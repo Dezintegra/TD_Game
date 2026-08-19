@@ -1,10 +1,10 @@
-import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS, TILE_HEIGHT_PX, TILE_WIDTH_PX } from '@td/shared';
+import { MAP_BOUNDS } from './iso.js';
 
 /**
  * Камера.
  *
  * Хранит точку, на которую смотрит игрок, в экранных координатах мира —
- * то есть уже после изометрической проекции, но до сдвига контейнера.
+ * то есть уже после проекции, но до сдвига контейнера.
  *
  * Движение камеры не перестраивает ничего: оно превращается в сдвиг
  * контейнера сцены, то есть в два числа. Именно поэтому прокрутка карты
@@ -15,22 +15,7 @@ export interface Camera {
   readonly y: number;
 }
 
-/**
- * Границы карты в экранных координатах.
- *
- * В изометрии карта — это ромб, а не прямоугольник, поэтому её габариты
- * считаются не по размеру в клетках напрямую. Крайняя левая точка — западный
- * угол, то есть клетка (0, высота); крайняя правая — восточный, (ширина, 0).
- */
-const HALF_TILE_WIDTH = TILE_WIDTH_PX / 2;
-const HALF_TILE_HEIGHT = TILE_HEIGHT_PX / 2;
-
-export const MAP_BOUNDS = {
-  minX: -MAP_HEIGHT_CELLS * HALF_TILE_WIDTH,
-  maxX: MAP_WIDTH_CELLS * HALF_TILE_WIDTH,
-  minY: 0,
-  maxY: (MAP_WIDTH_CELLS + MAP_HEIGHT_CELLS) * HALF_TILE_HEIGHT,
-} as const;
+export { MAP_BOUNDS };
 
 /** Камера, смотрящая в центр карты. */
 export const createCamera = (): Camera => ({

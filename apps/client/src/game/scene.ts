@@ -42,7 +42,9 @@ const toPixiColor = (cssColor: string, fallback: number): number => {
 const readTerrainColors = (): TerrainColors => ({
   grid: toPixiColor(readToken('--td-border-subtle', '#3a3a3a'), 0x3a3a3a),
   gridMajor: toPixiColor(readToken('--td-border-control', '#4d4d4d'), 0x4d4d4d),
-  rock: toPixiColor(readToken('--td-text-muted-3', '#808080'), 0x808080),
+  rock: toPixiColor(readToken('--td-rock', '#6e6a63'), 0x6e6a63),
+  rockFacet: toPixiColor(readToken('--td-rock-facet', '#817b71'), 0x817b71),
+  rockEdge: toPixiColor(readToken('--td-rock-edge', '#4a4741'), 0x4a4741),
   border: toPixiColor(readToken('--td-text-muted-4', '#6b6b6b'), 0x6b6b6b),
   // Читаем --td-accent, а не --td-player-self: последний объявлен через
   // var(), и получить из него готовый цвет средствами getComputedStyle

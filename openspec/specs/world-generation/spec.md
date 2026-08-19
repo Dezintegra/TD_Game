@@ -1,8 +1,11 @@
 # world-generation Specification
 
 ## Purpose
+
 TBD - created by archiving change add-world-and-view. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Детерминированная генерация карты из seed
 
 Система SHALL строить карту исключительно из числового seed матча. Одинаковый
@@ -101,4 +104,3 @@ seed SHALL давать побитово одинаковую карту при 
 
 - **WHEN** клиент получает сообщение о начале матча
 - **THEN** сообщение содержит seed и не содержит данных о клетках карты
-
