@@ -1,8 +1,11 @@
 # quality-gates Specification
 
 ## Purpose
+
 TBD - created by archiving change bootstrap-monorepo. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Обязательный набор проверок перед вливанием
 
 Изменение SHALL считаться пригодным к вливанию только если успешно прошли проверка типов, линт, проверка форматирования и юнит-тесты. CI SHALL запускать эти проверки на каждый push и каждый pull request в `main`.
@@ -63,4 +66,3 @@ TBD - created by archiving change bootstrap-monorepo. Update Purpose after archi
 
 - **WHEN** страница игры полностью загружена
 - **THEN** в DOM присутствует элемент `canvas`, созданный PixiJS, с ненулевыми размерами
-

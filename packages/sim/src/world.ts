@@ -2,6 +2,8 @@ import { asPlayerId, asTickNumber, PLAYERS_PER_MATCH } from '@td/shared';
 import type { EntityId, PlayerId, TickNumber, Vec2 } from '@td/shared';
 import { createRng } from './prng.js';
 import type { RngState } from './prng.js';
+import { generateMap } from './map.js';
+import type { GameMap } from './map.js';
 
 /**
  * Состояние одного игрока.
@@ -47,6 +49,11 @@ export interface CreepState {
 export interface WorldState {
   readonly tick: TickNumber;
   readonly rng: RngState;
+  /**
+   * Карта мира. Восстанавливается из seed на обеих сторонах и по сети
+   * не передаётся: четыре байта seed вместо девяти тысяч клеток.
+   */
+  readonly map: GameMap;
   readonly players: readonly PlayerState[];
   readonly towers: readonly TowerState[];
   readonly creeps: readonly CreepState[];
@@ -60,6 +67,7 @@ export const STARTING_LIVES = 20;
 export const createWorld = (seed: number): WorldState => ({
   tick: asTickNumber(0),
   rng: createRng(seed),
+  map: generateMap(seed),
   players: Array.from({ length: PLAYERS_PER_MATCH }, (_unused, index) => ({
     id: asPlayerId(index),
     gold: STARTING_GOLD,

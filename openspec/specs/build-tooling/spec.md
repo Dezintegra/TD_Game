@@ -1,8 +1,11 @@
 # build-tooling Specification
 
 ## Purpose
+
 TBD - created by archiving change bootstrap-monorepo. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Единый набор корневых команд
 
 Корневой `package.json` SHALL предоставлять команды `dev`, `build`, `typecheck`, `lint`, `format`, `test` и `e2e`. Каждая команда SHALL делегировать выполнение Turborepo, который обходит пакеты в порядке их зависимостей.
@@ -62,4 +65,3 @@ Turborepo SHALL кешировать результаты задач `build`, `t
 
 - **WHEN** в `apps/client` импортируется символ из `@td/sim`
 - **THEN** редактор показывает его тип и сигнатуру, а `pnpm typecheck` проходит без ошибок разрешения типов
-

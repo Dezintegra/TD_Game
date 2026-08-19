@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Panel } from '@td/ui';
 import { useHudStore } from '../game/store.js';
 import type { ConnectionStatus } from '../game/store.js';
@@ -17,22 +18,43 @@ const statusColor: Record<ConnectionStatus, string> = {
 /**
  * HUD — единственное место, где работает React.
  *
- * Компонент подписан на store точечно: каждый useHudStore с селектором
- * перерисовывает только себя и только при изменении своего значения.
- * Игровое поле при этом вообще не участвует в рендере React.
+ * Каждое значение подписано на store отдельным селектором, поэтому
+ * изменение частоты кадров перерисовывает одну строку, а не всю панель.
+ * Игровое поле в рендере React не участвует вообще.
  */
 export const Hud = () => (
   <div id="hud" data-testid="hud">
-    <Panel
-      title="Соединение"
-      style={{ position: 'absolute', top: 'var(--td-space-4)', left: 'var(--td-space-4)' }}
+    <div
+      style={{
+        position: 'absolute',
+        top: 'var(--td-space-4)',
+        left: 'var(--td-space-4)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--td-space-3)',
+        width: 220,
+      }}
     >
-      <ConnectionRow />
-      <StatRow label="Тик" value={<TickValue />} />
-      <StatRow label="Задержка" value={<LatencyValue />} />
-      <StatRow label="Ответов" value={<PongValue />} />
-      <StatRow label="Кадров/с" value={<FpsValue />} />
-    </Panel>
+      <Panel title="Соединение">
+        <ConnectionRow />
+        <StatRow label="Тик" value={<TickValue />} />
+        <StatRow label="Задержка" value={<LatencyValue />} />
+        <StatRow label="Ответов" value={<PongValue />} />
+        <StatRow label="Кадров/с" value={<FpsValue />} />
+      </Panel>
+
+      <Panel title="Карта">
+        <StatRow label="Seed" value={<SeedValue />} />
+        <StatRow label="Видно" value={<VisibleValue />} />
+        <StatRow label="Скалы" value={<RockValue />} />
+      </Panel>
+
+      <Panel title="Управление">
+        <Hint>Перетаскивание мышью — прокрутка</Hint>
+        <Hint>Стрелки — прокрутка</Hint>
+        <Hint>R — новая карта</Hint>
+      </Panel>
+    </div>
   </div>
 );
 
@@ -64,12 +86,12 @@ const ConnectionRow = () => {
   );
 };
 
-const StatRow = ({ label, value }: { label: string; value: React.ReactNode }) => (
+const StatRow = ({ label, value }: { label: string; value: ReactNode }) => (
   <div
     style={{
       display: 'flex',
       justifyContent: 'space-between',
-      gap: 'var(--td-space-6)',
+      gap: 'var(--td-space-4)',
       fontSize: 'var(--td-text-sm)',
       lineHeight: 1.7,
     }}
@@ -81,9 +103,28 @@ const StatRow = ({ label, value }: { label: string; value: React.ReactNode }) =>
   </div>
 );
 
+const Hint = ({ children }: { children: ReactNode }) => (
+  <div
+    style={{
+      fontSize: 'var(--td-text-sm)',
+      lineHeight: 1.7,
+      color: 'var(--td-text-muted-3)',
+    }}
+  >
+    {children}
+  </div>
+);
+
 const TickValue = () => <>{useHudStore((state) => state.tick)}</>;
 const LatencyValue = () => <>{useHudStore((state) => state.latencyMs)} мс</>;
 const PongValue = () => (
   <span data-testid="pong-count">{useHudStore((state) => state.pongCount)}</span>
 );
-const FpsValue = () => <>{useHudStore((state) => state.fps)}</>;
+const FpsValue = () => <span data-testid="fps">{useHudStore((state) => state.fps)}</span>;
+const SeedValue = () => <span data-testid="seed">{useHudStore((state) => state.seed)}</span>;
+const VisibleValue = () => (
+  <span data-testid="visible-percent">
+    {useHudStore((state) => state.visiblePercent).toFixed(1)} %
+  </span>
+);
+const RockValue = () => <>{useHudStore((state) => state.rockPercent).toFixed(1)} %</>;

@@ -31,6 +31,16 @@ export const checksum = (state: WorldState): number => {
   hash = mix(hash, state.rng.value);
   hash = mix(hash, state.nextEntityId);
 
+  // Карта входит в сумму целиком. Если детерминизм генерации сломается,
+  // расхождение обнаружится на первой же сверке, а не через сотню тиков
+  // по разошедшимся траекториям юнитов.
+  for (const cell of state.map.cells) {
+    hash = mix(hash, cell);
+  }
+  for (const base of state.map.baseCells) {
+    hash = mix(hash, base);
+  }
+
   for (const player of state.players) {
     hash = mix(hash, player.id);
     hash = mix(hash, player.gold);

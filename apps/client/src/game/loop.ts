@@ -26,6 +26,8 @@ export interface GameLoop {
   stop(): void;
   /** Ставит команду в очередь на ближайший тик. */
   enqueue(command: Command): void;
+  /** Начинает мир заново с другим seed. Пока нет матчей — способ посмотреть другую карту. */
+  reset(seed: number): void;
   readonly world: WorldState;
 }
 
@@ -110,6 +112,11 @@ export const createGameLoop = (options: GameLoopOptions): GameLoop => {
     },
     enqueue(command) {
       pending.push(command);
+    },
+    reset(seed) {
+      world = createWorld(seed);
+      pending = [];
+      accumulator = 0;
     },
     get world() {
       return world;

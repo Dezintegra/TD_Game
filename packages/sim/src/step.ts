@@ -1,4 +1,4 @@
-import { CommandKind, asEntityId, asTickNumber, cellsToUnits, FIELD_WIDTH_CELLS } from '@td/shared';
+import { CommandKind, asEntityId, asTickNumber, cellsToUnits, MAP_WIDTH_CELLS } from '@td/shared';
 import type { Command } from '@td/shared';
 import type { CreepState, WorldState } from './world.js';
 
@@ -81,7 +81,7 @@ const placeTower = (
   };
 };
 
-const FIELD_END_UNITS = cellsToUnits(FIELD_WIDTH_CELLS);
+const FIELD_END_UNITS = cellsToUnits(MAP_WIDTH_CELLS);
 
 const moveCreep = (creep: CreepState): CreepState => ({
   ...creep,

@@ -9,8 +9,8 @@ import { create } from 'zustand';
  *
  * Поэтому цикл пишет в store только то, что реально показывается
  * в HUD, и только когда значение изменилось. Всё остальное —
- * позиции башен, врагов, снарядов — живёт в PixiJS и до React
- * вообще не доходит.
+ * территория, позиции башен, врагов, снарядов — живёт в PixiJS
+ * и до React вообще не доходит.
  */
 export type ConnectionStatus = 'offline' | 'connecting' | 'online';
 
@@ -23,11 +23,18 @@ interface HudState {
   readonly latencyMs: number;
   /** Кадров в секунду, усреднённо. */
   readonly fps: number;
+  /** Seed текущей карты. Карта восстанавливается из него целиком. */
+  readonly seed: number;
+  /** Какая доля карты помещается на экран, в процентах. */
+  readonly visiblePercent: number;
+  /** Доля непроходимых клеток на текущей карте, в процентах. */
+  readonly rockPercent: number;
 
   setStatus(status: ConnectionStatus): void;
   setTick(tick: number): void;
   registerPong(latencyMs: number): void;
   setFps(fps: number): void;
+  setMapInfo(seed: number, visiblePercent: number, rockPercent: number): void;
 }
 
 export const useHudStore = create<HudState>((set) => ({
@@ -36,11 +43,15 @@ export const useHudStore = create<HudState>((set) => ({
   pongCount: 0,
   latencyMs: 0,
   fps: 0,
+  seed: 0,
+  visiblePercent: 0,
+  rockPercent: 0,
 
   setStatus: (status) => set({ status }),
   setTick: (tick) => set({ tick }),
   registerPong: (latencyMs) => set((state) => ({ pongCount: state.pongCount + 1, latencyMs })),
   setFps: (fps) => set({ fps }),
+  setMapInfo: (seed, visiblePercent, rockPercent) => set({ seed, visiblePercent, rockPercent }),
 }));
 
 /**
@@ -52,4 +63,6 @@ export const hudActions = {
   setTick: (tick: number) => useHudStore.getState().setTick(tick),
   registerPong: (latencyMs: number) => useHudStore.getState().registerPong(latencyMs),
   setFps: (fps: number) => useHudStore.getState().setFps(fps),
+  setMapInfo: (seed: number, visiblePercent: number, rockPercent: number) =>
+    useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent),
 };

@@ -44,3 +44,38 @@ test('страница загружается без ошибок в консо�
 
   expect(errors).toEqual([]);
 });
+
+test('карта показывается и перегенерируется', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#scene canvas')).toBeVisible();
+
+  const seedBefore = await page.getByTestId('seed').textContent();
+  expect(Number(seedBefore)).toBeGreaterThan(0);
+
+  // Видимая доля карты — требование дизайна, а не украшение.
+  const visible = Number(
+    (await page.getByTestId('visible-percent').textContent())?.replace('%', ''),
+  );
+  expect(visible).toBeGreaterThan(0);
+  expect(visible).toBeLessThan(20);
+
+  await page.keyboard.press('r');
+  await expect(page.getByTestId('seed')).not.toHaveText(seedBefore ?? '');
+});
+
+test('частота кадров держится при непрерывном движении камеры', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('#scene canvas')).toBeVisible();
+
+  // Прокручиваем карту стрелкой и смотрим, что показывает счётчик кадров.
+  // Счётчик считает сам игровой цикл, то есть меряем ровно то, что видит
+  // игрок, а не синтетический бенчмарк.
+  await page.keyboard.down('ArrowRight');
+  await page.waitForTimeout(3000);
+
+  const fps = Number(await page.getByTestId('fps').textContent());
+
+  await page.keyboard.up('ArrowRight');
+
+  expect(fps).toBeGreaterThanOrEqual(55);
+});

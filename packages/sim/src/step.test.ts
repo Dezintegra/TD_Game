@@ -3,6 +3,7 @@ import { CommandKind, asPlayerId, asTickNumber, cellsToUnits, vec2 } from '@td/s
 import type { Command } from '@td/shared';
 import { createWorld, STARTING_GOLD } from './world.js';
 import { step } from './step.js';
+import { checksum } from './checksum.js';
 
 const placeTower = (x: number, y: number): Command => ({
   kind: CommandKind.PlaceTower,
@@ -15,11 +16,15 @@ const placeTower = (x: number, y: number): Command => ({
 describe('шаг симуляции', () => {
   it('не мутирует входное состояние', () => {
     const world = createWorld(42);
-    const snapshot = structuredClone(world);
+    const before = checksum(world);
 
     step(world, [placeTower(3, 3)]);
 
-    expect(world).toEqual(snapshot);
+    // Сравниваем контрольные суммы, а не сами объекты через structuredClone:
+    // в браузерном окружении клон типизированного массива приходит из другого
+    // realm, и глубокое сравнение спотыкается о разные конструкторы при
+    // полностью одинаковом содержимом.
+    expect(checksum(world)).toBe(before);
   });
 
   it('увеличивает номер тика ровно на единицу', () => {

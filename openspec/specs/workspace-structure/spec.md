@@ -1,8 +1,11 @@
 # workspace-structure Specification
 
 ## Purpose
+
 TBD - created by archiving change bootstrap-monorepo. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Монорепозиторий на pnpm workspaces
 
 Репозиторий SHALL быть единым pnpm-workspace, объединяющим приложения из `apps/*` и библиотеки из `packages/*`. Каждый рабочий пакет SHALL иметь собственный `package.json` и уникальное имя в пространстве `@td/`.
@@ -62,4 +65,3 @@ TBD - created by archiving change bootstrap-monorepo. Update Purpose after archi
 
 - **WHEN** пакет переопределяет `"strict": false` в своём `tsconfig.json`
 - **THEN** проверка конфигураций в CI завершается ошибкой
-

@@ -12,7 +12,21 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:5173',
     trace: 'on-first-retry',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: {
+          // Без этих флагов headless-Chromium рисует через SwiftShader, то есть
+          // процессором, и выдаёт около 16 кадров в секунду на любой сцене.
+          // Измерять производительность в таком режиме бессмысленно: цифра
+          // говорит о среде, а не о коде.
+          args: ['--use-angle=default', '--enable-gpu', '--ignore-gpu-blocklist'],
+        },
+      },
+    },
+  ],
   webServer: [
     {
       command: 'pnpm --filter @td/server dev',
