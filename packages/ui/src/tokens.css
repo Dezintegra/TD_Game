@@ -1,0 +1,126 @@
+/**
+ * Дизайн-токены TD Game.
+ *
+ * ИСТОЧНИК ГАММЫ: дизайн-система Dezintegra, файл
+ * monetka.tools/app/src/design/tokens.css — тёмный графит с неоновым
+ * акцентом #00FF29.
+ *
+ * Это КОПИЯ, а не зависимость: тот проект живёт в своём репозитории со
+ * своим релизным циклом, и подключать его пакетом ради палитры значило бы
+ * связать два независимых репозитория. Расхождение со временем допустимо.
+ *
+ * Что добавлено сверх источника — игровая семантика, которой в утилите
+ * быть не могло: цвета двух сторон PvP, состояний башен, здоровья врагов
+ * и сетки поля. Они подобраны в тон исходной гамме.
+ *
+ * Правило: компоненты ссылаются только на переменные отсюда.
+ * Литеральных цветов в компонентах быть не должно.
+ */
+:root {
+  /* ── Акцент ─────────────────────────────────────────────────────────
+     Неон из источника. Это ключевая черта дизайна, приглушать нельзя. */
+  --td-accent: #00ff29;
+  --td-accent-0: rgba(0, 255, 41, 0);
+  --td-accent-25: rgba(0, 255, 41, 0.25);
+  --td-accent-35: rgba(0, 255, 41, 0.35);
+  --td-accent-50: rgba(0, 255, 41, 0.5);
+  --td-accent-60: rgba(0, 255, 41, 0.6);
+  --td-accent-80: rgba(0, 255, 41, 0.8);
+
+  /* ── Фоны ───────────────────────────────────────────────────────────
+     Страница светлее панелей: тёмная панель «парит» над полем. */
+  --td-bg-page: #191919;
+  --td-bg-header: #0e0e0e;
+  --td-bg-panel: #141414;
+  --td-bg-subhead: #1a1a1a;
+  --td-bg-content: #1c1c1c;
+  --td-bg-item-hover: #333333;
+  --td-bg-item-active: #3a3a3a;
+  --td-bg-input: #1f1f1f;
+  --td-bg-overlay: rgba(0, 0, 0, 0.6);
+
+  /* ── Границы ────────────────────────────────────────────────────── */
+  --td-border-hard: #000;
+  --td-border-subtle: #3a3a3a;
+  --td-border-divider: #424242;
+  --td-border-control: #4d4d4d;
+
+  /* ── Текст ──────────────────────────────────────────────────────── */
+  --td-text-primary: #ececec;
+  --td-text-secondary: #c4c4c4;
+  --td-text-muted-1: #ababab;
+  --td-text-muted-2: #969696;
+  --td-text-muted-3: #808080;
+  --td-text-muted-4: #6b6b6b;
+  --td-text-inactive: #9a9a9a;
+
+  /* ── Статусы ────────────────────────────────────────────────────────
+     Подобраны в тон акценту через oklch. success совпадает с акцентом:
+     успех — основное состояние системы. */
+  --td-error: oklch(0.72 0.25 29);
+  --td-warning: oklch(0.86 0.18 97);
+  --td-info: oklch(0.82 0.14 215);
+  --td-success: var(--td-accent);
+
+  /* ── Игровая семантика: стороны PvP ─────────────────────────────────
+     Своя сторона — акцентный неон, чужая — холодный контраст.
+     Различие по тону, а не только по яркости: так поле читается
+     и при дальтонизме, и в пылу боя. */
+  --td-player-self: var(--td-accent);
+  --td-player-self-dim: var(--td-accent-35);
+  --td-player-enemy: oklch(0.72 0.2 320);
+  --td-player-enemy-dim: oklch(0.72 0.2 320 / 0.35);
+
+  /* ── Игровая семантика: поле ────────────────────────────────────── */
+  --td-field-grid: rgba(255, 255, 255, 0.05);
+  --td-field-grid-major: rgba(255, 255, 255, 0.09);
+  --td-field-path: #232323;
+  --td-field-buildable: rgba(0, 255, 41, 0.08);
+  --td-field-blocked: rgba(255, 92, 92, 0.1);
+
+  /* ── Игровая семантика: сущности ────────────────────────────────── */
+  --td-tower-range: var(--td-accent-25);
+  --td-tower-cooldown: var(--td-text-muted-4);
+  --td-creep-health: var(--td-accent);
+  --td-creep-health-low: var(--td-error);
+  --td-projectile: #eaffef;
+
+  /* ── Радиусы ────────────────────────────────────────────────────── */
+  --td-radius-panel: 4px;
+  --td-radius-control: 3px;
+
+  /* ── Тени и свечение ────────────────────────────────────────────── */
+  --td-shadow-panel: 0 12px 26px rgba(0, 0, 0, 0.7), 0 48px 100px rgba(0, 0, 0, 0.85);
+  --td-shadow-modal: 0 24px 60px rgba(0, 0, 0, 0.8), 0 80px 140px rgba(0, 0, 0, 0.9);
+  --td-inset-edge: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --td-glow-accent: 0 0 12px var(--td-accent-35);
+
+  /* ── Типографика ────────────────────────────────────────────────── */
+  --td-font-ui: 'Manrope Variable', 'Manrope', system-ui, -apple-system, sans-serif;
+  --td-font-mono:
+    'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'Cascadia Mono', monospace;
+  --td-ls-label: 0.14em;
+  --td-ls-button: 0.1em;
+
+  --td-text-sm: 12px;
+  --td-text-md: 14px;
+  --td-text-lg: 18px;
+
+  /* ── Отступы ────────────────────────────────────────────────────── */
+  --td-space-1: 4px;
+  --td-space-2: 8px;
+  --td-space-3: 12px;
+  --td-space-4: 16px;
+  --td-space-6: 24px;
+
+  /* ── Анимации ───────────────────────────────────────────────────────
+     Короткие и функциональные. В реалтайм-игре интерфейс обязан
+     ощущаться мгновенным, а не «плавно уезжающим». */
+  --td-transition-item: 0.15s ease;
+  --td-transition-pulse: 0.22s ease-out;
+
+  /* ── Скроллбар ──────────────────────────────────────────────────── */
+  --td-scrollbar-size: 10px;
+  --td-scrollbar-thumb: var(--td-border-control);
+  --td-scrollbar-thumb-hover: var(--td-text-muted-4);
+}

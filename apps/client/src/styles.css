@@ -1,0 +1,64 @@
+@import '@td/ui/tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--td-bg-page);
+  color: var(--td-text-primary);
+  font: 400 14px/1.45 var(--td-font-ui);
+  overflow: hidden;
+
+  /* Игра, а не веб-страница: случайное выделение текста мышью
+     во время боя только мешает. Включаем его точечно там,
+     где копирование осмысленно. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.td-selectable {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+/* Обводка фокуса остаётся для клавиатуры. */
+:focus-visible {
+  outline: 2px solid var(--td-accent-50);
+  outline-offset: 2px;
+}
+
+/* Контейнер сцены PixiJS. Живёт под HUD и никогда не трогается React.
+
+   z-index задан явно, а не отдан на откуп порядку в DOM: сцена
+   добавляется в документ уже после монтирования HUD, и без этого
+   canvas оказался бы сверху и полностью скрыл бы интерфейс. */
+#scene {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* HUD-оверлей.
+   pointer-events: none пропускает клики сквозь пустые места оверлея
+   к игровому полю; сами элементы HUD включают события обратно. */
+#hud {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+#hud > * {
+  pointer-events: auto;
+}

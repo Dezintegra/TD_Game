@@ -1,0 +1,8 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Скрипты установки выполняются только у явно разрешённых пакетов.
+# esbuild скачивает свой нативный бинарник — без этого Vite и Vitest не работают.
+onlyBuiltDependencies:
+  - esbuild
