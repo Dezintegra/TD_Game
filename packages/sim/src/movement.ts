@@ -6,6 +6,7 @@ import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   STRUCTURE_STATS,
+  directionTowards,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
 import { cellAt, cellCentre, cellIndex, squaredDistanceToFootprint } from './map.js';
@@ -160,6 +161,14 @@ const moveUnitTowards = (
   // никогда.
   if (isBlocked(working, next.x, next.y)) return;
 
+  // Машина разворачивается по ходу шага — и только если шаг состоялся:
+  // упёршийся в стену юнит смотрит туда же, куда смотрел. Румб берётся
+  // от цели шага, а не от пройденного за тик расстояния: расстояние
+  // за тик мало, и округление его до одного из восьми румбов давало бы
+  // дрожание на длинной прямой.
+  const heading = directionTowards(towards.x - unit.x, towards.y - unit.y);
+  if (heading !== DIRECTION_STOP) unit.facing = heading;
+
   unit.x = clamp(next.x, MAP_MAX_X);
   unit.y = clamp(next.y, MAP_MAX_Y);
 };
@@ -178,6 +187,11 @@ export const moveGenerals = (working: Working, statsTable: readonly PlayerStats[
 
     const vector = DIRECTION_VECTORS[general.direction];
     if (vector === undefined) continue;
+
+    // Машина разворачивается туда, куда её ведут. Отдельно от `direction`
+    // потому, что тот обнуляется, едва игрок отпустил клавиши, а разворот
+    // должен сохраниться.
+    general.facing = general.direction;
 
     const speed = statsOf(statsTable, general.owner).general.speed;
     const stepX = Math.round((vector.x * speed) / DIRECTION_SCALE);

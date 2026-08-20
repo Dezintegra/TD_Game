@@ -12,6 +12,7 @@ import {
   asEntityId,
   asPlayerId,
   asTickNumber,
+  directionTowards,
 } from '@td/shared';
 import type { EntityId, PlayerId, TickNumber, UnitType, Vec2 } from '@td/shared';
 import { createRng } from './prng.js';
@@ -88,6 +89,27 @@ export interface UnitState {
   readonly unitType: UnitType;
   readonly position: Vec2;
   readonly health: number;
+  /**
+   * Румб, в который повёрнута машина: индекс из тех же восьми направлений,
+   * что и у генерала.
+   *
+   * Величина производная и нужна одному лишь рендеру — но храниться она
+   * обязана здесь, а не на клиенте. Клиент предсказывает симуляцию вперёд
+   * и откатывается при расхождении с сервером; направление, выведенное
+   * из разницы положений между кадрами, при откате теряется, и войско
+   * разворачивается куда попало ровно в тот момент, когда игрок смотрит
+   * на бой. Прецедент рядом: ShotState живёт здесь же и тоже нужен
+   * исключительно рендеру.
+   *
+   * В отличие от направления генерала, ноль здесь невозможен: у генерала
+   * ноль означает «стоять», а машина всегда куда-то повёрнута.
+   *
+   * На правила боя не влияет: точность от направления не зависит, разворот
+   * не занимает времени, стрелять назад можно. Разворот с задержкой — это
+   * игровая механика, а не облик, и вводить её под видом правки картинки
+   * нельзя.
+   */
+  readonly facing: number;
   readonly readyAtTick: TickNumber;
 }
 
@@ -97,6 +119,14 @@ export interface GeneralState {
   readonly health: number;
   /** Индекс направления движения, ноль — стоит. */
   readonly direction: number;
+  /**
+   * Румб, в который развёрнута машина.
+   *
+   * Отдельно от `direction` потому, что `direction` обнуляется, едва игрок
+   * отпустил клавиши, а машина от этого не разворачивается носом в никуда:
+   * остановившийся истребитель продолжает смотреть туда, куда летел.
+   */
+  readonly facing: number;
   readonly readyAtTick: TickNumber;
   readonly alive: boolean;
   /** Тик возвращения в игру. Осмысленно только когда генерал мёртв. */
@@ -233,15 +263,22 @@ export const createWorld = (seed: number): WorldState => {
     builtAtTick: asTickNumber(0),
   }));
 
-  const generals: GeneralState[] = map.baseCells.map((cell, index) => ({
-    owner: asPlayerId(index),
-    position: cellCentre(generalSpawnCell(cell)),
-    health: GENERAL_STATS.health,
-    direction: 0,
-    readyAtTick: asTickNumber(0),
-    alive: true,
-    respawnAtTick: asTickNumber(0),
-  }));
+  const generals: GeneralState[] = map.baseCells.map((cell, index) => {
+    const spawn = generalSpawnCell(cell);
+
+    return {
+      owner: asPlayerId(index),
+      position: cellCentre(spawn),
+      health: GENERAL_STATS.health,
+      direction: 0,
+      // На старте оба смотрят в центр карты — туда, откуда придёт война.
+      // Ноль здесь недопустим: у машины он означал бы отсутствие разворота.
+      facing: directionTowards(MAP_CENTRE_X - cellX(spawn), MAP_CENTRE_Y - cellY(spawn)),
+      readyAtTick: asTickNumber(0),
+      alive: true,
+      respawnAtTick: asTickNumber(0),
+    };
+  });
 
   const players: PlayerState[] = Array.from({ length: PLAYERS_PER_MATCH }, (_unused, index) => ({
     id: asPlayerId(index),

@@ -1,4 +1,5 @@
 import {
+  DIRECTION_STOP,
   FIXED_POINT_SCALE,
   GENERAL_KILL_REWARD,
   MAP_HEIGHT_CELLS,
@@ -10,6 +11,7 @@ import {
   UNIT_STATS,
   asTickNumber,
   clampPpm,
+  directionTowards,
   growPpm,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
@@ -201,18 +203,123 @@ export const seesStructure = (
     STRUCTURE_STATS[structure.kind].footprintRadius,
   );
 
+/** Ближайший видимый вражеский генерал. Ничья — по меньшему индексу. */
+const nearestGeneral = (
+  working: Working,
+  owner: PlayerId,
+  origin: Vec2,
+  reach: number,
+  elevated: boolean,
+): Target | undefined => {
+  const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
+
+  working.generals.forEach((general, index) => {
+    if (!general.alive || general.owner === owner) return;
+
+    const point = { x: general.x, y: general.y };
+    const distance = squaredDistance(origin, point);
+    if (distance > reach) return;
+    // Проверка линии дороже проверки расстояния, поэтому кандидата,
+    // заведомо худшего текущего, отсеиваем до неё.
+    if (best.target !== undefined && distance > best.distance) return;
+    if (!seesPoint(working, elevated, origin, point)) return;
+
+    consider(best, { kind: TargetKind.General, index }, distance, index);
+  });
+
+  return best.target;
+};
+
+/** Ближайший видимый вражеский юнит. */
+const nearestUnit = (
+  working: Working,
+  indices: CombatIndices,
+  owner: PlayerId,
+  origin: Vec2,
+  range: number,
+  reach: number,
+  elevated: boolean,
+): Target | undefined => {
+  const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
+
+  forEachNear(indices.units, origin, range, (index) => {
+    const unit = working.units[index];
+    if (unit === undefined || !unit.alive || unit.owner === owner) return;
+
+    const distance = squaredDistance(origin, { x: unit.x, y: unit.y });
+    if (distance > reach) return;
+    if (best.target !== undefined && distance > best.distance) return;
+    if (!seesPoint(working, elevated, origin, { x: unit.x, y: unit.y })) return;
+
+    consider(best, { kind: TargetKind.Unit, index }, distance, unit.id);
+  });
+
+  return best.target;
+};
+
+/** Ближайшая видимая вражеская постройка. */
+const nearestStructure = (
+  working: Working,
+  indices: CombatIndices,
+  owner: PlayerId,
+  origin: Vec2,
+  range: number,
+  reach: number,
+  elevated: boolean,
+): Target | undefined => {
+  const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
+
+  // Радиус поиска расширен на размер самого крупного основания.
+  // Корзины индексируют постройку по её центру, а стреляем мы по краю:
+  // база с основанием три на три попадала бы в соседнюю корзину и просто
+  // не находилась бы среди кандидатов.
+  forEachNear(indices.structures, origin, range + LARGEST_FOOTPRINT, (index) => {
+    const structure = working.structures[index];
+    if (structure === undefined || !structure.alive || structure.owner === owner) return;
+
+    const distance = structureDistance(origin, structure);
+    if (distance > reach) return;
+    if (best.target !== undefined && distance > best.distance) return;
+    if (!seesStructure(working, elevated, origin, structure)) return;
+
+    consider(best, { kind: TargetKind.Structure, index }, distance, structure.id);
+  });
+
+  return best.target;
+};
+
 /**
  * Выбор цели по приоритету:
- *   1) назначенная общая цель игрока, если она в радиусе;
- *   2) постройка, перегородившая путь;
- *   3) вражеский юнит или генерал;
- *   4) любая вражеская постройка.
+ *   1) назначенная общая цель игрока;
+ *   2) вражеский генерал;
+ *   3) постройка, перегородившая путь;
+ *   4) вражеский юнит;
+ *   5) любая вражеская постройка.
  *
- * Первые два пункта — намеренная цель, остальные — то, что подвернулось.
+ * Ступени перебираются сверху вниз, и первая, на которой нашлась цель
+ * в радиусе и на линии огня, останавливает перебор. Внутри ступени
+ * выбирается ближайшая цель, ничья разрешается меньшим идентификатором:
+ * без этого исход зависел бы от порядка элементов в массиве.
  *
- * На каждом пункте цель обязана быть видимой: расстояния мало, нужна ещё
- * и свободная линия. Проверка стоит обхода нескольких клеток и делается
- * последней — после отсева по расстоянию, который куда дешевле.
+ * Почему генерал выше юнитов. Раньше он участвовал в общем конкурсе
+ * наравне с ними и выигрывал, только будучи строго ближе любого юнита
+ * в радиусе. А ходит он там, где идёт бой, то есть в окружении своей
+ * пехоты, — и кто-нибудь из неё почти всегда оказывался ближе. В итоге
+ * по генералу не стреляли вовсе: механика «хочешь укрепить позицию —
+ * приди туда лично и подставься» не работала, а награда за убийство
+ * вражеского генерала не выплачивалась никогда.
+ *
+ * Почему генерал выше преграды. Стена никуда не денется и через секунду
+ * будет там же, а генерал уйдёт. К тому же за него дают двадцать
+ * стоимостей штурмовика, а стена столько не стоит.
+ *
+ * Почему назначенная цель всё-таки выше генерала. Это единственный
+ * прямой приказ игрока в выборе цели, и автоматика перебивать его
+ * не должна.
+ *
+ * На каждой ступени цель обязана быть видимой: расстояния мало, нужна
+ * ещё и свободная линия. Проверка стоит обхода нескольких клеток
+ * и делается последней — после отсева по расстоянию, который куда дешевле.
  */
 export const chooseTarget = (
   working: Working,
@@ -241,58 +348,17 @@ export const chooseTarget = (
     return { kind: TargetKind.Structure, index: globalTargetIndex };
   }
 
+  const general = nearestGeneral(working, owner, origin, reach, elevated);
+  if (general !== undefined) return general;
+
   if (blockedBy >= 0 && structureInReach(blockedBy)) {
     return { kind: TargetKind.Structure, index: blockedBy };
   }
 
-  const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
-
-  forEachNear(indices.units, origin, range, (index) => {
-    const unit = working.units[index];
-    if (unit === undefined || !unit.alive || unit.owner === owner) return;
-
-    const distance = squaredDistance(origin, { x: unit.x, y: unit.y });
-    if (distance > reach) return;
-    // Ничью по расстоянию мы всё равно разрешим по идентификатору,
-    // поэтому кандидата хуже текущего отсеиваем до проверки линии.
-    if (best.target !== undefined && distance > best.distance) return;
-    if (!seesPoint(working, elevated, origin, { x: unit.x, y: unit.y })) return;
-
-    consider(best, { kind: TargetKind.Unit, index }, distance, unit.id);
-  });
-
-  working.generals.forEach((general, index) => {
-    if (!general.alive || general.owner === owner) return;
-
-    const distance = squaredDistance(origin, { x: general.x, y: general.y });
-    if (distance > reach) return;
-    if (!seesPoint(working, elevated, origin, { x: general.x, y: general.y })) return;
-
-    // Генералы идут после юнитов при равном расстоянии: идентификатор
-    // берётся заведомо большой, чтобы толпа юнитов не расступалась,
-    // пропуская выстрелы в генерала.
-    consider(best, { kind: TargetKind.General, index }, distance, Number.MAX_SAFE_INTEGER - index);
-  });
-
-  if (best.target !== undefined) return best.target;
-
-  // Радиус поиска расширен на размер самого крупного основания.
-  // Корзины индексируют постройку по её центру, а стреляем мы по краю:
-  // база с основанием три на три попадала бы в соседнюю корзину и просто
-  // не находилась бы среди кандидатов.
-  forEachNear(indices.structures, origin, range + LARGEST_FOOTPRINT, (index) => {
-    const structure = working.structures[index];
-    if (structure === undefined || !structure.alive || structure.owner === owner) return;
-
-    const distance = structureDistance(origin, structure);
-    if (distance > reach) return;
-    if (best.target !== undefined && distance > best.distance) return;
-    if (!seesStructure(working, elevated, origin, structure)) return;
-
-    consider(best, { kind: TargetKind.Structure, index }, distance, structure.id);
-  });
-
-  return best.target;
+  return (
+    nearestUnit(working, indices, owner, origin, range, reach, elevated) ??
+    nearestStructure(working, indices, owner, origin, range, reach, elevated)
+  );
 };
 
 /**
@@ -625,6 +691,30 @@ const fireStructure = (
   );
 };
 
+/**
+ * Разворот стрелка на цель.
+ *
+ * Стрельба идёт после движения, поэтому этот разворот перебивает разворот
+ * по ходу шага — и это правильный порядок: доехавший до врага и открывший
+ * огонь смотрит на врага, а не на последнюю точку маршрута.
+ *
+ * На исход выстрела не влияет никак: разворот мгновенный, стрелять можно
+ * в любую сторону. Это облик, а не механика.
+ */
+const aimFacing = (
+  working: Working,
+  target: Target,
+  fromX: number,
+  fromY: number,
+  current: number,
+): number => {
+  const aim = targetPosition(working, target);
+  if (aim === undefined) return current;
+
+  const heading = directionTowards(aim.x - fromX, aim.y - fromY);
+  return heading === DIRECTION_STOP ? current : heading;
+};
+
 const fireUnit = (
   working: Working,
   statsTable: readonly PlayerStats[],
@@ -651,6 +741,7 @@ const fireUnit = (
   );
   if (target === undefined) return;
 
+  unit.facing = aimFacing(working, target, unit.x, unit.y, unit.facing);
   unit.readyAtTick = asTickNumber(working.tick + baseline.cooldownTicks);
   fire(
     working,
@@ -689,6 +780,7 @@ const fireGeneral = (
   );
   if (target === undefined) return;
 
+  general.facing = aimFacing(working, target, general.x, general.y, general.facing);
   general.readyAtTick = asTickNumber(working.tick + baseline.cooldownTicks);
   fire(
     working,

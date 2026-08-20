@@ -1,10 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import type { Graphics } from 'pixi.js';
-import { PPM_ONE, StructureKind, UnitType, asEntityId, asPlayerId, asTickNumber } from '@td/shared';
-import { cellCentre, cellIndex, createWorld } from '@td/sim';
+import {
+  DIRECTION_SOUTH,
+  PPM_ONE,
+  StructureKind,
+  UnitType,
+  asEntityId,
+  asPlayerId,
+  asTickNumber,
+} from '@td/shared';
+import {
+  cellCentre,
+  cellIndex,
+  cellX,
+  cellY,
+  createWorld,
+  playerStats,
+  structureMaxHealth,
+} from '@td/sim';
 import type { WorldState } from '@td/sim';
 import { drawEntities } from './entities.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
+import { baseCrestPoint } from './base-structure.js';
+import { worldToScreen } from './iso.js';
 
 /**
  * Порядок отрисовки проверяется не картинкой, а тем, в какую полосу
@@ -18,9 +36,23 @@ import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 
 const SEED = 4242;
 
-/** Заглушка Graphics: методы ничего не делают, но остаются цепочечными. */
-const stubGraphics = (): Graphics => {
+/**
+ * Заглушка Graphics: методы ничего не рисуют, но остаются цепочечными
+ * и считают обращения.
+ *
+ * Счётчик нужен полосам прочности. Прямоугольник в отрисовке сущностей
+ * рисуют только они — тела собраны из многоугольников, — поэтому число
+ * вызовов `rect` и отвечает на вопрос «попала ли в этот слой полоса».
+ */
+interface Recorder {
+  readonly graphics: Graphics;
+  readonly counts: Record<string, number>;
+}
+
+const recorder = (): Recorder => {
+  const counts: Record<string, number> = {};
   const stub: Record<string, () => unknown> = {};
+
   for (const name of [
     'moveTo',
     'lineTo',
@@ -31,9 +63,13 @@ const stubGraphics = (): Graphics => {
     'rect',
     'clear',
   ]) {
-    stub[name] = () => stub;
+    stub[name] = () => {
+      counts[name] = (counts[name] ?? 0) + 1;
+      return stub;
+    };
   }
-  return stub as unknown as Graphics;
+
+  return { graphics: stub as unknown as Graphics, counts };
 };
 
 /** Экран заведомо больше карты: отсечение по видимости не должно мешать. */
@@ -56,7 +92,8 @@ const COLORS: EntityColors = {
 
 /**
  * Мир без живых генералов и без построек, кроме заказанных.
- * Базы в отрисовке сущностей не участвуют — их рисует территория.
+ * Тела баз в отрисовке сущностей не участвуют — их рисует территория,
+ * а вот полосы прочности баз остаются здесь.
  */
 const bare = (): WorldState => {
   const world = createWorld(SEED);
@@ -86,26 +123,44 @@ const unitAt = (cell: number) => ({
   unitType: UnitType.Assault,
   position: cellCentre(cell),
   health: 100,
+  facing: DIRECTION_SOUTH,
   readyAtTick: asTickNumber(0),
 });
 
-/** Полосы, которые запросила отрисовка, в порядке обращения. */
-const bandsFor = (world: WorldState): number[] => {
-  const graphics = stubGraphics();
+interface DrawResult {
+  /** Полосы глубины, которые запросила отрисовка, в порядке обращения. */
+  readonly bands: number[];
+  /** Сколько прямоугольников ушло в полосы глубины. */
+  readonly bandRects: number;
+  /** Сколько прямоугольников ушло в слой поверх тел. */
+  readonly overheadRects: number;
+}
+
+const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult => {
+  const depth = recorder();
+  const overhead = recorder();
   const bands: number[] = [];
 
   const layers: EntityLayers = {
     band(index) {
       bands.push(index);
-      return graphics;
+      return depth.graphics;
     },
-    shots: graphics,
+    shots: depth.graphics,
+    overhead: overhead.graphics,
   };
 
-  drawEntities(layers, world, WHOLE_MAP, COLORS, asPlayerId(0));
+  drawEntities(layers, world, view, COLORS, asPlayerId(0));
 
-  return bands;
+  return {
+    bands,
+    bandRects: depth.counts['rect'] ?? 0,
+    overheadRects: overhead.counts['rect'] ?? 0,
+  };
 };
+
+/** Полосы, которые запросила отрисовка, в порядке обращения. */
+const bandsFor = (world: WorldState): number[] => drawInto(world).bands;
 
 describe('полосы глубины', () => {
   it('постройка и юнит в одной клетке попадают в одну полосу', () => {
@@ -149,5 +204,63 @@ describe('полосы глубины', () => {
 
     expect(bands[0]).toBe(20);
     expect(Math.max(...bands)).toBe(21);
+  });
+});
+
+describe('полоса прочности базы', () => {
+  it('уходит в слой поверх тел, а не в полосу глубины', () => {
+    // В голом мире нет ни юнитов, ни башен — остаются только две базы,
+    // значит всё нарисованное нарисовано ими.
+    const result = drawInto(bare());
+
+    expect(result.overheadRects).toBeGreaterThan(0);
+    expect(result.bands).toEqual([]);
+  });
+
+  it('рисуется у нетронутой базы, в отличие от целой стены', () => {
+    const world = bare();
+    const player = world.players[0];
+    if (player === undefined) throw new Error('в мире нет игрока');
+
+    // Здоровье берётся из баланса, а не назначается числом: стена с сотней
+    // очков при максимуме в несколько сотен считалась бы повреждённой,
+    // и проверка ничего бы не значила.
+    const intact = {
+      ...wallAt(cellIndex(10, 10)),
+      health: structureMaxHealth(playerStats(player).structures[StructureKind.Wall], PPM_ONE),
+    };
+
+    // Целая стена полосы не получает: полсотни одинаковых чёрточек
+    // над строем были бы шумом.
+    expect(drawInto({ ...world, structures: [intact] }).bandRects).toBe(0);
+
+    // База получает всегда: «полосы нет» и «база цела» — разные сообщения,
+    // а по пустому месту их не различить.
+    expect(drawInto(world).overheadRects).toBeGreaterThan(0);
+  });
+
+  it('не пропадает, когда основание базы ушло за нижнюю кромку экрана', () => {
+    const world = bare();
+    const [base] = world.structures;
+    if (base === undefined) throw new Error('в мире нет базы');
+
+    const x = cellX(base.cell);
+    const y = cellY(base.cell);
+    const ground = worldToScreen(x, y);
+    const crest = baseCrestPoint(x, y);
+
+    // Окно поставлено так, что полоса лежит ровно на нижней кромке,
+    // а основание базы — далеко под ней.
+    const view: ViewBounds = {
+      minX: crest.x - 300,
+      maxX: crest.x + 300,
+      minY: crest.y - 300,
+      maxY: crest.y,
+    };
+
+    // Ловушка, ради которой отсечение и считается по полосе: основание
+    // ушло под кромку дальше, чем запас на отсечение в 160 пикселей.
+    expect(ground.y - view.maxY).toBeGreaterThan(200);
+    expect(drawInto(world, view).overheadRects).toBeGreaterThan(0);
   });
 });

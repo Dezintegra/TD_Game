@@ -3,15 +3,29 @@ import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   StructureKind,
-  UnitType,
+  UNIT_TYPES,
+  UNIT_UPGRADE_TARGET,
+  UpgradeStat,
   unitsToCells,
+  upgradeBranchIndex,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import type { StructureState, UnitState, WorldState } from '@td/sim';
+import type { PlayerState, StructureState, WorldState } from '@td/sim';
 import { cellX, cellY, playerStats, structureMaxHealth } from '@td/sim';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
-import { blend, drawPrism, tracePolygon } from './prism.js';
+import type { Point } from './iso.js';
+import { blend, drawPrism, tracePolygon, tracePolygonAt } from './prism.js';
 import type { Prism } from './prism.js';
+import { baseCrestPoint } from './base-structure.js';
+import {
+  SIDE_ENEMY,
+  SIDE_SELF,
+  generalShadow,
+  generalSilhouette,
+  unitSilhouette,
+  weaponTier,
+} from './models.js';
+import type { Silhouette } from './models.js';
 
 /**
  * Отрисовка живого содержимого поля: построек, юнитов, генералов,
@@ -82,6 +96,14 @@ export interface EntityLayers {
   band(index: number): Graphics;
   /** Слой трассеров. Лежит поверх всего: выстрел — событие, и прятать его незачем. */
   readonly shots: Graphics;
+  /**
+   * Слой поверх тел — для того, что не имеет права прятаться за ними.
+   *
+   * Пока здесь живут только полосы прочности баз. Полоса глубины им
+   * не годится: нужнее всего они при осаде, когда база обложена толпой,
+   * и ровно тогда толпа их и закрыла бы.
+   */
+  readonly overhead: Graphics;
 }
 
 /** Номер последней полосы глубины: дальше юнит уйти не может. */
@@ -100,30 +122,54 @@ export const drawEntities = (
   const accentOf = (owner: PlayerId): number =>
     owner === localPlayer ? colors.self : colors.enemy;
 
-  const visible = (x: number, y: number): boolean => {
-    const point = worldToScreen(x, y);
-    return (
-      point.x >= view.minX - CULL_MARGIN_PX &&
-      point.x <= view.maxX + CULL_MARGIN_PX &&
-      point.y >= view.minY - CULL_MARGIN_PX &&
-      point.y <= view.maxY + CULL_MARGIN_PX
-    );
+  const onScreen = (point: Point): boolean =>
+    point.x >= view.minX - CULL_MARGIN_PX &&
+    point.x <= view.maxX + CULL_MARGIN_PX &&
+    point.y >= view.minY - CULL_MARGIN_PX &&
+    point.y <= view.maxY + CULL_MARGIN_PX;
+
+  const visible = (x: number, y: number): boolean => onScreen(worldToScreen(x, y));
+
+  const maxHealthOf = (structure: StructureState): number => {
+    const baseline = stats[structure.owner]?.structures[structure.kind];
+    return baseline === undefined
+      ? structure.health
+      : structureMaxHealth(baseline, structure.growthPpm);
   };
 
   const queue: Drawable[] = [];
 
   for (const structure of world.structures) {
-    // База рисуется вместе с территорией: она неподвижна, и перестраивать
-    // её сложную геометрию каждый кадр незачем.
-    if (structure.kind === StructureKind.Base) continue;
-
     const x = cellX(structure.cell);
     const y = cellY(structure.cell);
+
+    // Тело базы рисуется вместе с территорией: она неподвижна, и
+    // перестраивать её сложную геометрию каждый кадр незачем. А вот полоса
+    // прочности так не умеет — она меняется каждый тик, поэтому живёт
+    // здесь, в отрыве от своего тела.
+    if (structure.kind === StructureKind.Base) {
+      const crest = baseCrestPoint(x, y);
+
+      // Отсекаем по самой полосе, а не по основанию базы: полоса висит
+      // намного выше запаса CULL_MARGIN_PX, и по основанию она пропадала бы
+      // у нижней кромки экрана задолго до того, как уйдёт из виду.
+      if (onScreen(crest)) {
+        drawBaseHealthBar(
+          layers.overhead,
+          crest,
+          structure.health,
+          maxHealthOf(structure),
+          accentOf(structure.owner),
+          colors,
+        );
+      }
+
+      continue;
+    }
+
     if (!visible(x, y)) continue;
 
-    const baseline = stats[structure.owner]?.structures[structure.kind];
-    const maxHealth =
-      baseline === undefined ? structure.health : structureMaxHealth(baseline, structure.growthPpm);
+    const maxHealth = maxHealthOf(structure);
 
     // Глубина постройки — по центру её клетки, как и у юнита. Иначе юнит
     // на клетку севернее оказывался бы с ней вровень и рисовался поверх.
@@ -147,6 +193,10 @@ export const drawEntities = (
     });
   }
 
+  // Ступени оружия зависят от прокачки владельца, а не от юнита, поэтому
+  // считаются раз на кадр: игроков двое, а юнитов до четырёхсот.
+  const tiers = world.players.map(weaponTiersOf);
+
   for (const unit of world.units) {
     const x = cellsOf(unit.position.x);
     const y = cellsOf(unit.position.y);
@@ -154,20 +204,24 @@ export const drawEntities = (
 
     const maxHealth = stats[unit.owner]?.units[unit.unitType].health ?? unit.health;
     const accent = accentOf(unit.owner);
+    const side = unit.owner === localPlayer ? SIDE_SELF : SIDE_ENEMY;
+    const tier = tiers[unit.owner]?.[unit.unitType];
+
+    const silhouette = unitSilhouette(
+      colors,
+      side,
+      unit.unitType,
+      unit.facing,
+      tier?.attack ?? 0,
+      tier?.fire ?? 0,
+    );
+    const anchor = worldToScreen(x, y);
 
     queue.push({
       depth: x + y,
       draw: (graphics) => {
-        drawUnit(graphics, unit, x, y, accent, colors);
-        drawHealthBar(
-          graphics,
-          x,
-          y,
-          UNIT_SHAPE[unit.unitType].height,
-          unit.health,
-          maxHealth,
-          colors,
-        );
+        paintSilhouette(graphics, silhouette, anchor.x, anchor.y, accent);
+        drawHealthBar(graphics, x, y, silhouette.height, unit.health, maxHealth, colors);
       },
     });
   }
@@ -181,20 +235,19 @@ export const drawEntities = (
 
     const maxHealth = stats[general.owner]?.general.health ?? general.health;
     const accent = accentOf(general.owner);
+    const side = general.owner === localPlayer ? SIDE_SELF : SIDE_ENEMY;
+
+    const jet = generalSilhouette(colors, side, general.facing);
+    const shadow = generalShadow(colors, general.facing);
+    const anchor = worldToScreen(x, y);
 
     queue.push({
       depth: x + y,
       draw: (graphics) => {
-        drawGeneral(graphics, x, y, accent, colors);
-        drawHealthBar(
-          graphics,
-          x,
-          y,
-          GENERAL_HEIGHT + GENERAL_SPIRE,
-          general.health,
-          maxHealth,
-          colors,
-        );
+        // Тень сначала: она лежит на земле, а машина идёт над ней.
+        paintSilhouette(graphics, shadow, anchor.x, anchor.y, accent, SHADOW_ALPHA);
+        paintSilhouette(graphics, jet, anchor.x, anchor.y, accent);
+        drawHealthBar(graphics, x, y, jet.height, general.health, maxHealth, colors);
       },
     });
   }
@@ -285,82 +338,63 @@ const drawStructure = (
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Силуэты юнитов различаются пропорциями, а не цветом: цвет уже занят
- * принадлежностью стороне, и нагружать его ещё и типом нельзя.
+ * Отрисовка готового силуэта из кеша.
+ *
+ * Вся геометрия построена заранее относительно основания модели, поэтому
+ * здесь остаётся сложение двух чисел на точку. Заливки уже склеены
+ * по цвету и упорядочены от дальних граней к ближним — порядок вызовов
+ * менять нельзя.
  */
-const UNIT_SHAPE: Readonly<Record<UnitType, Shape>> = {
-  [UnitType.Assault]: { size: 0.34, height: 0.44 },
-  // Снайпер тонкий и высокий.
-  [UnitType.Sniper]: { size: 0.26, height: 0.56 },
-  // Гранатомётчик приземистый и широкий.
-  [UnitType.Grenadier]: { size: 0.46, height: 0.36 },
-};
-
-const GENERAL_HEIGHT = 0.6;
-const GENERAL_SPIRE = 0.55;
-
-const drawUnit = (
+const paintSilhouette = (
   graphics: Graphics,
-  unit: UnitState,
-  x: number,
-  y: number,
+  silhouette: Silhouette,
+  anchorX: number,
+  anchorY: number,
   accent: number,
-  colors: EntityColors,
+  alpha?: number,
 ): void => {
-  const shape = UNIT_SHAPE[unit.unitType];
-  const half = shape.size / 2;
+  for (const run of silhouette.fills) {
+    for (const polygon of run.polygons) {
+      tracePolygonAt(graphics, polygon, anchorX, anchorY);
+    }
+    graphics.fill(alpha === undefined ? { color: run.color } : { color: run.color, alpha });
+  }
 
-  drawPrism(
-    graphics,
-    { x: x - half, y: y - half, width: shape.size, depth: shape.size, height: shape.height },
-    { hull: blend(colors.hullDark, accent, 0.45), accent, lineWidth: 1, lineAlpha: 0.9 },
-  );
+  if (silhouette.outline.length === 0) return;
+
+  // Неоновая окантовка несёт основную нагрузку узнавания: тёмный корпус
+  // на тёмной земле сам по себе виден плохо. Обводятся не все детали,
+  // а только те, что задают силуэт, — иначе машина в сорок пикселей
+  // превращается в клубок светящихся линий.
+  for (const polygon of silhouette.outline) {
+    tracePolygonAt(graphics, polygon, anchorX, anchorY);
+  }
+  graphics.stroke({ width: 1, color: accent, alpha: 0.9 });
 };
+
+/** Ступени оружия одного игрока по типам юнитов. */
+interface WeaponTiers {
+  readonly attack: number;
+  readonly fire: number;
+}
 
 /**
- * Генерал.
+ * Ступени оружия по уровням прокачки владельца.
  *
- * Он должен опознаваться среди сотни юнитов мгновенно, поэтому у него
- * не просто больший размер, а другой силуэт: корпус со шпилем. Размером
- * от толпы не отличишься — на расстоянии разница в полтора раза
- * не читается, а вертикальная антенна читается сразу.
+ * Считаются раз на кадр на игрока, а не на юнита: игроков двое, типов три,
+ * а юнитов сотни.
  */
-const drawGeneral = (
-  graphics: Graphics,
-  x: number,
-  y: number,
-  accent: number,
-  colors: EntityColors,
-): void => {
-  const hull = blend(colors.hullDark, accent, 0.5);
-  const half = 0.26;
+const weaponTiersOf = (player: PlayerState): readonly WeaponTiers[] =>
+  UNIT_TYPES.map((unitType) => {
+    const target = UNIT_UPGRADE_TARGET[unitType];
+    const attack = player.upgrades[upgradeBranchIndex(target, UpgradeStat.Attack)]?.level ?? 0;
+    const fire = player.upgrades[upgradeBranchIndex(target, UpgradeStat.FireRate)]?.level ?? 0;
 
-  drawPrism(
-    graphics,
-    { x: x - half, y: y - half, width: half * 2, depth: half * 2, height: GENERAL_HEIGHT },
-    { hull, accent, lineWidth: 1.5, lineAlpha: 1 },
-  );
+    return { attack: weaponTier(attack), fire: weaponTier(fire) };
+  });
 
-  drawPrism(
-    graphics,
-    {
-      x: x - 0.05,
-      y: y - 0.05,
-      width: 0.1,
-      depth: 0.1,
-      height: GENERAL_SPIRE,
-      base: GENERAL_HEIGHT,
-    },
-    { hull: accent, accent, lineWidth: 1, lineAlpha: 1 },
-  );
-
-  // Точка на вершине шпиля: маленькая, но именно она ловит взгляд
-  // при беглом осмотре карты.
-  const tip = worldToScreen(x, y);
-  graphics
-    .circle(tip.x, tip.y - (GENERAL_HEIGHT + GENERAL_SPIRE) * ELEVATION_PX_PER_CELL, 3.5)
-    .fill({ color: accent });
-};
+/** Тень истребителя. Полупрозрачная: сплошное пятно читалось бы дырой в земле. */
+const SHADOW_ALPHA = 0.45;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Полосы здоровья и выстрелы
@@ -399,6 +433,68 @@ const drawHealthBar = (
   graphics
     .rect(left, top, HEALTH_BAR_WIDTH_PX * fraction, HEALTH_BAR_HEIGHT_PX)
     .fill({ color: fraction <= HEALTH_LOW_FRACTION ? colors.healthLow : colors.health });
+};
+
+const BASE_BAR_WIDTH_PX = 76;
+const BASE_BAR_HEIGHT_PX = 8;
+
+/** Отметки по четвертям. Половина и четверть — рубежи, а не оттенки. */
+const BASE_BAR_QUARTERS = [0.25, 0.5, 0.75];
+
+/**
+ * Полоса прочности базы.
+ *
+ * От полос юнитов и башен она отличается тремя вещами, и все три —
+ * следствие одного: база это цель матча, а не одна из сотен фигур на поле.
+ *
+ * Она видна всегда, даже у нетронутой базы. Правило «показывать только
+ * повреждённых» бережёт экран там, где полос полсотни, но здесь работает
+ * против игрока: «полосы нет» и «база цела» — разные сообщения, а по
+ * пустому месту их не различить. Заодно полная длина служит эталоном,
+ * без которого доля не читается: заливка в сорок пикселей означает
+ * «половина» только рядом с рамкой в восемьдесят.
+ *
+ * Она крупнее: её читают издали и мельком.
+ *
+ * И у неё есть отметки по четвертям — рубежи, на которых игрок меняет
+ * решение, и различать их на глаз по длине заливки он не обязан.
+ */
+const drawBaseHealthBar = (
+  graphics: Graphics,
+  crest: Point,
+  health: number,
+  maxHealth: number,
+  accent: number,
+  colors: EntityColors,
+): void => {
+  if (maxHealth <= 0) return;
+
+  const fraction = Math.max(0, Math.min(1, health / maxHealth));
+  const left = crest.x - BASE_BAR_WIDTH_PX / 2;
+  const top = crest.y - BASE_BAR_HEIGHT_PX;
+
+  graphics
+    .rect(left, top, BASE_BAR_WIDTH_PX, BASE_BAR_HEIGHT_PX)
+    .fill({ color: 0x000000, alpha: 0.7 });
+
+  graphics
+    .rect(left, top, BASE_BAR_WIDTH_PX * fraction, BASE_BAR_HEIGHT_PX)
+    .fill({ color: fraction <= HEALTH_LOW_FRACTION ? colors.healthLow : colors.health });
+
+  for (const quarter of BASE_BAR_QUARTERS) {
+    const markX = left + BASE_BAR_WIDTH_PX * quarter;
+    graphics
+      .moveTo(markX, top)
+      .lineTo(markX, top + BASE_BAR_HEIGHT_PX)
+      .stroke({ width: 1, color: 0x000000, alpha: 0.5 });
+  }
+
+  // Окантовка цветом стороны. Полоса висит высоко и от тела оторвана,
+  // поэтому чья она — должно быть видно по ней самой, а не по тому,
+  // над чем она оказалась.
+  graphics
+    .rect(left, top, BASE_BAR_WIDTH_PX, BASE_BAR_HEIGHT_PX)
+    .stroke({ width: 1.5, color: accent, alpha: 0.95 });
 };
 
 const drawShots = (

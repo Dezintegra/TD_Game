@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DIRECTION_SOUTH,
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
@@ -54,6 +55,7 @@ const unit = (
   unitType,
   position: at(dx, dy),
   health,
+  facing: DIRECTION_SOUTH,
   readyAtTick: asTickNumber(0),
 });
 

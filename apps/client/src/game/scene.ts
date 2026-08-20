@@ -35,6 +35,7 @@ import type { CellPoint } from './iso.js';
  *   территория  — то же самое, но разложена по диагоналям;
  *   сущности    — каждый кадр;
  *   трассеры    — каждый кадр, поверх всех тел;
+ *   поверх тел  — каждый кадр: то, чему прятаться за телами нельзя;
  *   подсказки   — каждый кадр, но зависят от намерения игрока, а не мира;
  *   миникарта   — несколько раз в секунду и в экранных координатах.
  *
@@ -111,6 +112,7 @@ const readTerrainColors = (): TerrainColors => ({
   rock: token('--td-rock', 0x6e6a63),
   rockFacet: token('--td-rock-facet', 0x817b71),
   rockEdge: token('--td-rock-edge', 0x4a4741),
+  rockSnow: token('--td-rock-snow', 0xdfe6ef),
   border: token('--td-text-muted-4', 0x6b6b6b),
   // Читаем --td-accent, а не --td-player-self: последний объявлен через
   // var(), и получить из него готовый цвет средствами getComputedStyle
@@ -193,8 +195,11 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   }
 
   const shotGraphics = new Graphics();
+  // Слой поверх тел лежит выше трассеров: полосы прочности баз показывают
+  // положение дел в матче, и перечёркивать их линиями выстрелов незачем.
+  const overheadGraphics = new Graphics();
   const overlayGraphics = new Graphics();
-  worldContainer.addChild(shotGraphics, overlayGraphics);
+  worldContainer.addChild(shotGraphics, overheadGraphics, overlayGraphics);
 
   /**
    * Слои сущностей, в которые что-то попало на прошлом кадре.
@@ -216,15 +221,17 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       return entityBands[index] as Graphics;
     },
     shots: shotGraphics,
+    overhead: overheadGraphics,
   };
 
-  const clearEntityBands = (): void => {
+  const clearEntityLayers = (): void => {
     for (const band of usedBands) {
       entityBands[band]?.clear();
       bandUsed[band] = 0;
     }
     usedBands.length = 0;
     shotGraphics.clear();
+    overheadGraphics.clear();
   };
 
   // Миникарта живёт в экранных координатах, поэтому лежит не в мировом
@@ -304,7 +311,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     },
 
     render(world, localPlayer, intent) {
-      clearEntityBands();
+      clearEntityLayers();
       drawEntities(layers, world, viewBounds(), entityColors, localPlayer);
       drawOverlays(overlayGraphics, world, localPlayer, intent, overlayColors);
 

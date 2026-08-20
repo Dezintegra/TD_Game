@@ -41,6 +41,7 @@ export interface TerrainColors {
   readonly rock: number;
   readonly rockFacet: number;
   readonly rockEdge: number;
+  readonly rockSnow: number;
   readonly border: number;
   readonly baseSelf: number;
   readonly baseEnemy: number;
@@ -79,6 +80,7 @@ export const drawTerrainDiagonal = (
     rock: colors.rock,
     facet: colors.rockFacet,
     edge: colors.rockEdge,
+    snow: colors.rockSnow,
   });
 
   map.baseCells.forEach((cell, index) => {

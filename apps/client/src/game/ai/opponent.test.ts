@@ -11,7 +11,8 @@ import {
 import type { PlayerId } from '@td/shared';
 import { cellAt, cellIndex, cellX, cellY, createWorld, isInsideMap, step } from '@td/sim';
 import type { WorldState } from '@td/sim';
-import { approachOf, createOpponent } from './opponent.js';
+import { approachOf } from './approach.js';
+import { createOpponent } from './opponent.js';
 
 /**
  * Противник проверяется прогоном настоящего матча без всякого рендера.
@@ -178,34 +179,63 @@ describe('размещение построек противника', () => {
   });
 });
 
+/**
+ * Путь генерала за матч: последовательность посещённых клеток без повторов
+ * подряд. По ней видно и то, что он вообще ходит, и то, что он не топчется.
+ */
+const generalTrail = (seconds: number, seed = SEED): readonly number[] => {
+  const opponent = createOpponent(AI_PLAYER, seed);
+  let world = createWorld(seed);
+
+  const trail: number[] = [];
+
+  for (let tick = 0; tick < seconds * TICKS_PER_SECOND; tick += 1) {
+    world = step(world, opponent.decide(world));
+
+    const general = world.generals[AI_PLAYER];
+    if (general === undefined || !general.alive) continue;
+
+    const cell = cellAt(general.position);
+    if (trail[trail.length - 1] !== cell) trail.push(cell);
+  }
+
+  return trail;
+};
+
 describe('генерал противника', () => {
-  it('не застревает надолго в одной клетке', () => {
-    const opponent = createOpponent(AI_PLAYER, SEED);
-    let world = createWorld(SEED);
+  const trail = generalTrail(180);
 
-    let lastCell = -1;
-    let streak = 0;
-    let longest = 0;
-    const visited = new Set<number>();
+  it('ходит по карте', () => {
+    expect(new Set(trail).size).toBeGreaterThan(5);
+  });
 
-    for (let tick = 0; tick < 180 * TICKS_PER_SECOND; tick += 1) {
-      world = step(world, opponent.decide(world));
-
-      const general = world.generals[AI_PLAYER];
-      if (general === undefined || !general.alive) continue;
-
-      const cell = cellAt(general.position);
-      visited.add(cell);
-
-      streak = cell === lastCell ? streak + 1 : 0;
-      lastCell = cell;
-      if (streak > longest) longest = streak;
+  it('не топчется взад-вперёд', () => {
+    // Топтание — это возврат в клетку, из которой только что вышел.
+    // Немного таких шагов неизбежно: генерал идёт по сетке, а цель
+    // не обязана лежать по её линиям. Но их не должно быть больше,
+    // чем шагов вперёд, иначе это и есть метание.
+    let bounces = 0;
+    for (let index = 2; index < trail.length; index += 1) {
+      if (trail[index] === trail[index - 2]) bounces += 1;
     }
 
-    // Простоять на месте полминуты генерал может только упершись:
-    // цель у него всегда на проходимом пути, и дойти до неё он обязан.
-    expect(longest).toBeLessThan(30 * TICKS_PER_SECOND);
-    expect(visited.size).toBeGreaterThan(5);
+    expect(trail.length).toBeGreaterThan(10);
+    expect(bounces * 2).toBeLessThan(trail.length);
+  });
+
+  it('за матч уходит на вражескую половину пути', () => {
+    // Прежняя версия упиралась в потолок продвижения 0,45 и дальше
+    // середины карты не заходила никогда. Экспансия — главное, ради чего
+    // затевалась развесовка.
+    const approach = approachOf(createWorld(SEED), AI_PLAYER);
+    if (approach === undefined) throw new Error('вероятный путь не посчитан');
+
+    const furthest = trail.reduce(
+      (best, cell) => Math.max(best, approach.fromHome[cell] ?? 0),
+      0,
+    );
+
+    expect(furthest / approach.shortest).toBeGreaterThan(0.5);
   });
 });
 

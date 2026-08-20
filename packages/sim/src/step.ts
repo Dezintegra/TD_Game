@@ -1,4 +1,6 @@
 import {
+  DIRECTION_SOUTH,
+  DIRECTION_STOP,
   NAV_MIN_INTERVAL_TICKS,
   NUKE_RADIUS,
   PLAYERS_PER_MATCH,
@@ -6,6 +8,7 @@ import {
   UNIT_CAP,
   asEntityId,
   asPlayerId,
+  directionTowards,
   distanceSquared,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
@@ -213,6 +216,13 @@ const spawnUnit = (
   taken.add(cell);
 
   const centre = cellCentre(cell);
+  const baseCentre = cellCentre(base.cell);
+
+  // Свежая машина уже повёрнута: она выезжает из базы наружу, туда же
+  // и поедет. Запасной юг нужен на вырожденный случай, когда клетка
+  // появления совпала с центром базы; в игре он невозможен — основание
+  // базы непроходимо, — но полагаться на это молча не стоит.
+  const outward = directionTowards(centre.x - baseCentre.x, centre.y - baseCentre.y);
 
   working.units.push({
     id: asEntityId(working.nextEntityId),
@@ -221,6 +231,7 @@ const spawnUnit = (
     x: centre.x,
     y: centre.y,
     health: statsOf(stats, player.id).units[head].health,
+    facing: outward === DIRECTION_STOP ? DIRECTION_SOUTH : outward,
     readyAtTick: working.tick,
     alive: true,
     blockedBy: -1,

@@ -82,6 +82,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, unit.position.x);
     hash = mix(hash, unit.position.y);
     hash = mix(hash, unit.health);
+    hash = mix(hash, unit.facing);
     hash = mix(hash, unit.readyAtTick);
   }
 
@@ -91,6 +92,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, general.position.y);
     hash = mix(hash, general.health);
     hash = mix(hash, general.direction);
+    hash = mix(hash, general.facing);
     hash = mix(hash, general.readyAtTick);
     hash = mix(hash, general.alive ? 1 : 0);
     hash = mix(hash, general.respawnAtTick);

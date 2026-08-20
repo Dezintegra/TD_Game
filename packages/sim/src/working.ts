@@ -56,6 +56,8 @@ export interface WorkingUnit {
   x: number;
   y: number;
   health: number;
+  /** Румб, в который повёрнута машина. Ноля здесь не бывает — см. UnitState. */
+  facing: number;
   readyAtTick: TickNumber;
   alive: boolean;
   /**
@@ -72,6 +74,8 @@ export interface WorkingGeneral {
   y: number;
   health: number;
   direction: number;
+  /** Румб, в который развёрнута машина. Ноля не бывает — см. GeneralState. */
+  facing: number;
   readyAtTick: TickNumber;
   alive: boolean;
   respawnAtTick: TickNumber;
@@ -143,6 +147,7 @@ export const toWorking = (state: WorldState): Working => ({
     x: unit.position.x,
     y: unit.position.y,
     health: unit.health,
+    facing: unit.facing,
     readyAtTick: unit.readyAtTick,
     alive: true,
     blockedBy: -1,
@@ -153,6 +158,7 @@ export const toWorking = (state: WorldState): Working => ({
     y: general.position.y,
     health: general.health,
     direction: general.direction,
+    facing: general.facing,
     readyAtTick: general.readyAtTick,
     alive: general.alive,
     respawnAtTick: general.respawnAtTick,
@@ -254,6 +260,7 @@ export const fromWorking = (working: Working): WorldState => ({
       unitType: unit.unitType,
       position: { x: unit.x, y: unit.y },
       health: unit.health,
+      facing: unit.facing,
       readyAtTick: unit.readyAtTick,
     })),
   generals: working.generals.map((general) => ({
@@ -261,6 +268,7 @@ export const fromWorking = (working: Working): WorldState => ({
     position: { x: general.x, y: general.y },
     health: general.health,
     direction: general.direction,
+    facing: general.facing,
     readyAtTick: general.readyAtTick,
     alive: general.alive,
     respawnAtTick: general.respawnAtTick,

@@ -1,13 +1,17 @@
 import type { Graphics } from 'pixi.js';
-import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
+import { ELEVATION_PX_PER_CELL, VIEW_DIRECTION, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 
 /**
  * Призма — единственный объёмный примитив игры.
  *
- * Любой объект на карте это горизонтальное основание, поднятое на заданную
- * высоту: скала, стена, корпус здания, мачта антенны. Юниты, когда появятся,
- * будут собираться из тех же призм.
+ * Любой неподвижный объект на карте это горизонтальное основание, поднятое
+ * на заданную высоту: скала, стена, корпус здания, мачта антенны.
+ *
+ * Техника выровнена по осям мира быть не может — она едет под углом,
+ * — поэтому для неё ниже есть общий случай: тело с произвольным выпуклым
+ * основанием. Призма выражается через него, но пользуется собственным
+ * кодом; почему именно так, объяснено там же.
  *
  * Ключевое упрощение даёт фиксированный угол обзора. Из шести граней куба
  * зритель видит ровно три — верхнюю и две боковые; остальные три обращены
@@ -73,20 +77,157 @@ export const prismFaces = (prism: Prism): PrismFaces => {
 /**
  * Условное освещение.
  *
- * Источник света неподвижен, и направление каждой грани известно заранее,
- * поэтому считать нормали и скалярные произведения незачем — достаточно трёх
- * множителей яркости.
+ * Источник света неподвижен и один на весь мир. Одни и те же правила
+ * применяются ко всем объектам: и к камню, и к зданиям, и к технике.
+ * Именно это делает разнородные объекты частями одного мира. Разное
+ * освещение у соседних предметов читается как ошибка даже теми, кто
+ * не сможет объяснить, что именно не так.
  *
- * Одни и те же множители применяются ко всем объектам: и к камню, и к зданиям.
- * Именно это делает разнородные объекты частями одного мира. Разное освещение
- * у соседних предметов читается как ошибка даже теми, кто не сможет
- * объяснить, что именно не так.
+ * У выровненной по осям призмы видимых боковых граней ровно две, и раньше
+ * яркость задавалась таблицей из трёх чисел. Повёрнутому телу таблицы мало:
+ * граней у него сколько угодно и смотрят они куда угодно. Поэтому яркость
+ * считается из направления внешней нормали по закону Ламберта.
+ *
+ * Числа подобраны так, чтобы на выровненной призме формула давала в точности
+ * прежние значения: нормаль «на восток» даёт 0,72, нормаль «на юг» — 0,48.
+ * Совпадение здесь не украшение, а требование: разъедься числа хоть
+ * на процент, неподвижная башня и стоящая рядом повёрнутая машина
+ * оказались бы освещены разными источниками.
+ *
+ * Грань, обращённая от источника, получает ровно фоновый уровень: он ниже
+ * обеих видимых яркостей, что и требуется — такая грань попадает в кадр
+ * только у повёрнутых тел.
+ */
+const AMBIENT_LIGHT = 0.34;
+
+/** Свет с востоко-северо-востока. Длина вектора — сила источника. */
+const LIGHT_X = 0.72 - AMBIENT_LIGHT;
+const LIGHT_Y = 0.48 - AMBIENT_LIGHT;
+
+/** Яркость боковой грани по её внешней нормали. Нормаль должна быть единичной. */
+export const faceLight = (normalX: number, normalY: number): number =>
+  AMBIENT_LIGHT + Math.max(0, normalX * LIGHT_X + normalY * LIGHT_Y);
+
+/**
+ * Яркость трёх граней выровненной призмы.
+ *
+ * Правая грань смотрит на восток, левая — на юг; верхняя не зависит
+ * от поворота вокруг вертикали и потому задана числом.
  */
 export const FACE_LIGHT = {
   top: 1,
-  right: 0.72,
-  left: 0.48,
+  right: faceLight(1, 0),
+  left: faceLight(0, 1),
 } as const;
+
+// ─────────────────────────────────────────────────────────────────────────
+// Тело с произвольным основанием
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Точка основания в клетках мира. */
+export interface FootprintPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+export interface SolidFace {
+  readonly points: readonly Point[];
+  /** Яркость по условному освещению. */
+  readonly light: number;
+}
+
+export interface SolidFaces {
+  /** Верхняя грань. Видна всегда, даже у тела нулевой высоты. */
+  readonly top: SolidFace;
+  /** Боковые грани, обращённые к зрителю. Пусто при нулевой высоте. */
+  readonly sides: readonly SolidFace[];
+}
+
+/**
+ * Грани тела с произвольным выпуклым основанием.
+ *
+ * Призма выше — частный случай этого тела, и оба кода живут рядом
+ * не по недосмотру. У выровненного прямоугольника видимые грани известны
+ * заранее, и `prismFaces` пользуется этим знанием: он не считает ни нормалей,
+ * ни скалярных произведений. Скал на карте тысячи, и платить за общность
+ * там, где она не нужна, незачем — это ровно тот же принцип, по которому
+ * мы не строим три обращённые от зрителя грани куба.
+ *
+ * Здесь общность нужна: основание техники повёрнуто, у крыла оно вообще
+ * трапеция, и какие грани окажутся видимыми, заранее не известно. Зато
+ * считается это один раз при построении кеша силуэтов, а не на кадре.
+ *
+ * Что оба кода дают на прямоугольнике одно и то же — закреплено тестом.
+ */
+export const solidFaces = (
+  footprint: readonly FootprintPoint[],
+  height: number,
+  base = 0,
+): SolidFaces => {
+  const top = base + height;
+  const projected = footprint.map((point) => worldToScreen(point.x, point.y));
+  const topFace: SolidFace = {
+    points: projected.map((point) => lift(point, top)),
+    light: FACE_LIGHT.top,
+  };
+
+  if (height === 0 || footprint.length < 3) return { top: topFace, sides: [] };
+
+  // Центр основания нужен, чтобы отличить внешнюю нормаль от внутренней.
+  // Для выпуклого основания достаточно среднего по углам.
+  let centreX = 0;
+  let centreY = 0;
+  for (const point of footprint) {
+    centreX += point.x;
+    centreY += point.y;
+  }
+  centreX /= footprint.length;
+  centreY /= footprint.length;
+
+  const sides: SolidFace[] = [];
+
+  for (let index = 0; index < footprint.length; index += 1) {
+    const from = footprint[index];
+    const to = footprint[(index + 1) % footprint.length];
+    if (from === undefined || to === undefined) continue;
+
+    const edgeX = to.x - from.x;
+    const edgeY = to.y - from.y;
+    const length = Math.sqrt(edgeX * edgeX + edgeY * edgeY);
+    // Вырожденное ребро граней не даёт. Так бывает у треугольного носа,
+    // заданного четырьмя точками с двумя совпавшими.
+    if (length === 0) continue;
+
+    // Нормаль к ребру — поворот его на прямой угол. Какой из двух поворотов
+    // внешний, решает знак произведения на вектор «от центра к ребру».
+    let normalX = edgeY / length;
+    let normalY = -edgeX / length;
+    const outward =
+      normalX * ((from.x + to.x) / 2 - centreX) + normalY * ((from.y + to.y) / 2 - centreY);
+    if (outward < 0) {
+      normalX = -normalX;
+      normalY = -normalY;
+    }
+
+    // Обращённые от зрителя грани не строим вовсе — их не видно.
+    if (normalX * VIEW_DIRECTION.x + normalY * VIEW_DIRECTION.y <= 0) continue;
+
+    const screenFrom = projected[index] as Point;
+    const screenTo = projected[(index + 1) % footprint.length] as Point;
+
+    sides.push({
+      points: [
+        lift(screenFrom, top),
+        lift(screenTo, top),
+        lift(screenTo, base),
+        lift(screenFrom, base),
+      ],
+      light: faceLight(normalX, normalY),
+    });
+  }
+
+  return { top: topFace, sides };
+};
 
 /**
  * Смешивает два цвета. `amount` — доля второго цвета от 0 до 1.
@@ -111,17 +252,33 @@ export const shade = (color: number, factor: number): number => {
   return (red << 16) | (green << 8) | blue;
 };
 
-/** Прокладывает путь по точкам многоугольника и замыкает его. */
-export const tracePolygon = (graphics: Graphics, points: readonly Point[]): void => {
+/**
+ * Прокладывает путь по точкам многоугольника со сдвигом и замыкает его.
+ *
+ * Сдвиг нужен готовой геометрии из кеша силуэтов: она построена
+ * относительно основания модели, и всё, что остаётся на кадре, —
+ * сложить её точки с экранным положением объекта.
+ */
+export const tracePolygonAt = (
+  graphics: Graphics,
+  points: readonly Point[],
+  offsetX: number,
+  offsetY: number,
+): void => {
   const first = points[0];
   if (first === undefined) return;
 
-  graphics.moveTo(first.x, first.y);
+  graphics.moveTo(first.x + offsetX, first.y + offsetY);
   for (let index = 1; index < points.length; index += 1) {
     const point = points[index];
-    if (point !== undefined) graphics.lineTo(point.x, point.y);
+    if (point !== undefined) graphics.lineTo(point.x + offsetX, point.y + offsetY);
   }
   graphics.closePath();
+};
+
+/** Прокладывает путь по точкам многоугольника и замыкает его. */
+export const tracePolygon = (graphics: Graphics, points: readonly Point[]): void => {
+  tracePolygonAt(graphics, points, 0, 0);
 };
 
 export interface PrismStyle {

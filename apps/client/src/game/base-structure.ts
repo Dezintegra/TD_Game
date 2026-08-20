@@ -1,6 +1,7 @@
 import type { Graphics } from 'pixi.js';
 import { FACE_LIGHT, blend, drawPrism, shade } from './prism.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
+import type { Point } from './iso.js';
 
 /**
  * Командный центр — база игрока.
@@ -26,6 +27,22 @@ interface BasePart {
   readonly height: number;
 }
 
+/** Высота антенны. База должна быть выше любой скалы — см. игровой дизайн. */
+export const BASE_ANTENNA_HEIGHT = 3.2;
+
+/**
+ * Мачта антенны: смещение от центра базы и сторона основания.
+ *
+ * Вынесено в константы не для красоты: этими же числами считается точка
+ * над гребнем базы, к которой цепляется полоса прочности. Продублируй мы
+ * их там ещё раз — сдвиг мачты молча оставил бы полосу на старом месте.
+ */
+const MAST_OFFSET = -1.35;
+const MAST_SIZE = 0.26;
+
+/** Смещение оси мачты от центра базы: угол основания плюс его половина. */
+const MAST_CENTRE = MAST_OFFSET + MAST_SIZE / 2;
+
 /**
  * Части командного центра.
  *
@@ -34,7 +51,14 @@ interface BasePart {
  * достаточно поправить одно смещение, и перекрытие сломается молча.
  */
 const BASE_PARTS: readonly BasePart[] = [
-  { label: 'мачта антенны', dx: -1.35, dy: -1.35, width: 0.26, depth: 0.26, height: 3.2 },
+  {
+    label: 'мачта антенны',
+    dx: MAST_OFFSET,
+    dy: MAST_OFFSET,
+    width: MAST_SIZE,
+    depth: MAST_SIZE,
+    height: BASE_ANTENNA_HEIGHT,
+  },
   { label: 'пристройка север', dx: 0.2, dy: -1.5, width: 1, depth: 0.5, height: 0.75 },
   { label: 'главный корпус', dx: -1, dy: -1, width: 2, depth: 2, height: 1.15 },
   { label: 'пристройка запад', dx: -1.5, dy: 0.2, width: 0.5, depth: 1, height: 0.75 },
@@ -44,9 +68,6 @@ const BASE_PARTS: readonly BasePart[] = [
   // направляющая поднимается рядом со зданием, а не сквозь него.
   { label: 'площадка установки', dx: 1.1, dy: -0.45, width: 0.9, depth: 0.9, height: 0.5 },
 ];
-
-/** Высота антенны. База должна быть выше любой скалы — см. игровой дизайн. */
-export const BASE_ANTENNA_HEIGHT = 3.2;
 
 /** Площадь основания базы в клетках. */
 export const BASE_FOOTPRINT_CELLS = 9;
@@ -89,7 +110,7 @@ export const drawBase = (
     );
   }
 
-  drawAntennaDish(graphics, centreX - 1.35 + 0.13, centreY - 1.35 + 0.13, accent);
+  drawAntennaDish(graphics, centreX + MAST_CENTRE, centreY + MAST_CENTRE, accent);
   drawRocketLauncher(graphics, centreX + 1.55, centreY, hull, accent);
 };
 
@@ -102,6 +123,52 @@ export const drawBase = (
  */
 const DISH_RADIUS_X = 34;
 const DISH_RADIUS_Y = 17;
+
+/** Штырь облучателя: вынос вбок, вынос вверх и радиус точки на конце. */
+const FEED_SIDE_PX = 9;
+const FEED_LIFT_PX = 14;
+const FEED_TIP_RADIUS_PX = 3;
+
+/** Насколько тарелка со штырём поднимается над вершиной мачты. */
+const DISH_CREST_PX = DISH_RADIUS_Y + FEED_LIFT_PX + FEED_TIP_RADIUS_PX;
+
+/** Просвет между гребнем и полосой прочности, в экранных пикселях. */
+const CREST_CLEARANCE_PX = 12;
+
+/**
+ * Подъём гребня над центром базы, в экранных пикселях.
+ *
+ * Величина постоянная, и это следствие линейности проекции: расстояние
+ * между центром базы и вершиной её мачты на экране одно и то же, где бы
+ * база ни стояла. Поэтому оно считается один раз при загрузке модуля,
+ * а не на каждом кадре.
+ *
+ * Слагаемые: мачта вынесена в северо-западный угол и потому уже стоит выше
+ * центра на экране, дальше её собственная высота, тарелка со штырём
+ * и просвет.
+ */
+export const BASE_CREST_LIFT_PX =
+  -worldToScreen(MAST_CENTRE, MAST_CENTRE).y +
+  BASE_ANTENNA_HEIGHT * ELEVATION_PX_PER_CELL +
+  DISH_CREST_PX +
+  CREST_CLEARANCE_PX;
+
+/**
+ * Точка над гребнем базы: сюда цепляется полоса прочности.
+ *
+ * Знание о том, где у базы верх, живёт здесь, а не в отрисовке сущностей,
+ * которая эту полосу рисует. Причина простая: гребень задают части базы,
+ * а из чего собрана база, знает только этот модуль. Иначе устройство
+ * командного центра пришлось бы воспроизводить в двух местах.
+ *
+ * По горизонтали точка берётся от центра базы: полоса должна висеть
+ * над серединой сооружения, а не над антенной, смещённой в угол.
+ */
+export const baseCrestPoint = (centreX: number, centreY: number): Point => {
+  const centre = worldToScreen(centreX, centreY);
+
+  return { x: centre.x, y: centre.y - BASE_CREST_LIFT_PX };
+};
 
 const drawAntennaDish = (graphics: Graphics, x: number, y: number, accent: number): void => {
   const centre = worldToScreen(x, y);
@@ -133,11 +200,15 @@ const drawAntennaDish = (graphics: Graphics, x: number, y: number, accent: numbe
   graphics.stroke({ width: 2, color: accent, alpha: 0.95 });
 
   // Штырь облучателя с точкой на конце.
-  graphics
-    .moveTo(centre.x, top)
-    .lineTo(centre.x + 9, top - DISH_RADIUS_Y - 14)
-    .stroke({ width: 2, color: accent, alpha: 0.9 });
-  graphics.circle(centre.x + 9, top - DISH_RADIUS_Y - 14, 3).fill({ color: accent });
+  const feedX = centre.x + FEED_SIDE_PX;
+  const feedY = top - DISH_RADIUS_Y - FEED_LIFT_PX;
+
+  graphics.moveTo(centre.x, top).lineTo(feedX, feedY).stroke({
+    width: 2,
+    color: accent,
+    alpha: 0.9,
+  });
+  graphics.circle(feedX, feedY, FEED_TIP_RADIUS_PX).fill({ color: accent });
 };
 
 /**

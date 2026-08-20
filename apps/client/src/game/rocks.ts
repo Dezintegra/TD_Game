@@ -25,6 +25,7 @@ export interface RockColors {
   readonly rock: number;
   readonly facet: number;
   readonly edge: number;
+  readonly snow: number;
 }
 
 /**
@@ -33,8 +34,28 @@ export interface RockColors {
  * Разброс намеренно широкий: массив из клеток одной высоты читается как
  * плита, а не как скальный выход. Верхний уровень — редкий острый пик,
  * нижний — почти россыпь щебня у подножия.
+ *
+ * Верхний предел поднят до двух клеток: на прежних полутора массив
+ * читался осыпью, а замысел называет его грядой. Выше поднимать нельзя —
+ * антенна командного центра обязана оставаться выше любой скалы,
+ * а у неё 3,2 клетки.
  */
-const ROCK_LEVELS = [0.32, 0.55, 0.78, 1.05, 1.45] as const;
+const ROCK_LEVELS = [0.34, 0.62, 0.95, 1.42, 2.05] as const;
+
+/**
+ * Снеговая линия — мировая высота, выше которой камень покрыт снегом.
+ *
+ * Ключевое здесь то, что линия задана мировой высотой, а не долей высоты
+ * скалы. При доле каждая скала, включая самую низкую, получила бы
+ * одинаковую шапочку, и массив читался бы как набор припорошённых
+ * холмиков. При общей высоте снег ложится на гряду единой горизонталью:
+ * два верхних уровня получают шапки — тонкую и толстую, — а три нижних
+ * остаются голым камнем. Именно это отличает горный хребет от насыпи.
+ *
+ * Значение выбрано между третьим и четвёртым уровнями: снег должен быть
+ * заметным событием, но не редкостью.
+ */
+export const SNOW_LINE = 1.15;
 
 /**
  * Доля, на которую верхняя площадка уже основания.
@@ -65,7 +86,10 @@ export const rockHeight = (x: number, y: number): number =>
   ROCK_LEVELS[hashCell(x, y) % ROCK_LEVELS.length] ?? ROCK_LEVELS[0];
 
 /** Самая высокая скала, какая может встретиться. Нужна, чтобы база была выше. */
-export const MAX_ROCK_HEIGHT = ROCK_LEVELS[ROCK_LEVELS.length - 1] ?? 1;
+export const MAX_ROCK_HEIGHT = Math.max(...ROCK_LEVELS);
+
+/** Самая низкая. Нужна, чтобы снеговая линия не оказалась ниже подножия. */
+export const MIN_ROCK_HEIGHT = Math.min(...ROCK_LEVELS);
 
 /** Насколько верхняя площадка клетки уже её основания. */
 export const rockTopShrink = (x: number, y: number): number =>
@@ -87,6 +111,8 @@ interface RockShape {
   readonly base: readonly [Point, Point, Point, Point];
   /** Четыре угла верхней площадки. При остром пике все четыре совпадают. */
   readonly top: readonly [Point, Point, Point, Point];
+  /** Высота в клетках. По ней считается, где на скате проходит снег. */
+  readonly height: number;
 }
 
 /**
@@ -124,7 +150,42 @@ export const rockShape = (x: number, y: number): RockShape => {
   return {
     base,
     top: [corner(x, y), corner(x + 1, y), corner(x + 1, y + 1), corner(x, y + 1)],
+    height,
   };
+};
+
+/** Есть ли на этой клетке снег. */
+export const isSnowy = (x: number, y: number): boolean => rockHeight(x, y) > SNOW_LINE;
+
+/**
+ * Часть ската выше снеговой линии.
+ *
+ * Скат — четырёхугольник между ребром основания и ребром вершины, поэтому
+ * снеговая линия рассекает его линейной интерполяцией углов. Интерполяция
+ * идёт по уже спроецированным точкам, и это законно: проекция аффинна,
+ * поэтому середина отрезка на экране — это проекция середины отрезка
+ * в мире.
+ *
+ * Снежная часть рисуется ПОВЕРХ целого ската, а не встык с его нижней
+ * частью. Встык при сглаживании оставляет на линии стыка тонкую щель
+ * фона — ту же, из-за которой верхняя грань призмы рисуется после боковых.
+ */
+const snowSlope = (shape: RockShape, fromIndex: number, toIndex: number): Point[] | undefined => {
+  if (shape.height <= SNOW_LINE) return undefined;
+
+  const baseFrom = shape.base[fromIndex];
+  const baseTo = shape.base[toIndex];
+  const topFrom = shape.top[fromIndex];
+  const topTo = shape.top[toIndex];
+  if (!baseFrom || !baseTo || !topFrom || !topTo) return undefined;
+
+  const part = SNOW_LINE / shape.height;
+  const along = (from: Point, to: Point): Point => ({
+    x: from.x + (to.x - from.x) * part,
+    y: from.y + (to.y - from.y) * part,
+  });
+
+  return [along(baseFrom, topFrom), along(baseTo, topTo), topTo, topFrom];
 };
 
 const polygon = (graphics: Graphics, points: readonly Point[]): void => {
@@ -153,6 +214,25 @@ const slope = (graphics: Graphics, shape: RockShape, fromIndex: number, toIndex:
   if (!baseFrom || !baseTo || !topFrom || !topTo) return;
 
   polygon(graphics, [baseFrom, baseTo, topTo, topFrom]);
+};
+
+/** Снежные части перечисленных скатов, залитые одним вызовом. */
+const paintSnow = (
+  graphics: Graphics,
+  shapes: readonly RockShape[],
+  edges: readonly (readonly [number, number])[],
+  color: number,
+): void => {
+  if (shapes.length === 0) return;
+
+  for (const shape of shapes) {
+    for (const [from, to] of edges) {
+      const cap = snowSlope(shape, from, to);
+      if (cap !== undefined) polygon(graphics, cap);
+    }
+  }
+
+  graphics.fill({ color });
 };
 
 /** Индексы углов: 0 север, 1 восток, 2 юг, 3 запад. */
@@ -204,7 +284,16 @@ export const drawRockDiagonal = (
   const leftColor = shade(colors.rock, FACE_LIGHT.left);
   const backColor = shade(colors.rock, FACE_LIGHT.left * 0.8);
 
+  // Снег освещён теми же множителями, что и камень: источник света
+  // в мире один, и снег не может быть исключением.
+  const snowTopColor = shade(colors.snow, FACE_LIGHT.top);
+  const snowRightColor = shade(colors.snow, FACE_LIGHT.right);
+  const snowLeftColor = shade(colors.snow, FACE_LIGHT.left);
+  const snowBackColor = shade(colors.snow, FACE_LIGHT.left * 0.8);
+
   const shapes = rocks.map(([x, y]) => rockShape(x, y));
+  const bare = shapes.filter((shape) => shape.height <= SNOW_LINE);
+  const capped = shapes.filter((shape) => shape.height > SNOW_LINE);
 
   // Дальние скаты: обращены на север и запад, от зрителя.
   for (const shape of shapes) {
@@ -221,13 +310,34 @@ export const drawRockDiagonal = (
   for (const shape of shapes) slope(graphics, shape, SOUTH, WEST);
   graphics.fill({ color: leftColor });
 
+  // Снег на скатах: поверх уже залитого камня, от снеговой линии и выше.
+  // Порядок тот же, что у камня, — и та же группировка по диагонали,
+  // поэтому число заливок по-прежнему не зависит от числа скал.
+  paintSnow(
+    graphics,
+    capped,
+    [
+      [NORTH, EAST],
+      [WEST, NORTH],
+    ],
+    snowBackColor,
+  );
+  paintSnow(graphics, capped, [[EAST, SOUTH]], snowRightColor);
+  paintSnow(graphics, capped, [[SOUTH, WEST]], snowLeftColor);
+
   // Верхняя площадка. У острых пиков вырождена в точку и не видна.
-  for (const shape of shapes) polygon(graphics, shape.top);
+  for (const shape of bare) polygon(graphics, shape.top);
   graphics.fill({ color: topColor });
 
+  // Площадка выше снеговой линии — целиком снежная: голого камня
+  // на вершине не остаётся.
+  for (const shape of capped) polygon(graphics, shape.top);
+  graphics.fill({ color: snowTopColor });
+
   // Скол на верхней площадке: половина её, залитая другим оттенком.
-  // Даёт фактуру камня там, где площадка достаточно велика.
-  for (const shape of shapes) {
+  // Даёт фактуру камня там, где площадка достаточно велика. На снегу
+  // скола нет: снег ложится ровно и фактуры породы не показывает.
+  for (const shape of bare) {
     const [north, east, south] = shape.top;
     if (north && east && south) polygon(graphics, [north, east, south]);
   }

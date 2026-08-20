@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BASE_INCOME_PER_TICK,
   CommandKind,
+  DIRECTION_SOUTH,
   GENERAL_KILL_REWARD,
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
@@ -260,6 +261,7 @@ describe('строительство', () => {
           // случайной стены — он выстрелил бы по базе.
           position: { x: centre.x + 2000, y: centre.y },
           health: 100,
+          facing: DIRECTION_SOUTH,
           readyAtTick: asTickNumber(0),
         },
       ],
