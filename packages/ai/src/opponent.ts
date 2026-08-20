@@ -205,7 +205,7 @@ export const createOpponent = (
       const commands: Command[] = [];
 
       // Выбор цели энергии не стоит и потому идёт всегда.
-      pushTargeting(commands, world, me, player);
+      pushTargeting(commands, world, me, player, approach);
 
       // Ядерный удар проверяется до остальных трат: он копится в запасе
       // фазы, и тратить этот запас на что-то другое было бы обидно.
@@ -835,39 +835,106 @@ const shieldBuildCell = (
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
+ * Ближайшая к своей базе клетка вероятного пути, накрытая постройкой.
+ *
+ * Возвращает `UNREACHABLE`, если постройка путь не накрывает вовсе, —
+ * такая войску не мешает и целью быть не должна.
+ *
+ * Меряется именно накрытая клетка, а не клетка самой постройки, и это
+ * не придирка: постройка делает свою клетку непроходимой, поэтому
+ * расстояние по проходимым клеткам у неё самой не определено. Взяв его,
+ * мы отбрасывали бы ровно те башни, которые стоят на пути, — то есть
+ * все, ради которых правило и заводится.
+ *
+ * Заодно величина получается осмысленнее: это место, где войско ВПЕРВЫЕ
+ * попадёт под огонь этой башни.
+ */
+const firstCoveredOnPath = (approach: Approach, cell: number, rangeCells: number): number => {
+  const cx = cellX(cell);
+  const cy = cellY(cell);
+
+  let nearest = UNREACHABLE;
+
+  for (let dy = -rangeCells; dy <= rangeCells; dy += 1) {
+    for (let dx = -rangeCells; dx <= rangeCells; dx += 1) {
+      if (dx * dx + dy * dy > rangeCells * rangeCells) continue;
+
+      const x = cx + dx;
+      const y = cy + dy;
+      if (x < 0 || y < 0 || x >= MAP_WIDTH_CELLS || y >= MAP_HEIGHT_CELLS) continue;
+
+      const inner = cellIndex(x, y);
+      if (approach.onPath[inner] !== 1) continue;
+
+      const from = approach.fromHome[inner] ?? UNREACHABLE;
+      if (from < nearest) nearest = from;
+    }
+  }
+
+  return nearest;
+};
+
+/**
  * Цель атаки.
  *
- * По умолчанию — база противника. Но если он выдвинул башни к нашей
- * половине карты, разумнее сначала снести их: иначе поток юнитов будет
- * умирать по дороге, так и не дойдя до базы.
+ * Ближайшая по вероятному пути вражеская стреляющая постройка, которая
+ * этот путь накрывает. База — только если таких построек нет вовсе.
+ *
+ * Правило существует потому, что юнит останавливается ТОЛЬКО у назначенной
+ * цели: постройка на пути его не задерживает. Это правило движения
+ * намеренное — без него гранатомётчик залипал бы на первой встречной
+ * стене, — но вместе с целью-базой оно давало волну, идущую сквозь строй
+ * башен под их огнём и не пытающуюся эти башни снять.
+ *
+ * Цена ошибки была не в одних потерях. Башня получает прибавку к атаке
+ * и прочности за каждое убийство сложным процентом, поэтому войско,
+ * гибнущее по дороге, бесплатно усиливало оборону, сквозь которую шло:
+ * двадцать разменянных машин делают обычную башню вдвое с половиной
+ * сильнее навсегда.
+ *
+ * Заодно правило впервые позволяет гранатомётчику делать то, ради чего
+ * он куплен: его дальность на клетку больше башенной, и, остановившись
+ * у НАЗНАЧЕННОЙ цели, он расстреливает её вне досягаемости.
+ *
+ * Прежнее правило делило карту пополам и перенацеливалось на всё, что
+ * противник выдвинул к нам. Оно покрывается новым как частный случай —
+ * выдвинутая башня накрывает путь и оказывается ближайшей, — но теперь
+ * выбирается по причине, а не по географии: башня в стороне от маршрута
+ * войску не мешает, а сход с маршрута ради неё стоит времени и жизней.
  */
 const pushTargeting = (
   commands: Command[],
   world: WorldState,
   me: PlayerId,
   player: PlayerState,
+  approach: Approach,
 ): void => {
-  const homeCell = world.map.baseCells[me];
-  const enemyBaseCell = world.map.baseCells[otherPlayer(me)];
-  if (homeCell === undefined || enemyBaseCell === undefined) return;
-
-  const home = cellCentre(homeCell);
   const enemyBase = world.structures.find(
     (structure) => structure.owner !== me && structure.kind === StructureKind.Base,
   );
   if (enemyBase === undefined) return;
 
-  const halfway = distanceSquared(home, cellCentre(enemyBaseCell)) * 0.36;
+  const enemy = world.players[otherPlayer(me)];
+  const enemyStats = enemy === undefined ? undefined : playerStats(enemy);
 
   let chosen = enemyBase;
   let closest = Number.POSITIVE_INFINITY;
 
   for (const structure of world.structures) {
-    if (structure.owner === me) continue;
-    if (structure.kind === StructureKind.Base || structure.kind === StructureKind.Wall) continue;
+    if (structure.owner === me || structure.kind === StructureKind.Base) continue;
 
-    const distance = distanceSquared(cellCentre(structure.cell), home);
-    if (distance > halfway || distance >= closest) continue;
+    // Стреляющая — значит опасная. Стена урона не наносит, и сносить
+    // её войску незачем; условие отсекает её без отдельного правила.
+    const baseline = enemyStats?.structures[structure.kind];
+    if (baseline === undefined || baseline.attack <= 0 || baseline.range <= 0) continue;
+
+    // Близость по проходимым клеткам, а не по прямой: войско идёт
+    // по маршруту, и первой ему встретится ближайшая по маршруту.
+    const distance = firstCoveredOnPath(approach, structure.cell, rangeInCells(baseline.range));
+    if (distance === UNREACHABLE || distance > closest) continue;
+    // Ничья — по меньшему индексу клетки: порядок построек в массиве
+    // меняется при разрушении, и без этого цель дрожала бы на ровном месте.
+    if (distance === closest && structure.cell >= chosen.cell) continue;
 
     closest = distance;
     chosen = structure;
