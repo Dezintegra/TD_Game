@@ -1,8 +1,6 @@
 import type { Graphics } from 'pixi.js';
-import { FACE_LIGHT, blend, prismFaces, shade } from './prism.js';
-import type { Prism } from './prism.js';
+import { FACE_LIGHT, blend, drawPrism, shade } from './prism.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
-import type { Point } from './iso.js';
 
 /**
  * Командный центр — база игрока.
@@ -65,38 +63,6 @@ export const BASE_PART_COUNT = BASE_PARTS.length;
 const HULL_TINT = 0.3;
 const HULL_DARK = 0x23271f;
 
-const polygon = (graphics: Graphics, points: readonly Point[]): void => {
-  const first = points[0];
-  if (first === undefined) return;
-
-  graphics.moveTo(first.x, first.y);
-  for (let index = 1; index < points.length; index += 1) {
-    const point = points[index];
-    if (point !== undefined) graphics.lineTo(point.x, point.y);
-  }
-  graphics.closePath();
-};
-
-const drawPrism = (graphics: Graphics, prism: Prism, hull: number, accent: number): void => {
-  const faces = prismFaces(prism);
-
-  polygon(graphics, faces.left);
-  graphics.fill({ color: shade(hull, FACE_LIGHT.left) });
-
-  polygon(graphics, faces.right);
-  graphics.fill({ color: shade(hull, FACE_LIGHT.right) });
-
-  polygon(graphics, faces.top);
-  graphics.fill({ color: shade(hull, FACE_LIGHT.top) });
-
-  // Неоновая окантовка. Именно она несёт узнавание силуэта издали:
-  // тёмный корпус на тёмной земле сам по себе виден плохо.
-  polygon(graphics, faces.top);
-  if (faces.left.length > 0) polygon(graphics, faces.left);
-  if (faces.right.length > 0) polygon(graphics, faces.right);
-  graphics.stroke({ width: 1.5, color: accent, alpha: 0.85 });
-};
-
 export const drawBase = (
   graphics: Graphics,
   centreX: number,
@@ -119,8 +85,7 @@ export const drawBase = (
         depth: part.depth,
         height: part.height,
       },
-      hull,
-      accent,
+      { hull, accent },
     );
   }
 

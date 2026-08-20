@@ -1,42 +1,143 @@
-import { asPlayerId, asTickNumber, PLAYERS_PER_MATCH } from '@td/shared';
-import type { EntityId, PlayerId, TickNumber, Vec2 } from '@td/shared';
+import {
+  GENERAL_STATS,
+  MAP_HEIGHT_CELLS,
+  MAP_WIDTH_CELLS,
+  PLAYERS_PER_MATCH,
+  PPM_ONE,
+  STARTING_ENERGY,
+  STRUCTURE_STATS,
+  StructureKind,
+  UPGRADE_BRANCHES,
+  UPGRADE_TARGET_COUNT,
+  asEntityId,
+  asPlayerId,
+  asTickNumber,
+} from '@td/shared';
+import type { EntityId, PlayerId, TickNumber, UnitType, Vec2 } from '@td/shared';
 import { createRng } from './prng.js';
 import type { RngState } from './prng.js';
-import { generateMap } from './map.js';
+import { cellCentre, cellIndex, cellX, cellY, generateMap, isInsideMap } from './map.js';
 import type { GameMap } from './map.js';
 
 /**
- * Состояние одного игрока.
+ * Уровень одной ветки прокачки.
  *
- * Все величины целочисленные — это требование детерминизма,
- * подробности в packages/shared/src/units.ts.
+ * Множитель и цена следующего уровня хранятся здесь, а не вычисляются
+ * из уровня при каждом обращении. Причина в производительности: уровней
+ * может быть сколько угодно, а характеристики запрашиваются каждый тик
+ * для каждой сущности. Пересчёт «с нуля» стоил бы цикла длиной в число
+ * купленных уровней на каждое обращение; наращивание по одному шагу
+ * за покупку стоит одного умножения на всю покупку.
  */
-export interface PlayerState {
-  readonly id: PlayerId;
-  /** Валюта на постройку башен. */
-  readonly gold: number;
-  /** Оставшиеся жизни. Ноль — поражение. */
-  readonly lives: number;
+export interface UpgradeState {
+  readonly level: number;
+  /** Множитель эффекта в миллионных долях. */
+  readonly effectPpm: number;
+  /** Множитель цены следующего уровня в миллионных долях. */
+  readonly costPpm: number;
 }
 
-export interface TowerState {
+/** Значение, означающее «производство простаивает». */
+export const PRODUCTION_IDLE = asTickNumber(-1);
+
+export interface PlayerState {
+  readonly id: PlayerId;
+  /** Энергия во внутренних единицах. См. ENERGY_SCALE в balance.ts. */
+  readonly energy: number;
+  /** Уровни прокачки, индексируются индексом ветки в UPGRADE_BRANCHES. */
+  readonly upgrades: readonly UpgradeState[];
+  /**
+   * Множители цены покупки, индексируются целью прокачки.
+   * Каждое купленное улучшение типа поднимает его цену на два процента.
+   */
+  readonly purchasePpm: readonly number[];
+  /** Постройка, назначенная общей целью для всех юнитов игрока. */
+  readonly targetStructure: EntityId;
+  /** Очередь производства. Энергия за эти заказы уже списана. */
+  readonly queue: readonly UnitType[];
+  /** Когда будет готов юнит из головы очереди, или PRODUCTION_IDLE. */
+  readonly produceReadyAtTick: TickNumber;
+}
+
+export interface StructureState {
   readonly id: EntityId;
   readonly owner: PlayerId;
+  readonly kind: StructureKind;
+  /** Индекс клетки центра постройки. */
+  readonly cell: number;
+  readonly health: number;
+  /**
+   * Индивидуальный множитель силы, накопленный убийствами.
+   *
+   * Это не прокачка: прокачка действует на все постройки вида и покупается
+   * за энергию, а это — заслуга конкретной башни, и вместе с ней она
+   * и погибает.
+   */
+  readonly growthPpm: number;
+  /** Тик, когда постройка сможет выстрелить снова. */
+  readonly readyAtTick: TickNumber;
+  /** Тик завершения возведения. До него постройка не стреляет. */
+  readonly builtAtTick: TickNumber;
+}
+
+export interface UnitState {
+  readonly id: EntityId;
+  readonly owner: PlayerId;
+  readonly unitType: UnitType;
   readonly position: Vec2;
-  readonly towerType: number;
-  readonly level: number;
-  /** Номер тика, когда башня сможет выстрелить снова. */
+  readonly health: number;
   readonly readyAtTick: TickNumber;
 }
 
-export interface CreepState {
-  readonly id: EntityId;
-  /** Игрок, по чьей полосе идёт этот враг. */
-  readonly target: PlayerId;
+export interface GeneralState {
+  readonly owner: PlayerId;
   readonly position: Vec2;
   readonly health: number;
-  /** Скорость во внутренних единицах за тик. */
-  readonly speed: number;
+  /** Индекс направления движения, ноль — стоит. */
+  readonly direction: number;
+  readonly readyAtTick: TickNumber;
+  readonly alive: boolean;
+  /** Тик возвращения в игру. Осмысленно только когда генерал мёртв. */
+  readonly respawnAtTick: TickNumber;
+}
+
+export interface NukeState {
+  readonly id: EntityId;
+  readonly owner: PlayerId;
+  readonly cell: number;
+  readonly detonateAtTick: TickNumber;
+}
+
+/**
+ * След выстрела.
+ *
+ * Попадание мгновенное, снаряда в полёте не существует. Эта запись живёт
+ * несколько тиков и нужна исключительно рендеру: без неё стрельба была бы
+ * не видна вовсе — здоровье просто убывало бы.
+ */
+export interface ShotState {
+  readonly owner: PlayerId;
+  readonly from: Vec2;
+  readonly to: Vec2;
+  readonly expiresAtTick: TickNumber;
+  /** Убил ли этот выстрел цель. Рендер показывает добивание ярче. */
+  readonly lethal: boolean;
+}
+
+/**
+ * Поле потока одного игрока: расстояние от каждой клетки до общей цели.
+ *
+ * Два поля, а не одно. `walk` идёт только по свободной земле, `breach`
+ * дополнительно проходит сквозь разрушимые вражеские постройки, и вход
+ * в такую клетку стоит тем дороже, чем она прочнее. Второе поле включается,
+ * только когда первое не даёт до цели никакого пути.
+ */
+export interface NavField {
+  readonly walk: Int32Array;
+  readonly breach: Int32Array;
+  /** Состояние мира, при котором поле посчитано. См. navRevision. */
+  readonly revision: number;
+  readonly computedAtTick: TickNumber;
 }
 
 /**
@@ -55,25 +156,118 @@ export interface WorldState {
    */
   readonly map: GameMap;
   readonly players: readonly PlayerState[];
-  readonly towers: readonly TowerState[];
-  readonly creeps: readonly CreepState[];
+  readonly structures: readonly StructureState[];
+  readonly units: readonly UnitState[];
+  readonly generals: readonly GeneralState[];
+  readonly nukes: readonly NukeState[];
+  readonly shots: readonly ShotState[];
+  /**
+   * Поля потока по игрокам. Данные производные, но кешируются между тиками:
+   * пересчитывать их каждый тик слишком дорого, а внешний кеш сломал бы
+   * чистоту шага симуляции.
+   */
+  readonly nav: readonly NavField[];
+  /**
+   * Растёт при любом изменении набора построек или цели.
+   * По нему поле потока понимает, что устарело.
+   */
+  readonly navRevision: number;
   /** Счётчик для выдачи идентификаторов новым сущностям. */
   readonly nextEntityId: number;
+  /** Победитель матча. Пока матч идёт — null. */
+  readonly winner: PlayerId | null;
 }
 
-export const STARTING_GOLD = 200;
-export const STARTING_LIVES = 20;
+/** Идентификатор, которого заведомо не существует. Означает «цели нет». */
+export const NO_ENTITY = asEntityId(0);
 
-export const createWorld = (seed: number): WorldState => ({
-  tick: asTickNumber(0),
-  rng: createRng(seed),
-  map: generateMap(seed),
-  players: Array.from({ length: PLAYERS_PER_MATCH }, (_unused, index) => ({
+const freshUpgrades = (): readonly UpgradeState[] =>
+  UPGRADE_BRANCHES.map(() => ({
+    level: 0,
+    effectPpm: PPM_ONE,
+    costPpm: PPM_ONE,
+  }));
+
+const MAP_CENTRE_X = MAP_WIDTH_CELLS / 2;
+const MAP_CENTRE_Y = MAP_HEIGHT_CELLS / 2;
+
+/**
+ * Отступ точки появления генерала от центра базы.
+ *
+ * Двойка, а не единица: основание базы занимает клетки в радиусе одной,
+ * и генерал оказался бы внутри неё.
+ */
+const GENERAL_SPAWN_OFFSET_CELLS = 2;
+
+/**
+ * Клетка, где появляется генерал: на две клетки от базы в сторону центра
+ * карты. Внутрь основания базы его ставить нельзя — она непроходима,
+ * а генерал должен иметь возможность сойти с места.
+ *
+ * Направление «к центру» выбрано не для красоты: база стоит в углу, и три
+ * из четырёх сторон вокруг неё упираются в край карты.
+ */
+export const generalSpawnCell = (baseCell: number): number => {
+  const bx = cellX(baseCell);
+  const by = cellY(baseCell);
+
+  const x = bx + Math.sign(MAP_CENTRE_X - bx) * GENERAL_SPAWN_OFFSET_CELLS;
+  const y = by + Math.sign(MAP_CENTRE_Y - by) * GENERAL_SPAWN_OFFSET_CELLS;
+
+  return isInsideMap(x, y) ? cellIndex(x, y) : baseCell;
+};
+
+export const createWorld = (seed: number): WorldState => {
+  const map = generateMap(seed);
+
+  const structures: StructureState[] = map.baseCells.map((cell, index) => ({
+    id: asEntityId(index + 1),
+    owner: asPlayerId(index),
+    kind: StructureKind.Base,
+    cell,
+    health: STRUCTURE_STATS[StructureKind.Base].health,
+    growthPpm: PPM_ONE,
+    readyAtTick: asTickNumber(0),
+    builtAtTick: asTickNumber(0),
+  }));
+
+  const generals: GeneralState[] = map.baseCells.map((cell, index) => ({
+    owner: asPlayerId(index),
+    position: cellCentre(generalSpawnCell(cell)),
+    health: GENERAL_STATS.health,
+    direction: 0,
+    readyAtTick: asTickNumber(0),
+    alive: true,
+    respawnAtTick: asTickNumber(0),
+  }));
+
+  const players: PlayerState[] = Array.from({ length: PLAYERS_PER_MATCH }, (_unused, index) => ({
     id: asPlayerId(index),
-    gold: STARTING_GOLD,
-    lives: STARTING_LIVES,
-  })),
-  towers: [],
-  creeps: [],
-  nextEntityId: 1,
-});
+    energy: STARTING_ENERGY,
+    upgrades: freshUpgrades(),
+    purchasePpm: Array.from({ length: UPGRADE_TARGET_COUNT }, () => PPM_ONE),
+    // По умолчанию цель — база противника. Это единственная постройка,
+    // которая заведомо существует с первого тика.
+    targetStructure: structures[1 - index]?.id ?? NO_ENTITY,
+    queue: [],
+    produceReadyAtTick: PRODUCTION_IDLE,
+  }));
+
+  return {
+    tick: asTickNumber(0),
+    rng: createRng(seed),
+    map,
+    players,
+    structures,
+    units: [],
+    generals,
+    nukes: [],
+    shots: [],
+    // Поля потока считаются лениво на первом же тике: строить их здесь
+    // значило бы дублировать логику пересчёта ради одного случая.
+    nav: [],
+    navRevision: 1,
+    nextEntityId: structures.length + 1,
+    winner: null,
+  };
+};

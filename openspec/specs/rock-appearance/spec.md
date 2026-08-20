@@ -1,8 +1,11 @@
 # rock-appearance Specification
 
 ## Purpose
+
 TBD - created by archiving change add-object-elevation. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Скалы имеют разную высоту
 
 Каждая скальная клетка SHALL получать собственную высоту в заданном
@@ -70,4 +73,3 @@ MUST NOT отрисовываться: их не видно, а вершин о�
 
 - **WHEN** сравниваются цвет камня и цвета обеих сторон
 - **THEN** они различаются по тону, а не только по яркости
-

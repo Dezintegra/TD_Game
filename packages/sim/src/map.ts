@@ -1,6 +1,7 @@
 import {
   BASE_CLEARANCE_CELLS,
   BASE_INSET_CELLS,
+  FIXED_POINT_SCALE,
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   MAP_TARGET_ROCK_PERCENT,
@@ -10,6 +11,7 @@ import {
   Terrain,
   isPassable,
 } from '@td/shared';
+import type { Vec2 } from '@td/shared';
 import { createRng, nextRngInt } from './prng.js';
 import type { RngState } from './prng.js';
 
@@ -35,6 +37,63 @@ export const cellY = (index: number): number => Math.floor(index / MAP_WIDTH_CEL
 
 export const isInsideMap = (x: number, y: number): boolean =>
   x >= 0 && y >= 0 && x < MAP_WIDTH_CELLS && y < MAP_HEIGHT_CELLS;
+
+/** Половина клетки во внутренних единицах. Смещение от угла клетки к её центру. */
+const HALF_CELL = FIXED_POINT_SCALE / 2;
+
+/**
+ * Центр клетки во внутренних единицах.
+ *
+ * Именно центр, а не угол. Сущности стоят в центрах клеток, поэтому
+ * расстояние между соседями по горизонтали равно ровно одной клетке,
+ * а не нулю с одной стороны и двум с другой.
+ */
+export const cellCentre = (index: number): Vec2 => ({
+  x: cellX(index) * FIXED_POINT_SCALE + HALF_CELL,
+  y: cellY(index) * FIXED_POINT_SCALE + HALF_CELL,
+});
+
+/**
+ * Квадрат расстояния от точки до основания постройки.
+ *
+ * Постройка занимает площадь, а не точку, и мерить до её центра нельзя.
+ * У базы основание три на три клетки: её центр отстоит от края на полторы
+ * клетки, и юнит с дальностью в две клетки, упёршийся в основание,
+ * оказывался бы от центра на 2,8 клетки — то есть не доставал бы
+ * до собственной цели вообще никогда. Ровно так и выглядела ошибка:
+ * армия доходила до базы и вставала вокруг, не нанося ей урона.
+ *
+ * Считается классическое расстояние от точки до прямоугольника: по каждой
+ * оси берётся выход за границу, внутри границ он равен нулю.
+ */
+export const squaredDistanceToFootprint = (
+  point: Vec2,
+  centreCell: number,
+  radiusCells: number,
+): number => {
+  const minX = (cellX(centreCell) - radiusCells) * FIXED_POINT_SCALE;
+  const maxX = (cellX(centreCell) + radiusCells + 1) * FIXED_POINT_SCALE;
+  const minY = (cellY(centreCell) - radiusCells) * FIXED_POINT_SCALE;
+  const maxY = (cellY(centreCell) + radiusCells + 1) * FIXED_POINT_SCALE;
+
+  const dx = Math.max(minX - point.x, 0, point.x - maxX);
+  const dy = Math.max(minY - point.y, 0, point.y - maxY);
+
+  return dx * dx + dy * dy;
+};
+
+/**
+ * Клетка, в которой находится точка.
+ *
+ * Координаты за пределами карты прижимаются к краю: вызывающий код почти
+ * всегда хочет «ближайшую клетку», а не исключение, и загонять эту проверку
+ * в каждое место вызова значило бы размазать её по всему ядру.
+ */
+export const cellAt = (position: Vec2): number => {
+  const x = Math.min(Math.max(Math.floor(position.x / FIXED_POINT_SCALE), 0), MAP_WIDTH_CELLS - 1);
+  const y = Math.min(Math.max(Math.floor(position.y / FIXED_POINT_SCALE), 0), MAP_HEIGHT_CELLS - 1);
+  return cellIndex(x, y);
+};
 
 /**
  * Индекс клетки, симметричной данной относительно поворота карты на 180°.

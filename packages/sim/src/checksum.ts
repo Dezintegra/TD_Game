@@ -30,6 +30,11 @@ export const checksum = (state: WorldState): number => {
   hash = mix(hash, state.tick);
   hash = mix(hash, state.rng.value);
   hash = mix(hash, state.nextEntityId);
+  hash = mix(hash, state.navRevision);
+  // null у победителя и игрок с номером ноль — разные вещи, поэтому
+  // отсутствие победителя кодируется значением, которого у игрока быть
+  // не может.
+  hash = mix(hash, state.winner ?? -1);
 
   // Карта входит в сумму целиком. Если детерминизм генерации сломается,
   // расхождение обнаружится на первой же сверке, а не через сотню тиков
@@ -43,28 +48,72 @@ export const checksum = (state: WorldState): number => {
 
   for (const player of state.players) {
     hash = mix(hash, player.id);
-    hash = mix(hash, player.gold);
-    hash = mix(hash, player.lives);
+    hash = mix(hash, player.energy);
+    hash = mix(hash, player.targetStructure);
+    hash = mix(hash, player.produceReadyAtTick);
+
+    for (const upgrade of player.upgrades) {
+      hash = mix(hash, upgrade.level);
+      hash = mix(hash, upgrade.effectPpm);
+      hash = mix(hash, upgrade.costPpm);
+    }
+    for (const multiplier of player.purchasePpm) {
+      hash = mix(hash, multiplier);
+    }
+    for (const queued of player.queue) {
+      hash = mix(hash, queued);
+    }
   }
 
-  for (const tower of state.towers) {
-    hash = mix(hash, tower.id);
-    hash = mix(hash, tower.owner);
-    hash = mix(hash, tower.position.x);
-    hash = mix(hash, tower.position.y);
-    hash = mix(hash, tower.towerType);
-    hash = mix(hash, tower.level);
-    hash = mix(hash, tower.readyAtTick);
+  for (const structure of state.structures) {
+    hash = mix(hash, structure.id);
+    hash = mix(hash, structure.owner);
+    hash = mix(hash, structure.kind);
+    hash = mix(hash, structure.cell);
+    hash = mix(hash, structure.health);
+    hash = mix(hash, structure.growthPpm);
+    hash = mix(hash, structure.readyAtTick);
+    hash = mix(hash, structure.builtAtTick);
   }
 
-  for (const creep of state.creeps) {
-    hash = mix(hash, creep.id);
-    hash = mix(hash, creep.target);
-    hash = mix(hash, creep.position.x);
-    hash = mix(hash, creep.position.y);
-    hash = mix(hash, creep.health);
-    hash = mix(hash, creep.speed);
+  for (const unit of state.units) {
+    hash = mix(hash, unit.id);
+    hash = mix(hash, unit.owner);
+    hash = mix(hash, unit.unitType);
+    hash = mix(hash, unit.position.x);
+    hash = mix(hash, unit.position.y);
+    hash = mix(hash, unit.health);
+    hash = mix(hash, unit.readyAtTick);
   }
+
+  for (const general of state.generals) {
+    hash = mix(hash, general.owner);
+    hash = mix(hash, general.position.x);
+    hash = mix(hash, general.position.y);
+    hash = mix(hash, general.health);
+    hash = mix(hash, general.direction);
+    hash = mix(hash, general.readyAtTick);
+    hash = mix(hash, general.alive ? 1 : 0);
+    hash = mix(hash, general.respawnAtTick);
+  }
+
+  for (const nuke of state.nukes) {
+    hash = mix(hash, nuke.id);
+    hash = mix(hash, nuke.owner);
+    hash = mix(hash, nuke.cell);
+    hash = mix(hash, nuke.detonateAtTick);
+  }
+
+  // Поля потока в сумму не входят намеренно, хотя и лежат в состоянии мира.
+  //
+  // Они полностью выводятся из карты, построек и цели, а всё это в сумме
+  // уже есть. Перемешивать девять тысяч чисел на каждой сверке — дорого
+  // и не добавляет ни одного шанса поймать расхождение. Номер ревизии
+  // при этом учтён выше, поэтому «поле пересчитали в разные моменты»
+  // мы всё-таки заметим.
+  //
+  // Следы выстрелов тоже не входят: они живут несколько тиков и нужны
+  // исключительно рендеру.
 
   return hash >>> 0;
 };

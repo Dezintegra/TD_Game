@@ -1,58 +1,527 @@
 import { describe, expect, it } from 'vitest';
-import { CommandKind, asPlayerId, asTickNumber, cellsToUnits, vec2 } from '@td/shared';
-import type { Command } from '@td/shared';
-import { createWorld, STARTING_GOLD } from './world.js';
+import {
+  BASE_INCOME_PER_TICK,
+  CommandKind,
+  GENERAL_KILL_REWARD,
+  MAP_WIDTH_CELLS,
+  NUKE_COST,
+  NUKE_DELAY_TICKS,
+  PRODUCTION_QUEUE_CAP,
+  STRUCTURE_STATS,
+  StructureKind,
+  UNIT_STATS,
+  UPGRADE_BRANCHES,
+  UnitType,
+  UpgradeStat,
+  UpgradeTarget,
+  asEntityId,
+  asPlayerId,
+  asTickNumber,
+} from '@td/shared';
+import type { Command, PlayerId } from '@td/shared';
+import { createWorld } from './world.js';
+import type { PlayerState, WorldState } from './world.js';
 import { step } from './step.js';
 import { checksum } from './checksum.js';
+import { cellCentre, cellIndex } from './map.js';
+import { buildOccupancy } from './occupancy.js';
+import { playerStats } from './stats.js';
 
-const placeTower = (x: number, y: number): Command => ({
-  kind: CommandKind.PlaceTower,
-  player: asPlayerId(0),
-  tick: asTickNumber(0),
-  position: vec2(cellsToUnits(x), cellsToUnits(y)),
-  towerType: 0,
+const SEED = 4242;
+
+/**
+ * Мир строится генерацией, а тестам нужны точные позиции. Поэтому
+ * состояние правится точечно: это обычный объект, и подмена одного поля
+ * не ломает остальные инварианты.
+ */
+const patchPlayer = (world: WorldState, id: number, patch: Partial<PlayerState>): WorldState => ({
+  ...world,
+  players: world.players.map((player, index) => (index === id ? { ...player, ...patch } : player)),
 });
 
-describe('шаг симуляции', () => {
+const richWorld = (seed = SEED, energy = 10_000_000): WorldState =>
+  patchPlayer(patchPlayer(createWorld(seed), 0, { energy }), 1, { energy });
+
+const baseCellOf = (world: WorldState, player: number): number => world.map.baseCells[player] ?? 0;
+
+const run = (world: WorldState, ticks: number, commands: readonly Command[] = []): WorldState => {
+  let current = step(world, commands);
+  for (let tick = 1; tick < ticks; tick += 1) {
+    current = step(current, []);
+  }
+  return current;
+};
+
+const command = <T extends Command>(value: T): T => value;
+
+const build = (player: number, cell: number, structure: StructureKind): Command =>
+  command({
+    kind: CommandKind.Build,
+    player: asPlayerId(player),
+    tick: asTickNumber(0),
+    cell,
+    structure,
+  });
+
+const train = (player: number, unitType: UnitType): Command =>
+  command({
+    kind: CommandKind.TrainUnit,
+    player: asPlayerId(player),
+    tick: asTickNumber(0),
+    unitType,
+  });
+
+const buy = (player: number, branch: number): Command =>
+  command({
+    kind: CommandKind.BuyUpgrade,
+    player: asPlayerId(player),
+    tick: asTickNumber(0),
+    branch,
+  });
+
+const nuke = (player: number, cell: number): Command =>
+  command({
+    kind: CommandKind.LaunchNuke,
+    player: asPlayerId(player),
+    tick: asTickNumber(0),
+    cell,
+  });
+
+/** Свободная расчищенная клетка рядом с базой игрока: генерал до неё дотянется. */
+const nearBaseCell = (world: WorldState, player: number): number => {
+  const base = baseCellOf(world, player);
+  const bx = base % MAP_WIDTH_CELLS;
+  const by = Math.floor(base / MAP_WIDTH_CELLS);
+  // Генерация расчищает вокруг базы площадку радиусом в две клетки,
+  // а основание базы занимает радиус в одну. Клетка на расстоянии двух
+  // клеток по горизонтали свободна гарантированно.
+  const away = player === 0 ? 2 : -2;
+
+  return cellIndex(bx + away, by);
+};
+
+/** Игрок из состояния мира. Обёртка ради читаемости — индекс всегда валиден. */
+const playerOf = (world: WorldState, index: number): PlayerState => {
+  const found = world.players[index];
+  if (found === undefined) throw new Error(`Нет игрока ${String(index)}`);
+  return found;
+};
+
+describe('шаг симуляции: основы', () => {
   it('не мутирует входное состояние', () => {
-    const world = createWorld(42);
+    const world = richWorld();
     const before = checksum(world);
 
-    step(world, [placeTower(3, 3)]);
+    step(world, [build(0, nearBaseCell(world, 0), StructureKind.Wall)]);
 
-    // Сравниваем контрольные суммы, а не сами объекты через structuredClone:
-    // в браузерном окружении клон типизированного массива приходит из другого
-    // realm, и глубокое сравнение спотыкается о разные конструкторы при
-    // полностью одинаковом содержимом.
+    // Сравниваем контрольные суммы, а не объекты через structuredClone:
+    // в браузерном окружении клон типизированного массива приходит
+    // из другого realm, и глубокое сравнение спотыкается о разные
+    // конструкторы при полностью одинаковом содержимом.
     expect(checksum(world)).toBe(before);
   });
 
   it('увеличивает номер тика ровно на единицу', () => {
-    const world = createWorld(42);
-    expect(step(world, []).tick).toBe(1);
+    expect(step(createWorld(SEED), []).tick).toBe(1);
   });
 
-  it('ставит башню и списывает золото', () => {
-    const after = step(createWorld(42), [placeTower(3, 3)]);
+  it('создаёт по базе и генералу на каждого игрока', () => {
+    const world = createWorld(SEED);
 
-    expect(after.towers).toHaveLength(1);
-    expect(after.players[0]?.gold).toBeLessThan(STARTING_GOLD);
+    expect(world.structures.filter((s) => s.kind === StructureKind.Base)).toHaveLength(2);
+    expect(world.generals).toHaveLength(2);
+    expect(world.generals.every((general) => general.alive)).toBe(true);
   });
 
-  it('не даёт поставить две башни в одну клетку', () => {
-    const after = step(createWorld(42), [placeTower(3, 3), placeTower(3, 3)]);
+  it('целью по умолчанию является база противника', () => {
+    const world = createWorld(SEED);
+    const enemyBase = world.structures.find((s) => s.owner === asPlayerId(1));
 
-    expect(after.towers).toHaveLength(1);
+    expect(world.players[0]?.targetStructure).toBe(enemyBase?.id);
+  });
+});
+
+describe('экономика', () => {
+  it('энергия начисляется каждый тик сама по себе', () => {
+    const world = createWorld(SEED);
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = run(world, 30);
+
+    expect((after.players[0]?.energy ?? 0) - before).toBe(BASE_INCOME_PER_TICK * 30);
   });
 
-  it('игнорирует постройку при нехватке золота', () => {
-    let world = createWorld(42);
-    // Ставим башни, пока золото не кончится.
-    for (let index = 0; index < 10; index += 1) {
-      world = step(world, [placeTower(index, 0)]);
+  it('прокачка экономики ускоряет доход', () => {
+    const branch = UPGRADE_BRANCHES.findIndex((entry) => entry.target === UpgradeTarget.Economy);
+    const world = step(richWorld(), [buy(0, branch)]);
+
+    expect(playerStats(playerOf(world, 0)).incomePerTick).toBeGreaterThan(BASE_INCOME_PER_TICK);
+  });
+});
+
+describe('строительство', () => {
+  it('ставит стену рядом с генералом и списывает энергию', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, [build(0, cell, StructureKind.Wall)]);
+
+    expect(after.structures.some((s) => s.cell === cell && s.kind === StructureKind.Wall)).toBe(
+      true,
+    );
+    expect(after.players[0]?.energy).toBeLessThan(before);
+  });
+
+  it('не ставит вторую постройку в ту же клетку', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+
+    const after = step(world, [
+      build(0, cell, StructureKind.Wall),
+      build(0, cell, StructureKind.Wall),
+    ]);
+
+    expect(after.structures.filter((s) => s.cell === cell)).toHaveLength(1);
+  });
+
+  it('не ставит постройку вне радиуса строительства', () => {
+    const world = richWorld();
+    const far = cellIndex(48, 48);
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, [build(0, far, StructureKind.Wall)]);
+
+    expect(after.structures.some((s) => s.cell === far)).toBe(false);
+    // Энергия не тронута: команда либо применяется целиком, либо никак.
+    expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK);
+  });
+
+  it('не ставит постройку при нехватке энергии', () => {
+    const world = patchPlayer(createWorld(SEED), 0, { energy: 0 });
+    const cell = nearBaseCell(world, 0);
+
+    const after = step(world, [build(0, cell, StructureKind.Wall)]);
+
+    expect(after.structures.some((s) => s.cell === cell)).toBe(false);
+  });
+
+  it('недостроенная постройка слабее готовой и не стреляет', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+
+    const fresh = step(world, [build(0, cell, StructureKind.TowerBasic)]);
+    const tower = fresh.structures.find((s) => s.cell === cell);
+
+    expect(tower).toBeDefined();
+    expect(tower?.health).toBeLessThan(STRUCTURE_STATS[StructureKind.TowerBasic].health);
+    expect(tower?.builtAtTick).toBeGreaterThan(fresh.tick);
+  });
+
+  it('по завершении возведения здоровье достигает максимума', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const buildTicks = STRUCTURE_STATS[StructureKind.TowerBasic].buildTicks;
+
+    const after = run(world, buildTicks + 2, [build(0, cell, StructureKind.TowerBasic)]);
+    const tower = after.structures.find((s) => s.cell === cell);
+
+    expect(tower?.health).toBe(STRUCTURE_STATS[StructureKind.TowerBasic].health);
+  });
+
+  it('разрушенная постройка исчезает и освобождает клетку', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+
+    // Стену надо сначала достроить: пока идёт возведение, здоровье
+    // прибавляется каждый тик быстрее, чем его успевает снимать один
+    // стрелок, и стена бы просто не умерла.
+    const built = run(world, STRUCTURE_STATS[StructureKind.Wall].buildTicks + 2, [
+      build(0, cell, StructureKind.Wall),
+    ]);
+    const centre = cellCentre(cell);
+
+    const doomed: WorldState = {
+      ...built,
+      structures: built.structures.map((s) => (s.cell === cell ? { ...s, health: 1 } : s)),
+      units: [
+        {
+          id: asEntityId(500),
+          owner: asPlayerId(1),
+          unitType: UnitType.Assault,
+          // Две клетки от стены, а не одна. Ближе нельзя: расстояние
+          // до построек считается до основания, и с одной клетки юнит
+          // достаёт уже до самой базы, а назначенная цель важнее
+          // случайной стены — он выстрелил бы по базе.
+          position: { x: centre.x + 2000, y: centre.y },
+          health: 100,
+          readyAtTick: asTickNumber(0),
+        },
+      ],
+    };
+
+    const after = run(doomed, 2);
+
+    expect(after.structures.some((s) => s.cell === cell)).toBe(false);
+    // Клетка снова проходима — это и проверяет, что сетка занятости
+    // пересобралась после гибели постройки.
+    expect(buildOccupancy(after.map, after.structures).blocked[cell]).toBe(0);
+  });
+});
+
+describe('производство юнитов', () => {
+  it('списывает энергию сразу, а юнита выдаёт позже', () => {
+    const world = richWorld();
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, [train(0, UnitType.Assault)]);
+
+    expect(after.players[0]?.queue).toHaveLength(1);
+    expect(after.units).toHaveLength(0);
+    expect(after.players[0]?.energy).toBeLessThan(before + BASE_INCOME_PER_TICK);
+  });
+
+  it('выпускает юнита по истечении времени производства', () => {
+    const after = run(richWorld(), UNIT_STATS[UnitType.Assault].produceTicks + 3, [
+      train(0, UnitType.Assault),
+    ]);
+
+    expect(after.units).toHaveLength(1);
+    expect(after.units[0]?.owner).toBe(asPlayerId(0));
+  });
+
+  it('соблюдает порядок очереди', () => {
+    const after = run(richWorld(), UNIT_STATS[UnitType.Assault].produceTicks + 3, [
+      train(0, UnitType.Assault),
+      train(0, UnitType.Sniper),
+    ]);
+
+    expect(after.units[0]?.unitType).toBe(UnitType.Assault);
+  });
+
+  it('не ставит в очередь при нехватке энергии', () => {
+    const poor = patchPlayer(createWorld(SEED), 0, { energy: 0 });
+
+    const after = step(poor, [train(0, UnitType.Grenadier)]);
+
+    expect(after.players[0]?.queue).toHaveLength(0);
+  });
+
+  it('не превышает потолок очереди', () => {
+    const orders = Array.from({ length: PRODUCTION_QUEUE_CAP + 5 }, () =>
+      train(0, UnitType.Assault),
+    );
+
+    const after = step(richWorld(), orders);
+
+    expect(after.players[0]?.queue.length).toBe(PRODUCTION_QUEUE_CAP);
+  });
+});
+
+describe('прокачка', () => {
+  const attackBranch = UPGRADE_BRANCHES.findIndex(
+    (entry) => entry.target === UpgradeTarget.UnitAssault && entry.stat === UpgradeStat.Attack,
+  );
+  const healthBranch = UPGRADE_BRANCHES.findIndex(
+    (entry) => entry.target === UpgradeTarget.TowerBasic && entry.stat === UpgradeStat.Health,
+  );
+
+  it('поднимает уровень и списывает энергию', () => {
+    const world = richWorld();
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, [buy(0, attackBranch)]);
+
+    expect(after.players[0]?.upgrades[attackBranch]?.level).toBe(1);
+    expect(after.players[0]?.energy).toBeLessThan(before);
+  });
+
+  it('усиливает все юниты своего типа и не трогает чужой', () => {
+    const after = step(richWorld(), [buy(0, attackBranch)]);
+    const stats = playerStats(playerOf(after, 0));
+
+    expect(stats.units[UnitType.Assault].attack).toBeGreaterThan(
+      UNIT_STATS[UnitType.Assault].attack,
+    );
+    expect(stats.units[UnitType.Sniper].attack).toBe(UNIT_STATS[UnitType.Sniper].attack);
+  });
+
+  it('удорожает покупку своего типа примерно на два процента', () => {
+    const after = step(richWorld(), [buy(0, attackBranch)]);
+    const stats = playerStats(playerOf(after, 0));
+
+    const grown = stats.units[UnitType.Assault].cost / UNIT_STATS[UnitType.Assault].cost;
+    expect(grown).toBeGreaterThan(1.019);
+    expect(grown).toBeLessThan(1.021);
+  });
+
+  it('прокачка генерала цен не двигает', () => {
+    const branch = UPGRADE_BRANCHES.findIndex(
+      (entry) => entry.target === UpgradeTarget.General && entry.stat === UpgradeStat.Speed,
+    );
+
+    const after = step(richWorld(), [buy(0, branch)]);
+    const stats = playerStats(playerOf(after, 0));
+
+    expect(stats.units[UnitType.Assault].cost).toBe(UNIT_STATS[UnitType.Assault].cost);
+  });
+
+  it('цена следующего уровня растёт', () => {
+    const once = step(richWorld(), [buy(0, attackBranch)]);
+    const twice = step(once, [buy(0, attackBranch)]);
+
+    expect(twice.players[0]?.upgrades[attackBranch]?.costPpm).toBeGreaterThan(
+      once.players[0]?.upgrades[attackBranch]?.costPpm ?? 0,
+    );
+  });
+
+  it('прочность добавляется уже построенной башне', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+
+    const built = run(world, STRUCTURE_STATS[StructureKind.TowerBasic].buildTicks + 2, [
+      build(0, cell, StructureKind.TowerBasic),
+    ]);
+    const before = built.structures.find((s) => s.cell === cell)?.health ?? 0;
+
+    const upgraded = step(built, [buy(0, healthBranch)]);
+    const after = upgraded.structures.find((s) => s.cell === cell)?.health ?? 0;
+
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it('число покупок не ограничено', () => {
+    let world = richWorld();
+    for (let index = 0; index < 40; index += 1) {
+      world = step(world, [buy(0, attackBranch)]);
     }
 
-    expect(world.players[0]?.gold).toBeGreaterThanOrEqual(0);
-    expect(world.towers.length).toBeLessThan(10);
+    expect(world.players[0]?.upgrades[attackBranch]?.level).toBe(40);
+  });
+});
+
+describe('ядерный удар', () => {
+  const CENTRE = cellIndex(48, 48);
+
+  it('создаёт запись об ударе и списывает энергию', () => {
+    const world = richWorld();
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, [nuke(0, CENTRE)]);
+
+    expect(after.nukes).toHaveLength(1);
+    expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK - NUKE_COST);
+  });
+
+  it('взрывается по истечении задержки', () => {
+    const after = run(richWorld(), NUKE_DELAY_TICKS + 2, [nuke(0, CENTRE)]);
+
+    expect(after.nukes).toHaveLength(0);
+  });
+
+  it('уничтожает юнитов обеих сторон в радиусе', () => {
+    const world = richWorld();
+    const epicentre = cellCentre(CENTRE);
+
+    const withUnits: WorldState = {
+      ...world,
+      units: [0, 1].map((owner) => ({
+        id: asEntityId(100 + owner),
+        owner: asPlayerId(owner),
+        unitType: UnitType.Assault,
+        position: { x: epicentre.x + owner * 1000, y: epicentre.y },
+        health: 100,
+        readyAtTick: asTickNumber(0),
+      })),
+    };
+
+    const after = run(withUnits, NUKE_DELAY_TICKS + 2, [nuke(0, CENTRE)]);
+
+    expect(after.units).toHaveLength(0);
+  });
+
+  it('отклоняется при наведении рядом с базой', () => {
+    const world = richWorld();
+    const base = baseCellOf(world, 1);
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, [nuke(0, base)]);
+
+    expect(after.nukes).toHaveLength(0);
+    expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK);
+  });
+
+  it('отклоняется при нехватке энергии', () => {
+    const poor = patchPlayer(createWorld(SEED), 0, { energy: 0 });
+
+    expect(step(poor, [nuke(0, CENTRE)]).nukes).toHaveLength(0);
+  });
+});
+
+describe('генерал', () => {
+  it('гибнет и возвращается на базу', () => {
+    const world = createWorld(SEED);
+    const wounded: WorldState = {
+      ...world,
+      generals: world.generals.map((general, index) =>
+        index === 0
+          ? { ...general, health: 0, alive: false, respawnAtTick: asTickNumber(5) }
+          : general,
+      ),
+    };
+
+    const soon = run(wounded, 3);
+    expect(soon.generals[0]?.alive).toBe(false);
+
+    const later = run(wounded, 8);
+    expect(later.generals[0]?.alive).toBe(true);
+    expect(later.generals[0]?.health).toBeGreaterThan(0);
+  });
+
+  it('мёртвый генерал не строит', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const dead: WorldState = {
+      ...world,
+      generals: world.generals.map((general, index) =>
+        index === 0
+          ? { ...general, alive: false, health: 0, respawnAtTick: asTickNumber(10_000) }
+          : general,
+      ),
+    };
+
+    const after = step(dead, [build(0, cell, StructureKind.Wall)]);
+
+    expect(after.structures.some((s) => s.cell === cell)).toBe(false);
+  });
+
+  it('награда за убийство чужого генерала — двадцать базовых стоимостей', () => {
+    expect(GENERAL_KILL_REWARD).toBe(UNIT_STATS[UnitType.Assault].cost * 20);
+  });
+});
+
+describe('победа', () => {
+  const withoutBase = (world: WorldState, owner: PlayerId): WorldState => ({
+    ...world,
+    structures: world.structures.filter(
+      (s) => !(s.owner === owner && s.kind === StructureKind.Base),
+    ),
+  });
+
+  it('разрушение базы завершает матч', () => {
+    const after = step(withoutBase(createWorld(SEED), asPlayerId(1)), []);
+
+    expect(after.winner).toBe(asPlayerId(0));
+  });
+
+  it('после победы мир замирает', () => {
+    const won = step(withoutBase(richWorld(), asPlayerId(1)), []);
+    const energyAtWin = won.players[0]?.energy ?? 0;
+
+    const later = run(won, 100, [train(0, UnitType.Assault)]);
+
+    expect(later.winner).toBe(asPlayerId(0));
+    expect(later.players[0]?.energy).toBe(energyAtWin);
+    expect(later.units).toHaveLength(0);
   });
 });

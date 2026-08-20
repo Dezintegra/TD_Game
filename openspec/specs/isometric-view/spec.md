@@ -3,7 +3,9 @@
 ## Purpose
 
 TBD - created by archiving change add-world-and-view. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Каркасная отрисовка территории
 
 Земля SHALL отрисовываться линиями: сетка клеток и границы карты. Заливки
@@ -121,4 +123,3 @@ TBD - created by archiving change add-world-and-view. Update Purpose after archi
 
 - **WHEN** на экран проецируются три точки, лежащие в мире на одной прямой
 - **THEN** их проекции также лежат на одной прямой
-

@@ -1,8 +1,11 @@
 # object-elevation Specification
 
 ## Purpose
+
 TBD - created by archiving change add-object-elevation. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Высота как свойство отрисовки
 
 Высота объекта SHALL быть свойством отрисовки и вычисляться на клиенте.
@@ -84,4 +87,3 @@ TBD - created by archiving change add-object-elevation. Update Purpose after arc
 
 - **WHEN** камера непрерывно движется по карте в течение трёх секунд
 - **THEN** частота кадров не опускается ниже 55 при аппаратном рендеринге
-

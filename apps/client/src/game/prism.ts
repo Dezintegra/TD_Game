@@ -1,3 +1,4 @@
+import type { Graphics } from 'pixi.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 
@@ -108,6 +109,68 @@ export const shade = (color: number, factor: number): number => {
   const blue = Math.round((color & 0xff) * factor);
 
   return (red << 16) | (green << 8) | blue;
+};
+
+/** Прокладывает путь по точкам многоугольника и замыкает его. */
+export const tracePolygon = (graphics: Graphics, points: readonly Point[]): void => {
+  const first = points[0];
+  if (first === undefined) return;
+
+  graphics.moveTo(first.x, first.y);
+  for (let index = 1; index < points.length; index += 1) {
+    const point = points[index];
+    if (point !== undefined) graphics.lineTo(point.x, point.y);
+  }
+  graphics.closePath();
+};
+
+export interface PrismStyle {
+  /** Цвет корпуса. Грани затеняются от него по правилу FACE_LIGHT. */
+  readonly hull: number;
+  /** Цвет неоновой окантовки по рёбрам. */
+  readonly accent: number;
+  readonly lineWidth?: number;
+  readonly lineAlpha?: number;
+  /** Не заливать грани, оставить только контур. Так рисуется недострой. */
+  readonly outlineOnly?: boolean;
+}
+
+/**
+ * Отрисовка одного объёмного тела.
+ *
+ * Порядок граней не случаен: сначала боковые, потом верхняя. При таком
+ * порядке верхняя грань перекрывает стыки боковых, и на месте ребра
+ * не остаётся тонкой щели фона, которая при сглаживании очень заметна.
+ *
+ * Неоновая окантовка обводится последней и несёт основную нагрузку
+ * узнавания: тёмный корпус на тёмной земле сам по себе виден плохо.
+ */
+export const drawPrism = (graphics: Graphics, prism: Prism, style: PrismStyle): void => {
+  const faces = prismFaces(prism);
+
+  if (style.outlineOnly !== true) {
+    if (faces.left.length > 0) {
+      tracePolygon(graphics, faces.left);
+      graphics.fill({ color: shade(style.hull, FACE_LIGHT.left) });
+    }
+    if (faces.right.length > 0) {
+      tracePolygon(graphics, faces.right);
+      graphics.fill({ color: shade(style.hull, FACE_LIGHT.right) });
+    }
+
+    tracePolygon(graphics, faces.top);
+    graphics.fill({ color: shade(style.hull, FACE_LIGHT.top) });
+  }
+
+  tracePolygon(graphics, faces.top);
+  if (faces.left.length > 0) tracePolygon(graphics, faces.left);
+  if (faces.right.length > 0) tracePolygon(graphics, faces.right);
+
+  graphics.stroke({
+    width: style.lineWidth ?? 1.5,
+    color: style.accent,
+    alpha: style.lineAlpha ?? 0.85,
+  });
 };
 
 /**

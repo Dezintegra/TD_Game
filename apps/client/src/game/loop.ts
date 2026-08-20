@@ -33,6 +33,16 @@ export interface GameLoop {
 
 export interface GameLoopOptions {
   readonly seed: number;
+  /**
+   * Дополнительный источник команд, опрашиваемый перед каждым тиком.
+   *
+   * Через него в матч попадает противник под управлением компьютера.
+   * Ставить его команды в общую очередь `enqueue` было бы неверно:
+   * очередь наполняется вводом игрока асинхронно, между кадрами,
+   * а противник должен видеть состояние мира ровно того тика,
+   * на котором он решает.
+   */
+  commands?: (world: WorldState) => readonly Command[];
   /** Вызывается после каждого тика симуляции. */
   onTick?: (world: WorldState) => void;
   /**
@@ -70,8 +80,11 @@ export const createGameLoop = (options: GameLoopOptions): GameLoop => {
 
     let ticksThisFrame = 0;
     while (accumulator >= MS_PER_TICK && ticksThisFrame < MAX_TICKS_PER_FRAME) {
-      const commands = pending;
+      const fromPlayer = pending;
       pending = [];
+
+      const fromOpponent = options.commands?.(world) ?? [];
+      const commands = fromOpponent.length === 0 ? fromPlayer : [...fromPlayer, ...fromOpponent];
 
       world = step(world, commands);
       accumulator -= MS_PER_TICK;

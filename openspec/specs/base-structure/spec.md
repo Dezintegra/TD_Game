@@ -1,8 +1,11 @@
 # base-structure Specification
 
 ## Purpose
+
 TBD - created by archiving change add-object-elevation. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: База состоит из нескольких объёмов
 
 База SHALL отрисовываться как командный центр, собранный минимум из четырёх
@@ -49,4 +52,3 @@ TBD - created by archiving change add-object-elevation. Update Purpose after arc
 
 - **WHEN** сравниваются коэффициенты затенения граней базы и скалы
 - **THEN** они совпадают
-

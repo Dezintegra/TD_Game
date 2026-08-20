@@ -1,9 +1,25 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import type { GameMap } from '@td/sim';
+import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
+import type { PlayerId } from '@td/shared';
+import { cellIndex } from '@td/sim';
+import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, createCamera, moveCamera } from './camera.js';
 import type { Camera } from './camera.js';
 import { drawTerrain } from './terrain.js';
 import type { TerrainColors } from './terrain.js';
+import { drawEntities } from './entities.js';
+import type { EntityColors, ViewBounds } from './entities.js';
+import { drawOverlays } from './overlays.js';
+import type { OverlayColors, OverlayIntent } from './overlays.js';
+import {
+  drawMinimapEntities,
+  drawMinimapTerrain,
+  minimapCellAt,
+  minimapLayout,
+} from './minimap.js';
+import type { MinimapColors, MinimapLayout } from './minimap.js';
+import { screenToWorld, worldToScreen } from './iso.js';
+import type { CellPoint } from './iso.js';
 
 /**
  * Сцена PixiJS: всё, что рисуется на игровом поле.
@@ -13,14 +29,36 @@ import type { TerrainColors } from './terrain.js';
  * времени. PixiJS рисует через WebGL и держит тысячи объектов на стабильных
  * 60 кадрах.
  *
+ * Слоёв четыре, и разделены они по частоте изменения, а не по смыслу:
+ *
+ *   территория  — перестраивается при смене карты, то есть почти никогда;
+ *   сущности    — каждый кадр;
+ *   подсказки   — каждый кадр, но зависят от намерения игрока, а не мира;
+ *   миникарта   — несколько раз в секунду и в экранных координатах.
+ *
+ * Разделение по частоте важнее разделения по смыслу: слой, который
+ * не изменился, не должен платить за соседа, который изменился.
+ *
  * Цвета берутся из тех же дизайн-токенов, что и HUD, — читаются из CSS.
  * Так палитра остаётся в одном месте, а не расползается по двум рендерерам.
  */
 export interface Scene {
   /** Показывает карту. Геометрия перестраивается только при смене карты. */
   setMap(map: GameMap): void;
-  /** Сдвигает камеру на заданное число экранных пикселей. */
+  /** Рисует текущее состояние мира и подсказки. */
+  render(world: WorldState, localPlayer: PlayerId, intent: OverlayIntent): void;
+  /** Сдвигает камеру на заданное число экранных пикселей и снимает слежение. */
   panBy(dx: number, dy: number): void;
+  /** Ставит камеру в клетку карты и снимает слежение. */
+  centreOnCell(cell: number): void;
+  /** Включает слежение камеры за точкой (в клетках). */
+  follow(point: CellPoint | undefined): void;
+  setFollowing(enabled: boolean): void;
+  readonly following: boolean;
+  /** Клетка карты под точкой экрана, либо -1. */
+  cellAtScreen(screenX: number, screenY: number): number;
+  /** Клетка карты под точкой миникарты, либо -1. */
+  minimapCellAtScreen(screenX: number, screenY: number): number;
   resize(): void;
   destroy(): void;
   /** Сколько раз перестраивалась геометрия территории. Нужно тестам. */
@@ -39,25 +77,63 @@ const toPixiColor = (cssColor: string, fallback: number): number => {
   return match?.[1] === undefined ? fallback : Number.parseInt(match[1], 16);
 };
 
+const token = (name: string, fallback: number): number =>
+  toPixiColor(readToken(name, ''), fallback);
+
 const readTerrainColors = (): TerrainColors => ({
-  grid: toPixiColor(readToken('--td-border-subtle', '#3a3a3a'), 0x3a3a3a),
-  gridMajor: toPixiColor(readToken('--td-border-control', '#4d4d4d'), 0x4d4d4d),
-  rock: toPixiColor(readToken('--td-rock', '#6e6a63'), 0x6e6a63),
-  rockFacet: toPixiColor(readToken('--td-rock-facet', '#817b71'), 0x817b71),
-  rockEdge: toPixiColor(readToken('--td-rock-edge', '#4a4741'), 0x4a4741),
-  border: toPixiColor(readToken('--td-text-muted-4', '#6b6b6b'), 0x6b6b6b),
+  grid: token('--td-border-subtle', 0x3a3a3a),
+  gridMajor: token('--td-border-control', 0x4d4d4d),
+  rock: token('--td-rock', 0x6e6a63),
+  rockFacet: token('--td-rock-facet', 0x817b71),
+  rockEdge: token('--td-rock-edge', 0x4a4741),
+  border: token('--td-text-muted-4', 0x6b6b6b),
   // Читаем --td-accent, а не --td-player-self: последний объявлен через
   // var(), и получить из него готовый цвет средствами getComputedStyle
   // надёжно не выйдет.
-  baseSelf: toPixiColor(readToken('--td-accent', '#00ff29'), 0x00ff29),
-  baseEnemy: toPixiColor(readToken('--td-player-enemy', '#d264ff'), 0xd264ff),
+  baseSelf: token('--td-accent', 0x00ff29),
+  baseEnemy: token('--td-player-enemy', 0xd264ff),
 });
+
+const readEntityColors = (): EntityColors => ({
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  hullDark: token('--td-hull-dark', 0x23271f),
+  health: token('--td-health-full', 0x00ff29),
+  healthLow: token('--td-health-low', 0xff5c5c),
+  shot: token('--td-projectile', 0xeaffef),
+  shotLethal: token('--td-health-low', 0xff5c5c),
+});
+
+const readOverlayColors = (): OverlayColors => ({
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  valid: token('--td-build-valid', 0x00ff29),
+  invalid: token('--td-build-invalid', 0xff5c5c),
+  danger: token('--td-strike', 0xff5c5c),
+});
+
+const readMinimapColors = (): MinimapColors => ({
+  background: token('--td-bg-panel', 0x141414),
+  border: token('--td-border-control', 0x4d4d4d),
+  rock: token('--td-rock', 0x6e6a63),
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  viewport: token('--td-text-secondary', 0xc4c4c4),
+});
+
+/**
+ * Как часто перерисовывается миникарта, в кадрах.
+ *
+ * Раз в шесть кадров — это десять обновлений в секунду. От шестидесяти
+ * человек их не отличит, а рисовать там приходится сотни точек.
+ */
+const MINIMAP_EVERY_FRAMES = 6;
 
 export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const app = new Application();
 
   await app.init({
-    background: toPixiColor(readToken('--td-bg-page', '#191919'), 0x191919),
+    background: token('--td-bg-page', 0x191919),
     antialias: true,
     // Учитываем плотность пикселей монитора, иначе на ретине картинка мылит.
     resolution: window.devicePixelRatio,
@@ -69,14 +145,30 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
   const worldContainer = new Container();
   const terrainGraphics = new Graphics();
-  worldContainer.addChild(terrainGraphics);
-  app.stage.addChild(worldContainer);
+  const entityGraphics = new Graphics();
+  const overlayGraphics = new Graphics();
+  worldContainer.addChild(terrainGraphics, entityGraphics, overlayGraphics);
 
-  const colors = readTerrainColors();
+  // Миникарта живёт в экранных координатах, поэтому лежит не в мировом
+  // контейнере, а прямо на сцене: сдвиг камеры её двигать не должен.
+  const minimapContainer = new Container();
+  const minimapTerrain = new Graphics();
+  const minimapEntities = new Graphics();
+  minimapContainer.addChild(minimapTerrain, minimapEntities);
+
+  app.stage.addChild(worldContainer, minimapContainer);
+
+  const terrainColors = readTerrainColors();
+  const entityColors = readEntityColors();
+  const overlayColors = readOverlayColors();
+  const minimapColors = readMinimapColors();
 
   let camera: Camera = createCamera();
   let currentMap: GameMap | undefined;
   let terrainRebuildCount = 0;
+  let following = true;
+  let layout: MinimapLayout = minimapLayout(app.screen.width, app.screen.height);
+  let frame = 0;
 
   /**
    * Сдвиг контейнера так, чтобы точка camera оказалась в центре экрана.
@@ -89,7 +181,33 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     worldContainer.y = Math.round(app.screen.height / 2 - camera.y);
   };
 
+  const relayoutMinimap = (): void => {
+    layout = minimapLayout(app.screen.width, app.screen.height);
+    if (currentMap !== undefined) {
+      drawMinimapTerrain(minimapTerrain, currentMap, layout, minimapColors);
+    }
+  };
+
+  const viewBounds = (): ViewBounds => ({
+    minX: camera.x - app.screen.width / 2,
+    maxX: camera.x + app.screen.width / 2,
+    minY: camera.y - app.screen.height / 2,
+    maxY: camera.y + app.screen.height / 2,
+  });
+
+  /** Четыре угла экрана в координатах клеток. Нужны рамке на миникарте. */
+  const viewCorners = (): readonly CellPoint[] => {
+    const bounds = viewBounds();
+    return [
+      screenToWorld(bounds.minX, bounds.minY),
+      screenToWorld(bounds.maxX, bounds.minY),
+      screenToWorld(bounds.maxX, bounds.maxY),
+      screenToWorld(bounds.minX, bounds.maxY),
+    ];
+  };
+
   applyCamera();
+  relayoutMinimap();
 
   return {
     setMap(map) {
@@ -100,16 +218,76 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
       currentMap = map;
       terrainRebuildCount += 1;
-      drawTerrain(terrainGraphics, map, colors);
+      drawTerrain(terrainGraphics, map, terrainColors);
+      drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
+    },
+
+    render(world, localPlayer, intent) {
+      drawEntities(entityGraphics, world, viewBounds(), entityColors, localPlayer);
+      drawOverlays(overlayGraphics, world, localPlayer, intent, overlayColors);
+
+      frame += 1;
+      if (frame % MINIMAP_EVERY_FRAMES === 0) {
+        drawMinimapEntities(
+          minimapEntities,
+          world,
+          localPlayer,
+          viewCorners(),
+          layout,
+          minimapColors,
+        );
+      }
     },
 
     panBy(dx, dy) {
+      following = false;
       camera = moveCamera(camera, dx, dy);
       applyCamera();
     },
 
+    centreOnCell(cell) {
+      following = false;
+      const point = worldToScreen(
+        (cell % MAP_WIDTH_CELLS) + 0.5,
+        Math.floor(cell / MAP_WIDTH_CELLS) + 0.5,
+      );
+      camera = { x: point.x, y: point.y };
+      applyCamera();
+    },
+
+    follow(point) {
+      if (!following || point === undefined) return;
+
+      const screen = worldToScreen(point.x, point.y);
+      camera = { x: screen.x, y: screen.y };
+      applyCamera();
+    },
+
+    setFollowing(enabled) {
+      following = enabled;
+    },
+
+    get following() {
+      return following;
+    },
+
+    cellAtScreen(screenX, screenY) {
+      const point = screenToWorld(screenX - worldContainer.x, screenY - worldContainer.y);
+      const x = Math.floor(point.x);
+      const y = Math.floor(point.y);
+
+      if (x < 0 || y < 0 || x >= MAP_WIDTH_CELLS || y >= MAP_HEIGHT_CELLS) return -1;
+
+      return cellIndex(x, y);
+    },
+
+    minimapCellAtScreen(screenX, screenY) {
+      return minimapCellAt(screenX, screenY, layout);
+    },
+
     resize() {
       applyCamera();
+      relayoutMinimap();
     },
 
     destroy() {
