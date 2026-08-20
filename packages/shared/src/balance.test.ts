@@ -7,6 +7,7 @@ import {
   BASE_TOWER_RANGE_CELLS,
   BASE_UNIT_COST,
   BASE_INCOME_PER_TICK,
+  BUILDABLE_KINDS,
   ENERGY_SCALE,
   NUKE_COST,
   NUKE_RADIUS,
@@ -92,6 +93,45 @@ describe('баланс: соотношения из игрового замыс�
   it('базовая атака и базовое здоровье достались штурмовику без изменений', () => {
     expect(assault.attack).toBe(BASE_ATTACK);
     expect(assault.health).toBe(BASE_HEALTH);
+  });
+});
+
+describe('баланс: время возведения', () => {
+  /**
+   * У постройки два ограничителя: цена — сколько её копить, и время
+   * возведения — сколько рядом с ней стоять. Работает тот, который длиннее,
+   * поэтому оба сравниваются в одной единице: в тиках при базовом доходе.
+   */
+  const savingTicks = (kind: StructureKind): number =>
+    STRUCTURE_STATS[kind].cost / BASE_INCOME_PER_TICK;
+
+  it('время возведения перестало быть незначимым ни у одной постройки', () => {
+    // Главное свойство изменения. До него стена возводилась полсекунды
+    // против двух секунд накопления, то есть время не значило ничего.
+    for (const kind of BUILDABLE_KINDS) {
+      expect(STRUCTURE_STATS[kind].buildTicks).toBeGreaterThanOrEqual(savingTicks(kind) / 2);
+    }
+  });
+
+  it('стену ограничивает время, а не цена', () => {
+    // Стена стоит две секунды дохода: ценой её не ограничить в принципе.
+    expect(STRUCTURE_STATS[StructureKind.Wall].buildTicks).toBeGreaterThan(
+      savingTicks(StructureKind.Wall),
+    );
+  });
+
+  it('у базовой башни цена и время сравнялись', () => {
+    expect(STRUCTURE_STATS[StructureKind.TowerBasic].buildTicks).toBe(
+      savingTicks(StructureKind.TowerBasic),
+    );
+  });
+
+  it('снайперскую башню по-прежнему ограничивает цена', () => {
+    // Так и задумано: дорогое специализированное сооружение. От времени
+    // требовалось лишь перестать быть незаметным.
+    expect(STRUCTURE_STATS[StructureKind.TowerSniper].buildTicks).toBeLessThan(
+      savingTicks(StructureKind.TowerSniper),
+    );
   });
 });
 

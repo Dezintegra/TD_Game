@@ -257,7 +257,16 @@ export const STRUCTURE_STATS: Readonly<Record<StructureKind, StructureStats>> = 
     cooldownTicks: 0,
     range: 0,
     cost: energy(20),
-    buildTicks: Math.round(TICKS_PER_SECOND * 0.5),
+    // Пять секунд — вдвое с половиной дольше, чем стена копится.
+    //
+    // У постройки два ограничителя: цена (сколько копить) и время
+    // возведения (сколько стоять). Работает тот, который длиннее.
+    // Стена стоит две секунды базового дохода, и ценой её ограничить
+    // невозможно в принципе: сколько её ни поднимай, она останется
+    // мелочью. Единственный доступный ограничитель — время, и оно
+    // намеренно сделано главным. Иначе стена бесплатна прямо в бою,
+    // а ход, меняющий геометрию карты, не должен стоить полсекунды.
+    buildTicks: TICKS_PER_SECOND * 5,
     footprintRadius: 0,
   },
   [StructureKind.TowerBasic]: {
@@ -270,7 +279,11 @@ export const STRUCTURE_STATS: Readonly<Record<StructureKind, StructureStats>> = 
     cooldownTicks: BASE_COOLDOWN_TICKS,
     range: cellsToUnits(BASE_TOWER_RANGE_CELLS),
     cost: energy(60),
-    buildTicks: TICKS_PER_SECOND * 2,
+    // Шесть секунд — ровно столько же, сколько башня копится при базовом
+    // доходе. Два ограничителя, цена и время, здесь сравнялись, и это
+    // самый честный случай: башня одинаково ограничена и деньгами,
+    // и необходимостью постоять рядом с местом стройки.
+    buildTicks: TICKS_PER_SECOND * 6,
     footprintRadius: 0,
   },
   [StructureKind.TowerSniper]: {
@@ -287,7 +300,14 @@ export const STRUCTURE_STATS: Readonly<Record<StructureKind, StructureStats>> = 
     // гранатомётчика с его шестью клетками, но не более того.
     range: cellsToUnits(BASE_TOWER_RANGE_CELLS * 2),
     cost: energy(150),
-    buildTicks: TICKS_PER_SECOND * 3,
+    // Девять секунд против пятнадцати, за которые башня копится.
+    //
+    // Здесь главным ограничителем намеренно остаётся цена: снайперская
+    // башня задумана как дорогое специализированное сооружение, и всё,
+    // что от времени требуется, — перестать быть незаметным. Уравнять
+    // время с ценой означало бы полминуты неподвижного генерала,
+    // после чего башня не строилась бы никогда.
+    buildTicks: TICKS_PER_SECOND * 9,
     footprintRadius: 0,
   },
 };

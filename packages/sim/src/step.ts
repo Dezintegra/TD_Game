@@ -123,23 +123,54 @@ const applyIncome = (working: Working, stats: readonly PlayerStats[]): void => {
 const BUILD_START_HEALTH_PERCENT = 20;
 
 /**
+ * Сколько прочности должно быть набрано к концу `elapsed` тиков возведения.
+ *
+ * Это расписание, а не прибавка за тик, и разница принципиальна. Прибавка
+ * обязана быть целой, а раздать нужно бывает меньше единицы за тик:
+ * у снайперской башни это сто двадцать единиц на двести семьдесят тиков.
+ * Округление вверх раздавало их вчетверо быстрее срока, и башня стояла
+ * целой, но не стреляющей, последние пять секунд возведения.
+ */
+const gainedByTick = (total: number, elapsed: number, buildTicks: number): number =>
+  Math.floor((total * elapsed) / buildTicks);
+
+/**
  * Достройка возводимых построек.
  *
- * Здоровье растёт линейно от стартовой доли до максимума. Пока идёт
+ * Здоровье растёт равномерно от стартовой доли до максимума. Пока идёт
  * возведение, постройка уже перекрывает проход, но ещё не стреляет
  * и легко разрушается — в этом и смысл времени постройки.
+ *
+ * Прибавка берётся разностью соседних значений расписания, поэтому за тик
+ * она равна нулю или единице, а за весь срок набирается ровно то, что нужно.
+ *
+ * Ничего дополнительного в состоянии мира при этом не хранится: `elapsed`
+ * выводится из `builtAtTick` и текущего тика, а оба уже есть. Остаток
+ * раздачи, живи он полем в постройке, попал бы и в контрольную сумму,
+ * и в откат при рассинхроне.
+ *
+ * Прибавка не зависит от текущей прочности — значит, подстреленная во время
+ * стройки постройка продолжает набирать по расписанию, а не «долечивается»
+ * до расчётного значения.
  */
 const advanceConstruction = (working: Working, stats: readonly PlayerStats[]): void => {
   for (const structure of working.structures) {
     if (!structure.alive || working.tick >= structure.builtAtTick) continue;
 
     const baseline = statsOf(stats, structure.owner).structures[structure.kind];
-    const maxHealth = structureMaxHealth(baseline, structure.growthPpm);
     if (baseline.buildTicks <= 0) continue;
 
-    const gain = Math.ceil(
-      (maxHealth * (100 - BUILD_START_HEALTH_PERCENT)) / 100 / baseline.buildTicks,
+    const maxHealth = structureMaxHealth(baseline, structure.growthPpm);
+    const startHealth = Math.max(
+      1,
+      Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100),
     );
+    const total = maxHealth - startHealth;
+
+    const elapsed = baseline.buildTicks - (structure.builtAtTick - working.tick);
+    const gain =
+      gainedByTick(total, elapsed + 1, baseline.buildTicks) -
+      gainedByTick(total, elapsed, baseline.buildTicks);
 
     structure.health = Math.min(maxHealth, structure.health + gain);
   }

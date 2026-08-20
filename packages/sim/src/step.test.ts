@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BASE_INCOME_PER_TICK,
+  BUILDABLE_KINDS,
   CommandKind,
   DIRECTION_SOUTH,
   GENERAL_KILL_REWARD,
@@ -233,6 +234,71 @@ describe('строительство', () => {
     const tower = after.structures.find((s) => s.cell === cell);
 
     expect(tower?.health).toBe(STRUCTURE_STATS[StructureKind.TowerBasic].health);
+  });
+
+  /** Догнать мир до тика, на котором постройка считается готовой. */
+  const runUntilBuilt = (world: WorldState, cell: number): WorldState => {
+    const builtAt = world.structures.find((s) => s.cell === cell)?.builtAtTick ?? 0;
+
+    let current = world;
+    while (current.tick < builtAt) current = step(current, []);
+
+    return current;
+  };
+
+  it('снайперская башня на середине возведения заметно слабее готовой', () => {
+    // Тот самый случай, который ломало округление вверх: сто двадцать
+    // единиц прочности раздавались за сто двадцать тиков из двухсот
+    // семидесяти, и башня стояла целой, но не стреляющей, пять секунд.
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const placed = step(world, [build(0, cell, StructureKind.TowerSniper)]);
+    const builtAt = placed.structures.find((s) => s.cell === cell)?.builtAtTick ?? 0;
+
+    let current = placed;
+    while (current.tick < Math.floor(builtAt / 2)) current = step(current, []);
+
+    const max = STRUCTURE_STATS[StructureKind.TowerSniper].health;
+    const half = current.structures.find((s) => s.cell === cell);
+
+    expect(half?.health).toBeLessThan(max * 0.7);
+    expect(half?.health).toBeGreaterThan(max * 0.3);
+  });
+
+  it('к концу возведения набрано ровно столько, сколько нужно', () => {
+    for (const kind of BUILDABLE_KINDS) {
+      const world = richWorld();
+      const cell = nearBaseCell(world, 0);
+      const done = runUntilBuilt(step(world, [build(0, cell, kind)]), cell);
+
+      expect(done.structures.find((s) => s.cell === cell)?.health).toBe(
+        STRUCTURE_STATS[kind].health,
+      );
+    }
+  });
+
+  it('подстреленная во время стройки постройка не долечивается', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const placed = step(world, [build(0, cell, StructureKind.TowerBasic)]);
+
+    // Урон наносится правкой состояния, а не боем: рядом с базой стрелять
+    // некому, а заводить ради одного теста целую расстановку незачем.
+    const damage = 30;
+    const wounded: WorldState = {
+      ...placed,
+      structures: placed.structures.map((entry) =>
+        entry.cell === cell ? { ...entry, health: entry.health - damage } : entry,
+      ),
+    };
+
+    const done = runUntilBuilt(wounded, cell);
+
+    // Набор идёт по расписанию и не зависит от текущей прочности, поэтому
+    // недостача сохраняется до конца возведения.
+    expect(done.structures.find((s) => s.cell === cell)?.health).toBe(
+      STRUCTURE_STATS[StructureKind.TowerBasic].health - damage,
+    );
   });
 
   it('разрушенная постройка исчезает и освобождает клетку', () => {

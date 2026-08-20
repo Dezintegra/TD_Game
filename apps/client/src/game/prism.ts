@@ -288,8 +288,6 @@ export interface PrismStyle {
   readonly accent: number;
   readonly lineWidth?: number;
   readonly lineAlpha?: number;
-  /** Не заливать грани, оставить только контур. Так рисуется недострой. */
-  readonly outlineOnly?: boolean;
 }
 
 /**
@@ -305,19 +303,17 @@ export interface PrismStyle {
 export const drawPrism = (graphics: Graphics, prism: Prism, style: PrismStyle): void => {
   const faces = prismFaces(prism);
 
-  if (style.outlineOnly !== true) {
-    if (faces.left.length > 0) {
-      tracePolygon(graphics, faces.left);
-      graphics.fill({ color: shade(style.hull, FACE_LIGHT.left) });
-    }
-    if (faces.right.length > 0) {
-      tracePolygon(graphics, faces.right);
-      graphics.fill({ color: shade(style.hull, FACE_LIGHT.right) });
-    }
-
-    tracePolygon(graphics, faces.top);
-    graphics.fill({ color: shade(style.hull, FACE_LIGHT.top) });
+  if (faces.left.length > 0) {
+    tracePolygon(graphics, faces.left);
+    graphics.fill({ color: shade(style.hull, FACE_LIGHT.left) });
   }
+  if (faces.right.length > 0) {
+    tracePolygon(graphics, faces.right);
+    graphics.fill({ color: shade(style.hull, FACE_LIGHT.right) });
+  }
+
+  tracePolygon(graphics, faces.top);
+  graphics.fill({ color: shade(style.hull, FACE_LIGHT.top) });
 
   tracePolygon(graphics, faces.top);
   if (faces.left.length > 0) tracePolygon(graphics, faces.left);

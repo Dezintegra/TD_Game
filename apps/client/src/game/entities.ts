@@ -2,6 +2,7 @@ import type { Graphics } from 'pixi.js';
 import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
+  STRUCTURE_STATS,
   StructureKind,
   UNIT_TYPES,
   UNIT_UPGRADE_TARGET,
@@ -302,21 +303,41 @@ const drawStructure = (
   const hull = blend(colors.hullDark, accent, HULL_TINT);
   const inset = (1 - shape.size) / 2;
 
-  // Недостроенное показывается одним контуром: сразу видно, что объект
-  // уже мешает пройти, но ещё не в строю.
-  const outlineOnly = tick < structure.builtAtTick;
+  // Ход возведения показывается растущей высотой тела.
+  //
+  // Раньше недострой рисовался одним контуром, и полсекунды контура игрок
+  // не замечал. Шесть секунд пустого контура — это уже сообщение, и оно
+  // неверное: пустой контур читается как «сломано», а не как «строится».
+  // Высота — уже работающий язык поля (объект, торчащий вверх, отличается
+  // от разметки на земле даже боковым зрением), и растущее тело
+  // не добавляет на экран ни одного нового элемента.
+  //
+  // Доля готовности выводится из `builtAtTick` и тика — обе величины уже
+  // есть в снимке мира. Срок берётся из таблицы баланса, а не переписан
+  // здесь числом: иначе правка времени возведения молча разошлась бы
+  // с ядром.
+  const buildTicks = STRUCTURE_STATS[structure.kind].buildTicks;
+  const readiness =
+    buildTicks <= 0 || tick >= structure.builtAtTick
+      ? 1
+      : Math.min(1, Math.max(0, (buildTicks - (structure.builtAtTick - tick)) / buildTicks));
 
   const body: Prism = {
     x: x + inset,
     y: y + inset,
     width: shape.size,
     depth: shape.size,
-    height: shape.height,
+    // Нижний порог не косметика: совсем плоское тело сливается с землёй,
+    // а начатая стройка обязана быть видна с первого тика.
+    height: shape.height * Math.max(0.12, readiness),
   };
 
-  drawPrism(graphics, body, { hull, accent, outlineOnly });
+  drawPrism(graphics, body, { hull, accent });
 
-  if (structure.kind === StructureKind.Wall) return;
+  // Ствол появляется только у готовой башни. Это второй признак
+  // готовности рядом с высотой: почти достроенная башня по высоте
+  // от готовой уже почти не отличается, а по стволу — отличается сразу.
+  if (structure.kind === StructureKind.Wall || readiness < 1) return;
 
   // Ствол: узкая насадка сверху. Именно она отличает башню от коробки.
   drawPrism(
