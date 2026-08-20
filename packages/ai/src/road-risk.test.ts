@@ -162,6 +162,11 @@ describe('опасность считается на момент прихода
 
     const idle: WorldState = {
       ...world,
+      // Вражеский генерал убран: он стоит у своей базы и достаёт до точки
+      // сам, а проверяем мы поведение ЮНИТА.
+      generals: world.generals.map((general) =>
+        general.owner === ENEMY ? { ...general, alive: false } : general,
+      ),
       units: [
         {
           id: asEntityId(8300),

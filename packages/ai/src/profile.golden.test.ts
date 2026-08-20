@@ -46,7 +46,7 @@ const AI: PlayerId = asPlayerId(1);
  * и доказывало, что перекладывание констант игру не изменило. Своё дело
  * оно сделало.
  */
-const GOLDEN_CHECKSUM = 2824976805;
+const GOLDEN_CHECKSUM = 1917383252;
 
 interface Outcome {
   readonly checksum: number;
@@ -108,11 +108,11 @@ describe('эталон профиля по умолчанию', () => {
     // построено или генерал не дошёл.
     expect(outcome).toMatchObject({
       structures: 1,
-      units: 10,
-      upgradeLevels: 30,
-      energy: 1451,
-      commands: 94,
-      furthestFraction: 1.0222,
+      units: 7,
+      upgradeLevels: 32,
+      energy: 1781,
+      commands: 334,
+      furthestFraction: 0.8889,
     });
   });
 

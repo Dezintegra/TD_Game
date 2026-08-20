@@ -51,13 +51,14 @@ const attemptsOf = (profile: AiProfile, seconds: number): readonly AttemptRecord
 
 describe('прикрытие генерала считается рядом с ним', () => {
   it('радиус соседства равен сумме дальностей генерала и юнита', () => {
-    // При нынешних двух клетках у обоих получается четыре: на таком
+    // Пять клеток у генерала плюс две у штурмовика дают семь: на таком
     // расстоянии юнит и генерал достают до одного противника, то есть
-    // действительно дерутся вместе.
+    // действительно дерутся вместе. Величина выводится, а не задаётся,
+    // и потому подросла сама вместе с дальностью генерала.
     const player = createWorld(SEED).players[AI];
     if (player === undefined) throw new Error('нет игрока');
 
-    expect(escortRadius(playerStats(player))).toBe(cellsToUnits(4));
+    expect(escortRadius(playerStats(player))).toBe(cellsToUnits(7));
   });
 
   it('юниты у своей базы прикрытием дальнего генерала не считаются', () => {

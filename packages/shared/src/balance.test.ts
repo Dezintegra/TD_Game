@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import { TICKS_PER_SECOND } from './constants.js';
 import { cellsToUnits } from './units.js';
 import {
@@ -9,6 +9,7 @@ import {
   BASE_INCOME_PER_TICK,
   BUILDABLE_KINDS,
   ENERGY_SCALE,
+  GENERAL_STATS,
   NUKE_COST,
   NUKE_RADIUS,
   STRUCTURE_STATS,
@@ -93,6 +94,45 @@ describe('баланс: соотношения из игрового замыс�
   it('базовая атака и базовое здоровье достались штурмовику без изменений', () => {
     expect(assault.attack).toBe(BASE_ATTACK);
     expect(assault.health).toBe(BASE_HEALTH);
+  });
+});
+
+describe('баланс: дальность генерала', () => {
+  const tower = STRUCTURE_STATS[StructureKind.TowerBasic];
+
+  it('равна дальности базовой башни и радиусу строительства', () => {
+    // Второе равенство важнее первого: из него следует правило,
+    // читаемое без объяснений, — «куда достанешь, там и построишь».
+    expect(GENERAL_STATS.range).toBe(tower.range);
+    expect(GENERAL_STATS.range).toBe(GENERAL_STATS.buildRadius);
+  });
+
+  it('дуэль с непрокачанной башней генерал проигрывает', () => {
+    // Главная проверка изменения. Начни генерал выигрывать у башни —
+    // и отменяется центральная механика замысла: укрепление позиции.
+    const shotsToKillGeneral = Math.ceil(GENERAL_STATS.health / tower.attack);
+    const shotsToKillTower = Math.ceil(tower.health / GENERAL_STATS.attack);
+
+    expect(shotsToKillGeneral * tower.cooldownTicks).toBeLessThan(
+      shotsToKillTower * GENERAL_STATS.cooldownTicks,
+    );
+  });
+
+  it('снайпер, гранатомётчик и снайперская башня по-прежнему перестреливают генерала', () => {
+    expect(UNIT_STATS[UnitType.Sniper].range).toBeGreaterThan(GENERAL_STATS.range);
+    expect(UNIT_STATS[UnitType.Grenadier].range).toBeGreaterThan(GENERAL_STATS.range);
+    expect(STRUCTURE_STATS[StructureKind.TowerSniper].range).toBeGreaterThan(GENERAL_STATS.range);
+  });
+
+  it('добывать энергию убийствами невыгоднее, чем просто ждать доход', () => {
+    // Тест защищает не от этой правки, а от будущих: стоит атаке генерала
+    // подрасти, и охота за юнитами станет выгоднее позиционной борьбы,
+    // а игра превратится в ферму.
+    const assault = UNIT_STATS[UnitType.Assault];
+    const shots = Math.ceil(assault.health / GENERAL_STATS.attack);
+    const perTick = assault.cost / (shots * GENERAL_STATS.cooldownTicks);
+
+    expect(perTick).toBeLessThan(BASE_INCOME_PER_TICK);
   });
 });
 
