@@ -126,6 +126,48 @@ export const generalDeathCost = (stats: PlayerStats, returnCells: number): numbe
 // Входящий урон
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Куда идут вражеские войска.
+ *
+ * У игрока одна общая цель для всех юнитов, и она лежит в его состоянии.
+ * Если цели почему-то нет, берётся наша база: именно туда войска пойдут
+ * по умолчанию, и ядро само их туда перенацелит.
+ */
+const enemyTargetPoint = (world: WorldState, me: PlayerId): Vec2 | undefined => {
+  const enemy = world.players[otherPlayer(me)];
+  const target = world.structures.find((structure) => structure.id === enemy?.targetStructure);
+  if (target !== undefined) return cellCentre(target.cell);
+
+  const home = world.map.baseCells[me];
+
+  return home === undefined ? undefined : cellCentre(home);
+};
+
+/**
+ * На сколько юнит успеет приблизиться к точке за отведённое время.
+ *
+ * Ноль, если точка не лежит у него на пути: юнит идёт к своей цели,
+ * а не к нашему рубежу, и считать, что каждый вражеский юнит бежит
+ * именно к нам, значило бы завысить опасность настолько, что генерал
+ * не вышел бы из дома.
+ *
+ * «Лежит на пути» проверяется просто: точка ближе к цели войск, чем сам
+ * юнит. Мерка грубая, но ошибается в безопасную сторону — она пропускает
+ * тех, кто идёт мимо, и никогда не пропускает идущих прямо на нас.
+ */
+const approachDistance = (
+  unit: { readonly position: Vec2 },
+  point: Vec2,
+  target: Vec2 | undefined,
+  speed: number,
+  ticks: number,
+): number => {
+  if (ticks <= 0 || target === undefined) return 0;
+  if (distanceSquared(point, target) >= distanceSquared(unit.position, target)) return 0;
+
+  return speed * ticks;
+};
+
 export interface Incoming {
   /** Урон в тик от всего вражеского, достающего до точки. */
   readonly total: number;
@@ -150,12 +192,25 @@ export interface Incoming {
  * Характеристики берутся с учётом прокачки противника и личного роста
  * его башен. Подглядыванием это не является: тумана войны в игре нет
  * намеренно, и уровни соперника видны обоим.
+ *
+ * `withinTicks` — за сколько тиков обстановка успеет измениться. Ноль
+ * означает «прямо сейчас», и такой вызов повторяет прежнее поведение.
+ * При положительном значении в счёт идут ещё две вещи, каждая из которых
+ * раньше молча занижала опасность:
+ *
+ * - постройка, которая **достроится** за это время. Заложенная башня
+ *   не стреляет в момент решения и потому не входила в урон вовсе —
+ *   а к приходу генерала уже стреляет;
+ * - войска, которые **дойдут** до точки за это время. Снимок «кто сейчас
+ *   в радиусе» устаревает раньше, чем генерал доходит, и пустой рубеж,
+ *   к которому подходит десяток штурмовиков, считался безопасным.
  */
 export const incomingAt = (
   world: WorldState,
   me: PlayerId,
   enemyStats: PlayerStats,
   point: Vec2,
+  withinTicks = 0,
 ): Incoming => {
   let fromStructures = 0;
   let fromUnits = 0;
@@ -163,8 +218,9 @@ export const incomingAt = (
 
   for (const structure of world.structures) {
     if (structure.owner === me) continue;
-    // Недостроенная постройка ещё не стреляет.
-    if (world.tick < structure.builtAtTick) continue;
+    // Недостроенная постройка не стреляет — но та, что достроится раньше,
+    // чем генерал уйдёт, стреляет по нему наверняка.
+    if (world.tick + withinTicks < structure.builtAtTick) continue;
 
     const baseline = enemyStats.structures[structure.kind];
     if (baseline.attack <= 0 || baseline.range <= 0) continue;
@@ -179,11 +235,16 @@ export const incomingAt = (
     fromStructures += structureAttack(baseline, structure.growthPpm) / baseline.cooldownTicks;
   }
 
+  // Куда идут вражеские войска, известно: у игрока одна общая цель
+  // для всех юнитов. Направление берётся отсюда, а не угадывается.
+  const enemyTarget = enemyTargetPoint(world, me);
+
   for (const unit of world.units) {
     if (unit.owner === me) continue;
 
     const baseline = enemyStats.units[unit.unitType];
-    if (distanceSquared(unit.position, point) > baseline.range * baseline.range) continue;
+    const reach = baseline.range + approachDistance(unit, point, enemyTarget, baseline.speed, withinTicks);
+    if (distanceSquared(unit.position, point) > reach * reach) continue;
 
     fromUnits += baseline.attack / baseline.cooldownTicks;
   }
@@ -465,6 +526,120 @@ const pressureOnHome = (situation: Situation): number => {
 };
 
 /**
+ * Клетки проб вдоль дороги генерала к рубежу, от генерала к рубежу.
+ *
+ * Берутся спуском по градиенту поля расстояний ОТ генерала — тем же
+ * способом, каким генерал и пойдёт. Прямая между двумя точками здесь
+ * не годится: она проходит сквозь скалы и застройку, а генерал идёт
+ * в обход, и опасен ему именно обход.
+ *
+ * Спуск идёт от рубежа к генералу (значения поля убывают), поэтому
+ * порядок в конце разворачивается: вызывающему нужна дорога в ту сторону,
+ * в которую он пойдёт, — от неё зависит, когда он окажется в каждой точке.
+ */
+export const probeRoute = (
+  reach: Int32Array,
+  from: number,
+  probes: number,
+): readonly number[] => {
+  if (probes <= 0) return [];
+
+  const route: number[] = [];
+  let current = from;
+
+  // Предохранитель на число шагов: поле убывает строго, поэтому цикл
+  // конечен по построению, но цикл без верхней границы — приглашение
+  // к зависанию, если поле однажды окажется испорченным.
+  for (let step = 0; step < MAP_CELL_COUNT; step += 1) {
+    route.push(current);
+
+    const here = reach[current] ?? UNREACHABLE;
+    if (here <= 0) break;
+
+    const cx = cellX(current);
+    const cy = cellY(current);
+
+    let next = -1;
+    let best = here;
+
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        if (dx === 0 && dy === 0) continue;
+
+        const x = cx + dx;
+        const y = cy + dy;
+        if (!isInsideMap(x, y)) continue;
+
+        const cell = cellIndex(x, y);
+        const value = reach[cell] ?? UNREACHABLE;
+        if (value >= best) continue;
+
+        best = value;
+        next = cell;
+      }
+    }
+
+    if (next < 0) break;
+    current = next;
+  }
+
+  route.reverse();
+
+  if (route.length <= probes) return route;
+
+  // Пробы раскладываются равномерно по дороге. Последней всегда остаётся
+  // клетка рубежа: она и есть место, где генерал остановится.
+  const picked: number[] = [];
+  for (let index = 1; index <= probes; index += 1) {
+    const at = Math.min(route.length - 1, Math.round((route.length - 1) * (index / probes)));
+    const cell = route[at];
+    if (cell !== undefined) picked.push(cell);
+  }
+
+  return picked;
+};
+
+/**
+ * Урон, накопленный генералом по дороге к рубежу.
+ *
+ * Накапливается по отрезкам, а не усредняется, и разница принципиальна:
+ * генерал проходит КАЖДЫЙ отрезок целиком, поэтому простреливаемый кусок
+ * в середине не должен размываться безопасными краями. Усреднение
+ * превратило бы дорогу, наполовину идущую под огнём башни, в дорогу
+ * с половинной опасностью — а генерал получит на ней полный урон,
+ * просто в течение половины времени.
+ *
+ * Опасность каждой пробы считается на тот тик, когда генерал до неё
+ * дойдёт: за это время достроятся башни и подойдут войска.
+ */
+const roadDamage = (situation: Situation, frontier: Frontier, travelTicks: number): number => {
+  const probes = probeRoute(
+    situation.reach,
+    frontier.cell,
+    situation.profile.posture.pathProbes,
+  );
+  if (probes.length === 0 || travelTicks <= 0) return 0;
+
+  const perSegment = travelTicks / probes.length;
+
+  let damage = 0;
+  probes.forEach((cell, index) => {
+    const arrival = perSegment * (index + 1);
+    const incoming = incomingAt(
+      situation.world,
+      situation.me,
+      situation.enemyStats,
+      cellCentre(cell),
+      arrival,
+    );
+
+    damage += incoming.total * perSegment;
+  });
+
+  return damage;
+};
+
+/**
  * Оценка одного рубежа.
  *
  * Выгода — что башня, поставленная на рубеже, уничтожит за время, которое
@@ -529,12 +704,20 @@ export const scoreFrontier = (situation: Situation, frontier: Frontier): Verdict
   const travel = walkTicks(situation.reach[frontier.cell] ?? 0, myStats);
   const productive = Math.max(0, horizonTicks(situation.profile) - travel);
 
-  const incoming = incomingAt(situation.world, situation.me, enemyStats, point);
+  // Опасность на самом рубеже считается на момент прихода: за время
+  // дороги достроятся заложенные башни и подойдут войска.
+  const incoming = incomingAt(situation.world, situation.me, enemyStats, point, travel + escape);
   const hold = incoming.fromStructures > 0 ? Math.min(productive, escape) : productive;
 
   const gain = ratePerTick * hold;
 
-  const deathChance = Math.min(1, (incoming.total * escape) / Math.max(1, situation.generalHealth));
+  // Гибнет генерал не только СТОЯ на рубеже, но и ИДЯ к нему. Прежняя
+  // оценка считала только точку назначения и потому объявляла гибель
+  // невозможной в 88% решений — при том, что пятую часть матча генерал
+  // проводил мёртвым. Дорога добавляется к урону на месте, а не заменяет
+  // его: обе опасности реальны и складываются.
+  const taken = roadDamage(situation, frontier, travel) + incoming.total * escape;
+  const deathChance = Math.min(1, taken / Math.max(1, situation.generalHealth));
 
   const risk = deathChance * generalDeathCost(myStats, approach.fromHome[frontier.cell] ?? 0);
 

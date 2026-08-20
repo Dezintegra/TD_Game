@@ -149,6 +149,15 @@ export interface AiProfile {
     readonly threatRadiusCells: number;
     /** Горизонт планирования, в секундах. */
     readonly horizonSeconds: number;
+    /**
+     * Сколько проб опасности брать вдоль дороги к рубежу.
+     *
+     * Проба стоит перебора всех вражеских стрелков, поэтому число
+     * держится маленьким. Четыре — это опасность в начале, в двух
+     * третях пути и на самом рубеже: достаточно, чтобы отличить дорогу
+     * под огнём от чистой, и мало, чтобы это стоило заметного времени.
+     */
+    readonly pathProbes: number;
   };
 
   readonly phases: readonly PhaseProfile[];
@@ -376,6 +385,7 @@ export const BASELINE_PROFILE: AiProfile = deepFreeze({
     // Брать больше нельзя: за пять минут обстановка меняется
     // до неузнаваемости, и оценка превратилась бы в гадание.
     horizonSeconds: 60,
+    pathProbes: 4,
   },
 
   phases: BASELINE_PHASES,
