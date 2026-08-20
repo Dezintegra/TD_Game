@@ -6,12 +6,11 @@ import {
   UNIT_CAP,
   asEntityId,
   asPlayerId,
-  asTickNumber,
   distanceSquared,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { applyCommand } from './apply.js';
-import { killGeneral, buildCombatIndices, resolveCombat } from './combat.js';
+import { killGeneral, buildCombatIndices, buildSpatialIndex, resolveCombat } from './combat.js';
 import { cellCentre } from './map.js';
 import { findFreeCellNear, moveGenerals, moveUnits } from './movement.js';
 import { buildNavField } from './navigation.js';
@@ -26,7 +25,7 @@ import {
   toWorking,
 } from './working.js';
 import type { Working, WorkingPlayer } from './working.js';
-import { PRODUCTION_IDLE, generalSpawnCell } from './world.js';
+import { generalSpawnCell } from './world.js';
 import type { WorldState } from './world.js';
 
 /**
@@ -67,7 +66,15 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
   runProduction(working, stats);
   refreshNavigation(working);
 
-  moveUnits(working, stats);
+  // Индекс по положениям на начало тика. Движение спрашивает у него,
+  // есть ли поблизости противник, и ответ не должен зависеть от того,
+  // кто из юнитов успел сдвинуться раньше в этом же тике.
+  const beforeMove = buildSpatialIndex(working.units.length, (index) => {
+    const unit = working.units[index];
+    return unit === undefined || !unit.alive ? undefined : { x: unit.x, y: unit.y };
+  });
+
+  moveUnits(working, stats, beforeMove);
   moveGenerals(working, stats);
 
   resolveCombat(working, stats, buildCombatIndices(working));
@@ -152,36 +159,31 @@ const respawnGenerals = (working: Working, stats: readonly PlayerStats[]): void 
 /**
  * Производство юнитов.
  *
- * Очередь на базе, по одному за раз. Энергия за заказ уже списана
- * в момент постановки в очередь, поэтому здесь остаётся только отсчитать
- * время и найти место для появления.
+ * Отката нет: очередь опустошается целиком за один тик. Энергия за заказ
+ * уже списана при постановке в очередь, поэтому здесь остаётся только
+ * найти каждому место.
+ *
+ * Очередь при мгновенном производстве всё равно нужна, но уже не как
+ * таймер, а как ожидание места: юнит остаётся в ней, пока достигнут
+ * потолок численности или вокруг базы нет свободной клетки. Отклонять
+ * такой заказ нельзя — энергия за него уже уплачена.
+ *
+ * Клетки появления не повторяются в пределах тика. Юниты проходят друг
+ * сквозь друга, поэтому занятость их не разводит, и без этого десяток
+ * заказанных разом встал бы в одну точку и двигался бы дальше идеально
+ * слитно — на поле это выглядит как один юнит, а не как отряд.
  */
 const runProduction = (working: Working, stats: readonly PlayerStats[]): void => {
   for (const player of working.players) {
-    const head = player.queue[0];
+    let living = livingUnitCount(working, player.id);
+    const taken = new Set<number>();
 
-    if (head === undefined) {
-      player.produceReadyAtTick = PRODUCTION_IDLE;
-      continue;
+    while (player.queue.length > 0 && living < UNIT_CAP) {
+      if (!spawnUnit(working, player, stats, taken)) break;
+
+      player.queue.shift();
+      living += 1;
     }
-
-    const baseline = statsOf(stats, player.id).units[head];
-
-    if (player.produceReadyAtTick === PRODUCTION_IDLE) {
-      player.produceReadyAtTick = asTickNumber(working.tick + baseline.produceTicks);
-      continue;
-    }
-
-    if (working.tick < player.produceReadyAtTick) continue;
-
-    // Потолок численности: производство встаёт на паузу, а очередь
-    // сохраняется. Энергия за неё уже уплачена, терять её игрок не должен.
-    if (livingUnitCount(working, player.id) >= UNIT_CAP) continue;
-
-    if (!spawnUnit(working, player, stats)) continue;
-
-    player.queue.shift();
-    player.produceReadyAtTick = PRODUCTION_IDLE;
   }
 };
 
@@ -197,6 +199,7 @@ const spawnUnit = (
   working: Working,
   player: WorkingPlayer,
   stats: readonly PlayerStats[],
+  taken: Set<number>,
 ): boolean => {
   const head = player.queue[0];
   if (head === undefined) return false;
@@ -204,8 +207,10 @@ const spawnUnit = (
   const base = findBase(working.structures, player.id);
   if (base === undefined) return false;
 
-  const cell = findFreeCellNear(working, base.cell, 8);
+  const cell = findFreeCellNear(working, base.cell, 8, taken);
   if (cell < 0) return false;
+
+  taken.add(cell);
 
   const centre = cellCentre(cell);
 

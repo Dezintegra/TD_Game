@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { StructureKind, TICKS_PER_SECOND, asPlayerId } from '@td/shared';
+import {
+  FIXED_POINT_SCALE,
+  MAP_CELL_COUNT,
+  STRUCTURE_STATS,
+  StructureKind,
+  TICKS_PER_SECOND,
+  Terrain,
+  asPlayerId,
+} from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import { createWorld, step } from '@td/sim';
+import { cellAt, cellIndex, cellX, cellY, createWorld, isInsideMap, step } from '@td/sim';
 import type { WorldState } from '@td/sim';
-import { createOpponent } from './opponent.js';
+import { approachOf, createOpponent } from './opponent.js';
 
 /**
  * Противник проверяется прогоном настоящего матча без всякого рендера.
@@ -108,6 +116,96 @@ describe('противник под управлением компьютера'
     expect(first.totalCommands).toBe(second.totalCommands);
     expect(first.world.units.length).toBe(second.world.units.length);
     expect(first.world.structures.length).toBe(second.world.structures.length);
+  });
+});
+
+describe('вероятный путь вражеских войск', () => {
+  const approach = approachOf(createWorld(SEED), AI_PLAYER);
+
+  it('вычисляется и не пуст', () => {
+    expect(approach).toBeDefined();
+
+    let count = 0;
+    for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+      if (approach?.onPath[cell] === 1) count += 1;
+    }
+
+    expect(count).toBeGreaterThan(0);
+  });
+
+  it('состоит только из проходимых клеток', () => {
+    const world = createWorld(SEED);
+
+    for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+      if (approach?.onPath[cell] !== 1) continue;
+
+      expect(world.map.cells[cell]).toBe(Terrain.Ground);
+    }
+  });
+});
+
+describe('размещение построек противника', () => {
+  const outcome = playMatch(180);
+  const approach = approachOf(createWorld(SEED), AI_PLAYER);
+
+  /** Есть ли в радиусе клетки хоть одна клетка вероятного пути. */
+  const coversPath = (cell: number, rangeCells: number): boolean => {
+    const cx = cellX(cell);
+    const cy = cellY(cell);
+
+    for (let dy = -rangeCells; dy <= rangeCells; dy += 1) {
+      for (let dx = -rangeCells; dx <= rangeCells; dx += 1) {
+        const x = cx + dx;
+        const y = cy + dy;
+        if (!isInsideMap(x, y)) continue;
+        if (approach?.onPath[cellIndex(x, y)] === 1) return true;
+      }
+    }
+
+    return false;
+  };
+
+  it('каждая башня накрывает вероятный путь', () => {
+    const towers = ownedBy(outcome.world, AI_PLAYER).buildings.filter(
+      (structure) => structure.kind !== StructureKind.Wall,
+    );
+    const range = Math.round(STRUCTURE_STATS[StructureKind.TowerBasic].range / FIXED_POINT_SCALE);
+
+    expect(towers.length).toBeGreaterThan(0);
+    for (const tower of towers) {
+      expect(coversPath(tower.cell, range)).toBe(true);
+    }
+  });
+});
+
+describe('генерал противника', () => {
+  it('не застревает надолго в одной клетке', () => {
+    const opponent = createOpponent(AI_PLAYER, SEED);
+    let world = createWorld(SEED);
+
+    let lastCell = -1;
+    let streak = 0;
+    let longest = 0;
+    const visited = new Set<number>();
+
+    for (let tick = 0; tick < 180 * TICKS_PER_SECOND; tick += 1) {
+      world = step(world, opponent.decide(world));
+
+      const general = world.generals[AI_PLAYER];
+      if (general === undefined || !general.alive) continue;
+
+      const cell = cellAt(general.position);
+      visited.add(cell);
+
+      streak = cell === lastCell ? streak + 1 : 0;
+      lastCell = cell;
+      if (streak > longest) longest = streak;
+    }
+
+    // Простоять на месте полминуты генерал может только упершись:
+    // цель у него всегда на проходимом пути, и дойти до неё он обязан.
+    expect(longest).toBeLessThan(30 * TICKS_PER_SECOND);
+    expect(visited.size).toBeGreaterThan(5);
   });
 });
 

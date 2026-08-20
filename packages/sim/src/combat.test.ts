@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAP_CELL_COUNT,
+  MAP_HEIGHT_CELLS,
+  MAP_WIDTH_CELLS,
   PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
+  Terrain,
   UNIT_STATS,
   UnitType,
   asEntityId,
@@ -26,7 +30,11 @@ import { cellCentre, cellIndex } from './map.js';
 const SEED = 909;
 
 /** Клетка вдали от обеих баз: там ничто не помешает расстановке. */
-const FIELD = cellIndex(48, 48);
+const FIELD_X = MAP_WIDTH_CELLS / 2;
+const FIELD_Y = MAP_HEIGHT_CELLS / 2;
+const FIELD = cellIndex(FIELD_X, FIELD_Y);
+
+const cellOffset = (dx: number, dy: number): number => cellIndex(FIELD_X + dx, FIELD_Y + dy);
 
 const at = (dx: number, dy: number): { x: number; y: number } => {
   const centre = cellCentre(FIELD);
@@ -60,17 +68,26 @@ const structure = (
   id: asEntityId(id),
   owner: asPlayerId(owner),
   kind,
-  cell: cellIndex(48 + dx, 48 + dy),
+  cell: cellOffset(dx, dy),
   health,
   growthPpm: PPM_ONE,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
 });
 
+/**
+ * Расстановка строится на карте без единой скалы.
+ *
+ * Расстояния здесь заданы числами, а генерация кладёт скалы куда угодно.
+ * После появления линии огня случайная скала между стрелком и целью
+ * отменяла бы выстрел, и тест ловил бы карту, а не правило боя. Скалы,
+ * если они нужны, ставятся явно.
+ */
 const arrange = (
   extraStructures: readonly StructureState[],
   units: readonly UnitState[],
   generalAt?: { x: number; y: number },
+  rocks: readonly number[] = [],
 ): WorldState => {
   const world = createWorld(SEED);
 
@@ -81,8 +98,12 @@ const arrange = (
           index === 0 ? { ...general, position: generalAt } : general,
         );
 
+  const cells = new Uint8Array(MAP_CELL_COUNT);
+  for (const cell of rocks) cells[cell] = Terrain.Rock;
+
   return {
     ...world,
+    map: { cells, baseCells: world.map.baseCells },
     structures: [...world.structures, ...extraStructures],
     units: [...units],
     generals,
@@ -164,6 +185,72 @@ describe('стрельба и урон', () => {
     // Десять тиков — это треть секунды, то есть не больше одного выстрела
     // при базовой скорострельности в выстрел в секунду.
     expect(damage).toBeLessThanOrEqual(attack);
+  });
+});
+
+describe('линия огня', () => {
+  it('башня стреляет поверх стены', () => {
+    const world = arrange(
+      [
+        structure(50, 0, StructureKind.TowerBasic, 0, 0, 200),
+        structure(51, 1, StructureKind.Wall, 1, 0, 10_000),
+      ],
+      [unit(60, 1, UnitType.Assault, 2, 0, 100)],
+    );
+
+    const after = step(world, []);
+
+    expect(unitById(after, 60)?.health).toBeLessThan(100);
+  });
+
+  it('юнит не стреляет сквозь стену', () => {
+    const world = arrange(
+      [structure(51, 1, StructureKind.Wall, 1, 0, 10_000)],
+      [unit(60, 1, UnitType.Assault, 2, 0, 100), unit(61, 0, UnitType.Assault, 0, 0, 10_000)],
+    );
+
+    const after = step(world, []);
+
+    expect(unitById(after, 60)?.health).toBe(100);
+  });
+
+  it('скала прячет юнита и от башни, и от юнита', () => {
+    const rock = [cellOffset(1, 0)];
+
+    const fromTower = step(
+      arrange(
+        [structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)],
+        [unit(60, 1, UnitType.Assault, 2, 0, 100)],
+        undefined,
+        rock,
+      ),
+      [],
+    );
+    const fromUnit = step(
+      arrange(
+        [],
+        [unit(60, 1, UnitType.Assault, 2, 0, 100), unit(61, 0, UnitType.Assault, 0, 0, 10_000)],
+        undefined,
+        rock,
+      ),
+      [],
+    );
+
+    expect(unitById(fromTower, 60)?.health).toBe(100);
+    expect(unitById(fromUnit, 60)?.health).toBe(100);
+  });
+
+  it('стена как цель обстреливается, а не прячет сама себя', () => {
+    const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
+
+    const world = arrange(
+      [structure(51, 1, StructureKind.Wall, 1, 0, wallHealth)],
+      [unit(61, 0, UnitType.Assault, 0, 0, 10_000)],
+    );
+
+    const after = step(world, []);
+
+    expect(structureById(after, 51)?.health).toBeLessThan(wallHealth);
   });
 });
 

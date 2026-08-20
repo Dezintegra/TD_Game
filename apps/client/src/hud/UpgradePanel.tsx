@@ -31,14 +31,32 @@ const panelStyle: CSSProperties = {
   position: 'absolute',
   right: 'var(--td-space-4)',
   bottom: 'var(--td-space-4)',
-  width: 260,
+  // Ширина под две колонки. В одну двадцать семь веток дают около восьмисот
+  // пикселей высоты и упираются в миникарту.
+  width: 400,
 };
 
+/**
+ * Список веток в две колонки и без прокрутки.
+ *
+ * Прокрутка тут была и оказалась ошибкой: выбор из списка, который надо
+ * сначала пролистать, в игре реального времени не делается — пока игрок
+ * листает, матч идёт.
+ *
+ * Многоколоночная раскладка, а не сетка из двух колонок: она сама
+ * выравнивает колонки по высоте, а сетка оставляла бы одну колонку
+ * заметно длиннее другой — группы у веток разного размера, от одной
+ * строки до пяти.
+ */
 const listStyle: CSSProperties = {
-  // Ограничение по высоте не даёт списку дорасти до миникарты.
-  maxHeight: '52vh',
-  overflowY: 'auto',
+  columnCount: 2,
+  columnGap: 'var(--td-space-4)',
   marginTop: 'var(--td-space-2)',
+};
+
+/** Группа не разрывается между колонками: разорванная читается как две разные. */
+const groupStyle: CSSProperties = {
+  breakInside: 'avoid',
 };
 
 const groupTitleStyle: CSSProperties = {
@@ -110,7 +128,7 @@ export const UpgradePanel = () => {
         {open && (
           <div style={listStyle}>
             {GROUPS.map((group) => (
-              <div key={group.target}>
+              <div key={group.target} style={groupStyle}>
                 <div style={groupTitleStyle}>{UPGRADE_GROUP[group.target]}</div>
                 {group.indices.map((index) => (
                   <Row key={index} index={index} />

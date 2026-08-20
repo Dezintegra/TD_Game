@@ -1,6 +1,7 @@
-import type { CSSProperties } from 'react';
+import type { CSSProperties, MouseEvent } from 'react';
 import { Panel } from '@td/ui';
 import { BUILDABLE_KINDS, StructureKind, UNIT_TYPES, UnitType } from '@td/shared';
+import { BATCH_ORDER_COUNT } from '../game/controls.js';
 import { matchCommands, useHudStore } from '../game/store.js';
 import { STRUCTURE_SHORT, UNIT_SHORT } from './labels.js';
 
@@ -54,7 +55,7 @@ interface TileProps {
   readonly affordable: boolean;
   readonly active?: boolean;
   readonly testId?: string;
-  readonly onSelect: () => void;
+  readonly onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
 }
 
 const Tile = ({ label, hotkey, cost, affordable, active, testId, onSelect }: TileProps) => (
@@ -110,7 +111,12 @@ export const ActionBar = () => {
               hotkey={UNIT_HOTKEY[type]}
               cost={match.unitCosts[type] ?? 0}
               affordable={match.energy >= (match.unitCosts[type] ?? 0)}
-              onSelect={() => matchCommands().train(type)}
+              // Ctrl или Shift — заказ пачки. Ядро проверит каждый заказ
+              // отдельно, поэтому «десять, когда хватает на четыре»
+              // превращается в четыре.
+              onSelect={(event) =>
+                matchCommands().train(type, event.ctrlKey || event.shiftKey ? BATCH_ORDER_COUNT : 1)
+              }
             />
           ))}
         </div>

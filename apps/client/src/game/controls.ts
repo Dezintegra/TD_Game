@@ -24,10 +24,19 @@ export interface ControlState {
   readonly hoverCell: number;
 }
 
+/**
+ * Сколько юнитов заказывает одно нажатие с зажатым Ctrl.
+ *
+ * Десять, а не двадцать: очередь вмещает двадцать заказов, и одно нажатие
+ * не должно забивать её целиком.
+ */
+export const BATCH_ORDER_COUNT = 10;
+
 export interface ControlHandlers {
   setDirection(direction: number): void;
   build(cell: number, kind: StructureKind): void;
-  train(unitType: UnitType): void;
+  /** Заказ юнита. `count` больше единицы — это пакет по Ctrl. */
+  train(unitType: UnitType, count: number): void;
   setTarget(cell: number): void;
   nuke(cell: number): void;
   pan(dx: number, dy: number): void;
@@ -171,7 +180,15 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
 
     const train = TRAIN_KEYS[event.code];
     if (train !== undefined) {
-      handlers.train(train);
+      // Пакет — это десять обычных заказов, а не отдельная команда. Ядро
+      // проверяет каждый по отдельности, поэтому «заказать десять, когда
+      // хватает на четыре» само собой превращается в четыре заказа.
+      //
+      // Модификаторов два, и это вынужденно. Ctrl с цифрой браузер
+      // оставляет себе — это переключение вкладок, и до страницы событие
+      // просто не доходит. Shift ничем не занят и работает всегда.
+      const batch = event.ctrlKey || event.shiftKey;
+      handlers.train(train, batch ? BATCH_ORDER_COUNT : 1);
       return;
     }
 

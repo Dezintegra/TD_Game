@@ -14,7 +14,14 @@ import {
   unitsToCells,
 } from '@td/shared';
 import type { Command, PlayerId, StructureKind as StructureKindType, UnitType } from '@td/shared';
-import { buildOccupancy, cellCentre, playerStats, rockPercent, upgradeCosts } from '@td/sim';
+import {
+  buildOccupancy,
+  cellAt,
+  cellCentre,
+  playerStats,
+  rockPercent,
+  upgradeCosts,
+} from '@td/sim';
 import type { Occupancy, WorldState } from '@td/sim';
 import { createGameLoop } from './loop.js';
 import { createNetClient } from './net.js';
@@ -133,10 +140,24 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
     tick: asTickNumber(loop.world.tick),
   });
 
+  /**
+   * Заказ пачки юнитов.
+   *
+   * Это `count` обычных команд заказа, а не одна команда «заказать пачку».
+   * Ядро проверяет каждую отдельно — цену, потолок очереди, — и лишние
+   * отклоняются молча. Отдельная команда потребовала бы дублировать
+   * эти проверки в частичном виде.
+   */
+  const train = (unitType: UnitType, count: number): void => {
+    for (let order = 0; order < count; order += 1) {
+      send({ kind: CommandKind.TrainUnit, ...at(), unitType });
+    }
+  };
+
   const controls = attachControls(host, {
     setDirection: (direction) => send({ kind: CommandKind.MoveGeneral, ...at(), direction }),
     build: (cell, structure) => send({ kind: CommandKind.Build, ...at(), cell, structure }),
-    train: (unitType) => send({ kind: CommandKind.TrainUnit, ...at(), unitType }),
+    train,
     setTarget: (cell) => send({ kind: CommandKind.SetTarget, ...at(), cell }),
     nuke: (cell) => send({ kind: CommandKind.LaunchNuke, ...at(), cell }),
     pan: (dx, dy) => scene.panBy(dx, dy),
@@ -171,8 +192,7 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
   };
 
   setMatchCommands({
-    train: (unitType) =>
-      send({ kind: CommandKind.TrainUnit, ...at(), unitType: unitType as UnitType }),
+    train: (unitType, count) => train(unitType as UnitType, count),
     setBuildKind: (kind) => controls.setBuildKind(kind as StructureKindType | null),
     toggleNukeAim: () => controls.setAimingNuke(!controls.state.aimingNuke),
     buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, ...at(), branch }),
@@ -234,6 +254,14 @@ const isHoverAllowed = (world: WorldState, state: ControlState, occupancy: Occup
 
   if (world.map.cells[state.hoverCell] !== Terrain.Ground) return false;
   if (occupancy.blocked[state.hoverCell] === 1) return false;
+
+  // Клетка с живым юнитом или генералом — чьим угодно — под постройку
+  // не годится. Проверка дублирует ядро намеренно: подсветка обязана
+  // покраснеть в том же кадре, в котором курсор наехал на клетку.
+  if (world.units.some((unit) => cellAt(unit.position) === state.hoverCell)) return false;
+  if (world.generals.some((entry) => entry.alive && cellAt(entry.position) === state.hoverCell)) {
+    return false;
+  }
 
   const stats = playerStats(player);
   if (player.energy < stats.structures[state.buildKind].cost) return false;

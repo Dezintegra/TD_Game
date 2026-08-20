@@ -189,21 +189,30 @@ export const drawPrism = (graphics: Graphics, prism: Prism, style: PrismStyle): 
  * так что их порядок внутри диагонали безразличен — и этим мы дальше
  * воспользуемся, чтобы группировать заливки.
  */
+export const diagonalCells = (
+  width: number,
+  height: number,
+  sum: number,
+): readonly (readonly [number, number])[] => {
+  const cells: (readonly [number, number])[] = [];
+
+  const startX = Math.max(0, sum - height + 1);
+  const endX = Math.min(sum, width - 1);
+
+  for (let x = startX; x <= endX; x += 1) {
+    cells.push([x, sum - x]);
+  }
+
+  return cells;
+};
+
 export const forEachDiagonal = (
   width: number,
   height: number,
   visitDiagonal: (cells: readonly (readonly [number, number])[]) => void,
 ): void => {
   for (let sum = 0; sum <= width + height - 2; sum += 1) {
-    const cells: (readonly [number, number])[] = [];
-
-    const startX = Math.max(0, sum - height + 1);
-    const endX = Math.min(sum, width - 1);
-
-    for (let x = startX; x <= endX; x += 1) {
-      cells.push([x, sum - x]);
-    }
-
+    const cells = diagonalCells(width, height, sum);
     if (cells.length > 0) visitDiagonal(cells);
   }
 };

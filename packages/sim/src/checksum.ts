@@ -50,7 +50,6 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, player.id);
     hash = mix(hash, player.energy);
     hash = mix(hash, player.targetStructure);
-    hash = mix(hash, player.produceReadyAtTick);
 
     for (const upgrade of player.upgrades) {
       hash = mix(hash, upgrade.level);

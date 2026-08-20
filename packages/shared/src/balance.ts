@@ -108,8 +108,6 @@ export interface UnitStats {
   /** Доля урона по постройкам, в процентах от обычного урона. */
   readonly structureDamagePercent: number;
   readonly cost: number;
-  /** Сколько тиков занимает производство одного юнита. */
-  readonly produceTicks: number;
 }
 
 /**
@@ -129,7 +127,6 @@ export const UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = {
     speed: BASE_SPEED_UNITS_PER_TICK, // ×1
     structureDamagePercent: 100, // ×1
     cost: BASE_UNIT_COST, // ×1
-    produceTicks: TICKS_PER_SECOND,
   },
   [UnitType.Sniper]: {
     label: 'Снайпер',
@@ -141,7 +138,6 @@ export const UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = {
     speed: BASE_SPEED_UNITS_PER_TICK, // ×1
     structureDamagePercent: 10, // ×0,1
     cost: BASE_UNIT_COST * 2, // ×2
-    produceTicks: Math.round(TICKS_PER_SECOND * 1.5),
   },
   [UnitType.Grenadier]: {
     label: 'Гранатомётчик',
@@ -155,7 +151,6 @@ export const UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = {
     speed: Math.round(BASE_SPEED_UNITS_PER_TICK * 0.3), // ×0,3
     structureDamagePercent: 100, // ×1
     cost: BASE_UNIT_COST * 10, // ×10
-    produceTicks: TICKS_PER_SECOND * 3,
   },
 };
 

@@ -1,7 +1,7 @@
 import type { Graphics } from 'pixi.js';
 import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS, Terrain } from '@td/shared';
 import type { GameMap } from '@td/sim';
-import { FACE_LIGHT, forEachDiagonal, shade } from './prism.js';
+import { FACE_LIGHT, diagonalCells, shade } from './prism.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 
@@ -162,7 +162,7 @@ const SOUTH = 2;
 const WEST = 3;
 
 /**
- * Отрисовка всех скал карты.
+ * Отрисовка скал одной диагонали карты.
  *
  * Здесь встречаются два требования, которые в лоб несовместимы.
  *
@@ -176,58 +176,69 @@ const WEST = 3;
  * заливок на диагональ вместо пяти на каждую скалу, и счёт зависит только
  * от размера карты, но не от количества скал на ней.
  *
+ * Диагональ — не только единица группировки заливок, но и единица слоя:
+ * каждая уезжает в свой объект `Graphics`, между которыми вклиниваются
+ * подвижные объекты. Иначе юнит за скалой рисовался бы поверх неё —
+ * слой сущностей целиком лежит над слоем территории, и алгоритм художника
+ * внутри каждого из них не спасает.
+ *
  * Внутри клетки порядок такой: сначала дальние скаты, затем верхняя
  * площадка, затем ближние. Дальние скаты видны только у пологих скал,
  * у крутых они закрыты вершиной — рисуем их всегда, лишнее просто
  * перекроется.
  */
-export const drawRocks = (graphics: Graphics, map: GameMap, colors: RockColors): void => {
+export const drawRockDiagonal = (
+  graphics: Graphics,
+  map: GameMap,
+  diagonal: number,
+  colors: RockColors,
+): void => {
+  const rocks = diagonalCells(MAP_WIDTH_CELLS, MAP_HEIGHT_CELLS, diagonal).filter(([x, y]) =>
+    isRock(map, x, y),
+  );
+  if (rocks.length === 0) return;
+
   const topColor = shade(colors.rock, FACE_LIGHT.top);
   const facetColor = shade(colors.facet, FACE_LIGHT.top);
   const rightColor = shade(colors.rock, FACE_LIGHT.right);
   const leftColor = shade(colors.rock, FACE_LIGHT.left);
   const backColor = shade(colors.rock, FACE_LIGHT.left * 0.8);
 
-  forEachDiagonal(MAP_WIDTH_CELLS, MAP_HEIGHT_CELLS, (cells) => {
-    const rocks = cells.filter(([x, y]) => isRock(map, x, y));
-    if (rocks.length === 0) return;
+  const shapes = rocks.map(([x, y]) => rockShape(x, y));
 
-    const shapes = rocks.map(([x, y]) => rockShape(x, y));
+  // Дальние скаты: обращены на север и запад, от зрителя.
+  for (const shape of shapes) {
+    slope(graphics, shape, NORTH, EAST);
+    slope(graphics, shape, WEST, NORTH);
+  }
+  graphics.fill({ color: backColor });
 
-    // Дальние скаты: обращены на север и запад, от зрителя.
-    for (const shape of shapes) {
-      slope(graphics, shape, NORTH, EAST);
-      slope(graphics, shape, WEST, NORTH);
-    }
-    graphics.fill({ color: backColor });
+  // Ближний правый скат.
+  for (const shape of shapes) slope(graphics, shape, EAST, SOUTH);
+  graphics.fill({ color: rightColor });
 
-    // Ближний правый скат.
-    for (const shape of shapes) slope(graphics, shape, EAST, SOUTH);
-    graphics.fill({ color: rightColor });
+  // Ближний левый скат.
+  for (const shape of shapes) slope(graphics, shape, SOUTH, WEST);
+  graphics.fill({ color: leftColor });
 
-    // Ближний левый скат.
-    for (const shape of shapes) slope(graphics, shape, SOUTH, WEST);
-    graphics.fill({ color: leftColor });
+  // Верхняя площадка. У острых пиков вырождена в точку и не видна.
+  for (const shape of shapes) polygon(graphics, shape.top);
+  graphics.fill({ color: topColor });
 
-    // Верхняя площадка. У острых пиков вырождена в точку и не видна.
-    for (const shape of shapes) polygon(graphics, shape.top);
-    graphics.fill({ color: topColor });
+  // Скол на верхней площадке: половина её, залитая другим оттенком.
+  // Даёт фактуру камня там, где площадка достаточно велика.
+  for (const shape of shapes) {
+    const [north, east, south] = shape.top;
+    if (north && east && south) polygon(graphics, [north, east, south]);
+  }
+  graphics.fill({ color: facetColor });
 
-    // Скол на верхней площадке: половина её, залитая другим оттенком.
-    // Даёт фактуру камня там, где площадка достаточно велика.
-    for (const shape of shapes) {
-      const [north, east, south] = shape.top;
-      if (north && east && south) polygon(graphics, [north, east, south]);
-    }
-    graphics.fill({ color: facetColor });
-
-    // Рёбра. Именно они отделяют скалу от соседней: без обводки массив
-    // сливается в одно пятно, потому что все скаты одного цвета.
-    for (const shape of shapes) {
-      slope(graphics, shape, EAST, SOUTH);
-      slope(graphics, shape, SOUTH, WEST);
-      polygon(graphics, shape.top);
-    }
-    graphics.stroke({ width: 1, color: colors.edge, alpha: 0.55 });
-  });
+  // Рёбра. Именно они отделяют скалу от соседней: без обводки массив
+  // сливается в одно пятно, потому что все скаты одного цвета.
+  for (const shape of shapes) {
+    slope(graphics, shape, EAST, SOUTH);
+    slope(graphics, shape, SOUTH, WEST);
+    polygon(graphics, shape.top);
+  }
+  graphics.stroke({ width: 1, color: colors.edge, alpha: 0.55 });
 };

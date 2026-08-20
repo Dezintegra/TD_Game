@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CommandKind,
+  MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   StructureKind,
   UPGRADE_BRANCHES,
@@ -100,13 +101,15 @@ const scriptedCommands = (tick: number): Command[] => {
     }
 
     // Ядерный удар в середину карты — единственная точка, гарантированно
-    // лежащая вне запретной зоны обеих баз.
+    // лежащая вне запретной зоны обеих баз. Координаты считаются от размера
+    // карты, а не вписаны числом: карта уже однажды меняла размер, и тогда
+    // вписанная точка молча уехала за её край, а удар — в никуда.
     if (tick === 900 + player * 30) {
       commands.push({
         kind: CommandKind.LaunchNuke,
         player: asPlayerId(player),
         tick: asTickNumber(tick),
-        cell: cellIndex(48, 48),
+        cell: cellIndex(MAP_WIDTH_CELLS / 2, MAP_HEIGHT_CELLS / 2),
       });
     }
   }
@@ -128,11 +131,12 @@ describe('детерминизм симуляции', () => {
   });
 
   it('совпадает с эталонной контрольной суммой', () => {
-    // Эталон вычислен на реализации боевого ядра из изменения
-    // add-combat-and-ai. Меняйте его ТОЛЬКО вместе с намеренным
+    // Эталон вычислен на правилах из изменения refine-combat-and-view:
+    // карта 48 × 48, линия огня, остановка юнита на встречном противнике,
+    // производство без отката. Меняйте его ТОЛЬКО вместе с намеренным
     // изменением игровых правил, и тем же коммитом — тогда история
     // баланса видна в diff.
-    const GOLDEN_CHECKSUM = 1657636765;
+    const GOLDEN_CHECKSUM = 1238608979;
 
     expect(runGolden()).toBe(GOLDEN_CHECKSUM);
   });

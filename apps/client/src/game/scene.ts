@@ -5,10 +5,10 @@ import { cellIndex } from '@td/sim';
 import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, createCamera, moveCamera } from './camera.js';
 import type { Camera } from './camera.js';
-import { drawTerrain } from './terrain.js';
+import { TERRAIN_DIAGONAL_COUNT, drawGround, drawTerrainDiagonal } from './terrain.js';
 import type { TerrainColors } from './terrain.js';
 import { drawEntities } from './entities.js';
-import type { EntityColors, ViewBounds } from './entities.js';
+import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { drawOverlays } from './overlays.js';
 import type { OverlayColors, OverlayIntent } from './overlays.js';
 import {
@@ -29,15 +29,40 @@ import type { CellPoint } from './iso.js';
  * времени. PixiJS рисует через WebGL и держит тысячи объектов на стабильных
  * 60 кадрах.
  *
- * Слоёв четыре, и разделены они по частоте изменения, а не по смыслу:
+ * Слои разделены по частоте изменения:
  *
- *   территория  — перестраивается при смене карты, то есть почти никогда;
+ *   земля       — перестраивается при смене карты, то есть почти никогда;
+ *   территория  — то же самое, но разложена по диагоналям;
  *   сущности    — каждый кадр;
+ *   трассеры    — каждый кадр, поверх всех тел;
  *   подсказки   — каждый кадр, но зависят от намерения игрока, а не мира;
  *   миникарта   — несколько раз в секунду и в экранных координатах.
  *
  * Разделение по частоте важнее разделения по смыслу: слой, который
  * не изменился, не должен платить за соседа, который изменился.
+ *
+ * Но одного разделения по частоте мало. Первая версия держала всю
+ * территорию одним слоем под слоем сущностей, и юнит за скалой рисовался
+ * поверх неё: порядок «ближний перекрывает дальнего» действовал внутри
+ * каждого слоя и не действовал между ними.
+ *
+ * Поэтому территория и сущности чередуются по полосам глубины. Слой
+ * территории с номером `d` содержит клетки диагонали `x + y = d`, то есть
+ * объекты глубины ровно `d + 1`. Слой сущностей с номером `k` собирает
+ * объекты глубины из полуинтервала `[k, k + 1)`. Выставленные в порядке
+ *
+ *   сущности[0], территория[0], сущности[1], территория[1], ...
+ *
+ * они дают ровно тот порядок, который нужен: сущности слоя `d` дальше
+ * скалы диагонали `d` и рисуются раньше неё, сущности слоя `d + 1` ближе
+ * и рисуются позже.
+ *
+ * Совпадение глубины возможно только у объектов одной диагонали, а такие
+ * в аксонометрии стоят на экране бок о бок и не перекрываются вовсе —
+ * их взаимный порядок безразличен.
+ *
+ * Геометрия территории при этом по-прежнему строится один раз на карту:
+ * разложить её по слоям — не то же самое, что перестраивать её на кадре.
  *
  * Цвета берутся из тех же дизайн-токенов, что и HUD, — читаются из CSS.
  * Так палитра остаётся в одном месте, а не расползается по двум рендерерам.
@@ -144,10 +169,63 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   host.appendChild(app.canvas);
 
   const worldContainer = new Container();
-  const terrainGraphics = new Graphics();
-  const entityGraphics = new Graphics();
+
+  const groundGraphics = new Graphics();
+  worldContainer.addChild(groundGraphics);
+
+  // Слоёв получается около четырёхсот. Это дёшево: пустой Graphics ничего
+  // не рисует, а обход четырёхсот детей на кадр не измеряется. Заливок
+  // при этом не прибавляется ни одной — они просто разъехались по разным
+  // объектам.
+  const terrainBands: Graphics[] = [];
+  const entityBands: Graphics[] = [];
+
+  for (let band = 0; band <= TERRAIN_DIAGONAL_COUNT; band += 1) {
+    const entities = new Graphics();
+    entityBands.push(entities);
+    worldContainer.addChild(entities);
+
+    if (band < TERRAIN_DIAGONAL_COUNT) {
+      const terrain = new Graphics();
+      terrainBands.push(terrain);
+      worldContainer.addChild(terrain);
+    }
+  }
+
+  const shotGraphics = new Graphics();
   const overlayGraphics = new Graphics();
-  worldContainer.addChild(terrainGraphics, entityGraphics, overlayGraphics);
+  worldContainer.addChild(shotGraphics, overlayGraphics);
+
+  /**
+   * Слои сущностей, в которые что-то попало на прошлом кадре.
+   *
+   * Очищаются только они. Обходить все четыреста ради полудюжины занятых
+   * значило бы платить за пустоту каждый кадр.
+   */
+  const usedBands: number[] = [];
+  const bandUsed = new Uint8Array(entityBands.length);
+
+  const layers: EntityLayers = {
+    band(index) {
+      if (bandUsed[index] === 0) {
+        bandUsed[index] = 1;
+        usedBands.push(index);
+      }
+      // Полоса гарантированно существует: её номер уже прижат к диапазону
+      // на стороне отрисовки сущностей.
+      return entityBands[index] as Graphics;
+    },
+    shots: shotGraphics,
+  };
+
+  const clearEntityBands = (): void => {
+    for (const band of usedBands) {
+      entityBands[band]?.clear();
+      bandUsed[band] = 0;
+    }
+    usedBands.length = 0;
+    shotGraphics.clear();
+  };
 
   // Миникарта живёт в экранных координатах, поэтому лежит не в мировом
   // контейнере, а прямо на сцене: сдвиг камеры её двигать не должен.
@@ -218,12 +296,16 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
       currentMap = map;
       terrainRebuildCount += 1;
-      drawTerrain(terrainGraphics, map, terrainColors);
+      drawGround(groundGraphics, terrainColors);
+      terrainBands.forEach((graphics, diagonal) => {
+        drawTerrainDiagonal(graphics, map, diagonal, terrainColors);
+      });
       drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
     },
 
     render(world, localPlayer, intent) {
-      drawEntities(entityGraphics, world, viewBounds(), entityColors, localPlayer);
+      clearEntityBands();
+      drawEntities(layers, world, viewBounds(), entityColors, localPlayer);
       drawOverlays(overlayGraphics, world, localPlayer, intent, overlayColors);
 
       frame += 1;

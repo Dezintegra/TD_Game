@@ -37,9 +37,6 @@ export interface UpgradeState {
   readonly costPpm: number;
 }
 
-/** Значение, означающее «производство простаивает». */
-export const PRODUCTION_IDLE = asTickNumber(-1);
-
 export interface PlayerState {
   readonly id: PlayerId;
   /** Энергия во внутренних единицах. См. ENERGY_SCALE в balance.ts. */
@@ -53,10 +50,15 @@ export interface PlayerState {
   readonly purchasePpm: readonly number[];
   /** Постройка, назначенная общей целью для всех юнитов игрока. */
   readonly targetStructure: EntityId;
-  /** Очередь производства. Энергия за эти заказы уже списана. */
+  /**
+   * Очередь производства. Энергия за эти заказы уже списана.
+   *
+   * Отката у производства нет, поэтому в обычном тике очередь пуста:
+   * заказанное выходит на карту немедленно. Непустой она остаётся
+   * только тогда, когда достигнут потолок численности или вокруг базы
+   * нет свободной клетки.
+   */
   readonly queue: readonly UnitType[];
-  /** Когда будет готов юнит из головы очереди, или PRODUCTION_IDLE. */
-  readonly produceReadyAtTick: TickNumber;
 }
 
 export interface StructureState {
@@ -250,7 +252,6 @@ export const createWorld = (seed: number): WorldState => {
     // которая заведомо существует с первого тика.
     targetStructure: structures[1 - index]?.id ?? NO_ENTITY,
     queue: [],
-    produceReadyAtTick: PRODUCTION_IDLE,
   }));
 
   return {

@@ -13,7 +13,8 @@ import {
   growPpm,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
-import { cellCentre, squaredDistanceToFootprint } from './map.js';
+import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
+import { hasLineOfSight } from './sight.js';
 import { statsOf, structureAttack, structureMaxHealth } from './stats.js';
 import type { PlayerStats } from './stats.js';
 import { recordShot } from './working.js';
@@ -180,6 +181,26 @@ const consider = (best: Candidate, target: Target, distance: number, id: number)
   best.id = id;
 };
 
+/** Видно ли точку из точки. Обёртка вокруг линии огня для живых целей. */
+const seesPoint = (working: Working, elevated: boolean, origin: Vec2, point: Vec2): boolean =>
+  hasLineOfSight(working.sight, elevated, origin, point, cellAt(point), 0);
+
+/** Видно ли постройку. Всё её основание для линии огня прозрачно. */
+export const seesStructure = (
+  working: Working,
+  elevated: boolean,
+  origin: Vec2,
+  structure: WorkingStructure,
+): boolean =>
+  hasLineOfSight(
+    working.sight,
+    elevated,
+    origin,
+    cellCentre(structure.cell),
+    structure.cell,
+    STRUCTURE_STATS[structure.kind].footprintRadius,
+  );
+
 /**
  * Выбор цели по приоритету:
  *   1) назначенная общая цель игрока, если она в радиусе;
@@ -188,6 +209,10 @@ const consider = (best: Candidate, target: Target, distance: number, id: number)
  *   4) любая вражеская постройка.
  *
  * Первые два пункта — намеренная цель, остальные — то, что подвернулось.
+ *
+ * На каждом пункте цель обязана быть видимой: расстояния мало, нужна ещё
+ * и свободная линия. Проверка стоит обхода нескольких клеток и делается
+ * последней — после отсева по расстоянию, который куда дешевле.
  */
 export const chooseTarget = (
   working: Working,
@@ -197,6 +222,8 @@ export const chooseTarget = (
   range: number,
   globalTargetIndex: number,
   blockedBy: number,
+  /** Стрелок выше стен: башня или база. Юнит и генерал — нет. */
+  elevated: boolean,
 ): Target | undefined => {
   if (range <= 0) return undefined;
 
@@ -205,8 +232,9 @@ export const chooseTarget = (
   const structureInReach = (index: number): boolean => {
     const structure = working.structures[index];
     if (structure === undefined || !structure.alive || structure.owner === owner) return false;
+    if (structureDistance(origin, structure) > reach) return false;
 
-    return structureDistance(origin, structure) <= reach;
+    return seesStructure(working, elevated, origin, structure);
   };
 
   if (globalTargetIndex >= 0 && structureInReach(globalTargetIndex)) {
@@ -225,6 +253,10 @@ export const chooseTarget = (
 
     const distance = squaredDistance(origin, { x: unit.x, y: unit.y });
     if (distance > reach) return;
+    // Ничью по расстоянию мы всё равно разрешим по идентификатору,
+    // поэтому кандидата хуже текущего отсеиваем до проверки линии.
+    if (best.target !== undefined && distance > best.distance) return;
+    if (!seesPoint(working, elevated, origin, { x: unit.x, y: unit.y })) return;
 
     consider(best, { kind: TargetKind.Unit, index }, distance, unit.id);
   });
@@ -234,6 +266,7 @@ export const chooseTarget = (
 
     const distance = squaredDistance(origin, { x: general.x, y: general.y });
     if (distance > reach) return;
+    if (!seesPoint(working, elevated, origin, { x: general.x, y: general.y })) return;
 
     // Генералы идут после юнитов при равном расстоянии: идентификатор
     // берётся заведомо большой, чтобы толпа юнитов не расступалась,
@@ -253,11 +286,62 @@ export const chooseTarget = (
 
     const distance = structureDistance(origin, structure);
     if (distance > reach) return;
+    if (best.target !== undefined && distance > best.distance) return;
+    if (!seesStructure(working, elevated, origin, structure)) return;
 
     consider(best, { kind: TargetKind.Structure, index }, distance, structure.id);
   });
 
   return best.target;
+};
+
+/**
+ * Есть ли в радиусе живой противник, по которому можно стрелять.
+ *
+ * Нужен движению: юнит останавливается, встретив противника, но только
+ * такого, до которого дострелит. Без проверки линии юнит замирал бы перед
+ * стеной, за которой стоит недосягаемый враг, и стоял бы там до конца
+ * матча.
+ *
+ * Индекс сюда передаётся построенный ДО движения — по положениям
+ * на начало тика. Иначе ответ зависел бы от того, кто в массиве юнитов
+ * идёт раньше, а от порядка перебора в детерминированном ядре зависеть
+ * не должно ничего.
+ */
+export const hasHostileInSight = (
+  working: Working,
+  units: SpatialIndex,
+  owner: PlayerId,
+  origin: Vec2,
+  range: number,
+): boolean => {
+  if (range <= 0) return false;
+
+  const reach = range * range;
+  let found = false;
+
+  forEachNear(units, origin, range, (index) => {
+    if (found) return;
+
+    const unit = working.units[index];
+    if (unit === undefined || !unit.alive || unit.owner === owner) return;
+    if (squaredDistance(origin, { x: unit.x, y: unit.y }) > reach) return;
+    if (!seesPoint(working, false, origin, { x: unit.x, y: unit.y })) return;
+
+    found = true;
+  });
+
+  if (found) return true;
+
+  for (const general of working.generals) {
+    if (!general.alive || general.owner === owner) continue;
+    if (squaredDistance(origin, { x: general.x, y: general.y }) > reach) continue;
+    if (!seesPoint(working, false, origin, { x: general.x, y: general.y })) continue;
+
+    return true;
+  }
+
+  return false;
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -523,6 +607,9 @@ const fireStructure = (
     baseline.range,
     globalTarget,
     -1,
+    // Башня и база выше стены и стреляют поверх неё. Именно это делает
+    // стену перед башней укреплением, а не просто занятой клеткой.
+    true,
   );
   if (target === undefined) return;
 
@@ -560,6 +647,7 @@ const fireUnit = (
     baseline.range,
     globalTarget,
     unit.blockedBy,
+    false,
   );
   if (target === undefined) return;
 
@@ -597,6 +685,7 @@ const fireGeneral = (
     baseline.range,
     globalTarget,
     -1,
+    false,
   );
   if (target === undefined) return;
 

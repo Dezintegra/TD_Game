@@ -5,6 +5,8 @@ import { cellCentre } from './map.js';
 import type { GameMap } from './map.js';
 import { buildOccupancy } from './occupancy.js';
 import type { Occupancy } from './occupancy.js';
+import { buildSightGrid } from './sight.js';
+import type { SightGrid } from './sight.js';
 import type { RngState } from './prng.js';
 import type { NavField, PlayerState, ShotState, UpgradeState, WorldState } from './world.js';
 
@@ -33,7 +35,6 @@ export interface WorkingPlayer {
   purchasePpm: number[];
   targetStructure: EntityId;
   queue: UnitType[];
-  produceReadyAtTick: TickNumber;
 }
 
 export interface WorkingStructure {
@@ -99,6 +100,8 @@ export interface Working {
   winner: PlayerId | null;
   /** Сетка занятости. Перестраивается, когда набор построек изменился. */
   occupancy: Occupancy;
+  /** Сетки непрозрачности для линии огня. Живут по тем же правилам. */
+  sight: SightGrid;
   /**
    * Постройки погибли и сетку занятости пора пересобрать.
    *
@@ -121,7 +124,6 @@ export const toWorking = (state: WorldState): Working => ({
     purchasePpm: [...player.purchasePpm],
     targetStructure: player.targetStructure,
     queue: [...player.queue],
-    produceReadyAtTick: player.produceReadyAtTick,
   })),
   structures: state.structures.map((structure) => ({
     id: structure.id,
@@ -162,21 +164,23 @@ export const toWorking = (state: WorldState): Working => ({
   nextEntityId: state.nextEntityId,
   winner: state.winner,
   occupancy: buildOccupancy(state.map, state.structures),
+  sight: buildSightGrid(state.map, state.structures),
   structuresDirty: false,
 });
 
 /**
- * Пересборка сетки занятости.
+ * Пересборка сеток, производных от набора построек: занятости и
+ * непрозрачности.
  *
  * Вызывается после любого изменения набора построек: постройки,
- * разрушения, ядерного удара. Стоит один обход карты — дешевле, чем
- * поддерживать сетку инкрементально и аккуратно откатывать.
+ * разрушения, ядерного удара. Стоит два обхода карты — дешевле, чем
+ * поддерживать сетки инкрементально и аккуратно откатывать.
  */
 export const refreshOccupancy = (working: Working): void => {
-  working.occupancy = buildOccupancy(
-    working.map,
-    working.structures.filter((structure) => structure.alive),
-  );
+  const alive = working.structures.filter((structure) => structure.alive);
+
+  working.occupancy = buildOccupancy(working.map, alive);
+  working.sight = buildSightGrid(working.map, alive);
 };
 
 /**
@@ -216,7 +220,6 @@ const toPlayerState = (player: WorkingPlayer): PlayerState => ({
   purchasePpm: player.purchasePpm,
   targetStructure: player.targetStructure,
   queue: player.queue,
-  produceReadyAtTick: player.produceReadyAtTick,
 });
 
 /**

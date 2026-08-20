@@ -90,7 +90,6 @@ export interface UnitBaseline {
   readonly speed: number;
   readonly structureDamagePercent: number;
   readonly cost: number;
-  readonly produceTicks: number;
 }
 
 export interface StructureBaseline {
@@ -145,7 +144,6 @@ const unitBaseline = (player: PlayerState, type: UnitType): UnitBaseline => {
     speed: applyPpm(base.speed, effectPpm(player, target, UpgradeStat.Speed)),
     structureDamagePercent: base.structureDamagePercent,
     cost: purchaseCost(player, target, base.cost),
-    produceTicks: base.produceTicks,
   };
 };
 

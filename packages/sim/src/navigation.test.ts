@@ -81,19 +81,23 @@ describe('поле расстояний', () => {
 
   it('обходит препятствие, а не проходит сквозь', () => {
     const occupancy = emptyOccupancy();
-    // Стена по вертикали x = 5, с проходом в одной клетке.
+    // Стена по вертикали x = 5 с единственным проходом посреди карты.
+    // Координаты считаются от размера карты, а не вписаны числами:
+    // при уменьшении карты вписанные молча уехали бы за её край.
+    const gapY = MAP_HEIGHT_CELLS / 2;
+
     for (let y = 0; y < MAP_HEIGHT_CELLS; y += 1) {
-      if (y === 48) continue;
+      if (y === gapY) continue;
       occupancy.blocked[cellIndex(5, y)] = 1;
     }
 
     const distances = dijkstraField(uniformCost(occupancy.blocked), [cellIndex(10, 10)]);
 
-    // До клетки за стеной путь есть, но он длиннее прямой линии:
-    // приходится сделать крюк к единственному проходу на y = 48.
+    // До клетки за стеной путь есть, но он много длиннее прямой линии
+    // в десять клеток: приходится сделать крюк к единственному проходу.
     const behind = distances[cellIndex(0, 10)] ?? UNREACHABLE;
     expect(behind).not.toBe(UNREACHABLE);
-    expect(behind).toBeGreaterThan(38);
+    expect(behind).toBeGreaterThan(20);
   });
 
   it('не пропускает сквозь диагональный стык', () => {
@@ -110,10 +114,19 @@ describe('поле расстояний', () => {
 });
 
 describe('пролом преград', () => {
+  // Ряд, на котором стоят старт и цель, и два прохода на равном удалении
+  // от него: слабый выше, прочный ниже. Считается от размера карты.
+  const MIDDLE_Y = MAP_HEIGHT_CELLS / 2;
+  const GAP_OFFSET = 8;
+  const WEAK_Y = MIDDLE_Y - GAP_OFFSET;
+  const STRONG_Y = MIDDLE_Y + GAP_OFFSET;
+
+  const START = cellIndex(0, MIDDLE_Y);
+
   /**
    * Карта: сплошная стена по вертикали x = 5 из вражеских построек.
-   * Два прохода на равном удалении от старта и от цели: слабый на y = 40
-   * и прочный на y = 56. Обычного пути до цели нет вовсе.
+   * Два прохода на равном удалении от старта и от цели: слабый и прочный.
+   * Обычного пути до цели нет вовсе.
    */
   const sealedWorld = (): {
     occupancy: Occupancy;
@@ -127,12 +140,12 @@ describe('пролом преград', () => {
       const cell = cellIndex(5, y);
       occupancy.blocked[cell] = 1;
 
-      if (y === 40) {
+      if (y === WEAK_Y) {
         occupancy.structureAt[cell] = structures.length;
         structures.push(structure(structures.length, ENEMY, cell, StructureKind.Wall, 100));
         continue;
       }
-      if (y === 56) {
+      if (y === STRONG_Y) {
         occupancy.structureAt[cell] = structures.length;
         structures.push(structure(structures.length, ENEMY, cell, StructureKind.Wall, 3000));
         continue;
@@ -140,7 +153,7 @@ describe('пролом преград', () => {
       // Остальная стена — скала: непроходима и неразрушима.
     }
 
-    const targetCell = cellIndex(10, 48);
+    const targetCell = cellIndex(10, MIDDLE_Y);
     const target = structure(structures.length, ENEMY, targetCell, StructureKind.TowerBasic, 200);
     structures.push(target);
     occupancy.blocked[targetCell] = 1;
@@ -154,7 +167,7 @@ describe('пролом преград', () => {
 
     const field = buildNavField(occupancy, structures, ME, target, 1, asTickNumber(0));
 
-    expect(field.walk[cellIndex(0, 48)]).toBe(UNREACHABLE);
+    expect(field.walk[START]).toBe(UNREACHABLE);
   });
 
   it('поле пролома находит путь и предпочитает слабую преграду', () => {
@@ -162,17 +175,19 @@ describe('пролом преград', () => {
 
     const field = buildNavField(occupancy, structures, ME, target, 1, asTickNumber(0));
 
-    expect(field.breach[cellIndex(0, 48)]).not.toBe(UNREACHABLE);
+    expect(field.breach[START]).not.toBe(UNREACHABLE);
     // Подход к слабой преграде обходится дешевле, чем к прочной,
     // хотя расстояния до них от цели одинаковы.
-    expect(field.breach[cellIndex(4, 40)] ?? 0).toBeLessThan(field.breach[cellIndex(4, 56)] ?? 0);
+    expect(field.breach[cellIndex(4, WEAK_Y)] ?? 0).toBeLessThan(
+      field.breach[cellIndex(4, STRONG_Y)] ?? 0,
+    );
   });
 
   it('юнит доходит до слабой преграды и упирается именно в неё', () => {
     const { occupancy, structures, target } = sealedWorld();
     const field = buildNavField(occupancy, structures, ME, target, 1, asTickNumber(0));
 
-    let cell = cellIndex(0, 48);
+    let cell = START;
     let blocker = NO_STRUCTURE;
 
     for (let guard = 0; guard < 200 && blocker === NO_STRUCTURE; guard += 1) {
@@ -184,7 +199,7 @@ describe('пролом преград', () => {
     }
 
     expect(blocker).not.toBe(NO_STRUCTURE);
-    expect(structures[blocker]?.cell).toBe(cellIndex(5, 40));
+    expect(structures[blocker]?.cell).toBe(cellIndex(5, WEAK_Y));
   });
 
   it('свои постройки юнит не ломает', () => {
@@ -197,7 +212,7 @@ describe('пролом преград', () => {
 
     const field = buildNavField(occupancy, mine, ME, target, 1, asTickNumber(0));
 
-    expect(field.breach[cellIndex(0, 48)]).toBe(UNREACHABLE);
+    expect(field.breach[START]).toBe(UNREACHABLE);
   });
 });
 

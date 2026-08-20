@@ -9,6 +9,7 @@ import {
   PPM_ONE,
   PRODUCTION_QUEUE_CAP,
   PURCHASE_INFLATION_PERCENT,
+  STRUCTURE_STATS,
   STRUCTURE_UPGRADE_TARGET,
   StructureKind,
   Terrain,
@@ -24,12 +25,13 @@ import {
   isValidDirection,
 } from '@td/shared';
 import type { Command, PlayerId, UnitType } from '@td/shared';
-import { cellCentre } from './map.js';
-import { NO_STRUCTURE } from './occupancy.js';
-import { playerStats, structureMaxHealth, upgradeCostOf } from './stats.js';
+import { killGeneral } from './combat.js';
+import { cellAt, cellCentre } from './map.js';
+import { NO_STRUCTURE, footprintCells } from './occupancy.js';
+import { allPlayerStats, playerStats, structureMaxHealth, upgradeCostOf } from './stats.js';
 import type { PlayerStats } from './stats.js';
 import { invalidateNavigation, refreshOccupancy } from './working.js';
-import type { Working, WorkingPlayer } from './working.js';
+import type { Working, WorkingGeneral, WorkingPlayer, WorkingUnit } from './working.js';
 
 /**
  * Применение команд.
@@ -109,6 +111,24 @@ const build = (
   if (working.map.cells[cell] !== Terrain.Ground) return;
   if (working.occupancy.blocked[cell] === 1) return;
 
+  const footprint = footprintCells(cell, STRUCTURE_STATS[kind].footprintRadius);
+
+  // И по живым — юнитам и генералам, чьим угодно.
+  //
+  // Разрешить постройку поверх вражеского юнита значило бы выдать генералу
+  // оружие, которое убивает мгновенно, бьёт без промаха и стоит дешевле
+  // снайпера. Запрет разворачивает это в обратную сторону: наступающий
+  // юнит мешает стройке одним своим присутствием, и его сначала надо
+  // прогнать.
+  //
+  // Генералы в этом правиле не для симметрии. Строитель стоит внутри
+  // собственного радиуса строительства, то есть первый кандидат на постройку
+  // — клетка под ним самим. Без запрета генерал замуровывал себя же:
+  // клетка становилась непроходимой, а он оставался в ней, и ни один шаг
+  // из неё уже не проходил проверку занятости. Ровно так противник
+  // под управлением компьютера и застревал до конца матча.
+  if (livingInside(working, footprint).length > 0) return;
+
   const general = working.generals.find((entry) => entry.owner === player.id);
   if (general === undefined || !general.alive) return;
 
@@ -143,8 +163,43 @@ const build = (
 
   working.nextEntityId += 1;
 
+  // Страховка инварианта «живое не находится в непроходимой клетке».
+  //
+  // При выполненной проверке выше сюда попасть нельзя: основание стены
+  // и башни равно одной клетке, а её мы и проверили. Правило существует
+  // на случай, когда инвариант нарушится по другой причине — появится
+  // постройка с основанием крупнее клетки или поменяется порядок этапов
+  // тика. Результатом тогда будет гибель, а не запертый в стене навсегда
+  // юнит.
+  //
+  // Генерал в этом случае не гибнет насовсем: он возрождается на базе,
+  // так что даже сработавшая страховка стоит ему позиции и времени,
+  // а не матча.
+  for (const entity of livingInside(working, footprint)) {
+    if ('unitType' in entity) {
+      entity.alive = false;
+      continue;
+    }
+
+    killGeneral(working, allPlayerStats(working.players), entity);
+  }
+
   refreshOccupancy(working);
   invalidateNavigation(working);
+};
+
+/** Живые юниты и генералы, стоящие в перечисленных клетках. Чьи угодно. */
+const livingInside = (
+  working: Working,
+  cells: readonly number[],
+): readonly (WorkingUnit | WorkingGeneral)[] => {
+  const inside = new Set(cells);
+  const standing = (entity: { x: number; y: number }): boolean => inside.has(cellAt(entity));
+
+  return [
+    ...working.units.filter((unit) => unit.alive && standing(unit)),
+    ...working.generals.filter((general) => general.alive && standing(general)),
+  ];
 };
 
 const trainUnit = (working: Working, player: WorkingPlayer, unitType: UnitType): void => {

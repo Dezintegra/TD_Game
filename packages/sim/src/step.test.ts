@@ -3,6 +3,8 @@ import {
   BASE_INCOME_PER_TICK,
   CommandKind,
   GENERAL_KILL_REWARD,
+  MAP_CELL_COUNT,
+  MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   NUKE_COST,
   NUKE_DELAY_TICKS,
@@ -23,7 +25,7 @@ import { createWorld } from './world.js';
 import type { PlayerState, WorldState } from './world.js';
 import { step } from './step.js';
 import { checksum } from './checksum.js';
-import { cellCentre, cellIndex } from './map.js';
+import { cellAt, cellCentre, cellIndex } from './map.js';
 import { buildOccupancy } from './occupancy.js';
 import { playerStats } from './stats.js';
 
@@ -187,7 +189,10 @@ describe('строительство', () => {
 
   it('не ставит постройку вне радиуса строительства', () => {
     const world = richWorld();
-    const far = cellIndex(48, 48);
+    // Противоположный угол карты: заведомо вне радиуса и при этом внутри
+    // карты — иначе команду отклонила бы проверка индекса, а не радиуса,
+    // и тест охранял бы не то правило.
+    const far = cellIndex(MAP_WIDTH_CELLS - 5, MAP_HEIGHT_CELLS - 5);
     const before = world.players[0]?.energy ?? 0;
 
     const after = step(world, [build(0, far, StructureKind.Wall)]);
@@ -270,33 +275,30 @@ describe('строительство', () => {
 });
 
 describe('производство юнитов', () => {
-  it('списывает энергию сразу, а юнита выдаёт позже', () => {
+  it('списывает энергию сразу', () => {
     const world = richWorld();
     const before = world.players[0]?.energy ?? 0;
 
     const after = step(world, [train(0, UnitType.Assault)]);
 
-    expect(after.players[0]?.queue).toHaveLength(1);
-    expect(after.units).toHaveLength(0);
     expect(after.players[0]?.energy).toBeLessThan(before + BASE_INCOME_PER_TICK);
   });
 
-  it('выпускает юнита по истечении времени производства', () => {
-    const after = run(richWorld(), UNIT_STATS[UnitType.Assault].produceTicks + 3, [
-      train(0, UnitType.Assault),
-    ]);
+  it('выпускает юнита без отката, за тот же тик', () => {
+    const after = step(richWorld(), [train(0, UnitType.Assault)]);
 
     expect(after.units).toHaveLength(1);
     expect(after.units[0]?.owner).toBe(asPlayerId(0));
+    // Очередь при мгновенном производстве остаётся пустой: она нужна
+    // только для ожидания места, а место есть.
+    expect(after.players[0]?.queue).toHaveLength(0);
   });
 
   it('соблюдает порядок очереди', () => {
-    const after = run(richWorld(), UNIT_STATS[UnitType.Assault].produceTicks + 3, [
-      train(0, UnitType.Assault),
-      train(0, UnitType.Sniper),
-    ]);
+    const after = step(richWorld(), [train(0, UnitType.Assault), train(0, UnitType.Sniper)]);
 
     expect(after.units[0]?.unitType).toBe(UnitType.Assault);
+    expect(after.units[1]?.unitType).toBe(UnitType.Sniper);
   });
 
   it('не ставит в очередь при нехватке энергии', () => {
@@ -305,6 +307,7 @@ describe('производство юнитов', () => {
     const after = step(poor, [train(0, UnitType.Grenadier)]);
 
     expect(after.players[0]?.queue).toHaveLength(0);
+    expect(after.units).toHaveLength(0);
   });
 
   it('не превышает потолок очереди', () => {
@@ -314,7 +317,19 @@ describe('производство юнитов', () => {
 
     const after = step(richWorld(), orders);
 
-    expect(after.players[0]?.queue.length).toBe(PRODUCTION_QUEUE_CAP);
+    // Лишние заказы отклонены на входе, принятые вышли на карту сразу.
+    expect(after.units).toHaveLength(PRODUCTION_QUEUE_CAP);
+  });
+
+  it('пачка юнитов появляется в разных клетках', () => {
+    const orders = Array.from({ length: 10 }, () => train(0, UnitType.Assault));
+
+    const after = step(richWorld(), orders);
+    const places = new Set(after.units.map((unit) => `${unit.position.x}:${unit.position.y}`));
+
+    // Иначе десяток заказанных разом встал бы в одну точку и двигался
+    // дальше слитно — на поле это неотличимо от одного юнита.
+    expect(places.size).toBe(after.units.length);
   });
 });
 
@@ -401,7 +416,10 @@ describe('прокачка', () => {
 });
 
 describe('ядерный удар', () => {
-  const CENTRE = cellIndex(48, 48);
+  // Середина карты — единственная точка, заведомо лежащая вне запретных
+  // зон обеих баз. Считается от размера карты, а не вписана числом:
+  // карта уже однажды меняла размер.
+  const CENTRE = cellIndex(MAP_WIDTH_CELLS / 2, MAP_HEIGHT_CELLS / 2);
 
   it('создаёт запись об ударе и списывает энергию', () => {
     const world = richWorld();
@@ -523,5 +541,159 @@ describe('победа', () => {
     expect(later.winner).toBe(asPlayerId(0));
     expect(later.players[0]?.energy).toBe(energyAtWin);
     expect(later.units).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Постройка и юниты в клетке
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Мир с юнитом, поставленным в заданную клетку. */
+const withUnitAt = (
+  world: WorldState,
+  owner: number,
+  cell: number,
+  health = 100,
+  id = 900,
+): WorldState => ({
+  ...world,
+  units: [
+    ...world.units,
+    {
+      id: asEntityId(id),
+      owner: asPlayerId(owner),
+      unitType: UnitType.Assault,
+      position: cellCentre(cell),
+      health,
+      readyAtTick: asTickNumber(0),
+    },
+  ],
+});
+
+describe('постройка в клетке с юнитом', () => {
+  it('своя башня не встаёт на своего юнита', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(withUnitAt(world, 0, cell), [build(0, cell, StructureKind.TowerBasic)]);
+
+    expect(after.structures.some((s) => s.cell === cell)).toBe(false);
+    expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK);
+  });
+
+  it('башня не встаёт на вражеского юнита', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(withUnitAt(world, 1, cell), [build(0, cell, StructureKind.TowerBasic)]);
+
+    expect(after.structures.some((s) => s.cell === cell)).toBe(false);
+    expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK);
+  });
+
+  it('в пустой клетке постройка появляется', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+
+    const after = step(world, [build(0, cell, StructureKind.TowerBasic)]);
+
+    expect(after.structures.some((s) => s.cell === cell)).toBe(true);
+  });
+
+  it('генерал не замуровывает сам себя', () => {
+    const world = richWorld();
+    const general = world.generals[0];
+    const under = cellAt(general?.position ?? { x: 0, y: 0 });
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, [build(0, under, StructureKind.TowerBasic)]);
+
+    expect(after.structures.some((s) => s.cell === under)).toBe(false);
+    expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK);
+  });
+
+  it('внутри постройки не остаётся живых', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+
+    const after = step(withUnitAt(world, 1, cell), [build(0, cell, StructureKind.TowerBasic)]);
+
+    const occupied = new Set(after.structures.map((structure) => structure.cell));
+    for (const unit of after.units) {
+      expect(occupied.has(cellAt(unit.position))).toBe(false);
+    }
+    for (const general of after.generals) {
+      if (!general.alive) continue;
+      expect(occupied.has(cellAt(general.position))).toBe(false);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Остановка юнита на противнике
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Мир с ровной картой без единой скалы.
+ *
+ * Положения юнитов в тестах ниже заданы числами, а генерация может
+ * положить скалу куда угодно. Базы остаются на своих местах, поэтому
+ * навигация продолжает работать.
+ */
+const openWorld = (): WorldState => {
+  const world = richWorld();
+  return {
+    ...world,
+    map: { cells: new Uint8Array(MAP_CELL_COUNT), baseCells: world.map.baseCells },
+  };
+};
+
+const wallAt = (cell: number, owner: number, id: number) => ({
+  id: asEntityId(id),
+  owner: asPlayerId(owner),
+  kind: StructureKind.Wall,
+  cell,
+  health: 10_000,
+  growthPpm: 1_000_000,
+  readyAtTick: asTickNumber(0),
+  builtAtTick: asTickNumber(0),
+});
+
+describe('остановка юнита на противнике', () => {
+  const MINE = cellIndex(20, 20);
+  const THEIRS = cellIndex(20, 22);
+
+  /** Здоровья с запасом: тест про движение, а не про то, кто кого убьёт. */
+  const TOUGH = 1_000_000;
+
+  it('встречный противник останавливает', () => {
+    const world = withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
+
+    const after = run(world, 4);
+    const mine = after.units.find((unit) => unit.id === asEntityId(900));
+
+    expect(mine?.position).toEqual(cellCentre(MINE));
+  });
+
+  it('в одиночестве тот же юнит идёт вперёд', () => {
+    const after = run(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 4);
+    const mine = after.units.find((unit) => unit.id === asEntityId(900));
+
+    expect(mine?.position).not.toEqual(cellCentre(MINE));
+  });
+
+  it('противник за стеной не останавливает', () => {
+    const world = withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
+    const walled: WorldState = {
+      ...world,
+      structures: [...world.structures, wallAt(cellIndex(20, 21), 1, 902)],
+    };
+
+    const after = run(walled, 4);
+    const mine = after.units.find((unit) => unit.id === asEntityId(900));
+
+    expect(mine?.position).not.toEqual(cellCentre(MINE));
   });
 });

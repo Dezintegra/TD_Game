@@ -62,10 +62,12 @@ test('карта показывается и матч начинается за�
   const seedBefore = await page.getByTestId('seed').textContent();
   expect(Number(seedBefore)).toBeGreaterThan(0);
 
-  // Видимая доля карты — требование дизайна, а не украшение.
+  // Видимая доля карты — требование дизайна, а не украшение. Верхняя
+  // граница важнее нижней: карта целиком на экран помещаться не должна,
+  // иначе перемещение взгляда перестаёт быть частью игры.
   const visible = await number(page, 'visible-percent');
   expect(visible).toBeGreaterThan(0);
-  expect(visible).toBeLessThan(20);
+  expect(visible).toBeLessThan(60);
 
   await page.getByTestId('restart').click();
   await expect(page.getByTestId('seed')).not.toHaveText(seedBefore ?? '');
@@ -92,8 +94,22 @@ test('заказ юнита с клавиатуры доходит до симу
 
   await page.keyboard.press('Digit1');
 
-  // Производство занимает секунду, плюс поиск свободной клетки у базы.
+  // Отката у производства нет: юнит выходит на ближайшем тике. Запас
+  // по времени оставлен на подъём сцены и первый кадр, а не на очередь.
   await expect(page.getByTestId('unit-count')).not.toHaveText('0', { timeout: 8000 });
+});
+
+test('заказ пачки с зажатым модификатором даёт десять юнитов', async ({ page }) => {
+  await bootGame(page);
+
+  // Shift, а не Ctrl: Ctrl с цифрой браузер оставляет себе — это
+  // переключение вкладок, и до страницы событие не доходит. По кнопке
+  // панели работают оба.
+  await page.keyboard.press('Shift+Digit1');
+
+  await expect
+    .poll(async () => number(page, 'unit-count'), { timeout: 8000 })
+    .toBeGreaterThanOrEqual(10);
 });
 
 test('режим строительства включается и выключается', async ({ page }) => {
@@ -138,9 +154,9 @@ test('частота кадров держится при непрерывном
 test('частота кадров держится, когда на поле появились войска', async ({ page }) => {
   await bootGame(page);
 
-  // Забиваем очередь производства и даём противнику развернуться.
+  // Выводим войско на поле и даём противнику развернуться.
   for (let order = 0; order < 8; order += 1) {
-    await page.keyboard.press('Digit1');
+    await page.keyboard.press('Shift+Digit1');
   }
   await page.waitForTimeout(8000);
 

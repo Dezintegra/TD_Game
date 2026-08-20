@@ -2,12 +2,18 @@ import {
   AI_DECISION_INTERVAL_TICKS,
   BUILDABLE_KINDS,
   CommandKind,
+  DIRECTION_COUNT,
+  DIRECTION_SCALE,
+  DIRECTION_STOP,
+  DIRECTION_VECTORS,
   NUKE_BASE_EXCLUSION,
   NUKE_COST,
   NUKE_RADIUS,
+  MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   PRODUCTION_QUEUE_CAP,
+  STRUCTURE_STATS,
   StructureKind,
   TICKS_PER_SECOND,
   FIXED_POINT_SCALE,
@@ -22,6 +28,7 @@ import {
 } from '@td/shared';
 import type { Command, PlayerId, Vec2 } from '@td/shared';
 import {
+  UNREACHABLE,
   buildOccupancy,
   cellAt,
   cellCentre,
@@ -29,11 +36,14 @@ import {
   cellX,
   cellY,
   createRng,
+  dijkstraField,
+  footprintCells,
+  isInsideMap,
   nextRngInt,
   playerStats,
   upgradeCosts,
 } from '@td/sim';
-import type { PlayerState, WorldState } from '@td/sim';
+import type { Occupancy, PlayerState, StructureState, WorldState } from '@td/sim';
 
 /**
  * Противник под управлением компьютера.
@@ -60,7 +70,7 @@ export interface Opponent {
 }
 
 /** Радиус, в котором вражеские юниты считаются угрозой базе, в клетках. */
-const THREAT_RADIUS_CELLS = 18;
+const THREAT_RADIUS_CELLS = 10;
 
 /** Сколько юнитов у базы противник считает поводом идти домой. */
 const THREAT_UNITS = 3;
@@ -70,14 +80,42 @@ const TOWERS_AROUND_GENERAL = 3;
 
 const CELLS_AROUND_GENERAL = 8;
 
-/** Каждая четвёртая постройка — стена: они создают узкие места. */
+/** Каждая четвёртая постройка — стена: они прикрывают уже стоящие башни. */
 const WALL_EVERY = 4;
 
 /** Сколько вражеских юнитов оправдывают ядерный удар. */
 const NUKE_WORTH_UNITS = 6;
 
 /** Шаг сетки при поиске места для удара, в клетках. */
-const NUKE_SCAN_STEP = 6;
+const NUKE_SCAN_STEP = 3;
+
+/**
+ * Насколько маршрут может быть длиннее кратчайшего, чтобы всё ещё считаться
+ * вероятным путём вражеских войск, в клетках.
+ *
+ * Ноль означал бы одну-единственную нитку, и башня чуть в стороне от неё
+ * считалась бы бесполезной. Слишком много — и «вероятным путём» станет
+ * половина карты, а вместе с этим исчезнет сам смысл понятия.
+ */
+const PATH_SLACK_CELLS = 6;
+
+/** Сколько решений подряд без смены клетки считается застреванием. */
+const STUCK_DECISIONS = 2;
+
+/**
+ * Сколько решений удерживается выбранный обход.
+ *
+ * Без удержания генерал на следующем же решении снова поворачивает к цели,
+ * упирается в ту же скалу и повторяет это до конца матча: из вогнутого
+ * кармана одним шагом в сторону не выйти.
+ */
+const DETOUR_DECISIONS = 6;
+
+/** На сколько клеток вперёд проверяется проходимость направления. */
+const PROBE_CELLS = 3;
+
+/** В скольких клетках от своей башни имеет смысл ставить прикрывающую стену. */
+const SHIELD_RADIUS_CELLS = 2;
 
 /** На что можно потратить энергию за одно решение. */
 type Spending = 'upgrade' | 'build' | 'train';
@@ -190,6 +228,92 @@ const phaseAt = (tick: number): Phase => {
 
 const otherPlayer = (id: PlayerId): number => 1 - id;
 
+// ─────────────────────────────────────────────────────────────────────────
+// Вероятный путь вражеских войск
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Где противник ждёт чужие войска.
+ *
+ * Первая версия ставила башни в свободную клетку, ближайшую к вражеской
+ * базе. Звучит наступательно, а на деле башни регулярно оказывались
+ * в скальном кармане, куда никто никогда не придёт: «ближе к врагу»
+ * по прямой и «на дороге к врагу» — разные вещи, и на карте со скалами
+ * они расходятся почти всегда.
+ *
+ * Правильный признак — лежит ли клетка на маршруте, по которому войска
+ * реально пойдут. Считается это без всякой эвристики: два обхода карты,
+ * от своей базы и от чужой. Клетка лежит на пути, если сумма расстояний
+ * до обеих баз превышает кратчайшее расстояние между ними не больше чем
+ * на допуск. При нулевом допуске получилась бы одна нитка кратчайшего
+ * пути, при разумном — коридор всех разумных обходов.
+ */
+export interface Approach {
+  /** Единица — клетка лежит на маршруте, близком к кратчайшему. */
+  readonly onPath: Uint8Array;
+  /** Расстояние от своей базы по проходимым клеткам. */
+  readonly fromHome: Int32Array;
+  /** Длина кратчайшего маршрута между базами. */
+  readonly shortest: number;
+  /** Занятость, посчитанная заодно: она нужна и строительству, и движению. */
+  readonly occupancy: Occupancy;
+}
+
+const distanceField = (occupancy: Occupancy, seeds: readonly number[]): Int32Array => {
+  const cost = new Int32Array(MAP_CELL_COUNT);
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    cost[cell] = occupancy.blocked[cell] === 1 ? 0 : 1;
+  }
+  // Клетки основания базы проходимы для поля: иначе оно не смогло бы
+  // от них начаться.
+  for (const seed of seeds) cost[seed] = 1;
+
+  return dijkstraField(cost, seeds);
+};
+
+const baseSeeds = (cell: number): readonly number[] =>
+  footprintCells(cell, STRUCTURE_STATS[StructureKind.Base].footprintRadius);
+
+export const approachOf = (world: WorldState, me: PlayerId): Approach | undefined => {
+  const homeCell = world.map.baseCells[me];
+  const enemyCell = world.map.baseCells[otherPlayer(me)];
+  if (homeCell === undefined || enemyCell === undefined) return undefined;
+
+  const occupancy = buildOccupancy(world.map, world.structures);
+  const fromHome = distanceField(occupancy, baseSeeds(homeCell));
+  const fromEnemy = distanceField(occupancy, baseSeeds(enemyCell));
+
+  // Кратчайший маршрут ищется минимумом суммы, а не расстоянием до чужой
+  // базы: клетки самой базы непроходимы, и поле до них не доходит.
+  let shortest = UNREACHABLE;
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    const home = fromHome[cell] ?? UNREACHABLE;
+    const enemy = fromEnemy[cell] ?? UNREACHABLE;
+    if (home === UNREACHABLE || enemy === UNREACHABLE) continue;
+
+    const total = home + enemy;
+    if (total < shortest) shortest = total;
+  }
+
+  if (shortest === UNREACHABLE) return undefined;
+
+  const limit = shortest + PATH_SLACK_CELLS;
+  const onPath = new Uint8Array(MAP_CELL_COUNT);
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (occupancy.blocked[cell] === 1) continue;
+
+    const home = fromHome[cell] ?? UNREACHABLE;
+    const enemy = fromEnemy[cell] ?? UNREACHABLE;
+    if (home === UNREACHABLE || enemy === UNREACHABLE) continue;
+
+    if (home + enemy <= limit) onPath[cell] = 1;
+  }
+
+  return { onPath, fromHome, shortest, occupancy };
+};
+
 export const createOpponent = (me: PlayerId, seed: number): Opponent => {
   // Случайность берётся из детерминированного генератора, а не из
   // Math.random. Формально это не требуется — противник живёт вне ядра, —
@@ -199,11 +323,14 @@ export const createOpponent = (me: PlayerId, seed: number): Opponent => {
   let nextDecisionTick = 0;
   let buildCounter = 0;
   let waitStreak = 0;
+  let decisionCount = 0;
 
   // Отслеживание застревания: если генерал не сдвинулся с места между
   // решениями, он упёрся в скалу, и надо попробовать другое направление.
   let lastGeneralCell = -1;
   let stuckCount = 0;
+
+  const detour: Detour = { direction: DIRECTION_STOP, untilDecision: 0 };
 
   const roll = (bound: number): number => {
     const [next, value] = nextRngInt(rng, bound);
@@ -227,9 +354,17 @@ export const createOpponent = (me: PlayerId, seed: number): Opponent => {
       if (world.tick < nextDecisionTick) return [];
 
       nextDecisionTick = world.tick + AI_DECISION_INTERVAL_TICKS;
+      decisionCount += 1;
 
       const player = world.players[me];
       if (player === undefined) return [];
+
+      // Вероятный путь считается раз в решение, то есть дважды в секунду.
+      // Это два обхода карты в две с небольшим тысячи клеток — цена,
+      // которую не видно даже на профиле, а зависят от него и выбор места
+      // под башню, и цель движения генерала.
+      const approach = approachOf(world, me);
+      if (approach === undefined) return [];
 
       const phase = phaseAt(world.tick);
       const commands: Command[] = [];
@@ -253,7 +388,7 @@ export const createOpponent = (me: PlayerId, seed: number): Opponent => {
             spending === 'upgrade'
               ? tryUpgrade(commands, world, me, player, phase)
               : spending === 'build'
-                ? tryBuild(commands, world, me, player, phase, () => {
+                ? tryBuild(commands, world, me, player, phase, approach, () => {
                     buildCounter += 1;
                     return buildCounter;
                   })
@@ -273,7 +408,15 @@ export const createOpponent = (me: PlayerId, seed: number): Opponent => {
         waitStreak = waited ? waitStreak + 1 : 0;
       }
 
-      const movement = decideMovement(world, me, roll, trackStuck(world));
+      const movement = decideMovement(
+        world,
+        me,
+        approach,
+        trackStuck(world),
+        decisionCount,
+        detour,
+        roll,
+      );
       if (movement !== undefined) commands.push(movement);
 
       return commands;
@@ -298,47 +441,141 @@ const waitOrPass = (price: number, incomePerTick: number): Attempt => {
 // Движение генерала
 // ─────────────────────────────────────────────────────────────────────────
 
+/** Выбранный обход. Живёт между решениями, поэтому изменяемый. */
+interface Detour {
+  direction: number;
+  /** Номер решения, до которого обход держится. */
+  untilDecision: number;
+}
+
 const decideMovement = (
   world: WorldState,
   me: PlayerId,
-  roll: (bound: number) => number,
+  approach: Approach,
   stuck: number,
+  decision: number,
+  detour: Detour,
+  roll: (bound: number) => number,
 ): Command | undefined => {
   const general = world.generals[me];
   if (general === undefined || !general.alive) return undefined;
 
-  // Упёрлись и стоим — пробуем случайное направление, иначе генерал
-  // так и останется висеть на углу скалы до конца матча.
-  const direction =
-    stuck >= 2 ? roll(8) + 1 : directionTowards(...offsetTo(goalOf(world, me), general.position));
+  const moveTo = (direction: number): Command | undefined =>
+    direction === general.direction || direction === DIRECTION_STOP
+      ? undefined
+      : command({
+          kind: CommandKind.MoveGeneral,
+          player: me,
+          tick: asTickNumber(world.tick),
+          direction,
+        });
 
-  if (direction === general.direction) return undefined;
+  // Обход держится несколько решений подряд, но прерывается, если генерал
+  // застрял и в нём тоже: тогда ищется новый.
+  if (decision < detour.untilDecision && stuck < STUCK_DECISIONS) {
+    return moveTo(detour.direction);
+  }
 
-  return command({
-    kind: CommandKind.MoveGeneral,
-    player: me,
-    tick: asTickNumber(world.tick),
-    direction,
-  });
+  const goal = goalOf(world, me, approach);
+
+  if (stuck >= STUCK_DECISIONS) {
+    detour.direction = escapeDirection(
+      approach.occupancy,
+      general.position,
+      goal,
+      general.direction,
+      roll,
+    );
+    detour.untilDecision = decision + DETOUR_DECISIONS;
+
+    return moveTo(detour.direction);
+  }
+
+  return moveTo(directionTowards(goal.x - general.position.x, goal.y - general.position.y));
 };
 
-const offsetTo = (goal: Vec2, from: Vec2): [number, number] => [goal.x - from.x, goal.y - from.y];
+/** Проходимы ли ближайшие клетки в этом направлении. */
+const directionIsFree = (occupancy: Occupancy, from: Vec2, direction: number): boolean => {
+  const vector = DIRECTION_VECTORS[direction];
+  if (vector === undefined) return false;
+
+  const centre = cellAt(from);
+  const startX = cellX(centre);
+  const startY = cellY(centre);
+
+  for (let step = 1; step <= PROBE_CELLS; step += 1) {
+    const x = startX + Math.round((vector.x * step) / DIRECTION_SCALE);
+    const y = startY + Math.round((vector.y * step) / DIRECTION_SCALE);
+
+    if (!isInsideMap(x, y)) return false;
+    if (occupancy.blocked[cellIndex(x, y)] === 1) return false;
+  }
+
+  return true;
+};
+
+/**
+ * Куда сворачивать, упершись.
+ *
+ * Не случайное направление, а лучшее из свободных: то, которое при прочих
+ * равных приближает к цели. Случайное было в первой версии и работало
+ * плохо ровно потому, что случайное — значит с вероятностью в семь восьмых
+ * не туда.
+ */
+const escapeDirection = (
+  occupancy: Occupancy,
+  from: Vec2,
+  goal: Vec2,
+  current: number,
+  roll: (bound: number) => number,
+): number => {
+  let best = DIRECTION_STOP;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let direction = 1; direction < DIRECTION_COUNT; direction += 1) {
+    if (direction === current) continue;
+    if (!directionIsFree(occupancy, from, direction)) continue;
+
+    const vector = DIRECTION_VECTORS[direction];
+    if (vector === undefined) continue;
+
+    const ahead = {
+      x: from.x + (vector.x * PROBE_CELLS * FIXED_POINT_SCALE) / DIRECTION_SCALE,
+      y: from.y + (vector.y * PROBE_CELLS * FIXED_POINT_SCALE) / DIRECTION_SCALE,
+    };
+
+    const distance = distanceSquared(ahead, goal);
+    if (distance >= bestDistance) continue;
+
+    bestDistance = distance;
+    best = direction;
+  }
+
+  // Свободных направлений нет вовсе — дёргаемся случайно. Лучше так,
+  // чем стоять до конца матча.
+  return best === DIRECTION_STOP ? roll(8) + 1 : best;
+};
 
 /**
  * Куда генерал стремится.
  *
  * Своя база под угрозой — идём домой. Иначе продвигаемся к фронту:
- * точке между базами, которая со временем сдвигается в сторону чужой.
+ * точке НА вероятном пути вражеских войск, отстоящей от своей базы
+ * на заданную долю маршрута. Доля растёт со временем.
+ *
+ * Именно на пути, а не на прямой между базами. Прямая между базами
+ * запросто проходит сквозь скальную гряду, и генерал, идущий к точке
+ * на ней, упирается в камень и там же строит бесполезные башни.
+ * Точка на пути проходима по построению.
+ *
  * Дальше середины противник не заходит: генерал — не штурмовой отряд,
  * а строитель, и терять его в чужом тылу невыгодно.
  */
-const goalOf = (world: WorldState, me: PlayerId): Vec2 => {
+const goalOf = (world: WorldState, me: PlayerId, approach: Approach): Vec2 => {
   const homeCell = world.map.baseCells[me];
-  const enemyCell = world.map.baseCells[otherPlayer(me)];
-  if (homeCell === undefined || enemyCell === undefined) return { x: 0, y: 0 };
+  if (homeCell === undefined) return { x: 0, y: 0 };
 
   const home = cellCentre(homeCell);
-  const enemy = cellCentre(enemyCell);
 
   const threatRadius = cellsToUnits(THREAT_RADIUS_CELLS);
   let threats = 0;
@@ -352,11 +589,22 @@ const goalOf = (world: WorldState, me: PlayerId): Vec2 => {
   // Продвижение растёт со временем: за пять минут доходит до 0,45.
   const minutes = world.tick / (TICKS_PER_SECOND * 60);
   const progress = Math.min(0.45, 0.12 + minutes * 0.07);
+  const wanted = Math.round(approach.shortest * progress);
 
-  return {
-    x: Math.round(home.x + (enemy.x - home.x) * progress),
-    y: Math.round(home.y + (enemy.y - home.y) * progress),
-  };
+  let best = -1;
+  let bestGap = Number.POSITIVE_INFINITY;
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (approach.onPath[cell] !== 1) continue;
+
+    const gap = Math.abs((approach.fromHome[cell] ?? 0) - wanted);
+    if (gap >= bestGap) continue;
+
+    bestGap = gap;
+    best = cell;
+  }
+
+  return best < 0 ? home : cellCentre(best);
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -424,32 +672,47 @@ const tryBuild = (
   me: PlayerId,
   player: PlayerState,
   phase: Phase,
+  approach: Approach,
   nextBuildNumber: () => number,
 ): Attempt => {
   const general = world.generals[me];
   if (general === undefined || !general.alive) return 'pass';
 
+  const around = cellsToUnits(CELLS_AROUND_GENERAL) ** 2;
   const nearby = world.structures.filter(
     (structure) =>
       structure.owner === me &&
       structure.kind !== StructureKind.Base &&
-      distanceSquared(cellCentre(structure.cell), general.position) <=
-        cellsToUnits(CELLS_AROUND_GENERAL) ** 2,
-  ).length;
+      distanceSquared(cellCentre(structure.cell), general.position) <= around,
+  );
 
   // Плотнее строить смысла нет: генерал всё равно уйдёт вперёд,
   // и новая позиция окажется полезнее ещё одной башни на старой.
-  if (nearby >= TOWERS_AROUND_GENERAL) return 'pass';
+  if (nearby.length >= TOWERS_AROUND_GENERAL) return 'pass';
 
-  const number = nextBuildNumber();
-  const kind = number % WALL_EVERY === 0 ? StructureKind.Wall : StructureKind.TowerBasic;
+  const towers = nearby.filter((structure) => structure.kind !== StructureKind.Wall);
+
+  // Стена ставится только когда есть что прикрывать. Стена сама по себе
+  // лишь покупает противнику время на обход; стена перед башней —
+  // укрепление, потому что башня стреляет поверх неё, а юниты сквозь
+  // неё стрелять не могут.
+  const shielding = nextBuildNumber() % WALL_EVERY === 0 && towers.length > 0;
+  const kind = shielding ? StructureKind.Wall : StructureKind.TowerBasic;
   if (!BUILDABLE_KINDS.includes(kind)) return 'pass';
 
   const stats = playerStats(player);
   const price = stats.structures[kind].cost + phase.reserve;
   if (player.energy < price) return waitOrPass(price, stats.incomePerTick);
 
-  const cell = forwardBuildCell(world, me, general.position, stats.general.buildRadius);
+  const radius = stats.general.buildRadius;
+  const towerRange = Math.floor(
+    stats.structures[StructureKind.TowerBasic].range / FIXED_POINT_SCALE,
+  );
+
+  const cell = shielding
+    ? shieldBuildCell(world, me, general.position, radius, approach, towers)
+    : towerBuildCell(world, me, general.position, radius, approach, towerRange);
+
   if (cell < 0) return 'pass';
 
   commands.push(
@@ -466,24 +729,27 @@ const tryBuild = (
 };
 
 /**
- * Свободная клетка в радиусе строительства, самая близкая к чужой базе.
+ * Свободные клетки в радиусе строительства.
  *
- * Выбор «ближайшей к врагу» превращает строительство в наступательное:
- * башни сами собой выстраиваются в сторону противника, а не кольцом
- * вокруг генерала.
+ * Клетки с живыми юнитами и генералами пропускаются: ядро такую постройку
+ * отклонит, а решение противника окажется потраченным впустую. Клетка под
+ * собственным генералом здесь особенно важна — она первый кандидат
+ * по построению, ведь строит он вокруг себя.
  */
-const forwardBuildCell = (world: WorldState, me: PlayerId, from: Vec2, radius: number): number => {
-  const enemyCell = world.map.baseCells[otherPlayer(me)];
-  if (enemyCell === undefined) return -1;
-
-  const enemy = cellCentre(enemyCell);
-  const occupancy = buildOccupancy(world.map, world.structures);
+const forEachBuildCandidate = (
+  world: WorldState,
+  occupancy: Occupancy,
+  from: Vec2,
+  radius: number,
+  visit: (cell: number, point: Vec2) => void,
+): void => {
+  const occupiedByLiving = new Set([
+    ...world.units.map((unit) => cellAt(unit.position)),
+    ...world.generals.filter((general) => general.alive).map((general) => cellAt(general.position)),
+  ]);
 
   const centre = cellAt(from);
   const reach = Math.floor(radius / FIXED_POINT_SCALE);
-
-  let best = -1;
-  let bestDistance = Number.POSITIVE_INFINITY;
 
   for (let dy = -reach; dy <= reach; dy += 1) {
     for (let dx = -reach; dx <= reach; dx += 1) {
@@ -493,19 +759,129 @@ const forwardBuildCell = (world: WorldState, me: PlayerId, from: Vec2, radius: n
 
       const cell = cellIndex(x, y);
       if (occupancy.blocked[cell] === 1) continue;
+      if (occupiedByLiving.has(cell)) continue;
 
       const point = cellCentre(cell);
       // Клетка должна быть действительно в радиусе: квадрат перебора
       // описан вокруг круга и по углам из него выходит.
       if (distanceSquared(point, from) > radius * radius) continue;
 
-      const distance = distanceSquared(point, enemy);
-      if (distance >= bestDistance) continue;
-
-      bestDistance = distance;
-      best = cell;
+      visit(cell, point);
     }
   }
+};
+
+/** Сколько клеток вероятного пути накрывает башня, поставленная в клетку. */
+const coverageOf = (approach: Approach, cell: number, rangeCells: number): number => {
+  const cx = cellX(cell);
+  const cy = cellY(cell);
+
+  let covered = 0;
+
+  for (let dy = -rangeCells; dy <= rangeCells; dy += 1) {
+    for (let dx = -rangeCells; dx <= rangeCells; dx += 1) {
+      if (dx * dx + dy * dy > rangeCells * rangeCells) continue;
+
+      const x = cx + dx;
+      const y = cy + dy;
+      if (!isInsideMap(x, y)) continue;
+
+      if (approach.onPath[cellIndex(x, y)] === 1) covered += 1;
+    }
+  }
+
+  return covered;
+};
+
+/**
+ * Место под башню: клетка, накрывающая как можно больше вероятного пути.
+ *
+ * При равном покрытии выбирается ближайшая к чужой базе — так башни
+ * сами собой выстраиваются в сторону противника, а не кольцом вокруг
+ * генерала.
+ *
+ * Если накрывать нечего вовсе, место не выбирается и башня не строится.
+ * Это не пропуск хода, а отказ от бесполезной покупки: энергия уйдёт
+ * на юнитов или прокачку, а генерал тем временем дойдёт до пути —
+ * его цель на нём и лежит.
+ */
+const towerBuildCell = (
+  world: WorldState,
+  me: PlayerId,
+  from: Vec2,
+  radius: number,
+  approach: Approach,
+  rangeCells: number,
+): number => {
+  const enemyCell = world.map.baseCells[otherPlayer(me)];
+  if (enemyCell === undefined) return -1;
+
+  const enemy = cellCentre(enemyCell);
+
+  let best = -1;
+  let bestCoverage = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  forEachBuildCandidate(world, approach.occupancy, from, radius, (cell, point) => {
+    const coverage = coverageOf(approach, cell, rangeCells);
+    if (coverage < bestCoverage) return;
+
+    const distance = distanceSquared(point, enemy);
+    if (coverage === bestCoverage && distance >= bestDistance) return;
+
+    bestCoverage = coverage;
+    bestDistance = distance;
+    best = cell;
+  });
+
+  return bestCoverage > 0 ? best : -1;
+};
+
+/**
+ * Место под стену: между своей башней и стороной, откуда подходят войска.
+ *
+ * «Откуда подходят» определяется по расстоянию до чужой базы: стена
+ * должна оказаться к ней ближе, чем прикрываемая башня. Клетка на самом
+ * пути ценнее клетки рядом с ним — именно по ней и пойдут.
+ */
+const shieldBuildCell = (
+  world: WorldState,
+  me: PlayerId,
+  from: Vec2,
+  radius: number,
+  approach: Approach,
+  towers: readonly StructureState[],
+): number => {
+  const enemyCell = world.map.baseCells[otherPlayer(me)];
+  if (enemyCell === undefined) return -1;
+
+  const enemy = cellCentre(enemyCell);
+  const shieldReach = cellsToUnits(SHIELD_RADIUS_CELLS) ** 2;
+
+  let best = -1;
+  let bestOnPath = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  forEachBuildCandidate(world, approach.occupancy, from, radius, (cell, point) => {
+    const distance = distanceSquared(point, enemy);
+
+    const shields = towers.some((tower) => {
+      const towerPoint = cellCentre(tower.cell);
+      return (
+        distanceSquared(point, towerPoint) <= shieldReach &&
+        distance < distanceSquared(towerPoint, enemy)
+      );
+    });
+    if (!shields) return;
+
+    const onPath = approach.onPath[cell] === 1 ? 1 : 0;
+    if (onPath < bestOnPath) return;
+    if (onPath === bestOnPath && distance >= bestDistance) return;
+
+    bestOnPath = onPath;
+    bestDistance = distance;
+    best = cell;
+  });
 
   return best;
 };

@@ -4,7 +4,7 @@ import { cellX, cellY } from '@td/sim';
 import type { GameMap } from '@td/sim';
 import { worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
-import { drawRocks } from './rocks.js';
+import { drawRockDiagonal } from './rocks.js';
 import { drawBase } from './base-structure.js';
 
 /**
@@ -23,8 +23,17 @@ import { drawBase } from './base-structure.js';
  * после добавления, получаются тысячи обращений на кадр. Поэтому сначала
  * накапливаются все отрезки одного стиля, и только потом делается обводка.
  *
- * Геометрия строится один раз и живёт в объекте Graphics. Движение камеры
- * её не трогает — сдвигается контейнер целиком.
+ * Территория разложена на две части, и разложена не по смыслу, а по тому,
+ * с чем каждая должна перекрываться.
+ *
+ * Земля плоская и лежит ниже всего на свете, поэтому живёт одним слоем.
+ * Объёмные объекты — скалы и базы — обязаны вставать в общий порядок
+ * удалённости вместе с юнитами, поэтому раскладываются по слоям-диагоналям,
+ * между которые сцена вклинивает слои сущностей.
+ *
+ * Геометрия и той, и другой части строится один раз на карту и живёт
+ * в объектах Graphics. Движение камеры её не трогает — сдвигается
+ * контейнер целиком.
  */
 export interface TerrainColors {
   readonly grid: number;
@@ -40,40 +49,49 @@ export interface TerrainColors {
 /** Каждая четвёртая линия ярче: так глаз считывает расстояния без линейки. */
 const MAJOR_GRID_EVERY = 4;
 
-export const drawTerrain = (graphics: Graphics, map: GameMap, colors: TerrainColors): void => {
+/** Плоская земля: сетка клеток и граница карты. Ниже всех объёмных тел. */
+export const drawGround = (graphics: Graphics, colors: TerrainColors): void => {
   graphics.clear();
 
   drawGrid(graphics, colors);
   drawBorder(graphics, colors);
+};
 
-  // Порядок отрисовки — от дальнего к ближнему. База в дальнем углу карты
-  // рисуется до скал, база в ближнем — после.
-  //
-  // Это упрощение, а не строгий обход: аккуратнее было бы вплести базы
-  // в диагональный проход по скалам. Приближение безопасно потому, что
-  // вокруг каждой базы генерация расчищает площадку, и ближайшая скала
-  // физически не может её перекрыть.
-  const middle = (MAP_WIDTH_CELLS + MAP_HEIGHT_CELLS) / 2;
-  const bases = map.baseCells.map((cell, index) => ({
-    x: cellX(cell),
-    y: cellY(cell),
-    color: index === 0 ? colors.baseSelf : colors.baseEnemy,
-  }));
+/**
+ * Объёмные объекты территории одной диагонали: скалы и, если её центр
+ * лежит на этой диагонали, база.
+ *
+ * База занимает три клетки на три и потому формально задевает пять
+ * диагоналей, а приписана к одной — своей центральной. Это упрощение,
+ * и оно безопасно: вокруг каждой базы генерация расчищает площадку,
+ * поэтому соседних скал, с которыми база могла бы поспорить за порядок,
+ * там нет по построению.
+ */
+export const drawTerrainDiagonal = (
+  graphics: Graphics,
+  map: GameMap,
+  diagonal: number,
+  colors: TerrainColors,
+): void => {
+  graphics.clear();
 
-  for (const base of bases.filter((item) => item.x + item.y < middle)) {
-    drawBase(graphics, base.x, base.y, base.color);
-  }
-
-  drawRocks(graphics, map, {
+  drawRockDiagonal(graphics, map, diagonal, {
     rock: colors.rock,
     facet: colors.rockFacet,
     edge: colors.rockEdge,
   });
 
-  for (const base of bases.filter((item) => item.x + item.y >= middle)) {
-    drawBase(graphics, base.x, base.y, base.color);
-  }
+  map.baseCells.forEach((cell, index) => {
+    const x = cellX(cell);
+    const y = cellY(cell);
+    if (x + y !== diagonal) return;
+
+    drawBase(graphics, x, y, index === 0 ? colors.baseSelf : colors.baseEnemy);
+  });
 };
+
+/** Сколько диагоналей на карте. Столько же и слоёв объёмной территории. */
+export const TERRAIN_DIAGONAL_COUNT = MAP_WIDTH_CELLS + MAP_HEIGHT_CELLS - 1;
 
 const segment = (graphics: Graphics, from: Point, to: Point): void => {
   graphics.moveTo(from.x, from.y).lineTo(to.x, to.y);

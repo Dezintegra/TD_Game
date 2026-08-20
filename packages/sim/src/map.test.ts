@@ -56,7 +56,11 @@ describe('генерация карты: симметрия', () => {
   });
 
   it('поворот клетки дважды возвращает исходную', () => {
-    for (const index of [0, 1, 95, 4242, MAP_CELL_COUNT - 1]) {
+    // Индексы выводятся из размера карты, а не вписаны числами: карта
+    // уже однажды уменьшилась, и вписанные уехали за её край.
+    const indices = [0, 1, MAP_WIDTH_CELLS - 1, Math.floor(MAP_CELL_COUNT / 3), MAP_CELL_COUNT - 1];
+
+    for (const index of indices) {
       expect(rotatedCell(rotatedCell(index))).toBe(index);
     }
   });

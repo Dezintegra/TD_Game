@@ -1,5 +1,11 @@
 import type { Graphics } from 'pixi.js';
-import { StructureKind, UnitType, unitsToCells } from '@td/shared';
+import {
+  MAP_HEIGHT_CELLS,
+  MAP_WIDTH_CELLS,
+  StructureKind,
+  UnitType,
+  unitsToCells,
+} from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import type { StructureState, UnitState, WorldState } from '@td/sim';
 import { cellX, cellY, playerStats, structureMaxHealth } from '@td/sim';
@@ -16,13 +22,23 @@ import type { Prism } from './prism.js';
  * Первое: геометрия перестраивается каждый кадр. Территория статична
  * и строится один раз, а юниты движутся. Чтобы это не съедало кадр,
  * всё, что вне экрана, отбрасывается ДО построения геометрии — при видимой
- * десятой части карты это отсекает примерно девять объектов из десяти.
+ * доле карты около трети это отсекает большинство объектов.
  *
  * Второе: порядок отрисовки считается каждый кадр. Объёмные тела
  * перекрывают друг друга, и рисовать их надо от дальнего к ближнему.
  * Для статичных скал хватало обхода по диагоналям, но юниты стоят
  * не в клетках, а между ними, поэтому здесь честная сортировка
- * по сумме координат.
+ * по глубине.
+ *
+ * Глубина — сумма координат ЦЕНТРА объекта в клетках, и центра, а не угла,
+ * не случайно. Юнит стоит в произвольной точке, и его глубина дробная;
+ * постройка занимает клетку, и её центр приходится на `x + ½, y + ½`.
+ * Считай мы постройку по углу клетки, юнит на клетку севернее оказывался бы
+ * с ней вровень и рисовался поверх, хотя стоит за ней.
+ *
+ * Готовые тела уходят не в один общий слой, а в слой своей полосы глубины.
+ * Между полосами сцена вставляет неподвижную территорию, и только благодаря
+ * этому юнит прячется за скалой, а не висит поверх неё.
  */
 
 export interface EntityColors {
@@ -57,20 +73,29 @@ const HULL_TINT = 0.32;
 interface Drawable {
   /** Глубина: чем больше, тем ближе к зрителю и тем позже рисуется. */
   readonly depth: number;
-  draw(): void;
+  draw(graphics: Graphics): void;
 }
+
+/** Слои, в которые сцена принимает нарисованное. */
+export interface EntityLayers {
+  /** Слой полосы глубины: полоса `k` собирает объекты с глубиной [k, k+1). */
+  band(index: number): Graphics;
+  /** Слой трассеров. Лежит поверх всего: выстрел — событие, и прятать его незачем. */
+  readonly shots: Graphics;
+}
+
+/** Номер последней полосы глубины: дальше юнит уйти не может. */
+const LAST_BAND = MAP_WIDTH_CELLS + MAP_HEIGHT_CELLS - 1;
 
 const cellsOf = (units: number): number => unitsToCells(units);
 
 export const drawEntities = (
-  graphics: Graphics,
+  layers: EntityLayers,
   world: WorldState,
   view: ViewBounds,
   colors: EntityColors,
   localPlayer: PlayerId,
 ): void => {
-  graphics.clear();
-
   const stats = world.players.map(playerStats);
   const accentOf = (owner: PlayerId): number =>
     owner === localPlayer ? colors.self : colors.enemy;
@@ -100,14 +125,16 @@ export const drawEntities = (
     const maxHealth =
       baseline === undefined ? structure.health : structureMaxHealth(baseline, structure.growthPpm);
 
+    // Глубина постройки — по центру её клетки, как и у юнита. Иначе юнит
+    // на клетку севернее оказывался бы с ней вровень и рисовался поверх.
     queue.push({
-      depth: x + y,
-      draw: () =>
+      depth: x + y + 1,
+      draw: (graphics) =>
         drawStructure(graphics, structure, world.tick, x, y, accentOf(structure.owner), colors),
     });
     queue.push({
-      depth: x + y + 0.001,
-      draw: () =>
+      depth: x + y + 1.001,
+      draw: (graphics) =>
         drawHealthBar(
           graphics,
           x + 0.5,
@@ -130,7 +157,7 @@ export const drawEntities = (
 
     queue.push({
       depth: x + y,
-      draw: () => {
+      draw: (graphics) => {
         drawUnit(graphics, unit, x, y, accent, colors);
         drawHealthBar(
           graphics,
@@ -157,7 +184,7 @@ export const drawEntities = (
 
     queue.push({
       depth: x + y,
-      draw: () => {
+      draw: (graphics) => {
         drawGeneral(graphics, x, y, accent, colors);
         drawHealthBar(
           graphics,
@@ -176,11 +203,15 @@ export const drawEntities = (
   // с одинаковой глубиной сохраняют порядок добавления — тело перед
   // своей полосой здоровья.
   queue.sort((a, b) => a.depth - b.depth);
-  for (const item of queue) item.draw();
+
+  for (const item of queue) {
+    const band = Math.max(0, Math.min(LAST_BAND, Math.floor(item.depth)));
+    item.draw(layers.band(band));
+  }
 
   // Трассеры рисуются поверх всего: выстрел — это событие, и прятать его
   // за телами не нужно, иначе бой в толпе перестаёт читаться.
-  drawShots(graphics, world, colors, localPlayer);
+  drawShots(layers.shots, world, colors, localPlayer);
 };
 
 // ─────────────────────────────────────────────────────────────────────────

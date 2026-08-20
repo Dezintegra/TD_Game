@@ -10,6 +10,7 @@
 export * from './prng.js';
 export * from './map.js';
 export * from './occupancy.js';
+export * from './sight.js';
 export * from './navigation.js';
 export * from './world.js';
 export * from './stats.js';

@@ -144,7 +144,8 @@ export const hudActions = {
  * HUD успевает смонтироваться раньше, чем PixiJS закончит инициализацию.
  */
 export interface MatchCommands {
-  train(unitType: number): void;
+  /** Заказ юнита. `count` больше единицы — пакет по Ctrl или Shift. */
+  train(unitType: number, count: number): void;
   setBuildKind(kind: number | null): void;
   toggleNukeAim(): void;
   buyUpgrade(branch: number): void;
