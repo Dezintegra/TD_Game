@@ -1,0 +1,91 @@
+/**
+ * Разговор о комнатах ожидания: что сервер сообщает клиенту и какими
+ * словами отказывает.
+ *
+ * Этот кусок протокола — единственный, который ходит не бинарным кадром,
+ * а обычным JSON поверх HTTP и SSE. Исключение осознанное. Бинарный
+ * кодек в `codec.ts` устроен под тридцать пакетов в секунду с кадром
+ * фиксированной длины, и вся его выгода — в отсутствии разбора строк
+ * на горячем пути. У комнат горячего пути нет: событий там единицы
+ * в минуту, зато есть строки переменной длины и списки неизвестного
+ * размера, то есть ровно то, ради чего JSON и придуман.
+ *
+ * Почему типы живут здесь, а не по копии у клиента и сервера. Копии
+ * разошлись бы молча: сервер добавил поле, клиент о нём не узнал,
+ * и ошибка проявилась бы в браузере, а не в сборке. Здесь же обе
+ * стороны сверяются с одним объявлением, и расхождение падает
+ * при проверке типов.
+ *
+ * `PROTOCOL_VERSION` эти типы не двигают: раскладка байтов игрового
+ * кадра от них не зависит.
+ */
+
+/** Игра на двоих. Ни зрителей, ни команд. */
+export const LOBBY_CAPACITY = 2;
+
+export const LobbyError = {
+  /** Комнаты с таким номером нет: её закрыли, пока игрок смотрел на список. */
+  NotFound: 'not-found',
+  /** Оба места заняты. */
+  Full: 'full',
+  /** В комнате уже идёт матч, войти в него посторонним нельзя. */
+  AlreadyStarted: 'already-started',
+  /** Действие требует быть в комнате, а игрок не в ней. */
+  NotInLobby: 'not-in-lobby',
+  /** Готовность в одиночестве ничего не выражает: соперника ещё нет. */
+  NeedOpponent: 'need-opponent',
+  /** Имя игрока не прошло проверку. */
+  BadName: 'bad-name',
+  /** Название комнаты не прошло проверку. */
+  BadTitle: 'bad-title',
+} as const;
+
+export type LobbyError = (typeof LobbyError)[keyof typeof LobbyError];
+
+export interface LobbySlotView {
+  readonly name: string;
+  readonly ready: boolean;
+  /** Открыт ли поток состояния. Ложь означает «связь потеряна». */
+  readonly connected: boolean;
+  /** Это сам спрашивающий, а не соперник. */
+  readonly you: boolean;
+}
+
+export interface LobbySummary {
+  readonly id: string;
+  readonly title: string;
+  readonly hostName: string;
+  readonly players: number;
+  readonly capacity: number;
+}
+
+export interface LobbyView {
+  readonly id: string;
+  readonly title: string;
+  readonly slots: readonly LobbySlotView[];
+  readonly capacity: number;
+}
+
+export interface MatchView {
+  readonly matchId: string;
+  readonly seed: number;
+  /** Сторона в симуляции: создателю комнаты 0, вошедшему 1. */
+  readonly side: number;
+  readonly opponentName: string;
+}
+
+/**
+ * Всё, что игрок должен знать о положении дел, целиком.
+ *
+ * Не дельта, а полный снимок, и это главное решение в устройстве
+ * комнат. Дельты экономят байты и покупают на них две беды: порядок
+ * применения и восстановление после разрыва. Полный снимок идемпотентен,
+ * порядок ему не важен, а первое же сообщение после переподключения
+ * чинит клиента целиком — включая случай «матч начался, пока связи
+ * не было».
+ */
+export interface PlayerView {
+  readonly lobbies: readonly LobbySummary[];
+  readonly lobby: LobbyView | null;
+  readonly match: MatchView | null;
+}

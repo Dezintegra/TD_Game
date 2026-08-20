@@ -4,38 +4,39 @@ import './styles.css';
 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { startGame } from './game/bootstrap.js';
-import { Hud } from './hud/Hud.js';
+import { App } from './menu/App.js';
+import { sessionActions } from './session/session.js';
 
 /**
  * Точка входа клиента.
  *
- * Игра и React стартуют независимо друг от друга — это ключевое решение
- * для отзывчивости. Игровой цикл не находится внутри React-дерева,
- * поэтому ни перерисовка HUD, ни горячая перезагрузка при разработке
- * не могут его прервать.
+ * React отвечает за меню и HUD, игровой цикл живёт вне его дерева —
+ * это ключевое решение для отзывчивости: ни перерисовка интерфейса,
+ * ни горячая перезагрузка при разработке не могут прервать матч.
+ *
+ * Здесь больше не запускается игра. Раньше матч начинался прямо
+ * при загрузке страницы, теперь его поднимает контроллер сессии,
+ * и только когда игрок этого попросил — тренировкой или готовностью
+ * в комнате.
  */
-const sceneHost = document.createElement('div');
-sceneHost.id = 'scene';
-document.body.appendChild(sceneHost);
+const root = document.getElementById('root');
+if (root === null) throw new Error('Не найден корневой элемент #root');
 
-const hudHost = document.getElementById('root');
-if (hudHost === null) throw new Error('Не найден корневой элемент #root');
-
-createRoot(hudHost).render(
+createRoot(root).render(
   <StrictMode>
-    <Hud />
+    <App />
   </StrictMode>,
 );
 
-const game = await startGame(sceneHost);
+// Профиль читается из куки после монтирования: если он есть, игрок
+// минует представление и сразу видит список комнат.
+sessionActions.start();
 
-// Горячая перезагрузка: при замене модуля гасим старый цикл,
-// иначе после нескольких правок в браузере будет крутиться
-// десяток параллельных игр.
+// Горячая перезагрузка: при замене модуля гасим матч и поток состояния,
+// иначе после нескольких правок в браузере будет крутиться десяток
+// параллельных игр и висеть столько же подписок.
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    game.stop();
-    sceneHost.remove();
+    sessionActions.dispose();
   });
 }

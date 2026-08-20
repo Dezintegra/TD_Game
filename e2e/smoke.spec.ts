@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import { bootGame, number } from './helpers.js';
 
 /**
  * Сквозные проверки.
@@ -8,21 +8,14 @@ import type { Page } from '@playwright/test';
  * тесты ядра, — а то, что вертикаль собрана: клиент поднимается, PixiJS
  * рисует, симуляция крутится, ввод доходит до мира, а интерфейс
  * показывает его состояние.
+ *
+ * Матч, в котором это проверяется, — тренировочный: он начинается
+ * одним нажатием и не требует второго человека. Комнаты и матч
+ * из комнаты проверяются отдельно, в `lobby.spec.ts`.
  */
 
-const bootGame = async (page: Page): Promise<void> => {
-  await page.goto('/');
-  await expect(page.locator('#scene canvas')).toBeVisible();
-  // Клика по полю здесь намеренно нет. Горячие клавиши слушает window,
-  // поэтому фокуса на body достаточно, а клик пришлось бы целить мимо
-  // панелей HUD — и тест ломался бы от любой правки вёрстки.
-};
-
-const number = async (page: Page, testId: string): Promise<number> =>
-  Number((await page.getByTestId(testId).textContent())?.replace(/[^\d.-]/g, ''));
-
 test('клиент поднимается, рисует поле и общается с сервером', async ({ page }) => {
-  await page.goto('/');
+  await bootGame(page);
 
   const canvas = page.locator('#scene canvas');
   await expect(canvas).toBeVisible();
@@ -50,8 +43,10 @@ test('страница загружается без ошибок в консо�
     if (message.type() === 'error') errors.push(message.text());
   });
 
-  await page.goto('/');
-  await expect(page.locator('#scene canvas')).toBeVisible();
+  // Проходим весь путь, а не только загрузку: представление и список
+  // комнат — такая же часть приложения, как и матч, и ошибка в них
+  // должна ловиться здесь же.
+  await bootGame(page);
 
   expect(errors).toEqual([]);
 });

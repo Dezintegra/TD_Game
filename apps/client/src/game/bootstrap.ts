@@ -47,19 +47,25 @@ import type { Recording } from './recording.js';
  * под управлением компьютера, и его команды попадают в тот же поток,
  * что и команды человека. Соединение с сервером остаётся диагностическим —
  * ping и pong, — и на матч не влияет.
+ *
+ * Сторона человека и seed приходят параметрами, а не зашиты константами.
+ * Причина в комнатах ожидания: матч из комнаты выдаёт seed сервер,
+ * а вошедшему достаётся сторона 1. Зашитая сторона показала бы ему
+ * чужую энергию, чужие отказы и надпись «ПОБЕДА» при собственном
+ * поражении.
  */
 export interface Game {
   stop(): void;
 }
 
+export interface GameOptions {
+  /** Seed карты. Мир восстанавливается из него целиком. */
+  readonly seed: number;
+  /** За какую сторону играет человек. Противоположная достаётся компьютеру. */
+  readonly localPlayer: number;
+}
+
 const WS_URL = import.meta.env['VITE_WS_URL'] ?? 'ws://127.0.0.1:3001/game';
-
-/** Стартовый seed. Карта воспроизводима, пока его не сменят. */
-const INITIAL_SEED = 1337;
-
-/** За кого играет человек. Противник — второй. */
-const LOCAL_PLAYER: PlayerId = asPlayerId(0);
-const OPPONENT_PLAYER: PlayerId = asPlayerId(1);
 
 /**
  * Как часто снимок матча уезжает в HUD, в тиках.
@@ -78,13 +84,21 @@ const HUD_EVERY_TICKS = 6;
  * означает дыру в записи, а дыру всё равно поймает сверка контрольных
  * сумм при воспроизведении.
  */
-const startRecording = (seed: number): Recording =>
-  createRecording({
+const startRecording = (seed: number, human: PlayerId, computer: PlayerId): Recording => {
+  // Список seed'ов противника индексируется стороной, поэтому его нельзя
+  // писать литералом: играя второй стороной, человек оставляет
+  // компьютеру нулевую, и seed обязан лечь именно в неё. Иначе арена
+  // воспроизведёт матч с безмозглым противником и разойдётся с записью
+  // на первом же его решении.
+  const aiSeeds = [0, 0];
+  aiSeeds[computer] = seed ^ 0x5bf03635;
+
+  return createRecording({
     matchId: `s${String(seed)}`,
     worldSeed: seed,
-    aiSeeds: [0, seed ^ 0x5bf03635],
+    aiSeeds,
     profiles: [DEFAULT_PROFILE_ID, DEFAULT_PROFILE_ID],
-    humanPlayer: LOCAL_PLAYER,
+    humanPlayer: human,
     // Версия кода в браузере неизвестна: git отсюда не спросить.
     // Проставит её арена при воспроизведении, а здесь честнее оставить
     // пусто, чем выдумать.
@@ -98,22 +112,28 @@ const startRecording = (seed: number): Recording =>
       }).catch(() => undefined);
     },
   });
+};
 
-export const startGame = async (host: HTMLElement): Promise<Game> => {
+export const startGame = async (host: HTMLElement, options: GameOptions): Promise<Game> => {
   const scene = await createScene(host);
   const net = createNetClient(WS_URL);
 
-  let seed = INITIAL_SEED;
-  let opponent = createOpponent(OPPONENT_PLAYER, seed ^ 0x5bf03635);
+  const localPlayer: PlayerId = asPlayerId(options.localPlayer);
+  const opponentPlayer: PlayerId = asPlayerId(options.localPlayer === 0 ? 1 : 0);
+
+  let seed = options.seed;
+  let opponent = createOpponent(opponentPlayer, seed ^ 0x5bf03635);
 
   // Лента переживает рестарт: она сама замечает, что тик пошёл назад,
   // и начинает новый матч с чистого листа. Пересоздавать её в `restart`
   // не нужно, а забыть пересоздать — можно.
-  const rejections = createRejectionFeed(LOCAL_PLAYER);
+  const rejections = createRejectionFeed(localPlayer);
 
   // Запись матча — только в разработке. В промышленной сборке условие
   // вычисляется на этапе сборки, и весь код записи из неё выпадает.
-  let recording = import.meta.env.DEV ? startRecording(seed) : undefined;
+  let recording = import.meta.env.DEV
+    ? startRecording(seed, localPlayer, opponentPlayer)
+    : undefined;
 
   /**
    * Сетка занятости пересобирается не каждый кадр, а при смене набора
@@ -160,7 +180,7 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
       if (notices !== undefined) hudActions.setNotices(notices);
 
       if (world.tick % HUD_EVERY_TICKS === 0) {
-        hudActions.setMatch(snapshot(world, controls.state));
+        hudActions.setMatch(snapshot(world, localPlayer, controls.state));
       }
 
       // Пингуем раз в секунду: этого достаточно для оценки задержки
@@ -175,7 +195,7 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
       // безопасно вызывать его каждый кадр.
       scene.setMap(world.map);
 
-      const general = world.generals[LOCAL_PLAYER];
+      const general = world.generals[localPlayer];
       if (general !== undefined && general.alive) {
         scene.follow({
           x: unitsToCells(general.position.x),
@@ -184,11 +204,11 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
       }
 
       const state = controls.state;
-      scene.render(world, LOCAL_PLAYER, {
+      scene.render(world, localPlayer, {
         buildKind: state.buildKind,
         aimingNuke: state.aimingNuke,
         hoverCell: state.hoverCell,
-        hoverAllowed: isHoverAllowed(world, state, occupancyOf(world)),
+        hoverAllowed: isHoverAllowed(world, localPlayer, state, occupancyOf(world)),
       });
     },
 
@@ -198,7 +218,7 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
   const send = (command: Command): void => loop.enqueue(command);
 
   const at = (): { player: PlayerId; tick: ReturnType<typeof asTickNumber> } => ({
-    player: LOCAL_PLAYER,
+    player: localPlayer,
     tick: asTickNumber(loop.world.tick),
   });
 
@@ -243,8 +263,10 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
     // конгруэнтный шаг. Он не претендует на качество — от него нужна лишь
     // непохожесть соседних seed.
     seed = (seed * 1664525 + 1013904223) >>> 0;
-    opponent = createOpponent(OPPONENT_PLAYER, seed ^ 0x5bf03635);
-    recording = import.meta.env.DEV ? startRecording(seed) : undefined;
+    opponent = createOpponent(opponentPlayer, seed ^ 0x5bf03635);
+    recording = import.meta.env.DEV
+      ? startRecording(seed, localPlayer, opponentPlayer)
+      : undefined;
 
     loop.reset(seed);
     occupancy = undefined;
@@ -255,7 +277,7 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
     scene.setFollowing(true);
 
     publishMapInfo();
-    hudActions.setMatch(snapshot(loop.world, controls.state));
+    hudActions.setMatch(snapshot(loop.world, localPlayer, controls.state));
   };
 
   setMatchCommands({
@@ -275,7 +297,7 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
   net.connect();
   loop.start();
   publishMapInfo();
-  hudActions.setMatch(snapshot(loop.world, controls.state));
+  hudActions.setMatch(snapshot(loop.world, localPlayer, controls.state));
 
   return {
     stop() {
@@ -300,10 +322,15 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
  * подсветка обязана появиться в том же кадре, в котором двинулась мышь,
  * то есть до того, как команда куда-либо уйдёт.
  */
-const isHoverAllowed = (world: WorldState, state: ControlState, occupancy: Occupancy): boolean => {
+const isHoverAllowed = (
+  world: WorldState,
+  playerId: PlayerId,
+  state: ControlState,
+  occupancy: Occupancy,
+): boolean => {
   if (state.hoverCell < 0) return false;
 
-  const player = world.players[LOCAL_PLAYER];
+  const player = world.players[playerId];
   if (player === undefined) return false;
 
   if (state.aimingNuke) {
@@ -319,7 +346,7 @@ const isHoverAllowed = (world: WorldState, state: ControlState, occupancy: Occup
 
   if (state.buildKind === null) return false;
 
-  const general = world.generals[LOCAL_PLAYER];
+  const general = world.generals[playerId];
   if (general === undefined || !general.alive) return false;
 
   if (world.map.cells[state.hoverCell] !== Terrain.Ground) return false;
@@ -341,11 +368,16 @@ const isHoverAllowed = (world: WorldState, state: ControlState, occupancy: Occup
 };
 
 /** Снимок матча для HUD. Все величины уже переведены в «видимые». */
-const snapshot = (world: WorldState, state: ControlState): MatchSnapshot => {
-  const player = world.players[LOCAL_PLAYER];
+const snapshot = (
+  world: WorldState,
+  playerId: PlayerId,
+  state: ControlState,
+): MatchSnapshot => {
+  const player = world.players[playerId];
 
   if (player === undefined) {
     return {
+      localPlayer: playerId,
       energy: 0,
       incomePerSecond: 0,
       unitCount: 0,
@@ -367,12 +399,12 @@ const snapshot = (world: WorldState, state: ControlState): MatchSnapshot => {
 
   const stats = playerStats(player);
   const costs = upgradeCosts(player);
-  const general = world.generals[LOCAL_PLAYER];
+  const general = world.generals[playerId];
   const target = world.structures.find((structure) => structure.id === player.targetStructure);
 
   let unitCount = 0;
   for (const unit of world.units) {
-    if (unit.owner === LOCAL_PLAYER) unitCount += 1;
+    if (unit.owner === playerId) unitCount += 1;
   }
 
   const structureCosts: number[] = [];
@@ -386,6 +418,7 @@ const snapshot = (world: WorldState, state: ControlState): MatchSnapshot => {
   }
 
   return {
+    localPlayer: playerId,
     energy: energyToVisible(player.energy),
     incomePerSecond: energyToVisible(stats.incomePerTick * TICKS_PER_SECOND),
     unitCount,

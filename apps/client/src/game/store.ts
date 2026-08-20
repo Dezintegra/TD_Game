@@ -32,6 +32,15 @@ export interface UpgradeRow {
  * значило бы размазать знание о внутреннем представлении по всему HUD.
  */
 export interface MatchSnapshot {
+  /**
+   * За какую сторону играет человек.
+   *
+   * Нужна HUD, чтобы отличить победу от поражения. Раньше сторона была
+   * зашита нулём и в снимке не значилась; с приходом комнат вошедшему
+   * достаётся сторона 1, и зашитый ноль показал бы ему «ПОБЕДА»
+   * при собственном поражении.
+   */
+  readonly localPlayer: number;
   readonly energy: number;
   readonly incomePerSecond: number;
   readonly unitCount: number;
@@ -56,6 +65,7 @@ export interface MatchSnapshot {
 }
 
 const EMPTY_MATCH: MatchSnapshot = {
+  localPlayer: 0,
   energy: 0,
   incomePerSecond: 0,
   unitCount: 0,
