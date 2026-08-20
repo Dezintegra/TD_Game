@@ -46,7 +46,7 @@ const AI: PlayerId = asPlayerId(1);
  * и доказывало, что перекладывание констант игру не изменило. Своё дело
  * оно сделало.
  */
-const GOLDEN_CHECKSUM = 1917383252;
+const GOLDEN_CHECKSUM = 1697171212;
 
 interface Outcome {
   readonly checksum: number;

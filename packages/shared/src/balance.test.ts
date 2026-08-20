@@ -17,8 +17,10 @@ import {
   UNIT_STATS,
   UPGRADE_BRANCHES,
   UnitType,
+  UpgradeStat,
   UpgradeTarget,
   energy,
+  upgradeBranchIndex,
 } from './balance.js';
 import { PPM_ONE, applyPpm, compoundPpm, growPpm } from './percent.js';
 import { DIRECTION_SCALE, DIRECTION_VECTORS, directionTowards } from './direction.js';
@@ -187,6 +189,64 @@ describe('баланс: энергия', () => {
   });
 });
 
+describe('баланс: дальность юнитов прокачивается', () => {
+  const rangeBranch = (target: UpgradeTarget): number =>
+    upgradeBranchIndex(target, UpgradeStat.Range);
+
+  it('ветки дальности есть у снайпера и гранатомётчика, но не у штурмовика', () => {
+    // У штурмовика её нет намеренно: он основа ближнего боя, и дальность
+    // сделала бы из него дешёвого снайпера.
+    expect(rangeBranch(UpgradeTarget.UnitSniper)).toBeGreaterThanOrEqual(0);
+    expect(rangeBranch(UpgradeTarget.UnitGrenadier)).toBeGreaterThanOrEqual(0);
+    expect(rangeBranch(UpgradeTarget.UnitAssault)).toBe(-1);
+  });
+
+  it('новые ветки стоят вчетверо против прочих веток своего типа', () => {
+    const costOf = (index: number): number => UPGRADE_BRANCHES[index]?.baseCost ?? 0;
+    const attackOf = (target: UpgradeTarget): number =>
+      costOf(upgradeBranchIndex(target, UpgradeStat.Attack));
+
+    expect(costOf(rangeBranch(UpgradeTarget.UnitSniper))).toBe(
+      attackOf(UpgradeTarget.UnitSniper) * 4,
+    );
+    expect(costOf(rangeBranch(UpgradeTarget.UnitGrenadier))).toBe(
+      attackOf(UpgradeTarget.UnitGrenadier) * 4,
+    );
+  });
+
+  it('новые ветки дорожают как экономика, а не как прочие', () => {
+    // У дальности пороговый эффект: уровень в какой-то момент выводит
+    // стрелка за круг ответного огня целиком.
+    expect(UPGRADE_BRANCHES[rangeBranch(UpgradeTarget.UnitSniper)]?.costGrowthPercent).toBe(25);
+    expect(UPGRADE_BRANCHES[rangeBranch(UpgradeTarget.UnitGrenadier)]?.costGrowthPercent).toBe(25);
+  });
+
+  it('новые ветки стоят в конце таблицы и ничего не сдвинули', () => {
+    // Защита сохранённых записей матчей: индекс ветки едет в команде
+    // покупки, и вставка в середину превратила бы старые записи
+    // в бессмыслицу.
+    const added = 2;
+    const tail = UPGRADE_BRANCHES.slice(UPGRADE_BRANCHES.length - added);
+
+    for (const branch of tail) expect(branch.stat).toBe(UpgradeStat.Range);
+    expect(upgradeBranchIndex(UpgradeTarget.UnitAssault, UpgradeStat.Attack)).toBe(0);
+    expect(upgradeBranchIndex(UpgradeTarget.Economy, UpgradeStat.Income)).toBe(
+      UPGRADE_BRANCHES.length - added - 1,
+    );
+  });
+
+  it('при равном числе уровней снайперская башня остаётся дальше гранатомётчика', () => {
+    // То самое свойство, ради которого верхний предел не понадобился:
+    // все ветки дальности растут одинаково, поэтому порядок сохраняется.
+    const levels = 20;
+    const factor = compoundPpm(10, levels);
+
+    expect(applyPpm(STRUCTURE_STATS[StructureKind.TowerSniper].range, factor)).toBeGreaterThan(
+      applyPpm(UNIT_STATS[UnitType.Grenadier].range, factor),
+    );
+  });
+});
+
 describe('баланс: ветки прокачки', () => {
   it('покрывают все типы юнитов, башен, стену, генерала и экономику', () => {
     const targets = new Set(UPGRADE_BRANCHES.map((entry) => entry.target));
@@ -205,9 +265,18 @@ describe('баланс: ветки прокачки', () => {
     );
   });
 
-  it('экономика дорожает на 25 процентов, прочие ветки на 10', () => {
+  it('ветки с пороговым эффектом дорожают на 25 процентов, прочие на 10', () => {
+    // Ускоренный рост цены — не привилегия экономики, а признак ветки,
+    // у которой уровень меняет не количество, а качество. У экономики это
+    // самоусиление, у дальности юнита — выход за круг ответного огня.
+    const steep = (entry: (typeof UPGRADE_BRANCHES)[number]): boolean =>
+      entry.target === UpgradeTarget.Economy ||
+      (entry.stat === UpgradeStat.Range &&
+        (entry.target === UpgradeTarget.UnitSniper ||
+          entry.target === UpgradeTarget.UnitGrenadier));
+
     for (const entry of UPGRADE_BRANCHES) {
-      expect(entry.costGrowthPercent).toBe(entry.target === UpgradeTarget.Economy ? 25 : 10);
+      expect(entry.costGrowthPercent).toBe(steep(entry) ? 25 : 10);
     }
   });
 

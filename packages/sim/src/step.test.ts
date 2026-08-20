@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   BASE_BUILD_EXCLUSION,
   BASE_INCOME_PER_TICK,
@@ -26,6 +26,7 @@ import {
   asTickNumber,
   cellsToUnits,
   distanceSquared,
+  upgradeBranchIndex,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { createWorld } from './world.js';
@@ -401,6 +402,41 @@ describe('строительство', () => {
     const after = run(dead, 5);
 
     expect(after.generals[0]?.alive).toBe(true);
+  });
+
+  it('дальность снайпера растёт от прокачки, а штурмовика — нет', () => {
+    const world = richWorld();
+    const branch = upgradeBranchIndex(UpgradeTarget.UnitSniper, UpgradeStat.Range);
+
+    const before = playerStats(playerOf(world, 0));
+    const after = playerStats(playerOf(run(world, 3, [buy(0, branch)]), 0));
+
+    expect(after.units[UnitType.Sniper].range).toBeGreaterThan(
+      before.units[UnitType.Sniper].range,
+    );
+    // У штурмовика ветки нет, и множитель для него остаётся единичным.
+    expect(after.units[UnitType.Assault].range).toBe(before.units[UnitType.Assault].range);
+    // Ветки разных типов независимы: покупка у снайпера гранатомётчика
+    // не трогает.
+    expect(after.units[UnitType.Grenadier].range).toBe(before.units[UnitType.Grenadier].range);
+  });
+
+  it('прокачка дальности действует на уже выпущенных юнитов', () => {
+    // Характеристики считаются из состояния игрока каждый тик, а не
+    // запоминаются юнитом при рождении, — но проверить это надо, а не
+    // поверить.
+    const world = richWorld();
+    const branch = upgradeBranchIndex(UpgradeTarget.UnitSniper, UpgradeStat.Range);
+
+    const withUnit = run(world, 3, [train(0, UnitType.Sniper)]);
+    expect(withUnit.units.some((unit) => unit.owner === 0)).toBe(true);
+
+    const before = playerStats(playerOf(withUnit, 0)).units[UnitType.Sniper].range;
+    const after = playerStats(playerOf(run(withUnit, 3, [buy(0, branch)]), 0)).units[
+      UnitType.Sniper
+    ].range;
+
+    expect(after).toBeGreaterThan(before);
   });
 
   it('разрушенная постройка исчезает и освобождает клетку', () => {
