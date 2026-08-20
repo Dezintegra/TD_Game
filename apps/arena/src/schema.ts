@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Схема аналитической базы.
  *
  * Главный принцип: **храним факты, а не выводы.** В таблицах лежат
@@ -58,6 +58,10 @@ create table if not exists decision (
   impatient         integer not null,
   escorting         integer not null,
   live_units        integer not null,
+  -- Своих юнитов РЯДОМ С ГЕНЕРАЛОМ. Пишется рядом с общей численностью,
+  -- а не вместо неё: расхождение двух величин и показало, что признак
+  -- «прикрыт» означал «юниты есть где-то на карте».
+  nearby_units      integer not null,
   spend_order       text not null,
   energy            integer not null,
   struck            integer not null,

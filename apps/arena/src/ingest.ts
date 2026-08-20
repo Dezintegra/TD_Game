@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+﻿import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
 import { CHILD_TABLES, SCHEMA } from './schema.js';
@@ -122,7 +122,7 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
     insert into sample values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertDecision = db.prepare(`
-    insert into decision values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    insert into decision values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertAttempt = db.prepare('insert into attempt values (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertFrontier = db.prepare('insert into frontier values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
@@ -187,6 +187,7 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
             bit(record.impatient),
             bit(record.escorting),
             record.liveUnits,
+            record.nearbyUnits,
             record.spendOrder.join(','),
             record.energy,
             bit(record.struck),

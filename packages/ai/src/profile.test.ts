@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   AI_DECISION_INTERVAL_TICKS,
   CommandKind,
@@ -6,11 +6,12 @@ import {
   UPGRADE_BRANCHES,
   UpgradeTarget,
   asPlayerId,
+  cellsToUnits,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import { createWorld, step } from '@td/sim';
+import { createWorld, playerStats, step } from '@td/sim';
 import { createOpponent } from './opponent.js';
-import { BASELINE_PROFILE, patienceDecisions } from './profile.js';
+import { BASELINE_PROFILE, escortRadius, patienceDecisions } from './profile.js';
 import type { AiProfile } from './profile.js';
 import type { AttemptRecord, DecisionRecord } from './observer.js';
 
@@ -47,6 +48,40 @@ const attemptsOf = (profile: AiProfile, seconds: number): readonly AttemptRecord
 
   return attempts;
 };
+
+describe('прикрытие генерала считается рядом с ним', () => {
+  it('радиус соседства равен сумме дальностей генерала и юнита', () => {
+    // При нынешних двух клетках у обоих получается четыре: на таком
+    // расстоянии юнит и генерал достают до одного противника, то есть
+    // действительно дерутся вместе.
+    const player = createWorld(SEED).players[AI];
+    if (player === undefined) throw new Error('нет игрока');
+
+    expect(escortRadius(playerStats(player))).toBe(cellsToUnits(4));
+  });
+
+  it('юниты у своей базы прикрытием дальнего генерала не считаются', () => {
+    // Замер поймал это сразу: в шести случаях из десяти признак «прикрыт»
+    // выполнялся, когда рядом с генералом не было ни одного своего.
+    const records: DecisionRecord[] = [];
+    const opponent = createOpponent(AI, SEED, BASELINE_PROFILE, (record) => {
+      records.push(record);
+    });
+
+    let world = createWorld(SEED);
+    for (let tick = 0; tick < 180 * TICKS_PER_SECOND; tick += 1) {
+      world = step(world, opponent.decide(world));
+    }
+
+    const apart = records.filter((record) => record.liveUnits > record.nearbyUnits);
+
+    expect(records.length).toBeGreaterThan(0);
+    expect(apart.length).toBeGreaterThan(0);
+    for (const record of records) {
+      expect(record.nearbyUnits).toBeLessThanOrEqual(record.liveUnits);
+    }
+  });
+});
 
 describe('цели прокачки выбираются долями, а не порядком', () => {
   /** Все ветки, купленные противником за матч. */

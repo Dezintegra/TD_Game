@@ -36,7 +36,7 @@ import {
   playerStats,
   upgradeCosts,
 } from '@td/sim';
-import type { Occupancy, PlayerState, StructureState, WorldState } from '@td/sim';
+import type { Occupancy, PlayerState, PlayerStats, StructureState, WorldState } from '@td/sim';
 import { approachOf, otherPlayer, walkField } from './approach.js';
 import type { Approach } from './approach.js';
 import {
@@ -50,9 +50,16 @@ import {
 import type { Verdict } from './posture.js';
 import { AttemptNote } from './observer.js';
 import type { AttemptRecord, AttemptResult, DecisionObserver, DecisionRecord } from './observer.js';
-import { BASELINE_PROFILE, patienceDecisions, phaseAt, reserveOf } from './profile.js';
+import { BASELINE_PROFILE, escortRadius, patienceDecisions, phaseAt, reserveOf } from './profile.js';
 import type { AiProfile, PhaseProfile, Spending } from './profile.js';
-import { hasComparableUpgrade, orderBySpendGain, unitGain, unitPrice, upgradeGain } from './value.js';
+import {
+  discountedEfficiency,
+  hasComparableUpgrade,
+  orderBySpendGain,
+  unitGain,
+  unitPrice,
+  upgradeGain,
+} from './value.js';
 
 /**
  * Противник под управлением компьютера.
@@ -205,9 +212,10 @@ export const createOpponent = (
       const struck = tryNuke(commands, world, me, player, profile);
 
       const attempts: AttemptRecord[] = [];
+      const nearby = escortNearby(world, me, stats);
       const escorting =
         (verdict?.frontier.fraction ?? 0) > profile.movement.advanceFraction &&
-        liveUnits(world, me) < profile.escort.units;
+        nearby < profile.escort.units;
       // Копить бесконечно нельзя: если накопление затянулось, на этом
       // решении желание «подождать» игнорируется, и деньги уходят на то,
       // что доступно сейчас. Предел выводится из горизонта накопления,
@@ -226,9 +234,20 @@ export const createOpponent = (
       // Сопровождение генерала оставлено отдельной веткой, а не сведено
       // к тому же сравнению: там речь не о выгоде покупки, а о том, что
       // генерал на дальнем рубеже без своих рядом просто не живёт.
+      const undefended = !world.structures.some(
+        (structure) =>
+          structure.owner === me &&
+          structure.kind !== StructureKind.Base &&
+          structure.kind !== StructureKind.Wall,
+      );
+
       const spendOrder = escorting
         ? profile.escort.spend
-        : orderBySpendGain(phase.spend, spendEfficiency(world, me, player, phase, profile, verdict));
+        : orderBySpendGain(
+            phase.spend,
+            spendEfficiency(world, me, player, phase, profile, verdict),
+            undefended,
+          );
 
       if (!struck) {
         let waited = false;
@@ -284,6 +303,7 @@ export const createOpponent = (
             waitStreak,
             impatient,
             escorting,
+            nearby,
             spendOrder,
             attempts,
             verdicts,
@@ -306,6 +326,7 @@ interface Observed {
   readonly waitStreak: number;
   readonly impatient: boolean;
   readonly escorting: boolean;
+  readonly nearby: number;
   readonly spendOrder: readonly Spending[];
   readonly attempts: readonly AttemptRecord[];
   readonly verdicts: readonly Verdict[];
@@ -348,6 +369,7 @@ const record = (
     impatient: seen.impatient,
     escorting: seen.escorting,
     liveUnits: liveUnits(world, me),
+    nearbyUnits: seen.nearby,
     spendOrder: seen.spendOrder,
     attempts: seen.attempts,
     frontiers: seen.verdicts.map((entry) => ({
@@ -394,15 +416,19 @@ const spendEfficiency = (
   const stats = playerStats(player);
   const efficiency: Partial<Record<Spending, number>> = {};
 
+  const reserve = reserveOf(phase);
+  const worth = (gain: number, price: number): number =>
+    discountedEfficiency(gain, price + reserve, player.energy, stats.incomePerTick, profile);
+
   const trainPrice = unitPrice(stats, phase);
-  if (trainPrice > 0) efficiency.train = unitGain(stats, phase, profile) / trainPrice;
+  if (trainPrice > 0) efficiency.train = worth(unitGain(stats, phase, profile), trainPrice);
 
   const towerPrice = stats.structures[StructureKind.TowerBasic].cost;
-  if (towerPrice > 0) efficiency.build = Math.max(0, verdict?.gain ?? 0) / towerPrice;
+  if (towerPrice > 0) efficiency.build = worth(Math.max(0, verdict?.gain ?? 0), towerPrice);
 
   if (hasComparableUpgrade(phase)) {
     const best = upgradeGain(world, me, stats, phase, profile, upgradeCosts(player));
-    efficiency.upgrade = best.price > 0 ? best.gain / best.price : 0;
+    efficiency.upgrade = worth(best.gain, best.price);
   }
 
   return efficiency;
@@ -411,6 +437,30 @@ const spendEfficiency = (
 /** Сколько юнитов игрока живо на карте. */
 const liveUnits = (world: WorldState, me: PlayerId): number =>
   world.units.reduce((count, unit) => (unit.owner === me ? count + 1 : count), 0);
+
+/**
+ * Сколько своих юнитов стоит РЯДОМ С ГЕНЕРАЛОМ.
+ *
+ * Именно это и означает «прикрыт», хотя раньше считались все живые юниты
+ * на карте. Разница не теоретическая: восемь штурмовиков, толпящихся
+ * у собственной базы, не помогают генералу, стоящему у чужой, ничем —
+ * а признак «прикрыт» при этом выполнялся, и противник спокойно уходил
+ * вперёд один.
+ */
+const escortNearby = (world: WorldState, me: PlayerId, stats: PlayerStats): number => {
+  const general = world.generals[me];
+  if (general === undefined || !general.alive) return 0;
+
+  const radius = escortRadius(stats);
+
+  return world.units.reduce(
+    (count, unit) =>
+      unit.owner === me && distanceSquared(unit.position, general.position) <= radius * radius
+        ? count + 1
+        : count,
+    0,
+  );
+};
 
 /**
  * Стоит ли копить на покупку или проще заняться чем-то другим.

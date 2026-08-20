@@ -121,6 +121,15 @@ export interface DecisionRecord {
    */
   readonly escorting: boolean;
   readonly liveUnits: number;
+  /**
+   * Сколько своих юнитов рядом с генералом.
+   *
+   * Пишется рядом с общей численностью, а не вместо неё, и это важно:
+   * именно расхождение двух величин показало, что «прикрыт» означало
+   * «юниты есть где-то на карте». Из одной только численности этого
+   * не увидеть.
+   */
+  readonly nearbyUnits: number;
   readonly spendOrder: readonly Spending[];
   readonly attempts: readonly AttemptRecord[];
   /** Оценки ВСЕХ рубежей, а не только выбранного. */

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import { StructureKind, TICKS_PER_SECOND, asPlayerId } from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import { cellAt, checksum, createWorld, step } from '@td/sim';
@@ -46,7 +46,7 @@ const AI: PlayerId = asPlayerId(1);
  * и доказывало, что перекладывание констант игру не изменило. Своё дело
  * оно сделало.
  */
-const GOLDEN_CHECKSUM = 1663937665;
+const GOLDEN_CHECKSUM = 1190010656;
 
 interface Outcome {
   readonly checksum: number;
@@ -107,12 +107,12 @@ describe('эталон профиля по умолчанию', () => {
     // именно эти числа покажут, где искать: пропала прокачка, не там
     // построено или генерал не дошёл.
     expect(outcome).toMatchObject({
-      structures: 3,
-      units: 10,
-      upgradeLevels: 30,
-      energy: 1451,
-      commands: 216,
-      furthestFraction: 1.0222,
+      structures: 1,
+      units: 52,
+      upgradeLevels: 12,
+      energy: 375,
+      commands: 164,
+      furthestFraction: 1.0444,
     });
   });
 
@@ -134,10 +134,31 @@ describe('эталон профиля по умолчанию', () => {
 });
 
 describe('профиль действительно влияет на игру', () => {
+  /**
+   * Свидетель влияния — горизонт накопления, а не частота стен.
+   *
+   * `WALL_LIGHT_PROFILE` на эту роль больше не годится, и это само по себе
+   * находка: он отличается от базового только тем, как часто ставит стену,
+   * а противник теперь строит так мало, что счётчик построек не доходит
+   * ни до четвёртой, ни до восьмой. Оба профиля дают побайтово одинаковый
+   * матч, и «профили работают» снова осталось бы без свидетеля.
+   *
+   * Число стен — предмет `fortify-approaches`; когда постройки вернутся
+   * в матч, свидетелем снова сможет стать и он.
+   */
+  const patient: AiProfile = {
+    ...BASELINE_PROFILE,
+    id: 'test-patient',
+    spending: { ...BASELINE_PROFILE.spending, savingHorizonSeconds: 5 },
+  };
+
   it('другой профиль даёт другой матч', () => {
-    // Без этой проверки «профили работают» осталось бы утверждением
-    // без свидетеля: базовый профиль обязан повторять прежнее поведение
-    // в точности, и по нему различия не увидеть в принципе.
-    expect(play(WALL_LIGHT_PROFILE).checksum).not.toBe(GOLDEN_CHECKSUM);
+    expect(play(patient).checksum).not.toBe(GOLDEN_CHECKSUM);
+  });
+
+  it('профиль, различающийся только частотой стен, сейчас не различим', () => {
+    // Проверка-свидетель находки выше. Она обязана начать падать, когда
+    // постройки вернутся в матч, — и это будет хорошая новость.
+    expect(play(WALL_LIGHT_PROFILE).checksum).toBe(GOLDEN_CHECKSUM);
   });
 });
