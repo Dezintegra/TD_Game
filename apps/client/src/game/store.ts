@@ -17,6 +17,33 @@ import type { Notice } from './rejections.js';
  */
 export type ConnectionStatus = 'offline' | 'connecting' | 'online';
 
+/**
+ * Положение дел в сетевом матче — то, чего не выразить состоянием мира.
+ *
+ * «Ждём соперника» и «восстанавливаемся» выглядят на поле одинаково:
+ * мир стоит. Разница для игрока огромная, и молчать о ней нельзя —
+ * неподвижная картинка без объяснения читается как поломка.
+ */
+export type MatchPhaseView =
+  /** Соединение открыто, приветствие ещё не пришло. */
+  | 'connecting'
+  /** Матч заведён, но второй участник ещё не подключился. */
+  | 'awaiting-opponent'
+  /** Мир восстанавливается из истории команд. */
+  | 'catching-up'
+  | 'playing'
+  /** Расхождение с сервером: идёт пересборка. */
+  | 'desynced'
+  /** Пересборка не помогла: играть дальше нельзя. */
+  | 'stopped'
+  | 'finished';
+
+/** Чем кончился матч. Причина приходит от сервера вместе с победителем. */
+export interface MatchOutcomeView {
+  readonly winner: number | null;
+  readonly reason: number;
+}
+
 /** Строка панели прокачки. Ровно то, что видно игроку. */
 export interface UpgradeRow {
   readonly level: number;
@@ -109,6 +136,37 @@ interface HudState {
    * один тик, и в снимок он попадал бы примерно в одном случае из шести.
    */
   readonly notices: readonly Notice[];
+  /** Что сейчас происходит с сетевым матчем. */
+  readonly phase: MatchPhaseView;
+  /**
+   * Задержка ввода в тиках: через сколько тиков команда попадёт в мир.
+   *
+   * Величину назначает сервер по худшему из каналов, одну на обоих.
+   * Игрок вправе знать, почему постройка появляется не мгновенно.
+   */
+  readonly inputDelayTicks: number;
+  /** Сколько своих команд ещё летит к серверу и обратно. */
+  readonly pendingCommands: number;
+  /**
+   * Доля восстановленного мира при догоне, от нуля до единицы.
+   *
+   * Догон занимает секунды, и молчаливое ожидание неотличимо от зависания.
+   * Полоса прогресса отвечает на единственный вопрос, который в этот
+   * момент есть у игрока: это надолго?
+   */
+  readonly catchUpProgress: number;
+  /**
+   * Последняя сверка: тик подтверждённого мира и его контрольная сумма.
+   *
+   * Величина диагностическая и текстом не показывается. Нужна она затем,
+   * что «миры сошлись» — единственное настоящее свидетельство общего
+   * матча, и проверять его косвенно, по картинке, значит не проверять
+   * вовсе.
+   */
+  readonly syncTick: number;
+  readonly syncChecksum: number;
+  /** Исход матча от сервера. До конца матча — null. */
+  readonly outcome: MatchOutcomeView | null;
 
   setStatus(status: ConnectionStatus): void;
   setTick(tick: number): void;
@@ -117,6 +175,10 @@ interface HudState {
   setMapInfo(seed: number, visiblePercent: number, rockPercent: number): void;
   setMatch(match: MatchSnapshot): void;
   setNotices(notices: readonly Notice[]): void;
+  setPhase(phase: MatchPhaseView): void;
+  setNetwork(delayTicks: number, pending: number, catchUpProgress: number): void;
+  setSync(tick: number, checksum: number): void;
+  setOutcome(outcome: MatchOutcomeView | null): void;
 }
 
 export const useHudStore = create<HudState>((set) => ({
@@ -130,6 +192,13 @@ export const useHudStore = create<HudState>((set) => ({
   rockPercent: 0,
   match: EMPTY_MATCH,
   notices: [],
+  phase: 'connecting',
+  inputDelayTicks: 0,
+  pendingCommands: 0,
+  catchUpProgress: 0,
+  syncTick: 0,
+  syncChecksum: 0,
+  outcome: null,
 
   setStatus: (status) => set({ status }),
   setTick: (tick) => set({ tick }),
@@ -138,6 +207,22 @@ export const useHudStore = create<HudState>((set) => ({
   setMapInfo: (seed, visiblePercent, rockPercent) => set({ seed, visiblePercent, rockPercent }),
   setMatch: (match) => set({ match }),
   setNotices: (notices) => set({ notices }),
+  setPhase: (phase) => set({ phase }),
+
+  // Три величины разом, одним изменением состояния: они меняются вместе
+  // и читаются вместе, а три отдельных вызова означали бы три перерисовки
+  // панели на каждый кадр.
+  setNetwork: (inputDelayTicks, pendingCommands, catchUpProgress) =>
+    set((state) =>
+      state.inputDelayTicks === inputDelayTicks &&
+      state.pendingCommands === pendingCommands &&
+      state.catchUpProgress === catchUpProgress
+        ? state
+        : { inputDelayTicks, pendingCommands, catchUpProgress },
+    ),
+
+  setSync: (syncTick, syncChecksum) => set({ syncTick, syncChecksum }),
+  setOutcome: (outcome) => set({ outcome }),
 }));
 
 /**
@@ -153,6 +238,11 @@ export const hudActions = {
     useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent),
   setMatch: (match: MatchSnapshot) => useHudStore.getState().setMatch(match),
   setNotices: (notices: readonly Notice[]) => useHudStore.getState().setNotices(notices),
+  setPhase: (phase: MatchPhaseView) => useHudStore.getState().setPhase(phase),
+  setNetwork: (delayTicks: number, pending: number, catchUpProgress: number) =>
+    useHudStore.getState().setNetwork(delayTicks, pending, catchUpProgress),
+  setSync: (tick: number, checksum: number) => useHudStore.getState().setSync(tick, checksum),
+  setOutcome: (outcome: MatchOutcomeView | null) => useHudStore.getState().setOutcome(outcome),
 };
 
 /**

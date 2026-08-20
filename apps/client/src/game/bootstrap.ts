@@ -1,4 +1,5 @@
-import {
+﻿import {
+  CHECKSUM_INTERVAL_TICKS,
   CommandKind,
   NUKE_BASE_EXCLUSION,
   NUKE_COST,
@@ -8,61 +9,73 @@ import {
   Terrain,
   UNIT_CAP,
   asPlayerId,
-  asTickNumber,
   distanceSquared,
   energyToVisible,
   unitsToCells,
 } from '@td/shared';
-import type { Command, PlayerId, StructureKind as StructureKindType, UnitType } from '@td/shared';
+import type { CommandIntent, PlayerId, StructureKind as StructureKindType, UnitType } from '@td/shared';
 import {
   buildOccupancy,
   cellAt,
   cellCentre,
+  checksum,
   playerStats,
   rockPercent,
   upgradeCosts,
 } from '@td/sim';
 import type { Occupancy, WorldState } from '@td/sim';
-import { createGameLoop } from './loop.js';
+import { createMatchGuest } from '@td/netplay';
+import type { GuestStatus } from '@td/netplay';
+import { createRenderLoop } from './loop.js';
 import { createNetClient } from './net.js';
+import type { NetClient } from './net.js';
 import { createScene } from './scene.js';
 import { visibleMapPercent } from './iso.js';
 import { hudActions, setMatchCommands } from './store.js';
-import type { MatchSnapshot } from './store.js';
+import type { MatchPhaseView, MatchSnapshot } from './store.js';
 import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
-import { DEFAULT_PROFILE_ID, createOpponent } from '@td/ai';
 import { createRejectionFeed } from './rejections.js';
 import { createRecording } from './recording.js';
 import type { Recording } from './recording.js';
 
 /**
- * Сборка игры воедино: сцена, цикл, сеть, управление, противник.
+ * Сборка игры воедино: сцена, сеть, участие в матче, управление.
  *
  * Живёт вне React намеренно. React-компоненты монтируются и размонтируются
- * по своим правилам, а игровой цикл должен пережить любую перерисовку HUD,
+ * по своим правилам, а игра должна пережить любую перерисовку HUD,
  * включая горячую перезагрузку при разработке.
  *
- * Матч идёт целиком в браузере: за второго игрока играет противник
- * под управлением компьютера, и его команды попадают в тот же поток,
- * что и команды человека. Соединение с сервером остаётся диагностическим —
- * ping и pong, — и на матч не влияет.
+ * Мир здесь больше не считается сам по себе. Его ведёт сервер, а сюда
+ * приезжают кадры команд, из которых `@td/netplay` собирает две копии:
+ * подтверждённую и предсказанную. Рисуется предсказанная — та, в которой
+ * уже применены собственные ещё не подтверждённые действия, — поэтому
+ * отклик на нажатие остаётся в том же кадре.
  *
- * Сторона человека и seed приходят параметрами, а не зашиты константами.
- * Причина в комнатах ожидания: матч из комнаты выдаёт seed сервер,
- * а вошедшему достаётся сторона 1. Зашитая сторона показала бы ему
- * чужую энергию, чужие отказы и надпись «ПОБЕДА» при собственном
- * поражении.
+ * Противника под управлением компьютера здесь нет и быть не может:
+ * он теперь такой же участник, подключённый к серверу отдельно.
+ * Играя против компьютера, клиент не отличает его от человека — и это
+ * ровно то свойство, ради которого всё затевалось.
  */
 export interface Game {
   stop(): void;
 }
 
 export interface GameOptions {
-  /** Seed карты. Мир восстанавливается из него целиком. */
+  /** Seed карты, выданный сервером. Приходит и в приветствии — сверяем. */
   readonly seed: number;
-  /** За какую сторону играет человек. Противоположная достаётся компьютеру. */
+  /** За какую сторону играет человек. */
   readonly localPlayer: number;
+  /** Билет на вход в матч. */
+  readonly ticket: string;
+  /**
+   * «Начать заново». Матч теперь общий, поэтому перезапуск — не дело
+   * игрового поля: сменить карту в одиночку нельзя, можно лишь начать
+   * новый матч, а это решает сессия.
+   */
+  readonly onRestart?: (() => void) | undefined;
+  /** Соединение отвергнуто сервером: версия протокола или билет. */
+  readonly onRejected?: ((code: number) => void) | undefined;
 }
 
 const WS_URL = import.meta.env['VITE_WS_URL'] ?? 'ws://127.0.0.1:3001/game';
@@ -75,33 +88,37 @@ const WS_URL = import.meta.env['VITE_WS_URL'] ?? 'ws://127.0.0.1:3001/game';
  */
 const HUD_EVERY_TICKS = 6;
 
+/** Как часто меряется задержка канала. */
+const PING_EVERY_MS = 1000;
+
+const PHASES: Readonly<Record<GuestStatus, MatchPhaseView>> = {
+  idle: 'connecting',
+  'catching-up': 'catching-up',
+  playing: 'playing',
+  desynced: 'desynced',
+  stopped: 'stopped',
+  finished: 'finished',
+};
+
 /**
  * Начать запись матча.
  *
  * Отправка — обычный POST на локальный сервер разработки, без ожидания
  * ответа: запись это побочное дело, и тормозить из-за неё игру нельзя.
- * Неудачную отправку мы намеренно не повторяем — потерянная порция
- * означает дыру в записи, а дыру всё равно поймает сверка контрольных
- * сумм при воспроизведении.
+ *
+ * В сетевом матче запись стала полной: раньше в неё попадали только
+ * команды человека, а решения компьютера арена восстанавливала прогоном.
+ * Теперь кадрами приходят команды обеих сторон, и воспроизводить нечего —
+ * достаточно подать записанное.
  */
-const startRecording = (seed: number, human: PlayerId, computer: PlayerId): Recording => {
-  // Список seed'ов противника индексируется стороной, поэтому его нельзя
-  // писать литералом: играя второй стороной, человек оставляет
-  // компьютеру нулевую, и seed обязан лечь именно в неё. Иначе арена
-  // воспроизведёт матч с безмозглым противником и разойдётся с записью
-  // на первом же его решении.
-  const aiSeeds = [0, 0];
-  aiSeeds[computer] = seed ^ 0x5bf03635;
-
-  return createRecording({
+const startRecording = (seed: number, human: PlayerId): Recording =>
+  createRecording({
     matchId: `s${String(seed)}`,
     worldSeed: seed,
-    aiSeeds,
-    profiles: [DEFAULT_PROFILE_ID, DEFAULT_PROFILE_ID],
+    aiSeeds: [0, 0],
+    profiles: [],
     humanPlayer: human,
     // Версия кода в браузере неизвестна: git отсюда не спросить.
-    // Проставит её арена при воспроизведении, а здесь честнее оставить
-    // пусто, чем выдумать.
     gitSha: '',
     gitDirty: true,
     send: (lines) => {
@@ -112,28 +129,109 @@ const startRecording = (seed: number, human: PlayerId, computer: PlayerId): Reco
       }).catch(() => undefined);
     },
   });
-};
 
 export const startGame = async (host: HTMLElement, options: GameOptions): Promise<Game> => {
   const scene = await createScene(host);
-  const net = createNetClient(WS_URL);
 
   const localPlayer: PlayerId = asPlayerId(options.localPlayer);
-  const opponentPlayer: PlayerId = asPlayerId(options.localPlayer === 0 ? 1 : 0);
+  const seed = options.seed;
 
-  let seed = options.seed;
-  let opponent = createOpponent(opponentPlayer, seed ^ 0x5bf03635);
-
-  // Лента переживает рестарт: она сама замечает, что тик пошёл назад,
-  // и начинает новый матч с чистого листа. Пересоздавать её в `restart`
-  // не нужно, а забыть пересоздать — можно.
+  // Лента отказов читает подтверждённый мир, а не предсказанный.
+  // Предсказание живёт несколько тиков и пересобирается на каждый кадр,
+  // поэтому один и тот же отказ показался бы игроку по нескольку раз,
+  // а отказ, которого на самом деле не было, — хотя бы раз.
   const rejections = createRejectionFeed(localPlayer);
 
   // Запись матча — только в разработке. В промышленной сборке условие
   // вычисляется на этапе сборки, и весь код записи из неё выпадает.
-  let recording = import.meta.env.DEV
-    ? startRecording(seed, localPlayer, opponentPlayer)
-    : undefined;
+  const recording = import.meta.env.DEV ? startRecording(seed, localPlayer) : undefined;
+
+  let mapPublished = false;
+  let lastHudTick = -1;
+  let lastPingMs = 0;
+
+  // Участник матча и сетевой клиент нужны друг другу: один отдаёт
+  // сообщения, второй их доставляет и приносит ответы. Кольцо разорвано
+  // порядком: `net` объявлен ниже, но к моменту первой отправки уже
+  // создан — до подключения отправлять нечего.
+  const guest = createMatchGuest({
+    send: (message) => net.send(message),
+
+    onStatus: (status) => {
+      // «Играем» сразу после приветствия — это ещё не игра: пока
+      // не подключился соперник, сервер не считает ни одного тика.
+      // Мир при этом стоит, и неподвижная картинка без объяснения
+      // читается игроком как поломка.
+      const waiting = status === 'playing' && (guest.confirmed?.tick ?? 0) === 0;
+      hudActions.setPhase(waiting ? 'awaiting-opponent' : (PHASES[status] ?? 'playing'));
+    },
+
+    onFrame: (tick, commands) => {
+      if (tick === 0) hudActions.setPhase('playing');
+
+      recording?.commands(tick, commands);
+
+      const confirmed = guest.confirmed;
+      if (confirmed === null) return;
+
+      recording?.tick(confirmed);
+      hudActions.setTick(confirmed.tick);
+
+      // Раз в секунду — свидетельство того, что мир общий. Считать сумму
+      // чаще незачем: расхождение никуда не денется, а лишний обход
+      // тысяч сущностей на каждом тике заметен.
+      if (confirmed.tick % CHECKSUM_INTERVAL_TICKS === 0) {
+        hudActions.setSync(confirmed.tick, checksum(confirmed));
+      }
+
+      // Отказы читаются на КАЖДОМ кадре, в отличие от снимка матча:
+      // запись отказа живёт ровно один тик, и, пойди она через снимок,
+      // до игрока доезжал бы примерно один отказ из шести.
+      const notices = rejections.accept(confirmed.tick, confirmed.rejections);
+      if (notices !== undefined) hudActions.setNotices(notices);
+    },
+
+    // Показания HUD снимаются здесь, а не в цикле отрисовки. Разница
+    // видна там, где её не ждёшь: браузер замораживает отрисовку
+    // в скрытой вкладке, а сеть продолжает идти, и снятые из отрисовки
+    // цифры в такой вкладке застывают, хотя матч идёт своим чередом.
+    onPredicted: (world) => {
+      if (!mapPublished) {
+        publishMapInfo(world);
+        mapPublished = true;
+      }
+
+      const serverTick = guest.serverTick;
+      hudActions.setNetwork(
+        guest.delayTicks,
+        guest.pendingCount,
+        serverTick === 0 ? 0 : Math.min(1, (guest.confirmed?.tick ?? 0) / serverTick),
+      );
+
+      if (world.tick !== lastHudTick && world.tick % HUD_EVERY_TICKS === 0) {
+        lastHudTick = world.tick;
+        hudActions.setMatch(snapshot(world, localPlayer, controls.state));
+      }
+    },
+
+    onOutcome: (outcome) =>
+      hudActions.setOutcome({ winner: outcome.winner, reason: outcome.reason }),
+
+    onDesync: (tick, recovering) => {
+      console.warn(
+        recovering
+          ? `Расхождение с сервером на тике ${String(tick)}: пересобираю мир из истории`
+          : `Расхождение с сервером на тике ${String(tick)} осталось после пересборки`,
+      );
+    },
+  });
+
+  const net: NetClient = createNetClient({
+    url: WS_URL,
+    ticket: options.ticket,
+    onMessage: (message) => guest.receive(message),
+    ...(options.onRejected === undefined ? {} : { onRejected: options.onRejected }),
+  });
 
   /**
    * Сетка занятости пересобирается не каждый кадр, а при смене набора
@@ -151,46 +249,22 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     return occupancy;
   };
 
-  const loop = createGameLoop({
-    seed,
+  const publishMapInfo = (world: WorldState): void => {
+    const { width, height } = scene.viewportSize;
+    hudActions.setMapInfo(seed, visibleMapPercent(width, height), rockPercent(world.map));
+  };
 
-    commands: (world) => opponent.decide(world),
-
-    // Команды записываются здесь, а не в момент нажатия: до симуляции
-    // они доезжают следующим кадром, и тик к тому времени может уйти
-    // вперёд. Воспроизведение подаёт их по тику мира до шага.
-    onStep: (world, commands) => recording?.commands(world.tick, commands),
-
-    onTick: (world) => {
-      recording?.tick(world);
-      hudActions.setTick(world.tick);
-
-      // Отказы читаются на КАЖДОМ тике, в отличие от снимка матча.
-      //
-      // Запись отказа живёт ровно один тик, а снимок снимается раз
-      // в `HUD_EVERY_TICKS`. Пойди отказы через снимок — до игрока
-      // доезжал бы примерно один из шести, причём совершенно случайный.
-      // Ошибка эта тихая: в браузере она выглядит как «иногда почему-то
-      // не показывает», и ловится месяцами.
-      //
-      // Цена такого чтения — сравнение длины пустого массива с нулём:
-      // отказ это исключение, и в подавляющем большинстве тиков список
-      // пуст, а лента в этом случае молчит и store не трогает.
-      const notices = rejections.accept(world.tick, world.rejections);
-      if (notices !== undefined) hudActions.setNotices(notices);
-
-      if (world.tick % HUD_EVERY_TICKS === 0) {
-        hudActions.setMatch(snapshot(world, localPlayer, controls.state));
+  const loop = createRenderLoop({
+    onFrame: () => {
+      const now = performance.now();
+      if (now - lastPingMs >= PING_EVERY_MS) {
+        lastPingMs = now;
+        net.ping(guest.confirmed?.tick ?? 0);
       }
 
-      // Пингуем раз в секунду: этого достаточно для оценки задержки
-      // и не создаёт лишнего трафика.
-      if (world.tick % TICKS_PER_SECOND === 0) {
-        net.ping(world.tick);
-      }
-    },
+      const world = guest.predicted;
+      if (world === null) return;
 
-    onRender: (world) => {
       // setMap перестраивает геометрию только при смене карты, поэтому
       // безопасно вызывать его каждый кадр.
       scene.setMap(world.map);
@@ -215,33 +289,37 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     onFps: (fps) => hudActions.setFps(fps),
   });
 
-  const send = (command: Command): void => loop.enqueue(command);
-
-  const at = (): { player: PlayerId; tick: ReturnType<typeof asTickNumber> } => ({
-    player: localPlayer,
-    tick: asTickNumber(loop.world.tick),
-  });
+  /**
+   * Отдать своё действие.
+   *
+   * Тик не проставляется здесь намеренно: его знает только сетевой слой,
+   * которому известны и задержка ввода, и номер подтверждённого тика.
+   * Считать его в каждом обработчике клавиш значило бы завести пять копий
+   * одной арифметики, которые рано или поздно разойдутся на единицу.
+   */
+  const send = (intent: CommandIntent): void => {
+    guest.issue(intent);
+  };
 
   /**
    * Заказ пачки юнитов.
    *
    * Это `count` обычных команд заказа, а не одна команда «заказать пачку».
    * Ядро проверяет каждую отдельно — цену, потолок очереди, — и лишние
-   * отклоняются молча. Отдельная команда потребовала бы дублировать
-   * эти проверки в частичном виде.
+   * отклоняются молча.
    */
   const train = (unitType: UnitType, count: number): void => {
     for (let order = 0; order < count; order += 1) {
-      send({ kind: CommandKind.TrainUnit, ...at(), unitType });
+      send({ kind: CommandKind.TrainUnit, unitType });
     }
   };
 
   const controls = attachControls(host, {
-    setDirection: (direction) => send({ kind: CommandKind.MoveGeneral, ...at(), direction }),
-    build: (cell, structure) => send({ kind: CommandKind.Build, ...at(), cell, structure }),
+    setDirection: (direction) => send({ kind: CommandKind.MoveGeneral, direction }),
+    build: (cell, structure) => send({ kind: CommandKind.Build, cell, structure }),
     train,
-    setTarget: (cell) => send({ kind: CommandKind.SetTarget, ...at(), cell }),
-    nuke: (cell) => send({ kind: CommandKind.LaunchNuke, ...at(), cell }),
+    setTarget: (cell) => send({ kind: CommandKind.SetTarget, cell }),
+    nuke: (cell) => send({ kind: CommandKind.LaunchNuke, cell }),
     pan: (dx, dy) => scene.panBy(dx, dy),
     jumpTo: (cell) => scene.centreOnCell(cell),
     recentre: () => scene.setFollowing(true),
@@ -249,55 +327,25 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     minimapCellAtScreen: (x, y) => scene.minimapCellAtScreen(x, y),
   });
 
-  const publishMapInfo = (): void => {
-    const { width, height } = scene.viewportSize;
-    hudActions.setMapInfo(seed, visibleMapPercent(width, height), rockPercent(loop.world.map));
-  };
-
-  const restart = (): void => {
-    // Прошлый матч дописывается до конца перед сменой seed: иначе
-    // последние полминуты игры просто пропали бы.
-    recording?.flush();
-
-    // Тот же генератор, что и в старом управлении картой: линейный
-    // конгруэнтный шаг. Он не претендует на качество — от него нужна лишь
-    // непохожесть соседних seed.
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    opponent = createOpponent(opponentPlayer, seed ^ 0x5bf03635);
-    recording = import.meta.env.DEV
-      ? startRecording(seed, localPlayer, opponentPlayer)
-      : undefined;
-
-    loop.reset(seed);
-    occupancy = undefined;
-    occupancyFor = undefined;
-
-    controls.setBuildKind(null);
-    controls.setAimingNuke(false);
-    scene.setFollowing(true);
-
-    publishMapInfo();
-    hudActions.setMatch(snapshot(loop.world, localPlayer, controls.state));
-  };
-
   setMatchCommands({
     train: (unitType, count) => train(unitType as UnitType, count),
     setBuildKind: (kind) => controls.setBuildKind(kind as StructureKindType | null),
     toggleNukeAim: () => controls.setAimingNuke(!controls.state.aimingNuke),
-    buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, ...at(), branch }),
-    restart,
+    buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, branch }),
+    restart: () => options.onRestart?.(),
   });
 
   const onResize = (): void => {
     scene.resize();
-    publishMapInfo();
+    const world = guest.predicted;
+    if (world !== null) publishMapInfo(world);
   };
   window.addEventListener('resize', onResize);
 
+  hudActions.setPhase('connecting');
+  hudActions.setOutcome(null);
   net.connect();
   loop.start();
-  publishMapInfo();
-  hudActions.setMatch(snapshot(loop.world, localPlayer, controls.state));
 
   return {
     stop() {
@@ -321,6 +369,9 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
  * и оно проверяет то же самое ещё раз. Дублирование здесь осознанное —
  * подсветка обязана появиться в том же кадре, в котором двинулась мышь,
  * то есть до того, как команда куда-либо уйдёт.
+ *
+ * Считается по предсказанному миру: игрок целится в то, что видит,
+ * а видит он предсказание.
  */
 const isHoverAllowed = (
   world: WorldState,
@@ -368,11 +419,7 @@ const isHoverAllowed = (
 };
 
 /** Снимок матча для HUD. Все величины уже переведены в «видимые». */
-const snapshot = (
-  world: WorldState,
-  playerId: PlayerId,
-  state: ControlState,
-): MatchSnapshot => {
+const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): MatchSnapshot => {
   const player = world.players[playerId];
 
   if (player === undefined) {

@@ -13,7 +13,7 @@
   "dependencies": {
     "@fontsource-variable/jetbrains-mono": "^5.1.2",
     "@fontsource-variable/manrope": "^5.1.1",
-    "@td/ai": "workspace:*",
+    "@td/netplay": "workspace:*",
     "@td/protocol": "workspace:*",
     "@td/shared": "workspace:*",
     "@td/sim": "workspace:*",

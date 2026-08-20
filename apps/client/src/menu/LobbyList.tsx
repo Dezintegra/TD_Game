@@ -38,6 +38,12 @@ export const LobbyList = () => {
   const profile = useSessionStore((state) => state.profile);
   const lobbies = useSessionStore((state) => state.view.lobbies);
   const error = useSessionStore((state) => state.error);
+  const joining = useSessionStore((state) => state.joiningComputer);
+  // Компьютер держит открытую комнату наравне с людьми: нет комнаты —
+  // нет и игры с ним, и сказать об этом надо прямо.
+  const computerAvailable = useSessionStore((state) =>
+    state.view.lobbies.some((lobby) => lobby.computer),
+  );
 
   const [title, setTitle] = useState(() => defaultTitle(profile?.name ?? ''));
   const [busy, setBusy] = useState(false);
@@ -84,14 +90,21 @@ export const LobbyList = () => {
           }}
         >
           <span style={{ color: 'var(--td-text-muted-3)', fontSize: 'var(--td-text-sm)' }}>
-            Соперника нет под рукой? Сыграйте против компьютера.
+            {computerAvailable
+              ? 'Соперника нет под рукой? Сыграйте против компьютера.'
+              : 'Компьютерный соперник сейчас недоступен: его служба не отвечает.'}
           </span>
           <Button
             variant="ghost"
             data-testid="practice-start"
-            onClick={() => sessionActions.startPractice()}
+            // Кнопка, которая на нажатие не отвечает ничем, хуже
+            // отсутствующей: игрок решит, что сломана игра.
+            disabled={busy || joining || !computerAvailable}
+            onClick={() => {
+              void sessionActions.playAgainstComputer();
+            }}
           >
-            Тренировка
+            {joining ? 'Входим…' : 'Играть с компьютером'}
           </Button>
         </div>
       </Panel>
@@ -141,7 +154,7 @@ const LobbyRow = ({ lobby }: { lobby: LobbySummary }) => {
   const full = lobby.players >= lobby.capacity;
 
   return (
-    <div style={rowStyle} data-testid="lobby-row">
+    <div style={rowStyle} data-testid="lobby-row" data-computer={String(lobby.computer)}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
         <span
           style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
@@ -150,7 +163,11 @@ const LobbyRow = ({ lobby }: { lobby: LobbySummary }) => {
           {lobby.title}
         </span>
         <span style={{ color: 'var(--td-text-muted-4)', fontSize: 'var(--td-text-sm)' }}>
+          {/* Пометка обязательна: игрок должен знать, с кем садится
+              играть, а «Компьютер» вполне может оказаться прозвищем
+              человека. */}
           создал {lobby.hostName}
+          {lobby.computer ? ' — компьютер' : ''}
         </span>
       </div>
 

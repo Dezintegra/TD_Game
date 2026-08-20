@@ -58,6 +58,22 @@ interface MatchRecord {
    */
   readonly sides: ReadonlyMap<string, number>;
   readonly names: ReadonlyMap<string, string>;
+  /** Игрок — его билет на вход в матч. */
+  readonly tickets: ReadonlyMap<string, string>;
+}
+
+/**
+ * Матч начался: всё, что нужно тому, кто будет его вести.
+ *
+ * Комнаты сообщают об этом наружу и на том свою роль заканчивают.
+ * Симуляция, тики и кадры живут в другом месте: комната сводит двоих,
+ * а не играет за них.
+ */
+export interface MatchStart {
+  readonly matchId: string;
+  readonly seed: number;
+  /** Билет — сторона в симуляции. */
+  readonly tickets: ReadonlyMap<string, number>;
 }
 
 interface LobbyRecord {
@@ -75,7 +91,28 @@ export interface LobbyStoreOptions {
   readonly now: () => number;
   /** Seed карты. Внедрён по той же причине — ради воспроизводимых тестов. */
   readonly randomSeed: () => number;
+  /** Билет на вход в матч: шестнадцать случайных байт шестнадцатеричной строкой. */
+  readonly randomTicket: () => string;
   readonly graceMs?: number;
+  /**
+   * Этот игрок — компьютер?
+   *
+   * Комнаты сами этого знать не могут и не должны: идентификатор игрока
+   * приходит из запроса и подделывается тривиально. Отвечает тот, кто
+   * запускал службу компьютера и знает выданный ей идентификатор.
+   */
+  readonly isComputer?: ((playerId: string) => boolean) | undefined;
+  /** Матч начался — самое время завести для него симуляцию. */
+  readonly onMatchStart?: ((start: MatchStart) => void) | undefined;
+  /**
+   * Игрок вышел из комнаты, в которой идёт матч.
+   *
+   * Вызывается только на явный выход, а не на истечение отсрочки после
+   * разрыва связи. Разница существенная: ушедший сам — сдался, и матч
+   * заканчивается немедленно, а потерявший связь имеет право вернуться,
+   * и ждёт его уже сам матч, по своим правилам.
+   */
+  readonly onMatchAbandon?: ((ticket: string) => void) | undefined;
 }
 
 export interface LobbyStore {
@@ -186,12 +223,28 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
 
     const sides = new Map<string, number>();
     const names = new Map<string, string>();
+    const tickets = new Map<string, string>();
+    const byTicket = new Map<string, number>();
+
     lobby.slots.forEach((slot, index) => {
       sides.set(slot.id, index);
       names.set(slot.id, slot.name);
+
+      const ticket = options.randomTicket();
+      tickets.set(slot.id, ticket);
+      byTicket.set(ticket, index);
     });
 
-    lobby.match = { id: makeId('m'), seed: options.randomSeed(), sides, names };
+    const match: MatchRecord = {
+      id: makeId('m'),
+      seed: options.randomSeed(),
+      sides,
+      names,
+      tickets,
+    };
+    lobby.match = match;
+
+    options.onMatchStart?.({ matchId: match.id, seed: match.seed, tickets: byTicket });
   };
 
   const lobbyView = (lobby: LobbyRecord, playerId: string): LobbyView => ({
@@ -214,11 +267,21 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
     if (side === undefined) return null;
 
     let opponentName = '';
+    let opponentIsComputer = false;
     for (const [id, name] of match.names) {
-      if (id !== playerId) opponentName = name;
+      if (id === playerId) continue;
+      opponentName = name;
+      opponentIsComputer = options.isComputer?.(id) ?? false;
     }
 
-    return { matchId: match.id, seed: match.seed, side, opponentName };
+    return {
+      matchId: match.id,
+      seed: match.seed,
+      side,
+      opponentName,
+      ticket: match.tickets.get(playerId) ?? '',
+      opponentIsComputer,
+    };
   };
 
   return {
@@ -270,6 +333,13 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
     },
 
     leave(playerId) {
+      // Уход из комнаты, где идёт матч, — это сдача, и матч обязан о ней
+      // узнать. Иначе соперник остался бы ждать хода того, кто уже
+      // в меню, и досидел бы до истечения отсрочки на возврат.
+      const lobby = lobbyOf(playerId);
+      const ticket = lobby?.match?.tickets.get(playerId);
+      if (ticket !== undefined) options.onMatchAbandon?.(ticket);
+
       return leaveAny(playerId);
     },
 
@@ -353,12 +423,15 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
         // в неё нельзя, и строка обещала бы невозможное.
         if (lobby.match !== null) continue;
 
+        const host = lobby.slots[0];
+
         summaries.push({
           id: lobby.id,
           title: lobby.title,
-          hostName: lobby.slots[0]?.name ?? '',
+          hostName: host?.name ?? '',
           players: lobby.slots.length,
           capacity: LOBBY_CAPACITY,
+          computer: host === undefined ? false : (options.isComputer?.(host.id) ?? false),
         });
       }
 

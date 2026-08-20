@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Button, Panel } from '@td/ui';
-import { RejectReason } from '@td/shared';
+import { MS_PER_TICK, RejectReason } from '@td/shared';
+import { OutcomeReason } from '@td/protocol';
 import { matchCommands, useHudStore } from '../game/store.js';
-import type { ConnectionStatus } from '../game/store.js';
+import type { ConnectionStatus, MatchPhaseView } from '../game/store.js';
 import { useSessionStore } from '../session/session-store.js';
 import { sessionActions } from '../session/session.js';
 import { ActionBar } from './ActionBar.js';
@@ -39,8 +41,21 @@ export const Hud = () => {
   // за матч, поэтому на перерисовку не влияет.
   const localPlayer = useHudStore((state) => state.match.localPlayer);
 
+  // Тик и контрольная сумма подтверждённого мира. Текстом не показываются:
+  // игроку они ни о чём не говорят. Зато по ним снаружи проверяется
+  // главное свойство сетевого матча — что мир у обоих участников
+  // действительно один и тот же, а не два похожих.
+  const syncTick = useHudStore((state) => state.syncTick);
+  const syncChecksum = useHudStore((state) => state.syncChecksum);
+
   return (
-    <div id="hud" data-testid="hud" data-local-player={String(localPlayer)}>
+    <div
+      id="hud"
+      data-testid="hud"
+      data-local-player={String(localPlayer)}
+      data-sync-tick={String(syncTick)}
+      data-sync-checksum={String(syncChecksum)}
+    >
       <StatusColumn />
       <MatchBar />
       <ActionBar />
@@ -119,18 +134,18 @@ const controlStyle: CSSProperties = {
 };
 
 /**
- * Управление самим матчем: перезапуск и выход в меню.
+ * Управление самим матчем: новый матч и выход в меню.
  *
- * Перезапуск есть только в тренировке. В матче из комнаты уход
- * с общей карты бессмыслен: соперник остался бы на прежней, и общего
- * матча не стало бы.
+ * «Новый матч» есть только против компьютера. С живым соперником уход
+ * на другую карту невозможен в принципе: мир один и живёт на сервере,
+ * а начать новый матч без согласия второго — не перезапуск, а бегство.
  */
 const MatchControls = () => {
-  const practice = useSessionStore((state) => state.practiceSeed !== null);
+  const computer = useSessionStore((state) => state.view.match?.opponentIsComputer ?? false);
 
   return (
     <>
-      {practice && (
+      {computer && (
         <Button
           variant="ghost"
           data-testid="restart"
@@ -141,17 +156,75 @@ const MatchControls = () => {
         </Button>
       )}
 
+      <LeaveButton testId="match-leave" variant="ghost" style={controlStyle} label="Выйти в меню" />
+    </>
+  );
+};
+
+interface LeaveButtonProps {
+  readonly testId: string;
+  readonly label: string;
+  readonly variant?: 'ghost' | 'accent';
+  readonly style?: CSSProperties;
+}
+
+/**
+ * Выход из матча.
+ *
+ * Пока матч идёт, выход засчитывается поражением, и спросить об этом
+ * обязательно. Иначе уход из матча стал бы способом не проиграть:
+ * проигрывающий закрывал бы вкладку, и партия оставалась бы
+ * незавершённой.
+ *
+ * После конца матча спрашивать не о чем — там выход просто выход.
+ */
+const LeaveButton = ({ testId, label, variant = 'ghost', style }: LeaveButtonProps) => {
+  const finished = useHudStore((state) => state.outcome !== null);
+  const [asking, setAsking] = useState(false);
+
+  if (finished) {
+    return (
       <Button
-        variant="ghost"
-        data-testid="match-leave"
+        variant={variant}
+        data-testid={testId}
+        style={style}
         onClick={() => {
           void sessionActions.leaveMatch();
         }}
-        style={controlStyle}
       >
-        Выйти в меню
+        {label}
       </Button>
-    </>
+    );
+  }
+
+  if (!asking) {
+    return (
+      <Button variant={variant} data-testid={testId} style={style} onClick={() => setAsking(true)}>
+        {label}
+      </Button>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--td-space-1)', ...style }}>
+      <span data-testid="leave-warning" style={{ color: 'var(--td-warning)', fontSize: 11 }}>
+        Выход засчитывается поражением
+      </span>
+      <div style={{ display: 'flex', gap: 'var(--td-space-2)' }}>
+        <Button
+          variant="accent"
+          data-testid="leave-confirm"
+          onClick={() => {
+            void sessionActions.leaveMatch();
+          }}
+        >
+          Сдаться
+        </Button>
+        <Button variant="ghost" data-testid="leave-cancel" onClick={() => setAsking(false)}>
+          Играть дальше
+        </Button>
+      </div>
+    </div>
   );
 };
 
@@ -171,10 +244,9 @@ const OpponentMetric = () => {
   // «состояние изменилось» — и компонент перерисовывается бесконечно,
   // пока React не снимет всё дерево. Проявляется это не ошибкой в месте
   // ошибки, а исчезнувшим интерфейсом.
-  const practice = useSessionStore((state) => state.practiceSeed !== null);
   const match = useSessionStore((state) => state.view.match);
 
-  if (practice || match === null) return null;
+  if (match === null) return null;
 
   return (
     <Metric
@@ -183,51 +255,90 @@ const OpponentMetric = () => {
         <span
           data-testid="match-opponent"
           data-side={String(match.side)}
+          data-computer={String(match.opponentIsComputer)}
           style={{ color: 'var(--td-player-enemy)' }}
         >
           {match.opponentName}
         </span>
       }
+      // Имени мало: игрок, увидевший «Компьютер», вправе счесть это
+      // прозвищем человека. Врать про живого соперника нельзя.
+      hint={match.opponentIsComputer ? 'компьютер' : undefined}
     />
   );
 };
 
 /**
- * Чем матч из комнаты пока не является.
+ * Что происходит с матчем, когда на поле ничего не происходит.
  *
- * Полоса существует ради честности. Команды соперника по сети ещё
- * не передаются, и за противоположную сторону играет компьютер.
- * Показать имя живого человека над чужой базой и промолчать об этом —
- * прямой обман: игрок объяснил бы поведение компьютера действиями
- * соперника и сделал бы из матча ложные выводы.
+ * Ожидание соперника, восстановление после разрыва и расхождение
+ * с сервером выглядят на экране одинаково: мир стоит. Разница для игрока
+ * огромная, а молчание он справедливо примет за поломку.
  *
- * Висит постоянно, а не гаснет через пару секунд: мелькнувшее
- * предупреждение можно не заметить, а последствия у него на весь матч.
- *
- * Полоса обязана исчезнуть тем изменением, которое введёт передачу
- * команд по сети.
+ * Обычная игра полосы не показывает вовсе: сообщать «всё хорошо» тому,
+ * кто и так это видит, — значит приучить не читать полосу.
  */
-const OfflineWarning = () => {
-  const practice = useSessionStore((state) => state.practiceSeed !== null);
-  const isLobbyMatch = useSessionStore((state) => state.view.match !== null);
+const PHASE_TEXT: Partial<Record<MatchPhaseView, string>> = {
+  connecting: 'подключение к матчу',
+  'awaiting-opponent': 'ждём соперника',
+  'catching-up': 'восстанавливаю матч по истории команд',
+  desynced: 'расхождение с сервером — пересобираю мир',
+  stopped: 'матч остановлен: расхождение не удалось устранить',
+};
 
-  if (practice || !isLobbyMatch) return null;
+const PhaseBanner = () => {
+  const phase = useHudStore((state) => state.phase);
+  const progress = useHudStore((state) => state.catchUpProgress);
+  const text = PHASE_TEXT[phase];
+
+  if (text === undefined) return null;
+
+  const withProgress =
+    phase === 'catching-up' ? `${text} — ${String(Math.round(progress * 100))}%` : text;
 
   return (
     <div
-      data-testid="match-offline-warning"
+      data-testid="match-phase"
+      data-phase={phase}
       style={{
         padding: 'var(--td-space-1) var(--td-space-3)',
         borderRadius: 'var(--td-radius-control)',
-        border: '1px solid var(--td-warning)',
-        color: 'var(--td-warning)',
+        border: `1px solid ${phase === 'stopped' ? 'var(--td-error)' : 'var(--td-warning)'}`,
+        color: phase === 'stopped' ? 'var(--td-error)' : 'var(--td-warning)',
         fontSize: 11,
         letterSpacing: 'var(--td-ls-label)',
         textTransform: 'uppercase',
       }}
     >
-      действия соперника пока не идут по сети — за его сторону играет компьютер
+      {withProgress}
     </div>
+  );
+};
+
+/**
+ * Задержка ввода.
+ *
+ * Показывается всегда, а не только когда велика. Игрок обязан понимать,
+ * почему постройка появляется не мгновенно, и видеть, что это свойство
+ * канала, а не игры. Здесь же — сколько его команд сейчас в пути:
+ * действие принято и летит, а не пропало.
+ */
+const InputDelayMetric = () => {
+  const ticks = useHudStore((state) => state.inputDelayTicks);
+  const pending = useHudStore((state) => state.pendingCommands);
+
+  if (ticks === 0) return null;
+
+  return (
+    <Metric
+      label="Ввод"
+      value={
+        <span data-testid="input-delay" data-ticks={String(ticks)}>
+          {Math.round(ticks * MS_PER_TICK)} мс
+        </span>
+      }
+      hint={pending > 0 ? `в пути: ${String(pending)}` : undefined}
+    />
   );
 };
 
@@ -281,6 +392,7 @@ const MatchBar = () => {
           />
           <Metric label="Цель" value={<span data-testid="target">{match.targetLabel}</span>} />
           <OpponentMetric />
+          <InputDelayMetric />
           <Metric
             label="Генерал"
             value={
@@ -293,7 +405,7 @@ const MatchBar = () => {
         </div>
       </Panel>
 
-      <OfflineWarning />
+      <PhaseBanner />
       <NoticeStack />
     </div>
   );
@@ -302,7 +414,7 @@ const MatchBar = () => {
 interface MetricProps {
   readonly label: string;
   readonly value: ReactNode;
-  readonly hint?: string;
+  readonly hint?: string | undefined;
   readonly accent?: boolean;
 }
 
@@ -339,15 +451,30 @@ const Metric = ({ label, value, hint, accent }: MetricProps) => (
  * Перекрывает поле целиком: матч закончен, и продолжать смотреть на него
  * незачем. Единственное действие — начать заново.
  */
+const OUTCOME_TEXT: Record<number, readonly [string, string]> = {
+  [OutcomeReason.BaseDestroyed]: ['База противника разрушена', 'Ваша база разрушена'],
+  [OutcomeReason.Disconnected]: [
+    'Соперник не вернулся после разрыва связи',
+    'Связь потеряна дольше отведённого времени',
+  ],
+  [OutcomeReason.NoShow]: ['Соперник не подключился к матчу', 'Вы не подключились к матчу'],
+  [OutcomeReason.Left]: ['Соперник вышел из матча', 'Вы вышли из матча'],
+};
+
 const ResultOverlay = () => {
-  const winner = useHudStore((state) => state.match.winner);
+  // Исход берётся от сервера, а не из своего состояния мира. Свой мир
+  // скажет только про разрушенную базу, а исход бывает и техническим:
+  // соперник не вернулся, не пришёл или вышел сам.
+  const outcome = useHudStore((state) => state.outcome);
   // Своя сторона, а не ноль. Играя второй стороной, игрок иначе читал бы
   // «ПОБЕДА» при собственном поражении — и наоборот.
   const localPlayer = useHudStore((state) => state.match.localPlayer);
 
-  if (winner === null) return null;
+  if (outcome === null) return null;
 
-  const victory = winner === localPlayer;
+  const victory = outcome.winner === localPlayer;
+  const texts = OUTCOME_TEXT[outcome.reason];
+  const explanation = texts === undefined ? '' : (victory ? texts[0] : texts[1]);
 
   return (
     <div
@@ -374,8 +501,8 @@ const ResultOverlay = () => {
       >
         {victory ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ'}
       </div>
-      <div style={{ color: 'var(--td-text-muted-2)' }}>
-        {victory ? 'База противника разрушена' : 'Ваша база разрушена'}
+      <div data-testid="result-reason" style={{ color: 'var(--td-text-muted-2)' }}>
+        {explanation}
       </div>
 
       <ResultActions />
@@ -384,25 +511,17 @@ const ResultOverlay = () => {
 };
 
 const ResultActions = () => {
-  const practice = useSessionStore((state) => state.practiceSeed !== null);
+  const computer = useSessionStore((state) => state.view.match?.opponentIsComputer ?? false);
 
   return (
     <div style={{ display: 'flex', gap: 'var(--td-space-3)' }}>
-      {practice && (
+      {computer && (
         <Button data-testid="restart-overlay" onClick={() => matchCommands().restart()}>
           Новый матч
         </Button>
       )}
 
-      <Button
-        variant={practice ? 'ghost' : 'accent'}
-        data-testid="leave-overlay"
-        onClick={() => {
-          void sessionActions.leaveMatch();
-        }}
-      >
-        В меню
-      </Button>
+      <LeaveButton testId="leave-overlay" label="В меню" variant={computer ? 'ghost' : 'accent'} />
     </div>
   );
 };

@@ -1,151 +1,61 @@
-import { MS_PER_TICK } from '@td/shared';
-import { createWorld, step } from '@td/sim';
-import type { Command } from '@td/shared';
-import type { WorldState } from '@td/sim';
-
 /**
- * Игровой цикл с фиксированным шагом симуляции.
+ * Цикл отрисовки.
  *
- * Разберём главную идею, потому что она неочевидна и очень важна.
+ * Раньше здесь жил и счёт мира: цикл держал состояние, копил время
+ * в накопителе и вызывал `step` фиксированными шагами. Теперь мир считает
+ * сервер, а сюда он приезжает кадрами команд, поэтому от прежнего цикла
+ * осталась ровно одна обязанность — рисовать со скоростью монитора.
  *
- * Монитор обновляется с произвольной частотой: 60 Гц, 120 Гц, а при
- * просадке — вообще неравномерно. Если считать физику «на каждый кадр»,
- * то у игрока со 120-герцовым монитором мир будет жить вдвое быстрее.
- * В PvP это прямое преимущество за счёт железа, что недопустимо.
+ * Почему разделение важно. Мир обязан идти в одном темпе у всех: игрок
+ * со стодвадцатигерцовым монитором не должен жить вдвое быстрее соперника.
+ * Пока темп задавал браузер, это держалось на дисциплине накопителя;
+ * теперь оно верно по построению, потому что тик считает не браузер.
  *
- * Поэтому мир считается строго фиксированными шагами (у нас 30 раз
- * в секунду), а рендер идёт со скоростью монитора. Между двумя тиками
- * картинка интерполируется — отсюда параметр alpha в onRender.
- *
- * Накопитель (accumulator) хранит «недосчитанное» время: если между
- * кадрами прошло 50 мс, а тик длится 33 мс, то выполнится один тик,
- * а остаток 17 мс перенесётся на следующий кадр.
+ * Частота кадров при этом остаётся частотой монитора: рендер ни на что
+ * не ждёт и вызывается каждый раз, когда браузер готов показать кадр.
  */
-export interface GameLoop {
+export interface RenderLoop {
   start(): void;
   stop(): void;
-  /** Ставит команду в очередь на ближайший тик. */
-  enqueue(command: Command): void;
-  /** Начинает мир заново с другим seed. Пока нет матчей — способ посмотреть другую карту. */
-  reset(seed: number): void;
-  readonly world: WorldState;
 }
 
-export interface GameLoopOptions {
-  readonly seed: number;
-  /**
-   * Дополнительный источник команд, опрашиваемый перед каждым тиком.
-   *
-   * Через него в матч попадает противник под управлением компьютера.
-   * Ставить его команды в общую очередь `enqueue` было бы неверно:
-   * очередь наполняется вводом игрока асинхронно, между кадрами,
-   * а противник должен видеть состояние мира ровно того тика,
-   * на котором он решает.
-   */
-  commands?: (world: WorldState) => readonly Command[];
-  /**
-   * Вызывается прямо перед шагом симуляции, с миром ДО шага и полным
-   * списком команд, поданных на этот шаг.
-   *
-   * Нужен записи матча, и номер тика здесь принципиален. Поле `tick`
-   * внутри команды проставляется в момент нажатия, а до симуляции команда
-   * доезжает следующим кадром — тик к тому времени может уйти вперёд.
-   * Воспроизведение подаёт команды по тику мира до шага, поэтому
-   * записывать надо именно его.
-   */
-  onStep?: (world: WorldState, commands: readonly Command[]) => void;
-  /** Вызывается после каждого тика симуляции. */
-  onTick?: (world: WorldState) => void;
-  /**
-   * Вызывается на каждом кадре отрисовки.
-   * alpha — доля от 0 до 1, показывающая, насколько мы «между» тиками.
-   */
-  onRender?: (world: WorldState, alpha: number) => void;
-  onFps?: (fps: number) => void;
+export interface RenderLoopOptions {
+  /** Вызывается на каждом кадре отрисовки. */
+  readonly onFrame: () => void;
+  readonly onFps?: (fps: number) => void;
 }
 
-/**
- * Предохранитель: если вкладка была свёрнута, между кадрами могут
- * пройти минуты. Без ограничения цикл попытается досчитать тысячи
- * тиков разом и подвесит браузер. Больше пяти тиков за кадр не считаем.
- */
-const MAX_TICKS_PER_FRAME = 5;
-
-export const createGameLoop = (options: GameLoopOptions): GameLoop => {
-  let world = createWorld(options.seed);
-  let pending: Command[] = [];
-  let accumulator = 0;
-  let lastTime = 0;
-  let frameHandle = 0;
+export const createRenderLoop = (options: RenderLoopOptions): RenderLoop => {
+  let handle = 0;
   let running = false;
-
   let framesInSecond = 0;
-  let fpsWindowStart = 0;
+  let windowStart = 0;
 
   const frame = (now: number): void => {
     if (!running) return;
 
-    const delta = now - lastTime;
-    lastTime = now;
-    accumulator += delta;
-
-    let ticksThisFrame = 0;
-    while (accumulator >= MS_PER_TICK && ticksThisFrame < MAX_TICKS_PER_FRAME) {
-      const fromPlayer = pending;
-      pending = [];
-
-      const fromOpponent = options.commands?.(world) ?? [];
-      const commands = fromOpponent.length === 0 ? fromPlayer : [...fromPlayer, ...fromOpponent];
-
-      options.onStep?.(world, commands);
-
-      world = step(world, commands);
-      accumulator -= MS_PER_TICK;
-      ticksThisFrame += 1;
-
-      options.onTick?.(world);
-    }
-
-    // Вкладка была неактивна слишком долго — сбрасываем накопитель,
-    // иначе он будет вечно тянуть за собой долг по тикам.
-    if (accumulator > MS_PER_TICK * MAX_TICKS_PER_FRAME) {
-      accumulator = 0;
-    }
-
-    options.onRender?.(world, accumulator / MS_PER_TICK);
+    options.onFrame();
 
     framesInSecond += 1;
-    if (now - fpsWindowStart >= 1000) {
+    if (now - windowStart >= 1000) {
       options.onFps?.(framesInSecond);
       framesInSecond = 0;
-      fpsWindowStart = now;
+      windowStart = now;
     }
 
-    frameHandle = requestAnimationFrame(frame);
+    handle = requestAnimationFrame(frame);
   };
 
   return {
     start() {
       if (running) return;
       running = true;
-      lastTime = performance.now();
-      fpsWindowStart = lastTime;
-      frameHandle = requestAnimationFrame(frame);
+      windowStart = performance.now();
+      handle = requestAnimationFrame(frame);
     },
     stop() {
       running = false;
-      cancelAnimationFrame(frameHandle);
-    },
-    enqueue(command) {
-      pending.push(command);
-    },
-    reset(seed) {
-      world = createWorld(seed);
-      pending = [];
-      accumulator = 0;
-    },
-    get world() {
-      return world;
+      cancelAnimationFrame(handle);
     },
   };
 };

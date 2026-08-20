@@ -26,11 +26,27 @@ export const identify = async (page: Page, name: string): Promise<void> => {
   await expect(page.getByTestId('profile-name-shown')).toHaveText(name);
 };
 
-/** Представиться и начать тренировочный матч против компьютера. */
+/**
+ * Представиться и начать матч против компьютера.
+ *
+ * Матч теперь идёт через сервер, как и всякий другой: клиент входит
+ * в дежурную комнату компьютера и подтверждает готовность. Отсюда
+ * и ожидание подольше — надо дождаться, пока служба компьютера поднимет
+ * комнату, а сервер сведёт двоих и дождётся обоих подключений.
+ */
 export const bootGame = async (page: Page): Promise<void> => {
   await identify(page, 'Тестер');
-  await page.getByTestId('practice-start').click();
-  await expect(page.locator('#scene canvas')).toBeVisible();
+
+  const start = page.getByTestId('practice-start');
+  await expect(start).toBeEnabled({ timeout: 15_000 });
+  await start.click();
+
+  await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 15_000 });
+  // Дожидаемся первого подтверждённого тика: до него мир стоит на нуле,
+  // и проверки вроде «энергия копится» ловили бы не игру, а ожидание.
+  await expect(page.getByTestId('hud')).toHaveAttribute('data-sync-tick', /[1-9]/, {
+    timeout: 20_000,
+  });
   // Клика по полю здесь намеренно нет. Горячие клавиши слушает window,
   // поэтому фокуса на body достаточно, а клик пришлось бы целить мимо
   // панелей HUD — и тест ломался бы от любой правки вёрстки.

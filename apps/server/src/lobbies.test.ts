@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { LobbyError } from '@td/protocol';
 import { DISCONNECT_GRACE_MS, createLobbyStore } from './lobbies.js';
-import type { LobbyStore } from './lobbies.js';
+import type { LobbyStore, MatchStart } from './lobbies.js';
 
 /**
  * Часы и seed внедрены, поэтому ни одна проверка здесь не ждёт по-настоящему
@@ -13,13 +13,18 @@ let store: LobbyStore;
 
 const seeds = [111, 222, 333];
 let seedIndex = 0;
+let ticketIndex = 0;
 
 beforeEach(() => {
   clock = 1_000_000;
   seedIndex = 0;
+  ticketIndex = 0;
   store = createLobbyStore({
     now: () => clock,
     randomSeed: () => seeds[seedIndex++ % seeds.length] ?? 0,
+    // Билеты предсказуемые: настоящая случайность в тесте только мешала бы
+    // сверять, кому какой достался.
+    randomTicket: () => `ticket-${String(ticketIndex++)}`,
   });
 });
 
@@ -240,6 +245,62 @@ describe('старт матча по обоюдной готовности', () 
 
     expect(store.view('a').match?.opponentName).toBe('Боря');
     expect(store.view('b').match?.opponentName).toBe('Аня');
+  });
+
+  it('выдаёт каждому свой билет на вход в матч', () => {
+    bothReady();
+
+    const first = store.view('a').match?.ticket;
+    const second = store.view('b').match?.ticket;
+
+    expect(first).toBeTruthy();
+    expect(second).toBeTruthy();
+    // Билеты разные: билет — это и есть «кто именно подключился».
+    // Один на двоих означал бы, что за любую сторону играет предъявитель.
+    expect(first).not.toBe(second);
+  });
+
+  it('сообщает начавшийся матч тому, кто его ведёт', () => {
+    const started: MatchStart[] = [];
+    const watched = createLobbyStore({
+      now: () => clock,
+      randomSeed: () => 555,
+      randomTicket: () => `ticket-${String(ticketIndex++)}`,
+      onMatchStart: (start) => started.push(start),
+    });
+
+    watched.connect('a');
+    watched.connect('b');
+    watched.create('a', 'Аня', 'Комната Ани');
+    const lobbyId = watched.view('a').lobby?.id ?? '';
+    watched.join('b', 'Боря', lobbyId);
+    watched.setReady('a', true);
+    watched.setReady('b', true);
+
+    expect(started).toHaveLength(1);
+    expect(started[0]?.seed).toBe(555);
+    expect([...(started[0]?.tickets.values() ?? [])].sort()).toEqual([0, 1]);
+  });
+
+  it('помечает комнату компьютера в списке', () => {
+    const withBot = createLobbyStore({
+      now: () => clock,
+      randomSeed: () => 1,
+      randomTicket: () => 'ticket',
+      isComputer: (playerId) => playerId === 'bot',
+    });
+
+    withBot.connect('bot');
+    withBot.create('bot', 'Компьютер', 'Матч с компьютером');
+    withBot.connect('человек');
+    withBot.create('человек', 'Аня', 'Комната Ани');
+
+    const list = withBot.view('гость').lobbies;
+    const botLobby = list.find((lobby) => lobby.hostName === 'Компьютер');
+    const humanLobby = list.find((lobby) => lobby.hostName === 'Аня');
+
+    expect(botLobby?.computer).toBe(true);
+    expect(humanLobby?.computer).toBe(false);
   });
 
   it('убирает комнату из списка открытых', () => {

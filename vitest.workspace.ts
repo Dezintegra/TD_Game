@@ -5,6 +5,8 @@ export default defineWorkspace([
   'packages/protocol',
   'packages/ui',
   'packages/ai',
+  'packages/netplay',
+  'packages/bot',
   'apps/server',
   'apps/client',
   'apps/arena',

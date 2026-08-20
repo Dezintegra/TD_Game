@@ -19,8 +19,15 @@ export interface GameTransport {
   send(connection: ConnectionId, frame: ArrayBuffer): void;
   /** Отправляет бинарный кадр всем подключённым. */
   broadcast(frame: ArrayBuffer): void;
-  /** Закрывает соединение. */
-  close(connection: ConnectionId): void;
+  /**
+   * Закрывает соединение, по возможности назвав причину кодом.
+   *
+   * Код нужен там, где сообщением объясниться нельзя: клиенту с чужой
+   * версией протокола наш кадр не разобрать по определению, а код
+   * закрытия читается любой версией, потому что не зависит от протокола
+   * вовсе.
+   */
+  close(connection: ConnectionId, code?: number): void;
   /** Количество активных соединений. */
   readonly connectionCount: number;
 }

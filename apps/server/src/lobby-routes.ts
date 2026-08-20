@@ -1,7 +1,8 @@
-import { LobbyError } from '@td/protocol';
+import { randomBytes } from 'node:crypto';
+import { LobbyError, TICKET_BYTES } from '@td/protocol';
 import { createLobbyStore } from './lobbies.js';
 import type { PlayerView } from '@td/protocol';
-import type { LobbyResult, LobbyStore } from './lobbies.js';
+import type { LobbyResult, LobbyStore, MatchStart } from './lobbies.js';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
 /**
@@ -76,6 +77,12 @@ export interface LobbyRoutesOptions {
    * и список источников.
    */
   readonly allowOrigin?: string;
+  /** Матч начался: пора заводить для него симуляцию. */
+  readonly onMatchStart?: ((start: MatchStart) => void) | undefined;
+  /** Игрок вышел из идущего матча — это сдача. */
+  readonly onMatchAbandon?: ((ticket: string) => void) | undefined;
+  /** Этот игрок — компьютер? Знает только тот, кто запускал его службу. */
+  readonly isComputer?: ((playerId: string) => boolean) | undefined;
 }
 
 export const registerLobbyRoutes = (
@@ -87,6 +94,10 @@ export const registerLobbyRoutes = (
     createLobbyStore({
       now: () => Date.now(),
       randomSeed: () => Math.floor(Math.random() * 0x100000000),
+      randomTicket: () => randomBytes(TICKET_BYTES).toString('hex'),
+      onMatchStart: options.onMatchStart,
+      onMatchAbandon: options.onMatchAbandon,
+      isComputer: options.isComputer,
     });
 
   const allowOrigin = options.allowOrigin ?? '*';

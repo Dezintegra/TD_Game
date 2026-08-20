@@ -64,8 +64,12 @@ test('карта показывается и матч начинается за�
   expect(visible).toBeGreaterThan(0);
   expect(visible).toBeLessThan(60);
 
+  // «Новый матч» против компьютера — это новый матч на сервере, а не
+  // смена карты в своём браузере: клиент выходит из комнаты и входит
+  // в следующую дежурную. Поэтому и ждать приходится дольше.
   await page.getByTestId('restart').click();
-  await expect(page.getByTestId('seed')).not.toHaveText(seedBefore ?? '');
+  await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('seed')).not.toHaveText(seedBefore ?? '', { timeout: 20_000 });
 });
 
 test('матч идёт: энергия копится, панели матча на месте', async ({ page }) => {

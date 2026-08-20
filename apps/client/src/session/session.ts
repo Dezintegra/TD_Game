@@ -23,24 +23,6 @@ import type { SessionState } from './session-store.js';
  * на тот же store.
  */
 
-/** Seed первого тренировочного матча. Тот же, что был зашит в игре до комнат. */
-const FIRST_PRACTICE_SEED = 1337;
-
-let nextPracticeSeed = FIRST_PRACTICE_SEED;
-
-/**
- * Seed следующей тренировки.
- *
- * Линейный конгруэнтный шаг, тот же, что в `restart`. Качества
- * от него не требуется — только чтобы соседние тренировки шли
- * на разных картах, а первая была воспроизводимой.
- */
-const takePracticeSeed = (): number => {
-  const seed = nextPracticeSeed;
-  nextPracticeSeed = (nextPracticeSeed * 1664525 + 1013904223) >>> 0;
-  return seed;
-};
-
 const store = useSessionStore;
 
 const lobby = createLobbyClient({
@@ -90,7 +72,18 @@ const syncMatch = (state: SessionState): void => {
   document.body.appendChild(host);
   sceneHost = host;
 
-  void startGame(host, { seed: desired.seed, localPlayer: desired.side }).then((started) => {
+  void startGame(host, {
+    seed: desired.seed,
+    localPlayer: desired.side,
+    ticket: desired.ticket,
+    // «Начать заново» осмысленно только против компьютера: уйти с общей
+    // карты в общем матче нельзя, а начать новый матч с тем же соперником
+    // без его согласия — тем более.
+    onRestart: desired.computer ? () => void sessionActions.playAgainstComputer() : undefined,
+    onRejected: (code) => {
+      console.warn(`Сервер отклонил соединение, код ${String(code)}`);
+    },
+  }).then((started) => {
     if (mine !== generation) {
       // Пока сцена поднималась, матч успел смениться или закончиться.
       // Гасим то, что подняли, и уходим: актуальным занят другой вызов.
@@ -146,7 +139,6 @@ export const sessionActions = {
 
     lobby.stop();
     clearProfile();
-    store.getState().setPracticeSeed(null);
     store.getState().setProfile(null);
   },
 
@@ -198,26 +190,84 @@ export const sessionActions = {
     }
   },
 
-  /** Начать тренировочный матч против компьютера. */
-  startPractice(): void {
-    store.getState().setPracticeSeed(takePracticeSeed());
+  /**
+   * Играть с компьютером.
+   *
+   * Никакого особого пути в матч у компьютера нет: он держит открытую
+   * комнату наравне с людьми, и «играть с компьютером» — это войти
+   * в неё и подтвердить готовность. Одно нажатие вместо трёх, но дорога
+   * та же самая, и потому она одна на всю игру, а не две расходящиеся.
+   *
+   * Повторная попытка нужна из-за гонки: двое, нажавшие одновременно,
+   * иначе получили бы один отказ «комната занята» на двоих. Служба
+   * компьютера открывает следующую комнату сразу по входу гостя,
+   * поэтому вторая попытка почти всегда удаётся.
+   */
+  async playAgainstComputer(): Promise<ActionError | null> {
+    const state = store.getState();
+    const { profile } = state;
+    if (profile === null) return null;
+
+    state.setJoiningComputer(true);
+    state.setError(null);
+
+    try {
+      const tried = new Set<string>();
+
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        // Из всех дежурных комнат берётся первая, в которую мы ещё
+        // не стучались. Служба держит их несколько именно ради этого:
+        // двое, нажавшие одновременно, расходятся по разным, а не
+        // дерутся за единственную.
+        const room = store
+          .getState()
+          .view.lobbies.find((lobby) => lobby.computer && !tried.has(lobby.id));
+
+        if (room === undefined) {
+          // Дежурной комнаты нет: служба компьютера не запущена, её
+          // места заняты или мы уже перебрали все. Молчаливая кнопка
+          // хуже отсутствующей, поэтому отказ доезжает до игрока.
+          //
+          // Прежде чем сдаться, ждём обновления списка: следующая
+          // дежурная комната уже открыта, но её состояние ещё летит.
+          if (attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            continue;
+          }
+
+          const error = 'not-found' as ActionError;
+          store.getState().setError(error);
+          return error;
+        }
+
+        tried.add(room.id);
+
+        // Выход из прежней комнаты не нужен: сервер выводит из неё сам
+        // при входе в другую.
+        const joinError = await lobby.join(profile.id, profile.name, room.id);
+        if (joinError === null) {
+          await this.toggleReady(true);
+          return null;
+        }
+      }
+
+      const error = 'full' as ActionError;
+      store.getState().setError(error);
+      return error;
+    } finally {
+      store.getState().setJoiningComputer(false);
+    }
   },
 
   /**
    * Выйти из матча в меню.
    *
-   * Тренировочный просто гасится. Матч из комнаты требует ещё и выхода
-   * из самой комнаты: иначе сервер продолжит считать игрока в матче
-   * и первым же состоянием вернёт его обратно на поле.
+   * Выход из идущего матча — это поражение, и предупреждает об этом
+   * интерфейс, а не эта функция: она делает то, что уже подтверждено.
+   * Выход из комнаты обязателен: иначе сервер продолжит считать игрока
+   * в матче и первым же состоянием вернёт его обратно на поле.
    */
   async leaveMatch(): Promise<void> {
-    const { practiceSeed, setPracticeSeed } = store.getState();
-
-    if (practiceSeed !== null) {
-      setPracticeSeed(null);
-      return;
-    }
-
     await this.leaveLobby();
   },
 

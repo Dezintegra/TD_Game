@@ -59,9 +59,9 @@ importers:
       '@fontsource-variable/manrope':
         specifier: ^5.1.1
         version: 5.3.0
-      '@td/ai':
+      '@td/netplay':
         specifier: workspace:*
-        version: link:../../packages/ai
+        version: link:../../packages/netplay
       '@td/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -102,6 +102,12 @@ importers:
 
   apps/server:
     dependencies:
+      '@td/bot':
+        specifier: workspace:*
+        version: link:../../packages/bot
+      '@td/netplay':
+        specifier: workspace:*
+        version: link:../../packages/netplay
       '@td/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -127,6 +133,43 @@ importers:
 
   packages/ai:
     dependencies:
+      '@td/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@td/sim':
+        specifier: workspace:*
+        version: link:../sim
+
+  packages/bot:
+    dependencies:
+      '@td/ai':
+        specifier: workspace:*
+        version: link:../ai
+      '@td/netplay':
+        specifier: workspace:*
+        version: link:../netplay
+      '@td/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@td/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@td/sim':
+        specifier: workspace:*
+        version: link:../sim
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
+
+  packages/netplay:
+    dependencies:
+      '@td/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@td/shared':
         specifier: workspace:*
         version: link:../shared

@@ -19,8 +19,17 @@ export interface SessionState {
   /** Открыт ли поток состояния. Ложь — сервер не отвечает. */
   readonly connected: boolean;
   readonly view: PlayerView;
-  /** Seed идущего тренировочного матча, либо null. */
-  readonly practiceSeed: number | null;
+  /**
+   * Идёт ли переход в матч с компьютером.
+   *
+   * Прежде здесь лежал seed тренировочного матча: тот матч шёл целиком
+   * в браузере, и клиенту достаточно было выдумать себе карту. Теперь
+   * матч с компьютером ничем не отличается от матча с человеком — он
+   * идёт через сервер, через комнату и через готовность, — и от прежнего
+   * поля осталось лишь «мы сейчас в процессе входа», чтобы кнопка
+   * не отвечала молчанием.
+   */
+  readonly joiningComputer: boolean;
   readonly error: ActionError | null;
   /**
    * Готовность, показанная до ответа сервера.
@@ -36,7 +45,7 @@ export interface SessionState {
   setProfile(profile: Profile | null): void;
   setConnected(connected: boolean): void;
   setView(view: PlayerView): void;
-  setPracticeSeed(seed: number | null): void;
+  setJoiningComputer(joining: boolean): void;
   setError(error: ActionError | null): void;
   setOptimisticReady(ready: boolean | null): void;
 }
@@ -45,7 +54,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   profile: null,
   connected: false,
   view: EMPTY_VIEW,
-  practiceSeed: null,
+  joiningComputer: false,
   error: null,
   optimisticReady: null,
 
@@ -62,7 +71,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       return { view, optimisticReady: settled ? null : state.optimisticReady };
     }),
 
-  setPracticeSeed: (practiceSeed) => set({ practiceSeed }),
+  setJoiningComputer: (joiningComputer) => set({ joiningComputer }),
   setError: (error) => set({ error }),
   setOptimisticReady: (optimisticReady) => set({ optimisticReady }),
 }));
@@ -79,19 +88,19 @@ export type Screen = 'profile' | 'lobbies' | 'room' | 'match';
  */
 export const screenOf = (state: SessionState): Screen => {
   if (state.profile === null) return 'profile';
-  if (state.practiceSeed !== null) return 'match';
   if (state.view.match !== null) return 'match';
   if (state.view.lobby !== null) return 'room';
   return 'lobbies';
 };
 
 export interface ActiveMatch {
-  /** Тренировочный матч против компьютера, а не матч из комнаты. */
-  readonly practice: boolean;
+  /** Противоположной стороной управляет компьютер. */
+  readonly computer: boolean;
   readonly seed: number;
   readonly side: number;
-  /** Пусто в тренировочном матче: там соперник безымянный. */
   readonly opponentName: string;
+  /** Билет на вход в матч. Без него сервер не знает, чьё это соединение. */
+  readonly ticket: string;
   /**
    * По смене этого ключа контроллер понимает, что матч другой и сцену
    * надо поднять заново. Внутри одного матча ключ не меняется, поэтому
@@ -112,24 +121,15 @@ export interface ActiveMatch {
 export const activeMatchOf = (state: SessionState): ActiveMatch | null => {
   if (state.profile === null) return null;
 
-  if (state.practiceSeed !== null) {
-    return {
-      practice: true,
-      seed: state.practiceSeed,
-      side: 0,
-      opponentName: '',
-      key: `practice:${String(state.practiceSeed)}`,
-    };
-  }
-
   const match = state.view.match;
   if (match === null) return null;
 
   return {
-    practice: false,
+    computer: match.opponentIsComputer,
     seed: match.seed,
     side: match.side,
     opponentName: match.opponentName,
+    ticket: match.ticket,
     key: `match:${match.matchId}`,
   };
 };

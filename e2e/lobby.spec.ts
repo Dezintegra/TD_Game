@@ -139,20 +139,63 @@ test('двое сходятся в комнате, и обоюдная гото�
     await expect(anya.getByTestId('hud')).toHaveAttribute('data-local-player', '0');
     await expect(borya.getByTestId('hud')).toHaveAttribute('data-local-player', '1');
 
-    // Матч из комнаты не притворяется сетевым и не предлагает
-    // перезапуск на новой карте.
-    await expect(anya.getByTestId('match-offline-warning')).toBeVisible();
-    await expect(anya.getByTestId('restart')).toBeHidden();
+    // Матч общий: миры сходятся тик в тик.
+    //
+    // Проверяется контрольной суммой подтверждённого мира, а не картинкой.
+    // Картинка сказала бы лишь «оба что-то рисуют»; сумма говорит, что
+    // это один и тот же мир, посчитанный независимо с двух сторон
+    // из одного потока команд. Ради этого всё и затевалось.
+    await expect(anya.getByTestId('hud')).toHaveAttribute('data-sync-tick', /[1-9]/);
+
+    const syncTick = await anya.getByTestId('hud').getAttribute('data-sync-tick');
+    await expect(borya.getByTestId('hud')).toHaveAttribute('data-sync-tick', syncTick ?? '');
+    const anyaChecksum = await anya.getByTestId('hud').getAttribute('data-sync-checksum');
+    await expect(borya.getByTestId('hud')).toHaveAttribute(
+      'data-sync-checksum',
+      anyaChecksum ?? '',
+    );
+
+    // Действия одного доходят до мира другого. Аня двигает генерала —
+    // и оба мира остаются одинаковыми, хотя команду отдавала только она.
+    await anya.locator('#scene canvas').click({ position: { x: 10, y: 10 } });
+    await anya.keyboard.down('w');
+    await anya.waitForTimeout(600);
+    await anya.keyboard.up('w');
+
+    await expect
+      .poll(
+        async () => {
+          const tick = await anya.getByTestId('hud').getAttribute('data-sync-tick');
+          const mine = await anya.getByTestId('hud').getAttribute('data-sync-checksum');
+          const theirs = await borya.getByTestId('hud').getAttribute('data-sync-checksum');
+          const theirTick = await borya.getByTestId('hud').getAttribute('data-sync-tick');
+
+          return tick === theirTick && mine === theirs && Number(tick) > Number(syncTick);
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+
+    // С живым соперником перезапуск на новой карте недоступен.
+    await expect(anya.getByTestId('restart')).toHaveCount(0);
 
     // Комната ушла из списка открытых: войти в неё уже нельзя.
     const onlooker = await firstContext.newPage();
     await onlooker.goto('/');
     await expect(rowOf(onlooker, title)).toHaveCount(0);
 
-    // Выход возвращает в меню и гасит поле.
+    // Выход из идущего матча спрашивает подтверждение: он засчитывается
+    // поражением, и уйти по ошибке нельзя.
     await anya.getByTestId('match-leave').click();
+    await expect(anya.getByTestId('leave-warning')).toBeVisible();
+    await anya.getByTestId('leave-confirm').click();
+
     await expect(anya.getByTestId('menu')).toBeVisible();
     await expect(anya.locator('#scene canvas')).toHaveCount(0);
+
+    // Соперник узнаёт, что матч кончился, а не ждёт вечно.
+    await expect(borya.getByTestId('result-overlay')).toBeVisible({ timeout: 15_000 });
+    await expect(borya.getByTestId('result-reason')).toContainText('вышел из матча');
   } finally {
     await firstContext.close();
     await secondContext.close();
@@ -194,6 +237,40 @@ test('готовность недоступна в одиночестве и с�
     await firstContext.close();
     await secondContext.close();
   }
+});
+
+test('компьютер держит комнату и играет как обычный участник', async ({ page }) => {
+  await identify(page, 'Аня');
+
+  // Комната компьютера — в общем списке, наравне с человеческими,
+  // и помечена как компьютерная: имени мало, «Компьютер» вполне может
+  // оказаться прозвищем человека.
+  const computerRow = page.getByTestId('lobby-row').filter({ hasText: 'Компьютер' });
+  await expect(computerRow.first()).toBeVisible({ timeout: 15_000 });
+  await expect(computerRow.first()).toHaveAttribute('data-computer', 'true');
+
+  // Одно нажатие: войти в дежурную комнату и подтвердить готовность.
+  await page.getByTestId('practice-start').click();
+
+  await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('match-opponent')).toHaveAttribute('data-computer', 'true');
+
+  // Мир идёт: сервер считает тики и рассылает кадры.
+  await expect(page.getByTestId('hud')).toHaveAttribute('data-sync-tick', /[1-9]/, {
+    timeout: 15_000,
+  });
+
+  // Компьютер действительно играет: его команды доходят до общего мира,
+  // а значит контрольная сумма меняется от тика к тику.
+  const first = await page.getByTestId('hud').getAttribute('data-sync-checksum');
+  await expect
+    .poll(async () => page.getByTestId('hud').getAttribute('data-sync-checksum'), {
+      timeout: 15_000,
+    })
+    .not.toBe(first);
+
+  // Против компьютера перезапуск на новой карте осмыслен и доступен.
+  await expect(page.getByTestId('restart')).toBeVisible();
 });
 
 test('заполненная комната показана занятой, а не исчезает', async ({ browser }) => {

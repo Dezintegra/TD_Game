@@ -55,8 +55,8 @@ export const createWsTransport = (
         socket.send(frame);
       }
     },
-    close(connection) {
-      sockets.get(connection.value)?.close();
+    close(connection, code) {
+      sockets.get(connection.value)?.close(code);
     },
     get connectionCount() {
       return sockets.size;

@@ -11,6 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@td/bot": "workspace:*",
+    "@td/netplay": "workspace:*",
     "@td/protocol": "workspace:*",
     "@td/shared": "workspace:*",
     "@td/sim": "workspace:*",
