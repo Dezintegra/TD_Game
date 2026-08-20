@@ -52,13 +52,25 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
 
   // Матч окончен — мир замирает. Тик всё равно растёт: часы идут,
   // даже когда играть уже не во что.
-  if (working.winner !== null) return fromWorking(working);
+  //
+  // Команды при этом всё же проходят через `applyCommand`. Не ради
+  // применения — оно немедленно отказывает с причиной «матч окончен», —
+  // а ради самого отказа: игрок, щёлкающий по полю после победы, должен
+  // получать ответ, а не тишину. Мир от этого не меняется: отказ живёт
+  // в отдельном списке и в контрольную сумму не входит.
+  if (working.winner !== null) {
+    commands.forEach((command, index) => {
+      applyCommand(working, command, index);
+    });
+
+    return fromWorking(working);
+  }
 
   applyIncome(working, allPlayerStats(working.players));
 
-  for (const command of commands) {
-    applyCommand(working, command);
-  }
+  commands.forEach((command, index) => {
+    applyCommand(working, command, index);
+  });
 
   // Характеристики пересчитываются после команд: покупка улучшения
   // в этом же тике должна подействовать немедленно.

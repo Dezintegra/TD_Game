@@ -17,8 +17,8 @@ import type { PlayerId, Vec2 } from '@td/shared';
 import { cellCentre, cellIndex, createWorld, playerStats } from '@td/sim';
 import type { StructureState, UnitState, WorldState } from '@td/sim';
 import { approachOf } from './approach.js';
+import { BASELINE_PROFILE } from './profile.js';
 import {
-  THREAT_RADIUS_CELLS,
   chooseFrontier,
   coveredCells,
   freshCoverage,
@@ -141,7 +141,14 @@ const situate = (world: WorldState): Situation => {
   if (approach === undefined || player === undefined) throw new Error('нет обстановки');
 
   const stats = playerStats(player);
-  const situation = situationOf(world, AI, approach, stats, coveredCells(world, AI, stats));
+  const situation = situationOf(
+    world,
+    AI,
+    approach,
+    stats,
+    coveredCells(world, AI, stats),
+    BASELINE_PROFILE,
+  );
   if (situation === undefined) throw new Error('нет обстановки');
 
   return situation;
@@ -240,7 +247,7 @@ describe('выбор рубежа', () => {
     const verdict = decide(clearMap({ units: attackers, hideFoeGeneral: true }));
 
     const home = cellCentre(homeCellOf(PLAIN, AI));
-    const radius = cellsToUnits(THREAT_RADIUS_CELLS);
+    const radius = cellsToUnits(BASELINE_PROFILE.posture.threatRadiusCells);
 
     expect(distanceSquared(cellCentre(verdict.frontier.cell), home)).toBeLessThanOrEqual(
       radius * radius,

@@ -4,8 +4,10 @@ export default defineWorkspace([
   'packages/shared',
   'packages/protocol',
   'packages/ui',
+  'packages/ai',
   'apps/server',
   'apps/client',
+  'apps/arena',
 
   // Ядро симуляции обязано вести себя одинаково в браузере и на сервере,
   // поэтому один и тот же набор тестов прогоняется в двух окружениях.

@@ -9,13 +9,11 @@ import {
   NUKE_BASE_EXCLUSION,
   NUKE_COST,
   NUKE_RADIUS,
-  PRODUCTION_QUEUE_CAP,
   StructureKind,
   TICKS_PER_SECOND,
   UPGRADE_BRANCHES,
   UnitType,
   UpgradeStat,
-  UpgradeTarget,
   asTickNumber,
   cellsToUnits,
   directionTowards,
@@ -23,6 +21,7 @@ import {
 } from '@td/shared';
 import type { Command, PlayerId, Vec2 } from '@td/shared';
 import {
+  UNREACHABLE,
   bestStep,
   cellAt,
   cellCentre,
@@ -38,13 +37,18 @@ import type { Occupancy, PlayerState, StructureState, WorldState } from '@td/sim
 import { approachOf, otherPlayer, walkField } from './approach.js';
 import type { Approach } from './approach.js';
 import {
-  chooseFrontier,
   coveredCells,
   freshCoverage,
+  pickVerdict,
   rangeInCells,
+  rankFrontiers,
   situationOf,
 } from './posture.js';
 import type { Verdict } from './posture.js';
+import { AttemptNote } from './observer.js';
+import type { AttemptRecord, AttemptResult, DecisionObserver, DecisionRecord } from './observer.js';
+import { BASELINE_PROFILE, phaseAt, reserveOf } from './profile.js';
+import type { AiProfile, PhaseProfile, Spending } from './profile.js';
 
 /**
  * Противник под управлением компьютера.
@@ -74,41 +78,8 @@ export interface Opponent {
   decide(world: WorldState): readonly Command[];
 }
 
-/** В каком радиусе от генерала ищутся свои башни, которые стоит прикрыть. */
-const CELLS_AROUND_GENERAL = 8;
-
-/** Каждая четвёртая постройка — стена: они прикрывают уже стоящие башни. */
-const WALL_EVERY = 4;
-
-/** Сколько вражеских юнитов оправдывают ядерный удар. */
-const NUKE_WORTH_UNITS = 6;
-
-/** Шаг сетки при поиске места для удара, в клетках. */
-const NUKE_SCAN_STEP = 3;
-
-/** В скольких клетках от своей башни имеет смысл ставить прикрывающую стену. */
-const SHIELD_RADIUS_CELLS = 2;
-
-/**
- * На сколько клеток вперёд по маршруту берётся прицел движения.
- *
- * За одно решение генерал проходит около полутора клеток. Прицел
- * в непосредственного соседа давал бы ступенчатую траекторию: направление
- * менялось бы на каждом шаге сетки, хотя идти надо по прямой.
- */
-const LOOKAHEAD_CELLS = 3;
-
-/**
- * Дальше этой доли пути рубеж считается наступательным.
- *
- * На таком рубеже юниты передвигаются в начало порядка трат: генерал там
- * приоритетная цель для всего, что стреляет, и без своих войск рядом
- * он не живёт.
- */
-const ADVANCE_FRACTION = 0.5;
-
-/** На что можно потратить энергию за одно решение. */
-type Spending = 'upgrade' | 'build' | 'train';
+// Все числа, задающие манеру игры, переехали в профиль поведения
+// (`profile.ts`). Здесь остаётся то, как противник ими пользуется.
 
 /**
  * Чем закончилась попытка потратить энергию.
@@ -119,126 +90,20 @@ type Spending = 'upgrade' | 'build' | 'train';
  * подрасти между решениями. `wait` означает «хочу, но пока не по карману,
  * и мелочь покупать не буду».
  */
-type Attempt = 'bought' | 'wait' | 'pass';
-
-/**
- * Насколько далёкую покупку имеет смысл ждать, в секундах дохода.
- *
- * Ждать вечно нельзя: если желаемое стоит десять минут дохода, разумнее
- * тратить на то, что доступно сейчас.
- */
-const SAVING_HORIZON_SECONDS = 45;
-
-/**
- * Сколько решений подряд разрешено копить, ничего не покупая.
- *
- * Без этого предела противник впадал в ступор: прокачка каждый раз
- * отвечала «почти хватает, подожди», и он ждал до конца матча, не построив
- * ни одной башни и не купив ни одного улучшения. Восемь решений — это
- * четыре секунды: за них казна прирастает заметно, но армия не простаивает.
- */
-const MAX_WAIT_DECISIONS = 8;
-
-interface Phase {
-  readonly untilSecond: number;
-  /** Ветки прокачки, интересные в этой фазе, в порядке предпочтения. */
-  readonly upgrades: readonly UpgradeTarget[];
-  /** Доля юнитов каждого типа: сумма весов задаёт вероятности. */
-  readonly mix: Readonly<Record<UnitType, number>>;
+interface Attempt {
+  readonly result: AttemptResult;
   /**
-   * Порядок трат. Первое, что удалось купить, останавливает перебор:
-   * за одно решение противник совершает не более одной покупки.
-   */
-  readonly spend: readonly Spending[];
-  /**
-   * Неприкосновенный запас энергии.
+   * Почему не купил. Отсутствует только у состоявшейся покупки.
    *
-   * В поздней фазе он равен цене ядерного удара: противник держит
-   * заряд в банке и тратит только излишек. Без запаса он до удара
-   * не накопит никогда — юниты и прокачка съедают доход подчистую.
+   * Хранится не ради самого противника — ему довольно исхода, — а ради
+   * разбора поведения: «не построил башню» может означать четыре
+   * совершенно разные вещи, и снаружи они неразличимы.
    */
-  readonly reserve: number;
+  readonly note?: AttemptNote;
 }
 
-/**
- * Фазы матча.
- *
- * Ранняя — вложения в экономику и первые башни у базы. Средняя — поток
- * юнитов и башни ближе к фронту. Поздняя — прокачка боевых веток
- * и ядерный удар.
- *
- * Порядок трат — самая важная строка в каждой фазе. Первая версия
- * противника пыталась купить всё сразу, и штурмовики за 25 энергии
- * при доходе в 10 в секунду выгребали казну раньше, чем очередь доходила
- * до экономики: за восемь минут он ставил ОДНУ постройку и не покупал
- * ни одного улучшения. Одна покупка за решение, в заданном порядке,
- * лечит это полностью.
- */
-const LATE_PHASE: Phase = {
-  untilSecond: Number.POSITIVE_INFINITY,
-  upgrades: [
-    UpgradeTarget.UnitAssault,
-    UpgradeTarget.UnitGrenadier,
-    UpgradeTarget.TowerSniper,
-    UpgradeTarget.General,
-    UpgradeTarget.Economy,
-  ],
-  mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 2, [UnitType.Grenadier]: 3 },
-  spend: ['upgrade', 'train', 'build'],
-  reserve: NUKE_COST,
-};
-
-const PHASES: readonly Phase[] = [
-  {
-    untilSecond: 90,
-    upgrades: [UpgradeTarget.Economy],
-    mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Grenadier]: 0 },
-    // Экономика вперёд всего: вложенное в первую минуту окупается весь матч.
-    spend: ['upgrade', 'build', 'train'],
-    reserve: 0,
-  },
-  {
-    untilSecond: 300,
-    upgrades: [UpgradeTarget.Economy, UpgradeTarget.UnitAssault, UpgradeTarget.TowerBasic],
-    mix: { [UnitType.Assault]: 5, [UnitType.Sniper]: 2, [UnitType.Grenadier]: 1 },
-    // Прокачка перед постройками: вложенное в экономику к середине матча
-    // окупается, а лишняя башня на пустом месте — почти никогда.
-    spend: ['upgrade', 'build', 'train'],
-    reserve: 0,
-  },
-  // Поздняя фаза замыкает список: её порог бесконечен, поэтому поиск
-  // всегда что-нибудь находит и запасной вариант нужен лишь формально.
-  LATE_PHASE,
-];
-
-const phaseAt = (tick: number): Phase => {
-  const seconds = tick / TICKS_PER_SECOND;
-  return PHASES.find((phase) => seconds < phase.untilSecond) ?? LATE_PHASE;
-};
-
-/**
- * Порядок трат, когда генерал уходит вперёд, а прикрывать его нечем.
- *
- * Юниты идут первыми — но, в отличие от порядка фаз, этот действует
- * не всегда, а только пока сопровождения не набралось. Иначе он бы всё
- * сломал: штурмовик стоит вчетверо дешевле башни и вдесятеро дешевле
- * улучшения экономики, поэтому «юниты первыми» без ограничения означает
- * «юниты всегда», и до построек с прокачкой очередь не дойдёт никогда.
- * Ровно на эти грабли противник уже наступал в первой своей версии.
- */
-const ESCORT_SPEND: readonly Spending[] = ['train', 'upgrade', 'build'];
-
-/**
- * Сколько своих юнитов должно быть живо, чтобы генерал считал себя
- * прикрытым на наступательном рубеже.
- *
- * Восемь штурмовиков — это восемь целей, которые вражеские башни выберут
- * прежде, чем очередь дойдёт до генерала... точнее, НЕ выберут: по новому
- * правилу генерал приоритетнее любого юнита. Смысл сопровождения другой:
- * восемь стволов рядом сносят башню за несколько секунд, и генерал
- * проводит под её огнём не всю осаду, а только эти секунды.
- */
-const ESCORT_UNITS = 8;
+const BOUGHT: Attempt = { result: 'bought' };
+const passing = (note: AttemptNote): Attempt => ({ result: 'pass', note });
 
 /** Поле расстояний до рубежа. Живёт между решениями, поэтому изменяемое. */
 interface GoalField {
@@ -248,7 +113,18 @@ interface GoalField {
   field: Int32Array;
 }
 
-export const createOpponent = (me: PlayerId, seed: number): Opponent => {
+export const createOpponent = (
+  me: PlayerId,
+  seed: number,
+  // Профиль необязателен намеренно: существующие вызовы от этого
+  // не меняются ни в клиенте, ни в тестах, и утверждение «поведение
+  // не изменилось» становится тем убедительнее, чем меньше тронуто строк.
+  profile: AiProfile = BASELINE_PROFILE,
+  // Наблюдатель необязателен и по умолчанию отсутствует. Без него
+  // не создаётся ни одного объекта записи: в матче человека это горячий
+  // путь, а сведения там никому не нужны.
+  observe?: DecisionObserver,
+): Opponent => {
   // Случайность берётся из детерминированного генератора, а не из
   // Math.random. Формально это не требуется — противник живёт вне ядра, —
   // но благодаря этому матч с фиксированными seed воспроизводится целиком,
@@ -301,11 +177,17 @@ export const createOpponent = (me: PlayerId, seed: number): Opponent => {
       const approach = approachOf(world, me);
       if (approach === undefined) return [];
 
-      const phase = phaseAt(world.tick);
+      const phase = phaseAt(profile, world.tick);
       const stats = playerStats(player);
       const covered = coveredCells(world, me, stats);
-      const situation = situationOf(world, me, approach, stats, covered);
-      const verdict = situation === undefined ? undefined : chooseFrontier(situation);
+      const situation = situationOf(world, me, approach, stats, covered, profile);
+
+      // Оценки всех рубежей и выбор лучшего — два шага, а не один.
+      // Разбору поведения нужны все оценки: если выбранный рубеж обошёл
+      // соседний на два процента, это дрожь, а не решение. Считаются они
+      // и так, поэтому наблюдение не стоит противнику ничего.
+      const verdicts = situation === undefined ? [] : rankFrontiers(situation);
+      const verdict = pickVerdict(verdicts);
 
       const commands: Command[] = [];
 
@@ -314,39 +196,43 @@ export const createOpponent = (me: PlayerId, seed: number): Opponent => {
 
       // Ядерный удар проверяется до остальных трат: он копится в запасе
       // фазы, и тратить этот запас на что-то другое было бы обидно.
-      const struck = tryNuke(commands, world, me, player);
+      const struck = tryNuke(commands, world, me, player, profile);
+
+      const attempts: AttemptRecord[] = [];
+      const escorting =
+        (verdict?.frontier.fraction ?? 0) > profile.movement.advanceFraction &&
+        liveUnits(world, me) < profile.escort.units;
+      // Копить бесконечно нельзя: если накопление затянулось, на этом
+      // решении желание «подождать» игнорируется, и деньги уходят на то,
+      // что доступно сейчас.
+      const impatient = waitStreak >= profile.spending.maxWaitDecisions;
+      const spendOrder = escorting ? profile.escort.spend : phase.spend;
 
       if (!struck) {
-        // Копить бесконечно нельзя: если накопление затянулось,
-        // на этом решении желание «подождать» игнорируется, и деньги
-        // уходят на то, что доступно сейчас.
-        const impatient = waitStreak >= MAX_WAIT_DECISIONS;
         let waited = false;
 
         // Уходя вперёд без сопровождения, противник сначала набирает
         // войско. На оборонительном рубеже такой спешки нет: там генерала
         // прикрывают собственные башни.
-        const escorting =
-          (verdict?.frontier.fraction ?? 0) > ADVANCE_FRACTION &&
-          liveUnits(world, me) < ESCORT_UNITS;
-
-        for (const spending of escorting ? ESCORT_SPEND : phase.spend) {
-          const result =
+        for (const spending of spendOrder) {
+          const attempt =
             spending === 'upgrade'
-              ? tryUpgrade(commands, world, me, player, phase)
+              ? tryUpgrade(commands, world, me, player, phase, profile)
               : spending === 'build'
-                ? tryBuild(commands, world, me, player, phase, approach, covered, () => {
+                ? tryBuild(commands, world, me, player, phase, profile, approach, covered, () => {
                     buildCounter += 1;
                     return buildCounter;
                   })
-                : tryTrain(commands, world, me, player, phase, roll, phase.reserve);
+                : tryTrain(commands, world, me, player, phase, profile, roll);
 
-          if (result === 'bought') break;
+          if (observe !== undefined) attempts.push({ spending, ...attempt });
+
+          if (attempt.result === 'bought') break;
 
           // `wait` прерывает перебор: раз на желаемое почти хватает,
           // тратить сейчас на что-то менее важное значит никогда до него
           // не добраться.
-          if (result === 'wait' && !impatient) {
+          if (attempt.result === 'wait' && !impatient) {
             waited = true;
             break;
           }
@@ -355,11 +241,100 @@ export const createOpponent = (me: PlayerId, seed: number): Opponent => {
         waitStreak = waited ? waitStreak + 1 : 0;
       }
 
-      const movement = decideMovement(world, me, approach, verdict, fieldTo);
+      const movement = decideMovement(world, me, approach, verdict, profile, fieldTo);
       if (movement !== undefined) commands.push(movement);
+
+      // Запись собирается последней и только когда есть кому её принять:
+      // без наблюдателя не создаётся ни одного лишнего объекта.
+      if (observe !== undefined) {
+        observe(
+          record(world, me, player, profile, {
+            phase,
+            waitStreak,
+            impatient,
+            escorting,
+            spendOrder,
+            attempts,
+            verdicts,
+            verdict,
+            approach,
+            struck,
+            commandCount: commands.length,
+          }),
+        );
+      }
 
       return commands;
     },
+  };
+};
+
+/** Собранное для наблюдателя. Живёт одно решение и наружу не выходит. */
+interface Observed {
+  readonly phase: PhaseProfile;
+  readonly waitStreak: number;
+  readonly impatient: boolean;
+  readonly escorting: boolean;
+  readonly spendOrder: readonly Spending[];
+  readonly attempts: readonly AttemptRecord[];
+  readonly verdicts: readonly Verdict[];
+  readonly verdict: Verdict | undefined;
+  readonly approach: Approach;
+  readonly struck: boolean;
+  readonly commandCount: number;
+}
+
+/**
+ * Запись о решении.
+ *
+ * Только чтение уже посчитанного: ни одного обращения к генератору
+ * случайных чисел, ни одного дополнительного обхода карты. Прогон
+ * с наблюдателем обязан давать ту же контрольную сумму, что и без него.
+ */
+const record = (
+  world: WorldState,
+  me: PlayerId,
+  player: PlayerState,
+  profile: AiProfile,
+  seen: Observed,
+): DecisionRecord => {
+  const general = world.generals[me];
+  const generalCell = general === undefined || !general.alive ? -1 : cellAt(general.position);
+
+  // Клетка генерала может оказаться недостижимой от собственной базы —
+  // например, если его обстроили со всех сторон. Поле расстояний
+  // возвращает в этом случае сентинел, и записать его как расстояние
+  // значило бы подсунуть разбору два миллиарда клеток вместо «неизвестно».
+  // Один такой матч ломает всю сводку по пачке: в ней появляется генерал,
+  // зашедший на пятьдесят миллионов долей пути.
+  const fromHome = generalCell < 0 ? UNREACHABLE : (seen.approach.fromHome[generalCell] ?? UNREACHABLE);
+
+  return {
+    tick: world.tick,
+    player: me,
+    phaseIndex: profile.phases.indexOf(seen.phase),
+    waitStreak: seen.waitStreak,
+    impatient: seen.impatient,
+    escorting: seen.escorting,
+    liveUnits: liveUnits(world, me),
+    spendOrder: seen.spendOrder,
+    attempts: seen.attempts,
+    frontiers: seen.verdicts.map((entry) => ({
+      fraction: entry.frontier.fraction,
+      cell: entry.frontier.cell,
+      coverage: entry.frontier.coverage,
+      gain: entry.gain,
+      risk: entry.risk,
+      score: entry.score,
+      deathChance: entry.deathChance,
+      chosen: entry.frontier.cell === seen.verdict?.frontier.cell,
+    })),
+    generalCell,
+    generalFromHome: fromHome === UNREACHABLE ? -1 : fromHome,
+    approachShortest: seen.approach.shortest,
+    energy: player.energy,
+    struck: seen.struck,
+    commandCount: seen.commandCount,
   };
 };
 
@@ -375,9 +350,18 @@ const liveUnits = (world: WorldState, me: PlayerId): number =>
  * Ждать имеет смысл, только если желаемое близко: копить десять минут
  * на одну башню, ничего при этом не делая, — верный способ проиграть.
  */
-const waitOrPass = (price: number, incomePerTick: number): Attempt => {
-  const horizon = incomePerTick * TICKS_PER_SECOND * SAVING_HORIZON_SECONDS;
-  return price <= horizon ? 'wait' : 'pass';
+const waitOrPass = (
+  price: number,
+  incomePerTick: number,
+  profile: AiProfile,
+  unaffordable: AttemptNote,
+): Attempt => {
+  const horizon = incomePerTick * TICKS_PER_SECOND * profile.spending.savingHorizonSeconds;
+
+  // Помеха одна и та же — не хватает энергии, — а исходов два. Причина
+  // поэтому прикладывается к обоим: без неё запись «коплю» не сказала бы,
+  // на что именно.
+  return { result: price <= horizon ? 'wait' : 'pass', note: unaffordable };
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -404,6 +388,7 @@ const decideMovement = (
   me: PlayerId,
   approach: Approach,
   verdict: Verdict | undefined,
+  profile: AiProfile,
   fieldTo: (occupancy: Occupancy, cell: number, revision: number) => Int32Array,
 ): Command | undefined => {
   const general = world.generals[me];
@@ -413,7 +398,7 @@ const decideMovement = (
   const field = fieldTo(approach.occupancy, verdict.frontier.cell, world.navRevision);
 
   let aim = from;
-  for (let step = 0; step < LOOKAHEAD_CELLS; step += 1) {
+  for (let step = 0; step < profile.movement.lookaheadCells; step += 1) {
     const next = bestStep(field, approach.occupancy, world.structures, me, aim, false);
     if (next.cell < 0) break;
 
@@ -440,19 +425,16 @@ const decideMovement = (
 // Производство
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Не держим в очереди больше нескольких заказов: энергия нужнее живой. */
-const QUEUE_TARGET = Math.min(4, PRODUCTION_QUEUE_CAP);
-
 const tryTrain = (
   commands: Command[],
   world: WorldState,
   me: PlayerId,
   player: PlayerState,
-  phase: Phase,
+  phase: PhaseProfile,
+  profile: AiProfile,
   roll: (bound: number) => number,
-  reserve: number,
 ): Attempt => {
-  if (player.queue.length >= QUEUE_TARGET) return 'pass';
+  if (player.queue.length >= profile.spending.queueTarget) return passing(AttemptNote.QueueFull);
 
   const stats = playerStats(player);
   const weights = [
@@ -462,7 +444,7 @@ const tryTrain = (
   ];
 
   const total = weights.reduce((sum, [, weight]) => sum + weight, 0);
-  if (total <= 0) return 'pass';
+  if (total <= 0) return passing(AttemptNote.MixEmpty);
 
   let pick = roll(total);
   let chosen: UnitType = UnitType.Assault;
@@ -477,7 +459,7 @@ const tryTrain = (
   const cost = stats.units[chosen].cost;
   // Юниты дёшевы, копить на них незачем: если сейчас не хватает,
   // через пару решений хватит само собой.
-  if (player.energy < cost + reserve) return 'pass';
+  if (player.energy < cost + reserveOf(phase)) return passing(AttemptNote.UnitUnaffordable);
 
   commands.push(
     command({
@@ -488,7 +470,7 @@ const tryTrain = (
     }),
   );
 
-  return 'bought';
+  return BOUGHT;
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -500,15 +482,16 @@ const tryBuild = (
   world: WorldState,
   me: PlayerId,
   player: PlayerState,
-  phase: Phase,
+  phase: PhaseProfile,
+  profile: AiProfile,
   approach: Approach,
   covered: Uint8Array,
   nextBuildNumber: () => number,
 ): Attempt => {
   const general = world.generals[me];
-  if (general === undefined || !general.alive) return 'pass';
+  if (general === undefined || !general.alive) return passing(AttemptNote.GeneralDead);
 
-  const around = cellsToUnits(CELLS_AROUND_GENERAL) ** 2;
+  const around = cellsToUnits(profile.building.cellsAroundGeneral) ** 2;
   const towers = world.structures.filter(
     (structure) =>
       structure.owner === me &&
@@ -521,18 +504,20 @@ const tryBuild = (
   // лишь покупает противнику время на обход; стена перед башней —
   // укрепление, потому что башня стреляет поверх неё, а юниты сквозь
   // неё стрелять не могут.
-  const shielding = nextBuildNumber() % WALL_EVERY === 0 && towers.length > 0;
+  const shielding = nextBuildNumber() % profile.building.wallEvery === 0 && towers.length > 0;
   const kind = shielding ? StructureKind.Wall : StructureKind.TowerBasic;
-  if (!BUILDABLE_KINDS.includes(kind)) return 'pass';
+  if (!BUILDABLE_KINDS.includes(kind)) return passing(AttemptNote.NotBuildable);
 
   const stats = playerStats(player);
-  const price = stats.structures[kind].cost + phase.reserve;
-  if (player.energy < price) return waitOrPass(price, stats.incomePerTick);
+  const price = stats.structures[kind].cost + reserveOf(phase);
+  if (player.energy < price) {
+    return waitOrPass(price, stats.incomePerTick, profile, AttemptNote.StructureUnaffordable);
+  }
 
   const radius = stats.general.buildRadius;
 
   const cell = shielding
-    ? shieldBuildCell(world, me, general.position, radius, approach, towers)
+    ? shieldBuildCell(world, me, general.position, radius, approach, towers, profile)
     : towerBuildCell(
         world,
         me,
@@ -543,7 +528,12 @@ const tryBuild = (
         rangeInCells(stats.structures[StructureKind.TowerBasic].range),
       );
 
-  if (cell < 0) return 'pass';
+  // Места нет — и это не то же самое, что «нет денег». Башне нужен
+  // ненакрытый путь в радиусе, стене — своя башня, которую она прикроет;
+  // и то и другое кончается задолго до энергии.
+  if (cell < 0) {
+    return passing(shielding ? AttemptNote.NoShieldSite : AttemptNote.NoTowerSite);
+  }
 
   commands.push(
     command({
@@ -555,7 +545,7 @@ const tryBuild = (
     }),
   );
 
-  return 'bought';
+  return BOUGHT;
 };
 
 /**
@@ -668,12 +658,13 @@ const shieldBuildCell = (
   radius: number,
   approach: Approach,
   towers: readonly StructureState[],
+  profile: AiProfile,
 ): number => {
   const enemyCell = world.map.baseCells[otherPlayer(me)];
   if (enemyCell === undefined) return -1;
 
   const enemy = cellCentre(enemyCell);
-  const shieldReach = cellsToUnits(SHIELD_RADIUS_CELLS) ** 2;
+  const shieldReach = cellsToUnits(profile.building.shieldRadiusCells) ** 2;
 
   let best = -1;
   let bestOnPath = -1;
@@ -767,7 +758,8 @@ const tryUpgrade = (
   world: WorldState,
   me: PlayerId,
   player: PlayerState,
-  phase: Phase,
+  phase: PhaseProfile,
+  profile: AiProfile,
 ): Attempt => {
   const costs = upgradeCosts(player);
 
@@ -801,10 +793,17 @@ const tryUpgrade = (
     if (bestBranch >= 0) break;
   }
 
-  if (bestBranch < 0) return 'pass';
+  if (bestBranch < 0) return passing(AttemptNote.NothingToUpgrade);
 
-  const price = bestCost + phase.reserve;
-  if (player.energy < price) return waitOrPass(price, playerStats(player).incomePerTick);
+  const price = bestCost + reserveOf(phase);
+  if (player.energy < price) {
+    return waitOrPass(
+      price,
+      playerStats(player).incomePerTick,
+      profile,
+      AttemptNote.UpgradeUnaffordable,
+    );
+  }
 
   commands.push(
     command({
@@ -815,7 +814,7 @@ const tryUpgrade = (
     }),
   );
 
-  return 'bought';
+  return BOUGHT;
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -827,6 +826,7 @@ const tryNuke = (
   world: WorldState,
   me: PlayerId,
   player: PlayerState,
+  profile: AiProfile,
 ): boolean => {
   if (player.energy < NUKE_COST) return false;
 
@@ -835,10 +835,10 @@ const tryNuke = (
     .map((structure) => cellCentre(structure.cell));
 
   let bestCell = -1;
-  let bestCount = NUKE_WORTH_UNITS - 1;
+  let bestCount = profile.nuke.worthUnits - 1;
 
-  for (let y = 0; y < MAP_HEIGHT_CELLS; y += NUKE_SCAN_STEP) {
-    for (let x = 0; x < MAP_WIDTH_CELLS; x += NUKE_SCAN_STEP) {
+  for (let y = 0; y < MAP_HEIGHT_CELLS; y += profile.nuke.scanStep) {
+    for (let x = 0; x < MAP_WIDTH_CELLS; x += profile.nuke.scanStep) {
       const centre = cellCentre(cellIndex(x, y));
 
       // Запретную зону проверяет и ядро, но команда, которую заведомо

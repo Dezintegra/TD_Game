@@ -1,5 +1,13 @@
 import { SHOT_LIFETIME_TICKS, asTickNumber } from '@td/shared';
-import type { EntityId, PlayerId, TickNumber, UnitType, Vec2 } from '@td/shared';
+import type {
+  CommandKind,
+  EntityId,
+  PlayerId,
+  RejectReason,
+  TickNumber,
+  UnitType,
+  Vec2,
+} from '@td/shared';
 import { StructureKind } from '@td/shared';
 import { cellCentre } from './map.js';
 import type { GameMap } from './map.js';
@@ -8,7 +16,14 @@ import type { Occupancy } from './occupancy.js';
 import { buildSightGrid } from './sight.js';
 import type { SightGrid } from './sight.js';
 import type { RngState } from './prng.js';
-import type { NavField, PlayerState, ShotState, UpgradeState, WorldState } from './world.js';
+import type {
+  NavField,
+  PlayerState,
+  Rejection,
+  ShotState,
+  UpgradeState,
+  WorldState,
+} from './world.js';
 
 /**
  * Изменяемая копия мира на время одного тика.
@@ -98,6 +113,13 @@ export interface Working {
   generals: WorkingGeneral[];
   nukes: WorkingNuke[];
   shots: ShotState[];
+  /**
+   * Отказы этого тика. Начинается пустым всегда — в отличие от следов
+   * выстрелов, которые переезжают из прошлого состояния и доживают
+   * свой срок. Накапливать отказы между тиками нельзя: показанный
+   * дважды отказ выглядит как два разных.
+   */
+  rejections: Rejection[];
   nav: NavField[];
   navRevision: number;
   nextEntityId: number;
@@ -165,6 +187,7 @@ export const toWorking = (state: WorldState): Working => ({
   })),
   nukes: state.nukes.map((nuke) => ({ ...nuke })),
   shots: [...state.shots],
+  rejections: [],
   nav: [...state.nav],
   navRevision: state.navRevision,
   nextEntityId: state.nextEntityId,
@@ -202,6 +225,23 @@ export const invalidateNavigation = (working: Working): void => {
 export const position = (entity: { x: number; y: number }): Vec2 => ({ x: entity.x, y: entity.y });
 
 export const structurePosition = (structure: WorkingStructure): Vec2 => cellCentre(structure.cell);
+
+/**
+ * Записать отказ.
+ *
+ * Единственный способ сообщить о непринятой команде. Отдельная функция,
+ * а не `push` по месту, — чтобы точку записи было видно поиском: правило
+ * «одна проверка, одна причина» проверяется глазами по списку вызовов.
+ */
+export const recordRejection = (
+  working: Working,
+  player: PlayerId,
+  kind: CommandKind,
+  reason: RejectReason,
+  index: number,
+): void => {
+  working.rejections.push({ player, kind, reason, index });
+};
 
 export const recordShot = (
   working: Working,
@@ -275,6 +315,7 @@ export const fromWorking = (working: Working): WorldState => ({
   })),
   nukes: working.nukes.map((nuke) => ({ ...nuke })),
   shots: working.shots.filter((shot) => shot.expiresAtTick > working.tick),
+  rejections: working.rejections,
   nav: working.nav,
   navRevision: working.navRevision,
   nextEntityId: working.nextEntityId,

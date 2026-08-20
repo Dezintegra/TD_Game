@@ -27,6 +27,8 @@ import { cellAt, playerStats } from '@td/sim';
 import type { PlayerStats, WorldState } from '@td/sim';
 import { otherPlayer, walkField } from './approach.js';
 import type { Approach } from './approach.js';
+import { horizonTicks } from './profile.js';
+import type { AiProfile } from './profile.js';
 
 /**
  * Развесовка моделей поведения генерала.
@@ -84,15 +86,6 @@ const ENERGY_PER_BASE_DAMAGE =
   STRUCTURE_STATS[StructureKind.Base].health;
 
 /**
- * Горизонт планирования: минута.
- *
- * Башня возводится две секунды, значит на этом отрезке успевает окупиться.
- * Брать больше нельзя: за пять минут обстановка меняется до неузнаваемости,
- * и оценка превратилась бы в гадание.
- */
-const HORIZON_TICKS = TICKS_PER_SECOND * 60;
-
-/**
  * Сколько тиков генерал проводит под огнём, прежде чем выйдет из-под него.
  *
  * Не выдумано: одно решение на то, чтобы заметить обстрел, плюс время
@@ -107,25 +100,9 @@ const escapeTicks = (stats: PlayerStats): number =>
 const walkTicks = (cells: number, stats: PlayerStats): number =>
   (cells * FIXED_POINT_SCALE) / Math.max(1, stats.general.speed);
 
-/**
- * Доли вероятного пути, на которых генерал готов встать.
- *
- * Шесть значений, а не непрерывная величина. Непрерывная давала бы
- * новую цель на каждом решении: доля сдвигается на сотую, желаемое
- * расстояние — на клетку, и клетка-цель перескакивает в другой конец
- * коридора. Именно от этого генерал и метался.
- */
-export const FRONTIER_FRACTIONS: readonly number[] = [0, 0.15, 0.35, 0.55, 0.75, 0.95];
-
-/**
- * Насколько клетка может отстоять от желаемого расстояния и всё ещё
- * считаться тем же рубежом. Без допуска рубеж вырождался бы в одну
- * клетку, а она запросто окажется непроходимой или уже застроенной.
- */
-const BAND_CELLS = 3;
-
-/** Радиус, в котором вражеские юниты считаются угрозой базе, в клетках. */
-export const THREAT_RADIUS_CELLS = 10;
+// Доли вероятного пути, допуск полосы, радиус угрозы базе и горизонт
+// планирования переехали в профиль поведения (`profile.ts`): это настройка,
+// которую сравнивают между вариантами, а не свойство формулы.
 
 // ─────────────────────────────────────────────────────────────────────────
 // Входящий урон
@@ -325,6 +302,8 @@ export interface Situation {
   /** Расстояния от генерала по проходимым клеткам: достижимость и дорога. */
   readonly reach: Int32Array;
   readonly covered: Uint8Array;
+  /** Настройка, по которой оцениваются рубежи. */
+  readonly profile: AiProfile;
 }
 
 /**
@@ -344,6 +323,7 @@ export const situationOf = (
   approach: Approach,
   myStats: PlayerStats,
   covered: Uint8Array,
+  profile: AiProfile,
 ): Situation | undefined => {
   const general = world.generals[me];
   if (general === undefined || !general.alive) return undefined;
@@ -368,6 +348,7 @@ export const situationOf = (
     enemyBaseCell,
     reach: walkField(approach.occupancy, [cellAt(general.position)]),
     covered,
+    profile,
   };
 };
 
@@ -380,11 +361,12 @@ export const situationOf = (
  * отсеиваются здесь же: идти к рубежу, до которого нет дороги, незачем.
  */
 export const frontiersOf = (situation: Situation): readonly Frontier[] => {
-  const { approach, reach, covered, myStats } = situation;
+  const { approach, reach, covered, myStats, profile } = situation;
   const rangeCells = rangeInCells(myStats.structures[StructureKind.TowerBasic].range);
+  const fractions = profile.posture.frontierFractions;
 
-  const wanted = FRONTIER_FRACTIONS.map((fraction) => Math.round(fraction * approach.shortest));
-  const best = FRONTIER_FRACTIONS.map(() => ({ cell: -1, coverage: -1 }));
+  const wanted = fractions.map((fraction) => Math.round(fraction * approach.shortest));
+  const best = fractions.map(() => ({ cell: -1, coverage: -1 }));
 
   for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
     if (approach.onPath[cell] !== 1) continue;
@@ -396,7 +378,7 @@ export const frontiersOf = (situation: Situation): readonly Frontier[] => {
     let coverage = -1;
 
     for (let index = 0; index < wanted.length; index += 1) {
-      if (Math.abs(fromHome - (wanted[index] ?? 0)) > BAND_CELLS) continue;
+      if (Math.abs(fromHome - (wanted[index] ?? 0)) > profile.posture.bandCells) continue;
 
       const slot = best[index];
       if (slot === undefined) continue;
@@ -413,7 +395,7 @@ export const frontiersOf = (situation: Situation): readonly Frontier[] => {
 
   const frontiers: Frontier[] = [];
 
-  FRONTIER_FRACTIONS.forEach((fraction, index) => {
+  fractions.forEach((fraction, index) => {
     const slot = best[index];
     if (slot === undefined || slot.cell < 0) return;
 
@@ -438,7 +420,7 @@ export const frontiersOf = (situation: Situation): readonly Frontier[] => {
  */
 const pressureOnHome = (situation: Situation): number => {
   const home = cellCentre(situation.homeCell);
-  const radius = cellsToUnits(THREAT_RADIUS_CELLS);
+  const radius = cellsToUnits(situation.profile.posture.threatRadiusCells);
   const reach = radius * radius;
 
   let enemyDamage = 0;
@@ -517,7 +499,7 @@ export const scoreFrontier = (situation: Situation, frontier: Frontier): Verdict
     tower.range * tower.range;
 
   const home = cellCentre(situation.homeCell);
-  const threatRadius = cellsToUnits(THREAT_RADIUS_CELLS);
+  const threatRadius = cellsToUnits(situation.profile.posture.threatRadiusCells);
   const coversHome = distanceSquared(point, home) <= threatRadius * threatRadius;
 
   const ratePerTick =
@@ -527,7 +509,7 @@ export const scoreFrontier = (situation: Situation, frontier: Frontier): Verdict
 
   const escape = escapeTicks(myStats);
   const travel = walkTicks(situation.reach[frontier.cell] ?? 0, myStats);
-  const productive = Math.max(0, HORIZON_TICKS - travel);
+  const productive = Math.max(0, horizonTicks(situation.profile) - travel);
 
   const incoming = incomingAt(situation.world, situation.me, enemyStats, point);
   const hold = incoming.fromStructures > 0 ? Math.min(productive, escape) : productive;
@@ -553,7 +535,19 @@ export const scoreFrontier = (situation: Situation, frontier: Frontier): Verdict
 };
 
 /**
- * Лучший рубеж.
+ * Оценки всех рубежей-кандидатов.
+ *
+ * Отделено от выбора не для красоты. Разбор поведения требует знать
+ * оценки ВСЕХ рубежей, а не только победившего: если выбранный обошёл
+ * соседний на два процента, это дрожь, а не решение, и лечится она совсем
+ * не тем, чем «выбрал не тот рубеж». Противник считает их все и так —
+ * отдельная функция лишь позволяет забрать посчитанное, не считая заново.
+ */
+export const rankFrontiers = (situation: Situation): readonly Verdict[] =>
+  frontiersOf(situation).map((frontier) => scoreFrontier(situation, frontier));
+
+/**
+ * Выбор лучшего из оценённых.
  *
  * Обычный случай — наибольшая оценка. Особый случай — когда накрывать
  * нечего нигде: положительной выгоды нет ни у одного рубежа, а значит
@@ -562,8 +556,7 @@ export const scoreFrontier = (situation: Situation, frontier: Frontier): Verdict
  * открываются ненакрытые клетки пути, выгода снова становится
  * положительной, и строительство возобновляется само.
  */
-export const chooseFrontier = (situation: Situation): Verdict | undefined => {
-  const verdicts = frontiersOf(situation).map((frontier) => scoreFrontier(situation, frontier));
+export const pickVerdict = (verdicts: readonly Verdict[]): Verdict | undefined => {
   if (verdicts.length === 0) return undefined;
 
   let best = verdicts[0];
@@ -585,3 +578,13 @@ export const chooseFrontier = (situation: Situation): Verdict | undefined => {
 
   return advance ?? best;
 };
+
+/**
+ * Лучший рубеж — оценить кандидатов и выбрать.
+ *
+ * Обёртка над двумя шагами выше. Существует потому, что вызывающему
+ * обычно нужен только результат; разбору поведения нужны и оценки,
+ * и он берёт их отдельно, не считая ничего заново.
+ */
+export const chooseFrontier = (situation: Situation): Verdict | undefined =>
+  pickVerdict(rankFrontiers(situation));

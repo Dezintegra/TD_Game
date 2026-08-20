@@ -39,6 +39,18 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)
 
+  apps/arena:
+    dependencies:
+      '@td/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
+      '@td/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@td/sim':
+        specifier: workspace:*
+        version: link:../../packages/sim
+
   apps/client:
     dependencies:
       '@fontsource-variable/jetbrains-mono':
@@ -47,6 +59,9 @@ importers:
       '@fontsource-variable/manrope':
         specifier: ^5.1.1
         version: 5.3.0
+      '@td/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@td/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -109,6 +124,15 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.23.12
+
+  packages/ai:
+    dependencies:
+      '@td/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@td/sim':
+        specifier: workspace:*
+        version: link:../sim
 
   packages/protocol:
     dependencies:

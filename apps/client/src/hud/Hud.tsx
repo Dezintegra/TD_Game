@@ -1,8 +1,10 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { Button, Panel } from '@td/ui';
+import { RejectReason } from '@td/shared';
 import { matchCommands, useHudStore } from '../game/store.js';
 import type { ConnectionStatus } from '../game/store.js';
 import { ActionBar } from './ActionBar.js';
+import { NoticeStack, Nudge } from './Notices.js';
 import { UpgradePanel } from './UpgradePanel.js';
 import { HOTKEYS } from './labels.js';
 
@@ -108,19 +110,32 @@ const MatchBar = () => {
   const seconds = Math.floor(match.matchSeconds % 60);
 
   return (
+    // Сообщения об отказах живут внутри этой же колонки, а не отдельным
+    // блоком с подобранным отступом сверху: так они всегда оказываются
+    // ровно под полосой матча, какой бы высоты та ни выросла.
     <div
       style={{
         position: 'absolute',
         top: 'var(--td-space-4)',
         left: '50%',
         transform: 'translateX(-50%)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 'var(--td-space-2)',
       }}
     >
       <Panel data-testid="match-bar">
         <div style={{ display: 'flex', gap: 'var(--td-space-6)', alignItems: 'baseline' }}>
           <Metric
             label="Энергия"
-            value={<span data-testid="energy">{match.energy}</span>}
+            value={
+              // Энергия вздрагивает на любой отказ по бедности — неважно,
+              // за юнита, постройку или улучшение не хватило.
+              <Nudge reason={RejectReason.NotEnoughEnergy}>
+                <span data-testid="energy">{match.energy}</span>
+              </Nudge>
+            }
             hint={`+${String(match.incomePerSecond)} / с`}
             accent
           />
@@ -141,6 +156,8 @@ const MatchBar = () => {
           <Metric label="Время" value={`${String(minutes)}:${String(seconds).padStart(2, '0')}`} />
         </div>
       </Panel>
+
+      <NoticeStack />
     </div>
   );
 };

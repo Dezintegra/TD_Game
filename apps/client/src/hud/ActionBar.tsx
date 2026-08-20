@@ -1,8 +1,9 @@
 import type { CSSProperties, MouseEvent } from 'react';
 import { Panel } from '@td/ui';
-import { BUILDABLE_KINDS, StructureKind, UNIT_TYPES, UnitType } from '@td/shared';
+import { BUILDABLE_KINDS, RejectReason, StructureKind, UNIT_TYPES, UnitType } from '@td/shared';
 import { BATCH_ORDER_COUNT } from '../game/controls.js';
 import { matchCommands, useHudStore } from '../game/store.js';
+import { Nudge } from './Notices.js';
 import { STRUCTURE_SHORT, UNIT_SHORT } from './labels.js';
 
 /**
@@ -120,7 +121,9 @@ export const ActionBar = () => {
             />
           ))}
         </div>
-        <Queue queue={match.queue} />
+        <Nudge reason={RejectReason.QueueFull}>
+          <Queue queue={match.queue} />
+        </Nudge>
       </Panel>
 
       <Panel title="Строительство" data-testid="build-panel">

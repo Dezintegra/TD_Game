@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { Notice } from './rejections.js';
 
 /**
  * Store — единственный канал связи между игровым циклом и React.
@@ -89,6 +90,15 @@ interface HudState {
   /** Доля непроходимых клеток на текущей карте, в процентах. */
   readonly rockPercent: number;
   readonly match: MatchSnapshot;
+  /**
+   * Сообщения об отклонённых командах игрока.
+   *
+   * Обновляются не вместе со снимком матча, а отдельно и на каждом тике.
+   * Снимок снимается раз в несколько тиков — этого достаточно для чисел,
+   * которые человек и так не считывает быстрее, — но отказ живёт ровно
+   * один тик, и в снимок он попадал бы примерно в одном случае из шести.
+   */
+  readonly notices: readonly Notice[];
 
   setStatus(status: ConnectionStatus): void;
   setTick(tick: number): void;
@@ -96,6 +106,7 @@ interface HudState {
   setFps(fps: number): void;
   setMapInfo(seed: number, visiblePercent: number, rockPercent: number): void;
   setMatch(match: MatchSnapshot): void;
+  setNotices(notices: readonly Notice[]): void;
 }
 
 export const useHudStore = create<HudState>((set) => ({
@@ -108,6 +119,7 @@ export const useHudStore = create<HudState>((set) => ({
   visiblePercent: 0,
   rockPercent: 0,
   match: EMPTY_MATCH,
+  notices: [],
 
   setStatus: (status) => set({ status }),
   setTick: (tick) => set({ tick }),
@@ -115,6 +127,7 @@ export const useHudStore = create<HudState>((set) => ({
   setFps: (fps) => set({ fps }),
   setMapInfo: (seed, visiblePercent, rockPercent) => set({ seed, visiblePercent, rockPercent }),
   setMatch: (match) => set({ match }),
+  setNotices: (notices) => set({ notices }),
 }));
 
 /**
@@ -129,6 +142,7 @@ export const hudActions = {
   setMapInfo: (seed: number, visiblePercent: number, rockPercent: number) =>
     useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent),
   setMatch: (match: MatchSnapshot) => useHudStore.getState().setMatch(match),
+  setNotices: (notices: readonly Notice[]) => useHudStore.getState().setNotices(notices),
 };
 
 /**

@@ -43,6 +43,17 @@ export interface GameLoopOptions {
    * на котором он решает.
    */
   commands?: (world: WorldState) => readonly Command[];
+  /**
+   * Вызывается прямо перед шагом симуляции, с миром ДО шага и полным
+   * списком команд, поданных на этот шаг.
+   *
+   * Нужен записи матча, и номер тика здесь принципиален. Поле `tick`
+   * внутри команды проставляется в момент нажатия, а до симуляции команда
+   * доезжает следующим кадром — тик к тому времени может уйти вперёд.
+   * Воспроизведение подаёт команды по тику мира до шага, поэтому
+   * записывать надо именно его.
+   */
+  onStep?: (world: WorldState, commands: readonly Command[]) => void;
   /** Вызывается после каждого тика симуляции. */
   onTick?: (world: WorldState) => void;
   /**
@@ -85,6 +96,8 @@ export const createGameLoop = (options: GameLoopOptions): GameLoop => {
 
       const fromOpponent = options.commands?.(world) ?? [];
       const commands = fromOpponent.length === 0 ? fromPlayer : [...fromPlayer, ...fromOpponent];
+
+      options.onStep?.(world, commands);
 
       world = step(world, commands);
       accumulator -= MS_PER_TICK;

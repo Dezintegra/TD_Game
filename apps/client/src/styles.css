@@ -62,3 +62,64 @@ body {
 #hud > * {
   pointer-events: auto;
 }
+
+/* Отклик на отклонённую команду.
+
+   Анимации, а не переходы: у отказа нет «состояния до» и «состояния
+   после», между которыми можно перейти. Есть событие, и элемент на него
+   вздрагивает.
+
+   Перезапускаются они сменой React-ключа: элемент размонтируется
+   и монтируется заново, и анимация начинается сначала. Иначе второй
+   отказ подряд не был бы виден вовсе — CSS не перезапускает анимацию,
+   которая уже идёт. */
+@keyframes td-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
+
+.td-shake {
+  display: inline-block;
+  animation: td-shake var(--td-duration-shake) ease-in-out;
+}
+
+@keyframes td-notice {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  10%,
+  70% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+}
+
+.td-notice {
+  animation: td-notice var(--td-duration-notice) ease-out forwards;
+}
+
+/* Уважение к системной настройке. Вздрагивание — единственный отклик
+   на отказ помимо текста, поэтому оно не выключается совсем, а сжимается
+   до мгновенной вспышки без движения. */
+@media (prefers-reduced-motion: reduce) {
+  .td-shake {
+    animation: none;
+  }
+
+  .td-notice {
+    animation: td-notice var(--td-duration-notice) step-end forwards;
+  }
+}

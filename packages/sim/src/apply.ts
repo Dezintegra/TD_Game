@@ -9,6 +9,7 @@ import {
   PPM_ONE,
   PRODUCTION_QUEUE_CAP,
   PURCHASE_INFLATION_PERCENT,
+  RejectReason,
   STRUCTURE_STATS,
   STRUCTURE_UPGRADE_TARGET,
   StructureKind,
@@ -30,7 +31,7 @@ import { cellAt, cellCentre } from './map.js';
 import { NO_STRUCTURE, footprintCells } from './occupancy.js';
 import { allPlayerStats, playerStats, structureMaxHealth, upgradeCostOf } from './stats.js';
 import type { PlayerStats } from './stats.js';
-import { invalidateNavigation, refreshOccupancy } from './working.js';
+import { invalidateNavigation, recordRejection, refreshOccupancy } from './working.js';
 import type { Working, WorkingGeneral, WorkingPlayer, WorkingUnit } from './working.js';
 
 /**
@@ -45,13 +46,29 @@ import type { Working, WorkingGeneral, WorkingPlayer, WorkingUnit } from './work
  * и сервер, получив одну и ту же команду, приходят к одному и тому же
  * решению, и предсказание на клиенте не расходится с сервером.
  *
- * Отказ происходит молча: недопустимая команда — штатная ситуация,
+ * Отказ не приводит к исключению: недопустимая команда — штатная ситуация,
  * а не аварийная. Она приходит от игрока, который нажал не туда,
  * или от устаревшего клиента, и валить из-за неё матч незачем.
+ *
+ * Но и молчать об отказе нельзя. Каждая проверка возвращает причину,
+ * а `applyCommand` кладёт её в состояние мира. Молчаливый отказ отнимал
+ * у игрока отклик на неверное действие и делал лог команд лживым:
+ * «приказал построить башню» и «приказал, и приказ выбросили» выглядели
+ * одинаково.
+ *
+ * Соглашение о возврате: `null` означает «команда применена», значение
+ * `RejectReason` — «отклонена по этой причине». Каждая проверка даёт
+ * свою причину; сливать две проверки в одну причину нельзя, если игрок
+ * должен реагировать на них по-разному.
  */
 
 /** Доля здоровья, с которой постройка появляется на карте. */
 const BUILD_START_HEALTH_PERCENT = 20;
+
+/** Итог применения: причина отказа либо `null`, если команда применена. */
+type Outcome = RejectReason | null;
+
+const APPLIED: Outcome = null;
 
 const playerOf = (working: Working, id: PlayerId): WorkingPlayer | undefined =>
   working.players.find((player) => player.id === id);
@@ -59,43 +76,56 @@ const playerOf = (working: Working, id: PlayerId): WorkingPlayer | undefined =>
 const isValidCell = (cell: number): boolean =>
   Number.isInteger(cell) && cell >= 0 && cell < MAP_CELL_COUNT;
 
-export const applyCommand = (working: Working, command: Command): void => {
-  // После победы мир замирает: доигрывать нечего, а команды опоздавших
-  // пакетов не должны менять итог матча.
-  if (working.winner !== null) return;
-
+/**
+ * Применить команду.
+ *
+ * `index` — её номер в списке, поданном на этот тик. Нужен только отказу:
+ * без него «шесть отказов» не связать с тем, какие именно шесть команд
+ * из десяти не прошли.
+ */
+export const applyCommand = (working: Working, command: Command, index = 0): void => {
+  // Игрока с таким номером в матче нет. Единственный случай, когда отказ
+  // не записывается: адресата у сообщения не существует, а приписать
+  // отказ кому-то другому значило бы соврать в его логе.
   const player = playerOf(working, command.player);
   if (player === undefined) return;
 
-  switch (command.kind) {
-    case CommandKind.MoveGeneral:
-      moveGeneral(working, player, command.direction);
-      return;
-    case CommandKind.Build:
-      build(working, player, command.cell, command.structure);
-      return;
-    case CommandKind.TrainUnit:
-      trainUnit(working, player, command.unitType);
-      return;
-    case CommandKind.SetTarget:
-      setTarget(working, player, command.cell);
-      return;
-    case CommandKind.BuyUpgrade:
-      buyUpgrade(working, player, command.branch);
-      return;
-    case CommandKind.LaunchNuke:
-      launchNuke(working, player, command.cell);
-      return;
+  // После победы мир замирает: доигрывать нечего, а команды опоздавших
+  // пакетов не должны менять итог матча.
+  const outcome =
+    working.winner !== null ? RejectReason.MatchOver : dispatch(working, player, command);
+
+  if (outcome !== APPLIED) {
+    recordRejection(working, command.player, command.kind, outcome, index);
   }
 };
 
-const moveGeneral = (working: Working, player: WorkingPlayer, direction: number): void => {
-  if (!isValidDirection(direction)) return;
+const dispatch = (working: Working, player: WorkingPlayer, command: Command): Outcome => {
+  switch (command.kind) {
+    case CommandKind.MoveGeneral:
+      return moveGeneral(working, player, command.direction);
+    case CommandKind.Build:
+      return build(working, player, command.cell, command.structure);
+    case CommandKind.TrainUnit:
+      return trainUnit(player, command.unitType);
+    case CommandKind.SetTarget:
+      return setTarget(working, player, command.cell);
+    case CommandKind.BuyUpgrade:
+      return buyUpgrade(working, player, command.branch);
+    case CommandKind.LaunchNuke:
+      return launchNuke(working, player, command.cell);
+  }
+};
+
+const moveGeneral = (working: Working, player: WorkingPlayer, direction: number): Outcome => {
+  if (!isValidDirection(direction)) return RejectReason.InvalidArgument;
 
   const general = working.generals.find((entry) => entry.owner === player.id);
-  if (general === undefined || !general.alive) return;
+  if (general === undefined || !general.alive) return RejectReason.GeneralDead;
 
   general.direction = direction;
+
+  return APPLIED;
 };
 
 const build = (
@@ -103,17 +133,24 @@ const build = (
   player: WorkingPlayer,
   cell: number,
   kind: StructureKind,
-): void => {
-  if (!isValidCell(cell)) return;
-  if (!BUILDABLE_KINDS.includes(kind)) return;
+): Outcome => {
+  if (!isValidCell(cell)) return RejectReason.InvalidCell;
+  if (!BUILDABLE_KINDS.includes(kind)) return RejectReason.InvalidArgument;
 
-  // Клетка должна быть свободна и по рельефу, и по постройкам.
-  if (working.map.cells[cell] !== Terrain.Ground) return;
-  if (working.occupancy.blocked[cell] === 1) return;
+  // Клетка должна быть свободна и по рельефу, и по постройкам. Обе причины
+  // для игрока означают одно и то же — «здесь уже что-то есть, целься
+  // в другое место», — и потому это одна причина, а не две.
+  if (working.map.cells[cell] !== Terrain.Ground) return RejectReason.CellBlocked;
+  if (working.occupancy.blocked[cell] === 1) return RejectReason.CellBlocked;
 
   const footprint = footprintCells(cell, STRUCTURE_STATS[kind].footprintRadius);
 
   // И по живым — юнитам и генералам, чьим угодно.
+  //
+  // Причина здесь отдельная от «клетка занята» намеренно: занятость
+  // рельефом или постройкой постоянна, и игроку надо выбрать другое место,
+  // а живой объект уйдёт сам через секунду, и надо просто подождать.
+  // Разные действия — разные причины.
   //
   // Разрешить постройку поверх вражеского юнита значило бы выдать генералу
   // оружие, которое убивает мгновенно, бьёт без промаха и стоит дешевле
@@ -127,10 +164,10 @@ const build = (
   // клетка становилась непроходимой, а он оставался в ней, и ни один шаг
   // из неё уже не проходил проверку занятости. Ровно так противник
   // под управлением компьютера и застревал до конца матча.
-  if (livingInside(working, footprint).length > 0) return;
+  if (livingInside(working, footprint).length > 0) return RejectReason.CellOccupiedByLiving;
 
   const general = working.generals.find((entry) => entry.owner === player.id);
-  if (general === undefined || !general.alive) return;
+  if (general === undefined || !general.alive) return RejectReason.GeneralDead;
 
   const stats = playerStats(player);
   const centre = cellCentre(cell);
@@ -138,10 +175,12 @@ const build = (
 
   // Центральная механика: строить можно только вокруг себя. Чтобы укрепить
   // позицию, надо физически туда прийти и там находиться под ударом.
-  if (distanceSquared(centre, { x: general.x, y: general.y }) > radius * radius) return;
+  if (distanceSquared(centre, { x: general.x, y: general.y }) > radius * radius) {
+    return RejectReason.OutsideBuildRadius;
+  }
 
   const baseline = stats.structures[kind];
-  if (player.energy < baseline.cost) return;
+  if (player.energy < baseline.cost) return RejectReason.NotEnoughEnergy;
 
   player.energy -= baseline.cost;
 
@@ -186,6 +225,8 @@ const build = (
 
   refreshOccupancy(working);
   invalidateNavigation(working);
+
+  return APPLIED;
 };
 
 /** Живые юниты и генералы, стоящие в перечисленных клетках. Чьи угодно. */
@@ -202,48 +243,56 @@ const livingInside = (
   ];
 };
 
-const trainUnit = (working: Working, player: WorkingPlayer, unitType: UnitType): void => {
-  if (UNIT_STATS[unitType] === undefined) return;
-  if (player.queue.length >= PRODUCTION_QUEUE_CAP) return;
+const trainUnit = (player: WorkingPlayer, unitType: UnitType): Outcome => {
+  if (UNIT_STATS[unitType] === undefined) return RejectReason.InvalidArgument;
+  if (player.queue.length >= PRODUCTION_QUEUE_CAP) return RejectReason.QueueFull;
 
   const stats = playerStats(player);
   const cost = stats.units[unitType].cost;
-  if (player.energy < cost) return;
+  if (player.energy < cost) return RejectReason.NotEnoughEnergy;
 
   // Энергия списывается в момент заказа, а не в момент появления юнита.
   // Иначе очередь стала бы бесплатным резервированием: можно было бы
   // заказать двадцать юнитов, не имея на них энергии.
   player.energy -= cost;
   player.queue.push(unitType);
+
+  return APPLIED;
 };
 
-const setTarget = (working: Working, player: WorkingPlayer, cell: number): void => {
-  if (!isValidCell(cell)) return;
+const setTarget = (working: Working, player: WorkingPlayer, cell: number): Outcome => {
+  if (!isValidCell(cell)) return RejectReason.InvalidCell;
 
   const index = working.occupancy.structureAt[cell] ?? NO_STRUCTURE;
-  if (index === NO_STRUCTURE) return;
+  if (index === NO_STRUCTURE) return RejectReason.InvalidTarget;
 
   const structure = working.structures[index];
-  if (structure === undefined || !structure.alive) return;
+  if (structure === undefined || !structure.alive) return RejectReason.InvalidTarget;
 
   // Целью может быть только чужая постройка: приказ бить по своим —
   // почти наверняка промах мимо клетки, а не замысел.
-  if (structure.owner === player.id) return;
-  if (player.targetStructure === structure.id) return;
+  if (structure.owner === player.id) return RejectReason.InvalidTarget;
+
+  // Цель уже назначена. Это не отказ, а успех: игрок хотел, чтобы целью
+  // была эта постройка, и она ею является. Сообщать об отказе здесь
+  // значило бы ругаться на повторный щелчок по той же башне.
+  if (player.targetStructure === structure.id) return APPLIED;
 
   player.targetStructure = structure.id;
   invalidateNavigation(working);
+
+  return APPLIED;
 };
 
-const buyUpgrade = (working: Working, player: WorkingPlayer, branchIndex: number): void => {
+const buyUpgrade = (working: Working, player: WorkingPlayer, branchIndex: number): Outcome => {
   const branch = UPGRADE_BRANCHES[branchIndex];
-  if (branch === undefined) return;
+  if (branch === undefined) return RejectReason.InvalidArgument;
 
   const current = player.upgrades[branchIndex];
-  if (current === undefined) return;
+  if (current === undefined) return RejectReason.InvalidArgument;
 
   const cost = upgradeCostOf(branchIndex, current);
-  if (player.energy < cost) return;
+  if (player.energy < cost) return RejectReason.NotEnoughEnergy;
 
   const before = playerStats(player);
 
@@ -267,6 +316,8 @@ const buyUpgrade = (working: Working, player: WorkingPlayer, branchIndex: number
   if (branch.stat === UpgradeStat.Health) {
     healToNewMaximum(working, player, branch.target, before, playerStats(player));
   }
+
+  return APPLIED;
 };
 
 /**
@@ -312,9 +363,9 @@ const healToNewMaximum = (
   }
 };
 
-const launchNuke = (working: Working, player: WorkingPlayer, cell: number): void => {
-  if (!isValidCell(cell)) return;
-  if (player.energy < NUKE_COST) return;
+const launchNuke = (working: Working, player: WorkingPlayer, cell: number): Outcome => {
+  if (!isValidCell(cell)) return RejectReason.InvalidCell;
+  if (player.energy < NUKE_COST) return RejectReason.NotEnoughEnergy;
 
   const centre = cellCentre(cell);
 
@@ -326,7 +377,9 @@ const launchNuke = (working: Working, player: WorkingPlayer, cell: number): void
     if (!structure.alive || structure.kind !== StructureKind.Base) continue;
 
     const baseCentre = cellCentre(structure.cell);
-    if (distanceSquared(centre, baseCentre) < NUKE_BASE_EXCLUSION * NUKE_BASE_EXCLUSION) return;
+    if (distanceSquared(centre, baseCentre) < NUKE_BASE_EXCLUSION * NUKE_BASE_EXCLUSION) {
+      return RejectReason.NukeNearBase;
+    }
   }
 
   player.energy -= NUKE_COST;
@@ -339,4 +392,6 @@ const launchNuke = (working: Working, player: WorkingPlayer, cell: number): void
   });
 
   working.nextEntityId += 1;
+
+  return APPLIED;
 };

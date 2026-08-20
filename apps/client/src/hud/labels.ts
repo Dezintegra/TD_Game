@@ -1,4 +1,11 @@
-import { STRUCTURE_STATS, StructureKind, UNIT_STATS, UnitType, UpgradeTarget } from '@td/shared';
+import {
+  RejectReason,
+  STRUCTURE_STATS,
+  StructureKind,
+  UNIT_STATS,
+  UnitType,
+  UpgradeTarget,
+} from '@td/shared';
 
 /**
  * Подписи для HUD.
@@ -36,6 +43,33 @@ export const UPGRADE_GROUP: Readonly<Record<UpgradeTarget, string>> = {
   [UpgradeTarget.Wall]: 'Стена',
   [UpgradeTarget.General]: 'Генерал',
   [UpgradeTarget.Economy]: 'Экономика',
+};
+
+/**
+ * Почему действие не прошло — словами.
+ *
+ * Пишется от лица игрока и в повелительном наклонении там, где есть что
+ * делать: он читает эту строку боковым зрением посреди боя, и «нужно
+ * подойти ближе» действует, а «нарушено ограничение радиуса
+ * строительства» — нет.
+ *
+ * Причины различаются не для полноты, а потому что действия разные.
+ * «Клетка занята» означает «целься в другое место», «в клетке техника» —
+ * «подожди пару секунд». Слить их в общее «сюда нельзя» значило бы
+ * отнять у игрока подсказку и оставить одно раздражение.
+ */
+export const REJECT_LABEL: Readonly<Record<RejectReason, string>> = {
+  [RejectReason.NotEnoughEnergy]: 'Не хватает энергии',
+  [RejectReason.CellBlocked]: 'Клетка занята',
+  [RejectReason.CellOccupiedByLiving]: 'В клетке техника — подождите',
+  [RejectReason.OutsideBuildRadius]: 'Далеко от генерала — подойдите ближе',
+  [RejectReason.QueueFull]: 'Очередь производства заполнена',
+  [RejectReason.GeneralDead]: 'Генерал уничтожен',
+  [RejectReason.NukeNearBase]: 'Слишком близко к базе',
+  [RejectReason.InvalidCell]: 'Мимо карты',
+  [RejectReason.InvalidTarget]: 'Целью может быть только чужая постройка',
+  [RejectReason.InvalidArgument]: 'Так нельзя',
+  [RejectReason.MatchOver]: 'Матч окончен',
 };
 
 export interface Hotkey {

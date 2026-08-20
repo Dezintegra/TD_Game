@@ -31,7 +31,10 @@ import { hudActions, setMatchCommands } from './store.js';
 import type { MatchSnapshot } from './store.js';
 import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
-import { createOpponent } from './ai/opponent.js';
+import { DEFAULT_PROFILE_ID, createOpponent } from '@td/ai';
+import { createRejectionFeed } from './rejections.js';
+import { createRecording } from './recording.js';
+import type { Recording } from './recording.js';
 
 /**
  * Сборка игры воедино: сцена, цикл, сеть, управление, противник.
@@ -66,12 +69,51 @@ const OPPONENT_PLAYER: PlayerId = asPlayerId(1);
  */
 const HUD_EVERY_TICKS = 6;
 
+/**
+ * Начать запись матча.
+ *
+ * Отправка — обычный POST на локальный сервер разработки, без ожидания
+ * ответа: запись это побочное дело, и тормозить из-за неё игру нельзя.
+ * Неудачную отправку мы намеренно не повторяем — потерянная порция
+ * означает дыру в записи, а дыру всё равно поймает сверка контрольных
+ * сумм при воспроизведении.
+ */
+const startRecording = (seed: number): Recording =>
+  createRecording({
+    matchId: `s${String(seed)}`,
+    worldSeed: seed,
+    aiSeeds: [0, seed ^ 0x5bf03635],
+    profiles: [DEFAULT_PROFILE_ID, DEFAULT_PROFILE_ID],
+    humanPlayer: LOCAL_PLAYER,
+    // Версия кода в браузере неизвестна: git отсюда не спросить.
+    // Проставит её арена при воспроизведении, а здесь честнее оставить
+    // пусто, чем выдумать.
+    gitSha: '',
+    gitDirty: true,
+    send: (lines) => {
+      void fetch('/__matchlog', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ matchId: `s${String(seed)}`, lines }),
+      }).catch(() => undefined);
+    },
+  });
+
 export const startGame = async (host: HTMLElement): Promise<Game> => {
   const scene = await createScene(host);
   const net = createNetClient(WS_URL);
 
   let seed = INITIAL_SEED;
   let opponent = createOpponent(OPPONENT_PLAYER, seed ^ 0x5bf03635);
+
+  // Лента переживает рестарт: она сама замечает, что тик пошёл назад,
+  // и начинает новый матч с чистого листа. Пересоздавать её в `restart`
+  // не нужно, а забыть пересоздать — можно.
+  const rejections = createRejectionFeed(LOCAL_PLAYER);
+
+  // Запись матча — только в разработке. В промышленной сборке условие
+  // вычисляется на этапе сборки, и весь код записи из неё выпадает.
+  let recording = import.meta.env.DEV ? startRecording(seed) : undefined;
 
   /**
    * Сетка занятости пересобирается не каждый кадр, а при смене набора
@@ -94,8 +136,28 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
 
     commands: (world) => opponent.decide(world),
 
+    // Команды записываются здесь, а не в момент нажатия: до симуляции
+    // они доезжают следующим кадром, и тик к тому времени может уйти
+    // вперёд. Воспроизведение подаёт их по тику мира до шага.
+    onStep: (world, commands) => recording?.commands(world.tick, commands),
+
     onTick: (world) => {
+      recording?.tick(world);
       hudActions.setTick(world.tick);
+
+      // Отказы читаются на КАЖДОМ тике, в отличие от снимка матча.
+      //
+      // Запись отказа живёт ровно один тик, а снимок снимается раз
+      // в `HUD_EVERY_TICKS`. Пойди отказы через снимок — до игрока
+      // доезжал бы примерно один из шести, причём совершенно случайный.
+      // Ошибка эта тихая: в браузере она выглядит как «иногда почему-то
+      // не показывает», и ловится месяцами.
+      //
+      // Цена такого чтения — сравнение длины пустого массива с нулём:
+      // отказ это исключение, и в подавляющем большинстве тиков список
+      // пуст, а лента в этом случае молчит и store не трогает.
+      const notices = rejections.accept(world.tick, world.rejections);
+      if (notices !== undefined) hudActions.setNotices(notices);
 
       if (world.tick % HUD_EVERY_TICKS === 0) {
         hudActions.setMatch(snapshot(world, controls.state));
@@ -173,11 +235,16 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
   };
 
   const restart = (): void => {
+    // Прошлый матч дописывается до конца перед сменой seed: иначе
+    // последние полминуты игры просто пропали бы.
+    recording?.flush();
+
     // Тот же генератор, что и в старом управлении картой: линейный
     // конгруэнтный шаг. Он не претендует на качество — от него нужна лишь
     // непохожесть соседних seed.
     seed = (seed * 1664525 + 1013904223) >>> 0;
     opponent = createOpponent(OPPONENT_PLAYER, seed ^ 0x5bf03635);
+    recording = import.meta.env.DEV ? startRecording(seed) : undefined;
 
     loop.reset(seed);
     occupancy = undefined;
@@ -212,6 +279,9 @@ export const startGame = async (host: HTMLElement): Promise<Game> => {
 
   return {
     stop() {
+      // Хвост записи обязан уехать до остановки: страницу закрывают
+      // чаще, чем доигрывают матч до победы.
+      recording?.flush();
       window.removeEventListener('resize', onResize);
       setMatchCommands(null);
       controls.detach();
