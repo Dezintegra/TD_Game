@@ -100,6 +100,24 @@ const escapeTicks = (stats: PlayerStats): number =>
 const walkTicks = (cells: number, stats: PlayerStats): number =>
   (cells * FIXED_POINT_SCALE) / Math.max(1, stats.general.speed);
 
+/**
+ * Цена гибели генерала в энергии.
+ *
+ * Простой на возрождении и дорога обратно, оплаченные доходом: всё это
+ * время генерал ничего не строит, и доход некуда деть.
+ *
+ * Награда противнику за убийство сюда НЕ входит, хотя соблазн велик.
+ * Дуэль двух генералов симметрична: сколько противник получит за нашего,
+ * столько же мы получили бы за его. Считать один только убыток значит
+ * научить противника избегать равного боя — и он избегал бы, потому что
+ * награда в двадцать стоимостей юнита перевешивает любую выгоду позиции.
+ *
+ * Вынесено наружу, чтобы оценка ядерного удара пользовалась той же ценой,
+ * а не заводила вторую: две цены гибели немедленно разошлись бы.
+ */
+export const generalDeathCost = (stats: PlayerStats, returnCells: number): number =>
+  (stats.general.respawnTicks + walkTicks(returnCells, stats)) * stats.incomePerTick;
+
 // Доли вероятного пути, допуск полосы, радиус угрозы базе и горизонт
 // планирования переехали в профиль поведения (`profile.ts`): это настройка,
 // которую сравнивают между вариантами, а не свойство формулы.
@@ -518,18 +536,7 @@ export const scoreFrontier = (situation: Situation, frontier: Frontier): Verdict
 
   const deathChance = Math.min(1, (incoming.total * escape) / Math.max(1, situation.generalHealth));
 
-  // Цена гибели — простой на возрождении и дорога обратно, оплаченные
-  // доходом: всё это время генерал ничего не строит, и доход некуда деть.
-  //
-  // Награда за убийство генерала сюда НЕ входит, хотя соблазн велик.
-  // Дуэль двух генералов симметрична: сколько противник получит за нашего,
-  // столько же мы получили бы за его. Считать один только убыток значит
-  // научить противника избегать равного боя — и он избегал бы, потому что
-  // награда в двадцать стоимостей юнита перевешивает любую выгоду позиции.
-  const returnTicks = walkTicks(approach.fromHome[frontier.cell] ?? 0, myStats);
-  const deathCost = (myStats.general.respawnTicks + returnTicks) * myStats.incomePerTick;
-
-  const risk = deathChance * deathCost;
+  const risk = deathChance * generalDeathCost(myStats, approach.fromHome[frontier.cell] ?? 0);
 
   return { frontier, score: gain - risk, gain, risk, deathChance };
 };

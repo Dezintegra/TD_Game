@@ -1,15 +1,19 @@
 ﻿import {
   BUILDABLE_KINDS,
+  NUKE_RADIUS,
   STRUCTURE_UPGRADE_TARGET,
+  StructureKind,
   UNIT_TYPES,
   UNIT_UPGRADE_TARGET,
   UPGRADE_BRANCHES,
   UpgradeStat,
   UpgradeTarget,
+  distanceSquared,
 } from '@td/shared';
-import type { PlayerId, UnitType } from '@td/shared';
+import type { PlayerId, UnitType, Vec2 } from '@td/shared';
+import { cellAt, cellCentre } from '@td/sim';
 import type { PlayerStats, WorldState } from '@td/sim';
-import { ENERGY_PER_LIVE_DAMAGE } from './posture.js';
+import { ENERGY_PER_LIVE_DAMAGE, generalDeathCost } from './posture.js';
 import { horizonTicks } from './profile.js';
 import type { AiProfile, PhaseProfile, Spending } from './profile.js';
 
@@ -179,6 +183,83 @@ export const upgradeGain = (
   });
 
   return best;
+};
+
+export interface NukeOutcome {
+  /** Стоимость уничтоженного у противника, в энергии. */
+  readonly gain: number;
+  /** Стоимость уничтоженного у себя, в энергии. */
+  readonly loss: number;
+}
+
+/**
+ * Во что обойдётся и что принесёт удар в этой точке.
+ *
+ * Взрыв не различает стороны: свои юниты, свои постройки и свой генерал
+ * гибнут наравне с чужими. Прежняя оценка считала одни только чужие
+ * головы и потому регулярно приводила к ударам по собственному генералу:
+ * из ста пятидесяти восьми ударов сорок пять убили его.
+ *
+ * Живое считается по ОСТАВШЕЙСЯ стоимости — цена, умноженная на долю
+ * здоровья. Добитый юнит противник и так вот-вот потеряет, и платить
+ * за него ценой удара незачем. Постройка считается по полной цене:
+ * стоящая башня стоит того, что за неё заплачено, независимо от царапин.
+ *
+ * Генерал считается той же ценой гибели, какой её меряет `posture.ts`.
+ * Двух цен гибели быть не должно — они немедленно разойдутся.
+ */
+export const nukeOutcome = (
+  world: WorldState,
+  me: PlayerId,
+  centre: Vec2,
+  myStats: PlayerStats,
+  enemyStats: PlayerStats,
+  homeCells: (cell: number) => number,
+): NukeOutcome => {
+  const reach = NUKE_RADIUS * NUKE_RADIUS;
+
+  let gain = 0;
+  let loss = 0;
+
+  for (const unit of world.units) {
+    if (distanceSquared(unit.position, centre) > reach) continue;
+
+    const mine = unit.owner === me;
+    const stats = mine ? myStats : enemyStats;
+    const baseline = stats.units[unit.unitType];
+    const worth = (baseline.cost * unit.health) / Math.max(1, baseline.health);
+
+    if (mine) loss += worth;
+    else gain += worth;
+  }
+
+  for (const structure of world.structures) {
+    // База неуязвима для удара: её прикрывает запретная зона наведения.
+    if (structure.kind === StructureKind.Base) continue;
+    if (distanceSquared(cellCentre(structure.cell), centre) > reach) continue;
+
+    const mine = structure.owner === me;
+    const worth = (mine ? myStats : enemyStats).structures[structure.kind].cost;
+
+    if (mine) loss += worth;
+    else gain += worth;
+  }
+
+  for (const general of world.generals) {
+    if (!general.alive) continue;
+    if (distanceSquared(general.position, centre) > reach) continue;
+
+    const mine = general.owner === me;
+    const worth = generalDeathCost(
+      mine ? myStats : enemyStats,
+      homeCells(cellAt(general.position)),
+    );
+
+    if (mine) loss += worth;
+    else gain += worth;
+  }
+
+  return { gain, loss };
 };
 
 /** Есть ли в фазе хоть одна боевая цель прокачки, кроме экономики. */

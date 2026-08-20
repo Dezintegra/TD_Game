@@ -1,4 +1,4 @@
-import {
+﻿import {
   AI_DECISION_INTERVAL_TICKS,
   NUKE_COST,
   PRODUCTION_QUEUE_CAP,
@@ -136,8 +136,6 @@ export interface AiProfile {
   };
 
   readonly nuke: {
-    /** Сколько вражеских юнитов оправдывают удар. */
-    readonly worthUnits: number;
     /** Шаг сетки при поиске места для удара, в клетках. */
     readonly scanStep: number;
   };
@@ -362,7 +360,6 @@ export const BASELINE_PROFILE: AiProfile = deepFreeze({
   },
 
   nuke: {
-    worthUnits: 6,
     scanStep: 3,
   },
 

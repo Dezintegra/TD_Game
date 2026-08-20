@@ -9,7 +9,6 @@
   MAP_WIDTH_CELLS,
   NUKE_BASE_EXCLUSION,
   NUKE_COST,
-  NUKE_RADIUS,
   StructureKind,
   TICKS_PER_SECOND,
   UPGRADE_BRANCHES,
@@ -56,6 +55,7 @@ import {
   discountedEfficiency,
   hasComparableUpgrade,
   orderBySpendGain,
+  nukeOutcome,
   unitGain,
   unitPrice,
   upgradeGain,
@@ -209,7 +209,7 @@ export const createOpponent = (
 
       // Ядерный удар проверяется до остальных трат: он копится в запасе
       // фазы, и тратить этот запас на что-то другое было бы обидно.
-      const struck = tryNuke(commands, world, me, player, profile);
+      const struck = tryNuke(commands, world, me, player, profile, approach, stats);
 
       const attempts: AttemptRecord[] = [];
       const nearby = escortNearby(world, me, stats);
@@ -1041,21 +1041,51 @@ const tryUpgrade = (
 // Ядерный удар
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Ядерный удар.
+ *
+ * Бьём тогда и только тогда, когда уничтоженное стоит дороже самого удара,
+ * и стоимость считается в энергии — той же единицей, в которой выражена
+ * цена удара.
+ *
+ * Прежде порог задавался числом «шесть юнитов», и число это ничем
+ * не выводилось. Удар стоит пятьдесят базовых стоимостей юнита, то есть
+ * оружием ценой в пятьдесят машин уничтожалось шесть: переплата в восемь
+ * раз, на которую уходила почти половина дохода за матч.
+ *
+ * Свои потери входят в расчёт наравне с чужими, и не для симметрии:
+ * взрыв не различает стороны, и из ста пятидесяти восьми ударов сорок
+ * пять убили собственного генерала.
+ *
+ * Порог не хранится в профиле: он и есть цена удара. Поменяется цена
+ * в балансе — порог пересчитается сам.
+ */
 const tryNuke = (
   commands: Command[],
   world: WorldState,
   me: PlayerId,
   player: PlayerState,
   profile: AiProfile,
+  approach: Approach,
+  myStats: PlayerStats,
 ): boolean => {
   if (player.energy < NUKE_COST) return false;
+
+  const enemy = world.players[otherPlayer(me)];
+  const enemyStats = enemy === undefined ? myStats : playerStats(enemy);
 
   const bases = world.structures
     .filter((structure) => structure.kind === StructureKind.Base)
     .map((structure) => cellCentre(structure.cell));
 
+  // Дорога генерала домой нужна цене его гибели. Для чужого генерала это
+  // его расстояние до НАШЕЙ базы — приближение, и намеренное: считать поле
+  // расстояний от чужой базы ради одной величины значило бы добавить обход
+  // карты на каждое решение.
+  const homeCells = (cell: number): number => approach.fromHome[cell] ?? 0;
+
   let bestCell = -1;
-  let bestCount = profile.nuke.worthUnits - 1;
+  let bestNet = NUKE_COST;
 
   for (let y = 0; y < MAP_HEIGHT_CELLS; y += profile.nuke.scanStep) {
     for (let x = 0; x < MAP_WIDTH_CELLS; x += profile.nuke.scanStep) {
@@ -1067,21 +1097,11 @@ const tryNuke = (
         continue;
       }
 
-      let count = 0;
-      for (const unit of world.units) {
-        if (unit.owner === me) continue;
-        if (distanceSquared(unit.position, centre) <= NUKE_RADIUS ** 2) count += 1;
-      }
-      // Свои потери вычитаются: удар по свалке, где своих больше чужих,
-      // выгоден противнику, а не нам.
-      for (const unit of world.units) {
-        if (unit.owner !== me) continue;
-        if (distanceSquared(unit.position, centre) <= NUKE_RADIUS ** 2) count -= 1;
-      }
+      const outcome = nukeOutcome(world, me, centre, myStats, enemyStats, homeCells);
+      const net = outcome.gain - outcome.loss;
+      if (net <= bestNet) continue;
 
-      if (count <= bestCount) continue;
-
-      bestCount = count;
+      bestNet = net;
       bestCell = cellIndex(x, y);
     }
   }

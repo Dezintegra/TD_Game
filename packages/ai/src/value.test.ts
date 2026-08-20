@@ -1,6 +1,13 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
   DIRECTION_SOUTH,
+  MAP_HEIGHT_CELLS,
+  MAP_WIDTH_CELLS,
+  NUKE_COST,
+  PPM_ONE,
+  STRUCTURE_STATS,
+  StructureKind,
+  UNIT_STATS,
   UPGRADE_BRANCHES,
   UnitType,
   UpgradeStat,
@@ -12,11 +19,19 @@ import {
   upgradeBranchIndex,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import { cellCentre, createWorld, playerStats, upgradeCosts } from '@td/sim';
+import { cellAt, cellCentre, cellIndex, createWorld, playerStats, upgradeCosts } from '@td/sim';
 import type { UnitState, WorldState } from '@td/sim';
 import { BASELINE_PROFILE } from './profile.js';
+import { generalDeathCost } from './posture.js';
 import type { PhaseProfile, Spending } from './profile.js';
-import { hasComparableUpgrade, orderBySpendGain, unitGain, unitPrice, upgradeGain } from './value.js';
+import {
+  hasComparableUpgrade,
+  nukeOutcome,
+  orderBySpendGain,
+  unitGain,
+  unitPrice,
+  upgradeGain,
+} from './value.js';
 
 /**
  * Сравнение покупок по прибавке в энергии.
@@ -138,6 +153,117 @@ describe('прибавка от покупки считается в энерг�
 
   it('средняя цена машины положительна при непустом составе', () => {
     expect(unitPrice(statsOf(withAssaults(0)).stats, phaseOf(1))).toBeGreaterThan(0);
+  });
+});
+
+describe('ядерный удар считается в энергии, со своими потерями', () => {
+  const ENEMY: PlayerId = asPlayerId(1);
+
+  /** Мир, где вокруг точки стоит заданное число юнитов игрока. */
+  const crowdAt = (world: WorldState, owner: PlayerId, cell: number, count: number): WorldState => ({
+    ...world,
+    units: [
+      ...world.units,
+      ...Array.from({ length: count }, (_unused, index) => ({
+        id: asEntityId(7000 + index + owner * 1000),
+        owner,
+        unitType: UnitType.Assault,
+        position: cellCentre(cell),
+        health: UNIT_STATS[UnitType.Assault].health,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(0),
+      })),
+    ],
+  });
+
+  const outcomeAt = (world: WorldState, cell: number) => {
+    const { stats } = statsOf(world);
+    const enemy = world.players[ENEMY];
+    if (enemy === undefined) throw new Error('нет противника');
+
+    return nukeOutcome(world, ME, cellCentre(cell), stats, playerStats(enemy), () => 0);
+  };
+
+  /** Клетка вдали от обеих баз: удар туда ядро не отклонит. */
+  const middle = (): number =>
+    cellIndex(Math.floor(MAP_WIDTH_CELLS / 2), Math.floor(MAP_HEIGHT_CELLS / 2));
+
+  it('чужие юниты идут в выгоду, свои — в потери', () => {
+    const world = createWorld(SEED);
+    const cell = middle();
+
+    const theirs = outcomeAt(crowdAt(world, ENEMY, cell, 4), cell);
+    const mixed = outcomeAt(crowdAt(crowdAt(world, ENEMY, cell, 4), ME, cell, 2), cell);
+
+    expect(theirs.gain).toBeGreaterThan(0);
+    expect(theirs.loss).toBe(0);
+    expect(mixed.gain).toBe(theirs.gain);
+    expect(mixed.loss).toBeGreaterThan(0);
+  });
+
+  it('добитые юниты стоят дешевле целых', () => {
+    // Иначе удар по свалке подранков оценивался бы как удар по свежему
+    // войску, а противник вот-вот потерял бы их и без нас.
+    const world = createWorld(SEED);
+    const cell = middle();
+    const full = crowdAt(world, ENEMY, cell, 10);
+    const hurt: WorldState = {
+      ...full,
+      units: full.units.map((unit) => ({ ...unit, health: Math.max(1, unit.health / 10) })),
+    };
+
+    expect(outcomeAt(hurt, cell).gain).toBeLessThan(outcomeAt(full, cell).gain);
+  });
+
+  it('своя постройка входит в потери ровно по своей цене', () => {
+    const world = createWorld(SEED);
+    const cell = middle();
+
+    const withTower: WorldState = {
+      ...world,
+      structures: [
+        ...world.structures,
+        {
+          id: asEntityId(7777),
+          owner: ME,
+          kind: StructureKind.TowerBasic,
+          cell,
+          health: STRUCTURE_STATS[StructureKind.TowerBasic].health,
+          growthPpm: PPM_ONE,
+          readyAtTick: asTickNumber(0),
+          builtAtTick: asTickNumber(0),
+        },
+      ],
+    };
+
+    expect(outcomeAt(withTower, cell).loss - outcomeAt(world, cell).loss).toBe(
+      STRUCTURE_STATS[StructureKind.TowerBasic].cost,
+    );
+  });
+
+  it('свой генерал входит в потери по той же цене гибели, что и в оценке рубежей', () => {
+    const world = createWorld(SEED);
+    const general = world.generals[ME];
+    if (general === undefined) throw new Error('нет генерала');
+
+    const { stats } = statsOf(world);
+    const atGeneral = outcomeAt(world, cellAt(general.position));
+
+    expect(atGeneral.loss).toBe(generalDeathCost(stats, 0));
+  });
+
+  it('шесть целых юнитов удара не оправдывают, шесть десятков — оправдывают', () => {
+    // Прежний порог «шесть юнитов» означал оружие ценой в пятьдесят машин,
+    // применяемое ради шести: переплата в восемь раз.
+    //
+    // Ровно полсотни дают точную безубыточность — и удара тоже не будет:
+    // размен ценою в самого себя не приносит ничего.
+    const world = createWorld(SEED);
+    const cell = middle();
+
+    expect(outcomeAt(crowdAt(world, ENEMY, cell, 6), cell).gain).toBeLessThan(NUKE_COST);
+    expect(outcomeAt(crowdAt(world, ENEMY, cell, 50), cell).gain).toBe(NUKE_COST);
+    expect(outcomeAt(crowdAt(world, ENEMY, cell, 60), cell).gain).toBeGreaterThan(NUKE_COST);
   });
 });
 
