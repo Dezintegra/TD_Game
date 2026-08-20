@@ -86,6 +86,8 @@ export interface DecisionLogRecord extends Omit<DecisionRecord, 'attempts' | 'fr
     readonly spending: string;
     readonly result: AttemptResult;
     readonly note?: AttemptNote;
+    /** Цена желаемого: без неё «коплю» не говорит, на что именно. */
+    readonly price?: number;
   }[];
   readonly frontiers: readonly {
     readonly fraction: number;

@@ -1,135 +1,135 @@
 import { describe, expect, it } from 'vitest';
-import { NUKE_COST, TICKS_PER_SECOND } from '@td/shared';
 import {
-  BASELINE_PROFILE,
-  DEFAULT_PROFILE_ID,
-  PROFILES,
-  WALL_LIGHT_PROFILE,
-  horizonTicks,
-  phaseAt,
-  profileByName,
-  reserveOf,
-} from './profile.js';
+  AI_DECISION_INTERVAL_TICKS,
+  CommandKind,
+  TICKS_PER_SECOND,
+  UPGRADE_BRANCHES,
+  UpgradeTarget,
+  asPlayerId,
+} from '@td/shared';
+import type { PlayerId } from '@td/shared';
+import { createWorld, step } from '@td/sim';
+import { createOpponent } from './opponent.js';
+import { BASELINE_PROFILE, patienceDecisions } from './profile.js';
+import type { AiProfile } from './profile.js';
+import type { AttemptRecord, DecisionRecord } from './observer.js';
 
 /**
- * Профиль как таковой: реестр, неизменяемость, перевод единиц.
+ * Настройка трат: горизонт накопления и выведенный из него предел терпения.
  *
- * Что профиль воспроизводит прежнее поведение — предмет
- * `profile.golden.test.ts`. Здесь проверяется сам механизм.
+ * Проверяется главное свойство — что второго числа об одном и том же
+ * в профиле нет. Раньше их было два, они разошлись в одиннадцать раз,
+ * и обнаружить это удалось только прогоном пачки матчей.
  */
 
-describe('реестр профилей', () => {
-  it('профиль достаётся по имени', () => {
-    expect(profileByName(DEFAULT_PROFILE_ID)).toBe(BASELINE_PROFILE);
-    expect(profileByName(WALL_LIGHT_PROFILE.id)).toBe(WALL_LIGHT_PROFILE);
-  });
+const SEED = 20260821;
+const AI: PlayerId = asPlayerId(1);
 
-  it('неизвестное имя даёт понятную ошибку, а не молчаливый откат', () => {
-    // Молчаливый откат к профилю по умолчанию был бы худшим из возможных
-    // поведений: опечатка в имени превратилась бы в прогон не того,
-    // что задумано, и разбор матча оказался бы разбором чужой настройки.
-    expect(() => profileByName('нет-такого')).toThrow(/неизвестный профиль/);
-    expect(() => profileByName('нет-такого')).toThrow(new RegExp(DEFAULT_PROFILE_ID));
-  });
+const withHorizon = (seconds: number): AiProfile => ({
+  ...BASELINE_PROFILE,
+  id: `test-horizon-${String(seconds)}`,
+  spending: { ...BASELINE_PROFILE.spending, savingHorizonSeconds: seconds },
+});
 
-  it('идентификатор профиля совпадает с ключом в реестре', () => {
-    for (const [key, profile] of Object.entries(PROFILES)) {
-      expect(profile.id).toBe(key);
+/** Все попытки трат за короткий матч. */
+const attemptsOf = (profile: AiProfile, seconds: number): readonly AttemptRecord[] => {
+  const attempts: AttemptRecord[] = [];
+  const observe = (record: DecisionRecord): void => {
+    attempts.push(...record.attempts);
+  };
+
+  const opponent = createOpponent(AI, SEED, profile, observe);
+
+  let world = createWorld(SEED);
+  for (let tick = 0; tick < seconds * TICKS_PER_SECOND; tick += 1) {
+    world = step(world, opponent.decide(world));
+  }
+
+  return attempts;
+};
+
+describe('цели прокачки выбираются долями, а не порядком', () => {
+  /** Все ветки, купленные противником за матч. */
+  const boughtBranches = (profile: AiProfile, seconds: number): readonly number[] => {
+    const opponent = createOpponent(AI, SEED, profile);
+    const branches: number[] = [];
+
+    let world = createWorld(SEED);
+    for (let tick = 0; tick < seconds * TICKS_PER_SECOND; tick += 1) {
+      const commands = opponent.decide(world);
+      for (const command of commands) {
+        if (command.kind === CommandKind.BuyUpgrade) branches.push(command.branch);
+      }
+      world = step(world, commands);
+    }
+
+    return branches;
+  };
+
+  // Цель выбрана не случайно: штурмовиков у противника всегда много,
+  // значит прокачке будет что умножать и покупки действительно случатся.
+  // С целью, которой у игрока нет вовсе, тест проверял бы не веса,
+  // а сравнение выгоды: умножать ноль незачем, и покупок не было бы
+  // по совсем другой причине.
+  const onlyAssault: AiProfile = {
+    ...BASELINE_PROFILE,
+    id: 'test-only-assault',
+    phases: BASELINE_PROFILE.phases.map((phase) => ({
+      ...phase,
+      upgrades: { [UpgradeTarget.UnitAssault]: 1 },
+    })),
+  };
+
+  it('цель с нулевым весом не выбирается никогда', () => {
+    const branches = boughtBranches(onlyAssault, 240);
+
+    expect(branches.length).toBeGreaterThan(0);
+    for (const branch of branches) {
+      expect(UPGRADE_BRANCHES[branch]?.target).toBe(UpgradeTarget.UnitAssault);
     }
   });
 
-  it('имя профиля содержит дату появления', () => {
-    // По имени `baseline-2026-08` через полгода сразу видно, что это
-    // за линия поведения и насколько она стара; по имени `default` —
-    // ничего.
-    for (const id of Object.keys(PROFILES)) {
-      expect(id).toMatch(/-\d{4}-\d{2}$/);
-    }
+  it('названные в фазе цели покупки действительно получают', () => {
+    // Прежний порядок «по предпочтению» вырождался в первый пункт: ветка
+    // не кончается никогда, поэтому до второй цели очередь не доходила
+    // ни разу за матч. Из восьми названных целей покупки получали две.
+    const targets = new Set(
+      boughtBranches(BASELINE_PROFILE, 240).map((branch) => UPGRADE_BRANCHES[branch]?.target),
+    );
+
+    expect(targets.size).toBeGreaterThan(1);
   });
 });
 
-describe('профиль неизменяем', () => {
-  it('верхний уровень заморожен', () => {
-    expect(Object.isFrozen(BASELINE_PROFILE)).toBe(true);
+describe('предел терпения выводится из горизонта накопления', () => {
+  it('сорок пять секунд при решении раз в полсекунды дают девяносто решений', () => {
+    expect(patienceDecisions(BASELINE_PROFILE)).toBe(90);
   });
 
-  it('вложенные объекты заморожены тоже', () => {
-    // Object.freeze неглубок и остановился бы на верхнем уровне, оставив
-    // изменяемыми ровно те места, куда потянется рука «подкрутить на ходу».
-    expect(Object.isFrozen(BASELINE_PROFILE.posture)).toBe(true);
-    expect(Object.isFrozen(BASELINE_PROFILE.posture.frontierFractions)).toBe(true);
-    expect(Object.isFrozen(BASELINE_PROFILE.phases)).toBe(true);
-    expect(Object.isFrozen(BASELINE_PROFILE.phases[0])).toBe(true);
-    expect(Object.isFrozen(BASELINE_PROFILE.phases[0]?.mix)).toBe(true);
-    expect(Object.isFrozen(BASELINE_PROFILE.escort.spend)).toBe(true);
-  });
+  it('предел равен горизонту, выраженному в решениях', () => {
+    // Смысл всей правки одной строкой: два числа об одном и том же
+    // разойтись больше не могут, потому что число одно.
+    const decisionsPerSecond = TICKS_PER_SECOND / AI_DECISION_INTERVAL_TICKS;
 
-  it('запись не меняет значения', () => {
-    // Случайная запись посреди матча дала бы поведение, невоспроизводимое
-    // по seed, — то есть уничтожила бы главное свойство, ради которого
-    // профиль и заводился.
-    const before = BASELINE_PROFILE.building.wallEvery;
-    const mutable = BASELINE_PROFILE.building as { wallEvery: number };
-
-    try {
-      mutable.wallEvery = 999;
-    } catch {
-      // В строгом режиме запись в замороженное бросает — это тоже успех.
-    }
-
-    expect(BASELINE_PROFILE.building.wallEvery).toBe(before);
-  });
-});
-
-describe('перевод в единицы ядра', () => {
-  it('горизонт планирования переводится из секунд в тики', () => {
-    // В профиле числа человеческие: `horizonSeconds: 60` понятен сразу,
-    // `horizonTicks: 1800` — нет.
-    expect(horizonTicks(BASELINE_PROFILE)).toBe(
-      BASELINE_PROFILE.posture.horizonSeconds * TICKS_PER_SECOND,
+    expect(patienceDecisions(BASELINE_PROFILE)).toBe(
+      BASELINE_PROFILE.spending.savingHorizonSeconds * decisionsPerSecond,
     );
   });
 
-  it('запас фазы разворачивается в цену удара', () => {
-    // Запас хранится состоянием, а не числом: иначе цена удара имела бы
-    // два источника истины, и поменяв её в балансе, мы оставили бы
-    // противника копить не то, что нужно.
-    const late = BASELINE_PROFILE.phases[BASELINE_PROFILE.phases.length - 1];
-    const early = BASELINE_PROFILE.phases[0];
+  it('нулевой горизонт отбрасывает недостижимое желание, а не копит на него', () => {
+    // При нулевом горизонте ждать нельзя ничего: любая нехватка энергии
+    // обязана давать «пропускаю», а не «коплю».
+    const attempts = attemptsOf(withHorizon(0), 60);
 
-    expect(late?.reserve).toBe('nuke');
-    expect(reserveOf(late!)).toBe(NUKE_COST);
-    expect(early?.reserve).toBe('none');
-    expect(reserveOf(early!)).toBe(0);
-  });
-});
-
-describe('фазы матча', () => {
-  it('на нулевом тике действует первая фаза', () => {
-    expect(phaseAt(BASELINE_PROFILE, 0)).toBe(BASELINE_PROFILE.phases[0]);
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(attempts.some((attempt) => attempt.result === 'wait')).toBe(false);
   });
 
-  it('фаза сменяется на своём пороге', () => {
-    const first = BASELINE_PROFILE.phases[0];
-    if (first === undefined) throw new Error('профиль без фаз');
+  it('при обычном горизонте накопление всё-таки случается', () => {
+    // Обратная страховка: без неё предыдущий тест проходил бы и на
+    // противнике, который вообще разучился копить.
+    const attempts = attemptsOf(BASELINE_PROFILE, 60);
 
-    const border = first.untilSecond * TICKS_PER_SECOND;
-
-    expect(phaseAt(BASELINE_PROFILE, border - 1)).toBe(first);
-    expect(phaseAt(BASELINE_PROFILE, border)).not.toBe(first);
-  });
-
-  it('поздняя фаза замыкает список и действует до конца матча', () => {
-    const last = BASELINE_PROFILE.phases[BASELINE_PROFILE.phases.length - 1];
-
-    expect(last?.untilSecond).toBe(Number.POSITIVE_INFINITY);
-    expect(phaseAt(BASELINE_PROFILE, 60 * 60 * TICKS_PER_SECOND)).toBe(last);
-  });
-
-  it('пороги фаз возрастают', () => {
-    const thresholds = BASELINE_PROFILE.phases.map((phase) => phase.untilSecond);
-    const sorted = [...thresholds].sort((a, b) => a - b);
-
-    expect(thresholds).toEqual(sorted);
+    expect(attempts.some((attempt) => attempt.result === 'wait')).toBe(true);
   });
 });

@@ -124,7 +124,7 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
   const insertDecision = db.prepare(`
     insert into decision values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const insertAttempt = db.prepare('insert into attempt values (?, ?, ?, ?, ?, ?, ?)');
+  const insertAttempt = db.prepare('insert into attempt values (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertFrontier = db.prepare('insert into frontier values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const insertCommand = db.prepare('insert into command values (?, ?, ?, ?, ?, ?, ?, ?)');
 
@@ -206,6 +206,7 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
               attempt.spending,
               attempt.result,
               attempt.note ?? null,
+              attempt.price ?? null,
             );
             rows += 1;
           });

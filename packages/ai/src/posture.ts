@@ -67,7 +67,7 @@ import type { AiProfile } from './profile.js';
  * Выводится прямо: убив сто здоровья штурмовика, мы отняли у противника
  * ровно то, что он за штурмовика заплатил.
  */
-const ENERGY_PER_LIVE_DAMAGE = BASE_UNIT_COST / BASE_HEALTH;
+export const ENERGY_PER_LIVE_DAMAGE = BASE_UNIT_COST / BASE_HEALTH;
 
 /**
  * Сколько энергии стоит единица урона по вражеской базе.

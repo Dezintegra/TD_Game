@@ -1,4 +1,11 @@
-import { NUKE_COST, PRODUCTION_QUEUE_CAP, TICKS_PER_SECOND, UnitType, UpgradeTarget } from '@td/shared';
+import {
+  AI_DECISION_INTERVAL_TICKS,
+  NUKE_COST,
+  PRODUCTION_QUEUE_CAP,
+  TICKS_PER_SECOND,
+  UnitType,
+  UpgradeTarget,
+} from '@td/shared';
 
 /**
  * Профиль поведения — все числа, задающие манеру игры противника.
@@ -56,8 +63,19 @@ export type Reserve = 'none' | 'nuke';
 export interface PhaseProfile {
   /** До какой секунды матча действует фаза. */
   readonly untilSecond: number;
-  /** Ветки прокачки, интересные в этой фазе, в порядке предпочтения. */
-  readonly upgrades: readonly UpgradeTarget[];
+  /**
+   * Доли прокачки по целям: сумма весов задаёт вероятности, как у `mix`.
+   *
+   * Раньше здесь стоял список целей «в порядке предпочтения», и он
+   * вырождался. Ветка не кончается никогда — уровни не ограничены
+   * намеренно, — поэтому до второй цели в списке очередь не доходила
+   * ни разу за матч: из восьми названных целей покупки получали две.
+   *
+   * Веса выродиться не могут по построению: цель с ненулевым весом
+   * покупки получает, цель с нулевым — не получает, и «никогда»
+   * записывается единственным способом, а не двумя.
+   */
+  readonly upgrades: Readonly<Partial<Record<UpgradeTarget, number>>>;
   /** Доля юнитов каждого типа: сумма весов задаёт вероятности. */
   readonly mix: Readonly<Record<UnitType, number>>;
   /**
@@ -93,10 +111,18 @@ export interface AiProfile {
   };
 
   readonly spending: {
-    /** Насколько далёкую покупку имеет смысл ждать, в секундах дохода. */
+    /**
+     * Насколько далёкую покупку имеет смысл ждать, в секундах дохода.
+     *
+     * Это же число задаёт и предел терпения — сколько решений подряд
+     * разрешено копить. Второго числа рядом нет намеренно: они говорят
+     * об одном и том же, и, разойдясь, дают противоречие, которое
+     * ничем, кроме прогона пачки матчей, не найти. Один раз так уже
+     * вышло: горизонт в сорок пять секунд означал девяносто решений,
+     * а предел стоял на восьми, и в него упиралось КАЖДОЕ накопление
+     * без исключения — то есть накопление не завершалось никогда.
+     */
     readonly savingHorizonSeconds: number;
-    /** Сколько решений подряд разрешено копить, ничего не покупая. */
-    readonly maxWaitDecisions: number;
     /** Сколько заказов держать в очереди производства. */
     readonly queueTarget: number;
   };
@@ -136,6 +162,24 @@ export interface AiProfile {
 /** Горизонт планирования в тиках. */
 export const horizonTicks = (profile: AiProfile): number =>
   profile.posture.horizonSeconds * TICKS_PER_SECOND;
+
+/**
+ * Предел терпения: сколько решений подряд разрешено копить.
+ *
+ * Вычисляется, а не хранится. Ждать разрешено только тогда, когда цена
+ * укладывается в горизонт при нынешнем доходе, а во время накопления
+ * деньги не тратятся — значит, энергия растёт монотонно и цена достигается
+ * за время не длиннее горизонта. Отсюда: предел, равный горизонту,
+ * не обрывает ни одного законного накопления, а всё, что он обрывает,
+ * законным не было.
+ *
+ * Прежние восемь решений при горизонте в сорок пять секунд означали
+ * четыре секунды против сорока пяти. В предел упиралось каждое
+ * накопление, и «копить» на деле означало «потерять четыре секунды
+ * и купить что подвернулось».
+ */
+export const patienceDecisions = (profile: AiProfile): number =>
+  (profile.spending.savingHorizonSeconds * TICKS_PER_SECOND) / AI_DECISION_INTERVAL_TICKS;
 
 /** Неприкосновенный запас фазы в единицах энергии ядра. */
 export const reserveOf = (phase: PhaseProfile): number =>
@@ -198,7 +242,8 @@ const deepFreeze = <T>(value: T): T => {
 const BASELINE_PHASES: readonly PhaseProfile[] = [
   {
     untilSecond: 90,
-    upgrades: [UpgradeTarget.Economy],
+    // Только экономика: вложенное в первую минуту окупается весь матч.
+    upgrades: { [UpgradeTarget.Economy]: 1 },
     mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Grenadier]: 0 },
     // Экономика вперёд всего: вложенное в первую минуту окупается весь матч.
     spend: ['upgrade', 'build', 'train'],
@@ -206,7 +251,14 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
   },
   {
     untilSecond: 300,
-    upgrades: [UpgradeTarget.Economy, UpgradeTarget.UnitAssault, UpgradeTarget.TowerBasic],
+    // Прежний порядок «экономика, штурмовик, башня» выражен убывающими
+    // весами. Разница в том, что теперь до второй и третьей цели очередь
+    // доходит, а не только называется.
+    upgrades: {
+      [UpgradeTarget.Economy]: 3,
+      [UpgradeTarget.UnitAssault]: 2,
+      [UpgradeTarget.TowerBasic]: 1,
+    },
     mix: { [UnitType.Assault]: 5, [UnitType.Sniper]: 2, [UnitType.Grenadier]: 1 },
     // Прокачка перед постройками: вложенное в экономику к середине матча
     // окупается, а лишняя башня на пустом месте — почти никогда.
@@ -216,13 +268,13 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
   {
     // Порог бесконечен: поздняя фаза замыкает список.
     untilSecond: Number.POSITIVE_INFINITY,
-    upgrades: [
-      UpgradeTarget.UnitAssault,
-      UpgradeTarget.UnitGrenadier,
-      UpgradeTarget.TowerSniper,
-      UpgradeTarget.General,
-      UpgradeTarget.Economy,
-    ],
+    upgrades: {
+      [UpgradeTarget.UnitAssault]: 5,
+      [UpgradeTarget.UnitGrenadier]: 4,
+      [UpgradeTarget.TowerSniper]: 3,
+      [UpgradeTarget.General]: 2,
+      [UpgradeTarget.Economy]: 1,
+    },
     mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 2, [UnitType.Grenadier]: 3 },
     spend: ['upgrade', 'train', 'build'],
     // Заряд держится в банке, тратится только излишек. Без запаса
@@ -269,10 +321,6 @@ export const BASELINE_PROFILE: AiProfile = deepFreeze({
     // Ждать вечно нельзя: если желаемое стоит десять минут дохода,
     // разумнее тратить на то, что доступно сейчас.
     savingHorizonSeconds: 45,
-    // Без этого предела противник впадал в ступор: прокачка каждый раз
-    // отвечала «почти хватает, подожди», и он ждал до конца матча,
-    // не построив ни одной башни. Восемь решений — это четыре секунды.
-    maxWaitDecisions: 8,
     // Не держим в очереди больше нескольких заказов: энергия нужнее живой.
     queueTarget: Math.min(4, PRODUCTION_QUEUE_CAP),
   },

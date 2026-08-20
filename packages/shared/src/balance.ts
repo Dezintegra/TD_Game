@@ -431,6 +431,25 @@ export type UpgradeTarget = (typeof UpgradeTarget)[keyof typeof UpgradeTarget];
 
 export const UPGRADE_TARGET_COUNT = 8;
 
+/**
+ * Все цели прокачки в закреплённом порядке.
+ *
+ * Порядок нужен там, где по целям идёт перебор с участием случайности:
+ * `Object.values` дал бы тот же список, но его порядок — свойство
+ * реализации, а не наш выбор, и опереть на него воспроизводимость матча
+ * нельзя.
+ */
+export const UPGRADE_TARGETS: readonly UpgradeTarget[] = [
+  UpgradeTarget.UnitAssault,
+  UpgradeTarget.UnitSniper,
+  UpgradeTarget.UnitGrenadier,
+  UpgradeTarget.TowerBasic,
+  UpgradeTarget.TowerSniper,
+  UpgradeTarget.Wall,
+  UpgradeTarget.General,
+  UpgradeTarget.Economy,
+];
+
 /** Какая характеристика улучшается. */
 export const UpgradeStat = {
   Attack: 0,

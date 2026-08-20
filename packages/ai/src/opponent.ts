@@ -1,5 +1,6 @@
-import {
+﻿import {
   AI_DECISION_INTERVAL_TICKS,
+  BASE_BUILD_EXCLUSION,
   BUILDABLE_KINDS,
   CommandKind,
   DIRECTION_STOP,
@@ -12,8 +13,10 @@ import {
   StructureKind,
   TICKS_PER_SECOND,
   UPGRADE_BRANCHES,
+  UPGRADE_TARGETS,
   UnitType,
   UpgradeStat,
+  UpgradeTarget,
   asTickNumber,
   cellsToUnits,
   directionTowards,
@@ -47,8 +50,9 @@ import {
 import type { Verdict } from './posture.js';
 import { AttemptNote } from './observer.js';
 import type { AttemptRecord, AttemptResult, DecisionObserver, DecisionRecord } from './observer.js';
-import { BASELINE_PROFILE, phaseAt, reserveOf } from './profile.js';
+import { BASELINE_PROFILE, patienceDecisions, phaseAt, reserveOf } from './profile.js';
 import type { AiProfile, PhaseProfile, Spending } from './profile.js';
+import { hasComparableUpgrade, orderBySpendGain, unitGain, unitPrice, upgradeGain } from './value.js';
 
 /**
  * Противник под управлением компьютера.
@@ -100,6 +104,8 @@ interface Attempt {
    * совершенно разные вещи, и снаружи они неразличимы.
    */
   readonly note?: AttemptNote;
+  /** Цена желаемого. Без неё запись «коплю» не говорит, на что именно. */
+  readonly price?: number;
 }
 
 const BOUGHT: Attempt = { result: 'bought' };
@@ -204,9 +210,25 @@ export const createOpponent = (
         liveUnits(world, me) < profile.escort.units;
       // Копить бесконечно нельзя: если накопление затянулось, на этом
       // решении желание «подождать» игнорируется, и деньги уходят на то,
-      // что доступно сейчас.
-      const impatient = waitStreak >= profile.spending.maxWaitDecisions;
-      const spendOrder = escorting ? profile.escort.spend : phase.spend;
+      // что доступно сейчас. Предел выводится из горизонта накопления,
+      // а не хранится вторым числом рядом с ним.
+      const impatient = waitStreak >= patienceDecisions(profile);
+
+      // Порядок трат фазы — предпочтение по умолчанию, но не закон.
+      // Покупка с большей прибавкой обходит очередь, и прибавка считается
+      // в энергии, той же единицей, какой меряются рубежи.
+      //
+      // Без этого правила строгий приоритет съедал сам себя: как только
+      // прокачка начала выбирать цель жеребьёвкой, в начале очереди почти
+      // всегда оказывалась дешёвая доступная ветка, и постройки исчезли
+      // из матча совсем — за семь минут ни одной.
+      //
+      // Сопровождение генерала оставлено отдельной веткой, а не сведено
+      // к тому же сравнению: там речь не о выгоде покупки, а о том, что
+      // генерал на дальнем рубеже без своих рядом просто не живёт.
+      const spendOrder = escorting
+        ? profile.escort.spend
+        : orderBySpendGain(phase.spend, spendEfficiency(world, me, player, phase, profile, verdict));
 
       if (!struck) {
         let waited = false;
@@ -217,7 +239,7 @@ export const createOpponent = (
         for (const spending of spendOrder) {
           const attempt =
             spending === 'upgrade'
-              ? tryUpgrade(commands, world, me, player, phase, profile)
+              ? tryUpgrade(commands, world, me, player, phase, profile, roll)
               : spending === 'build'
                 ? tryBuild(commands, world, me, player, phase, profile, approach, covered, () => {
                     buildCounter += 1;
@@ -232,6 +254,15 @@ export const createOpponent = (
           // `wait` прерывает перебор: раз на желаемое почти хватает,
           // тратить сейчас на что-то менее важное значит никогда до него
           // не добраться.
+          //
+          // Разрешать при этом покупки дешевле желаемого нельзя, и это
+          // проверено прогоном: юнит вчетверо дешевле улучшения, поэтому
+          // «покупай, что дешевле цели» вырождается в «покупай юнитов
+          // всегда» — за две минуты 59 машин, ноль построек и ни одного
+          // улучшения сверх первого. Послабление имеет смысл только вместе
+          // со сравнением выгоды покупок (раздел 5 в `fix-ai-spending`),
+          // которое умеет сказать, что юнит сейчас выгоднее улучшения,
+          // а не просто дешевле.
           if (attempt.result === 'wait' && !impatient) {
             waited = true;
             break;
@@ -340,6 +371,43 @@ const record = (
 
 const command = <T extends Command>(value: T): T => value;
 
+/**
+ * Прибавка на единицу энергии по каждому виду трат.
+ *
+ * Отсутствующий ключ означает «сравнивать не с чем»: такая трата остаётся
+ * на своём месте в порядке фазы. Так ведёт себя прокачка в фазе, где
+ * интересна одна экономика: её прибавка выражается будущим доходом,
+ * а не уроном, и привести одно к другому нечем.
+ *
+ * Постройка оценивается уже посчитанной выгодой лучшего рубежа — той
+ * самой, по которой генерал этот рубеж и выбрал. Второй оценки для
+ * башни не заводится: она немедленно разошлась бы с первой.
+ */
+const spendEfficiency = (
+  world: WorldState,
+  me: PlayerId,
+  player: PlayerState,
+  phase: PhaseProfile,
+  profile: AiProfile,
+  verdict: Verdict | undefined,
+): Readonly<Partial<Record<Spending, number>>> => {
+  const stats = playerStats(player);
+  const efficiency: Partial<Record<Spending, number>> = {};
+
+  const trainPrice = unitPrice(stats, phase);
+  if (trainPrice > 0) efficiency.train = unitGain(stats, phase, profile) / trainPrice;
+
+  const towerPrice = stats.structures[StructureKind.TowerBasic].cost;
+  if (towerPrice > 0) efficiency.build = Math.max(0, verdict?.gain ?? 0) / towerPrice;
+
+  if (hasComparableUpgrade(phase)) {
+    const best = upgradeGain(world, me, stats, phase, profile, upgradeCosts(player));
+    efficiency.upgrade = best.price > 0 ? best.gain / best.price : 0;
+  }
+
+  return efficiency;
+};
+
 /** Сколько юнитов игрока живо на карте. */
 const liveUnits = (world: WorldState, me: PlayerId): number =>
   world.units.reduce((count, unit) => (unit.owner === me ? count + 1 : count), 0);
@@ -360,8 +428,9 @@ const waitOrPass = (
 
   // Помеха одна и та же — не хватает энергии, — а исходов два. Причина
   // поэтому прикладывается к обоим: без неё запись «коплю» не сказала бы,
-  // на что именно.
-  return { result: price <= horizon ? 'wait' : 'pass', note: unaffordable };
+  // на что именно. Цена прикладывается по той же причине и вдобавок
+  // работает потолком для более дешёвых покупок.
+  return { result: price <= horizon ? 'wait' : 'pass', note: unaffordable, price };
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -456,10 +525,16 @@ const tryTrain = (
     pick -= weight;
   }
 
-  const cost = stats.units[chosen].cost;
-  // Юниты дёшевы, копить на них незачем: если сейчас не хватает,
-  // через пару решений хватит само собой.
-  if (player.energy < cost + reserveOf(phase)) return passing(AttemptNote.UnitUnaffordable);
+  const price = stats.units[chosen].cost + reserveOf(phase);
+
+  // Копить на юнита можно — и это не мелочность. «Юниты дёшевы, копить
+  // незачем» верно для штурмовика за одну базовую стоимость и неверно
+  // для гранатомётчика за десять: его цена сопоставима с башней, и без
+  // накопления он не покупается никогда. Ровно поэтому в матчах не было
+  // ни одного гранатомётчика при заявленной в профиле трети.
+  if (player.energy < price) {
+    return waitOrPass(price, stats.incomePerTick, profile, AttemptNote.UnitUnaffordable);
+  }
 
   commands.push(
     command({
@@ -555,6 +630,12 @@ const tryBuild = (
  * отклонит, а решение противника окажется потраченным впустую. Клетка под
  * собственным генералом здесь особенно важна — она первый кандидат
  * по построению, ведь строит он вокруг себя.
+ *
+ * По той же причине пропускается и защищённое кольцо вокруг баз. Оно
+ * особенно коварно: генерал начинает матч именно там, и без этой проверки
+ * ВСЕ ранние попытки строить уходили в отказ. Противник при этом считал,
+ * что построил, и не пробовал другое место — за первые три минуты матча
+ * у него не появлялось ни одной постройки.
  */
 const forEachBuildCandidate = (
   world: WorldState,
@@ -585,6 +666,11 @@ const forEachBuildCandidate = (
       // Клетка должна быть действительно в радиусе: квадрат перебора
       // описан вокруг круга и по углам из него выходит.
       if (distanceSquared(point, from) > radius * radius) continue;
+
+      const nearBase = world.map.baseCells.some(
+        (base) => distanceSquared(point, cellCentre(base)) <= BASE_BUILD_EXCLUSION ** 2,
+      );
+      if (nearBase) continue;
 
       visit(cell, point);
     }
@@ -760,38 +846,55 @@ const tryUpgrade = (
   player: PlayerState,
   phase: PhaseProfile,
   profile: AiProfile,
+  roll: (bound: number) => number,
 ): Attempt => {
+  // Цель прокачки выбирается взвешенной жеребьёвкой — тем же способом
+  // и тем же генератором, каким выбирается тип юнита.
+  //
+  // Прежде цели перебирались «в порядке предпочтения», и порядок
+  // вырождался в первый пункт: ветка не кончается никогда, поэтому
+  // до второй цели очередь не доходила ни разу за матч. Из восьми
+  // названных целей покупки получали две.
+  //
+  // Пережеребьёвки при неудаче нет намеренно. Соблазн велик — выпала
+  // цель, где покупать нечего, тянем ещё раз, — но так состав молча
+  // сдвигается в сторону доступного, и заявленные доли перестают
+  // значить хоть что-нибудь.
+  const weights = UPGRADE_TARGETS.map((target) => [target, phase.upgrades[target] ?? 0] as const);
+  const totalWeight = weights.reduce((sum, [, weight]) => sum + weight, 0);
+  if (totalWeight <= 0) return passing(AttemptNote.NothingToUpgrade);
+
+  let pick = roll(totalWeight);
+  let target: UpgradeTarget = UpgradeTarget.Economy;
+  for (const [candidate, weight] of weights) {
+    if (pick < weight) {
+      target = candidate;
+      break;
+    }
+    pick -= weight;
+  }
+
   const costs = upgradeCosts(player);
 
-  // Ветки перебираются в порядке предпочтения фазы, а не по цене.
-  //
-  // Первая версия брала самую дешёвую из доступных, и это оказалось
-  // ловушкой: ветки штурмовика стоят 40, а экономика 100, поэтому
-  // противник до бесконечности покупал мелкие прибавки к атаке и ни разу
-  // не вкладывался в добычу энергии. За пятнадцать минут он оставался
-  // на втором уровне прокачки и с тем же доходом, что и на первой минуте.
+  // Внутри выпавшей цели берётся самая дешёвая ветка: они однородны
+  // по смыслу, и предпочитать среди них нечего.
   let bestBranch = -1;
   let bestCost = Number.POSITIVE_INFINITY;
 
-  for (const target of phase.upgrades) {
-    UPGRADE_BRANCHES.forEach((branch, index) => {
-      if (branch.target !== target) return;
-      // Радиус строительства и время воскрешения полезны, но выигрыш
-      // от них не считается в уроне, и оценить его нечем. Проще
-      // пропустить, чем усложнять правило.
-      if (branch.stat === UpgradeStat.BuildRadius) return;
-      if (branch.stat === UpgradeStat.RespawnTime) return;
+  UPGRADE_BRANCHES.forEach((branch, index) => {
+    if (branch.target !== target) return;
+    // Радиус строительства и время воскрешения полезны, но выигрыш
+    // от них не считается в уроне, и оценить его нечем. Проще
+    // пропустить, чем усложнять правило.
+    if (branch.stat === UpgradeStat.BuildRadius) return;
+    if (branch.stat === UpgradeStat.RespawnTime) return;
 
-      const cost = costs[index] ?? Number.POSITIVE_INFINITY;
-      if (cost >= bestCost) return;
+    const cost = costs[index] ?? Number.POSITIVE_INFINITY;
+    if (cost >= bestCost) return;
 
-      bestBranch = index;
-      bestCost = cost;
-    });
-
-    // Нашли что-то в текущей по важности цели — дальше не смотрим.
-    if (bestBranch >= 0) break;
-  }
+    bestBranch = index;
+    bestCost = cost;
+  });
 
   if (bestBranch < 0) return passing(AttemptNote.NothingToUpgrade);
 
