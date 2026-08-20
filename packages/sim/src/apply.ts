@@ -1,4 +1,5 @@
 import {
+  BASE_BUILD_EXCLUSION,
   BUILDABLE_KINDS,
   CommandKind,
   INFLATES_PURCHASE,
@@ -128,6 +129,22 @@ const moveGeneral = (working: Working, player: WorkingPlayer, direction: number)
   return APPLIED;
 };
 
+/**
+ * Клетка внутри защищённого кольца вокруг какой-нибудь базы.
+ *
+ * Расстояние меряется от центра базы по прямой, как и в запретной зоне
+ * ядерного удара: кольцо — это круг, а не квадрат. По углам квадрата
+ * запрет выглядел бы произвольным, а игрок читает поле кругами —
+ * дальности и радиусы в игре все круглые.
+ */
+const insideBaseExclusion = (working: Working, cell: number): boolean => {
+  const centre = cellCentre(cell);
+
+  return working.map.baseCells.some(
+    (base) => distanceSquared(centre, cellCentre(base)) <= BASE_BUILD_EXCLUSION * BASE_BUILD_EXCLUSION,
+  );
+};
+
 const build = (
   working: Working,
   player: WorkingPlayer,
@@ -136,6 +153,17 @@ const build = (
 ): Outcome => {
   if (!isValidCell(cell)) return RejectReason.InvalidCell;
   if (!BUILDABLE_KINDS.includes(kind)) return RejectReason.InvalidArgument;
+
+  // Кольцо вокруг базы проверяется ПЕРВЫМ — раньше занятости и живых
+  // объектов. Порядок выбран не ради скорости, а ради того, что услышит
+  // игрок: клетка у базы, где вдобавок стоит юнит, — это прежде всего
+  // клетка у базы. Уйдёт юнит или нет, строить там всё равно нельзя,
+  // и советовать «подожди, он уйдёт» было бы враньём.
+  //
+  // Кольцо защищает обе базы, включая собственную: обстроенная своя база
+  // перестаёт выпускать юнитов и возвращать генерала так же надёжно,
+  // как обстроенная чужая.
+  if (insideBaseExclusion(working, cell)) return RejectReason.TooCloseToBase;
 
   // Клетка должна быть свободна и по рельефу, и по постройкам. Обе причины
   // для игрока означают одно и то же — «здесь уже что-то есть, целься

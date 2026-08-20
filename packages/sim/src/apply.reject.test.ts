@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BASE_BUILD_EXCLUSION,
   CommandKind,
   DIRECTION_SOUTH,
   MAP_CELL_COUNT,
@@ -57,6 +58,14 @@ const killGeneralOf = (world: WorldState, owner: number): WorldState => ({
   ),
 });
 
+/** Переставить генерала в центр клетки: нужно, чтобы обойти кольцо базы. */
+const withGeneralAt = (world: WorldState, owner: number, cell: number): WorldState => ({
+  ...world,
+  generals: world.generals.map((general, index) =>
+    index === owner ? { ...general, position: cellCentre(cell) } : general,
+  ),
+});
+
 /** Единственный отказ, случившийся на тике. */
 const rejectionOf = (world: WorldState, command: Command): Rejection | undefined => {
   const next = step(world, [command]);
@@ -89,6 +98,15 @@ const livingCells = (world: WorldState): ReadonlySet<number> =>
     ...world.generals.filter((general) => general.alive).map((general) => cellAt(general.position)),
   ]);
 
+/** Клетка внутри защищённого кольца вокруг какой-нибудь базы. */
+const insideBaseRing = (world: WorldState, cell: number): boolean => {
+  const centre = cellCentre(cell);
+
+  return world.map.baseCells.some(
+    (base) => distanceSquared(centre, cellCentre(base)) <= BASE_BUILD_EXCLUSION ** 2,
+  );
+};
+
 /** Клетка, годная под постройку по всему, кроме, возможно, радиуса. */
 const buildableCells = (world: WorldState): readonly number[] => {
   const occupancy = buildOccupancy(world.map, world.structures);
@@ -99,6 +117,7 @@ const buildableCells = (world: WorldState): readonly number[] => {
     if (world.map.cells[cell] !== Terrain.Ground) continue;
     if (occupancy.blocked[cell] === 1) continue;
     if (living.has(cell)) continue;
+    if (insideBaseRing(world, cell)) continue;
 
     cells.push(cell);
   }
@@ -157,6 +176,24 @@ const baseCellOf = (world: WorldState, owner: number): number => {
   return cell;
 };
 
+/** Свободная клетка ВНУТРИ защищённого кольца вокруг базы игрока. */
+const insideRingOf = (world: WorldState, owner: number): number => {
+  const occupancy = buildOccupancy(world.map, world.structures);
+  const living = livingCells(world);
+  const base = cellCentre(baseCellOf(world, owner));
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (world.map.cells[cell] !== Terrain.Ground) continue;
+    if (occupancy.blocked[cell] === 1) continue;
+    if (living.has(cell)) continue;
+    if (distanceSquared(cellCentre(cell), base) > BASE_BUILD_EXCLUSION ** 2) continue;
+
+    return cell;
+  }
+
+  throw new Error('свободной клетки в кольце нет');
+};
+
 // ─────────────────────────────────────────────────────────────────────────
 
 describe('отказ в постройке называет свою причину', () => {
@@ -178,18 +215,27 @@ describe('отказ в постройке называет свою причи�
   });
 
   it('клетка перекрыта постройкой', () => {
+    // Постройка ставится заранее: базы для этой проверки больше не годятся,
+    // они внутри защищённого кольца, и причина оттуда придёт другая.
     const world = rich();
-    expect(reasonOf(world, buildAt(baseCellOf(world, HUMAN)))).toBe(RejectReason.CellBlocked);
+    const cell = nearGeneral(world);
+    const occupied = step(world, [buildAt(cell, StructureKind.Wall)]);
+
+    expect(reasonOf(rich(occupied), buildAt(cell))).toBe(RejectReason.CellBlocked);
   });
 
   it('в клетке стоит живой — и это НЕ то же самое, что занятая клетка', () => {
+    // Генерал переставлен за пределы кольца вокруг базы: иначе сработала бы
+    // проверка близости, которая идёт раньше, и тест охранял бы не то
+    // правило.
     const world = rich();
-    const under = cellAt(generalPositionOf(world, HUMAN));
+    const spot = nearGeneral(world);
+    const moved = withGeneralAt(world, HUMAN, spot);
 
     // Клетка под собственным генералом: он строит вокруг себя, поэтому
     // она первый кандидат по построению. Именно на ней противник
     // под управлением компьютера когда-то замуровывал сам себя.
-    const reason = reasonOf(world, buildAt(under));
+    const reason = reasonOf(moved, buildAt(spot));
 
     expect(reason).toBe(RejectReason.CellOccupiedByLiving);
     expect(reason).not.toBe(RejectReason.CellBlocked);
@@ -203,6 +249,43 @@ describe('отказ в постройке называет свою причи�
   it('вне радиуса строительства', () => {
     const world = rich();
     expect(reasonOf(world, buildAt(farFromGeneral(world)))).toBe(RejectReason.OutsideBuildRadius);
+  });
+
+  it('слишком близко к собственной базе', () => {
+    const world = rich();
+    expect(reasonOf(world, buildAt(insideRingOf(world, HUMAN)))).toBe(RejectReason.TooCloseToBase);
+  });
+
+  it('слишком близко к чужой базе — и причина именно эта, а не дальность', () => {
+    // Кольцо проверяется раньше радиуса строительства, поэтому чужая база
+    // отвечает «нельзя в принципе» даже издалека. Так и задумано: игрок
+    // должен узнать про запрет, а не про то, что не дошёл.
+    const world = rich();
+    const reason = reasonOf(world, buildAt(insideRingOf(world, 1)));
+
+    expect(reason).toBe(RejectReason.TooCloseToBase);
+    expect(reason).not.toBe(RejectReason.OutsideBuildRadius);
+  });
+
+  it('клетка у базы с живым — это прежде всего клетка у базы', () => {
+    // Порядок проверок: уйдёт живой или нет, строить там всё равно нельзя,
+    // и советовать «подожди, он уйдёт» было бы враньём.
+    const world = rich();
+    const under = cellAt(generalPositionOf(world, HUMAN));
+    const reason = reasonOf(world, buildAt(under));
+
+    expect(reason).toBe(RejectReason.TooCloseToBase);
+    expect(reason).not.toBe(RejectReason.CellOccupiedByLiving);
+  });
+
+  it('за пределами кольца укрепление собственной базы работает', () => {
+    // Обратная страховка: правило не должно превратиться в запрет обороны.
+    const world = rich();
+    const cell = nearGeneral(world);
+    const after = step(world, [buildAt(cell, StructureKind.TowerBasic)]);
+
+    expect(after.rejections).toHaveLength(0);
+    expect(after.structures.some((entry) => entry.cell === cell)).toBe(true);
   });
 
   it('не хватает энергии', () => {

@@ -31,8 +31,16 @@ const SEED = 20260820;
 const SECONDS = 180;
 const AI: PlayerId = asPlayerId(1);
 
-/** Снято до выделения профиля. См. пояснение выше. */
-const GOLDEN_CHECKSUM = 1864210346;
+/**
+ * Снято на правилах slow-down-construction и protect-base-surroundings.
+ *
+ * Предыдущее число, 1864210346, было снято ещё до выделения профиля
+ * и доказывало, что перекладывание констант игру не изменило. Своё дело
+ * оно сделало: с тех пор дважды намеренно менялись правила игры, и держать
+ * эталон на старых значениях уже нечестно — он охранял бы прошлое, а не
+ * настоящее.
+ */
+const GOLDEN_CHECKSUM = 3270386554;
 
 interface Outcome {
   readonly checksum: number;
@@ -93,12 +101,12 @@ describe('эталон профиля по умолчанию', () => {
     // именно эти числа покажут, где искать: пропала прокачка, не там
     // построено или генерал не дошёл.
     expect(outcome).toMatchObject({
-      structures: 29,
-      units: 10,
-      upgradeLevels: 6,
-      energy: 2788,
-      commands: 177,
-      furthestFraction: 0.9556,
+      structures: 25,
+      units: 8,
+      upgradeLevels: 7,
+      energy: 13212,
+      commands: 153,
+      furthestFraction: 1.0444,
     });
   });
 

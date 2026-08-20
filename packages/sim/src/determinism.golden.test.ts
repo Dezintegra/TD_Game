@@ -49,7 +49,11 @@ const scriptedCommands = (tick: number): Command[] => {
   const commands: Command[] = [];
 
   for (const player of [0, 1]) {
-    const near = player === 0 ? BASE_INSET + 2 : MAP_WIDTH_CELLS - 1 - BASE_INSET - 2;
+    // Смещение в три клетки, а не в две: вокруг базы появилось защищённое
+    // кольцо, и с прежним смещением ближайшая постройка сценария — стена —
+    // отклонялась всегда. Сценарий продолжал бы «проходить», охраняя
+    // при этом мир без единой стены.
+    const near = player === 0 ? BASE_INSET + 3 : MAP_WIDTH_CELLS - 1 - BASE_INSET - 3;
     const side = player === 0 ? 1 : -1;
 
     // Генерал меняет направление раз в пару секунд: движение обязано
@@ -68,15 +72,30 @@ const scriptedCommands = (tick: number): Command[] => {
     }
 
     // Постройки вокруг базы: стены и башни вперемешку.
+    //
+    // Место выбирается веером из нескольких клеток, а не одной. Вокруг базы
+    // есть и скалы, и защищённое кольцо, и одна фиксированная клетка легко
+    // оказывается негодной — тогда сценарий молча перестаёт ставить
+    // постройки этого вида, продолжая при этом «проходить». Лишние команды
+    // ядро отклонит, а отказы в контрольную сумму не входят.
     if (tick % 90 === 30 + player * 5) {
-      const offset = Math.floor(tick / 90) % 3;
-      commands.push({
-        kind: CommandKind.Build,
-        player: asPlayerId(player),
-        tick: asTickNumber(tick),
-        cell: cellIndex(near, near + side * offset),
-        structure: offset === 0 ? StructureKind.Wall : StructureKind.TowerBasic,
-      });
+      const shift = Math.floor(tick / 90) % 3;
+
+      for (let dx = 0; dx < 3; dx += 1) {
+        for (let dy = 0; dy < 3; dy += 1) {
+          commands.push({
+            kind: CommandKind.Build,
+            player: asPlayerId(player),
+            tick: asTickNumber(tick),
+            cell: cellIndex(near + side * dx, near + side * dy),
+            // Виды чередуются в шахматном порядке, а сдвиг меняет её от раза
+            // к разу. Прежняя схема ставила один вид за раз в одну клетку,
+            // и стоило клетке оказаться скалой — постройки этого вида
+            // исчезали из сценария целиком.
+            structure: (dx + dy + shift) % 2 === 0 ? StructureKind.Wall : StructureKind.TowerBasic,
+          });
+        }
+      }
     }
 
     // Производство: три типа по кругу.
@@ -131,19 +150,20 @@ describe('детерминизм симуляции', () => {
   });
 
   it('совпадает с эталонной контрольной суммой', () => {
-    // Эталон вычислен на правилах из изменения slow-down-construction:
-    // время возведения выросло у всех трёх построек (стена ×10, башня ×3,
-    // снайперская башня ×3 от прежних значений), а прочность набирается
-    // по расписанию, а не прибавкой с округлением вверх. Оба правила
-    // меняют здоровье построек на каждом тике возведения.
+    // Эталон вычислен на правилах из двух изменений сразу.
     //
-    // Предыдущий эталон, 519025619, отвечал правилам
-    // refine-targeting-and-ai-posture (генерал выше юнитов в выборе цели)
-    // и add-detailed-models (румб разворота в состоянии мира).
+    // slow-down-construction: время возведения выросло у всех трёх построек,
+    // а прочность набирается по расписанию, а не прибавкой с округлением
+    // вверх. protect-base-surroundings: вокруг каждой базы появилось кольцо,
+    // в котором строить нельзя, и сценарий пришлось отодвинуть от базы —
+    // с прежним смещением все его стены отклонялись.
+    //
+    // Предыдущие эталоны: 3677035819 — только slow-down-construction;
+    // 519025619 — refine-targeting-and-ai-posture и add-detailed-models.
     //
     // Меняйте его ТОЛЬКО вместе с намеренным изменением игровых правил,
     // и тем же коммитом — тогда история баланса видна в diff.
-    const GOLDEN_CHECKSUM = 3677035819;
+    const GOLDEN_CHECKSUM = 3833150104;
 
     expect(runGolden()).toBe(GOLDEN_CHECKSUM);
   });
@@ -152,12 +172,26 @@ describe('детерминизм симуляции', () => {
     // Страховка от вырождения: если сценарий перестанет что-либо делать,
     // сумма всё равно будет стабильной, и тест начнёт охранять пустоту.
     let world = createWorld(GOLDEN_SEED);
+
+    // Виды собираются за весь прогон, а не снимаются в конце. Башня
+    // у базы вполне может не дожить до последнего тика — это законный ход
+    // матча, а не вырождение сценария. Вырождение — это когда башню
+    // ни разу не поставили.
+    const seen = new Set<StructureKind>();
+
     for (let tick = 0; tick < GOLDEN_TICKS; tick += 1) {
       world = step(world, scriptedCommands(tick));
+      for (const structure of world.structures) seen.add(structure.kind);
     }
 
     expect(world.structures.length).toBeGreaterThan(2);
     expect(world.units.length).toBeGreaterThan(0);
+
+    // Виды названы поимённо. Общего счётчика мало: правило, отсекающее
+    // ровно один вид построек, оставило бы счётчик прежним, и охват
+    // сценария сузился бы молча.
+    expect(seen.has(StructureKind.Wall)).toBe(true);
+    expect(seen.has(StructureKind.TowerBasic)).toBe(true);
   });
 
   it('различает состояния, отличающиеся одним полем', () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BASE_BUILD_EXCLUSION,
   BASE_INCOME_PER_TICK,
   BUILDABLE_KINDS,
   CommandKind,
@@ -10,9 +11,11 @@ import {
   MAP_WIDTH_CELLS,
   NUKE_COST,
   NUKE_DELAY_TICKS,
+  PPM_ONE,
   PRODUCTION_QUEUE_CAP,
   STRUCTURE_STATS,
   StructureKind,
+  Terrain,
   UNIT_STATS,
   UPGRADE_BRANCHES,
   UnitType,
@@ -21,10 +24,12 @@ import {
   asEntityId,
   asPlayerId,
   asTickNumber,
+  cellsToUnits,
+  distanceSquared,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { createWorld } from './world.js';
-import type { PlayerState, WorldState } from './world.js';
+import type { PlayerState, StructureState, WorldState } from './world.js';
 import { step } from './step.js';
 import { checksum } from './checksum.js';
 import { cellAt, cellCentre, cellIndex } from './map.js';
@@ -91,17 +96,52 @@ const nuke = (player: number, cell: number): Command =>
     cell,
   });
 
-/** Свободная расчищенная клетка рядом с базой игрока: генерал до неё дотянется. */
+/**
+ * Ближайшая к генералу клетка, где постройка пройдёт все проверки ядра.
+ *
+ * Раньше здесь стояло фиксированное смещение в две клетки от базы, и оно
+ * перестало годиться, когда вокруг базы появилось защищённое кольцо.
+ * Поиск вместо смещения переживёт и следующую правку правил: помощник
+ * спрашивает у мира, а не помнит числа.
+ */
 const nearBaseCell = (world: WorldState, player: number): number => {
-  const base = baseCellOf(world, player);
-  const bx = base % MAP_WIDTH_CELLS;
-  const by = Math.floor(base / MAP_WIDTH_CELLS);
-  // Генерация расчищает вокруг базы площадку радиусом в две клетки,
-  // а основание базы занимает радиус в одну. Клетка на расстоянии двух
-  // клеток по горизонтали свободна гарантированно.
-  const away = player === 0 ? 2 : -2;
+  const general = world.generals[player];
+  if (general === undefined) throw new Error(`Нет генерала ${String(player)}`);
 
-  return cellIndex(bx + away, by);
+  const state = world.players[player];
+  if (state === undefined) throw new Error(`Нет игрока ${String(player)}`);
+
+  const occupancy = buildOccupancy(world.map, world.structures);
+  const radius = playerStats(state).general.buildRadius;
+
+  const living = new Set([
+    ...world.units.map((unit) => cellAt(unit.position)),
+    ...world.generals.map((entry) => cellAt(entry.position)),
+  ]);
+
+  let best = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (occupancy.blocked[cell] === 1 || living.has(cell)) continue;
+
+    const centre = cellCentre(cell);
+
+    const distance = distanceSquared(centre, general.position);
+    if (distance > radius * radius || distance >= bestDistance) continue;
+
+    const nearBase = world.map.baseCells.some(
+      (base) => distanceSquared(centre, cellCentre(base)) <= BASE_BUILD_EXCLUSION ** 2,
+    );
+    if (nearBase) continue;
+
+    bestDistance = distance;
+    best = cell;
+  }
+
+  if (best < 0) throw new Error(`Негде строить игроку ${String(player)}`);
+
+  return best;
 };
 
 /** Игрок из состояния мира. Обёртка ради читаемости — индекс всегда валиден. */
@@ -299,6 +339,68 @@ describe('строительство', () => {
     expect(done.structures.find((s) => s.cell === cell)?.health).toBe(
       STRUCTURE_STATS[StructureKind.TowerBasic].health - damage,
     );
+  });
+
+  /**
+   * Обстроить базу настолько, насколько правила это позволяют.
+   *
+   * Стены ставятся прямо в состояние, а не командами: команд понадобилось бы
+   * несколько сотен, а генерал всё равно не дотянулся бы до дальних клеток.
+   * Проверяем мы не то, как их построили, а то, что база работает,
+   * когда их построили.
+   */
+  const besiege = (world: WorldState, player: number): WorldState => {
+    const base = cellCentre(baseCellOf(world, player));
+    const outer = cellsToUnits(9);
+
+    const walls: StructureState[] = [];
+    let nextId = world.nextEntityId;
+
+    for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+      if (world.map.cells[cell] !== Terrain.Ground) continue;
+
+      const distance = distanceSquared(cellCentre(cell), base);
+      if (distance <= BASE_BUILD_EXCLUSION ** 2 || distance > outer * outer) continue;
+
+      walls.push({
+        id: asEntityId(nextId),
+        owner: asPlayerId(player),
+        kind: StructureKind.Wall,
+        cell,
+        health: STRUCTURE_STATS[StructureKind.Wall].health,
+        growthPpm: PPM_ONE,
+        readyAtTick: asTickNumber(0),
+        builtAtTick: asTickNumber(0),
+      });
+      nextId += 1;
+    }
+
+    return { ...world, structures: [...world.structures, ...walls], nextEntityId: nextId };
+  };
+
+  it('обстроенная по правилам база всё равно выпускает юнитов', () => {
+    // Главный тест изменения: ради этого кольцо и заводилось. Раньше базу
+    // можно было обложить вплотную, и производство вставало намертво.
+    const world = besiege(richWorld(), 0);
+    const after = run(world, 5, [train(0, UnitType.Assault)]);
+
+    expect(after.units.some((unit) => unit.owner === 0)).toBe(true);
+  });
+
+  it('обстроенная по правилам база всё равно возвращает генерала', () => {
+    const world = besiege(richWorld(), 0);
+    const dead: WorldState = {
+      ...world,
+      generals: world.generals.map((general, index) =>
+        index === 0
+          ? { ...general, alive: false, respawnAtTick: asTickNumber(world.tick + 1) }
+          : general,
+      ),
+    };
+
+    const after = run(dead, 5);
+
+    expect(after.generals[0]?.alive).toBe(true);
   });
 
   it('разрушенная постройка исчезает и освобождает клетку', () => {

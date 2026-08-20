@@ -1,4 +1,5 @@
 ﻿import {
+  BASE_BUILD_EXCLUSION,
   CHECKSUM_INTERVAL_TICKS,
   CommandKind,
   NUKE_BASE_EXCLUSION,
@@ -399,6 +400,18 @@ const isHoverAllowed = (
 
   const general = world.generals[playerId];
   if (general === undefined || !general.alive) return false;
+
+  // Кольцо вокруг баз. Величина берётся из той же константы, что и в ядре,
+  // а не переписывается числом: расхождение подсветки с правилами хуже,
+  // чем отсутствие подсветки вовсе.
+  const hovered = cellCentre(state.hoverCell);
+  if (
+    world.map.baseCells.some(
+      (base) => distanceSquared(hovered, cellCentre(base)) <= BASE_BUILD_EXCLUSION ** 2,
+    )
+  ) {
+    return false;
+  }
 
   if (world.map.cells[state.hoverCell] !== Terrain.Ground) return false;
   if (occupancy.blocked[state.hoverCell] === 1) return false;

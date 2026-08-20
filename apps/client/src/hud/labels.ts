@@ -70,6 +70,10 @@ export const REJECT_LABEL: Readonly<Record<RejectReason, string>> = {
   [RejectReason.InvalidTarget]: 'Целью может быть только чужая постройка',
   [RejectReason.InvalidArgument]: 'Так нельзя',
   [RejectReason.MatchOver]: 'Матч окончен',
+  // Отличается от «Клетка занята» намеренно: там надо целиться в другое
+  // место, здесь — отойти от базы. И от одноимённого запрета для удара
+  // отличается словом «строить»: правила разные, и путать их нельзя.
+  [RejectReason.TooCloseToBase]: 'Вплотную к базе строить нельзя — отойдите',
 };
 
 export interface Hotkey {
