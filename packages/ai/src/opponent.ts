@@ -12,7 +12,6 @@
   NUKE_COST,
   PRODUCTION_QUEUE_CAP,
   StructureKind,
-  TICKS_PER_SECOND,
   UPGRADE_BRANCHES,
   UPGRADE_TARGETS,
   UnitType,
@@ -37,12 +36,13 @@ import {
   playerStats,
   upgradeCosts,
 } from '@td/sim';
-import type { Occupancy, PlayerState, PlayerStats, StructureState, WorldState } from '@td/sim';
+import type { Occupancy, PlayerState, PlayerStats, WorldState } from '@td/sim';
 import { approachOf, otherPlayer, sealsApproach, walkField } from './approach.js';
 import type { Approach } from './approach.js';
 import {
   coveredCells,
   freshCoverage,
+  markCovered,
   pickVerdict,
   rangeInCells,
   rankFrontiers,
@@ -51,7 +51,14 @@ import {
 import type { Verdict } from './posture.js';
 import { AttemptNote } from './observer.js';
 import type { AttemptRecord, AttemptResult, DecisionObserver, DecisionRecord } from './observer.js';
-import { BASELINE_PROFILE, escortRadius, patienceDecisions, phaseAt, reserveOf } from './profile.js';
+import {
+  BASELINE_PROFILE,
+  escortRadius,
+  patienceDecisions,
+  phaseAt,
+  reserveOf,
+  savingLimit,
+} from './profile.js';
 import { waveOutcome, waveType } from './push.js';
 import type { AiProfile, PhaseProfile, Spending } from './profile.js';
 import {
@@ -427,7 +434,7 @@ const spendEfficiency = (
   const stats = playerStats(player);
   const efficiency: Partial<Record<Spending, number>> = {};
 
-  const reserve = reserveOf(phase);
+  const reserve = reserveOf(phase, stats.incomePerTick, profile);
   const worth = (gain: number, price: number): number =>
     discountedEfficiency(gain, price + reserve, player.energy, stats.incomePerTick, profile);
 
@@ -485,7 +492,7 @@ const waitOrPass = (
   profile: AiProfile,
   unaffordable: AttemptNote,
 ): Attempt => {
-  const horizon = incomePerTick * TICKS_PER_SECOND * profile.spending.savingHorizonSeconds;
+  const horizon = savingLimit(incomePerTick, profile);
 
   // Помеха одна и та же — не хватает энергии, — а исходов два. Причина
   // поэтому прикладывается к обоим: без неё запись «коплю» не сказала бы,
@@ -586,7 +593,7 @@ const tryTrain = (
     pick -= weight;
   }
 
-  const price = stats.units[chosen].cost + reserveOf(phase);
+  const price = stats.units[chosen].cost + reserveOf(phase, stats.incomePerTick, profile);
 
   // Копить на юнита можно — и это не мелочность. «Юниты дёшевы, копить
   // незачем» верно для штурмовика за одну базовую стоимость и неверно
@@ -721,6 +728,61 @@ const tryPush = (
 // Строительство
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Постройка — единственная трата, которой разрешено повторяться
+ * за одно решение.
+ *
+ * Причина в живучести, а не в скорости трат. Одиночную башню сносит
+ * толпа: пока башня стреляет по одному нападающему, остальные бьют
+ * по ней. Ставя по одной за полсекунды, противник собирал группу из трёх
+ * полторы минуты и всё это время держал на карте одиночек. В замере это
+ * выглядело так: семнадцать построенных за матч башен и **0,56** башни
+ * на карте одновременно.
+ *
+ * ## Чем группа кончается
+ *
+ * Двумя границами, и обе уже были в коде.
+ *
+ * Казна — цена следующей постройки вместе с запасом фазы, из казны
+ * вычитается заказанное этим же решением. Без вычитания три команды
+ * по 1800 ушли бы при казне в 2000, и ядро отклонило бы две: решение
+ * потратилось бы впустую.
+ *
+ * Польза — `freshCoverage`, считающая только ещё не накрытые клетки
+ * пути. Радиус строительства генерала и дальность башни равны пяти
+ * клеткам, поэтому вторая башня в этой окрестности накрывает заметно
+ * меньше первой, третья — меньше второй, и покрытие насыщается само.
+ * Потолка «не больше N за решение» поэтому нет: это был бы подобранный
+ * счётчик, а такой в этом файле уже жил под именем «не больше трёх башен
+ * рядом с генералом» и врал — три башни в скальном горле и три в чистом
+ * поле накрывают совершенно разное.
+ *
+ * Цикл конечен по построению даже без этих двух границ: каждая
+ * поставленная клетка помечается непроходимой, а перебор мест ходит
+ * только по проходимым, и свободные клетки радиуса кончаются.
+ *
+ * ## Что приходится помнить
+ *
+ * Мир между командами одного решения не меняется: постройка попадёт
+ * в `world.structures` только после `step`. Поэтому вторая башня,
+ * спрошенная у тех же функций, что и первая, назвала бы ту же клетку.
+ * Решение ведёт три записи — накрытые клетки, занятые клетки и свои
+ * башни — и обновляет их после каждой команды.
+ *
+ * Первые две — КОПИИ. Занятость и покрытие принадлежат вызывающему:
+ * по ним в этом же решении уже посчитаны рубежи и выбрана цель движения
+ * генерала. Нынешний порядок вызовов таков, что порча осталась бы
+ * незамеченной, но полагаться на порядок вызовов — ошибка, которая ждёт
+ * перестановки двух строк.
+ *
+ * Сам вероятный путь при этом НЕ пересчитывается, и это намеренное
+ * упрощение. Постройка делает свою клетку непроходимой, значит коридор
+ * подхода от неё чуть смещается; учесть смещение стоило бы двух обходов
+ * карты на каждую постройку группы. Ошибка мала — коридор шире группы
+ * из нескольких клеток, — а единственный опасный её исход, запертый
+ * проход, ловится отдельной проверкой, которая занятость как раз
+ * учитывает.
+ */
 const tryBuild = (
   commands: Command[],
   world: WorldState,
@@ -735,67 +797,105 @@ const tryBuild = (
   const general = world.generals[me];
   if (general === undefined || !general.alive) return passing(AttemptNote.GeneralDead);
 
-  const around = cellsToUnits(profile.building.cellsAroundGeneral) ** 2;
-  const towers = world.structures.filter(
-    (structure) =>
-      structure.owner === me &&
-      structure.kind !== StructureKind.Base &&
-      structure.kind !== StructureKind.Wall &&
-      distanceSquared(cellCentre(structure.cell), general.position) <= around,
-  );
-
-  // Стена ставится только когда есть что прикрывать. Стена сама по себе
-  // лишь покупает противнику время на обход; стена перед башней —
-  // укрепление, потому что башня стреляет поверх неё, а юниты сквозь
-  // неё стрелять не могут.
-  const shielding = nextBuildNumber() % profile.building.wallEvery === 0 && towers.length > 0;
-  const kind = shielding ? StructureKind.Wall : StructureKind.TowerBasic;
-  if (!BUILDABLE_KINDS.includes(kind)) return passing(AttemptNote.NotBuildable);
-
   const stats = playerStats(player);
-  const price = stats.structures[kind].cost + reserveOf(phase);
-  if (player.energy < price) {
-    return waitOrPass(price, stats.incomePerTick, profile, AttemptNote.StructureUnaffordable);
-  }
-
   const radius = stats.general.buildRadius;
+  const towerRange = rangeInCells(stats.structures[StructureKind.TowerBasic].range);
+  const reserve = reserveOf(phase, stats.incomePerTick, profile);
 
-  const cell = shielding
-    ? shieldBuildCell(world, me, general.position, radius, approach, towers, profile)
-    : towerBuildCell(
-        world,
-        me,
-        general.position,
-        radius,
-        approach,
-        covered,
-        rangeInCells(stats.structures[StructureKind.TowerBasic].range),
-      );
+  const fresh = Uint8Array.from(covered);
+  const blocked = Uint8Array.from(approach.occupancy.blocked);
+  const local: Approach = { ...approach, occupancy: { ...approach.occupancy, blocked } };
 
-  // Места нет — и это не то же самое, что «нет денег». Башне нужен
-  // ненакрытый путь в радиусе, стене — своя башня, которую она прикроет;
-  // и то и другое кончается задолго до энергии.
-  if (cell < 0) {
-    return passing(shielding ? AttemptNote.NoShieldSite : AttemptNote.NoTowerSite);
+  // Свои башни окрестности — клетками, а не постройками: у заказанных
+  // этим решением объекта в мире ещё нет, а прикрывать их стеной уже
+  // осмысленно.
+  const around = cellsToUnits(profile.building.cellsAroundGeneral) ** 2;
+  const towerCells = world.structures
+    .filter(
+      (structure) =>
+        structure.owner === me &&
+        structure.kind !== StructureKind.Base &&
+        structure.kind !== StructureKind.Wall &&
+        distanceSquared(cellCentre(structure.cell), general.position) <= around,
+    )
+    .map((structure) => structure.cell);
+
+  let purse = player.energy;
+  let placed = 0;
+  // Чем кончилась попытка, оборвавшая группу. Когда не поставлено ничего,
+  // она же и есть исход всей траты: разбору важно, что именно помешало
+  // первой постройке — денег не хватило, места не нашлось или проход
+  // оказался бы заперт.
+  //
+  // Начальное значение до чтения не доживает: каждый выход из цикла
+  // присваивает своё. Оно стоит здесь потому, что бесконечный `for`
+  // не позволяет вывести это правило из текста.
+  let stopped: Attempt = passing(AttemptNote.NoTowerSite);
+
+  for (;;) {
+    // Стена ставится только когда есть что прикрывать. Стена сама по себе
+    // лишь покупает противнику время на обход; стена перед башней —
+    // укрепление, потому что башня стреляет поверх неё, а юниты сквозь
+    // неё стрелять не могут.
+    const shielding = nextBuildNumber() % profile.building.wallEvery === 0 && towerCells.length > 0;
+    const kind = shielding ? StructureKind.Wall : StructureKind.TowerBasic;
+    if (!BUILDABLE_KINDS.includes(kind)) {
+      stopped = passing(AttemptNote.NotBuildable);
+      break;
+    }
+
+    const price = stats.structures[kind].cost + reserve;
+    if (purse < price) {
+      stopped = waitOrPass(price, stats.incomePerTick, profile, AttemptNote.StructureUnaffordable);
+      break;
+    }
+
+    const cell = shielding
+      ? shieldBuildCell(world, me, general.position, radius, local, towerCells, profile)
+      : towerBuildCell(world, me, general.position, radius, local, fresh, towerRange);
+
+    // Места нет — и это не то же самое, что «нет денег». Башне нужен
+    // ненакрытый путь в радиусе, стене — своя башня, которую она прикроет;
+    // и то и другое кончается задолго до энергии.
+    if (cell < 0) {
+      stopped = passing(shielding ? AttemptNote.NoShieldSite : AttemptNote.NoTowerSite);
+      break;
+    }
+
+    // Запечатать проход себе — законный ход по правилам игры и почти
+    // наверняка ошибка по замыслу: своё войско выходит из своей базы,
+    // и последняя закрытая щель останавливает его так же надёжно, как чужое.
+    // Обход карты здесь один и только для уже выбранного места — но
+    // по занятости, УЖЕ учитывающей заказанное этим решением: группа
+    // способна запереть проход тем, чего не делает ни одна её постройка
+    // по отдельности.
+    if (sealsApproach(world, me, local, cell)) {
+      stopped = passing(AttemptNote.WouldSealPath);
+      break;
+    }
+
+    commands.push(
+      command({
+        kind: CommandKind.Build,
+        player: me,
+        tick: asTickNumber(world.tick),
+        cell,
+        structure: kind,
+      }),
+    );
+
+    placed += 1;
+    purse -= price;
+
+    blocked[cell] = 1;
+    if (!shielding) {
+      towerCells.push(cell);
+      // Стена не стреляет, и накрывать ей нечего: помечается только башня.
+      markCovered(fresh, cell, towerRange);
+    }
   }
 
-  // Запечатать проход себе — законный ход по правилам игры и почти
-  // наверняка ошибка по замыслу: своё войско выходит из своей базы,
-  // и последняя закрытая щель останавливает его так же надёжно, как чужое.
-  // Обход карты здесь один и только для уже выбранного места.
-  if (sealsApproach(world, me, approach, cell)) return passing(AttemptNote.WouldSealPath);
-
-  commands.push(
-    command({
-      kind: CommandKind.Build,
-      player: me,
-      tick: asTickNumber(world.tick),
-      cell,
-      structure: kind,
-    }),
-  );
-
-  return BOUGHT;
+  return placed > 0 ? BOUGHT : stopped;
 };
 
 /**
@@ -911,6 +1011,11 @@ const towerBuildCell = (
  * «Откуда подходят» определяется по расстоянию до чужой базы: стена
  * должна оказаться к ней ближе, чем прикрываемая башня. Клетка на самом
  * пути ценнее клетки рядом с ним — именно по ней и пойдут.
+ *
+ * Башни передаются КЛЕТКАМИ, а не постройками, и не ради краткости:
+ * башня, заказанная этим же решением, объекта в мире ещё не имеет —
+ * он появится только после `step`, — а прикрывать её стеной уже
+ * осмысленно. Ничего, кроме клетки, отсюда у башни и не спрашивалось.
  */
 const shieldBuildCell = (
   world: WorldState,
@@ -918,7 +1023,7 @@ const shieldBuildCell = (
   from: Vec2,
   radius: number,
   approach: Approach,
-  towers: readonly StructureState[],
+  towers: readonly number[],
   profile: AiProfile,
 ): number => {
   const enemyCell = world.map.baseCells[otherPlayer(me)];
@@ -935,7 +1040,7 @@ const shieldBuildCell = (
     const distance = distanceSquared(point, enemy);
 
     const shields = towers.some((tower) => {
-      const towerPoint = cellCentre(tower.cell);
+      const towerPoint = cellCentre(tower);
       return (
         distanceSquared(point, towerPoint) <= shieldReach &&
         distance < distanceSquared(towerPoint, enemy)
@@ -1140,14 +1245,10 @@ const tryUpgrade = (
 
   if (bestBranch < 0) return passing(AttemptNote.NothingToUpgrade);
 
-  const price = bestCost + reserveOf(phase);
+  const income = playerStats(player).incomePerTick;
+  const price = bestCost + reserveOf(phase, income, profile);
   if (player.energy < price) {
-    return waitOrPass(
-      price,
-      playerStats(player).incomePerTick,
-      profile,
-      AttemptNote.UpgradeUnaffordable,
-    );
+    return waitOrPass(price, income, profile, AttemptNote.UpgradeUnaffordable);
   }
 
   commands.push(

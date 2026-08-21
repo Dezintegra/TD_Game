@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CommandKind,
   FIXED_POINT_SCALE,
   MAP_CELL_COUNT,
   STRUCTURE_STATS,
@@ -176,6 +177,109 @@ describe('размещение построек противника', () => {
     for (const tower of towers) {
       expect(coversPath(tower.cell, range)).toBe(true);
     }
+  });
+});
+
+/**
+ * Постройки, заказанные за один тик, — по тикам, где их было хоть сколько.
+ *
+ * Заодно проверяется, что заказ прошёл: сразу после `step` в каждой
+ * названной клетке обязана стоять постройка противника. Ядро отклоняет
+ * и покупку не по карману, и постройку в занятую клетку, поэтому одна
+ * эта проверка ловит обе беды, ради которых группа ведёт свои записи.
+ */
+const buildGroups = (seconds: number, seed = SEED): readonly (readonly number[])[] => {
+  const opponent = createOpponent(AI_PLAYER, seed);
+  let world = createWorld(seed);
+
+  const groups: number[][] = [];
+
+  for (let tick = 0; tick < seconds * TICKS_PER_SECOND; tick += 1) {
+    const commands = opponent.decide(world);
+    const cells = commands.flatMap((issued) =>
+      issued.kind === CommandKind.Build ? [issued.cell] : [],
+    );
+
+    world = step(world, commands);
+
+    if (cells.length === 0) continue;
+
+    for (const cell of cells) {
+      const standing = world.structures.some(
+        (structure) => structure.owner === AI_PLAYER && structure.cell === cell,
+      );
+      expect(standing).toBe(true);
+    }
+
+    groups.push(cells);
+  }
+
+  return groups;
+};
+
+describe('постройки ставятся группой', () => {
+  const groups = buildGroups(180);
+
+  it('за одно решение случается больше одной постройки', () => {
+    // Ради этого всё и затевалось. До правки решение отдавало не более
+    // одной команды постройки, и группа из трёх башен собиралась
+    // полторы минуты — если казна вообще дотерпит.
+    expect(groups.length).toBeGreaterThan(0);
+    expect(groups.some((group) => group.length > 1)).toBe(true);
+  });
+
+  it('клетки внутри группы не повторяются', () => {
+    // Мир между командами одного решения не меняется, поэтому вторая
+    // башня, спрошенная у тех же функций, назвала бы ту же клетку.
+    // От этого группу и берегут копии покрытия и занятости.
+    for (const group of groups) {
+      expect(new Set(group).size).toBe(group.length);
+    }
+  });
+
+  it('послабление касается только построек', () => {
+    // Правило «одна покупка за решение» заводилось против обратной беды:
+    // юнит стоит вчетверо дешевле башни и вдесятеро дешевле улучшения
+    // экономики, поэтому «юниты первыми» без ограничения означает «юниты
+    // всегда». Башня из правила выведена потому, что самоограничена:
+    // ставить её некуда, как только путь в радиусе накрыт.
+    //
+    // Добивающий рывок сюда не попадает: он заказывает волну одним
+    // залпом и по построению тратит казну целиком, поэтому решения
+    // с несколькими заказами юнитов из проверки исключаются, а не
+    // объявляются ошибкой.
+    const opponent = createOpponent(AI_PLAYER, SEED);
+    let world = createWorld(SEED);
+
+    let upgradeBursts = 0;
+
+    for (let tick = 0; tick < 180 * TICKS_PER_SECOND; tick += 1) {
+      const commands = opponent.decide(world);
+      world = step(world, commands);
+
+      const upgrades = commands.filter((issued) => issued.kind === CommandKind.BuyUpgrade);
+      if (upgrades.length > 1) upgradeBursts += 1;
+    }
+
+    expect(upgradeBursts).toBe(0);
+  });
+
+  it('группа кончается насыщением, а не упирается в геометрию', () => {
+    // Потолка «не больше N за решение» в коде нет намеренно: предел
+    // задаётся убывающей отдачей. Сторожить надо именно её, и порог
+    // поэтому взят не с потолка, а от той границы, которая осталась бы
+    // единственной, если бы покрытие перестало учитываться: радиус
+    // строительства в пять клеток — это круг в восемь десятков клеток,
+    // и группа, ограниченная одной геометрией, разрослась бы до них.
+    //
+    // Наблюдаемая величина много меньше: четыре постройки на этом seed,
+    // девять — самая большая за пачку матчей арены. Запас между
+    // наблюдаемым и порогом оставлен нарочно: тест обязан ловить
+    // пропажу убывающей отдачи, а не колебания в пределах горсти клеток.
+    const largest = groups.reduce((best, group) => Math.max(best, group.length), 0);
+
+    expect(largest).toBeGreaterThan(0);
+    expect(largest).toBeLessThan(20);
   });
 });
 

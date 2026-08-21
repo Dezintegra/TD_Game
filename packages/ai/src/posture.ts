@@ -328,6 +328,20 @@ export const coveredCells = (
   return covered;
 };
 
+/**
+ * Пометить накрытым всё, до чего достанет башня из этой клетки.
+ *
+ * Нужна там, где башня уже заказана, но в мире её ещё нет: `coveredCells`
+ * обходит `world.structures`, а команда постройки попадёт туда только
+ * после `step`. Без такой пометки вторая башня одного решения считала бы
+ * своей заслугой то, что накрыла первая, и обе вставали бы в одно место.
+ */
+export const markCovered = (covered: Uint8Array, cell: number, rangeCells: number): void => {
+  forEachInDisc(cell, rangeCells, (inner) => {
+    covered[inner] = 1;
+  });
+};
+
 /** Сколько ещё не накрытых клеток вероятного пути накроет башня в этой клетке. */
 export const freshCoverage = (
   approach: Approach,

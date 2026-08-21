@@ -2,6 +2,7 @@
 import {
   AI_DECISION_INTERVAL_TICKS,
   CommandKind,
+  NUKE_COST,
   TICKS_PER_SECOND,
   UPGRADE_BRANCHES,
   UpgradeTarget,
@@ -11,7 +12,13 @@ import {
 import type { PlayerId } from '@td/shared';
 import { createWorld, playerStats, step } from '@td/sim';
 import { createOpponent } from './opponent.js';
-import { BASELINE_PROFILE, escortRadius, patienceDecisions } from './profile.js';
+import {
+  BASELINE_PROFILE,
+  escortRadius,
+  patienceDecisions,
+  reserveOf,
+  savingLimit,
+} from './profile.js';
 import type { AiProfile } from './profile.js';
 import type { AttemptRecord, DecisionRecord } from './observer.js';
 
@@ -167,5 +174,62 @@ describe('предел терпения выводится из горизонт
     const attempts = attemptsOf(BASELINE_PROFILE, 60);
 
     expect(attempts.some((attempt) => attempt.result === 'wait')).toBe(true);
+  });
+});
+
+describe('неприкосновенный запас держится, только пока достижим', () => {
+  /**
+   * Фаза с запасом под ядерный удар. Берётся последняя фаза базового
+   * профиля — именно она его и объявляет.
+   */
+  const withReserve = BASELINE_PROFILE.phases[BASELINE_PROFILE.phases.length - 1];
+  if (withReserve === undefined) throw new Error('в базовом профиле нет фаз');
+
+  /** Доход, при котором запас ровно набирается за горизонт накопления. */
+  const enough = NUKE_COST / (TICKS_PER_SECOND * BASELINE_PROFILE.spending.savingHorizonSeconds);
+
+  it('при доходе замера запас нулевой', () => {
+    // Четырнадцать за тик — доход, выше которого противник в замере
+    // на двадцати матчах не поднимался. При нём на удар копить больше
+    // минуты, и запас запрещал бы вообще все покупки.
+    expect(reserveOf(withReserve, 14, BASELINE_PROFILE)).toBe(0);
+  });
+
+  it('при достаточном доходе запас равен цене удара', () => {
+    expect(reserveOf(withReserve, Math.ceil(enough), BASELINE_PROFILE)).toBe(NUKE_COST);
+  });
+
+  it('граница проходит ровно там, где кончается горизонт накопления', () => {
+    // Смысл правила одной строкой: тот же вопрос, который уже задаётся
+    // о каждой отдельной покупке, задан о запасе, и ответ на него один.
+    expect(savingLimit(Math.ceil(enough), BASELINE_PROFILE)).toBeGreaterThanOrEqual(NUKE_COST);
+    expect(savingLimit(Math.floor(enough) - 1, BASELINE_PROFILE)).toBeLessThan(NUKE_COST);
+  });
+
+  it('фаза без запаса не держит его ни при каком доходе', () => {
+    const plain = BASELINE_PROFILE.phases[0];
+    if (plain === undefined) throw new Error('в базовом профиле нет фаз');
+
+    expect(reserveOf(plain, 1, BASELINE_PROFILE)).toBe(0);
+    expect(reserveOf(plain, 1000, BASELINE_PROFILE)).toBe(0);
+  });
+
+  it('фаза с недостижимым запасом всё равно покупает', () => {
+    // Главное следствие правила, и проверяется оно на фазе, а не на
+    // поздней минуте матча: замер до правки дал 1014 решений подряд,
+    // в каждом из которых и постройка, и юнит, и улучшение отвечали
+    // «не по карману» — при энергии, которой хватало на шесть башен.
+    //
+    // Запас объявлен с первой секунды, чтобы проверка не зависела
+    // от того, доживёт ли матч до третьей минуты.
+    const reserved: AiProfile = {
+      ...BASELINE_PROFILE,
+      id: 'test-reserve-from-start',
+      phases: BASELINE_PROFILE.phases.map((phase) => ({ ...phase, reserve: 'nuke' as const })),
+    };
+
+    const bought = attemptsOf(reserved, 60).filter((attempt) => attempt.result === 'bought');
+
+    expect(bought.length).toBeGreaterThan(0);
   });
 });
