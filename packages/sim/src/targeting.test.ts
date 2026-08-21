@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   FIXED_POINT_SCALE,
   GENERAL_STATS,
@@ -92,6 +92,7 @@ const structure = (
   growthPpm: PPM_ONE,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
+  demolishAtTick: asTickNumber(0),
 });
 
 interface Scene {

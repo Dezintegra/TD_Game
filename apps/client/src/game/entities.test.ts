@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import type { Graphics } from 'pixi.js';
 import {
   DIRECTION_SOUTH,
@@ -115,6 +115,7 @@ const wallAt = (cell: number) => ({
   growthPpm: PPM_ONE,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
+  demolishAtTick: asTickNumber(0),
 });
 
 const unitAt = (cell: number) => ({

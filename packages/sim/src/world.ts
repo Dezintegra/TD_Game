@@ -1,4 +1,4 @@
-import {
+﻿import {
   GENERAL_STATS,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
@@ -89,6 +89,19 @@ export interface StructureState {
   readonly readyAtTick: TickNumber;
   /** Тик завершения возведения. До него постройка не стреляет. */
   readonly builtAtTick: TickNumber;
+  /**
+   * Тик исчезновения при сносе. Ноль означает, что снос не начат.
+   *
+   * Снос — обратное возведение той же длительности: здоровье убывает,
+   * клетка остаётся непроходимой, в конце постройка исчезает. Мгновенный
+   * снос превратил бы стену из обязательства в бесплатный переключатель:
+   * перекрыл проход, дождался волны, перед своей атакой открыл.
+   *
+   * Величина живёт в состоянии мира, а не в клиенте, потому что снос —
+   * обычная команда: он воспроизводится реплеем, переезжает в снимке
+   * при рассинхроне и откатывается вместе с предсказанием.
+   */
+  readonly demolishAtTick: TickNumber;
 }
 
 export interface UnitState {
@@ -309,6 +322,7 @@ export const createWorld = (seed: number): WorldState => {
     growthPpm: PPM_ONE,
     readyAtTick: asTickNumber(0),
     builtAtTick: asTickNumber(0),
+    demolishAtTick: asTickNumber(0),
   }));
 
   const generals: GeneralState[] = map.baseCells.map((cell, index) => {

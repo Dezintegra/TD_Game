@@ -1,4 +1,4 @@
-import {
+﻿import {
   BUILDABLE_KINDS,
   CommandKind,
   MAP_CELL_COUNT,
@@ -101,6 +101,8 @@ const packArgs = (command: UnownedCommand | Command): CommandArgs => {
       return { a: command.branch, b: 0 };
     case CommandKind.LaunchNuke:
       return { a: command.cell, b: 0 };
+    case CommandKind.Demolish:
+      return { a: command.cell, b: 0 };
   }
 };
 
@@ -147,6 +149,9 @@ const unpackCommand = (kind: number, a: number, b: number, tick: number): Unowne
 
     case CommandKind.LaunchNuke:
       return isCell(a) ? { kind: CommandKind.LaunchNuke, tick: at, cell: a } : undefined;
+
+    case CommandKind.Demolish:
+      return isCell(a) ? { kind: CommandKind.Demolish, tick: at, cell: a } : undefined;
 
     default:
       return undefined;

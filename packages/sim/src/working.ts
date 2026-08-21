@@ -1,4 +1,4 @@
-import { SHOT_LIFETIME_TICKS, asTickNumber } from '@td/shared';
+﻿import { SHOT_LIFETIME_TICKS, asTickNumber } from '@td/shared';
 import type {
   CommandKind,
   EntityId,
@@ -61,6 +61,7 @@ export interface WorkingStructure {
   growthPpm: number;
   readyAtTick: TickNumber;
   builtAtTick: TickNumber;
+  demolishAtTick: TickNumber;
   alive: boolean;
 }
 
@@ -160,6 +161,7 @@ export const toWorking = (state: WorldState): Working => ({
     growthPpm: structure.growthPpm,
     readyAtTick: structure.readyAtTick,
     builtAtTick: structure.builtAtTick,
+    demolishAtTick: structure.demolishAtTick,
     alive: true,
   })),
   units: state.units.map((unit) => ({
@@ -291,6 +293,7 @@ export const fromWorking = (working: Working): WorldState => ({
       growthPpm: structure.growthPpm,
       readyAtTick: structure.readyAtTick,
       builtAtTick: structure.builtAtTick,
+      demolishAtTick: structure.demolishAtTick,
     })),
   units: working.units
     .filter((unit) => unit.alive)

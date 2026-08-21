@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
@@ -47,6 +47,7 @@ const structure = (
   growthPpm: PPM_ONE,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
+  demolishAtTick: asTickNumber(0),
 });
 
 const uniformCost = (blocked: Uint8Array): Int32Array => {

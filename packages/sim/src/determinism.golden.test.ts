@@ -98,6 +98,26 @@ const scriptedCommands = (tick: number): Command[] => {
       }
     }
 
+    // Снос: раз в шесть секунд разбирается угол веера.
+    //
+    // Сценарий существует ради охвата всех механик сразу, и снос — такая же
+    // механика, как стройка. Команды по пустым клеткам ядро отклонит,
+    // а отказы в контрольную сумму не входят.
+    if (tick % 180 === 100 + player * 5) {
+      // Тот же веер, что и у стройки, и по той же причине: угадать
+      // заранее, какая клетка окажется землёй, а какая скалой, нельзя.
+      for (let dx = 0; dx < 3; dx += 1) {
+        for (let dy = 0; dy < 3; dy += 1) {
+          commands.push({
+            kind: CommandKind.Demolish,
+            player: asPlayerId(player),
+            tick: asTickNumber(tick),
+            cell: cellIndex(near + side * dx, near + side * dy),
+          });
+        }
+      }
+    }
+
     // Производство: три типа по кругу.
     if (tick % 40 === 10 + player * 3) {
       const type = (Math.floor(tick / 40) % 3) as UnitType;
@@ -163,13 +183,17 @@ describe('детерминизм симуляции', () => {
     // прокачки дальности — от них поехал и состав покупок сценария,
     // который перебирает ветки по кругу.
     //
-    // Предыдущие эталоны: 3833150104 — стройка и кольцо базы;
+    // И наконец добавился снос: у постройки появился тик исчезновения,
+    // а сценарий научился разбирать собственный веер.
+    //
+    // Предыдущие эталоны: 1724205168 — дальность генерала и ветки
+    // дальности; 3833150104 — стройка и кольцо базы;
     // 3677035819 — только slow-down-construction;
     // 519025619 — refine-targeting-and-ai-posture и add-detailed-models.
     //
     // Меняйте его ТОЛЬКО вместе с намеренным изменением игровых правил,
     // и тем же коммитом — тогда история баланса видна в diff.
-    const GOLDEN_CHECKSUM = 1724205168;
+    const GOLDEN_CHECKSUM = 1886512028;
 
     expect(runGolden()).toBe(GOLDEN_CHECKSUM);
   });
@@ -184,11 +208,19 @@ describe('детерминизм симуляции', () => {
     // матча, а не вырождение сценария. Вырождение — это когда башню
     // ни разу не поставили.
     const seen = new Set<StructureKind>();
+    let demolished = false;
 
     for (let tick = 0; tick < GOLDEN_TICKS; tick += 1) {
       world = step(world, scriptedCommands(tick));
-      for (const structure of world.structures) seen.add(structure.kind);
+      for (const structure of world.structures) {
+        seen.add(structure.kind);
+        if (structure.demolishAtTick > 0) demolished = true;
+      }
     }
+
+    // Снос задействован хотя бы раз: без этой проверки команда сноса
+    // могла бы отклоняться всегда, а сценарий продолжал бы «проходить».
+    expect(demolished).toBe(true);
 
     expect(world.structures.length).toBeGreaterThan(2);
     expect(world.units.length).toBeGreaterThan(0);

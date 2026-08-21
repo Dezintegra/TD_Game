@@ -73,6 +73,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, structure.growthPpm);
     hash = mix(hash, structure.readyAtTick);
     hash = mix(hash, structure.builtAtTick);
+    hash = mix(hash, structure.demolishAtTick);
   }
 
   for (const unit of state.units) {

@@ -1,4 +1,4 @@
-import { CommandKind, TICKS_PER_SECOND } from '@td/shared';
+﻿import { CommandKind, TICKS_PER_SECOND } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { checksum } from '@td/sim';
 import type { WorldState } from '@td/sim';
@@ -90,6 +90,8 @@ const argsOf = (command: Command): readonly [number, number] => {
     case CommandKind.BuyUpgrade:
       return [command.branch, 0];
     case CommandKind.LaunchNuke:
+      return [command.cell, 0];
+    case CommandKind.Demolish:
       return [command.cell, 0];
   }
 };

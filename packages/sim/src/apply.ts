@@ -1,4 +1,4 @@
-import {
+﻿import {
   BASE_BUILD_EXCLUSION,
   BUILDABLE_KINDS,
   CommandKind,
@@ -115,6 +115,8 @@ const dispatch = (working: Working, player: WorkingPlayer, command: Command): Ou
       return buyUpgrade(working, player, command.branch);
     case CommandKind.LaunchNuke:
       return launchNuke(working, player, command.cell);
+    case CommandKind.Demolish:
+      return demolish(working, player, command.cell);
   }
 };
 
@@ -225,6 +227,7 @@ const build = (
     growthPpm: PPM_ONE,
     readyAtTick: asTickNumber(working.tick + baseline.buildTicks),
     builtAtTick: asTickNumber(working.tick + baseline.buildTicks),
+    demolishAtTick: asTickNumber(0),
     alive: true,
   });
 
@@ -308,6 +311,67 @@ const setTarget = (working: Working, player: WorkingPlayer, cell: number): Outco
 
   player.targetStructure = structure.id;
   invalidateNavigation(working);
+
+  return APPLIED;
+};
+
+/**
+ * Снос собственной постройки.
+ *
+ * Занимает столько же времени, сколько её возведение, и энергии
+ * не возвращает — ни в начале, ни в конце.
+ *
+ * Возврата нет не из скупости. Считать его пришлось бы от цены, ПО КОТОРОЙ
+ * постройка куплена: цена вида растёт с прокачкой, и возврат по текущей
+ * превратил бы снос старых стен в способ зарабатывать на собственной
+ * прокачке. Значит цену покупки надо было бы хранить у каждой постройки —
+ * а с нею лишнее число в контрольной сумме, в снимке при рассинхроне
+ * и в откате предсказания. Заодно исчезает вопрос «когда приходит
+ * возврат» и цикл «поставил — снёс — поставил»: полная цена за каждую
+ * постановку удерживает перекрытие прохода в статусе обязательства.
+ *
+ * Время сноса при этом нужно по другой причине, и её стоит помнить,
+ * если однажды зайдёт разговор «а давайте ускорим». Постройка уже
+ * оплачена, поэтому открывать и закрывать проход было бы БЕСПЛАТНО —
+ * стена стала бы воротами с мгновенным приводом. Время заставляет решать
+ * заранее, не видя, чем обернутся эти секунды.
+ *
+ * Начатый снос не отменяется: отмена вернула бы мгновенность через чёрный
+ * ход — начал сносить, увидел волну, передумал.
+ */
+const demolish = (working: Working, player: WorkingPlayer, cell: number): Outcome => {
+  if (!isValidCell(cell)) return RejectReason.InvalidCell;
+
+  const index = working.occupancy.structureAt[cell] ?? NO_STRUCTURE;
+  if (index === NO_STRUCTURE) return RejectReason.InvalidTarget;
+
+  const structure = working.structures[index];
+  if (structure === undefined || !structure.alive) return RejectReason.InvalidTarget;
+
+  // Сносить можно только своё: приказ снести чужую постройку — это
+  // не снос, а промах мимо клетки.
+  if (structure.owner !== player.id) return RejectReason.InvalidTarget;
+
+  // База — особый случай и особая причина. Игрок целился осмысленно,
+  // и «недопустимая цель» ему ничего не объяснит.
+  if (structure.kind === StructureKind.Base) return RejectReason.CannotDemolishBase;
+
+  const general = working.generals.find((entry) => entry.owner === player.id);
+  if (general === undefined || !general.alive) return RejectReason.GeneralDead;
+
+  const radius = playerStats(player).general.buildRadius;
+  if (distanceSquared(cellCentre(cell), { x: general.x, y: general.y }) > radius * radius) {
+    return RejectReason.OutsideBuildRadius;
+  }
+
+  // Повторная команда по уже сносимой постройке — успех, а не отказ:
+  // игрок хотел, чтобы её сносили, и её сносят. Срок при этом
+  // не продлевается, иначе снос можно было бы растянуть навсегда.
+  if (structure.demolishAtTick > 0) return APPLIED;
+
+  structure.demolishAtTick = asTickNumber(
+    working.tick + STRUCTURE_STATS[structure.kind].buildTicks,
+  );
 
   return APPLIED;
 };

@@ -70,6 +70,10 @@ describe('бинарный кодек', () => {
         },
       },
       { type: MessageType.Command, command: { kind: CommandKind.LaunchNuke, tick: asTickNumber(7), cell: 5 } },
+      {
+        type: MessageType.Command,
+        command: { kind: CommandKind.Demolish, tick: asTickNumber(7), cell: MAP_CELL_COUNT - 1 },
+      },
       { type: MessageType.HistoryFrom, tick: 900 },
       { type: MessageType.Welcome, side: 1, seed: 123456789, tick: 0, delayTicks: 3 },
       { type: MessageType.TickFrame, tick: 5, commands: [] },

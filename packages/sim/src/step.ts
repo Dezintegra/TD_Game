@@ -77,6 +77,7 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
   const stats = allPlayerStats(working.players);
 
   advanceConstruction(working, stats);
+  advanceDemolition(working, stats);
   respawnGenerals(working, stats);
   runProduction(working, stats);
   refreshNavigation(working);
@@ -173,6 +174,43 @@ const advanceConstruction = (working: Working, stats: readonly PlayerStats[]): v
       gainedByTick(total, elapsed, baseline.buildTicks);
 
     structure.health = Math.min(maxHealth, structure.health + gain);
+  }
+};
+
+/**
+ * Ход сноса.
+ *
+ * Обратное возведение: здоровье убывает по тому же расписанию, клетка
+ * остаётся непроходимой до последнего тика, в конце постройка исчезает.
+ *
+ * Сносимую постройку можно добить, и это не беда, а свойство: стена,
+ * которую разбирают, перестаёт быть надёжной защитой — ровно так
+ * и должно быть.
+ */
+const advanceDemolition = (working: Working, stats: readonly PlayerStats[]): void => {
+  for (const structure of working.structures) {
+    if (!structure.alive || structure.demolishAtTick <= 0) continue;
+
+    if (working.tick >= structure.demolishAtTick) {
+      structure.alive = false;
+      working.structuresDirty = true;
+      continue;
+    }
+
+    const baseline = statsOf(stats, structure.owner).structures[structure.kind];
+    if (baseline.buildTicks <= 0) continue;
+
+    const maxHealth = structureMaxHealth(baseline, structure.growthPpm);
+    const left = structure.demolishAtTick - working.tick;
+
+    // То же расписание, что и у возведения, только прочитанное с конца.
+    // Разность соседних значений даёт целую убыль в ноль или единицу,
+    // а за весь срок разбирается ровно столько, сколько было набрано.
+    const gain =
+      gainedByTick(maxHealth, left, baseline.buildTicks) -
+      gainedByTick(maxHealth, left - 1, baseline.buildTicks);
+
+    structure.health = Math.max(1, structure.health - gain);
   }
 };
 

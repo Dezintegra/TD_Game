@@ -89,6 +89,14 @@ const buy = (player: number, branch: number): Command =>
     branch,
   });
 
+const demolish = (player: number, cell: number): Command =>
+  command({
+    kind: CommandKind.Demolish,
+    player: asPlayerId(player),
+    tick: asTickNumber(0),
+    cell,
+  });
+
 const nuke = (player: number, cell: number): Command =>
   command({
     kind: CommandKind.LaunchNuke,
@@ -287,6 +295,16 @@ describe('строительство', () => {
     return current;
   };
 
+  /** Догнать мир до тика, на котором сносимая постройка исчезает. */
+  const runUntilGone = (world: WorldState, cell: number): WorldState => {
+    const goneAt = world.structures.find((s) => s.cell === cell)?.demolishAtTick ?? 0;
+
+    let current = world;
+    while (current.tick < goneAt) current = step(current, []);
+
+    return current;
+  };
+
   it('снайперская башня на середине возведения заметно слабее готовой', () => {
     // Тот самый случай, который ломало округление вверх: сто двадцать
     // единиц прочности раздавались за сто двадцать тиков из двухсот
@@ -372,6 +390,7 @@ describe('строительство', () => {
         growthPpm: PPM_ONE,
         readyAtTick: asTickNumber(0),
         builtAtTick: asTickNumber(0),
+        demolishAtTick: asTickNumber(0),
       });
       nextId += 1;
     }
@@ -437,6 +456,63 @@ describe('строительство', () => {
     ].range;
 
     expect(after).toBeGreaterThan(before);
+  });
+
+  it('снос идёт столько же, сколько возведение, и освобождает клетку в конце', () => {
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const built = runUntilBuilt(step(world, [build(0, cell, StructureKind.Wall)]), cell);
+
+    const started = step(built, [demolish(0, cell)]);
+    const target = started.structures.find((s) => s.cell === cell);
+    expect(target?.demolishAtTick).toBe(started.tick + STRUCTURE_STATS[StructureKind.Wall].buildTicks);
+
+    // На середине сноса клетка ещё непроходима: разбираемая стена
+    // продолжает перекрывать проход.
+    let current = started;
+    const half = Math.floor((started.tick + (target?.demolishAtTick ?? 0)) / 2);
+    while (current.tick < half) current = step(current, []);
+
+    expect(buildOccupancy(current.map, current.structures).blocked[cell]).toBe(1);
+    expect(current.structures.find((s) => s.cell === cell)?.health).toBeLessThan(
+      STRUCTURE_STATS[StructureKind.Wall].health,
+    );
+
+    while (current.tick < (target?.demolishAtTick ?? 0)) current = step(current, []);
+
+    expect(current.structures.some((s) => s.cell === cell)).toBe(false);
+    expect(buildOccupancy(current.map, current.structures).blocked[cell]).toBe(0);
+  });
+
+  it('снос не меняет энергию ни в начале, ни в конце', () => {
+    // Возврата нет намеренно: он потребовал бы хранить у каждой постройки
+    // цену покупки, а вместе с нею лишнее число в контрольной сумме.
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const built = runUntilBuilt(step(world, [build(0, cell, StructureKind.Wall)]), cell);
+
+    const before = playerOf(built, 0).energy;
+    const started = step(built, [demolish(0, cell)]);
+    const done = runUntilGone(started, cell);
+
+    const income = BASE_INCOME_PER_TICK * (done.tick - built.tick);
+    expect(playerOf(done, 0).energy).toBe(before + income);
+  });
+
+  it('начатый снос не отменяется повторной командой', () => {
+    // Отмена вернула бы мгновенность через чёрный ход: начал сносить,
+    // увидел волну, передумал.
+    const world = richWorld();
+    const cell = nearBaseCell(world, 0);
+    const built = runUntilBuilt(step(world, [build(0, cell, StructureKind.Wall)]), cell);
+
+    const started = step(built, [demolish(0, cell)]);
+    const at = started.structures.find((s) => s.cell === cell)?.demolishAtTick;
+
+    const again = step(started, [demolish(0, cell)]);
+
+    expect(again.rejections).toHaveLength(0);
+    expect(again.structures.find((s) => s.cell === cell)?.demolishAtTick).toBe(at);
   });
 
   it('разрушенная постройка исчезает и освобождает клетку', () => {
@@ -865,6 +941,7 @@ const wallAt = (cell: number, owner: number, id: number) => ({
   growthPpm: 1_000_000,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
+  demolishAtTick: asTickNumber(0),
 });
 
 describe('остановка юнита на противнике', () => {

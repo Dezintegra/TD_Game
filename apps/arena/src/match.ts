@@ -85,6 +85,8 @@ const argsOf = (command: Command): readonly [number, number] => {
       return [command.branch, 0];
     case CommandKind.LaunchNuke:
       return [command.cell, 0];
+    case CommandKind.Demolish:
+      return [command.cell, 0];
   }
 };
 

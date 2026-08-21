@@ -88,6 +88,12 @@ const buildAt = (cell: number, structure = StructureKind.TowerBasic, player = HU
   structure,
 });
 
+const demolishAt = (cell: number, player = HUMAN): Command => ({
+  kind: CommandKind.Demolish,
+  ...at(player),
+  cell,
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // Поиск клеток с нужными свойствами
 // ─────────────────────────────────────────────────────────────────────────
@@ -276,6 +282,52 @@ describe('отказ в постройке называет свою причи�
 
     expect(reason).toBe(RejectReason.TooCloseToBase);
     expect(reason).not.toBe(RejectReason.CellOccupiedByLiving);
+  });
+
+  it('снос: клетки с таким номером не существует', () => {
+    expect(reasonOf(rich(), demolishAt(-1))).toBe(RejectReason.InvalidCell);
+  });
+
+  it('снос: в клетке нет постройки', () => {
+    const world = rich();
+    expect(reasonOf(world, demolishAt(nearGeneral(world)))).toBe(RejectReason.InvalidTarget);
+  });
+
+  it('снос: чужую постройку сносить нельзя', () => {
+    const world = rich();
+    expect(reasonOf(world, demolishAt(baseCellOf(world, 1)))).toBe(RejectReason.InvalidTarget);
+  });
+
+  it('снос: базу снести нельзя — и причина отдельная', () => {
+    // Игрок целился осмысленно: это его постройка, она рядом, генерал жив.
+    // «Недопустимая цель» ему ничего бы не объяснила.
+    const world = rich();
+    const reason = reasonOf(world, demolishAt(baseCellOf(world, HUMAN)));
+
+    expect(reason).toBe(RejectReason.CannotDemolishBase);
+    expect(reason).not.toBe(RejectReason.InvalidTarget);
+  });
+
+  it('снос: генерал мёртв', () => {
+    const world = rich();
+    const cell = nearGeneral(world);
+    const built = step(world, [buildAt(cell, StructureKind.Wall)]);
+
+    expect(reasonOf(killGeneralOf(rich(built), HUMAN), demolishAt(cell))).toBe(
+      RejectReason.GeneralDead,
+    );
+  });
+
+  it('снос: постройка вне радиуса строительства', () => {
+    const world = rich();
+    const cell = nearGeneral(world);
+    const built = rich(step(world, [buildAt(cell, StructureKind.Wall)]));
+
+    // Генерал уводится далеко: сносить можно только то, до чего дотянулся,
+    // ровно как и строить.
+    const away = withGeneralAt(built, HUMAN, farFromGeneral(built));
+
+    expect(reasonOf(away, demolishAt(cell))).toBe(RejectReason.OutsideBuildRadius);
   });
 
   it('за пределами кольца укрепление собственной базы работает', () => {

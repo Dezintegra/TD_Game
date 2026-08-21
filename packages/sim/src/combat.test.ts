@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   DIRECTION_SOUTH,
   MAP_CELL_COUNT,
@@ -75,6 +75,7 @@ const structure = (
   growthPpm: PPM_ONE,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
+  demolishAtTick: asTickNumber(0),
 });
 
 /**

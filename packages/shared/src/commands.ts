@@ -30,6 +30,8 @@ export const CommandKind = {
   BuyUpgrade: 4,
   /** Нанести ядерный удар по клетке. */
   LaunchNuke: 5,
+  /** Снести собственную постройку в клетке. */
+  Demolish: 6,
 } as const;
 
 export type CommandKind = (typeof CommandKind)[keyof typeof CommandKind];
@@ -75,13 +77,27 @@ export interface LaunchNukeCommand extends CommandBase {
   readonly cell: number;
 }
 
+export interface DemolishCommand extends CommandBase {
+  readonly kind: typeof CommandKind.Demolish;
+  /**
+   * Клетка со своей постройкой.
+   *
+   * Клетка, а не идентификатор постройки, — по той же причине, по которой
+   * клеткой передаются все позиции: два байта вместо восьми, и она
+   * не может оказаться «между». Постройку в клетке находит сетка
+   * занятости, как это уже делает назначение цели.
+   */
+  readonly cell: number;
+}
+
 export type Command =
   | MoveGeneralCommand
   | BuildCommand
   | TrainUnitCommand
   | SetTargetCommand
   | BuyUpgradeCommand
-  | LaunchNukeCommand;
+  | LaunchNukeCommand
+  | DemolishCommand;
 
 /**
  * Команда в том виде, в каком участник отправляет её по сети: без стороны.
@@ -181,6 +197,14 @@ export const RejectReason = {
    * разные.
    */
   TooCloseToBase: 11,
+  /**
+   * Базу снести нельзя.
+   *
+   * Причина своя, а не «недопустимая цель»: игрок целился совершенно
+   * осмысленно — это его постройка, она рядом, генерал жив, — и отказ
+   * приходит по особому правилу. Сказать об этом надо особо.
+   */
+  CannotDemolishBase: 12,
 } as const;
 
 export type RejectReason = (typeof RejectReason)[keyof typeof RejectReason];
