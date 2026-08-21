@@ -6,7 +6,6 @@ import {
   SIDE_SELF,
   UNIT_ALTITUDE,
   generalReflection,
-  generalShadow,
   generalSilhouette,
   hoverBob,
   resetModelCache,
@@ -382,38 +381,138 @@ describe('отражение в поверхности', () => {
   });
 });
 
-describe('истребитель генерала', () => {
+describe('ударный вертолёт генерала', () => {
   it('идёт над землёй', () => {
     // Точка (0, 0) силуэта — это земля под машиной. Вся модель обязана
-    // лежать выше неё: генерала опознают именно по тому, что он
-    // единственный на поле не касается земли.
+    // лежать выше неё: генерала опознают именно по тому, что он оторван
+    // от земли дальше всех.
     expect(bounds(generalSilhouette(COLORS, SIDE_SELF, DIRECTION_SOUTH)).maxY).toBeLessThan(0);
   });
 
-  it('тень лежит на земле и накрывает клетку генерала', () => {
-    const shadow = bounds(generalShadow(COLORS, DIRECTION_SOUTH));
-
-    expect(shadow.minY).toBeLessThan(0);
-    expect(shadow.maxY).toBeGreaterThan(0);
-    expect(shadow.minX).toBeLessThan(0);
-    expect(shadow.maxX).toBeGreaterThan(0);
-  });
-
-  it('тень не несёт неоновой окантовки', () => {
-    // Обводка сделала бы из тени второй объект, а она — отсутствие света.
-    expect(generalShadow(COLORS, DIRECTION_SOUTH).outline).toHaveLength(0);
-  });
-
-  it('силуэт выше и шире любого юнита', () => {
-    const jet = bounds(generalSilhouette(COLORS, SIDE_SELF, DIRECTION_SOUTH));
+  it('силуэт шире любого юнита', () => {
+    const gunship = bounds(generalSilhouette(COLORS, SIDE_SELF, DIRECTION_SOUTH));
     const unit = bounds(assault());
 
-    expect(jet.width).toBeGreaterThan(unit.width);
+    expect(gunship.width).toBeGreaterThan(unit.width);
   });
 
   it('поворачивается на всех восьми румбах', () => {
     for (let facing = 1; facing <= 8; facing += 1) {
       expect(polygonCount(generalSilhouette(COLORS, SIDE_SELF, facing))).toBeGreaterThan(12);
+    }
+  });
+
+  it('несёт ровно два светящихся хувера', () => {
+    // Хуверы заменяют верхний винт, и говорит об этом их свечение.
+    // Чистый цвет стороны на модели носят только они: у всех прочих
+    // тел материал разбавлен тёмным корпусом, а верхняя грань неонового
+    // диска остаётся цветом стороны в точности — освещённость верхней
+    // грани равна единице, и `shade` её не трогает.
+    //
+    // Значит, число многоугольников чистого цвета стороны и есть число
+    // хуверов. Их должно быть два, и ни одного лишнего: третье такое
+    // пятно означало бы, что неон утёк на деталь, для которой он
+    // не предназначен.
+    const glowing = generalSilhouette(COLORS, SIDE_SELF, DIRECTION_SOUTH)
+      .fills.filter((run) => run.color === COLORS.self)
+      .reduce((count, run) => count + run.polygons.length, 0);
+
+    expect(glowing).toBe(2);
+  });
+
+  it('свечение хувера ярче всего остального на машине', () => {
+    // Если бы неон оказался не самым ярким, хувер читался бы глухим
+    // кольцом, и признак «вот чем она держится» пропал бы.
+    const green = (color: number): number => (color >> 8) & 0xff;
+    const fills = generalSilhouette(COLORS, SIDE_SELF, DIRECTION_SOUTH).fills;
+
+    expect(Math.max(...fills.map((run) => green(run.color)))).toBe(green(COLORS.self));
+  });
+
+  it('отражение не несёт окантовки и обходится без тени рядом', () => {
+    // Тень убрана: рядом с отражением она читалась вторым отражением,
+    // а не тенью. Здесь остаётся проверить, что заменять её отражение
+    // не бросилось — окантовки у него по-прежнему нет.
+    expect(generalReflection(COLORS, SIDE_SELF, DIRECTION_SOUTH).outline).toHaveLength(0);
+  });
+});
+
+describe('скошенная броня', () => {
+  /**
+   * Верхняя граница числа заливок в силуэте.
+   *
+   * Число не круглое и взято не с потолка: замер до пересборки давал
+   * 46 заливок в худшем случае (гранатомётчик на верхних ступенях обеих
+   * веток), после пересборки — 48. Прибавка вся приходится на грани,
+   * которые наклон вывел из тени: у отвесного тела они смотрели строго
+   * от зрителя и не строились.
+   *
+   * Граница держится тесной намеренно. Любая новая деталь — это плюс
+   * три-четыре заливки на каждой из двух сотен машин на экране, и склейка
+   * по цвету от этого не спасает: она в этой модели не срабатывает
+   * ни разу (см. «подряд идущих заливок одного цвета не остаётся»).
+   * Значит, цена кадра — честное число заливок, умноженное на число
+   * машин, и уводить его вверх молча нельзя.
+   */
+  const FILL_BUDGET = 50;
+
+  it('число заливок остаётся в бюджете на всех комбинациях', () => {
+    for (const unitType of UNIT_TYPES) {
+      for (let attack = 0; attack < 3; attack += 1) {
+        for (let fire = 0; fire < 3; fire += 1) {
+          for (let facing = 1; facing < 9; facing += 1) {
+            const silhouette = unitSilhouette(COLORS, SIDE_SELF, unitType, facing, attack, fire);
+
+            expect(silhouette.fills.length).toBeLessThanOrEqual(FILL_BUDGET);
+          }
+        }
+      }
+    }
+  });
+
+  it('оттенков больше, чем может дать отвесное тело', () => {
+    // У тела с отвесными боками грань принимает одну из трёх яркостей:
+    // «на восток», «на юг» и верхнюю. Материалов четыре, значит потолок
+    // плоского затенения — двенадцать оттенков на всю машину, и до
+    // пересборки их было десять. Всё, что сверх двенадцати, могло взяться
+    // только от наклонных граней.
+    for (const unitType of UNIT_TYPES) {
+      const silhouette = unitSilhouette(COLORS, SIDE_SELF, unitType, 2, 0, 0);
+      const shades = new Set(silhouette.fills.map((run) => run.color));
+
+      expect(shades.size).toBeGreaterThan(12);
+    }
+  });
+
+  it('скос доезжает до отражения, не ломая его', () => {
+    // Отражение строится обменом оснований местами, и обмен легко
+    // испортить: при ошибке тело сворачивается, а координаты уходят
+    // в NaN — молча, без единого исключения.
+    for (const unitType of UNIT_TYPES) {
+      const reflection = unitReflection(COLORS, SIDE_SELF, unitType, 2, 0, 0);
+
+      expect(reflection.fills.length).toBeGreaterThan(0);
+
+      for (const run of reflection.fills) {
+        for (const polygon of run.polygons) {
+          for (const point of polygon) {
+            expect(Number.isFinite(point.x)).toBe(true);
+            expect(Number.isFinite(point.y)).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it('у отражения граней не больше, чем у машины', () => {
+    // Отражение показывает машину снизу, и грани, завалённые кверху,
+    // в нём оказываются завалёнными книзу — то есть от зрителя.
+    // Часть из них отсекается, и это не потеря, а следствие наклона.
+    for (const unitType of UNIT_TYPES) {
+      const model = unitSilhouette(COLORS, SIDE_SELF, unitType, 2, 0, 0);
+      const reflection = unitReflection(COLORS, SIDE_SELF, unitType, 2, 0, 0);
+
+      expect(reflection.fills.length).toBeLessThanOrEqual(model.fills.length);
     }
   });
 });

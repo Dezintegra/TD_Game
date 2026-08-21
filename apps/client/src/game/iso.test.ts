@@ -6,6 +6,8 @@ import {
   screenToWorld,
   visibleCellCount,
   visibleMapPercent,
+  VIEW_DIRECTION,
+  VIEW_DIRECTION_3D,
   worldToScreen,
 } from './iso.js';
 
@@ -103,5 +105,30 @@ describe('габариты карты', () => {
 
   it('несимметричны по горизонтали из-за поворота', () => {
     expect(Math.abs(MAP_BOUNDS.minX)).not.toBeCloseTo(MAP_BOUNDS.maxX, 1);
+  });
+});
+
+describe('направление взгляда', () => {
+  it('объёмный вектор единичный', () => {
+    const { x, y, z } = VIEW_DIRECTION_3D;
+
+    expect(Math.sqrt(x * x + y * y + z * z)).toBeCloseTo(1, 12);
+  });
+
+  it('горизонтальная часть сонаправлена плоскому взгляду', () => {
+    // Отсюда следует, что для отвесных граней новый тест видимости
+    // совпадает со старым: векторы отличаются только длиной, а знак
+    // скалярного произведения от длины не зависит.
+    const cross = VIEW_DIRECTION.x * VIEW_DIRECTION_3D.y - VIEW_DIRECTION.y * VIEW_DIRECTION_3D.x;
+    const dot = VIEW_DIRECTION.x * VIEW_DIRECTION_3D.x + VIEW_DIRECTION.y * VIEW_DIRECTION_3D.y;
+
+    expect(cross).toBeCloseTo(0, 12);
+    expect(dot).toBeGreaterThan(0);
+  });
+
+  it('смотрит сверху вниз, а не снизу вверх', () => {
+    // Положительная третья составляющая означает «к зрителю»: камера
+    // над полем, и поднятая точка приближается к ней.
+    expect(VIEW_DIRECTION_3D.z).toBeGreaterThan(0);
   });
 });

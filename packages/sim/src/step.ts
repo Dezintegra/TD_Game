@@ -1,4 +1,5 @@
 import {
+  BlastKind,
   DIRECTION_SOUTH,
   DIRECTION_STOP,
   NAV_MIN_INTERVAL_TICKS,
@@ -24,7 +25,10 @@ import {
   findStructure,
   fromWorking,
   invalidateNavigation,
+  position,
+  recordBlast,
   refreshOccupancy,
+  structurePosition,
   toWorking,
 } from './working.js';
 import type { Working, WorkingPlayer } from './working.js';
@@ -186,6 +190,13 @@ const advanceConstruction = (working: Working, stats: readonly PlayerStats[]): v
  * Сносимую постройку можно добить, и это не беда, а свойство: стена,
  * которую разбирают, перестаёт быть надёжной защитой — ровно так
  * и должно быть.
+ *
+ * Взрыва в конце сноса не записывается, и это не забывчивость. Вспышка
+ * означает «по тебе попали», и на разобранной по собственному приказу
+ * стене она была бы ложной тревогой. К последнему тику от постройки
+ * и так остаётся единица прочности и осевшее до земли тело — взрываться
+ * там уже нечему. Добитая посреди сноса стена взрыв, разумеется, даёт:
+ * её убивает огонь, а огонь проходит через `dealDamage`.
  */
 const advanceDemolition = (working: Working, stats: readonly PlayerStats[]): void => {
   for (const structure of working.structures) {
@@ -398,11 +409,19 @@ const detonateNukes = (working: Working, stats: readonly PlayerStats[]): void =>
   for (const nuke of detonated) {
     const epicentre = cellCentre(nuke.cell);
 
+    recordBlast(working, BlastKind.Nuke, nuke.owner, epicentre);
+
+    // Каждый погибший получает и свой собственный взрыв, хотя в первые
+    // полсекунды его не разглядеть за вспышкой. Разглядеть и не нужно:
+    // вспышка гаснет быстрее, чем оседают обломки, и к концу зрелища
+    // на земле должно остаться ровно то, что там погибло. Взрыв
+    // без обломков читался бы как «здесь ничего и не стояло».
     for (const unit of working.units) {
       if (!unit.alive) continue;
       if (distanceSquared(epicentre, unit) > reach) continue;
 
       unit.alive = false;
+      recordBlast(working, BlastKind.Unit, unit.owner, position(unit));
     }
 
     for (const structure of working.structures) {
@@ -411,6 +430,7 @@ const detonateNukes = (working: Working, stats: readonly PlayerStats[]): void =>
 
       structure.alive = false;
       working.structuresDirty = true;
+      recordBlast(working, BlastKind.Structure, structure.owner, structurePosition(structure));
     }
 
     for (const general of working.generals) {

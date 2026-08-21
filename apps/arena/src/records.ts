@@ -108,55 +108,7 @@ export type LogRecord =
   | CommandRecord
   | DecisionLogRecord;
 
-// ─────────────────────────────────────────────────────────────────────────
-// Тонкая запись матча человека
-// ─────────────────────────────────────────────────────────────────────────
-
-/**
- * Записывается браузером и содержит только то, из чего матч
- * воспроизводится: seed, версию кода и команды человека с номерами тиков.
- *
- * Состояние мира сюда не входит: оно полностью выводится из
- * перечисленного, а его хранение сделало бы запись на порядки больше
- * без единого дополнительного сведения. Подробности — решения, оценки
- * рубежей, отказы — арена восстанавливает, прогоняя матч заново.
- *
- * Отсюда и название: пятьдесят килобайт против пяти мегабайт подробного
- * лога.
- */
-export interface ThinHeader {
-  readonly t: 'thin';
-  readonly matchId: string;
-  readonly worldSeed: number;
-  readonly aiSeeds: readonly number[];
-  readonly profiles: readonly string[];
-  readonly gitSha: string;
-  readonly gitDirty: boolean;
-  readonly startedAt: string;
-  /** За кого играл человек: его команды и записаны. */
-  readonly humanPlayer: number;
-}
-
-export interface ThinCommand {
-  readonly t: 'cmd';
-  readonly tick: number;
-  readonly player: number;
-  readonly kind: number;
-  readonly arg0: number;
-  readonly arg1: number;
-}
-
-/**
- * Контрольная сумма мира на тике.
- *
- * Тонкая запись бесполезна, если воспроизведение молча разойдётся
- * с оригиналом: разбирать будут выдуманный матч. Суммы снимаются
- * с постоянным шагом, и воспроизведение обязано их сверять.
- */
-export interface ThinChecksum {
-  readonly t: 'sum';
-  readonly tick: number;
-  readonly value: number;
-}
-
-export type ThinRecord = ThinHeader | ThinCommand | ThinChecksum;
+// Тонкая запись матча живёт не здесь, а в `@td/shared`: пишет её игровой
+// сервер, читает арена, и приложения друг друга не импортируют. См.
+// `packages/shared/src/matchlog.ts` — там же лежит и преобразование
+// команды в плоский вид, общее для записи и чтения.

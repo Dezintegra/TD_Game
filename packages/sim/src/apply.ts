@@ -1,7 +1,10 @@
 ﻿import {
   BASE_BUILD_EXCLUSION,
   BUILDABLE_KINDS,
+  BlastKind,
   CommandKind,
+  DIRECTION_SOUTH,
+  DIRECTION_STOP,
   INFLATES_PURCHASE,
   MAP_CELL_COUNT,
   NUKE_BASE_EXCLUSION,
@@ -22,6 +25,7 @@
   UpgradeTarget,
   asEntityId,
   asTickNumber,
+  directionTowards,
   distanceSquared,
   growPpm,
   isValidDirection,
@@ -33,7 +37,13 @@ import { cellAt, cellCentre } from './map.js';
 import { NO_STRUCTURE, footprintCells } from './occupancy.js';
 import { allPlayerStats, playerStats, structureMaxHealth, upgradeCostOf } from './stats.js';
 import type { PlayerStats } from './stats.js';
-import { invalidateNavigation, recordRejection, refreshOccupancy } from './working.js';
+import {
+  invalidateNavigation,
+  position,
+  recordBlast,
+  recordRejection,
+  refreshOccupancy,
+} from './working.js';
 import type { Working, WorkingGeneral, WorkingPlayer, WorkingUnit } from './working.js';
 
 /**
@@ -219,11 +229,24 @@ const build = (
 
   const maxHealth = baseline.health;
 
+  // Свежая постройка уже повёрнута — наружу от своей базы, то есть туда,
+  // откуда придут. Первый же выстрел развернёт её на цель, но до него
+  // может пройти полматча, и всё это время направление должно быть
+  // осмысленным. Запасной юг нужен на вырожденный случай, когда клетка
+  // постройки совпала с центром базы; в игре он невозможен — основание
+  // базы непроходимо, — но полагаться на это молча не стоит.
+  const baseCell = working.map.baseCells[player.id];
+  const outward =
+    baseCell === undefined
+      ? DIRECTION_STOP
+      : directionTowards(centre.x - cellCentre(baseCell).x, centre.y - cellCentre(baseCell).y);
+
   working.structures.push({
     id: asEntityId(working.nextEntityId),
     owner: player.id,
     kind,
     cell,
+    facing: outward === DIRECTION_STOP ? DIRECTION_SOUTH : outward,
     // Постройка появляется недостроенной и потому уязвимой: она уже
     // перекрывает проход, но развалить её пока легко.
     health: Math.max(1, Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100)),
@@ -251,6 +274,7 @@ const build = (
   for (const entity of livingInside(working, footprint)) {
     if ('unitType' in entity) {
       entity.alive = false;
+      recordBlast(working, BlastKind.Unit, entity.owner, position(entity));
       continue;
     }
 

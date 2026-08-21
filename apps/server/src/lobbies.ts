@@ -1,5 +1,7 @@
 import { LOBBY_CAPACITY, LobbyError } from '@td/protocol';
 import { checkName } from '@td/shared';
+import { computerMindOf } from '@td/bot';
+import type { MatchSide } from '@td/shared';
 import type {
   LobbySummary,
   LobbyView,
@@ -74,6 +76,15 @@ export interface MatchStart {
   readonly seed: number;
   /** Билет — сторона в симуляции. */
   readonly tickets: ReadonlyMap<string, number>;
+  /**
+   * Кем занята каждая сторона, по порядку сторон.
+   *
+   * Знает об этом только комната: сведения о том, кто из игроков
+   * компьютер, приходят от того, кто запускал службу компьютера,
+   * и ниоткуда больше их достоверно не взять. Записи матча состав сторон
+   * нужен целиком — без него воспроизведение не знает, за кого думать.
+   */
+  readonly sides: readonly MatchSide[];
 }
 
 interface LobbyRecord {
@@ -244,7 +255,22 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
     };
     lobby.match = match;
 
-    options.onMatchStart?.({ matchId: match.id, seed: match.seed, tickets: byTicket });
+    // Состав сторон собирается здесь, потому что здесь известно и кто
+    // за какой стороной, и кто из игроков компьютер. Seed решений
+    // и профиль спрашиваются у самого компьютера: второй источник этих
+    // сведений рано или поздно разошёлся бы с настоящим.
+    const composition: MatchSide[] = lobby.slots.map((slot, index) =>
+      (options.isComputer?.(slot.id) ?? false)
+        ? computerMindOf(match.seed, index)
+        : { who: 'human' },
+    );
+
+    options.onMatchStart?.({
+      matchId: match.id,
+      seed: match.seed,
+      tickets: byTicket,
+      sides: composition,
+    });
   };
 
   const lobbyView = (lobby: LobbyRecord, playerId: string): LobbyView => ({

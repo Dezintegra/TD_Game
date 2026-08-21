@@ -1,9 +1,9 @@
 ﻿import {
-  CommandKind,
   PLAYERS_PER_MATCH,
   StructureKind,
   TICKS_PER_SECOND,
   asPlayerId,
+  flatten,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { cellAt, checksum, createWorld, playerStats, step } from '@td/sim';
@@ -52,13 +52,28 @@ export interface MatchOptions {
   readonly log: LogWriter;
   readonly tickCap?: number;
   /**
-   * Команды человека по тикам. Пусто для матча компьютеров.
+   * Записанные команды по тикам. Пусто для матча компьютеров.
    *
-   * Ключ — номер тика, значение — команды, поданные на этом тике.
+   * Ключ — номер тика, значение — команды, исполнившиеся на этом тике.
    */
   readonly scripted?: ReadonlyMap<number, readonly Command[]>;
   /** Кто из игроков управляется компьютером. По умолчанию оба. */
   readonly computerPlayers?: readonly number[];
+  /**
+   * Кто из игроков думает рядом с миром, а не в мире.
+   *
+   * Это воспроизведение записанного матча. Такой противник получает
+   * то же состояние, что видел в матче, и пишет в лог свои решения —
+   * ради них воспроизведение и затевается. Но команды его в мир
+   * не идут: мир ведут записанные, и только они.
+   *
+   * Разница существенная, и вот почему. Подай в мир записанные команды
+   * обеих сторон — и контрольные суммы совпадут по построению, то есть
+   * перестанут доказывать хоть что-нибудь о противнике. Единственное,
+   * что теперь доказывает его неизменность, — совпадение восстановленных
+   * команд с записанными, и восстановить их можно, только дав ему думать.
+   */
+  readonly verifiedPlayers?: readonly number[];
 }
 
 export interface MatchResult {
@@ -68,31 +83,20 @@ export interface MatchResult {
   readonly wallMs: number;
   /** Контрольные суммы по тикам: для сверки при воспроизведении. */
   readonly checksums: ReadonlyMap<number, number>;
+  /**
+   * Что отдал бы каждый сверяемый противник, по порядку.
+   *
+   * Порядок, а не тики: команда исполняется не в тот тик, в который
+   * отдана, — между ними входная задержка, и меняется она по ходу матча
+   * вслед за качеством связи. Записан тик исполнения, восстановлен тик
+   * решения, и сравнивать их потиково значило бы тащить в запись всю
+   * историю изменений задержки ради сведения, которое ничего не добавляет.
+   * Отдал те же команды в том же порядке — не изменился.
+   */
+  readonly recovered: ReadonlyMap<number, readonly Command[]>;
 }
 
-/** Аргументы команды в плоском виде. Смысл зависит от вида команды. */
-const argsOf = (command: Command): readonly [number, number] => {
-  switch (command.kind) {
-    case CommandKind.MoveGeneral:
-      return [command.direction, 0];
-    case CommandKind.Build:
-      return [command.cell, command.structure];
-    case CommandKind.TrainUnit:
-      return [command.unitType, 0];
-    case CommandKind.SetTarget:
-      return [command.cell, 0];
-    case CommandKind.BuyUpgrade:
-      return [command.branch, 0];
-    case CommandKind.LaunchNuke:
-      return [command.cell, 0];
-    case CommandKind.Demolish:
-      return [command.cell, 0];
-    case CommandKind.SetStance:
-      return [command.stance, 0];
-  }
-};
-
-const sampleOf = (world: WorldState, player: PlayerId): SampleRecord => {
+const sampleOf =(world: WorldState, player: PlayerId): SampleRecord => {
   const state = world.players[player];
   const general = world.generals[player];
   const stats = state === undefined ? undefined : playerStats(state);
@@ -150,6 +154,7 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     tickCap = MATCH_TICK_CAP,
     scripted,
     computerPlayers = Array.from({ length: PLAYERS_PER_MATCH }, (_unused, index) => index),
+    verifiedPlayers = [],
   } = options;
 
   const version = codeVersion();
@@ -170,18 +175,26 @@ export const runMatch = (options: MatchOptions): MatchResult => {
 
   // Наблюдатели пишут в лог напрямую. Порядок записей внутри тика
   // при этом сохраняется: решение — команды — снимок.
-  const opponents = new Map<number, Opponent>();
-  for (const player of computerPlayers) {
+  const makeOpponent = (player: number): Opponent => {
     const seed = aiSeeds[player] ?? worldSeed;
     const profileId = profiles[player];
     const profile = profileId === undefined ? undefined : profileByName(profileId);
 
-    opponents.set(
-      player,
-      createOpponent(asPlayerId(player), seed, profile, (record: DecisionRecord) => {
-        log.write({ ...record, t: 'decision' });
-      }),
-    );
+    return createOpponent(asPlayerId(player), seed, profile, (record: DecisionRecord) => {
+      log.write({ ...record, t: 'decision' });
+    });
+  };
+
+  /** Противники, чьи команды идут в мир. */
+  const playing = new Map<number, Opponent>();
+  for (const player of computerPlayers) playing.set(player, makeOpponent(player));
+
+  /** Противники, которые думают рядом с миром: их команды идут на сверку. */
+  const shadowing = new Map<number, Opponent>();
+  const recovered = new Map<number, Command[]>();
+  for (const player of verifiedPlayers) {
+    shadowing.set(player, makeOpponent(player));
+    recovered.set(player, []);
   }
 
   let world = createWorld(worldSeed);
@@ -191,7 +204,8 @@ export const runMatch = (options: MatchOptions): MatchResult => {
   let tick = 0;
   for (; tick < tickCap && world.winner === null; tick += 1) {
     const issued: Command[] = [];
-    for (const [, opponent] of opponents) issued.push(...opponent.decide(world));
+    for (const [, opponent] of playing) issued.push(...opponent.decide(world));
+
     for (const command of scripted?.get(world.tick) ?? []) issued.push(command);
 
     const next = step(world, issued);
@@ -201,7 +215,7 @@ export const runMatch = (options: MatchOptions): MatchResult => {
 
       issued.forEach((command, index) => {
         const reason = refused.get(index);
-        const [arg0, arg1] = argsOf(command);
+        const [arg0, arg1] = flatten(command);
         const record: CommandRecord = {
           t: 'command',
           tick: next.tick,
@@ -217,6 +231,25 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     }
 
     world = next;
+
+    // Сверяемые думают ПОСЛЕ шага, и это не мелочь.
+    //
+    // В матче на сервере противник — обычный участник: он получает кадр,
+    // применяет его к своей копии мира и только потом решает. То есть
+    // видит мир СЛЕДУЮЩЕГО тика, а не того, чей кадр пришёл
+    // (`guest.confirmed` в `@td/netplay` к моменту вызова уже шагнул).
+    //
+    // Прогон арены устроен иначе — там противник решает до шага и попадает
+    // в тот же тик, — и это правильно для лаборатории, но воспроизводить
+    // так записанный матч нельзя: противник увидел бы мир на тик раньше,
+    // чем видел на самом деле, и разошёлся бы с записью на первом же
+    // решении, где тик что-то значит.
+    //
+    // Проверено на живой записи: до этой правки расхождение наступало
+    // на 32-й команде.
+    for (const [player, opponent] of shadowing) {
+      recovered.get(player)?.push(...opponent.decide(world));
+    }
 
     if (world.tick % SAMPLE_EVERY === 0) {
       for (let player = 0; player < PLAYERS_PER_MATCH; player += 1) {
@@ -243,5 +276,6 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     endReason: footer.endReason,
     wallMs: footer.wallMs,
     checksums,
+    recovered,
   };
 };

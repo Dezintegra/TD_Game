@@ -7,10 +7,14 @@ import {
   BASE_TOWER_RANGE_CELLS,
   BASE_UNIT_COST,
   BASE_INCOME_PER_TICK,
+  BLAST_LIFETIME_TICKS,
   BUILDABLE_KINDS,
+  BlastKind,
   ENERGY_SCALE,
   GENERAL_STATS,
+  GENERAL_WEAPON,
   NUKE_COST,
+  NUKE_DELAY_TICKS,
   NUKE_RADIUS,
   SHOT_LIFETIME_TICKS,
   STRUCTURE_STATS,
@@ -212,6 +216,55 @@ describe('оружие и след выстрела', () => {
     // Трассеров в бою десятки в секунду, снайперский выстрел редок
     // и весом: вдвое больший срок и делает из него событие.
     expect(SHOT_LIFETIME_TICKS[ShotWeapon.Beam]).toBe(SHOT_LIFETIME_TICKS[ShotWeapon.Bolt] * 2);
+  });
+
+  it('след ракеты живёт дольше следа трассера', () => {
+    // За срок трассера ракета не успевает ни долететь, ни оставить дым:
+    // показ кончается вместе с записью в мире, и всё, что должно быть
+    // видно, обязано уложиться внутрь срока.
+    expect(SHOT_LIFETIME_TICKS[ShotWeapon.Missile]).toBeGreaterThan(
+      SHOT_LIFETIME_TICKS[ShotWeapon.Bolt],
+    );
+  });
+
+  it('ракетой стреляет один генерал', () => {
+    // Отрисовка узнаёт по виду оружия, с какой высоты вышел выстрел.
+    // Отдай ракету кому-то ещё — и она поедет по воздуху на чужой высоте.
+    expect(GENERAL_WEAPON).toBe(ShotWeapon.Missile);
+
+    for (const weapon of Object.values(UNIT_WEAPON)) {
+      expect(weapon).not.toBe(ShotWeapon.Missile);
+    }
+    for (const weapon of Object.values(STRUCTURE_WEAPON)) {
+      expect(weapon).not.toBe(ShotWeapon.Missile);
+    }
+  });
+});
+
+describe('взрывы', () => {
+  it('у каждого вида взрыва задан срок жизни', () => {
+    // Обход по перечислению, а не по списку руками: иначе первый же
+    // новый вид взрыва молча получил бы undefined и не показался вовсе.
+    for (const kind of Object.values(BlastKind)) {
+      expect(BLAST_LIFETIME_TICKS[kind]).toBeGreaterThan(0);
+    }
+  });
+
+  it('гибель юнита показывается короче всех', () => {
+    // Машин на поле сотни, и гибнут они пачками. Длинный взрыв у каждой
+    // превратил бы бой в сплошное зарево, из которого не вычитается
+    // ни одно событие.
+    const others = [BlastKind.General, BlastKind.Structure, BlastKind.Nuke];
+
+    for (const kind of others) {
+      expect(BLAST_LIFETIME_TICKS[BlastKind.Unit]).toBeLessThan(BLAST_LIFETIME_TICKS[kind]);
+    }
+  });
+
+  it('ядерный взрыв висит над полем дольше ожидания удара', () => {
+    // Удар стоит пятидесяти юнитов, и его последствие обязано пережить
+    // то самое ожидание, ради которого задержка и заведена.
+    expect(BLAST_LIFETIME_TICKS[BlastKind.Nuke]).toBeGreaterThan(NUKE_DELAY_TICKS);
   });
 });
 

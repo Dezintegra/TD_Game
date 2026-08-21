@@ -78,6 +78,7 @@ const structure = (
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
+  facing: DIRECTION_SOUTH,
 });
 
 /**
@@ -227,12 +228,18 @@ describe('след выстрела', () => {
     );
   });
 
-  it('штурмовик, базовая башня и генерал помечают выстрел трассером', () => {
+  it('штурмовик и базовая башня помечают выстрел трассером', () => {
     expect(weaponOf(duel([], [unit(60, 0, UnitType.Assault, 0, 0, 100)]), 0)).toBe(ShotWeapon.Bolt);
     expect(weaponOf(duel([structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)], []), 0)).toBe(
       ShotWeapon.Bolt,
     );
-    expect(weaponOf(duel([], [], at(0, 0)), 0)).toBe(ShotWeapon.Bolt);
+  });
+
+  it('генерал помечает выстрел ракетой', () => {
+    // Ракета принадлежит одному генералу, и это условие, которым
+    // пользуется отрисовка: по виду оружия она узнаёт, что выстрел
+    // вышел с высоты машины генерала, а не с плеча пехоты.
+    expect(weaponOf(duel([], [], at(0, 0)), 0)).toBe(ShotWeapon.Missile);
   });
 
   it('след луча живёт вдвое дольше следа трассера', () => {

@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  DIRECTION_SOUTH,
   FIXED_POINT_SCALE,
   GENERAL_STATS,
   MAP_CELL_COUNT,
@@ -93,6 +94,7 @@ const structure = (
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
+  facing: DIRECTION_SOUTH,
 });
 
 interface Scene {

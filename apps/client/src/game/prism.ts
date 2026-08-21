@@ -1,5 +1,5 @@
 import type { Graphics } from 'pixi.js';
-import { ELEVATION_PX_PER_CELL, VIEW_DIRECTION, worldToScreen } from './iso.js';
+import { ELEVATION_PX_PER_CELL, VIEW_DIRECTION_3D, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 
 /**
@@ -104,9 +104,43 @@ const AMBIENT_LIGHT = 0.34;
 const LIGHT_X = 0.72 - AMBIENT_LIGHT;
 const LIGHT_Y = 0.48 - AMBIENT_LIGHT;
 
-/** Яркость боковой грани по её внешней нормали. Нормаль должна быть единичной. */
-export const faceLight = (normalX: number, normalY: number): number =>
-  AMBIENT_LIGHT + Math.max(0, normalX * LIGHT_X + normalY * LIGHT_Y);
+/**
+ * Вертикальная составляющая света.
+ *
+ * Выведена, а не подобрана. Верхняя грань горизонтальна, её нормаль
+ * равна `(0, 0, 1)`, и освещённость этой грани уже задана единицей
+ * в `FACE_LIGHT.top`. Значит, `AMBIENT + LIGHT_Z = 1` — других
+ * значений у этого числа быть не может.
+ *
+ * Из этого же следует и совместимость: у отвесной грани третья
+ * составляющая нормали равна нулю, слагаемое исчезает целиком,
+ * и выражение сводится к прежнему — до последнего знака, а не
+ * приблизительно. Скос не сдвигает ни одного существующего оттенка,
+ * и соседняя постройка остаётся освещённой тем же источником,
+ * что и стоящая рядом машина.
+ */
+const LIGHT_Z = 1 - AMBIENT_LIGHT;
+
+/**
+ * Яркость грани по её внешней нормали. Нормаль должна быть единичной.
+ *
+ * Третья составляющая необязательна: у отвесной грани она нулевая,
+ * и вызов с двумя аргументами остаётся точным, а не упрощённым.
+ *
+ * Результат ограничен единицей сверху, и это не перестраховка.
+ * Длина светового вектора равна 0,774, поэтому грань, повёрнутая точно
+ * к источнику, набрала бы 1,11 — больше верхней грани. Мешают этому
+ * две вещи. Замысел (7.2) говорит прямо: верхние грани самые светлые,
+ * — и грань ярче верхней читалась бы бликом там, где блику взяться
+ * неоткуда: источник у нас условный и один на весь мир. А `shade`
+ * при множителе больше единицы вывел бы канал за 255, и цвет
+ * переполнился бы в соседний разряд, дав вместо света грязь.
+ */
+export const faceLight = (normalX: number, normalY: number, normalZ = 0): number =>
+  Math.min(
+    1,
+    AMBIENT_LIGHT + Math.max(0, normalX * LIGHT_X + normalY * LIGHT_Y + normalZ * LIGHT_Z),
+  );
 
 /**
  * Яркость трёх граней выровненной призмы.
@@ -158,16 +192,39 @@ export interface SolidFaces {
  * считается это один раз при построении кеша силуэтов, а не на кадре.
  *
  * Что оба кода дают на прямоугольнике одно и то же — закреплено тестом.
+ *
+ * Верхнее основание может отличаться от нижнего — тогда бока тела
+ * получаются наклонными. Этим задаются коническая башня, развал бортов
+ * и заваленный лобовой лист: формы, без которых машина читается стопкой
+ * кубиков, потому что у отвесной грани яркость принимает всего два
+ * значения — «на восток» и «на юг», а между ними ничего нет.
+ *
+ * Лежать верхнее основание обязано на одной высоте целиком. Разреши мы
+ * углам разную высоту — верхняя грань перестала бы быть горизонтальной,
+ * её яркость пришлось бы считать вместо готовой `FACE_LIGHT.top`,
+ * а тело перестало бы быть выпуклым по вертикали, и порядок его граней
+ * перестал бы выводиться из порядка рёбер. Покатая крыша выражается
+ * и без этого — двумя телами друг на друге.
+ *
+ * Аргумент необязательный и стои́т последним намеренно: вызов с тремя
+ * аргументами обязан остаться рабочим и давать в точности прежний
+ * результат, потому что так его зовёт код построек.
  */
 export const solidFaces = (
   footprint: readonly FootprintPoint[],
   height: number,
   base = 0,
+  topFootprint?: readonly FootprintPoint[],
 ): SolidFaces => {
   const top = base + height;
+  // Верхнее основание по умолчанию совпадает с нижним — это и есть призма.
+  // Совпадение здесь буквальное, по ссылке: ниже на нём экономится проекция.
+  const upper = topFootprint ?? footprint;
   const projected = footprint.map((point) => worldToScreen(point.x, point.y));
+  const projectedTop =
+    upper === footprint ? projected : upper.map((point) => worldToScreen(point.x, point.y));
   const topFace: SolidFace = {
-    points: projected.map((point) => lift(point, top)),
+    points: projectedTop.map((point) => lift(point, top)),
     light: FACE_LIGHT.top,
   };
 
@@ -193,36 +250,64 @@ export const solidFaces = (
 
     const edgeX = to.x - from.x;
     const edgeY = to.y - from.y;
-    const length = Math.sqrt(edgeX * edgeX + edgeY * edgeY);
+
+    // Подъём к соответствующему углу верхнего основания. У призмы он
+    // вертикален, и обе горизонтальные составляющие нулевые.
+    const upperFrom = upper[index];
+    const riseX = upperFrom === undefined ? 0 : upperFrom.x - from.x;
+    const riseY = upperFrom === undefined ? 0 : upperFrom.y - from.y;
+
+    // Нормаль — векторное произведение ребра на подъём. Общий множитель
+    // «высота» из него вынесен, поэтому у отвесной грани остаётся ровно
+    // прежний поворот ребра на прямой угол, а третья составляющая
+    // оказывается нулевой — и результат совпадает со старым до бита.
+    let normalX = edgeY;
+    let normalY = -edgeX;
+    let normalZ = (edgeX * riseY - edgeY * riseX) / height;
+    const norm = Math.sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
     // Вырожденное ребро граней не даёт. Так бывает у треугольного носа,
     // заданного четырьмя точками с двумя совпавшими.
-    if (length === 0) continue;
+    if (norm === 0) continue;
+    normalX /= norm;
+    normalY /= norm;
+    normalZ /= norm;
 
-    // Нормаль к ребру — поворот его на прямой угол. Какой из двух поворотов
-    // внешний, решает знак произведения на вектор «от центра к ребру».
-    let normalX = edgeY / length;
-    let normalY = -edgeX / length;
+    // Какой из двух поворотов внешний, решает знак произведения на вектор
+    // «от центра к ребру». Судим по горизонтальной части: наклон кверху
+    // или книзу на этот выбор не влияет.
     const outward =
       normalX * ((from.x + to.x) / 2 - centreX) + normalY * ((from.y + to.y) / 2 - centreY);
     if (outward < 0) {
       normalX = -normalX;
       normalY = -normalY;
+      normalZ = -normalZ;
     }
 
-    // Обращённые от зрителя грани не строим вовсе — их не видно.
-    if (normalX * VIEW_DIRECTION.x + normalY * VIEW_DIRECTION.y <= 0) continue;
+    // Обращённые от зрителя грани не строим вовсе — их не видно. Взгляд
+    // берётся объёмный: заваленная кверху грань видна и тогда, когда её
+    // горизонтальная нормаль смотрит от зрителя.
+    if (
+      normalX * VIEW_DIRECTION_3D.x +
+        normalY * VIEW_DIRECTION_3D.y +
+        normalZ * VIEW_DIRECTION_3D.z <=
+      0
+    ) {
+      continue;
+    }
 
     const screenFrom = projected[index] as Point;
     const screenTo = projected[(index + 1) % footprint.length] as Point;
+    const upperScreenFrom = projectedTop[index] as Point;
+    const upperScreenTo = projectedTop[(index + 1) % footprint.length] as Point;
 
     sides.push({
       points: [
-        lift(screenFrom, top),
-        lift(screenTo, top),
+        lift(upperScreenFrom, top),
+        lift(upperScreenTo, top),
         lift(screenTo, base),
         lift(screenFrom, base),
       ],
-      light: faceLight(normalX, normalY),
+      light: faceLight(normalX, normalY, normalZ),
     });
   }
 

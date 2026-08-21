@@ -3,7 +3,6 @@ import type { Graphics } from 'pixi.js';
 import {
   DIRECTION_SOUTH,
   PPM_ONE,
-  ShotWeapon,
   StructureKind,
   UnitType,
   asEntityId,
@@ -19,7 +18,7 @@ import {
   playerStats,
   structureMaxHealth,
 } from '@td/sim';
-import type { ShotState, WorldState } from '@td/sim';
+import type { WorldState } from '@td/sim';
 import { drawEntities } from './entities.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { baseCrestPoint } from './base-structure.js';
@@ -114,8 +113,6 @@ const COLORS: EntityColors = {
   ground: 0x191919,
   health: 0x00ff29,
   healthLow: 0xff5c5c,
-  shot: 0xeaffef,
-  shotLethal: 0xff5c5c,
 };
 
 /**
@@ -144,6 +141,7 @@ const wallAt = (cell: number) => ({
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
+  facing: DIRECTION_SOUTH,
 });
 
 /** Номер подопытного юнита. Из него же выводится фаза его покачивания. */
@@ -168,15 +166,10 @@ interface DrawResult {
   readonly overheadRects: number;
   /** Точки тел — в порядке обхода. */
   readonly bodyPoints: Point[];
-  /** Точки следов выстрелов. Слой у них свой, поэтому и точки отдельно. */
-  readonly shotPoints: Point[];
-  /** Толщины обводок следов выстрелов. */
-  readonly shotWidths: number[];
 }
 
 const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult => {
   const depth = recorder();
-  const shots = recorder();
   const overhead = recorder();
   const bands: number[] = [];
 
@@ -185,7 +178,6 @@ const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult =
       bands.push(index);
       return depth.graphics;
     },
-    shots: shots.graphics,
     overhead: overhead.graphics,
   };
 
@@ -196,8 +188,6 @@ const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult =
     bandRects: depth.counts['rect'] ?? 0,
     overheadRects: overhead.counts['rect'] ?? 0,
     bodyPoints: depth.points,
-    shotPoints: shots.points,
-    shotWidths: shots.widths,
   };
 };
 
@@ -317,89 +307,6 @@ describe('парение и отражение', () => {
 
   it('в разные тики машина стоит на разной высоте', () => {
     expect(drawUnit(18)).not.toEqual(drawUnit(0));
-  });
-});
-
-describe('облик выстрела', () => {
-  const FROM = cellIndex(10, 10);
-  const TO = cellIndex(14, 10);
-
-  const START = worldToScreen(cellX(FROM) + 0.5, cellY(FROM) + 0.5);
-  const FINISH = worldToScreen(cellX(TO) + 0.5, cellY(TO) + 0.5);
-
-  const shotOf = (weapon: ShotWeapon): ShotState => ({
-    owner: asPlayerId(0),
-    from: cellCentre(FROM),
-    to: cellCentre(TO),
-    expiresAtTick: asTickNumber(4),
-    lethal: false,
-    weapon,
-  });
-
-  const draw = (weapon: ShotWeapon, tick = 0): DrawResult =>
-    drawInto({ ...bare(), tick: asTickNumber(tick), shots: [shotOf(weapon)] });
-
-  it('трассер держится над землёй и не отражается', () => {
-    // Сравнивать надо каждый конец со своей точкой земли: экранная `y`
-    // растёт и от высоты, и от положения на плоскости, поэтому дальний
-    // конец трассера лежит ниже ближнего, оставаясь над землёй.
-    const points = draw(ShotWeapon.Bolt).shotPoints;
-    const [start, finish] = points;
-
-    expect(points).toHaveLength(2);
-    expect(start?.y).toBeLessThan(START.y);
-    expect(finish?.y).toBeLessThan(FINISH.y);
-  });
-
-  it('луч толще трассера', () => {
-    const bolt = Math.max(...draw(ShotWeapon.Bolt).shotWidths);
-    const beam = Math.max(...draw(ShotWeapon.Beam).shotWidths);
-
-    // Не на волосок: разницу должно быть видно, не приглядываясь.
-    expect(beam).toBeGreaterThan(bolt * 2);
-  });
-
-  it('луч отражается в поверхности', () => {
-    // У стрелка луч трижды проходит через одну и ту же вертикаль: ореол,
-    // ядро и отражение. Отражение — то из трёх, что ушло под землю.
-    const atShooter = draw(ShotWeapon.Beam).shotPoints.filter((point) => point.x === START.x);
-
-    expect(atShooter.length).toBeGreaterThan(1);
-    expect(atShooter.some((point) => point.y > START.y)).toBe(true);
-  });
-
-  it('разряд выходит из ствола и приходит в цель', () => {
-    // Излом — это облик, а не промах: концы обязаны стоять там же,
-    // где стояли бы концы трассера.
-    const points = draw(ShotWeapon.Arc).shotPoints;
-    const first = points[0];
-    const arrival = points.find((point) => point.x === FINISH.x);
-
-    if (first === undefined || arrival === undefined) throw new Error('разряд не дошёл до цели');
-
-    expect(first.x).toBe(START.x);
-    expect(arrival.y - first.y).toBeCloseTo(FINISH.y - START.y, 6);
-  });
-
-  it('разряд изломан, а не прям', () => {
-    const points = draw(ShotWeapon.Arc).shotPoints;
-    const first = points[0];
-    if (first === undefined) throw new Error('разряд не нарисован');
-
-    const alongX = FINISH.x - START.x;
-    const alongY = FINISH.y - START.y;
-    const offLine = points.some(
-      (point) => Math.abs((point.x - first.x) * alongY - (point.y - first.y) * alongX) > 1,
-    );
-
-    expect(offLine).toBe(true);
-  });
-
-  it('разряд держит форму весь тик и вспыхивает заново на следующем', () => {
-    const now = draw(ShotWeapon.Arc).shotPoints;
-
-    expect(draw(ShotWeapon.Arc).shotPoints).toEqual(now);
-    expect(draw(ShotWeapon.Arc, 1).shotPoints).not.toEqual(now);
   });
 });
 

@@ -1,6 +1,7 @@
-﻿import { SHOT_LIFETIME_TICKS, asTickNumber } from '@td/shared';
+﻿import { BLAST_LIFETIME_TICKS, SHOT_LIFETIME_TICKS, asTickNumber } from '@td/shared';
 import type { AttackStance } from '@td/shared';
 import type {
+  BlastKind,
   CommandKind,
   EntityId,
   PlayerId,
@@ -19,6 +20,7 @@ import { buildSightGrid } from './sight.js';
 import type { SightGrid } from './sight.js';
 import type { RngState } from './prng.js';
 import type {
+  BlastState,
   NavField,
   PlayerState,
   Rejection,
@@ -65,6 +67,8 @@ export interface WorkingStructure {
   readyAtTick: TickNumber;
   builtAtTick: TickNumber;
   demolishAtTick: TickNumber;
+  /** Румб турели. Ноля здесь не бывает — см. StructureState. */
+  facing: number;
   alive: boolean;
 }
 
@@ -117,6 +121,8 @@ export interface Working {
   generals: WorkingGeneral[];
   nukes: WorkingNuke[];
   shots: ShotState[];
+  /** Взрывы. Переезжают из прошлого состояния и доживают свой срок. */
+  blasts: BlastState[];
   /**
    * Отказы этого тика. Начинается пустым всегда — в отличие от следов
    * выстрелов, которые переезжают из прошлого состояния и доживают
@@ -166,6 +172,7 @@ export const toWorking = (state: WorldState): Working => ({
     readyAtTick: structure.readyAtTick,
     builtAtTick: structure.builtAtTick,
     demolishAtTick: structure.demolishAtTick,
+    facing: structure.facing,
     alive: true,
   })),
   units: state.units.map((unit) => ({
@@ -193,6 +200,7 @@ export const toWorking = (state: WorldState): Working => ({
   })),
   nukes: state.nukes.map((nuke) => ({ ...nuke })),
   shots: [...state.shots],
+  blasts: [...state.blasts],
   rejections: [],
   nav: [...state.nav],
   navRevision: state.navRevision,
@@ -274,6 +282,32 @@ export const recordShot = (
   });
 };
 
+/**
+ * Записать взрыв на месте погибшего.
+ *
+ * Отдельная функция, а не `push` по месту, — по той же причине, что
+ * и у отказа: точки, где мир сообщает наружу о случившемся, должны
+ * находиться поиском. Иначе первая же новая причина гибели молча
+ * останется без взрыва, и объект снова начнёт исчезать в никуда.
+ *
+ * Срок жизни не передаётся, а выводится из вида взрыва — как и у следа
+ * выстрела, и по той же причине: два источника одной величины разъезжаются
+ * при первой правке таблицы.
+ */
+export const recordBlast = (
+  working: Working,
+  kind: BlastKind,
+  owner: PlayerId,
+  at: Vec2,
+): void => {
+  working.blasts.push({
+    at,
+    kind,
+    owner,
+    expiresAtTick: asTickNumber(working.tick + BLAST_LIFETIME_TICKS[kind]),
+  });
+};
+
 const toPlayerState = (player: WorkingPlayer): PlayerState => ({
   id: player.id,
   energy: player.energy,
@@ -308,6 +342,7 @@ export const fromWorking = (working: Working): WorldState => ({
       readyAtTick: structure.readyAtTick,
       builtAtTick: structure.builtAtTick,
       demolishAtTick: structure.demolishAtTick,
+      facing: structure.facing,
     })),
   units: working.units
     .filter((unit) => unit.alive)
@@ -332,6 +367,7 @@ export const fromWorking = (working: Working): WorldState => ({
   })),
   nukes: working.nukes.map((nuke) => ({ ...nuke })),
   shots: working.shots.filter((shot) => shot.expiresAtTick > working.tick),
+  blasts: working.blasts.filter((blast) => blast.expiresAtTick > working.tick),
   rejections: working.rejections,
   nav: working.nav,
   navRevision: working.navRevision,

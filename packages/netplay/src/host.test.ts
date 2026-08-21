@@ -11,10 +11,11 @@ import {
 } from '@td/shared';
 import { checksum, createWorld } from '@td/sim';
 import { MessageType, OutcomeReason } from '@td/protocol';
-import type { PlayerId, UnownedCommand } from '@td/shared';
+import type { Command, PlayerId, UnownedCommand } from '@td/shared';
 import type { ServerMessage } from '@td/protocol';
 import { describe, expect, it } from 'vitest';
 import { createMatchHost } from './host.js';
+import type { MatchObserver } from './host.js';
 import { byTick, replayThrough } from './replay.js';
 import { createClock } from './harness.test-utils.js';
 
@@ -35,7 +36,7 @@ interface Bench {
   runMs(ms: number): void;
 }
 
-const bench = (join = true): Bench => {
+const bench = (join = true, observe?: MatchObserver): Bench => {
   const clock = createClock();
   const sent: { player: PlayerId; message: ServerMessage }[] = [];
 
@@ -43,6 +44,7 @@ const bench = (join = true): Bench => {
     seed: SEED,
     now: () => clock.now(),
     send: (player, message) => sent.push({ player, message }),
+    observe,
   });
 
   if (join) {
@@ -360,5 +362,89 @@ describe('ведущая сторона матча', () => {
     table.host.advance();
 
     expect(table.host.world.tick - before).toBeLessThanOrEqual(60);
+  });
+});
+
+describe('наблюдатель матча', () => {
+  interface Seen {
+    readonly observer: MatchObserver;
+    readonly frames: { tick: number; commands: number }[];
+    readonly sums: { tick: number; value: number }[];
+    readonly commands: Command[];
+  }
+
+  const watcher = (): Seen => {
+    const frames: { tick: number; commands: number }[] = [];
+    const sums: { tick: number; value: number }[] = [];
+    const commands: Command[] = [];
+
+    return {
+      frames,
+      sums,
+      commands,
+      observer: {
+        frame(tick, issued) {
+          frames.push({ tick, commands: issued.length });
+          commands.push(...issued);
+        },
+        checksum(tick, value) {
+          sums.push({ tick, value });
+        },
+      },
+    };
+  };
+
+  /** Один и тот же матч, отличающийся только наличием наблюдателя. */
+  const play = (observe?: MatchObserver): ReturnType<typeof bench> => {
+    const table = bench(true, observe);
+    table.runMs(400);
+
+    for (let index = 0; index < 6; index += 1) {
+      table.host.submit(index % 2 === 0 ? P0 : P1, move(table.host.world.tick + 2, 1 + index));
+      table.runMs(200);
+    }
+
+    return table;
+  };
+
+  it('не меняет матч: мир с наблюдателем и без него одинаков', () => {
+    const seen = watcher();
+
+    const withObserver = play(seen.observer);
+    const without = play();
+
+    expect(checksum(withObserver.host.world)).toBe(checksum(without.host.world));
+    expect(withObserver.host.world.tick).toBe(without.host.world.tick);
+    expect(withObserver.host.history).toEqual(without.host.history);
+  });
+
+  it('видит каждую команду матча ровно по одному разу', () => {
+    const seen = watcher();
+    const table = play(seen.observer);
+
+    expect(seen.commands).toEqual([...table.host.history]);
+  });
+
+  it('видит кадр на каждый сыгранный тик, включая пустые', () => {
+    const seen = watcher();
+    const table = play(seen.observer);
+
+    expect(seen.frames).toHaveLength(table.host.world.tick);
+    expect(seen.frames.map((frame) => frame.tick)).toEqual(
+      Array.from({ length: table.host.world.tick }, (_unused, tick) => tick),
+    );
+  });
+
+  it('получает ту же сумму, что уходит участникам', () => {
+    const seen = watcher();
+    const table = play(seen.observer);
+
+    const sent = table.sent
+      .filter((entry) => entry.player === P0 && entry.message.type === MessageType.Checksum)
+      .map((entry) => entry.message as Extract<ServerMessage, { type: typeof MessageType.Checksum }>)
+      .map((message) => ({ tick: message.tick, value: message.value }));
+
+    expect(seen.sums).toEqual(sent);
+    expect(seen.sums.length).toBeGreaterThan(0);
   });
 });

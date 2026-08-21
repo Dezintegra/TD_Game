@@ -2,9 +2,10 @@ import Fastify from 'fastify';
 import { PROTOCOL_VERSION } from '@td/protocol';
 import { startComputerService } from '@td/bot';
 import type { ComputerService } from '@td/bot';
-import { SERVER_HOST, SERVER_PORT } from './config.js';
+import { MATCHLOG_DIR, MATCHLOG_ENABLED, SERVER_HOST, SERVER_PORT } from './config.js';
 import { createGameHandlers } from './game-server.js';
 import { createMatchRegistry } from './matches.js';
+import { createMatchRecorder } from './recording.js';
 import { registerLobbyRoutes } from './lobby-routes.js';
 import { createWsTransport } from './ws-transport.js';
 import type { GameTransport } from './transport.js';
@@ -22,7 +23,20 @@ import type { GameTransport } from './transport.js';
  * событий там единицы в минуту, и платить за них бинарным кодеком,
  * рассчитанным на тридцать пакетов в секунду, не за что.
  */
-export const buildServer = async () => {
+export interface BuildOptions {
+  /**
+   * Писать ли матчи. Не указано — как велит настройка сервера.
+   *
+   * Существует ради проверок. Тест поднимает настоящий сервер, а запись
+   * теперь идёт по умолчанию, и без явного отказа каждый прогон тестов
+   * оставлял бы файлы в каталоге записей. Отказ именно явный: тест,
+   * который смотрит на переменную среды, однажды пройдёт на чужой машине
+   * и упадёт на своей.
+   */
+  readonly record?: boolean;
+}
+
+export const buildServer = async (options: BuildOptions = {}) => {
   const app = Fastify({ logger: false });
 
   app.get('/health', () => ({ status: 'ok', protocol: PROTOCOL_VERSION }));
@@ -41,7 +55,23 @@ export const buildServer = async () => {
 
   const log = (message: string): void => console.info(`[game] ${message}`);
 
-  const matches = createMatchRegistry({ transport, log });
+  // Запись матчей — за флагом и по умолчанию выключена. Без неё
+  // не создаётся ни писателя, ни наблюдателя, и ведущий матча работает
+  // ровно так же, как работал бы без всей этой затеи.
+  const record = options.record ?? MATCHLOG_ENABLED;
+  const recorder = record ? createMatchRecorder({ dir: MATCHLOG_DIR }) : undefined;
+
+  // Состояние записи сервер называет вслух в обоих случаях, и это
+  // не болтливость. Настройка, выставленная и не доехавшая, выглядит
+  // снаружи ровно как невыставленная: матчи идут, файлов нет, ошибок нет.
+  // Различить их можно было только чтением исходников.
+  if (recorder === undefined) {
+    log('Запись матчей выключена настройкой. Убрать MATCHLOG=0 — и она вернётся.');
+  } else {
+    log(`Запись матчей включена, каталог ${MATCHLOG_DIR}`);
+  }
+
+  const matches = createMatchRegistry({ transport, log, recorder });
 
   // Компьютер — обычный участник, но сервер обязан знать, кто из игроков
   // им является: иначе комнату компьютера нечем пометить, а врать

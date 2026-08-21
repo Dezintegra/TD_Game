@@ -41,8 +41,6 @@ import type { MatchPhaseView, MatchSnapshot, SelectionView } from './store.js';
 import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
 import { createRejectionFeed } from './rejections.js';
-import { createRecording } from './recording.js';
-import type { Recording } from './recording.js';
 
 /**
  * Сборка игры воедино: сцена, сеть, участие в матче, управление.
@@ -105,36 +103,6 @@ const PHASES: Readonly<Record<GuestStatus, MatchPhaseView>> = {
   finished: 'finished',
 };
 
-/**
- * Начать запись матча.
- *
- * Отправка — обычный POST на локальный сервер разработки, без ожидания
- * ответа: запись это побочное дело, и тормозить из-за неё игру нельзя.
- *
- * В сетевом матче запись стала полной: раньше в неё попадали только
- * команды человека, а решения компьютера арена восстанавливала прогоном.
- * Теперь кадрами приходят команды обеих сторон, и воспроизводить нечего —
- * достаточно подать записанное.
- */
-const startRecording = (seed: number, human: PlayerId): Recording =>
-  createRecording({
-    matchId: `s${String(seed)}`,
-    worldSeed: seed,
-    aiSeeds: [0, 0],
-    profiles: [],
-    humanPlayer: human,
-    // Версия кода в браузере неизвестна: git отсюда не спросить.
-    gitSha: '',
-    gitDirty: true,
-    send: (lines) => {
-      void fetch('/__matchlog', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ matchId: `s${String(seed)}`, lines }),
-      }).catch(() => undefined);
-    },
-  });
-
 export const startGame = async (host: HTMLElement, options: GameOptions): Promise<Game> => {
   const scene = await createScene(host);
 
@@ -147,9 +115,10 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   // а отказ, которого на самом деле не было, — хотя бы раз.
   const rejections = createRejectionFeed(localPlayer);
 
-  // Запись матча — только в разработке. В промышленной сборке условие
-  // вычисляется на этапе сборки, и весь код записи из неё выпадает.
-  const recording = import.meta.env.DEV ? startRecording(seed, localPlayer) : undefined;
+  // Записи матча здесь нет намеренно. Её ведёт сервер: клиент видит матч
+  // со своей стороны и не знает ни состава сторон, ни профиля
+  // компьютерного участника, а в партии двух людей записывали бы оба
+  // клиента — две неполные записи одного матча.
 
   let mapPublished = false;
   let lastHudTick = -1;
@@ -171,15 +140,12 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       hudActions.setPhase(waiting ? 'awaiting-opponent' : (PHASES[status] ?? 'playing'));
     },
 
-    onFrame: (tick, commands) => {
+    onFrame: (tick) => {
       if (tick === 0) hudActions.setPhase('playing');
-
-      recording?.commands(tick, commands);
 
       const confirmed = guest.confirmed;
       if (confirmed === null) return;
 
-      recording?.tick(confirmed);
       hudActions.setTick(confirmed.tick);
 
       // Раз в секунду — свидетельство того, что мир общий. Считать сумму
@@ -368,9 +334,6 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
   return {
     stop() {
-      // Хвост записи обязан уехать до остановки: страницу закрывают
-      // чаще, чем доигрывают матч до победы.
-      recording?.flush();
       window.removeEventListener('resize', onResize);
       setMatchCommands(null);
       controls.detach();

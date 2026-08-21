@@ -9,6 +9,11 @@ import { TERRAIN_DIAGONAL_COUNT, drawGround, drawTerrainDiagonal } from './terra
 import type { TerrainColors } from './terrain.js';
 import { drawEntities } from './entities.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
+import { drawShots } from './shots.js';
+import type { ShotColors, ShotLayers } from './shots.js';
+import { drawBlasts, shakeOffset } from './blasts.js';
+import type { BlastColors, BlastLayers } from './blasts.js';
+import { createFrameClock } from './clock.js';
 import { drawOverlays } from './overlays.js';
 import type { OverlayColors, OverlayIntent } from './overlays.js';
 import {
@@ -130,8 +135,34 @@ const readEntityColors = (): EntityColors => ({
   ground: token('--td-bg-page', 0x191919),
   health: token('--td-health-full', 0x00ff29),
   healthLow: token('--td-health-low', 0xff5c5c),
+});
+
+/**
+ * Цвета выстрела.
+ *
+ * Огонь, дым и белое ядро берутся из тех же токенов, что у взрыва,
+ * и это требование, а не экономия: пламя на дульном срезе и пламя
+ * горящей машины — один и тот же огонь, и разойдись они хоть на оттенок,
+ * поле распалось бы на два разных мира.
+ */
+const readShotColors = (): ShotColors => ({
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  hullDark: token('--td-hull-dark', 0x23271f),
   shot: token('--td-projectile', 0xeaffef),
   shotLethal: token('--td-health-low', 0xff5c5c),
+  core: token('--td-blast-core', 0xfff6e0),
+  fire: token('--td-blast-fire', 0xff8a2b),
+  smoke: token('--td-blast-smoke', 0x2b2622),
+});
+
+const readBlastColors = (): BlastColors => ({
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  hullDark: token('--td-hull-dark', 0x23271f),
+  core: token('--td-blast-core', 0xfff6e0),
+  fire: token('--td-blast-fire', 0xff8a2b),
+  smoke: token('--td-blast-smoke', 0x2b2622),
 });
 
 const readOverlayColors = (): OverlayColors => ({
@@ -173,7 +204,12 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
   host.appendChild(app.canvas);
 
+  // Мировой контейнер несёт камеру, внешний — только тряску. Разделение
+  // не косметическое: положение мирового контейнера читает наведение,
+  // и подмешивать в него дрожание нельзя. Подробности у `applyShake`.
+  const shakeContainer = new Container();
   const worldContainer = new Container();
+  shakeContainer.addChild(worldContainer);
 
   const groundGraphics = new Graphics();
   worldContainer.addChild(groundGraphics);
@@ -197,12 +233,45 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     }
   }
 
-  const shotGraphics = new Graphics();
-  // Слой поверх тел лежит выше трассеров: полосы прочности баз показывают
+  // Порядок слоёв эффектов снизу вверх:
+  //
+  //   дым и обломки взрывов
+  //   дым выстрелов и корпуса ракет
+  //   свет выстрелов          (сложение)
+  //   свет взрывов            (сложение)
+  //
+  // Дым — это тело: его можно заслонить, и вспышка, случившаяся перед
+  // ним, должна быть видна. Свет заслонить нельзя ничем, поэтому оба
+  // светящихся слоя лежат выше всех дымов сразу, а не каждый над своим.
+  //
+  // Свет взрыва выше света выстрела намеренно: взрыв — событие более
+  // крупное, и перекрывать его вспышками очередей незачем.
+  const blastDebrisGraphics = new Graphics();
+  const shotTrailGraphics = new Graphics();
+  const shotGlowGraphics = new Graphics();
+  const blastGlowGraphics = new Graphics();
+
+  // Сложение цвета вместо закрашивания: две пересёкшиеся искры ярче одной,
+  // а вспышка высветляет то, что под ней. Задаётся слою целиком — ровно
+  // поэтому светящееся и несветящееся здесь разложены по разным слоям.
+  shotGlowGraphics.blendMode = 'add';
+  blastGlowGraphics.blendMode = 'add';
+
+  const flashGraphics = new Graphics();
+  flashGraphics.blendMode = 'add';
+
+  // Слой поверх тел лежит выше выстрелов: полосы прочности баз показывают
   // положение дел в матче, и перечёркивать их линиями выстрелов незачем.
   const overheadGraphics = new Graphics();
   const overlayGraphics = new Graphics();
-  worldContainer.addChild(shotGraphics, overheadGraphics, overlayGraphics);
+  worldContainer.addChild(
+    blastDebrisGraphics,
+    shotTrailGraphics,
+    shotGlowGraphics,
+    blastGlowGraphics,
+    overheadGraphics,
+    overlayGraphics,
+  );
 
   /**
    * Слои сущностей, в которые что-то попало на прошлом кадре.
@@ -223,8 +292,18 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       // на стороне отрисовки сущностей.
       return entityBands[index] as Graphics;
     },
-    shots: shotGraphics,
     overhead: overheadGraphics,
+  };
+
+  const shotLayers: ShotLayers = {
+    trails: shotTrailGraphics,
+    glow: shotGlowGraphics,
+  };
+
+  const blastLayers: BlastLayers = {
+    debris: blastDebrisGraphics,
+    glow: blastGlowGraphics,
+    flash: flashGraphics,
   };
 
   const clearEntityLayers = (): void => {
@@ -233,8 +312,12 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       bandUsed[band] = 0;
     }
     usedBands.length = 0;
-    shotGraphics.clear();
+    shotTrailGraphics.clear();
+    shotGlowGraphics.clear();
     overheadGraphics.clear();
+    blastDebrisGraphics.clear();
+    blastGlowGraphics.clear();
+    flashGraphics.clear();
   };
 
   // Миникарта живёт в экранных координатах, поэтому лежит не в мировом
@@ -244,10 +327,16 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const minimapEntities = new Graphics();
   minimapContainer.addChild(minimapTerrain, minimapEntities);
 
-  app.stage.addChild(worldContainer, minimapContainer);
+  // Засветка экрана лежит вне мирового контейнера: она не привязана
+  // к точке карты и ездить с камерой не должна. Миникарта — выше неё:
+  // засветить единственный прибор ориентирования значило бы отнять
+  // ориентирование ровно тогда, когда оно нужнее всего.
+  app.stage.addChild(shakeContainer, flashGraphics, minimapContainer);
 
   const terrainColors = readTerrainColors();
   const entityColors = readEntityColors();
+  const shotColors = readShotColors();
+  const blastColors = readBlastColors();
   const overlayColors = readOverlayColors();
   const minimapColors = readMinimapColors();
 
@@ -258,6 +347,8 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   let layout: MinimapLayout = minimapLayout(app.screen.width, app.screen.height);
   let frame = 0;
 
+  const clock = createFrameClock();
+
   /**
    * Сдвиг контейнера так, чтобы точка camera оказалась в центре экрана.
    * Это единственное, что происходит при движении камеры: два числа,
@@ -267,6 +358,26 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     camera = clampCamera(camera, app.screen.width, app.screen.height);
     worldContainer.x = Math.round(app.screen.width / 2 - camera.x);
     worldContainer.y = Math.round(app.screen.height / 2 - camera.y);
+  };
+
+  /**
+   * Тряска от взрыва.
+   *
+   * Смещается ВНЕШНИЙ контейнер, а не мировой, и это не мелочь. Клетка
+   * под курсором считается из положения мирового контейнера (см.
+   * `cellAtScreen`); подмешай мы тряску туда, во время взрыва прицел
+   * уезжал бы на полклетки — а целится игрок как раз тогда, когда что-то
+   * взрывается.
+   *
+   * Отдельный контейнер, а не запоминание «положения без тряски», выбран
+   * намеренно: при запоминании правило держится на том, что каждый будущий
+   * читатель положения не забудет взять запомненное. Здесь оно держится
+   * на устройстве сцены и забыть о нём нельзя.
+   */
+  const applyShake = (amplitude: number, time: number): void => {
+    const offset = shakeOffset(amplitude, time);
+    shakeContainer.x = offset.x;
+    shakeContainer.y = offset.y;
   };
 
   const relayoutMinimap = (): void => {
@@ -315,7 +426,32 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
     render(world, localPlayer, intent) {
       clearEntityLayers();
-      drawEntities(layers, world, viewBounds(), entityColors, localPlayer);
+
+      // Дробный номер тика: мир идёт тридцать раз в секунду, кадров вдвое
+      // больше, и эффект, посчитанный от целого номера, дёргался бы через
+      // кадр. Снимается один раз на кадр — он же и отмечает смену тика.
+      const time = clock.sample(world.tick, performance.now());
+      const bounds = viewBounds();
+
+      drawEntities(layers, world, bounds, entityColors, localPlayer);
+
+      // Выстрелы поверх всех тел: выстрел — это событие, и прятать его
+      // за телами не нужно, иначе бой в толпе перестаёт читаться.
+      drawShots(shotLayers, world, time, bounds, shotColors, localPlayer);
+
+      // Размах тряски приходит оттуда же, откуда взрывы: слоями владеет
+      // сцена, а решает, насколько тряхнуть, тот, кто знает про взрывы.
+      const shake = drawBlasts(
+        blastLayers,
+        world,
+        time,
+        bounds,
+        { width: app.screen.width, height: app.screen.height },
+        blastColors,
+        localPlayer,
+      );
+      applyShake(shake, time);
+
       drawOverlays(overlayGraphics, world, localPlayer, intent, overlayColors);
 
       frame += 1;
@@ -364,6 +500,8 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     },
 
     cellAtScreen(screenX, screenY) {
+      // Читается положение мирового контейнера, а не внешнего: тряска
+      // живёт во внешнем и на наведение влиять не должна.
       const point = screenToWorld(screenX - worldContainer.x, screenY - worldContainer.y);
       const x = Math.floor(point.x);
       const y = Math.floor(point.y);

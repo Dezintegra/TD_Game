@@ -39,11 +39,28 @@ export interface MatchOutcome {
   readonly reason: OutcomeReason;
 }
 
+/**
+ * Наблюдатель матча: тот, кто ведёт запись.
+ *
+ * Строго наблюдающий. Ведущий ничего у него не спрашивает и ничего ради
+ * него не считает — контрольная сумма приходит уже посчитанной, той самой,
+ * что уходит участникам. Матч, идущий с наблюдателем и без него, обязан
+ * давать одинаковый мир: измеряли бы иначе уже другой матч.
+ */
+export interface MatchObserver {
+  /** Кадр сыгран: тик и команды, исполнившиеся на нём. */
+  frame(tick: number, commands: readonly Command[]): void;
+  /** Сумма, посчитанная для рассылки. Второй раз её считать нельзя. */
+  checksum(tick: number, value: number): void;
+}
+
 export interface MatchHostOptions {
   readonly seed: number;
   /** Часы в миллисекундах. Внедряются ради тестов и только ради них. */
   readonly now: () => number;
   readonly send: (player: PlayerId, message: ServerMessage) => void;
+  /** Запись матча. Отсутствует — не пишется ничего и не тратится ничего. */
+  readonly observe?: MatchObserver | undefined;
   /**
    * Предохранитель на число тиков за один вызов `advance`.
    *
@@ -232,9 +249,15 @@ export const createMatchHost = (options: MatchHostOptions): MatchHost => {
     if (commands.length > 0) history.push(...commands);
 
     broadcast({ type: MessageType.TickFrame, tick, commands });
+    options.observe?.frame(tick, commands);
 
     if (world.tick % CHECKSUM_INTERVAL_TICKS === 0) {
-      broadcast({ type: MessageType.Checksum, tick: world.tick, value: checksum(world) });
+      // Сумма считается один раз и расходится по двум адресам: участникам
+      // и в запись. Второй обход тысяч сущностей ради записи означал бы,
+      // что матч с записью считается иначе, чем без неё.
+      const value = checksum(world);
+      broadcast({ type: MessageType.Checksum, tick: world.tick, value });
+      options.observe?.checksum(world.tick, value);
     }
 
     if (world.tick % PING_INTERVAL_TICKS === 0) {

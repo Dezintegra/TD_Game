@@ -6,4 +6,5 @@ export * from './percent.js';
 export * from './balance.js';
 export * from './direction.js';
 export * from './commands.js';
+export * from './matchlog.js';
 export * from './player.js';

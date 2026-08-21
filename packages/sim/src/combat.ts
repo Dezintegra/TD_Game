@@ -1,4 +1,5 @@
 import {
+  BlastKind,
   DIRECTION_STOP,
   FIXED_POINT_SCALE,
   GENERAL_KILL_REWARD,
@@ -22,7 +23,7 @@ import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
 import { statsOf, structureAttack, structureMaxHealth } from './stats.js';
 import type { PlayerStats } from './stats.js';
-import { recordShot } from './working.js';
+import { position, recordBlast, recordShot, structurePosition } from './working.js';
 import type { Working, WorkingGeneral, WorkingStructure, WorkingUnit } from './working.js';
 
 /**
@@ -526,6 +527,7 @@ const subtractHealth = (
       if (unit.health > 0) return false;
 
       unit.alive = false;
+      recordBlast(working, BlastKind.Unit, unit.owner, position(unit));
       return true;
     }
     case TargetKind.Structure: {
@@ -537,6 +539,7 @@ const subtractHealth = (
 
       structure.alive = false;
       working.structuresDirty = true;
+      recordBlast(working, BlastKind.Structure, structure.owner, structurePosition(structure));
       return true;
     }
     case TargetKind.General: {
@@ -557,6 +560,11 @@ const subtractHealth = (
  *
  * Смерть не окончательна: наказание — потерянная позиция и время,
  * а не проигрыш. Время возрождения берётся из прокачки владельца.
+ *
+ * Взрыв записывается здесь, а не у трёх мест вызова — огонь, ядерный удар
+ * и появившаяся поверх генерала постройка. Разъехаться три копии одной
+ * строчки успели бы уже на следующей правке, и генерал начал бы исчезать
+ * молча ровно от одной из причин.
  */
 export const killGeneral = (
   working: Working,
@@ -569,6 +577,8 @@ export const killGeneral = (
   general.respawnAtTick = asTickNumber(
     working.tick + statsOf(statsTable, general.owner).general.respawnTicks,
   );
+
+  recordBlast(working, BlastKind.General, general.owner, position(general));
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -683,6 +693,11 @@ const fireStructure = (
   );
   if (target === undefined) return;
 
+  // Турель разворачивается на цель ровно тем же кодом, что и машина.
+  // Разворот мгновенный и на выстрел не влияет: сектора обстрела в игре
+  // нет, башня бьёт куда угодно. Он нужен затем, чтобы по башне было
+  // видно, что она сейчас дерётся и с какой стороны к ней подошли.
+  structure.facing = aimFacing(working, target, origin.x, origin.y, structure.facing);
   structure.readyAtTick = asTickNumber(working.tick + baseline.cooldownTicks);
   fire(
     working,

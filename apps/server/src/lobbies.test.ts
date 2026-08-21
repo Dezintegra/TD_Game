@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { LobbyError } from '@td/protocol';
+import { computerMindOf } from '@td/bot';
 import { DISCONNECT_GRACE_MS, createLobbyStore } from './lobbies.js';
 import type { LobbyStore, MatchStart } from './lobbies.js';
 
@@ -280,6 +281,36 @@ describe('старт матча по обоюдной готовности', () 
     expect(started).toHaveLength(1);
     expect(started[0]?.seed).toBe(555);
     expect([...(started[0]?.tickets.values() ?? [])].sort()).toEqual([0, 1]);
+    // Партия двух людей: обе стороны человеческие, выдумывать профили
+    // и seed решений не для кого.
+    expect(started[0]?.sides).toEqual([{ who: 'human' }, { who: 'human' }]);
+  });
+
+  it('сообщает профиль и seed решений компьютерной стороны', () => {
+    const started: MatchStart[] = [];
+    const watched = createLobbyStore({
+      now: () => clock,
+      randomSeed: () => 555,
+      randomTicket: () => `ticket-${String(ticketIndex++)}`,
+      isComputer: (playerId) => playerId === 'bot',
+      onMatchStart: (start) => started.push(start),
+    });
+
+    watched.connect('человек');
+    watched.connect('bot');
+    watched.create('человек', 'Аня', 'Комната Ани');
+    const lobbyId = watched.view('человек').lobby?.id ?? '';
+    watched.join('bot', 'Компьютер', lobbyId);
+    watched.setReady('человек', true);
+    watched.setReady('bot', true);
+
+    const sides = started[0]?.sides ?? [];
+    expect(sides[0]).toEqual({ who: 'human' });
+    // Seed решений спрошен у самого компьютера и выведен из seed мира:
+    // ни нулей, ни пустых профилей, которые писал прежний клиент.
+    expect(sides[1]).toEqual(computerMindOf(555, 1));
+    expect(sides[1]).toMatchObject({ who: 'computer', profile: expect.any(String) });
+    expect((sides[1] as { seed: number }).seed).not.toBe(0);
   });
 
   it('помечает комнату компьютера в списке', () => {

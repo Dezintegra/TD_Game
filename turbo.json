@@ -16,7 +16,8 @@
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": ["MATCHLOG", "MATCHLOG_DIR", "PORT", "HOST"]
     }
   }
 }

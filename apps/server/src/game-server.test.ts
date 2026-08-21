@@ -20,7 +20,11 @@ describe('игровой сервер', () => {
   let matches: MatchRegistry;
 
   beforeAll(async () => {
-    const built = await buildServer();
+    // Запись выключена явно: тест поднимает настоящий сервер, а матчи
+    // пишутся по умолчанию, и без этого каждый прогон оставлял бы файлы
+    // в каталоге записей. Полагаться на переменную среды нельзя — она
+    // у всех разная.
+    const built = await buildServer({ record: false });
     matches = built.matches;
 
     await built.app.listen({ port: 0, host: '127.0.0.1' });

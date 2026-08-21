@@ -1,15 +1,9 @@
 ﻿import type { Graphics } from 'pixi.js';
-import {
-  NUKE_DELAY_TICKS,
-  NUKE_RADIUS_CELLS,
-  StructureKind,
-  TICKS_PER_SECOND,
-  unitsToCells,
-} from '@td/shared';
+import { NUKE_DELAY_TICKS, NUKE_RADIUS_CELLS, StructureKind, unitsToCells } from '@td/shared';
 import type { PlayerId, StructureKind as StructureKindType } from '@td/shared';
 import { cellX, cellY, playerStats } from '@td/sim';
 import type { WorldState } from '@td/sim';
-import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
+import { worldToScreen } from './iso.js';
 import { traceCell } from './entities.js';
 
 /**
@@ -58,7 +52,7 @@ export const drawOverlays = (
 
   drawBuildRadius(graphics, world, localPlayer, intent, colors);
   drawTargetMarker(graphics, world, localPlayer, colors);
-  drawNukes(graphics, world, localPlayer, colors);
+  drawNukes(graphics, world, colors);
   drawSelection(graphics, intent, colors);
   drawHover(graphics, intent, colors);
 };
@@ -165,13 +159,15 @@ const drawTargetMarker = (
  * быть угрозой, на которую можно ответить, а не наказанием без права хода.
  * Кольцо сжимается по мере приближения взрыва, поэтому оставшееся время
  * читается без цифр.
+ *
+ * Раньше здесь стоял ещё столб в эпицентре и кружок, растущий по числу
+ * оставшихся секунд. Оба ушли вместе с появлением летящей ракеты: столб
+ * отвечал на вопрос «где», кружок — на вопрос «когда», а ракета отвечает
+ * на оба сразу и делает это тем, что видно и не глядя на землю. Держать
+ * три ответа на два вопроса значило бы засорять место, куда игрок как раз
+ * и смотрит, решая, уводить ли войска.
  */
-const drawNukes = (
-  graphics: Graphics,
-  world: WorldState,
-  localPlayer: PlayerId,
-  colors: OverlayColors,
-): void => {
+const drawNukes = (graphics: Graphics, world: WorldState, colors: OverlayColors): void => {
   for (const nuke of world.nukes) {
     const x = cellX(nuke.cell) + 0.5;
     const y = cellY(nuke.cell) + 0.5;
@@ -183,23 +179,6 @@ const drawNukes = (
 
     traceWorldCircle(graphics, x, y, NUKE_RADIUS_CELLS * (1 - progress));
     graphics.stroke({ width: 3, color: colors.danger, alpha: 0.6 });
-
-    // Столб в эпицентре: сверху вниз он читается быстрее, чем круг
-    // на земле, а при взгляде вскользь только он и заметен.
-    const centre = worldToScreen(x, y);
-    graphics
-      .moveTo(centre.x, centre.y)
-      .lineTo(centre.x, centre.y - 3 * ELEVATION_PX_PER_CELL)
-      .stroke({
-        width: 3,
-        color: colors.danger,
-        alpha: nuke.owner === localPlayer ? 0.9 : 0.7,
-      });
-
-    const seconds = Math.ceil(remaining / TICKS_PER_SECOND);
-    graphics
-      .circle(centre.x, centre.y - 3 * ELEVATION_PX_PER_CELL, 3 + seconds)
-      .stroke({ width: 2, color: colors.danger, alpha: 0.9 });
   }
 };
 
@@ -232,11 +211,7 @@ const drawHover = (graphics: Graphics, intent: OverlayIntent, colors: OverlayCol
  * Своей рамкой, а не заливкой: заливка спорила бы с подсветкой клетки
  * под курсором, а игрок вполне может навести курсор на выделенное.
  */
-const drawSelection = (
-  graphics: Graphics,
-  intent: OverlayIntent,
-  colors: OverlayColors,
-): void => {
+const drawSelection = (graphics: Graphics, intent: OverlayIntent, colors: OverlayColors): void => {
   if (intent.selectedCell < 0) return;
 
   const x = cellX(intent.selectedCell);

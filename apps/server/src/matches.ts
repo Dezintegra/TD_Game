@@ -2,8 +2,10 @@ import { MS_PER_TICK, asPlayerId } from '@td/shared';
 import { applyClientMessage, createMatchHost } from '@td/netplay';
 import { encode } from '@td/protocol';
 import type { MatchHost } from '@td/netplay';
+import type { MatchSide } from '@td/shared';
 import type { ClientMessage } from '@td/protocol';
 import type { ConnectionId, GameTransport } from './transport.js';
+import type { MatchRecorder, MatchRecording } from './recording.js';
 
 /**
  * Реестр матчей: кто сейчас играет и по какому соединению.
@@ -35,6 +37,8 @@ export interface MatchStartRequest {
   readonly seed: number;
   /** Билет — сторона в симуляции. */
   readonly tickets: ReadonlyMap<string, number>;
+  /** Кем занята каждая сторона. Нужно записи и только ей. */
+  readonly sides: readonly MatchSide[];
 }
 
 export interface MatchRegistry {
@@ -73,6 +77,8 @@ interface Entry {
   /** Соединение каждой стороны; `null` — сторона сейчас не на связи. */
   readonly seats: (ConnectionId | null)[];
   readonly tickets: readonly string[];
+  /** Запись матча; `undefined` — запись выключена. */
+  readonly recording: MatchRecording | undefined;
   finishedAtMs: number | null;
 }
 
@@ -85,6 +91,8 @@ export interface MatchRegistryOptions {
   readonly transport: () => GameTransport;
   readonly now?: () => number;
   readonly log?: (message: string) => void;
+  /** Куда писать матчи. Отсутствует — не пишется ничего. */
+  readonly recorder?: MatchRecorder | undefined;
 }
 
 export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistry => {
@@ -102,6 +110,19 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
     if (entry.host.phase === 'finished' && entry.finishedAtMs === null) {
       entry.finishedAtMs = now();
       options.log?.(`Матч ${entry.id} завершён: ${String(entry.host.outcome?.reason)}`);
+
+      // Запись закрывается здесь, а не по отдельному вызову наблюдателя:
+      // место, где кончается матч, должно остаться одно.
+      const outcome = entry.host.outcome;
+      void entry.recording?.close(
+        outcome === null
+          ? null
+          : {
+              tick: entry.host.world.tick,
+              winner: outcome.winner,
+              reason: String(outcome.reason),
+            },
+      );
     }
   };
 
@@ -132,14 +153,22 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
     start(request) {
       const seatsOfMatch: (ConnectionId | null)[] = [];
 
+      const recording = options.recorder?.open({
+        matchId: request.matchId,
+        seed: request.seed,
+        sides: request.sides,
+      });
+
       const entry: Entry = {
         id: request.matchId,
         seats: seatsOfMatch,
         tickets: [...request.tickets.keys()],
+        recording,
         finishedAtMs: null,
         host: createMatchHost({
           seed: request.seed,
           now,
+          observe: recording,
           send(player, message) {
             const connection = seatsOfMatch[player];
             if (connection === undefined || connection === null) return;
@@ -155,7 +184,10 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
       }
 
       matches.set(entry.id, entry);
-      options.log?.(`Матч ${entry.id} заведён, seed ${String(request.seed)}`);
+      options.log?.(
+        `Матч ${entry.id} заведён, seed ${String(request.seed)}` +
+          (recording === undefined ? '' : `, запись в ${recording.path}`),
+      );
     },
 
     admit(connection, ticket) {
@@ -213,6 +245,13 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
 
     close() {
       clearInterval(timer);
+
+      // Хвосты недоигранных матчей дописываются: сервер останавливают
+      // чаще, чем доигрывают партию до победы, и потерять из-за этого
+      // десять минут игры было бы обидно. Исхода у таких записей нет —
+      // его и не было.
+      for (const entry of matches.values()) void entry.recording?.close(null);
+
       matches.clear();
       seats.clear();
       admitted.clear();

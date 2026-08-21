@@ -1,12 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { matchLogPlugin } from './src/matchlog-plugin.js';
 
+// Приёмника записи матчей здесь больше нет. Запись ведёт игровой сервер:
+// он один знает и состав сторон, и профиль компьютерного участника,
+// и все идущие матчи разом. См. apps/server/src/recording.ts.
 export default defineConfig({
-  // Плагин записи матчей объявлен с `apply: 'serve'`, поэтому в сборку
-  // не попадает: обработчика приёма записи в промышленном приложении
-  // не существует физически, а не по условию.
-  plugins: [react(), matchLogPlugin()],
+  plugins: [react()],
   server: {
     // Хост задан явно, а не оставлен по умолчанию: 'localhost' на Windows
     // разрешается в IPv6-адрес ::1, и тогда обращение на 127.0.0.1

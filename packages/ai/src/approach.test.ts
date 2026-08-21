@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  DIRECTION_SOUTH,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   PPM_ONE,
@@ -113,6 +114,7 @@ describe('постройка не должна запирать путь меж�
           readyAtTick: asTickNumber(0),
           builtAtTick: asTickNumber(0),
           demolishAtTick: asTickNumber(0),
+          facing: DIRECTION_SOUTH,
         },
       ],
     };

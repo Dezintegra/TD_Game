@@ -1,8 +1,8 @@
 import { asPlayerId } from '@td/shared';
 import { createMatchGuest } from '@td/netplay';
-import { createOpponent } from '@td/ai';
+import { DEFAULT_PROFILE_ID, createOpponent, profileByName } from '@td/ai';
 import { MessageType, decode, encode, isFromServer } from '@td/protocol';
-import type { Command, CommandIntent } from '@td/shared';
+import type { Command, CommandIntent, ComputerSide } from '@td/shared';
 import type { GuestOutcome } from '@td/netplay';
 
 /**
@@ -61,6 +61,24 @@ export interface Participant {
 export const aiSeedOf = (seed: number, side: number): number =>
   side === 0 ? (seed ^ 0x5bf03635) >>> 0 : (seed ^ 0x2f6e1a77) >>> 0;
 
+/**
+ * Чем компьютер думает на этой стороне.
+ *
+ * Спрашивать об этом надо здесь, а не выводить у себя. Записи матча нужно
+ * знать профиль и seed решений, чтобы воспроизведение собрало того же
+ * противника, и любой второй источник этих сведений рано или поздно
+ * разойдётся с настоящим. Ровно так клиент писал `profiles: []`
+ * и `aiSeeds: [0, 0]` — правдоподобную неправду.
+ *
+ * Тем же значением пользуется и `joinMatch` ниже: у ответа и у дела один
+ * источник.
+ */
+export const computerMindOf = (worldSeed: number, side: number): ComputerSide => ({
+  who: 'computer',
+  profile: DEFAULT_PROFILE_ID,
+  seed: aiSeedOf(worldSeed, side),
+});
+
 /** Команда, отданная противником, — это намерение: тик и сторону проставят за него. */
 const intentOf = (command: Command): CommandIntent => {
   const { player: _player, tick: _tick, ...intent } = command;
@@ -69,7 +87,10 @@ const intentOf = (command: Command): CommandIntent => {
 
 export const joinMatch = (options: ParticipantOptions): Participant => {
   const me = asPlayerId(options.side);
-  const opponent = createOpponent(me, aiSeedOf(options.seed, options.side));
+  // Профиль и seed берутся оттуда же, откуда о них узнаёт запись матча.
+  // Разойтись они не могут по построению.
+  const mind = computerMindOf(options.seed, options.side);
+  const opponent = createOpponent(me, mind.seed, profileByName(mind.profile));
 
   let socket: BotSocket | undefined;
   let finished = false;

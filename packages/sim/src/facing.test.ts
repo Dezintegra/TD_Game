@@ -1,21 +1,30 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
   AttackStance,
+  BASE_BUILD_EXCLUSION_CELLS,
   CommandKind,
   DIRECTION_COUNT,
   DIRECTION_STOP,
+  MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
+  PPM_ONE,
+  STRUCTURE_STATS,
+  StructureKind,
+  Terrain,
   UnitType,
   asEntityId,
   asPlayerId,
   asTickNumber,
+  cellsToUnits,
+  directionTowards,
+  distanceSquared,
 } from '@td/shared';
-import type { Command } from '@td/shared';
+import type { Command, Vec2 } from '@td/shared';
 import { createWorld } from './world.js';
-import type { UnitState, WorldState } from './world.js';
+import type { StructureState, UnitState, WorldState } from './world.js';
 import { step } from './step.js';
-import { cellCentre, cellIndex } from './map.js';
+import { cellAt, cellCentre, cellIndex } from './map.js';
 
 /**
  * Разворот машин.
@@ -49,6 +58,37 @@ const unit = (id: number, owner: number, dx: number, dy: number, facing: number)
   facing,
   readyAtTick: asTickNumber(0),
 });
+
+/**
+ * Свободная клетка рядом с генералом и подальше от обеих баз.
+ *
+ * Клетка ищется, а не задаётся числом: карта строится генератором,
+ * и заданная руками клетка при первой же правке генерации оказалась бы
+ * под скалой или внутри защищённого кольца базы.
+ */
+const buildSpotNear = (world: WorldState, from: Vec2, ownerBase: number): number => {
+  const reach = cellsToUnits(4);
+  const clear = cellsToUnits(BASE_BUILD_EXCLUSION_CELLS + 1);
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (world.map.cells[cell] !== Terrain.Ground) continue;
+    if (world.structures.some((entry) => entry.cell === cell)) continue;
+    // На клетке с живым строить нельзя — своего же генерала и убили бы.
+    if (world.generals.some((entry) => entry.alive && cellAt(entry.position) === cell)) continue;
+
+    const centre = cellCentre(cell);
+    if (distanceSquared(centre, from) > reach * reach) continue;
+    if (
+      world.map.baseCells.some((base) => distanceSquared(centre, cellCentre(base)) < clear * clear)
+    ) {
+      continue;
+    }
+
+    return cell;
+  }
+
+  throw new Error(`рядом с генералом базы ${ownerBase} некуда строить`);
+};
 
 const run = (world: WorldState, ticks: number, commands: Command[] = []): WorldState => {
   let current = world;
@@ -155,6 +195,137 @@ describe('разворот юнита', () => {
       y: centre.y,
     });
     expect(facingOf(after, 700)).toBe(6);
+  });
+});
+
+describe('разворот постройки', () => {
+  const tower = (
+    id: number,
+    owner: number,
+    dx: number,
+    dy: number,
+    facing: number,
+    readyAtTick = 0,
+  ): StructureState => ({
+    id: asEntityId(id),
+    owner: asPlayerId(owner),
+    kind: StructureKind.TowerBasic,
+    // Клетка и положение обязаны совпадать: башня стреляет из центра
+    // своей клетки, а цель выбирает по расстоянию оттуда же.
+    cell: cellIndex(FIELD_X + dx, FIELD_Y + dy),
+    health: STRUCTURE_STATS[StructureKind.TowerBasic].health,
+    growthPpm: PPM_ONE,
+    readyAtTick: asTickNumber(readyAtTick),
+    builtAtTick: asTickNumber(0),
+    demolishAtTick: asTickNumber(0),
+    facing,
+  });
+
+  const towerFacing = (world: WorldState, id: number): number =>
+    world.structures.find((entry) => entry.id === asEntityId(id))?.facing ?? DIRECTION_STOP;
+
+  it('стреляющая башня разворачивается на цель', () => {
+    // Башня смотрит на юг, а враг стоит к востоку от неё. Выстрел
+    // обязан развернуть турель на восток: по башне должно быть видно,
+    // что она дерётся и с какой стороны к ней подошли.
+    const world = createWorld(SEED);
+    const placed: WorldState = {
+      ...world,
+      structures: [...world.structures, tower(9100, 0, 0, 0, 3)],
+      units: [unit(701, 1, 2, 0, 3)],
+    };
+
+    expect(towerFacing(step(placed, []), 9100)).toBe(1);
+  });
+
+  it('молчащая башня сохраняет направление', () => {
+    // Тот же расклад, но башня заряжена перезарядкой до конца прогона.
+    // Врага она видит, а выстрелить не может — значит, и повернуться
+    // ей не с чего.
+    const world = createWorld(SEED);
+    const placed: WorldState = {
+      ...world,
+      structures: [...world.structures, tower(9100, 0, 0, 0, 3, 1000)],
+      units: [unit(701, 1, 2, 0, 3)],
+    };
+
+    expect(towerFacing(run(placed, 5), 9100)).toBe(3);
+  });
+
+  it('разворот башни не меняет исход боя', () => {
+    // Та же гарантия, что и у машин: сектора обстрела нет, разворот
+    // мгновенный, стрелять можно назад. Разъедься это — направление
+    // стало бы игровой величиной.
+    const world = createWorld(SEED);
+
+    const facing = (rumb: number): WorldState => ({
+      ...world,
+      structures: [...world.structures, tower(9100, 0, 0, 0, rumb)],
+      units: [unit(701, 1, 2, 0, 3)],
+    });
+
+    const strip = (state: WorldState) => ({
+      units: state.units.map((entry) => ({ id: entry.id, health: entry.health })),
+      structures: state.structures.map((entry) => ({ id: entry.id, health: entry.health })),
+    });
+
+    expect(strip(run(facing(7), 30))).toEqual(strip(run(facing(3), 30)));
+  });
+
+  it('база на старте смотрит в центр карты', () => {
+    // Ноль здесь недопустим: у постройки он означал бы отсутствие
+    // разворота, а такого состояния у неё не бывает.
+    const world = createWorld(SEED);
+
+    for (const structure of world.structures) {
+      expect(structure.facing).not.toBe(DIRECTION_STOP);
+      expect(structure.facing).toBeGreaterThan(0);
+      expect(structure.facing).toBeLessThan(DIRECTION_COUNT);
+    }
+  });
+
+  it('свежая постройка уже повёрнута наружу от базы', () => {
+    // Первый выстрел развернёт её на цель, но до него может пройти
+    // полматча, и всё это время направление обязано быть осмысленным.
+    const world = createWorld(SEED);
+    const owner = 0;
+    const general = world.generals[owner];
+    const baseCell = world.map.baseCells[owner] ?? 0;
+
+    if (general === undefined) throw new Error('генерала нет');
+
+    // Клетка ищется, а не задаётся числом: карта строится генератором,
+    // и заданная руками клетка при первой же правке генерации оказалась
+    // бы под скалой.
+    const spot = buildSpotNear(world, general.position, baseCell);
+
+    const rich: WorldState = {
+      ...world,
+      players: world.players.map((player) => ({ ...player, energy: 1_000_000_000 })),
+    };
+
+    const after = step(rich, [
+      {
+        kind: CommandKind.Build,
+        player: asPlayerId(owner),
+        tick: asTickNumber(0),
+        cell: spot,
+        structure: StructureKind.Wall,
+      },
+    ]);
+
+    const built = after.structures.find((entry) => entry.cell === spot);
+
+    expect(after.rejections).toHaveLength(0);
+    expect(built?.kind).toBe(StructureKind.Wall);
+    expect(built?.facing).not.toBe(DIRECTION_STOP);
+
+    // Наружу от базы: свежая постройка смотрит туда, откуда придут.
+    const baseCentre = cellCentre(baseCell);
+    const spotCentre = cellCentre(spot);
+    expect(built?.facing).toBe(
+      directionTowards(spotCentre.x - baseCentre.x, spotCentre.y - baseCentre.y),
+    );
   });
 });
 

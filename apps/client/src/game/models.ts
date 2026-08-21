@@ -82,6 +82,27 @@ const Material = {
 
 type Material = (typeof Material)[keyof typeof Material];
 
+/**
+ * Скос детали: чем верхнее основание отличается от нижнего.
+ *
+ * Вторым списком точек верх не задаётся намеренно. Два списка обязаны
+ * совпадать по числу точек и по порядку обхода, и ничто, кроме
+ * внимательности, этого не гарантирует: разъедься они — тело свернулось
+ * бы в ленту молча, без единой ошибки. Три числа же не дают ошибиться
+ * по построению.
+ */
+interface Slope {
+  /**
+   * На сколько клеток верх стянут к центру основания.
+   * Положительное сужает кверху, отрицательное расширяет.
+   */
+  readonly inset?: number;
+  /** Сдвиг верха вдоль хода. Им заваливается лобовой лист. */
+  readonly forward?: number;
+  /** Сдвиг верха поперёк хода. */
+  readonly side?: number;
+}
+
 interface Part {
   readonly label: string;
   /** Основание детали в местных координатах, обход по контуру. */
@@ -92,7 +113,56 @@ interface Part {
   readonly material: Material;
   /** Нести ли неоновую окантовку по рёбрам. */
   readonly outline?: boolean;
+  /** Чем верх отличается от низа. Без него деталь — призма. */
+  readonly top?: Slope;
+  /**
+   * Готовое верхнее основание. Заполняется только там, где скос уже
+   * вычислен и описанием его больше не выразить, — у опрокинутых
+   * деталей отражения, где верх и низ меняются местами.
+   */
+  readonly topShape?: readonly LocalPoint[];
 }
+
+/**
+ * Верхнее основание детали.
+ *
+ * Углы разъезжаются по лучам от центра основания, поэтому число точек
+ * и порядок обхода сохраняются сами. Стягивание ограничено нулём: угол
+ * может дойти до центра, но не пройти его насквозь — иначе тело
+ * вывернулось бы наизнанку и грани посмотрели бы внутрь.
+ */
+const topFootprintOf = (part: Part): readonly LocalPoint[] => {
+  if (part.topShape !== undefined) return part.topShape;
+
+  const slope = part.top;
+  if (slope === undefined) return part.shape;
+
+  const inset = slope.inset ?? 0;
+  const forward = slope.forward ?? 0;
+  const side = slope.side ?? 0;
+  if (inset === 0 && forward === 0 && side === 0) return part.shape;
+
+  let centreForward = 0;
+  let centreSide = 0;
+  for (const point of part.shape) {
+    centreForward += point.forward;
+    centreSide += point.side;
+  }
+  centreForward /= part.shape.length;
+  centreSide /= part.shape.length;
+
+  return part.shape.map((point) => {
+    const alongForward = point.forward - centreForward;
+    const alongSide = point.side - centreSide;
+    const distance = Math.sqrt(alongForward * alongForward + alongSide * alongSide);
+    const keep = distance === 0 ? 0 : Math.max(0, 1 - inset / distance);
+
+    return {
+      forward: centreForward + alongForward * keep + forward,
+      side: centreSide + alongSide * keep + side,
+    };
+  });
+};
 
 /** Прямоугольная деталь: центр, длина вдоль хода, ширина поперёк. */
 const box = (forward: number, side: number, length: number, width: number): LocalPoint[] => {
@@ -128,6 +198,35 @@ const taper = (
     { forward: forward - halfLength, side: side - backWidth / 2 },
     { forward: forward - halfLength, side: side + backWidth / 2 },
   ];
+};
+
+/**
+ * Правильный многоугольник: им задаются круглые в плане детали.
+ *
+ * Круга в нашем языке тел нет и быть не может: `solidFaces` строит
+ * по грани на ребро и требует выпуклого основания. Восьмигранник
+ * на десяти пикселях от круга неотличим, а стоит ровно столько же,
+ * сколько коробка, — одно тело.
+ *
+ * Первый угол сдвинут на половину шага намеренно. Без сдвига вершина
+ * приходится точно на ось, и восьмигранник читается звездой с торчащим
+ * углом; со сдвигом ось попадает на середину грани, и он читается
+ * кольцом — а кольцом ему и надо читаться.
+ */
+const disc = (forward: number, side: number, radius: number, corners = 8): LocalPoint[] => {
+  const points: LocalPoint[] = [];
+  const step = (Math.PI * 2) / corners;
+
+  for (let index = 0; index < corners; index += 1) {
+    const angle = (index + 0.5) * step;
+
+    points.push({
+      forward: forward + Math.cos(angle) * radius,
+      side: side + Math.sin(angle) * radius,
+    });
+  }
+
+  return points;
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -228,13 +327,22 @@ const barrels = (mount: Mount, attackTier: number, fireTier: number): Part[] => 
 // Шасси
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Колесо. Тёмное и утопленное в борт: на экране это деталь в шесть пикселей. */
+/**
+ * Колесо. Тёмное и утопленное в борт: на экране это деталь в шесть пикселей.
+ *
+ * Слабый скос кверху заменяет колесу округлость. Отвесная коробка на шести
+ * пикселях читается кубиком, а стянутый верх ловит свет иначе, чем борт,
+ * и та же коробка начинает читаться скатом. Стягивание задано долей ширины,
+ * а не числом: колёса у трёх шасси разного размера, и общее число сделало бы
+ * маленькое колесо конусом, а большое — почти отвесным.
+ */
 const wheel = (forward: number, side: number, radius: number, width: number): Part => ({
   label: 'колесо',
   shape: box(forward, side, radius * 2, width),
   base: 0,
   height: radius * 1.7,
   material: Material.Tread,
+  top: { inset: width * 0.22 },
 });
 
 const wheelPair = (forward: number, offset: number, radius: number, width: number): Part[] => [
@@ -272,6 +380,10 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.125,
         material: Material.Hull,
         outline: true,
+        // Развал бортов. При высоте 0,125 стягивание в 0,03 даёт наклон
+        // около 13 градусов — борт светлеет примерно на шестую часть
+        // и перестаёт сливаться с бортом соседней машины.
+        top: { inset: 0.03 },
       },
       {
         label: 'моторный отсек',
@@ -280,6 +392,10 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.075,
         material: Material.Hull,
         outline: true,
+        // Верх сдвинут НАЗАД, а не вперёд: так лобовой лист заваливается
+        // внутрь, как ему и положено. Сдвинь мы верх вперёд — получился бы
+        // козырёк, нависающий над носом, а это облик грузовика, не брони.
+        top: { inset: 0.02, forward: -0.025 },
       },
       {
         label: 'башня',
@@ -288,6 +404,11 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.09,
         material: Material.Hull,
         outline: true,
+        // Самый сильный скос на машине, и это не украшение: башня стои́т
+        // вплотную к моторному отсеку и одного с ним оттенка, поэтому
+        // отличать их приходится форме. Конус от коробки отличим
+        // и на сорока пикселях.
+        top: { inset: 0.04 },
       },
     ],
     // Срез ствола вынесен за нос корпуса. Орудие, не достающее до капота,
@@ -306,6 +427,10 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.095,
         material: Material.Hull,
         outline: true,
+        // Развал сильнее, чем у штурмовика: корпус снайпера низкий,
+        // и при малой высоте только заметный наклон отличает его борт
+        // от плоской полосы.
+        top: { inset: 0.026 },
       },
       {
         label: 'носовой клин',
@@ -314,6 +439,10 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.055,
         material: Material.Hull,
         outline: true,
+        // Самый сильный завал носа из трёх машин: 0,028 при высоте 0,055
+        // это около 27 градусов. Острый скошенный нос — то, по чему
+        // снайпера узнают раньше, чем разглядят длину ствола.
+        top: { inset: 0.012, forward: -0.028 },
       },
       {
         label: 'башня',
@@ -322,6 +451,7 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.07,
         material: Material.Hull,
         outline: true,
+        top: { inset: 0.03 },
       },
     ],
     // Ствол вынесен далеко вперёд и тонок: дальность снайпера должна
@@ -341,6 +471,9 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.15,
         material: Material.Hull,
         outline: true,
+        // Корпус самый высокий из трёх, поэтому стягивание больше
+        // по величине, а наклон — тот же: важно не число, а угол.
+        top: { inset: 0.038 },
       },
       {
         label: 'отвал',
@@ -349,6 +482,10 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.06,
         material: Material.Hull,
         outline: true,
+        // Отвал завален назад сильно и почти не сужается: это широкий
+        // щит, а не клин. Наклон у него от бульдозерного ножа, и по нему
+        // тяжёлая машина узнаётся прежде, чем сосчитаны колёса.
+        top: { inset: 0.01, forward: -0.03 },
       },
       {
         label: 'башня',
@@ -357,6 +494,10 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
         height: 0.115,
         material: Material.Hull,
         outline: true,
+        // Крупная и коническая. Мортира выходит из неё коротким толстым
+        // стволом, и без сужения башня читалась бы вторым корпусом,
+        // поставленным сверху.
+        top: { inset: 0.05 },
       },
     ],
     // Мортира короткая и толстая — противоположность снайперскому стволу.
@@ -419,7 +560,7 @@ export const hoverBob = (seed: number, tick: number): number =>
   BOB_AMPLITUDE * Math.sin((TWO_PI * (tick + seed * BOB_PHASE_STRIDE_TICKS)) / BOB_PERIOD_TICKS);
 
 // ─────────────────────────────────────────────────────────────────────────
-// Истребитель генерала
+// Ударный вертолёт генерала
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
@@ -433,125 +574,186 @@ export const hoverBob = (seed: number, tick: number): number =>
  * виден рядом с чужими разрывами, а сравнение нагляднее одиночного
  * присутствия.
  *
- * Полклетки, а не больше: выше — и машина отрывается от собственной тени
- * настолько, что перестаёт быть понятно, где она стоит, а вокруг её клетки
- * считается радиус строительства.
+ * Полклетки, а не больше: выше — и разрыв между машиной и отражением
+ * становится таким, что машина перестаёт читаться связанной с местом,
+ * над которым висит.
  */
 export const GENERAL_ALTITUDE = 0.5;
 
-const JET_PARTS: readonly Part[] = [
+/**
+ * Машина генерала — ударный вертолёт, а не самолёт.
+ *
+ * Разница здесь не в украшении, а в обещании. Самолёт обещает скорость
+ * и пролёт мимо; генерал же висит над полем, ждёт, строит вокруг себя
+ * и отходит. Висение обещает винтокрылая машина — и это про него правда.
+ *
+ * Пропорции сняты с Ка-50 и пересчитаны в доли длины корпуса, а не
+ * подобраны на глаз. На сорока пикселях силуэт узнаётся не деталями —
+ * их там нет, — а отношением длин: длинная тонкая хвостовая балка при
+ * коротком широком корпусе. Ошибись в этом отношении вдвое, и вертолёт
+ * снова станет самолётом, сколько деталей на него ни навесь.
+ *
+ * Верхнего винта нет намеренно. У винта ровно два состояния, и оба
+ * плохи: неподвижный читается поломкой (глаз знает, что вертолёт
+ * с остановленным винтом падает), а вращающийся требует пересчёта
+ * геометрии на каждом кадре — то есть выхода за кеш силуэтов, который
+ * ключуется румбом и стороной и знать «какой сейчас кадр» не может.
+ * Подъём вместо винта дают два боковых хувера на концах пилонов,
+ * и отсутствие винта само по себе служит признаком: взгляд ищет,
+ * чем машина держится, и находит их.
+ */
+const GUNSHIP_PARTS: readonly Part[] = [
   {
-    label: 'левое крыло',
-    shape: [
-      { forward: 0.02, side: -0.06 },
-      { forward: -0.24, side: -0.44 },
-      { forward: -0.34, side: -0.42 },
-      { forward: -0.16, side: -0.06 },
-    ],
-    base: GENERAL_ALTITUDE + 0.02,
-    height: 0.028,
+    label: 'киль',
+    shape: taper(-0.415, 0, 0.11, 0.02, 0.028),
+    base: GENERAL_ALTITUDE + 0.075,
+    height: 0.125,
     material: Material.Hull,
     outline: true,
+    // Киль скошен назад: верх сдвинут против хода. Стреловидность
+    // здесь не украшение — киль высокий и узкий, и отвесным он читается
+    // мачтой антенны, то есть деталью базы, а не машины.
+    top: { inset: 0.004, forward: -0.028 },
   },
   {
-    label: 'правое крыло',
-    shape: [
-      { forward: 0.02, side: 0.06 },
-      { forward: -0.16, side: 0.06 },
-      { forward: -0.34, side: 0.42 },
-      { forward: -0.24, side: 0.44 },
-    ],
-    base: GENERAL_ALTITUDE + 0.02,
-    height: 0.028,
+    label: 'стабилизатор',
+    shape: box(-0.38, 0, 0.07, 0.19),
+    base: GENERAL_ALTITUDE + 0.052,
+    height: 0.018,
+    material: Material.Hull,
+    // Окантовки нет: полоска в два пикселя, обведённая неоном,
+    // превращается в светящуюся чёрточку поперёк хвоста.
+    top: { inset: 0.005 },
+  },
+  {
+    label: 'хвостовая балка',
+    shape: taper(-0.27, 0, 0.36, 0.075, 0.035),
+    base: GENERAL_ALTITUDE + 0.045,
+    height: 0.045,
     material: Material.Hull,
     outline: true,
+    // Балка чуть длиннее кабины и вдвое сужается к хвосту. Это главная
+    // мерка вертолёта: укороти балку или удлини кабину — и получится
+    // самолёт, сколько деталей на него ни навесь.
+    top: { inset: 0.01 },
   },
   {
-    label: 'фюзеляж',
-    shape: taper(-0.02, 0, 0.5, 0.11, 0.14),
+    label: 'кабина',
+    shape: taper(0.1, 0, 0.34, 0.13, 0.17),
     base: GENERAL_ALTITUDE,
-    height: 0.1,
+    height: 0.125,
     material: Material.Hull,
     outline: true,
+    // Кабина коробчатая и высокая, к носу сужается. Ударный вертолёт
+    // узнают по тому, что тело у него короткое и высокое, а хвост
+    // длинный и тонкий, — отношение важнее любой детали.
+    top: { inset: 0.024 },
   },
   {
-    label: 'носовой обтекатель',
-    shape: taper(0.35, 0, 0.24, 0.02, 0.11),
-    base: GENERAL_ALTITUDE + 0.012,
-    height: 0.07,
+    label: 'носовая часть',
+    shape: taper(0.35, 0, 0.18, 0.03, 0.13),
+    base: GENERAL_ALTITUDE + 0.015,
+    height: 0.062,
     material: Material.Hull,
     outline: true,
+    // Нос низкий, острый и завален внутрь — клин, а не конус.
+    // Опущенный нос перед высокой кабиной и есть та поза, по которой
+    // ударную машину отличают от транспортной.
+    top: { inset: 0.012, forward: -0.02 },
   },
   {
     label: 'фонарь кабины',
-    shape: taper(0.13, 0, 0.16, 0.05, 0.09),
-    base: GENERAL_ALTITUDE + 0.1,
-    height: 0.045,
+    shape: taper(0.19, 0, 0.17, 0.05, 0.1),
+    base: GENERAL_ALTITUDE + 0.125,
+    height: 0.052,
     material: Material.Gun,
     outline: true,
+    // Единственная деталь светлого материала: она притягивает взгляд
+    // первой и потому обязана стоять там, где у машины перёд.
+    top: { inset: 0.018, forward: -0.014 },
   },
   {
-    label: 'левый стабилизатор',
-    shape: taper(-0.28, -0.12, 0.14, 0.03, 0.12),
-    base: GENERAL_ALTITUDE + 0.02,
-    height: 0.025,
+    label: 'левый пилон',
+    shape: [
+      { forward: 0.07, side: -0.07 },
+      { forward: -0.03, side: -0.07 },
+      { forward: -0.025, side: -0.215 },
+      { forward: 0.045, side: -0.215 },
+    ],
+    base: GENERAL_ALTITUDE + 0.045,
+    height: 0.024,
     material: Material.Hull,
+    // Окантовки нет намеренно: пилон — это перемычка между кабиной
+    // и хувером, и обведённый неоном он спорит с ними обоими.
+    top: { inset: 0.005 },
   },
   {
-    label: 'правый стабилизатор',
-    shape: taper(-0.28, 0.12, 0.14, 0.03, 0.12),
-    base: GENERAL_ALTITUDE + 0.02,
-    height: 0.025,
+    label: 'правый пилон',
+    shape: [
+      { forward: 0.045, side: 0.215 },
+      { forward: -0.025, side: 0.215 },
+      { forward: -0.03, side: 0.07 },
+      { forward: 0.07, side: 0.07 },
+    ],
+    base: GENERAL_ALTITUDE + 0.045,
+    height: 0.024,
     material: Material.Hull,
+    top: { inset: 0.005 },
   },
   {
-    label: 'киль',
-    shape: taper(-0.22, 0, 0.16, 0.022, 0.032),
-    base: GENERAL_ALTITUDE + 0.1,
-    height: 0.17,
+    label: 'левый хувер',
+    shape: disc(0.01, -0.265, 0.085),
+    base: GENERAL_ALTITUDE + 0.022,
+    height: 0.055,
+    material: Material.Hull,
+    outline: true,
+    // Борт отвесный, без стягивания: хувер обязан читаться кольцом,
+    // а стянутый кверху восьмигранник читается стаканом.
+  },
+  {
+    label: 'правый хувер',
+    shape: disc(0.01, 0.265, 0.085),
+    base: GENERAL_ALTITUDE + 0.022,
+    height: 0.055,
     material: Material.Hull,
     outline: true,
   },
   {
-    label: 'сопло',
-    shape: box(-0.29, 0, 0.07, 0.1),
-    base: GENERAL_ALTITUDE + 0.018,
-    height: 0.07,
+    label: 'свечение левого хувера',
+    shape: disc(0.01, -0.265, 0.048),
+    base: GENERAL_ALTITUDE + 0.077,
+    height: 0.007,
+    material: Material.Neon,
+  },
+  {
+    label: 'свечение правого хувера',
+    shape: disc(0.01, 0.265, 0.048),
+    base: GENERAL_ALTITUDE + 0.077,
+    height: 0.007,
     material: Material.Neon,
   },
 ];
 
 /**
- * Тень истребителя.
+ * Тени у генерала нет, и это решение, а не упущение.
  *
- * Не украшение: объект, оторванный от земли, теряет привязку к клетке,
- * а вокруг клетки генерала считается радиус строительства — игрок обязан
- * видеть, где генерал стоит. Тень эту привязку возвращает.
+ * Она была: плоское пятно под машиной, отмечавшее клетку, вокруг которой
+ * считается радиус строительства. После того как поле стало слабым
+ * зеркалом, пятно оказалось рядом с отражением — и обе отметки вышли
+ * приглушённо-зелёными почти одной яркости: тень на земле `rgb(28,41,28)`,
+ * верхняя грань отражения `rgb(24,48,27)`. Читались они не как «тень
+ * и отражение», а как одно отражение, продублированное со сдвигом.
  *
- * Отражение эту обязанность не снимает и заменить тень не может.
- * Отражение объекта, поднятого на высоту, лежит на той же глубине под
- * поверхностью — так устроено плоское зеркало, — и у генерала с его
- * полклетки оно целиком уходит ниже его клетки. Клетку оно отмечает
- * приблизительно, тень — точно.
+ * Покраской это не чинится. Земля у нас `#191919`, то есть 25 из 255:
+ * вниз остаётся 25 единиц, и тень, отличимая от земли, обязана уйти
+ * почти в чёрный — а тогда она читается дырой в поверхности. Приём
+ * «затемнить поверхность» рассчитан на светлую поверхность, наша тёмная
+ * по замыслу.
  *
- * Рисуется плоским телом нулевой высоты, то есть одной верхней гранью.
+ * Точную клетку игрок получает там, где она ему нужна: окружность
+ * радиуса строительства рисуется вокруг положения генерала в момент
+ * выбора места под постройку — см. `drawBuildRadius` в `overlays.ts`.
  */
-const SHADOW_PARTS: readonly Part[] = [
-  {
-    label: 'тень фюзеляжа',
-    shape: taper(-0.02, 0, 0.62, 0.08, 0.1),
-    base: 0,
-    height: 0,
-    material: Material.Tread,
-  },
-  {
-    label: 'тень крыла',
-    shape: taper(-0.16, 0, 0.26, 0.5, 0.7),
-    base: 0,
-    height: 0,
-    material: Material.Tread,
-  },
-];
 
 // ─────────────────────────────────────────────────────────────────────────
 // Сборка силуэта
@@ -627,6 +829,12 @@ const toWorld = (local: LocalPoint, facing: number): FootprintPoint => {
 interface PlacedPart {
   readonly part: Part;
   readonly footprint: readonly FootprintPoint[];
+  /**
+   * Верхнее основание в мировых координатах. У детали без скоса — та же
+   * ссылка, что и нижнее: `solidFaces` узнаёт призму по совпадению ссылок
+   * и не проецирует одни и те же точки дважды.
+   */
+  readonly topFootprint: readonly FootprintPoint[];
   /** Удалённость от зрителя: сумма мировых координат центра детали. */
   readonly depth: number;
 }
@@ -650,11 +858,20 @@ const buildSilhouette = (
 
   const placed: PlacedPart[] = parts.map((part) => {
     const footprint = part.shape.map((point) => toWorld(point, facing));
+    const localTop = topFootprintOf(part);
+    // Совпадение по ссылке означает «скоса нет» и передаётся дальше как есть.
+    const topFootprint =
+      localTop === part.shape ? footprint : localTop.map((point) => toWorld(point, facing));
 
     let sum = 0;
     for (const point of footprint) sum += point.x + point.y;
 
-    return { part, footprint, depth: footprint.length === 0 ? 0 : sum / footprint.length };
+    return {
+      part,
+      footprint,
+      topFootprint,
+      depth: footprint.length === 0 ? 0 : sum / footprint.length,
+    };
   });
 
   placed.sort((a, b) => a.depth - b.depth || a.part.base - b.part.base);
@@ -675,8 +892,8 @@ const buildSilhouette = (
     fills.push({ color, polygons: [points] });
   };
 
-  for (const { part, footprint } of placed) {
-    const faces = solidFaces(footprint, part.height, part.base);
+  for (const { part, footprint, topFootprint } of placed) {
+    const faces = solidFaces(footprint, part.height, part.base, topFootprint);
     const base = palette[part.material] ?? palette[0] ?? 0;
 
     for (const face of faces.sides) emit(shade(base, face.light), face.points);
@@ -741,12 +958,30 @@ const MIRROR_STRENGTH = 0.22;
  * объект, а это изображение объекта.
  */
 const mirroredParts = (parts: readonly Part[]): Part[] =>
-  parts.map((part) => ({
-    ...part,
-    base: -(part.base + part.height) * MIRROR_SQUASH,
-    height: part.height * MIRROR_SQUASH,
-    outline: false,
-  }));
+  parts.map((part) => {
+    // У скошенной детали при опрокидывании верх становится низом:
+    // то основание, что было наверху, оказывается ближе всего
+    // к поверхности. Поэтому основания меняются местами.
+    //
+    // Обратного скоса тут не изобрести: стягивание нелинейно — у него
+    // есть ограничение нулём, — и описания, возвращающего верх обратно
+    // в низ, в общем случае не существует. Значит, скос нужно вычислить
+    // в готовое основание до опрокидывания, что и делается.
+    //
+    // У детали без скоса оба основания остаются одной и той же ссылкой,
+    // поэтому отражение отвесного тела не меняется ничем.
+    const upper = topFootprintOf(part);
+
+    return {
+      label: part.label,
+      shape: upper,
+      topShape: part.shape,
+      base: -(part.base + part.height) * MIRROR_SQUASH,
+      height: part.height * MIRROR_SQUASH,
+      material: part.material,
+      outline: false,
+    };
+  });
 
 /**
  * Приглушение отражения цветом поверхности.
@@ -808,7 +1043,6 @@ const unitCache: (Silhouette | undefined)[] = new Array<Silhouette | undefined>(
 const generalCache: (Silhouette | undefined)[] = new Array<Silhouette | undefined>(
   DIRECTION_COUNT * SIDE_COUNT,
 );
-const shadowCache: (Silhouette | undefined)[] = new Array<Silhouette | undefined>(DIRECTION_COUNT);
 
 /**
  * Кеши отражений. Ключи те же самые: отражение однозначно выводится
@@ -837,7 +1071,6 @@ const ensurePalette = (colors: ModelColors): void => {
   cachedColors = colors;
   unitCache.fill(undefined);
   generalCache.fill(undefined);
-  shadowCache.fill(undefined);
   unitMirrorCache.fill(undefined);
   generalMirrorCache.fill(undefined);
 };
@@ -890,7 +1123,7 @@ export const unitSilhouette = (
   return built;
 };
 
-/** Силуэт истребителя генерала. */
+/** Силуэт машины генерала. */
 export const generalSilhouette = (
   colors: ModelColors,
   side: number,
@@ -904,25 +1137,8 @@ export const generalSilhouette = (
   const cached = generalCache[index];
   if (cached !== undefined) return cached;
 
-  const built = buildSilhouette(JET_PARTS, rumb, colors, side);
+  const built = buildSilhouette(GUNSHIP_PARTS, rumb, colors, side);
   generalCache[index] = built;
-  return built;
-};
-
-/**
- * Тень истребителя. От стороны не зависит: тень у всех одна и та же,
- * и красить её в цвет игрока значило бы соврать про источник света.
- */
-export const generalShadow = (colors: ModelColors, facing: number): Silhouette => {
-  ensurePalette(colors);
-
-  const rumb = normaliseFacing(facing);
-
-  const cached = shadowCache[rumb];
-  if (cached !== undefined) return cached;
-
-  const built = buildSilhouette(SHADOW_PARTS, rumb, colors, SIDE_SELF);
-  shadowCache[rumb] = built;
   return built;
 };
 
@@ -953,7 +1169,7 @@ export const unitReflection = (
   return built;
 };
 
-/** Отражение истребителя генерала. */
+/** Отражение машины генерала. */
 export const generalReflection = (
   colors: ModelColors,
   side: number,
@@ -966,7 +1182,7 @@ export const generalReflection = (
   const cached = generalMirrorCache[index];
   if (cached !== undefined) return cached;
 
-  const built = buildReflection(JET_PARTS, normaliseFacing(facing), colors, side);
+  const built = buildReflection(GUNSHIP_PARTS, normaliseFacing(facing), colors, side);
   generalMirrorCache[index] = built;
   return built;
 };
@@ -990,7 +1206,6 @@ export const resetModelCache = (): void => {
   cachedColors = undefined;
   unitCache.fill(undefined);
   generalCache.fill(undefined);
-  shadowCache.fill(undefined);
   unitMirrorCache.fill(undefined);
   generalMirrorCache.fill(undefined);
 };

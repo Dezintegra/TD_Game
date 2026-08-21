@@ -75,6 +75,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, structure.readyAtTick);
     hash = mix(hash, structure.builtAtTick);
     hash = mix(hash, structure.demolishAtTick);
+    hash = mix(hash, structure.facing);
   }
 
   for (const unit of state.units) {
@@ -116,7 +117,10 @@ export const checksum = (state: WorldState): number => {
   // мы всё-таки заметим.
   //
   // Следы выстрелов тоже не входят: они живут несколько тиков и нужны
-  // исключительно рендеру.
+  // исключительно рендеру. Взрывы на местах погибших — ровно того же
+  // рода запись и не входят по той же причине. Проверить это легко:
+  // сам факт гибели в сумме уже есть — погибшего нет в массивах, —
+  // и добавить взрыв значило бы посчитать одно и то же дважды.
   //
   // Отказы команд не входят по той же причине и по ещё одной, более
   // важной. Отказ полностью выводится из состояния и списка команд,

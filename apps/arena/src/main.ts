@@ -1,16 +1,15 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { availableParallelism } from 'node:os';
-import { CommandKind, TICKS_PER_SECOND, asPlayerId, asTickNumber } from '@td/shared';
-import type { Command, StructureKind, UnitType } from '@td/shared';
+import { TICKS_PER_SECOND } from '@td/shared';
 import { DEFAULT_PROFILE_ID } from '@td/ai';
 import { createLogWriter } from './log.js';
 import { runMatch } from './match.js';
-import { ingestFile, openDatabase, stripBom } from './ingest.js';
+import { replayAndReport } from './replay.js';
+import { ingestFile, openDatabase } from './ingest.js';
 import { reportBatch, reportMatch } from './report.js';
-import type { ThinRecord } from './records.js';
 
 /**
  * Арена — инструмент разработки, а не часть игры.
@@ -29,8 +28,10 @@ const USAGE = `
       и считаются параллельно по числу ядер.
 
   arena replay <файл>
-      Воспроизвести записанный матч человека, сверяя контрольные суммы,
-      и создать подробный лог. Расхождение — остановка с указанием тика.
+      Воспроизвести записанный матч и создать подробный лог: решения
+      компьютерных сторон восстанавливаются прогоном, мир ведут
+      записанные команды. Сверяются и контрольные суммы, и команды
+      компьютера; расхождение — остановка с указанием тика, без лога.
 
   arena ingest [каталог]
       Собрать базу SQLite из логов. Идемпотентно: повторный прогон
@@ -39,7 +40,8 @@ const USAGE = `
   arena report [идентификатор матча]
       Напечатать сводку. Без аргумента — по всей пачке.
 
-Логи и база лежат в .matchlog/ в корне репозитория.
+Логи и база лежат в .matchlog/ в корне репозитория. Записи матчей,
+сыгранных людьми, кладёт туда же игровой сервер, запущенный с MATCHLOG=1.
 `.trim();
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -201,135 +203,6 @@ const runBatch = async (flags: ReadonlyMap<string, string>): Promise<void> => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────
-// replay
-// ─────────────────────────────────────────────────────────────────────────
-
-const commandOf = (record: { kind: number; player: number; tick: number; arg0: number; arg1: number }): Command | undefined => {
-  const player = asPlayerId(record.player);
-  const tick = asTickNumber(record.tick);
-
-  switch (record.kind) {
-    case CommandKind.MoveGeneral:
-      return { kind: CommandKind.MoveGeneral, player, tick, direction: record.arg0 };
-    case CommandKind.Build:
-      // Приведение осознанное: запись пришла из файла, то есть
-      // из недоверенного источника, и числу в ней верить нельзя.
-      // Проверит его ядро — оно всё равно проверяет каждую команду,
-      // и негодную отклонит с причиной.
-      return {
-        kind: CommandKind.Build,
-        player,
-        tick,
-        cell: record.arg0,
-        structure: record.arg1 as StructureKind,
-      };
-    case CommandKind.TrainUnit:
-      return { kind: CommandKind.TrainUnit, player, tick, unitType: record.arg0 as UnitType };
-    case CommandKind.SetTarget:
-      return { kind: CommandKind.SetTarget, player, tick, cell: record.arg0 };
-    case CommandKind.BuyUpgrade:
-      return { kind: CommandKind.BuyUpgrade, player, tick, branch: record.arg0 };
-    case CommandKind.LaunchNuke:
-      return { kind: CommandKind.LaunchNuke, player, tick, cell: record.arg0 };
-    default:
-      return undefined;
-  }
-};
-
-const replay = (path: string): void => {
-  const records = stripBom(readFileSync(path, 'utf8'))
-    .split('\n')
-    .filter((line) => line.length > 0)
-    .flatMap((line): ThinRecord[] => {
-      try {
-        return [JSON.parse(line) as ThinRecord];
-      } catch {
-        // Оборванный хвост прерванной записи. Годные строки от этого
-        // годными быть не перестали.
-        return [];
-      }
-    });
-
-  const header = records.find((record) => record.t === 'thin');
-  if (header === undefined) throw new Error(`в файле ${path} нет заголовка записи`);
-
-  const scripted = new Map<number, Command[]>();
-  for (const record of records) {
-    if (record.t !== 'cmd') continue;
-
-    const command = commandOf(record);
-    if (command === undefined) continue;
-
-    const bucket = scripted.get(record.tick) ?? [];
-    bucket.push(command);
-    scripted.set(record.tick, bucket);
-  }
-
-  const expected = new Map<number, number>();
-  for (const record of records) {
-    if (record.t === 'sum') expected.set(record.tick, record.value);
-  }
-
-  const matchId = `${header.matchId}-replay`;
-  const log = createLogWriter(join(LOG_DIR, `${matchId}.jsonl`));
-
-  // Воспроизведение кончается там, где кончилась запись.
-  //
-  // Продолжать дальше технически можно — противник детерминирован
-  // и доиграет сам, — но это было бы враньём: получилось бы «что было
-  // бы, если бы человек бросил играть», выданное за запись матча.
-  // Разбор таких минут вводил бы в заблуждение ровно там, где он должен
-  // давать опору.
-  const recorded = Math.max(0, ...expected.keys(), ...scripted.keys());
-
-  // Полная запись — та, где сохранены команды обеих сторон.
-  //
-  // Такими стали записи сетевых матчей: кадрами приходят действия обоих
-  // участников, и клиенту известно всё, что произошло. Подставлять
-  // в такую запись думающего противника нельзя — его решения легли бы
-  // поверх уже записанных, и воспроизведение разошлось бы на первом же
-  // из них. Признак полноты — пустой список профилей: думать некому,
-  // потому что думать не о чем.
-  //
-  // Прежние записи, где сохранены только команды человека, продолжают
-  // воспроизводиться по-старому: за соперника доигрывает компьютер.
-  const complete = header.profiles.length === 0;
-
-  const result = runMatch({
-    matchId,
-    worldSeed: header.worldSeed,
-    aiSeeds: header.aiSeeds,
-    profiles: header.profiles,
-    log,
-    scripted,
-    tickCap: recorded,
-    computerPlayers: complete ? [] : [0, 1].filter((player) => player !== header.humanPlayer),
-  });
-
-  // Сверка. Расхождение означает, что воспроизведён не тот матч,
-  // и продолжать разбор нельзя: анализировали бы мы матч, которого
-  // не было.
-  for (const [tick, value] of expected) {
-    const got = result.checksums.get(tick);
-    if (got === undefined) continue;
-
-    if (got !== value) {
-      throw new Error(
-        `воспроизведение разошлось с записью на тике ${String(tick)}: ` +
-          `ожидалось ${String(value)}, получено ${String(got)}. ` +
-          'Скорее всего, код изменился с момента записи ' +
-          `(запись сделана на ${header.gitSha.slice(0, 8)}${header.gitDirty ? ', дерево было грязным' : ''}).`,
-      );
-    }
-  }
-
-  process.stdout.write(
-    `${matchId}: воспроизведено, сверено ${String(expected.size)} контрольных сумм, ` +
-      `${String(Math.round(result.ticks / TICKS_PER_SECOND))} с игры\n`,
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────────────
 // ingest / report
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -392,7 +265,7 @@ const main = async (): Promise<void> => {
       const path = rest[0];
       if (path === undefined) throw new Error('укажите файл записи: arena replay <файл>');
 
-      replay(resolve(path));
+      replayAndReport(resolve(path), LOG_DIR);
       return;
     }
 

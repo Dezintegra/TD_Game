@@ -392,6 +392,7 @@ describe('строительство', () => {
         readyAtTick: asTickNumber(0),
         builtAtTick: asTickNumber(0),
         demolishAtTick: asTickNumber(0),
+        facing: DIRECTION_SOUTH,
       });
       nextId += 1;
     }
@@ -943,6 +944,7 @@ const wallAt = (cell: number, owner: number, id: number) => ({
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
+  facing: DIRECTION_SOUTH,
 });
 
 describe('остановка юнита на противнике', () => {

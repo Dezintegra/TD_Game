@@ -209,3 +209,82 @@ describe('обход по диагоналям', () => {
     });
   });
 });
+
+describe('скошенное тело', () => {
+  const SQUARE = [
+    { x: 4, y: 7 },
+    { x: 5, y: 7 },
+    { x: 5, y: 8 },
+    { x: 4, y: 8 },
+  ];
+
+  /** То же основание, стянутое к центру (4,5; 7,5) на заданную долю. */
+  const shrunk = (inset: number): { x: number; y: number }[] =>
+    SQUARE.map((point) => ({
+      x: 4.5 + (point.x - 4.5) * (1 - inset * 2),
+      y: 7.5 + (point.y - 7.5) * (1 - inset * 2),
+    }));
+
+  const lights = (faces: ReturnType<typeof solidFaces>): number[] =>
+    faces.sides.map((face) => face.light).sort((a, b) => a - b);
+
+  it('явно заданное совпадающее основание ничего не меняет', () => {
+    // Требование не косметическое: с тремя аргументами эту функцию зовёт
+    // код построек, и он обязан получать в точности прежнюю геометрию.
+    expect(solidFaces(SQUARE, 1, 0, SQUARE)).toEqual(solidFaces(SQUARE, 1, 0));
+  });
+
+  it('скос не добавляет граней, пока не меняет видимости', () => {
+    expect(solidFaces(SQUARE, 1, 0, shrunk(0.15)).sides).toHaveLength(2);
+  });
+
+  it('заваленная кверху грань светлее отвесной той же стороны', () => {
+    const upright = lights(solidFaces(SQUARE, 1));
+    const sloped = lights(solidFaces(SQUARE, 1, 0, shrunk(0.15)));
+
+    expect(sloped).toHaveLength(upright.length);
+    sloped.forEach((light, index) => {
+      expect(light).toBeGreaterThan(upright[index] as number);
+    });
+  });
+
+  it('яркость наклонной грани не превышает верхнюю', () => {
+    // Длина светового вектора больше расстояния от фона до единицы,
+    // поэтому без ограничения грань, повёрнутая точно к источнику,
+    // оказалась бы ярче верхней — и `shade` вывел бы канал за 255.
+    for (let inset = 0.05; inset < 0.5; inset += 0.05) {
+      for (const light of lights(solidFaces(SQUARE, 0.2, 0, shrunk(inset)))) {
+        expect(light).toBeLessThanOrEqual(FACE_LIGHT.top);
+      }
+    }
+  });
+
+  it('горизонтальная нормаль даёт ровно яркость верхней грани', () => {
+    expect(faceLight(0, 0, 1)).toBeCloseTo(FACE_LIGHT.top, 12);
+  });
+
+  it('отвесная грань освещена по-прежнему при явном нуле третьей оси', () => {
+    expect(faceLight(1, 0, 0)).toBeCloseTo(FACE_LIGHT.right, 12);
+    expect(faceLight(0, 1, 0)).toBeCloseTo(FACE_LIGHT.left, 12);
+  });
+
+  it('сильно заваленная грань видна там, где отвесная была бы не видна', () => {
+    // Почти плоская пирамида: все четыре боковые грани смотрят вверх
+    // сильнее, чем в стороны, поэтому в кадр попадают все.
+    expect(solidFaces(SQUARE, 0.1, 0, shrunk(0.48)).sides).toHaveLength(4);
+    expect(solidFaces(SQUARE, 0.1).sides).toHaveLength(2);
+  });
+
+  it('стягивание в точку не выворачивает тело', () => {
+    const spike = solidFaces(SQUARE, 0.5, 0, shrunk(0.5));
+
+    // Верхнее основание выродилось в точку, но грани построены и не пусты.
+    expect(spike.sides.length).toBeGreaterThan(0);
+    for (const face of spike.sides) {
+      for (const point of face.points) {
+        expect(Number.isFinite(point.x)).toBe(true);
+        expect(Number.isFinite(point.y)).toBe(true);
+      }
+    }
+  });
+});
