@@ -67,6 +67,54 @@ export const walkField = (occupancy: Occupancy, seeds: readonly number[]): Int32
 const baseSeeds = (cell: number): readonly number[] =>
   footprintCells(cell, STRUCTURE_STATS[StructureKind.Base].footprintRadius);
 
+/** Клетки вокруг основания базы: единственные, до которых поле доходит. */
+const ringAround = (cell: number): readonly number[] => {
+  const radius = STRUCTURE_STATS[StructureKind.Base].footprintRadius + 1;
+  const inside = new Set(baseSeeds(cell));
+
+  return footprintCells(cell, radius).filter((entry) => !inside.has(entry));
+};
+
+/**
+ * Запрёт ли постройка в этой клетке путь между базами.
+ *
+ * Проверка нужна потому, что запечатывание прохода — законный ход,
+ * и ядро его не запрещает. Запечатать проход можно и СЕБЕ: своё войско
+ * выходит из своей базы, и стена, закрывшая последнюю щель, останавливает
+ * его так же надёжно, как чужое. Прецедент в проекте есть — генерал
+ * однажды замуровывал сам себя в одной клетке.
+ *
+ * Считается ОДИН обход карты и только для уже выбранного места. Проверять
+ * каждого кандидата значило бы сотни обходов за решение — цену, которую
+ * не окупает ни одна башня.
+ *
+ * Ошибка проверки односторонняя и безопасная: она смотрит только
+ * на проходимость и не знает, что стену можно сломать. Значит, изредка
+ * она запретит постройку, которая на деле прошла бы, — и никогда
+ * не пропустит ту, что действительно запирает.
+ */
+export const sealsApproach = (
+  world: WorldState,
+  me: PlayerId,
+  approach: Approach,
+  cell: number,
+): boolean => {
+  const homeCell = world.map.baseCells[me];
+  const enemyCell = world.map.baseCells[otherPlayer(me)];
+  if (homeCell === undefined || enemyCell === undefined) return false;
+
+  const blocked = Uint8Array.from(approach.occupancy.blocked);
+  blocked[cell] = 1;
+
+  const field = walkField({ ...approach.occupancy, blocked }, baseSeeds(homeCell));
+
+  // Достижимость меряется по КОЛЬЦУ вокруг чужой базы, а не по её клеткам.
+  // Сами клетки базы непроходимы — их занимает сама база, — и поле
+  // до них не доходит никогда. Проверка по ним всегда отвечала бы
+  // «заперто», то есть запрещала бы вообще любую постройку.
+  return !ringAround(enemyCell).some((cell) => (field[cell] ?? UNREACHABLE) !== UNREACHABLE);
+};
+
 export const approachOf = (world: WorldState, me: PlayerId): Approach | undefined => {
   const homeCell = world.map.baseCells[me];
   const enemyCell = world.map.baseCells[otherPlayer(me)];

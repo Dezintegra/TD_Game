@@ -61,6 +61,14 @@ export const AttemptNote = {
   NothingToUpgrade: 'nothing-to-upgrade',
   /** На улучшение не хватает энергии. */
   UpgradeUnaffordable: 'upgrade-unaffordable',
+  /**
+   * Постройка в выбранном месте заперла бы путь между базами.
+   *
+   * Причина своя, а не «места нет»: место как раз есть и оно лучшее,
+   * но ставить туда нельзя. Слитая причина не дала бы отличить
+   * «застроил всё вокруг» от «чуть не замуровал сам себя».
+   */
+  WouldSealPath: 'would-seal-path',
 } as const;
 
 export type AttemptNote = (typeof AttemptNote)[keyof typeof AttemptNote];

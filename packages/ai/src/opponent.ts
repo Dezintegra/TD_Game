@@ -38,7 +38,7 @@ import {
   upgradeCosts,
 } from '@td/sim';
 import type { Occupancy, PlayerState, PlayerStats, StructureState, WorldState } from '@td/sim';
-import { approachOf, otherPlayer, walkField } from './approach.js';
+import { approachOf, otherPlayer, sealsApproach, walkField } from './approach.js';
 import type { Approach } from './approach.js';
 import {
   coveredCells,
@@ -778,6 +778,12 @@ const tryBuild = (
   if (cell < 0) {
     return passing(shielding ? AttemptNote.NoShieldSite : AttemptNote.NoTowerSite);
   }
+
+  // Запечатать проход себе — законный ход по правилам игры и почти
+  // наверняка ошибка по замыслу: своё войско выходит из своей базы,
+  // и последняя закрытая щель останавливает его так же надёжно, как чужое.
+  // Обход карты здесь один и только для уже выбранного места.
+  if (sealsApproach(world, me, approach, cell)) return passing(AttemptNote.WouldSealPath);
 
   commands.push(
     command({
