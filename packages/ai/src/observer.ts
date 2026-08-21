@@ -1,4 +1,4 @@
-import type { PlayerId } from '@td/shared';
+﻿import type { PlayerId } from '@td/shared';
 import type { Spending } from './profile.js';
 
 /**
@@ -142,6 +142,13 @@ export interface DecisionRecord {
   readonly energy: number;
   /** Нанесён ядерный удар: остальные траты на этом решении пропущены. */
   readonly struck: boolean;
+  /**
+   * Начат добивающий рывок: волна заказана целиком, казна потрачена.
+   *
+   * Признак нужен разбору: со стороны залп неотличим от череды обычных
+   * заказов, а решение за ним стоит совсем другое.
+   */
+  readonly pushed: boolean;
   readonly commandCount: number;
 }
 

@@ -9,6 +9,7 @@
   MAP_WIDTH_CELLS,
   NUKE_BASE_EXCLUSION,
   NUKE_COST,
+  PRODUCTION_QUEUE_CAP,
   StructureKind,
   TICKS_PER_SECOND,
   UPGRADE_BRANCHES,
@@ -50,6 +51,7 @@ import type { Verdict } from './posture.js';
 import { AttemptNote } from './observer.js';
 import type { AttemptRecord, AttemptResult, DecisionObserver, DecisionRecord } from './observer.js';
 import { BASELINE_PROFILE, escortRadius, patienceDecisions, phaseAt, reserveOf } from './profile.js';
+import { waveOutcome, waveType } from './push.js';
 import type { AiProfile, PhaseProfile, Spending } from './profile.js';
 import {
   discountedEfficiency,
@@ -211,6 +213,10 @@ export const createOpponent = (
       // фазы, и тратить этот запас на что-то другое было бы обидно.
       const struck = tryNuke(commands, world, me, player, profile, approach, stats);
 
+      // Рывок проверяется до обычных трат: он тратит казну целиком,
+      // и делить её с чем-то ещё было бы бессмысленно.
+      const pushed = tryPush(commands, world, me, player, stats, approach, profile);
+
       const attempts: AttemptRecord[] = [];
       const nearby = escortNearby(world, me, stats);
       const escorting =
@@ -249,7 +255,7 @@ export const createOpponent = (
             undefended,
           );
 
-      if (!struck) {
+      if (!struck && !pushed) {
         let waited = false;
 
         // Уходя вперёд без сопровождения, противник сначала набирает
@@ -310,6 +316,7 @@ export const createOpponent = (
             verdict,
             approach,
             struck,
+            pushed,
             commandCount: commands.length,
           }),
         );
@@ -333,6 +340,7 @@ interface Observed {
   readonly verdict: Verdict | undefined;
   readonly approach: Approach;
   readonly struck: boolean;
+  readonly pushed: boolean;
   readonly commandCount: number;
 }
 
@@ -387,6 +395,7 @@ const record = (
     approachShortest: seen.approach.shortest,
     energy: player.energy,
     struck: seen.struck,
+    pushed: seen.pushed,
     commandCount: seen.commandCount,
   };
 };
@@ -596,6 +605,80 @@ const tryTrain = (
   );
 
   return BOUGHT;
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Добивающий рывок
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Волна, заказанная целиком за одно решение.
+ *
+ * Начинается тогда и только тогда, когда расчёт показывает, что она
+ * разрушит базу. Ворота почти всегда будут закрыты, и это правильный
+ * ответ, а не поломка: он честно говорит «одной волной базу не взять,
+ * копи дальше». Именно этого и не хватало — волна отправлялась, не спросив,
+ * хватит ли её.
+ *
+ * Отдельного поля состояния «идёт рывок» не заводится. Обязательство
+ * выражено расходом: залп совершается один раз, тратит казну, и следующая
+ * проверка ворот увидит уже пустую.
+ */
+const tryPush = (
+  commands: Command[],
+  world: WorldState,
+  me: PlayerId,
+  player: PlayerState,
+  stats: PlayerStats,
+  approach: Approach,
+  profile: AiProfile,
+): boolean => {
+  const enemyBase = world.structures.find(
+    (structure) => structure.owner !== me && structure.kind === StructureKind.Base,
+  );
+  if (enemyBase === undefined) return false;
+
+  const enemy = world.players[otherPlayer(me)];
+  const enemyStats = enemy === undefined ? stats : playerStats(enemy);
+
+  // Путь считается прикрытым, если на нём стоит хоть одна стреляющая
+  // вражеская постройка. Ровно та же проверка, по которой выбирается
+  // цель войска.
+  const guarded = world.structures.some((structure) => {
+    if (structure.owner === me || structure.kind === StructureKind.Base) return false;
+
+    const baseline = enemyStats.structures[structure.kind];
+    if (baseline.attack <= 0 || baseline.range <= 0) return false;
+
+    return approach.onPath[structure.cell] === 1 || approach.fromHome[structure.cell] !== undefined;
+  });
+
+  const type = waveType(stats, guarded);
+  const price = stats.units[type].cost;
+  if (price <= 0) return false;
+
+  // Волна ограничена и казной, и свободным местом в очереди производства:
+  // полагаться на отказы ядра значило бы отдавать заведомо негодные
+  // команды.
+  const room = Math.max(0, PRODUCTION_QUEUE_CAP - player.queue.length);
+  const count = Math.min(room, Math.floor(player.energy / price));
+  if (count <= 0) return false;
+
+  const outcome = waveOutcome(world, me, stats, enemyStats, approach, profile, type, count);
+  if (outcome.damage < enemyBase.health) return false;
+
+  for (let order = 0; order < count; order += 1) {
+    commands.push(
+      command({
+        kind: CommandKind.TrainUnit,
+        player: me,
+        tick: asTickNumber(world.tick),
+        unitType: type,
+      }),
+    );
+  }
+
+  return true;
 };
 
 // ─────────────────────────────────────────────────────────────────────────

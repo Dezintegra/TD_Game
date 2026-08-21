@@ -65,6 +65,9 @@ create table if not exists decision (
   spend_order       text not null,
   energy            integer not null,
   struck            integer not null,
+  -- Начат добивающий рывок. Со стороны залп неотличим от череды обычных
+  -- заказов, а решение за ним стоит совсем другое.
+  pushed            integer not null,
   command_count     integer not null,
   general_cell      integer not null,
   general_from_home integer not null,
