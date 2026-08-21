@@ -437,9 +437,9 @@ describe('строительство', () => {
     );
     // У штурмовика ветки нет, и множитель для него остаётся единичным.
     expect(after.units[UnitType.Assault].range).toBe(before.units[UnitType.Assault].range);
-    // Ветки разных типов независимы: покупка у снайпера гранатомётчика
+    // Ветки разных типов независимы: покупка у снайпера Теслу
     // не трогает.
-    expect(after.units[UnitType.Grenadier].range).toBe(before.units[UnitType.Grenadier].range);
+    expect(after.units[UnitType.Tesla].range).toBe(before.units[UnitType.Tesla].range);
   });
 
   it('прокачка дальности действует на уже выпущенных юнитов', () => {
@@ -588,7 +588,7 @@ describe('производство юнитов', () => {
   it('не ставит в очередь при нехватке энергии', () => {
     const poor = patchPlayer(createWorld(SEED), 0, { energy: 0 });
 
-    const after = step(poor, [train(0, UnitType.Grenadier)]);
+    const after = step(poor, [train(0, UnitType.Tesla)]);
 
     expect(after.players[0]?.queue).toHaveLength(0);
     expect(after.units).toHaveLength(0);

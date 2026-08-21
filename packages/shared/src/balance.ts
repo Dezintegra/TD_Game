@@ -100,8 +100,17 @@ export const UnitType = {
   Assault: 0,
   /** Снайпер: бьёт живых больно и издалека, по постройкам почти бесполезен. */
   Sniper: 1,
-  /** Гранатомётчик: осадный. Медленный, дорогой, перекрывает башню по дальности. */
-  Grenadier: 2,
+  /**
+   * Тесла: осадный. Медленный и дорогой.
+   *
+   * Роль складывается из трёх свойств сразу, и порознь ни одно из них
+   * её не составляет: достаёт дальше базовой башни, бьёт по постройкам
+   * навесом поверх стен и поражает площадь вокруг точки попадания.
+   *
+   * Значение равно двум с самого начала и меняться не должно: оно едет
+   * в командах по сети и лежит в сохранённых записях матчей.
+   */
+  Tesla: 2,
 } as const;
 
 export type UnitType = (typeof UnitType)[keyof typeof UnitType];
@@ -109,7 +118,7 @@ export type UnitType = (typeof UnitType)[keyof typeof UnitType];
 export const UNIT_TYPES: readonly UnitType[] = [
   UnitType.Assault,
   UnitType.Sniper,
-  UnitType.Grenadier,
+  UnitType.Tesla,
 ];
 
 /**
@@ -195,13 +204,13 @@ export const UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = {
     structureDamagePercent: 10, // ×0,1
     cost: BASE_UNIT_COST * 2, // ×2
   },
-  [UnitType.Grenadier]: {
-    label: 'Гранатомётчик',
+  [UnitType.Tesla]: {
+    label: 'Тесла',
     health: BASE_HEALTH, // ×1
     attack: BASE_ATTACK * 3, // ×3
     cooldownTicks: Math.round(BASE_COOLDOWN_TICKS / 0.3), // скорострельность ×0,3
     // Дальность задана не множителем, а относительно башни: ровно на клетку
-    // больше базовой дальности башни. В этом весь смысл гранатомётчика —
+    // больше базовой дальности башни. В этом весь смысл Теслы —
     // он расстреливает башню, стоя вне её досягаемости.
     range: cellsToUnits(BASE_TOWER_RANGE_CELLS + 1),
     speed: Math.round(BASE_SPEED_UNITS_PER_TICK * 0.3), // ×0,3
@@ -338,7 +347,7 @@ export const STRUCTURE_STATS: Readonly<Record<StructureKind, StructureStats>> = 
     // башня простреливала бы поле раньше, чем игрок успевал её заметить,
     // и превращалась бы из контрбатарейной в оружие по всей карте.
     // Двукратная дальность сохраняет за ней роль: она перекрывает
-    // гранатомётчика с его шестью клетками, но не более того.
+    // Теслу с её шестью клетками, но не более того.
     range: cellsToUnits(BASE_TOWER_RANGE_CELLS * 2),
     cost: energy(150),
     // Девять секунд против пятнадцати, за которые башня копится.
@@ -473,7 +482,7 @@ export const NUKE_BASE_EXCLUSION = cellsToUnits(NUKE_RADIUS_CELLS + 2);
 export const UpgradeTarget = {
   UnitAssault: 0,
   UnitSniper: 1,
-  UnitGrenadier: 2,
+  UnitTesla: 2,
   TowerBasic: 3,
   TowerSniper: 4,
   Wall: 5,
@@ -496,7 +505,7 @@ export const UPGRADE_TARGET_COUNT = 8;
 export const UPGRADE_TARGETS: readonly UpgradeTarget[] = [
   UpgradeTarget.UnitAssault,
   UpgradeTarget.UnitSniper,
-  UpgradeTarget.UnitGrenadier,
+  UpgradeTarget.UnitTesla,
   UpgradeTarget.TowerBasic,
   UpgradeTarget.TowerSniper,
   UpgradeTarget.Wall,
@@ -600,7 +609,7 @@ const towerBranches = (target: UpgradeTarget, cost: number): readonly UpgradeBra
 export const UPGRADE_BRANCHES: readonly UpgradeBranch[] = [
   ...unitBranches(UpgradeTarget.UnitAssault, energy(40)),
   ...unitBranches(UpgradeTarget.UnitSniper, energy(60)),
-  ...unitBranches(UpgradeTarget.UnitGrenadier, energy(120)),
+  ...unitBranches(UpgradeTarget.UnitTesla, energy(120)),
   ...towerBranches(UpgradeTarget.TowerBasic, energy(60)),
   ...towerBranches(UpgradeTarget.TowerSniper, energy(120)),
   branch(UpgradeTarget.Wall, UpgradeStat.Health, 'Прочность', energy(50), GAIN),
@@ -648,7 +657,7 @@ export const UPGRADE_BRANCHES: readonly UpgradeBranch[] = [
     effectPercent: GAIN,
   },
   {
-    target: UpgradeTarget.UnitGrenadier,
+    target: UpgradeTarget.UnitTesla,
     stat: UpgradeStat.Range,
     label: 'Дальность',
     baseCost: energy(480),
@@ -691,7 +700,7 @@ export const PURCHASE_INFLATION_PERCENT = 2;
 export const INFLATES_PURCHASE: Readonly<Record<UpgradeTarget, boolean>> = {
   [UpgradeTarget.UnitAssault]: true,
   [UpgradeTarget.UnitSniper]: true,
-  [UpgradeTarget.UnitGrenadier]: true,
+  [UpgradeTarget.UnitTesla]: true,
   [UpgradeTarget.TowerBasic]: true,
   [UpgradeTarget.TowerSniper]: true,
   [UpgradeTarget.Wall]: true,
@@ -703,7 +712,7 @@ export const INFLATES_PURCHASE: Readonly<Record<UpgradeTarget, boolean>> = {
 export const UNIT_UPGRADE_TARGET: Readonly<Record<UnitType, UpgradeTarget>> = {
   [UnitType.Assault]: UpgradeTarget.UnitAssault,
   [UnitType.Sniper]: UpgradeTarget.UnitSniper,
-  [UnitType.Grenadier]: UpgradeTarget.UnitGrenadier,
+  [UnitType.Tesla]: UpgradeTarget.UnitTesla,
 };
 
 /**
@@ -765,7 +774,7 @@ export const ShotWeapon = {
   Bolt: 0,
   /** Луч: толстый, яркий, долгий. Снайпер и снайперская башня. */
   Beam: 1,
-  /** Разряд: молния до цели. Гранатомётчик. */
+  /** Разряд: молния до цели. Тесла. */
   Arc: 2,
   /**
    * Ракета: летящее тело с дымным следом. Только генерал.
@@ -785,7 +794,7 @@ export type ShotWeapon = (typeof ShotWeapon)[keyof typeof ShotWeapon];
 export const UNIT_WEAPON: Readonly<Record<UnitType, ShotWeapon>> = {
   [UnitType.Assault]: ShotWeapon.Bolt,
   [UnitType.Sniper]: ShotWeapon.Beam,
-  [UnitType.Grenadier]: ShotWeapon.Arc,
+  [UnitType.Tesla]: ShotWeapon.Arc,
 };
 
 /**

@@ -104,7 +104,7 @@ const BUILD_KEYS: Readonly<Record<string, StructureKind>> = {
 const TRAIN_KEYS: Readonly<Record<string, UnitType>> = {
   Digit1: UnitType.Assault,
   Digit2: UnitType.Sniper,
-  Digit3: UnitType.Grenadier,
+  Digit3: UnitType.Tesla,
 };
 
 /**

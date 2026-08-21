@@ -304,7 +304,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
     untilSecond: 90,
     // Только экономика: вложенное в первую минуту окупается весь матч.
     upgrades: { [UpgradeTarget.Economy]: 1 },
-    mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Grenadier]: 0 },
+    mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Tesla]: 0 },
     // Экономика вперёд всего: вложенное в первую минуту окупается весь матч.
     spend: ['upgrade', 'build', 'train'],
     reserve: 'none',
@@ -319,7 +319,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
       [UpgradeTarget.UnitAssault]: 2,
       [UpgradeTarget.TowerBasic]: 1,
     },
-    mix: { [UnitType.Assault]: 5, [UnitType.Sniper]: 2, [UnitType.Grenadier]: 1 },
+    mix: { [UnitType.Assault]: 5, [UnitType.Sniper]: 2, [UnitType.Tesla]: 1 },
     // Прокачка перед постройками: вложенное в экономику к середине матча
     // окупается, а лишняя башня на пустом месте — почти никогда.
     spend: ['upgrade', 'build', 'train'],
@@ -330,12 +330,12 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
     untilSecond: Number.POSITIVE_INFINITY,
     upgrades: {
       [UpgradeTarget.UnitAssault]: 5,
-      [UpgradeTarget.UnitGrenadier]: 4,
+      [UpgradeTarget.UnitTesla]: 4,
       [UpgradeTarget.TowerSniper]: 3,
       [UpgradeTarget.General]: 2,
       [UpgradeTarget.Economy]: 1,
     },
-    mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 2, [UnitType.Grenadier]: 3 },
+    mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 2, [UnitType.Tesla]: 3 },
     spend: ['upgrade', 'train', 'build'],
     // Заряд держится в банке, тратится только излишек. Без запаса
     // противник до удара не накопит никогда: юниты и прокачка съедают

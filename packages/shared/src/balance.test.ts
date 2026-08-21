@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { TICKS_PER_SECOND } from './constants.js';
 import { cellsToUnits } from './units.js';
 import {
@@ -45,7 +45,7 @@ import { DIRECTION_SCALE, DIRECTION_VECTORS, directionTowards } from './directio
 describe('баланс: соотношения из игрового замысла', () => {
   const assault = UNIT_STATS[UnitType.Assault];
   const sniper = UNIT_STATS[UnitType.Sniper];
-  const grenadier = UNIT_STATS[UnitType.Grenadier];
+  const tesla = UNIT_STATS[UnitType.Tesla];
 
   it('снайпер бьёт втрое сильнее штурмовика', () => {
     expect(sniper.attack).toBe(assault.attack * 3);
@@ -60,19 +60,19 @@ describe('баланс: соотношения из игрового замыс�
     expect(sniper.health).toBe(Math.round(assault.health * 0.75));
   });
 
-  it('снайпер и гранатомётчик стреляют втрое реже штурмовика', () => {
+  it('снайпер и Тесла стреляют втрое реже штурмовика', () => {
     expect(sniper.cooldownTicks).toBeCloseTo(assault.cooldownTicks / 0.3, 0);
-    expect(grenadier.cooldownTicks).toBeCloseTo(assault.cooldownTicks / 0.3, 0);
+    expect(tesla.cooldownTicks).toBeCloseTo(assault.cooldownTicks / 0.3, 0);
   });
 
-  it('гранатомётчик достаёт ровно на клетку дальше базовой башни', () => {
+  it('Тесла достаёт ровно на клетку дальше базовой башни', () => {
     const tower = STRUCTURE_STATS[StructureKind.TowerBasic];
-    expect(grenadier.range).toBe(tower.range + cellsToUnits(1));
+    expect(tesla.range).toBe(tower.range + cellsToUnits(1));
   });
 
-  it('гранатомётчик втрое медленнее штурмовика и вдесятеро дороже', () => {
-    expect(grenadier.speed).toBe(Math.round(assault.speed * 0.3));
-    expect(grenadier.cost).toBe(assault.cost * 10);
+  it('Тесла втрое медленнее штурмовика и вдесятеро дороже', () => {
+    expect(tesla.speed).toBe(Math.round(assault.speed * 0.3));
+    expect(tesla.cost).toBe(assault.cost * 10);
   });
 
   it('стена вдесятеро прочнее базового здоровья', () => {
@@ -89,8 +89,8 @@ describe('баланс: соотношения из игрового замыс�
     );
   });
 
-  it('снайперская башня перекрывает гранатомётчика по дальности', () => {
-    expect(STRUCTURE_STATS[StructureKind.TowerSniper].range).toBeGreaterThan(grenadier.range);
+  it('снайперская башня перекрывает Теслу по дальности', () => {
+    expect(STRUCTURE_STATS[StructureKind.TowerSniper].range).toBeGreaterThan(tesla.range);
   });
 
   it('ядерный удар стоит пятьдесят базовых юнитов', () => {
@@ -128,9 +128,9 @@ describe('баланс: дальность генерала', () => {
     );
   });
 
-  it('снайпер, гранатомётчик и снайперская башня по-прежнему перестреливают генерала', () => {
+  it('снайпер, Тесла и снайперская башня по-прежнему перестреливают генерала', () => {
     expect(UNIT_STATS[UnitType.Sniper].range).toBeGreaterThan(GENERAL_STATS.range);
-    expect(UNIT_STATS[UnitType.Grenadier].range).toBeGreaterThan(GENERAL_STATS.range);
+    expect(UNIT_STATS[UnitType.Tesla].range).toBeGreaterThan(GENERAL_STATS.range);
     expect(STRUCTURE_STATS[StructureKind.TowerSniper].range).toBeGreaterThan(GENERAL_STATS.range);
   });
 
@@ -284,11 +284,11 @@ describe('баланс: дальность юнитов прокачиваетс
   const rangeBranch = (target: UpgradeTarget): number =>
     upgradeBranchIndex(target, UpgradeStat.Range);
 
-  it('ветки дальности есть у снайпера и гранатомётчика, но не у штурмовика', () => {
+  it('ветки дальности есть у снайпера и Теслы, но не у штурмовика', () => {
     // У штурмовика её нет намеренно: он основа ближнего боя, и дальность
     // сделала бы из него дешёвого снайпера.
     expect(rangeBranch(UpgradeTarget.UnitSniper)).toBeGreaterThanOrEqual(0);
-    expect(rangeBranch(UpgradeTarget.UnitGrenadier)).toBeGreaterThanOrEqual(0);
+    expect(rangeBranch(UpgradeTarget.UnitTesla)).toBeGreaterThanOrEqual(0);
     expect(rangeBranch(UpgradeTarget.UnitAssault)).toBe(-1);
   });
 
@@ -300,8 +300,8 @@ describe('баланс: дальность юнитов прокачиваетс
     expect(costOf(rangeBranch(UpgradeTarget.UnitSniper))).toBe(
       attackOf(UpgradeTarget.UnitSniper) * 4,
     );
-    expect(costOf(rangeBranch(UpgradeTarget.UnitGrenadier))).toBe(
-      attackOf(UpgradeTarget.UnitGrenadier) * 4,
+    expect(costOf(rangeBranch(UpgradeTarget.UnitTesla))).toBe(
+      attackOf(UpgradeTarget.UnitTesla) * 4,
     );
   });
 
@@ -309,7 +309,7 @@ describe('баланс: дальность юнитов прокачиваетс
     // У дальности пороговый эффект: уровень в какой-то момент выводит
     // стрелка за круг ответного огня целиком.
     expect(UPGRADE_BRANCHES[rangeBranch(UpgradeTarget.UnitSniper)]?.costGrowthPercent).toBe(25);
-    expect(UPGRADE_BRANCHES[rangeBranch(UpgradeTarget.UnitGrenadier)]?.costGrowthPercent).toBe(25);
+    expect(UPGRADE_BRANCHES[rangeBranch(UpgradeTarget.UnitTesla)]?.costGrowthPercent).toBe(25);
   });
 
   it('новые ветки стоят в конце таблицы и ничего не сдвинули', () => {
@@ -326,14 +326,14 @@ describe('баланс: дальность юнитов прокачиваетс
     );
   });
 
-  it('при равном числе уровней снайперская башня остаётся дальше гранатомётчика', () => {
+  it('при равном числе уровней снайперская башня остаётся дальше Теслы', () => {
     // То самое свойство, ради которого верхний предел не понадобился:
     // все ветки дальности растут одинаково, поэтому порядок сохраняется.
     const levels = 20;
     const factor = compoundPpm(10, levels);
 
     expect(applyPpm(STRUCTURE_STATS[StructureKind.TowerSniper].range, factor)).toBeGreaterThan(
-      applyPpm(UNIT_STATS[UnitType.Grenadier].range, factor),
+      applyPpm(UNIT_STATS[UnitType.Tesla].range, factor),
     );
   });
 });
@@ -346,7 +346,7 @@ describe('баланс: ветки прокачки', () => {
       new Set([
         UpgradeTarget.UnitAssault,
         UpgradeTarget.UnitSniper,
-        UpgradeTarget.UnitGrenadier,
+        UpgradeTarget.UnitTesla,
         UpgradeTarget.TowerBasic,
         UpgradeTarget.TowerSniper,
         UpgradeTarget.Wall,
@@ -364,7 +364,7 @@ describe('баланс: ветки прокачки', () => {
       entry.target === UpgradeTarget.Economy ||
       (entry.stat === UpgradeStat.Range &&
         (entry.target === UpgradeTarget.UnitSniper ||
-          entry.target === UpgradeTarget.UnitGrenadier));
+          entry.target === UpgradeTarget.UnitTesla));
 
     for (const entry of UPGRADE_BRANCHES) {
       expect(entry.costGrowthPercent).toBe(steep(entry) ? 25 : 10);

@@ -58,7 +58,7 @@ describe('бинарный кодек', () => {
       },
       {
         type: MessageType.Command,
-        command: { kind: CommandKind.TrainUnit, tick: asTickNumber(7), unitType: UnitType.Grenadier },
+        command: { kind: CommandKind.TrainUnit, tick: asTickNumber(7), unitType: UnitType.Tesla },
       },
       { type: MessageType.Command, command: { kind: CommandKind.SetTarget, tick: asTickNumber(7), cell: 0 } },
       {

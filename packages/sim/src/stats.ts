@@ -137,17 +137,17 @@ const unitBaseline = (player: PlayerState, type: UnitType): UnitBaseline => {
       MIN_COOLDOWN_TICKS,
       applyPpm(base.cooldownTicks, effectPpm(player, target, UpgradeStat.FireRate)),
     ),
-    // Дальность юнита прокачивается — у снайпера и гранатомётчика.
+    // Дальность юнита прокачивается — у снайпера и Теслы.
     //
     // Прежде ветки не было, и запрет обосновывался так: «снайпер
     // с прокачанной дальностью перекрыл бы любую башню и обесценил
-    // гранатомётчика». Причина отмены записана здесь, а не удалена вместе
+    // Теслу». Причина отмены записана здесь, а не удалена вместе
     // со старым комментарием, иначе запрет вернут обратно.
     //
     // Опасение не сбылось по арифметике. Ветки дальности всех типов растут
     // одинаково — на десять процентов за уровень, — поэтому при равном
     // числе уровней порядок сохраняется: снайперская башня остаётся дальше
-    // гранатомётчика, а гранатомётчик — дальше базовой башни. Обогнать
+    // Теслы, а Тесла — дальше базовой башни. Обогнать
     // соседа можно только вложив в дальность заметно больше, чем он,
     // и это уже не перекос, а осознанный размен, оплаченный вчетверо
     // более дорогой веткой.
@@ -219,7 +219,7 @@ export const playerStats = (player: PlayerState): PlayerStats => ({
   units: {
     [UnitType.Assault]: unitBaseline(player, UnitType.Assault),
     [UnitType.Sniper]: unitBaseline(player, UnitType.Sniper),
-    [UnitType.Grenadier]: unitBaseline(player, UnitType.Grenadier),
+    [UnitType.Tesla]: unitBaseline(player, UnitType.Tesla),
   },
   structures: {
     [StructureKind.Base]: structureBaseline(player, StructureKind.Base),

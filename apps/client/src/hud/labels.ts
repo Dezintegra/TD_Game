@@ -24,7 +24,7 @@ export const structureLabel = (kind: StructureKind): string => STRUCTURE_STATS[k
 export const UNIT_SHORT: Readonly<Record<UnitType, string>> = {
   [UnitType.Assault]: 'Штурм',
   [UnitType.Sniper]: 'Снайпер',
-  [UnitType.Grenadier]: 'Гранат',
+  [UnitType.Tesla]: 'Тесла',
 };
 
 export const STRUCTURE_SHORT: Readonly<Record<StructureKind, string>> = {
@@ -37,7 +37,7 @@ export const STRUCTURE_SHORT: Readonly<Record<StructureKind, string>> = {
 export const UPGRADE_GROUP: Readonly<Record<UpgradeTarget, string>> = {
   [UpgradeTarget.UnitAssault]: 'Штурмовик',
   [UpgradeTarget.UnitSniper]: 'Снайпер',
-  [UpgradeTarget.UnitGrenadier]: 'Гранатомётчик',
+  [UpgradeTarget.UnitTesla]: 'Тесла',
   [UpgradeTarget.TowerBasic]: 'Башня',
   [UpgradeTarget.TowerSniper]: 'Снайперская башня',
   [UpgradeTarget.Wall]: 'Стена',

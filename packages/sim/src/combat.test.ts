@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   DIRECTION_SOUTH,
   MAP_CELL_COUNT,
@@ -222,8 +222,8 @@ describe('след выстрела', () => {
     ).toBe(ShotWeapon.Beam);
   });
 
-  it('гранатомётчик помечает выстрел разрядом', () => {
-    expect(weaponOf(duel([], [unit(60, 0, UnitType.Grenadier, 0, 0, 100)]), 0)).toBe(
+  it('Тесла помечает выстрел разрядом', () => {
+    expect(weaponOf(duel([], [unit(60, 0, UnitType.Tesla, 0, 0, 100)]), 0)).toBe(
       ShotWeapon.Arc,
     );
   });
@@ -411,3 +411,4 @@ describe('награда генералу', () => {
     );
   });
 });
+

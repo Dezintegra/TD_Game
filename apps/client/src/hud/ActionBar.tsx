@@ -96,7 +96,7 @@ const Tile = ({ label, hotkey, cost, affordable, active, testId, onSelect }: Til
 const UNIT_HOTKEY: Readonly<Record<UnitType, string>> = {
   [UnitType.Assault]: '1',
   [UnitType.Sniper]: '2',
-  [UnitType.Grenadier]: '3',
+  [UnitType.Tesla]: '3',
 };
 
 const STRUCTURE_HOTKEY: Readonly<Record<StructureKind, string>> = {
