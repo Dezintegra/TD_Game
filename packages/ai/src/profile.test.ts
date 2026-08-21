@@ -20,6 +20,7 @@ import {
   savingLimit,
 } from './profile.js';
 import type { AiProfile } from './profile.js';
+import { AttemptNote } from './observer.js';
 import type { AttemptRecord, DecisionRecord } from './observer.js';
 
 /**
@@ -231,5 +232,119 @@ describe('неприкосновенный запас держится, толь
     const bought = attemptsOf(reserved, 60).filter((attempt) => attempt.result === 'bought');
 
     expect(bought.length).toBeGreaterThan(0);
+  });
+});
+
+describe('накопление уступает очередь тому, что выгоднее', () => {
+  /**
+   * Решения ОБЕИХ сторон матча компьютера против компьютера.
+   *
+   * Матч с бездействующим соперником для этой проверки не годится, и это
+   * само по себе находка: там укрепления никто не сносит, покрытие вокруг
+   * генерала остаётся насыщенным, и новая башня честно ничего не стоит.
+   * Обгон накопления в таком матче почти не случается — и правильно
+   * делает. Видно его только там, где укрепления теряют и восстанавливают.
+   *
+   * Seed сторонам разводятся так же, как это делает арена. Взяв их
+   * близкими, мы получили бы двух почти одинаковых игроков, чей матч
+   * вырождается в симметричное топтание, — на таком матче обгон
+   * не наблюдается вовсе.
+   */
+  const DUEL_SEED = 3000;
+
+  const duel = (seconds: number): readonly DecisionRecord[] => {
+    const records: DecisionRecord[] = [];
+    const observe = (record: DecisionRecord): void => {
+      records.push(record);
+    };
+
+    const sides = [DUEL_SEED ^ 0x5bf03635, DUEL_SEED ^ 0x2f6e1a77].map((seed, index) =>
+      createOpponent(asPlayerId(index), seed, BASELINE_PROFILE, observe),
+    );
+
+    let world = createWorld(DUEL_SEED);
+    for (let tick = 0; tick < seconds * TICKS_PER_SECOND; tick += 1) {
+      world = step(
+        world,
+        sides.flatMap((side) => side.decide(world)),
+      );
+    }
+
+    return records;
+  };
+
+  const decisions = duel(180);
+
+  it('очередь доходит до постройки, даже когда та не первая', () => {
+    // Главная беда, ради которой всё затевалось. До правки первое же
+    // «коплю» обрывало перебор, и до постройки очередь не доходила
+    // НИ РАЗУ, если она не стояла первой: сто процентов решений в каждом
+    // из трёх таких порядков трат.
+    const late = decisions.filter((record) => record.spendOrder.indexOf('build') > 0);
+    const tried = late.filter((record) =>
+      record.attempts.some((attempt) => attempt.spending === 'build'),
+    );
+
+    expect(late.length).toBeGreaterThan(0);
+    expect(tried.length).toBeGreaterThan(0);
+  });
+
+  it('копя на одно, противник покупает другое, если оно выгоднее', () => {
+    // Тот самый обгон. До правки решений, где что-то и копится, и
+    // покупается, не бывало вовсе: первое же «коплю» обрывало перебор.
+    const overtook = decisions.filter(
+      (record) =>
+        record.attempts.some((attempt) => attempt.result === 'wait') &&
+        record.attempts.some((attempt) => attempt.result === 'bought'),
+    );
+
+    expect(overtook.length).toBeGreaterThan(0);
+  });
+
+  it('обгоняет именно более выгодное, а не более дешёвое', () => {
+    // Различие принципиальное и проверено прогоном: «покупай что дешевле
+    // цели» вырождается в «покупай юнитов всегда». Купившая трата обязана
+    // давать больше прибавки на единицу энергии, чем та, на которую
+    // копили, — а раз прибавку мы здесь не видим, проверяем следствие:
+    // уступившие очередь помечены своей причиной, и среди них есть юниты.
+    const yielded = decisions.flatMap((record) =>
+      record.attempts.filter((attempt) => attempt.note === AttemptNote.SavingForBetter),
+    );
+
+    expect(yielded.length).toBeGreaterThan(0);
+    expect(yielded.some((attempt) => attempt.spending === 'train')).toBe(true);
+    for (const attempt of yielded) expect(attempt.result).toBe('pass');
+  });
+
+  it('купив, противник не считается копившим', () => {
+    // Иначе исправно покупающий башни противник через полторы минуты
+    // объявлялся бы потерявшим терпение и начинал тратить казну куда попало.
+    for (const record of decisions) {
+      const bought = record.attempts.some((attempt) => attempt.result === 'bought');
+      if (bought) expect(record.waitStreak).toBe(0);
+    }
+  });
+
+  it('накопление на несравнимое не пускает вперёд никого', () => {
+    // В ранней фазе интересна одна экономика, а её прибавка выражается
+    // будущим доходом, а не уроном, и сравнивать её не с чем. Такое
+    // накопление обязано отложить всё, что стоит за ним: считать
+    // неизвестное малым значило бы пускать вперёд что угодно.
+    const waitedOnUpgrade = decisions
+      .filter((record) => record.phaseIndex === 0)
+      .map((record) => ({
+        record,
+        at: record.attempts.findIndex(
+          (attempt) => attempt.spending === 'upgrade' && attempt.result === 'wait',
+        ),
+      }))
+      .filter((entry) => entry.at >= 0);
+
+    expect(waitedOnUpgrade.length).toBeGreaterThan(0);
+    for (const { record, at } of waitedOnUpgrade) {
+      for (const attempt of record.attempts.slice(at + 1)) {
+        expect(attempt.result).not.toBe('bought');
+      }
+    }
   });
 });

@@ -47,6 +47,7 @@ import {
   rangeInCells,
   rankFrontiers,
   situationOf,
+  towerGain,
 } from './posture.js';
 import type { Verdict } from './posture.js';
 import { AttemptNote } from './observer.js';
@@ -256,21 +257,47 @@ export const createOpponent = (
           structure.kind !== StructureKind.Wall,
       );
 
+      const efficiency = spendEfficiency(world, me, player, phase, profile, approach, covered);
+
       const spendOrder = escorting
         ? profile.escort.spend
-        : orderBySpendGain(
-            phase.spend,
-            spendEfficiency(world, me, player, phase, profile, verdict),
-            undefended,
-          );
+        : orderBySpendGain(phase.spend, efficiency, undefended);
 
       if (!struck && !pushed) {
         let waited = false;
+        // Прибавка на единицу энергии той покупки, ради которой копится.
+        // Пока порога нет, копить не на что и уступать очередь некому.
+        let saving: number | undefined;
 
         // Уходя вперёд без сопровождения, противник сначала набирает
         // войско. На оборонительном рубеже такой спешки нет: там генерала
         // прикрывают собственные башни.
         for (const spending of spendOrder) {
+          // Копя на выгодное, менее выгодное уступает ему очередь —
+          // но именно менее выгодное, а не просто более дорогое.
+          //
+          // Прежде «коплю» обрывало перебор целиком, и это было главной
+          // бедой развесовки: прокачка стоит в очереди раньше постройки,
+          // ветки её не кончаются никогда, поэтому она отвечала «коплю»
+          // почти всегда — и до постройки очередь не доходила НИ РАЗУ,
+          // если та не стояла первой. В замере на двадцати матчах: 66%
+          // решений обрывались раньше постройки, а во всех трёх порядках,
+          // где она не первая, — все сто процентов.
+          //
+          // Сравнивать по цене нельзя, и это проверено прогоном: юнит
+          // вчетверо дешевле улучшения, поэтому «покупай, что дешевле
+          // цели» вырождается в «покупай юнитов всегда» — за две минуты
+          // 59 машин, ноль построек и ни одного улучшения сверх первого.
+          // Сравнение по прибавке на энергию такого вырождения не даёт:
+          // прокачка умножает то, что уже есть, и, набрав войско, честно
+          // обходит и юнита, и башню.
+          if (saving !== undefined && !outvalues(efficiency[spending], saving)) {
+            if (observe !== undefined) {
+              attempts.push({ spending, ...passing(AttemptNote.SavingForBetter) });
+            }
+            continue;
+          }
+
           const attempt =
             spending === 'upgrade'
               ? tryUpgrade(commands, world, me, player, phase, profile, roll)
@@ -283,23 +310,25 @@ export const createOpponent = (
 
           if (observe !== undefined) attempts.push({ spending, ...attempt });
 
-          if (attempt.result === 'bought') break;
+          if (attempt.result === 'bought') {
+            // Купил — значит не копил. Иначе противник, исправно
+            // покупающий башни, через полторы минуты объявлялся бы
+            // потерявшим терпение и начинал тратить казну куда попало.
+            waited = false;
+            break;
+          }
 
-          // `wait` прерывает перебор: раз на желаемое почти хватает,
-          // тратить сейчас на что-то менее важное значит никогда до него
-          // не добраться.
-          //
-          // Разрешать при этом покупки дешевле желаемого нельзя, и это
-          // проверено прогоном: юнит вчетверо дешевле улучшения, поэтому
-          // «покупай, что дешевле цели» вырождается в «покупай юнитов
-          // всегда» — за две минуты 59 машин, ноль построек и ни одного
-          // улучшения сверх первого. Послабление имеет смысл только вместе
-          // со сравнением выгоды покупок (раздел 5 в `fix-ai-spending`),
-          // которое умеет сказать, что юнит сейчас выгоднее улучшения,
-          // а не просто дешевле.
           if (attempt.result === 'wait' && !impatient) {
             waited = true;
-            break;
+            // Прибавка, которую сравнивать не с чем, непревосходима.
+            // Считать неизвестное малым значило бы пускать вперёд что
+            // угодно всякий раз, когда сравнить не с чем; бесконечный
+            // порог оставляет прежнее поведение — перебор кончается.
+            //
+            // Копится сразу на несколько — порог берётся наибольший:
+            // уступать надо лучшему из отложенного, а не первому.
+            const value = efficiency[spending] ?? Number.POSITIVE_INFINITY;
+            saving = saving === undefined ? value : Math.max(saving, value);
           }
         }
 
@@ -429,7 +458,8 @@ const spendEfficiency = (
   player: PlayerState,
   phase: PhaseProfile,
   profile: AiProfile,
-  verdict: Verdict | undefined,
+  approach: Approach,
+  covered: Uint8Array,
 ): Readonly<Partial<Record<Spending, number>>> => {
   const stats = playerStats(player);
   const efficiency: Partial<Record<Spending, number>> = {};
@@ -442,7 +472,12 @@ const spendEfficiency = (
   if (trainPrice > 0) efficiency.train = worth(unitGain(stats, phase, profile), trainPrice);
 
   const towerPrice = stats.structures[StructureKind.TowerBasic].cost;
-  if (towerPrice > 0) efficiency.build = worth(Math.max(0, verdict?.gain ?? 0), towerPrice);
+  if (towerPrice > 0) {
+    efficiency.build = worth(
+      towerGain(towerSiteCoverage(world, me, stats, approach, covered), stats, profile),
+      towerPrice,
+    );
+  }
 
   if (hasComparableUpgrade(phase)) {
     const best = upgradeGain(world, me, stats, phase, profile, upgradeCosts(player));
@@ -450,6 +485,56 @@ const spendEfficiency = (
   }
 
   return efficiency;
+};
+
+/**
+ * Может ли эта трата обойти ту, ради которой копится.
+ *
+ * Строго больше, а не «не меньше»: при равной выгоде очередь остаётся
+ * за накоплением. Иначе противник вечно менял бы шило на мыло, а до
+ * дорогой покупки не добирался никогда.
+ *
+ * Отсутствующая прибавка не обходит ничего. Считать неизвестное большим
+ * значило бы пускать вперёд что попало.
+ */
+const outvalues = (candidate: number | undefined, saving: number): boolean =>
+  candidate !== undefined && candidate > saving;
+
+/**
+ * Сколько ненакрытого пути накроет башня, если купить её прямо сейчас.
+ *
+ * Место спрашивается тем же `towerBuildCell`, каким его выберет и сама
+ * постройка. Функция детерминированная, поэтому два вызова за решение —
+ * это не два источника истины, а один ответ, полученный дважды.
+ *
+ * Прежде вместо этого бралась выгода РУБЕЖА генерала, и место, где башня
+ * встанет, в расчёт не входило вовсе. Отсюда и брались нелепости:
+ * простреливаемый вражескими башнями рубеж обесценивал покупку, хотя
+ * поставленная там своя башня как раз стоит и стреляет.
+ */
+const towerSiteCoverage = (
+  world: WorldState,
+  me: PlayerId,
+  stats: PlayerStats,
+  approach: Approach,
+  covered: Uint8Array,
+): number => {
+  const general = world.generals[me];
+  if (general === undefined || !general.alive) return 0;
+
+  const rangeCells = rangeInCells(stats.structures[StructureKind.TowerBasic].range);
+  const cell = towerBuildCell(
+    world,
+    me,
+    general.position,
+    stats.general.buildRadius,
+    approach,
+    covered,
+    rangeCells,
+  );
+  if (cell < 0) return 0;
+
+  return freshCoverage(approach, covered, cell, rangeCells);
 };
 
 /** Сколько юнитов игрока живо на карте. */

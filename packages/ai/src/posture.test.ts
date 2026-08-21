@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BASE_COOLDOWN_TICKS,
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
+  TOWER_GROWTH_CAP_PPM,
   UNIT_STATS,
   UnitType,
   asEntityId,
@@ -17,14 +19,18 @@ import type { PlayerId, Vec2 } from '@td/shared';
 import { cellCentre, cellIndex, createWorld, playerStats } from '@td/sim';
 import type { StructureState, UnitState, WorldState } from '@td/sim';
 import { approachOf } from './approach.js';
-import { BASELINE_PROFILE } from './profile.js';
+import { BASELINE_PROFILE, horizonTicks } from './profile.js';
 import {
+  ENERGY_PER_LIVE_DAMAGE,
   chooseFrontier,
   coveredCells,
+  discCellCount,
   freshCoverage,
   incomingAt,
   rangeInCells,
   situationOf,
+  towerGain,
+  towerGrowthFactor,
 } from './posture.js';
 import type { Situation, Verdict } from './posture.js';
 
@@ -270,5 +276,84 @@ describe('выбор рубежа', () => {
     const world = clearMap();
 
     expect(decide(world).frontier.cell).toBe(decide(world).frontier.cell);
+  });
+});
+
+describe('покупка башни оценивается своей меркой', () => {
+  const owner = PLAIN.players[AI];
+  if (owner === undefined) throw new Error('нет игрока');
+
+  const stats = playerStats(owner);
+  const baseline = stats.structures[StructureKind.TowerBasic];
+  const full = discCellCount(rangeInCells(baseline.range));
+
+  it('башня, не накрывающая путь, не стоит ничего', () => {
+    expect(towerGain(0, stats, BASELINE_PROFILE)).toBe(0);
+  });
+
+  it('прибавка растёт вместе с покрытием', () => {
+    const half = towerGain(Math.floor(full / 2), stats, BASELINE_PROFILE);
+    const whole = towerGain(full, stats, BASELINE_PROFILE);
+
+    expect(half).toBeGreaterThan(0);
+    expect(whole).toBeGreaterThan(half);
+  });
+
+  it('покрытие сверх круга дальности прибавки не добавляет', () => {
+    // Доля ограничена единицей: клеток пути в радиусе не может быть
+    // больше, чем клеток в самом радиусе.
+    expect(towerGain(full * 3, stats, BASELINE_PROFILE)).toBe(
+      towerGain(full, stats, BASELINE_PROFILE),
+    );
+  });
+
+  it('прибавка выше паспортного урона ровно на рост за убийства', () => {
+    // Основание — то же выражение, каким меряется юнит: урон в тик,
+    // помноженный на горизонт и на курс энергии. Всё, что сверх него, —
+    // рост башни за убийства, и ничего больше.
+    const damagePerTick = baseline.attack / baseline.cooldownTicks;
+    const horizon = horizonTicks(BASELINE_PROFILE);
+    const bare = damagePerTick * horizon * ENERGY_PER_LIVE_DAMAGE;
+
+    expect(towerGain(full, stats, BASELINE_PROFILE)).toBeCloseTo(
+      bare * towerGrowthFactor(damagePerTick, horizon),
+      6,
+    );
+  });
+
+  it('в оценку не входят ни дорога генерала, ни время удержания рубежа', () => {
+    // Свидетель отделения одной мерки от другой: выгода рубежа зависит
+    // от обстановки вокруг генерала, а цена башни — нет. Один и тот же
+    // аргумент обязан давать один и тот же ответ, где бы генерал ни был.
+    const here = towerGain(full, stats, BASELINE_PROFILE);
+    const there = towerGain(full, stats, BASELINE_PROFILE);
+
+    expect(here).toBe(there);
+    expect(here).toBeGreaterThan(0);
+  });
+});
+
+describe('рост башни за убийства', () => {
+  it('при нынешнем балансе даёт средний множитель около 1,22', () => {
+    // Девять убийств за горизонт: урон 0,5 в тик, горизонт 1800 тиков,
+    // здоровье опорного юнита 100. Средний множитель — среднее
+    // геометрической прогрессии, а не её последний член: башня
+    // усиливается постепенно.
+    const damagePerTick = STRUCTURE_STATS[StructureKind.TowerBasic].attack / BASE_COOLDOWN_TICKS;
+
+    expect(towerGrowthFactor(damagePerTick, horizonTicks(BASELINE_PROFILE))).toBeCloseTo(1.225, 2);
+  });
+
+  it('без убийств множитель равен единице', () => {
+    expect(towerGrowthFactor(0, horizonTicks(BASELINE_PROFILE))).toBe(1);
+    expect(towerGrowthFactor(1, 0)).toBe(1);
+  });
+
+  it('множитель не превышает потолка из баланса', () => {
+    // Потолок тысячекратный. Без него степень у сильно прокачанной башни
+    // ушла бы в бесконечность, а правила такого роста не позволяют.
+    expect(towerGrowthFactor(1000, horizonTicks(BASELINE_PROFILE))).toBe(
+      TOWER_GROWTH_CAP_PPM / PPM_ONE,
+    );
   });
 });
