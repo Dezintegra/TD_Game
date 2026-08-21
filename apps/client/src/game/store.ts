@@ -1,4 +1,5 @@
-﻿import { create } from 'zustand';
+﻿import { AttackStance } from '@td/shared';
+import { create } from 'zustand';
 import type { Notice } from './rejections.js';
 
 /**
@@ -89,6 +90,8 @@ export interface MatchSnapshot {
   /** Вид постройки, выбранный для размещения, либо null. */
   readonly buildKind: number | null;
   readonly aimingNuke: boolean;
+  /** Режим атаки войска: приказ отдаётся всему войску сразу. */
+  readonly stance: AttackStance;
 }
 
 const EMPTY_MATCH: MatchSnapshot = {
@@ -109,6 +112,7 @@ const EMPTY_MATCH: MatchSnapshot = {
   winner: null,
   buildKind: null,
   aimingNuke: false,
+  stance: AttackStance.Breakthrough,
 };
 
 /**
@@ -302,6 +306,8 @@ export interface MatchCommands {
   train(unitType: number, count: number): void;
   setBuildKind(kind: number | null): void;
   toggleNukeAim(): void;
+  /** Сменить режим атаки войска. */
+  setStance(stance: number): void;
   buyUpgrade(branch: number): void;
   /** Снести выделенную постройку. */
   demolish(cell: number): void;
@@ -312,6 +318,7 @@ const NO_COMMANDS: MatchCommands = {
   train: () => undefined,
   setBuildKind: () => undefined,
   toggleNukeAim: () => undefined,
+  setStance: () => undefined,
   buyUpgrade: () => undefined,
   demolish: () => undefined,
   restart: () => undefined,

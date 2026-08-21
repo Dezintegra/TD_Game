@@ -93,6 +93,8 @@ const argsOf = (command: Command): readonly [number, number] => {
       return [command.cell, 0];
     case CommandKind.Demolish:
       return [command.cell, 0];
+    case CommandKind.SetStance:
+      return [command.stance, 0];
   }
 };
 

@@ -25,6 +25,7 @@
   distanceSquared,
   growPpm,
   isValidDirection,
+  isValidStance,
 } from '@td/shared';
 import type { Command, PlayerId, UnitType } from '@td/shared';
 import { killGeneral } from './combat.js';
@@ -117,6 +118,8 @@ const dispatch = (working: Working, player: WorkingPlayer, command: Command): Ou
       return launchNuke(working, player, command.cell);
     case CommandKind.Demolish:
       return demolish(working, player, command.cell);
+    case CommandKind.SetStance:
+      return setStance(player, command.stance);
   }
 };
 
@@ -372,6 +375,21 @@ const demolish = (working: Working, player: WorkingPlayer, cell: number): Outcom
   structure.demolishAtTick = asTickNumber(
     working.tick + STRUCTURE_STATS[structure.kind].buildTicks,
   );
+
+  return APPLIED;
+};
+
+/**
+ * Режим атаки войска.
+ *
+ * Новой причины отказа не заводится: значение вне диапазона — та же
+ * ошибка, что негодное направление или несуществующая ветка прокачки,
+ * и действие игрока в ответ то же самое.
+ */
+const setStance = (player: WorkingPlayer, stance: number): Outcome => {
+  if (!isValidStance(stance)) return RejectReason.InvalidArgument;
+
+  player.stance = stance;
 
   return APPLIED;
 };

@@ -1,6 +1,15 @@
-import type { CSSProperties, MouseEvent } from 'react';
+﻿import type { CSSProperties, MouseEvent } from 'react';
 import { Panel } from '@td/ui';
-import { BUILDABLE_KINDS, RejectReason, StructureKind, UNIT_TYPES, UnitType } from '@td/shared';
+import {
+  ATTACK_STANCES,
+  ATTACK_STANCE_LABEL,
+  AttackStance,
+  BUILDABLE_KINDS,
+  RejectReason,
+  StructureKind,
+  UNIT_TYPES,
+  UnitType,
+} from '@td/shared';
 import { BATCH_ORDER_COUNT } from '../game/controls.js';
 import { matchCommands, useHudStore } from '../game/store.js';
 import { Nudge } from './Notices.js';
@@ -97,6 +106,17 @@ const STRUCTURE_HOTKEY: Readonly<Record<StructureKind, string>> = {
   [StructureKind.TowerSniper]: 'R',
 };
 
+/**
+ * Горячие клавиши режимов атаки.
+ *
+ * Z и X свободны, лежат подряд и сами по себе выглядят переключателем.
+ * Занятые клавиши — WASD, QER, цифры и F — не задеты.
+ */
+const STANCE_HOTKEYS: Readonly<Record<AttackStance, string>> = {
+  [AttackStance.Breakthrough]: 'Z',
+  [AttackStance.Engage]: 'X',
+};
+
 export const ActionBar = () => {
   const match = useHudStore((state) => state.match);
 
@@ -150,6 +170,26 @@ export const ActionBar = () => {
             active={match.aimingNuke}
             onSelect={() => matchCommands().toggleNukeAim()}
           />
+        </div>
+      </Panel>
+
+      {/* Режим атаки — приказ всему войску сразу, как и выбор цели.
+          Текущий виден всегда: это не разовое действие, а состояние,
+          и игрок должен знать, в каком его войско сейчас находится. */}
+      <Panel title="Режим атаки">
+        <div style={groupStyle}>
+          {ATTACK_STANCES.map((stance) => (
+            <Tile
+              key={stance}
+              testId={`stance-${String(stance)}`}
+              label={ATTACK_STANCE_LABEL[stance]}
+              hotkey={STANCE_HOTKEYS[stance]}
+              cost={0}
+              affordable
+              active={match.stance === stance}
+              onSelect={() => matchCommands().setStance(stance)}
+            />
+          ))}
         </div>
       </Panel>
     </div>

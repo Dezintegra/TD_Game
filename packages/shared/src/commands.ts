@@ -1,4 +1,4 @@
-import type { PlayerId, TickNumber } from './branded.js';
+﻿import type { PlayerId, TickNumber } from './branded.js';
 import type { StructureKind, UnitType } from './balance.js';
 
 /**
@@ -32,6 +32,8 @@ export const CommandKind = {
   LaunchNuke: 5,
   /** Снести собственную постройку в клетке. */
   Demolish: 6,
+  /** Задать режим атаки всему своему войску. */
+  SetStance: 7,
 } as const;
 
 export type CommandKind = (typeof CommandKind)[keyof typeof CommandKind];
@@ -90,6 +92,12 @@ export interface DemolishCommand extends CommandBase {
   readonly cell: number;
 }
 
+export interface SetStanceCommand extends CommandBase {
+  readonly kind: typeof CommandKind.SetStance;
+  /** Значение из AttackStance. */
+  readonly stance: number;
+}
+
 export type Command =
   | MoveGeneralCommand
   | BuildCommand
@@ -97,7 +105,8 @@ export type Command =
   | SetTargetCommand
   | BuyUpgradeCommand
   | LaunchNukeCommand
-  | DemolishCommand;
+  | DemolishCommand
+  | SetStanceCommand;
 
 /**
  * Команда в том виде, в каком участник отправляет её по сети: без стороны.
@@ -183,7 +192,7 @@ export const RejectReason = {
   InvalidCell: 7,
   /** Цель своя, либо в клетке нет постройки. */
   InvalidTarget: 8,
-  /** Направление, тип юнита или ветка прокачки вне допустимого диапазона. */
+  /** Направление, тип юнита, ветка прокачки или режим атаки вне диапазона. */
   InvalidArgument: 9,
   /** Матч окончен: мир замер и команд больше не принимает. */
   MatchOver: 10,

@@ -1,4 +1,4 @@
-import type { Command, UnownedCommand } from '@td/shared';
+﻿import type { Command, UnownedCommand } from '@td/shared';
 
 /**
  * Версия протокола. Передаётся в заголовке каждого кадра.
@@ -16,8 +16,10 @@ import type { Command, UnownedCommand } from '@td/shared';
  *
  * Тройка — вместе с командой сноса: видов команд стало семь вместо шести,
  * и клиент прежней версии седьмую не разберёт.
+ *
+ * Четвёрка — вместе с режимом атаки: восьмой вид команды.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /**
  * Типы сообщений.

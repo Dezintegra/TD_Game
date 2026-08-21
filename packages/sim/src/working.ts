@@ -1,4 +1,5 @@
 ﻿import { SHOT_LIFETIME_TICKS, asTickNumber } from '@td/shared';
+import type { AttackStance } from '@td/shared';
 import type {
   CommandKind,
   EntityId,
@@ -49,6 +50,7 @@ export interface WorkingPlayer {
   upgrades: UpgradeState[];
   purchasePpm: number[];
   targetStructure: EntityId;
+  stance: AttackStance;
   queue: UnitType[];
 }
 
@@ -150,6 +152,7 @@ export const toWorking = (state: WorldState): Working => ({
     upgrades: [...player.upgrades],
     purchasePpm: [...player.purchasePpm],
     targetStructure: player.targetStructure,
+    stance: player.stance,
     queue: [...player.queue],
   })),
   structures: state.structures.map((structure) => ({
@@ -267,6 +270,7 @@ const toPlayerState = (player: WorkingPlayer): PlayerState => ({
   upgrades: player.upgrades,
   purchasePpm: player.purchasePpm,
   targetStructure: player.targetStructure,
+  stance: player.stance,
   queue: player.queue,
 });
 

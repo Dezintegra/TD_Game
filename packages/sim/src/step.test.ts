@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  AttackStance,
   BASE_BUILD_EXCLUSION,
   BASE_INCOME_PER_TICK,
   BUILDABLE_KINDS,
@@ -951,13 +952,37 @@ describe('остановка юнита на противнике', () => {
   /** Здоровья с запасом: тест про движение, а не про то, кто кого убьёт. */
   const TOUGH = 1_000_000;
 
-  it('встречный противник останавливает', () => {
-    const world = withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
+  /**
+   * Мир, где обе стороны дерутся, а не прорываются.
+   *
+   * Режим по умолчанию — «Прорыв», и в нём остановки на встречном нет
+   * вовсе. Эти тесты проверяют именно «Бой», поэтому режим ставится явно:
+   * иначе они проверяли бы отсутствие правила, а не правило.
+   */
+  const engaging = (world: WorldState): WorldState => ({
+    ...world,
+    players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
+  });
+  it('в режиме «Бой» встречный противник останавливает', () => {
+    const world = engaging(
+      withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901),
+    );
 
     const after = run(world, 4);
     const mine = after.units.find((unit) => unit.id === asEntityId(900));
 
     expect(mine?.position).toEqual(cellCentre(MINE));
+  });
+
+  it('в режиме «Прорыв» встречный противник не останавливает', () => {
+    // Главное свойство режима: волна идёт к цели, ведя огонь на ходу,
+    // и не вязнет в первом же заслоне.
+    const world = withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
+
+    const after = run(world, 4);
+    const mine = after.units.find((unit) => unit.id === asEntityId(900));
+
+    expect(mine?.position).not.toEqual(cellCentre(MINE));
   });
 
   it('в одиночестве тот же юнит идёт вперёд', () => {
@@ -967,8 +992,10 @@ describe('остановка юнита на противнике', () => {
     expect(mine?.position).not.toEqual(cellCentre(MINE));
   });
 
-  it('противник за стеной не останавливает', () => {
-    const world = withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
+  it('противник за стеной не останавливает даже в «Бою»', () => {
+    const world = engaging(
+      withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901),
+    );
     const walled: WorldState = {
       ...world,
       structures: [...world.structures, wallAt(cellIndex(20, 21), 1, 902)],

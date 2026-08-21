@@ -1,4 +1,5 @@
 ﻿import {
+  AttackStance,
   GENERAL_STATS,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
@@ -59,6 +60,13 @@ export interface PlayerState {
   readonly purchasePpm: readonly number[];
   /** Постройка, назначенная общей целью для всех юнитов игрока. */
   readonly targetStructure: EntityId;
+  /**
+   * Режим атаки всего войска.
+   *
+   * Свойство игрока, а не отдельного юнита: приказ отдаётся войску
+   * целиком, как и выбор цели. Управление ротами — совсем другая игра.
+   */
+  readonly stance: AttackStance;
   /**
    * Очередь производства. Энергия за эти заказы уже списана.
    *
@@ -350,6 +358,9 @@ export const createWorld = (seed: number): WorldState => {
     // По умолчанию цель — база противника. Это единственная постройка,
     // которая заведомо существует с первого тика.
     targetStructure: structures[1 - index]?.id ?? NO_ENTITY,
+    // Прорыв по умолчанию: до появления режимов войско останавливалось
+    // на каждом встречном, и осадная волна вязла в первом же заслоне.
+    stance: AttackStance.Breakthrough,
     queue: [],
   }));
 

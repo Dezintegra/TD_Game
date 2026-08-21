@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
+  AttackStance,
   CommandKind,
   DIRECTION_COUNT,
   DIRECTION_STOP,
@@ -115,6 +116,9 @@ describe('разворот юнита', () => {
     const world = createWorld(SEED);
     const placed: WorldState = {
       ...world,
+      // Режим «Бой» ставится явно: по умолчанию войско прорывается
+      // и встречного боя не завязывает, а тест именно про него.
+      players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
       units: [unit(700, 0, 0, 0, 3), unit(701, 1, 1, 0, 3)],
     };
 

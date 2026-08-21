@@ -1,4 +1,5 @@
 ﻿import {
+  AttackStance,
   BASE_BUILD_EXCLUSION,
   CHECKSUM_INTERVAL_TICKS,
   CommandKind,
@@ -8,8 +9,8 @@
   StructureKind,
   TICKS_PER_SECOND,
   Terrain,
-  UNIT_CAP,
   PPM_ONE,
+  UNIT_CAP,
   asPlayerId,
   distanceSquared,
   energyToVisible,
@@ -327,6 +328,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     build: (cell, structure) => send({ kind: CommandKind.Build, cell, structure }),
     train,
     setTarget: (cell) => send({ kind: CommandKind.SetTarget, cell }),
+    setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     nuke: (cell) => send({ kind: CommandKind.LaunchNuke, cell }),
     pan: (dx, dy) => scene.panBy(dx, dy),
     jumpTo: (cell) => scene.centreOnCell(cell),
@@ -346,6 +348,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     train: (unitType, count) => train(unitType as UnitType, count),
     setBuildKind: (kind) => controls.setBuildKind(kind as StructureKindType | null),
     toggleNukeAim: () => controls.setAimingNuke(!controls.state.aimingNuke),
+    setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, branch }),
     demolish: (cell) => send({ kind: CommandKind.Demolish, cell }),
     restart: () => options.onRestart?.(),
@@ -537,6 +540,7 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
       winner: world.winner,
       buildKind: state.buildKind,
       aimingNuke: state.aimingNuke,
+      stance: AttackStance.Breakthrough,
     };
   }
 
@@ -585,5 +589,6 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
     winner: world.winner,
     buildKind: state.buildKind,
     aimingNuke: state.aimingNuke,
+    stance: player.stance,
   };
 };

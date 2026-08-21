@@ -1,5 +1,6 @@
 ﻿import {
   AI_DECISION_INTERVAL_TICKS,
+  AttackStance,
   BASE_BUILD_EXCLUSION,
   BUILDABLE_KINDS,
   CommandKind,
@@ -208,6 +209,7 @@ export const createOpponent = (
 
       // Выбор цели энергии не стоит и потому идёт всегда.
       pushTargeting(commands, world, me, player, approach);
+      pushStance(commands, world, me, player, verdict, profile);
 
       // Ядерный удар проверяется до остальных трат: он копится в запасе
       // фазы, и тратить этот запас на что-то другое было бы обидно.
@@ -605,6 +607,40 @@ const tryTrain = (
   );
 
   return BOUGHT;
+};
+
+/**
+ * Режим атаки войска.
+ *
+ * Выводится из позиции, а не решается отдельно: наступая, противник
+ * прорывается к цели, обороняясь — принимает встречный бой. Это ровно
+ * тот же выбор, который уже сделан выбором рубежа, и заводить под него
+ * второе решение значило бы завести второй источник истины о намерении.
+ *
+ * Команда отдаётся только при смене: она ничего не стоит, но лишние
+ * команды засоряют и запись матча, и разбор.
+ */
+const pushStance = (
+  commands: Command[],
+  world: WorldState,
+  me: PlayerId,
+  player: PlayerState,
+  verdict: Verdict | undefined,
+  profile: AiProfile,
+): void => {
+  const advancing = (verdict?.frontier.fraction ?? 0) > profile.movement.advanceFraction;
+  const wanted = advancing ? AttackStance.Breakthrough : AttackStance.Engage;
+
+  if (player.stance === wanted) return;
+
+  commands.push(
+    command({
+      kind: CommandKind.SetStance,
+      player: me,
+      tick: asTickNumber(world.tick),
+      stance: wanted,
+    }),
+  );
 };
 
 // ─────────────────────────────────────────────────────────────────────────

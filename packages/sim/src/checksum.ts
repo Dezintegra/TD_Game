@@ -1,4 +1,4 @@
-import type { WorldState } from './world.js';
+﻿import type { WorldState } from './world.js';
 
 /**
  * Контрольная сумма состояния мира (алгоритм FNV-1a, 32 бита).
@@ -50,6 +50,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, player.id);
     hash = mix(hash, player.energy);
     hash = mix(hash, player.targetStructure);
+    hash = mix(hash, player.stance);
 
     for (const upgrade of player.upgrades) {
       hash = mix(hash, upgrade.level);

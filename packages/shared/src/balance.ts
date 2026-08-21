@@ -112,6 +112,47 @@ export const UNIT_TYPES: readonly UnitType[] = [
   UnitType.Grenadier,
 ];
 
+/**
+ * Как войско ведёт себя при встрече с противником по дороге.
+ *
+ * До сих пор правило было одно и жёсткое: юнит останавливается перед
+ * встречным врагом. Оно осмысленно — две армии, прошедшие друг сквозь
+ * друга и разошедшиеся по своим делам, это не тактика, а отсутствие
+ * события, — но оно же означало, что осадная волна вязнет в любом
+ * заслоне, и решать за игрока тут не за что.
+ *
+ * Режим — свойство ИГРОКА, а не отдельного юнита: приказ отдаётся всему
+ * войску сразу, как и выбор цели. Управление ротами — совсем другая игра,
+ * и вводить его под видом режима атаки нельзя.
+ *
+ * Преследования здесь пока нет намеренно. Оно требует памяти у юнита —
+ * за кем гонимся и откуда начали, — то есть двух новых полей в состоянии
+ * мира и предела погони; это отдельный раздел работы, и половинчатое
+ * преследование хуже, чем его отсутствие.
+ */
+export const AttackStance = {
+  /** Прорыв: идти к цели, ведя огонь на ходу и не останавливаясь. */
+  Breakthrough: 0,
+  /** Бой: остановиться перед встречным противником и драться. */
+  Engage: 1,
+} as const;
+
+export type AttackStance = (typeof AttackStance)[keyof typeof AttackStance];
+
+export const ATTACK_STANCES: readonly AttackStance[] = [
+  AttackStance.Breakthrough,
+  AttackStance.Engage,
+];
+
+/** Подписи режимов. Живут рядом с прочими подписями баланса. */
+export const ATTACK_STANCE_LABEL: Readonly<Record<AttackStance, string>> = {
+  [AttackStance.Breakthrough]: 'Прорыв',
+  [AttackStance.Engage]: 'Бой',
+};
+
+export const isValidStance = (value: number): value is AttackStance =>
+  Number.isInteger(value) && value >= 0 && value < ATTACK_STANCES.length;
+
 export interface UnitStats {
   readonly label: string;
   readonly health: number;

@@ -8,6 +8,7 @@
   asPlayerId,
   asTickNumber,
   isValidDirection,
+  isValidStance,
   withPlayer,
 } from '@td/shared';
 import type { Command, StructureKind, UnitType, UnownedCommand } from '@td/shared';
@@ -103,6 +104,8 @@ const packArgs = (command: UnownedCommand | Command): CommandArgs => {
       return { a: command.cell, b: 0 };
     case CommandKind.Demolish:
       return { a: command.cell, b: 0 };
+    case CommandKind.SetStance:
+      return { a: command.stance, b: 0 };
   }
 };
 
@@ -152,6 +155,9 @@ const unpackCommand = (kind: number, a: number, b: number, tick: number): Unowne
 
     case CommandKind.Demolish:
       return isCell(a) ? { kind: CommandKind.Demolish, tick: at, cell: a } : undefined;
+
+    case CommandKind.SetStance:
+      return isValidStance(a) ? { kind: CommandKind.SetStance, tick: at, stance: a } : undefined;
 
     default:
       return undefined;

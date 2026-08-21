@@ -1,4 +1,4 @@
-﻿import { DIRECTION_STOP, StructureKind, UnitType, directionTowards } from '@td/shared';
+﻿import { AttackStance, DIRECTION_STOP, StructureKind, UnitType, directionTowards } from '@td/shared';
 import { screenToWorld } from './iso.js';
 
 /**
@@ -47,6 +47,8 @@ export interface ControlHandlers {
   /** Заказ юнита. `count` больше единицы — это пакет по Ctrl. */
   train(unitType: UnitType, count: number): void;
   setTarget(cell: number): void;
+  /** Сменить режим атаки войска. */
+  setStance(stance: number): void;
   nuke(cell: number): void;
   pan(dx: number, dy: number): void;
   /** Перенести камеру в клетку — по клику на миникарте. */
@@ -103,6 +105,16 @@ const TRAIN_KEYS: Readonly<Record<string, UnitType>> = {
   Digit1: UnitType.Assault,
   Digit2: UnitType.Sniper,
   Digit3: UnitType.Grenadier,
+};
+
+/**
+ * Клавиши режима атаки.
+ *
+ * Z и X свободны, лежат подряд и сами по себе выглядят переключателем.
+ */
+const STANCE_KEYS: Readonly<Record<string, AttackStance>> = {
+  KeyZ: AttackStance.Breakthrough,
+  KeyX: AttackStance.Engage,
 };
 
 const NUKE_KEY = 'KeyF';
@@ -207,6 +219,12 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       // просто не доходит. Shift ничем не занят и работает всегда.
       const batch = event.ctrlKey || event.shiftKey;
       handlers.train(train, batch ? BATCH_ORDER_COUNT : 1);
+      return;
+    }
+
+    const stance = STANCE_KEYS[event.code];
+    if (stance !== undefined) {
+      handlers.setStance(stance);
       return;
     }
 
