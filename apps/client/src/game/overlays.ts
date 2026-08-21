@@ -1,4 +1,4 @@
-import type { Graphics } from 'pixi.js';
+﻿import type { Graphics } from 'pixi.js';
 import {
   NUKE_DELAY_TICKS,
   NUKE_RADIUS_CELLS,
@@ -40,6 +40,8 @@ export interface OverlayIntent {
   readonly hoverCell: number;
   /** Можно ли выполнить задуманное в клетке под курсором. */
   readonly hoverAllowed: boolean;
+  /** Клетка с выделенным объектом, либо -1. */
+  readonly selectedCell: number;
 }
 
 /** Сколько точек берётся на окружность. Больше — глаже, дороже. */
@@ -57,6 +59,7 @@ export const drawOverlays = (
   drawBuildRadius(graphics, world, localPlayer, intent, colors);
   drawTargetMarker(graphics, world, localPlayer, colors);
   drawNukes(graphics, world, localPlayer, colors);
+  drawSelection(graphics, intent, colors);
   drawHover(graphics, intent, colors);
 };
 
@@ -218,4 +221,27 @@ const drawHover = (graphics: Graphics, intent: OverlayIntent, colors: OverlayCol
     traceWorldCircle(graphics, x + 0.5, y + 0.5, NUKE_RADIUS_CELLS);
     graphics.stroke({ width: 2, color: colour, alpha: 0.7 });
   }
+};
+
+/**
+ * Подсветка выделенной постройки.
+ *
+ * Рисуется под подсказкой курсора, а не поверх: подсказка отвечает
+ * на «что будет, если нажать», и перекрывать её не должно ничто.
+ *
+ * Своей рамкой, а не заливкой: заливка спорила бы с подсветкой клетки
+ * под курсором, а игрок вполне может навести курсор на выделенное.
+ */
+const drawSelection = (
+  graphics: Graphics,
+  intent: OverlayIntent,
+  colors: OverlayColors,
+): void => {
+  if (intent.selectedCell < 0) return;
+
+  const x = cellX(intent.selectedCell);
+  const y = cellY(intent.selectedCell);
+
+  traceCell(graphics, x, y);
+  graphics.stroke({ width: 2.5, color: colors.self, alpha: 0.95 });
 };

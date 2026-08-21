@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+﻿import { create } from 'zustand';
 import type { Notice } from './rejections.js';
 
 /**
@@ -111,6 +111,39 @@ const EMPTY_MATCH: MatchSnapshot = {
   aimingNuke: false,
 };
 
+/**
+ * Сведения о выделенной постройке.
+ *
+ * Всё уже переведено в «видимые» величины: React ничего не считает
+ * и в состояние мира не заглядывает.
+ *
+ * Личный рост показывается обязательно. Башня растёт убийствами и вместе
+ * с ними гибнет; без этого числа игрок не может узнать, какая из его
+ * башен выросла вдвое, а значит не может решить, какую защищать.
+ *
+ * Чужие постройки показываются наравне со своими: тумана войны в игре
+ * нет намеренно, уровни соперника видны обоим, и прятать здесь нечего.
+ */
+export interface SelectionView {
+  readonly cell: number;
+  readonly label: string;
+  readonly own: boolean;
+  readonly health: number;
+  readonly maxHealth: number;
+  /** Личный рост за убийства, в процентах сверх базовой силы. */
+  readonly growthPercent: number;
+  readonly attack: number;
+  /** Дальность в клетках. Ноль означает, что постройка не стреляет. */
+  readonly rangeCells: number;
+  /** Секунд до конца возведения. Ноль — уже готова. */
+  readonly buildingSeconds: number;
+  /** Секунд до исчезновения при сносе. Ноль — снос не идёт. */
+  readonly demolishSeconds: number;
+  /** Снос возможен. Иначе причина в `demolishBlocked`. */
+  readonly canDemolish: boolean;
+  /** Почему снести нельзя. Пусто, когда можно. */
+  readonly demolishBlocked: string;
+}
 interface HudState {
   readonly status: ConnectionStatus;
   readonly tick: number;
@@ -167,6 +200,8 @@ interface HudState {
   readonly syncChecksum: number;
   /** Исход матча от сервера. До конца матча — null. */
   readonly outcome: MatchOutcomeView | null;
+  /** Выделенная постройка, либо null. Состояние интерфейса, не мира. */
+  readonly selection: SelectionView | null;
 
   setStatus(status: ConnectionStatus): void;
   setTick(tick: number): void;
@@ -179,6 +214,7 @@ interface HudState {
   setNetwork(delayTicks: number, pending: number, catchUpProgress: number): void;
   setSync(tick: number, checksum: number): void;
   setOutcome(outcome: MatchOutcomeView | null): void;
+  setSelection(selection: SelectionView | null): void;
 }
 
 export const useHudStore = create<HudState>((set) => ({
@@ -199,6 +235,7 @@ export const useHudStore = create<HudState>((set) => ({
   syncTick: 0,
   syncChecksum: 0,
   outcome: null,
+  selection: null,
 
   setStatus: (status) => set({ status }),
   setTick: (tick) => set({ tick }),
@@ -223,6 +260,7 @@ export const useHudStore = create<HudState>((set) => ({
 
   setSync: (syncTick, syncChecksum) => set({ syncTick, syncChecksum }),
   setOutcome: (outcome) => set({ outcome }),
+  setSelection: (selection) => set({ selection }),
 }));
 
 /**
@@ -243,6 +281,8 @@ export const hudActions = {
     useHudStore.getState().setNetwork(delayTicks, pending, catchUpProgress),
   setSync: (tick: number, checksum: number) => useHudStore.getState().setSync(tick, checksum),
   setOutcome: (outcome: MatchOutcomeView | null) => useHudStore.getState().setOutcome(outcome),
+  setSelection: (selection: SelectionView | null) =>
+    useHudStore.getState().setSelection(selection),
 };
 
 /**
@@ -263,6 +303,8 @@ export interface MatchCommands {
   setBuildKind(kind: number | null): void;
   toggleNukeAim(): void;
   buyUpgrade(branch: number): void;
+  /** Снести выделенную постройку. */
+  demolish(cell: number): void;
   restart(): void;
 }
 
@@ -271,6 +313,7 @@ const NO_COMMANDS: MatchCommands = {
   setBuildKind: () => undefined,
   toggleNukeAim: () => undefined,
   buyUpgrade: () => undefined,
+  demolish: () => undefined,
   restart: () => undefined,
 };
 

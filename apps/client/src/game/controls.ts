@@ -1,4 +1,4 @@
-import { DIRECTION_STOP, StructureKind, UnitType, directionTowards } from '@td/shared';
+﻿import { DIRECTION_STOP, StructureKind, UnitType, directionTowards } from '@td/shared';
 import { screenToWorld } from './iso.js';
 
 /**
@@ -22,6 +22,15 @@ export interface ControlState {
   readonly aimingNuke: boolean;
   /** Клетка под курсором, либо -1. */
   readonly hoverCell: number;
+  /**
+   * Клетка с выделенным объектом, либо -1.
+   *
+   * Выделение — состояние интерфейса одного игрока: по сети
+   * не передаётся, в состояние мира не попадает, в контрольную сумму
+   * не входит. Поэтому живёт здесь, рядом с выбранным видом постройки
+   * и режимом наведения удара.
+   */
+  readonly selectedCell: number;
 }
 
 /**
@@ -44,6 +53,8 @@ export interface ControlHandlers {
   jumpTo(cell: number): void;
   /** Вернуть камеру к генералу и включить слежение. */
   recentre(): void;
+  /** Выделить объект в клетке, либо снять выделение при -1. */
+  select(cell: number): void;
   cellAtScreen(x: number, y: number): number;
   minimapCellAtScreen(x: number, y: number): number;
 }
@@ -119,6 +130,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   let buildKind: StructureKind | null = null;
   let aimingNuke = false;
   let hoverCell = -1;
+  let selectedCell = -1;
 
   let direction = DIRECTION_STOP;
   let dragging = false;
@@ -152,6 +164,12 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   const cancelModes = (): void => {
     buildKind = null;
     aimingNuke = false;
+    // Esc снимает и выделение: игрок нажимает его, чтобы «ничего
+    // не было выбрано», и оставлять подсветку на поле было бы обманом.
+    if (selectedCell >= 0) {
+      selectedCell = -1;
+      handlers.select(-1);
+    }
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
@@ -256,6 +274,21 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       return;
     }
 
+    // Левая кнопка БЕЗ выбранного вида постройки выделяет объект под
+    // курсором. Свободного нажатия у нас нет, и придумывать третью кнопку
+    // не хочется; зато в этом состоянии левая кнопка до сих пор не делала
+    // ничего — новое поведение занимает пустоту, а не отбирает
+    // существующее. Пока вид постройки выбран, левая кнопка строит,
+    // как строила.
+    const picked = handlers.cellAtScreen(point.x, point.y);
+    if (picked >= 0) {
+      // Повторный щелчок по выделенному снимает выделение: так же,
+      // как повторное нажатие клавиши постройки выключает режим.
+      selectedCell = selectedCell === picked ? -1 : picked;
+      handlers.select(selectedCell);
+      return;
+    }
+
     dragging = true;
     lastX = event.clientX;
     lastY = event.clientY;
@@ -322,7 +355,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
 
   return {
     get state(): ControlState {
-      return { buildKind, aimingNuke, hoverCell };
+      return { buildKind, aimingNuke, hoverCell, selectedCell };
     },
 
     setBuildKind(kind) {

@@ -9,6 +9,7 @@
   TICKS_PER_SECOND,
   Terrain,
   UNIT_CAP,
+  PPM_ONE,
   asPlayerId,
   distanceSquared,
   energyToVisible,
@@ -22,6 +23,8 @@ import {
   checksum,
   playerStats,
   rockPercent,
+  structureAttack,
+  structureMaxHealth,
   upgradeCosts,
 } from '@td/sim';
 import type { Occupancy, WorldState } from '@td/sim';
@@ -33,7 +36,7 @@ import type { NetClient } from './net.js';
 import { createScene } from './scene.js';
 import { visibleMapPercent } from './iso.js';
 import { hudActions, setMatchCommands } from './store.js';
-import type { MatchPhaseView, MatchSnapshot } from './store.js';
+import type { MatchPhaseView, MatchSnapshot, SelectionView } from './store.js';
 import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
 import { createRejectionFeed } from './rejections.js';
@@ -212,6 +215,9 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       if (world.tick !== lastHudTick && world.tick % HUD_EVERY_TICKS === 0) {
         lastHudTick = world.tick;
         hudActions.setMatch(snapshot(world, localPlayer, controls.state));
+        // Сведения обновляются вместе со снимком: здоровье убывает,
+        // стройка и снос идут, и застывшее окно врало бы.
+        hudActions.setSelection(selectionOf(world, localPlayer, controls.state.selectedCell));
       }
     },
 
@@ -284,6 +290,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         aimingNuke: state.aimingNuke,
         hoverCell: state.hoverCell,
         hoverAllowed: isHoverAllowed(world, localPlayer, state, occupancyOf(world)),
+        selectedCell: state.selectedCell,
       });
     },
 
@@ -324,6 +331,13 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     pan: (dx, dy) => scene.panBy(dx, dy),
     jumpTo: (cell) => scene.centreOnCell(cell),
     recentre: () => scene.setFollowing(true),
+    // Выделение обновляется немедленно, а не со снимком матча: снимок
+    // снимается раз в несколько тиков, а отклик на нажатие обязан быть
+    // в том же кадре.
+    select: (cell) => {
+      const world = guest.predicted;
+      hudActions.setSelection(world === null ? null : selectionOf(world, localPlayer, cell));
+    },
     cellAtScreen: (x, y) => scene.cellAtScreen(x, y),
     minimapCellAtScreen: (x, y) => scene.minimapCellAtScreen(x, y),
   });
@@ -333,6 +347,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     setBuildKind: (kind) => controls.setBuildKind(kind as StructureKindType | null),
     toggleNukeAim: () => controls.setAimingNuke(!controls.state.aimingNuke),
     buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, branch }),
+    demolish: (cell) => send({ kind: CommandKind.Demolish, cell }),
     restart: () => options.onRestart?.(),
   });
 
@@ -429,6 +444,74 @@ const isHoverAllowed = (
 
   const radius = stats.general.buildRadius;
   return distanceSquared(cellCentre(state.hoverCell), general.position) <= radius * radius;
+};
+
+/**
+ * Сведения о постройке в клетке — для окна сведений.
+ *
+ * Показывается то, что уже есть в состоянии мира, и ничего сверх. Чужие
+ * постройки — наравне со своими: тумана войны в игре нет намеренно.
+ *
+ * Кнопка сноса не прячется при невозможности, а показывается недоступной
+ * с причиной. Спрятанная кнопка оставляет игрока гадать, а причин ровно
+ * три, и каждая ему что-то говорит.
+ */
+const selectionOf = (
+  world: WorldState,
+  playerId: PlayerId,
+  cell: number,
+): SelectionView | null => {
+  if (cell < 0) return null;
+
+  const structure = world.structures.find((entry) => entry.cell === cell);
+  if (structure === undefined) return null;
+
+  const owner = world.players[structure.owner];
+  const stats = owner === undefined ? undefined : playerStats(owner);
+  const baseline = stats?.structures[structure.kind];
+
+  const own = structure.owner === playerId;
+  const general = world.generals[playerId];
+  const mine = world.players[playerId];
+
+  const radius = mine === undefined ? 0 : playerStats(mine).general.buildRadius;
+  const reachable =
+    general !== undefined &&
+    general.alive &&
+    distanceSquared(cellCentre(cell), general.position) <= radius * radius;
+
+  const isBase = structure.kind === StructureKind.Base;
+
+  const blocked = !own
+    ? 'Чужая постройка'
+    : isBase
+      ? 'Командный центр снести нельзя'
+      : general === undefined || !general.alive
+        ? 'Генерал уничтожен'
+        : !reachable
+          ? 'Далеко от генерала'
+          : '';
+
+  return {
+    cell,
+    label: STRUCTURE_STATS[structure.kind].label,
+    own,
+    health: structure.health,
+    maxHealth:
+      baseline === undefined
+        ? STRUCTURE_STATS[structure.kind].health
+        : structureMaxHealth(baseline, structure.growthPpm),
+    growthPercent: Math.round((structure.growthPpm / PPM_ONE - 1) * 100),
+    attack: baseline === undefined ? 0 : structureAttack(baseline, structure.growthPpm),
+    rangeCells: baseline === undefined ? 0 : Math.round(unitsToCells(baseline.range)),
+    buildingSeconds: Math.max(0, (structure.builtAtTick - world.tick) / TICKS_PER_SECOND),
+    demolishSeconds:
+      structure.demolishAtTick <= 0
+        ? 0
+        : Math.max(0, (structure.demolishAtTick - world.tick) / TICKS_PER_SECOND),
+    canDemolish: blocked === '' && structure.demolishAtTick <= 0,
+    demolishBlocked: blocked,
+  };
 };
 
 /** Снимок матча для HUD. Все величины уже переведены в «видимые». */

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Button, Panel } from '@td/ui';
 import { MS_PER_TICK, RejectReason } from '@td/shared';
@@ -9,6 +9,7 @@ import { useSessionStore } from '../session/session-store.js';
 import { sessionActions } from '../session/session.js';
 import { ActionBar } from './ActionBar.js';
 import { NoticeStack, Nudge } from './Notices.js';
+import { StructureInfo } from './StructureInfo.js';
 import { UpgradePanel } from './UpgradePanel.js';
 import { HOTKEYS } from './labels.js';
 
@@ -60,6 +61,7 @@ export const Hud = () => {
       <MatchBar />
       <ActionBar />
       <UpgradePanel />
+      <StructureInfo />
       <ResultOverlay />
     </div>
   );
