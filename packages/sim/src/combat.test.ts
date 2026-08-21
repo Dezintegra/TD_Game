@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   DIRECTION_SOUTH,
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
+  GENERAL_STATS,
   MAP_WIDTH_CELLS,
   PPM_ONE,
+  SPLASH_OUTER_DIVISOR,
   STRUCTURE_STATS,
   ShotWeapon,
   StructureKind,
@@ -412,3 +414,165 @@ describe('награда генералу', () => {
   });
 });
 
+describe('накрытие Теслы', () => {
+  const ATTACK = UNIT_STATS[UnitType.Tesla].attack;
+  const SHARE = Math.floor(ATTACK / SPLASH_OUTER_DIVISOR);
+
+  /**
+   * Тесла у середины поля и толпа перед ней.
+   *
+   * Целью станет ближайшая машина — на три клетки, — а всё остальное
+   * получит своё по расстоянию уже от неё. Числа расстановки выбраны
+   * с запасом от порогов в одну и две клетки: за тик все успевают
+   * сместиться на сотые доли клетки, и попасть на сам порог нельзя.
+   */
+  const crowd = (): WorldState =>
+    arrange(
+      [],
+      [
+        unit(60, 0, UnitType.Tesla, 0, 0, 200),
+        unit(70, 1, UnitType.Assault, 3, 0, 100),
+        unit(71, 1, UnitType.Assault, 3.5, 0, 100),
+        unit(72, 1, UnitType.Assault, 4.5, 0, 100),
+        unit(73, 1, UnitType.Assault, 6, 0, 100),
+      ],
+    );
+
+  it('в ближнем радиусе достаётся полный урон, в дальнем — четверть', () => {
+    const after = step(crowd(), []);
+
+    // Прямая цель. Ровно один урон, а не два: из накрытия она исключена,
+    // иначе получила бы своё дважды.
+    expect(unitById(after, 70)?.health).toBe(100 - ATTACK);
+    // Полклетки от точки попадания — полный урон.
+    expect(unitById(after, 71)?.health).toBe(100 - ATTACK);
+    // Полторы клетки — четверть с округлением вниз.
+    expect(unitById(after, 72)?.health).toBe(100 - SHARE);
+    // Три клетки — не задело вовсе.
+    expect(unitById(after, 73)?.health).toBe(100);
+  });
+
+  it('свои под накрытие не попадают', () => {
+    // Целью станет стена: живых врагов в радиусе нет. Своя машина стоит
+    // от неё в полуклетки, то есть в самой середине накрытия.
+    const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
+    const after = step(
+      arrange(
+        [structure(50, 1, StructureKind.Wall, 3, 0, wallHealth)],
+        [unit(60, 0, UnitType.Tesla, 0, 0, 200), unit(61, 0, UnitType.Assault, 3.5, 0, 100)],
+      ),
+      [],
+    );
+
+    expect(unitById(after, 61)?.health).toBe(100);
+  });
+
+  it('постройки накрытие не чувствуют', () => {
+    // Стена стоит в полуклетке от точки попадания — в ближнем радиусе,
+    // где живые получают полный урон. Иначе стеновая линия оседала бы
+    // веером, а не ломалась по одной.
+    const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
+    const after = step(
+      arrange(
+        [structure(50, 1, StructureKind.Wall, 3.5, 0, wallHealth)],
+        [unit(60, 0, UnitType.Tesla, 0, 0, 200), unit(70, 1, UnitType.Assault, 3, 0, 100)],
+      ),
+      [],
+    );
+
+    expect(structureById(after, 50)?.health).toBe(wallHealth);
+    expect(unitById(after, 70)?.health).toBe(100 - ATTACK);
+  });
+
+  it('вражеский генерал накрывается наравне с машинами', () => {
+    // Генерал стоит в шести с половиной клетках — вне досягаемости Теслы
+    // с её шестью, поэтому целью он не станет, — но в полутора клетках
+    // от точки попадания, то есть в дальнем кольце накрытия. Стрелок
+    // здесь второй игрок, потому что расстановка двигает генерала первого.
+    //
+    // Полклетки запаса и до порога дальности, и до порога кольца: цель
+    // ровно на границе за тик успевает с неё сойти, и тест ловил бы
+    // движение вместо правила.
+    const after = step(
+      arrange(
+        [],
+        [unit(60, 1, UnitType.Tesla, 0, 0, 200), unit(70, 0, UnitType.Assault, 5, 0, 100)],
+        at(6.5, 0),
+      ),
+      [],
+    );
+
+    // Сначала — что выстрел вообще был: иначе «генерал цел» означало бы
+    // не «накрытие его не тронуло», а «никто не стрелял».
+    expect(unitById(after, 70)?.health).toBe(100 - ATTACK);
+    expect(after.generals[0]?.health).toBe(GENERAL_STATS.health - SHARE);
+  });
+
+  it('стена от накрытия не спасает', () => {
+    // Накрытие линию огня не проверяет: это последствие попадания,
+    // а не отдельный выстрел, и разряд растекается по земле. Машина
+    // за стеной свою четверть получит, хотя выстрелить по ней напрямую
+    // было бы нельзя.
+    //
+    // Следствие сознательное, и тест закрепляет его именно поэтому:
+    // без него следующий примет это за недочёт и «починит».
+    const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
+    const after = step(
+      arrange(
+        [structure(50, 1, StructureKind.Wall, 4, 0, wallHealth)],
+        [
+          unit(60, 0, UnitType.Tesla, 0, 0, 200),
+          unit(70, 1, UnitType.Assault, 3, 0, 100),
+          unit(71, 1, UnitType.Assault, 4.5, 0, 100),
+        ],
+      ),
+      [],
+    );
+
+    expect(unitById(after, 70)?.health).toBe(100 - ATTACK);
+    expect(unitById(after, 71)?.health).toBe(100 - SHARE);
+  });
+
+  it('накрытие не приносит добычи', () => {
+    // Добыча за убийство полагается только генералу, а стреляет здесь
+    // юнит. Проверка нужна потому, что один выстрел убивает многих:
+    // отдай накрытие тому, кому награда полагается, — и оно оплатит
+    // само себя с одного залпа.
+    const world = arrange(
+      [],
+      [
+        unit(60, 0, UnitType.Tesla, 0, 0, 200),
+        unit(70, 1, UnitType.Assault, 3, 0, 10),
+        unit(71, 1, UnitType.Assault, 3.5, 0, 10),
+      ],
+    );
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, []);
+
+    expect(unitById(after, 70)).toBeUndefined();
+    expect(unitById(after, 71)).toBeUndefined();
+    expect((after.players[0]?.energy ?? 0) - before).toBeLessThan(
+      UNIT_STATS[UnitType.Assault].cost,
+    );
+  });
+
+  it('прочее оружие площадь не поражает', () => {
+    // Та же расстановка, но стрелок — снайпер: одинаковая дальность
+    // и одинаковый урон, разное оружие. Соседа он не задевает.
+    const after = step(
+      arrange(
+        [],
+        [
+          unit(60, 0, UnitType.Sniper, 0, 0, 200),
+          unit(70, 1, UnitType.Assault, 3, 0, 100),
+          unit(71, 1, UnitType.Assault, 3.5, 0, 100),
+        ],
+      ),
+      [],
+    );
+
+    expect(unitById(after, 70)?.health).toBeLessThan(100);
+    expect(unitById(after, 71)?.health).toBe(100);
+  });
+});

@@ -1,5 +1,11 @@
 import type { Graphics } from 'pixi.js';
-import { SHOT_LIFETIME_TICKS, ShotWeapon, TICKS_PER_SECOND, unitsToCells } from '@td/shared';
+import {
+  SHOT_LIFETIME_TICKS,
+  SPLASH_OUTER_RADIUS,
+  ShotWeapon,
+  TICKS_PER_SECOND,
+  unitsToCells,
+} from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import { cellIndex } from '@td/sim';
 import type { ShotState, StructureState, WorldState } from '@td/sim';
@@ -194,8 +200,33 @@ const impactHeight = (shot: ShotState, world: WorldState, colors: ShotColors): n
   const target = structureAt(world, unitsToCells(shot.to.x), unitsToCells(shot.to.y));
   if (target === undefined) return IMPACT_CELLS;
 
-  return Math.max(IMPACT_CELLS, structureModelHeight(colors, target.kind) * 0.55);
+  return Math.max(IMPACT_CELLS, structureModelHeight(colors, target.kind) * modelShare(shot));
 };
+
+/** Доля высоты модели, в которую приходит попадание: примерно середина. */
+const IMPACT_MODEL_SHARE = 0.55;
+
+/**
+ * Та же доля для разряда: почти вершина.
+ *
+ * Молния бьёт в самую высокую точку — объяснять это игроку не нужно, —
+ * и ровно этим объясняется навесной огонь Теслы. Она бьёт по постройкам
+ * поверх стен, а верх башни выше верха стены, поэтому прямая от ствола
+ * к вершине проходит над стеной сама собой.
+ *
+ * Разница не косметическая. Верх стены — 0,45 клетки по столбам, плечо
+ * стрелка — примерно 0,4. При стрельбе с шести клеток прежняя середина
+ * модели давала над стеной три сотых клетки — то есть формально линия
+ * проходила выше, а глазом читалась касанием. Вершина даёт около трети
+ * клетки, и выстрел сквозь стену не отрисовывается.
+ *
+ * Навесной дуги при этом не заводится: след остаётся прямой ломаной,
+ * меняется только высота точки, в которую он приходит.
+ */
+const IMPACT_ARC_MODEL_SHARE = 0.92;
+
+const modelShare = (shot: ShotState): number =>
+  shot.weapon === ShotWeapon.Arc ? IMPACT_ARC_MODEL_SHARE : IMPACT_MODEL_SHARE;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Точка входа
@@ -343,6 +374,12 @@ const drawShot = (
       break;
     case ShotWeapon.Arc:
       drawArc(layers.glow, muzzle, impact, color, trail, shot.lethal, arcSeed(shot, time), lean);
+      // Растекание идёт по земле под точкой попадания, а не от неё самой:
+      // урон накрытия достаётся тем, кто стоит на земле вокруг, и облик
+      // обязан показывать именно это. У выстрела по башне точка попадания
+      // висит на её вершине, и разряд, растекающийся оттуда, читался бы
+      // короной над крышей.
+      drawSplash(layers.glow, worldToScreen(toX, toY), color, trail, arcSeed(shot, time), lean);
       break;
     default:
       drawBolt(layers.glow, muzzle, impact, color, trail, shot.lethal, lean);
@@ -769,6 +806,80 @@ const drawArc = (
     for (const branch of branches) tracePolyline(glow, branch);
   }
   glow.stroke({ width: core, color, alpha: Math.min(1, alpha * 1.3) });
+};
+
+/** Сколько ветвей растекается от точки попадания по земле. */
+const SPLASH_BRANCHES = 6;
+
+/** Толщина ветви растекания. Тоньше самого разряда: это его затухание. */
+const SPLASH_CORE_PX = 1.4;
+
+/** Насколько ветвь изгибается вбок, в долях радиуса накрытия. */
+const SPLASH_BEND_FRACTION = 0.22;
+
+/**
+ * Растекание разряда по накрытой площади.
+ *
+ * Ветви расходятся от точки попадания по земле и доходят примерно
+ * до внешнего радиуса накрытия. «Примерно» — это разброс длин, а не
+ * вольность: облик обязан показывать ту площадь, по которой нанесён урон.
+ * Разряд, растекающийся дальше или ближе накрытия, обманывает игрока
+ * в решении, отводить войско или нет.
+ *
+ * Радиус берётся из баланса и переводится в экран той же проекцией,
+ * что и всё остальное, а не подобранным числом пикселей: поправят радиус
+ * в правилах — растекание поедет за ним само, и второго источника правды
+ * не заведётся.
+ *
+ * Формы между кадрами не копится: она выводится из зерна, а зерно —
+ * из выстрела и номера тика, ровно как у самого разряда. Внутри тика
+ * растекание неподвижно, на следующем перестраивается заново.
+ */
+const drawSplash = (
+  glow: Graphics,
+  ground: Point,
+  color: number,
+  alpha: number,
+  seed: number,
+  lean: boolean,
+): void => {
+  const reachCells = unitsToCells(SPLASH_OUTER_RADIUS);
+  const noise = noiseFrom(seed);
+
+  const away = (cellsX: number, cellsY: number): Point => {
+    const shift = worldToScreen(cellsX, cellsY);
+    return { x: ground.x + shift.x, y: ground.y + shift.y };
+  };
+
+  const branches: Point[][] = [];
+  for (let index = 0; index < SPLASH_BRANCHES; index += 1) {
+    // Ветви расставлены по кругу, а не разбросаны случайно: случайные
+    // сходятся пучком, и накрытие читается кляксой, а не разрядом.
+    const angle = ((index + 0.5) / SPLASH_BRANCHES) * Math.PI * 2 + noise() * 0.5;
+    const reach = reachCells * (0.6 + Math.abs(noise()) * 0.4);
+    const bend = noise() * reachCells * SPLASH_BEND_FRACTION;
+
+    const dirX = Math.cos(angle);
+    const dirY = Math.sin(angle);
+
+    branches.push([
+      ground,
+      away(dirX * reach * 0.5 - dirY * bend, dirY * reach * 0.5 + dirX * bend),
+      away(dirX * reach, dirY * reach),
+    ]);
+  }
+
+  const trace = (): void => {
+    for (const branch of branches) tracePolyline(glow, branch);
+  };
+
+  if (!lean) {
+    trace();
+    glow.stroke({ width: SPLASH_CORE_PX * ARC_HALO_SCALE, color, alpha: alpha * ARC_HALO_ALPHA });
+  }
+
+  trace();
+  glow.stroke({ width: SPLASH_CORE_PX, color, alpha: Math.min(1, alpha * 1.1) });
 };
 
 // ─────────────────────────────────────────────────────────────────────────

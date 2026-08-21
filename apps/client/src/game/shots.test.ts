@@ -199,6 +199,28 @@ describe('след выстрела', () => {
     expect(offLine).toBe(true);
   });
 
+  it('разряд растекается за цель по накрытой площади', () => {
+    // Насколько далеко за цель, вдоль направления выстрела, уходит
+    // хоть одна нарисованная точка. У луча — никуда: он кончается в цели.
+    // У разряда — на клетку с лишним: там лежит накрытие, и облик обязан
+    // показывать ту площадь, по которой нанесён урон.
+    const dx = FINISH.x - START.x;
+    const dy = FINISH.y - START.y;
+    const length = Math.hypot(dx, dy);
+
+    const beyond = (weapon: ShotWeapon): number =>
+      Math.max(
+        ...draw([shotOf(weapon)]).glow.points.map(
+          (point) => ((point.x - FINISH.x) * dx + (point.y - FINISH.y) * dy) / length,
+        ),
+      );
+
+    const step = worldToScreen(1, 0);
+    const cellPx = Math.hypot(step.x, step.y);
+
+    expect(beyond(ShotWeapon.Arc)).toBeGreaterThan(beyond(ShotWeapon.Beam) + cellPx * 0.5);
+  });
+
   it('разряд держит форму весь тик и вспыхивает заново на следующем', () => {
     // Кадров в тике несколько, и разряд со случайной формой перестраивался
     // бы шестьдесят раз в секунду — это читается шумом, а не молнией.
@@ -314,6 +336,23 @@ describe('высота дульного среза', () => {
       Math.min(...circles.filter((point) => Math.abs(point.x - FINISH.x) < 40).map((p) => p.y));
 
     expect(highest(onTower)).toBeLessThan(highest(onGround));
+  });
+
+  it('разряд приходит в вершину башни, а прочее оружие — в середину', () => {
+    // Молния бьёт в самую высокую точку, и этим же объясняется навесной
+    // огонь Теслы: верх башни выше верха стены, поэтому прямая от ствола
+    // к вершине проходит над стеной сама собой, и выстрел сквозь
+    // непроходимую постройку не отрисовывается.
+    const target = towerAt(TO, StructureKind.TowerBasic);
+
+    const highest = (weapon: ShotWeapon): number =>
+      Math.min(
+        ...draw([shotOf(weapon)], 0, [target])
+          .glow.circles.filter((point) => Math.abs(point.x - FINISH.x) < 40)
+          .map((point) => point.y),
+      );
+
+    expect(highest(ShotWeapon.Arc)).toBeLessThan(highest(ShotWeapon.Bolt));
   });
 
   it('снесённая башня не ломает показ своего следа', () => {

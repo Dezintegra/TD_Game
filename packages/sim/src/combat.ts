@@ -6,11 +6,16 @@ import {
   GENERAL_WEAPON,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
+  SPLASH_FULL_RADIUS,
+  SPLASH_OUTER_DIVISOR,
+  SPLASH_OUTER_RADIUS,
   STRUCTURE_STATS,
   STRUCTURE_WEAPON,
+  ShotWeapon,
   StructureKind,
   TOWER_GROWTH_CAP_PPM,
   TOWER_KILL_GROWTH_PERCENT,
+  UNIT_INDIRECT_FIRE,
   UNIT_STATS,
   UNIT_WEAPON,
   asTickNumber,
@@ -18,7 +23,7 @@ import {
   directionTowards,
   growPpm,
 } from '@td/shared';
-import type { PlayerId, ShotWeapon, Vec2 } from '@td/shared';
+import type { PlayerId, UnitType, Vec2 } from '@td/shared';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
 import { statsOf, structureAttack, structureMaxHealth } from './stats.js';
@@ -333,8 +338,7 @@ export const chooseTarget = (
   range: number,
   globalTargetIndex: number,
   blockedBy: number,
-  /** Стрелок выше стен: башня или база. Юнит и генерал — нет. */
-  elevated: boolean,
+  elevation: Elevation,
 ): Target | undefined => {
   if (range <= 0) return undefined;
 
@@ -345,14 +349,14 @@ export const chooseTarget = (
     if (structure === undefined || !structure.alive || structure.owner === owner) return false;
     if (structureDistance(origin, structure) > reach) return false;
 
-    return seesStructure(working, elevated, origin, structure);
+    return seesStructure(working, elevation.structures, origin, structure);
   };
 
   if (globalTargetIndex >= 0 && structureInReach(globalTargetIndex)) {
     return { kind: TargetKind.Structure, index: globalTargetIndex };
   }
 
-  const general = nearestGeneral(working, owner, origin, reach, elevated);
+  const general = nearestGeneral(working, owner, origin, reach, elevation.living);
   if (general !== undefined) return general;
 
   if (blockedBy >= 0 && structureInReach(blockedBy)) {
@@ -360,10 +364,41 @@ export const chooseTarget = (
   }
 
   return (
-    nearestUnit(working, indices, owner, origin, range, reach, elevated) ??
-    nearestStructure(working, indices, owner, origin, range, reach, elevated)
+    nearestUnit(working, indices, owner, origin, range, reach, elevation.living) ??
+    nearestStructure(working, indices, owner, origin, range, reach, elevation.structures)
   );
 };
+
+/**
+ * Что стрелок видит поверх стен.
+ *
+ * Флага два, а не один, и разошлись они из-за Теслы: по постройкам она
+ * бьёт навесом, поверх стен, а по живым — прямой наводкой, и стена их
+ * от неё прячет. У всех прочих стрелков оба значения совпадают: башня
+ * и база видят поверх стен всё, пехота и генерал — ничего.
+ *
+ * Скала не проходит ни при одном значении: сетки непрозрачности две,
+ * и скала есть в обеих (`sight.ts`).
+ */
+export interface Elevation {
+  /** Видны ли поверх стен живые цели: юниты и генералы. */
+  readonly living: boolean;
+  /** Видны ли поверх стен постройки. */
+  readonly structures: boolean;
+}
+
+/** Стрелок, который поверх стен не видит ничего: пехота и генерал. */
+const ON_THE_GROUND: Elevation = { living: false, structures: false };
+
+/** Стрелок выше стен во всём: башня и база. */
+const ABOVE_WALLS: Elevation = { living: true, structures: true };
+
+/**
+ * Что видит юнит. У Теслы постройки — поверх стен, живые — нет;
+ * у остальных не видно ничего.
+ */
+export const unitElevation = (unitType: UnitType): Elevation =>
+  UNIT_INDIRECT_FIRE[unitType] ? { living: false, structures: true } : ON_THE_GROUND;
 
 /**
  * Есть ли в радиусе живой противник, по которому можно стрелять.
@@ -497,6 +532,12 @@ export const dealDamage = (
   const killed = subtractHealth(working, statsTable, target, amount);
   if (!killed) return false;
 
+  // Осторожно с накрытием: оно идёт через эту же функцию, и убитых за один
+  // выстрел может быть много. Сейчас это безопасно — накрытие есть только
+  // у Теслы, то есть у юнита, а юнит не получает ни добычи, ни усиления.
+  // Отдайте накрытие башне, и она получит свои пять процентов к атаке
+  // и прочности сложным процентом за КАЖДОГО убитого в залпе: один
+  // выстрел по толпе из десяти машин сделает её вдвое сильнее навсегда.
   if (shooter.kind === ShooterKind.General) {
     // Награда за убийство даётся только генералу — это плата за то,
     // что игрок рискнул им лично.
@@ -598,9 +639,81 @@ const damageAgainst = (
   return Math.max(1, Math.floor((attack * structureDamagePercent) / 100));
 };
 
+/**
+ * Накрытие: урон всем живым противникам вокруг точки попадания.
+ *
+ * Полный урон — в ближнем радиусе, доля — в дальнем, дальше не задевает
+ * вовсе. Числа и вывод к ним лежат в балансе; здесь только правило.
+ *
+ * Кого НЕ задевает и почему:
+ *
+ * - свои. Строем игрок не управляет, и дружественный огонь наказывал бы
+ *   его за то, чего он не выбирал;
+ * - постройки. Иначе стеновая линия оседает веером, а база с основанием
+ *   три на три получает урон по разу за каждую накрытую клетку;
+ * - прямую цель. Она уже получила своё, и без этой проверки получила бы
+ *   дважды.
+ *
+ * Линия огня здесь не проверяется, и это сознательно: накрытие —
+ * последствие попадания, а не отдельный выстрел. Машина за стеной
+ * в полутора клетках от точки удара свою долю получит. Проверять линию
+ * до каждого задетого означало бы десятки обходов клеток на один
+ * выстрел, а проверка линии — самая дорогая часть выбора цели.
+ *
+ * Перебор идёт по пространственному индексу, а не по всем юнитам подряд,
+ * как у ядерного удара: тот случается раз за полторы тысячи энергии,
+ * а этот — каждые три с небольшим секунды у каждой Теслы. Индекс
+ * построен один раз за тик, до стрельбы, поэтому в нём остаются убитые
+ * в этом же тике — `alive` проверяется у каждого.
+ */
+const splash = (
+  working: Working,
+  statsTable: readonly PlayerStats[],
+  indices: CombatIndices,
+  shooter: Shooter,
+  aim: Vec2,
+  direct: Target,
+  attack: number,
+): void => {
+  const share = Math.floor(attack / SPLASH_OUTER_DIVISOR);
+  const full = SPLASH_FULL_RADIUS * SPLASH_FULL_RADIUS;
+  const outer = SPLASH_OUTER_RADIUS * SPLASH_OUTER_RADIUS;
+
+  const amountAt = (distance: number): number => (distance <= full ? attack : share);
+
+  forEachNear(indices.units, aim, SPLASH_OUTER_RADIUS, (index) => {
+    if (direct.kind === TargetKind.Unit && direct.index === index) return;
+
+    const unit = working.units[index];
+    if (unit === undefined || !unit.alive || unit.owner === shooter.owner) return;
+
+    const distance = squaredDistance(aim, { x: unit.x, y: unit.y });
+    if (distance > outer) return;
+
+    dealDamage(working, statsTable, shooter, { kind: TargetKind.Unit, index }, amountAt(distance));
+  });
+
+  working.generals.forEach((general, index) => {
+    if (direct.kind === TargetKind.General && direct.index === index) return;
+    if (!general.alive || general.owner === shooter.owner) return;
+
+    const distance = squaredDistance(aim, { x: general.x, y: general.y });
+    if (distance > outer) return;
+
+    dealDamage(
+      working,
+      statsTable,
+      shooter,
+      { kind: TargetKind.General, index },
+      amountAt(distance),
+    );
+  });
+};
+
 const fire = (
   working: Working,
   statsTable: readonly PlayerStats[],
+  indices: CombatIndices,
   shooter: Shooter,
   origin: Vec2,
   target: Target,
@@ -618,6 +731,13 @@ const fire = (
     target,
     damageAgainst(working, target, attack, structureDamagePercent),
   );
+
+  // Накрытие опознаётся по оружию, а не по типу юнита: разряд и площадь —
+  // одно и то же оружие, и раздавать их порознь было бы двумя правилами
+  // там, где хватает одного.
+  if (weapon === ShotWeapon.Arc) {
+    splash(working, statsTable, indices, shooter, aim, target, attack);
+  }
 
   recordShot(working, shooter.owner, origin, aim, lethal, weapon);
 };
@@ -689,7 +809,7 @@ const fireStructure = (
     -1,
     // Башня и база выше стены и стреляют поверх неё. Именно это делает
     // стену перед башней укреплением, а не просто занятой клеткой.
-    true,
+    ABOVE_WALLS,
   );
   if (target === undefined) return;
 
@@ -702,6 +822,7 @@ const fireStructure = (
   fire(
     working,
     statsTable,
+    indices,
     { kind: ShooterKind.Structure, index, owner: structure.owner },
     origin,
     target,
@@ -757,7 +878,7 @@ const fireUnit = (
     baseline.range,
     globalTarget,
     unit.blockedBy,
-    false,
+    unitElevation(unit.unitType),
   );
   if (target === undefined) return;
 
@@ -766,6 +887,7 @@ const fireUnit = (
   fire(
     working,
     statsTable,
+    indices,
     { kind: ShooterKind.Unit, index, owner: unit.owner },
     origin,
     target,
@@ -797,7 +919,7 @@ const fireGeneral = (
     baseline.range,
     globalTarget,
     -1,
-    false,
+    ON_THE_GROUND,
   );
   if (target === undefined) return;
 
@@ -806,6 +928,7 @@ const fireGeneral = (
   fire(
     working,
     statsTable,
+    indices,
     { kind: ShooterKind.General, index, owner: general.owner },
     origin,
     target,

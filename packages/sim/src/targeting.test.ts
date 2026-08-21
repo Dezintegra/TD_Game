@@ -131,6 +131,12 @@ interface Shot {
   readonly range: number;
   /** Стрелок выше стен: башня или база. Юнит и генерал — нет. */
   readonly elevated: boolean;
+  /**
+   * Навесной огонь: постройки видны поверх стен, живые — нет. Это Тесла.
+   * Задаётся отдельно от `elevated`, потому что у неё эти два значения
+   * впервые разошлись.
+   */
+  readonly indirect?: boolean;
   readonly globalTarget?: number;
   readonly blockedBy?: number;
 }
@@ -147,7 +153,9 @@ const targetOf = (world: WorldState, shot: Shot): Target | undefined => {
     shot.range,
     shot.globalTarget ?? -1,
     shot.blockedBy ?? -1,
-    shot.elevated,
+    shot.indirect === true
+      ? { living: false, structures: true }
+      : { living: shot.elevated, structures: shot.elevated },
   );
 };
 
@@ -289,5 +297,100 @@ describe('приоритет доходит до настоящего боя', (
     for (let tick = 0; tick < TICKS_PER_SECOND * 6; tick += 1) current = step(current, []);
 
     expect(current.generals.find((general) => general.owner !== ME)?.alive).toBe(false);
+  });
+});
+
+describe('навесной огонь Теслы', () => {
+  const TESLA_RANGE = UNIT_STATS[UnitType.Tesla].range;
+
+  const WALL_ID = 70;
+  const TOWER_ID = 71;
+
+  /** Стена вплотную перед башней — тот самый случай из замысла. */
+  const behindWall = (): WorldState =>
+    arrange({
+      structures: [
+        structure(WALL_ID, FOE, StructureKind.Wall, 2, 0),
+        structure(TOWER_ID, FOE, StructureKind.TowerBasic, 3, 0),
+      ],
+    });
+
+  const towerTarget = (world: WorldState): Target => ({
+    kind: TargetKind.Structure,
+    index: structureIndex(world, TOWER_ID),
+  });
+
+  it('назначенная башня достаётся через стену', () => {
+    const world = behindWall();
+
+    expect(
+      targetOf(world, {
+        range: TESLA_RANGE,
+        elevated: false,
+        indirect: true,
+        globalTarget: structureIndex(world, TOWER_ID),
+      }),
+    ).toEqual(towerTarget(world));
+  });
+
+  it('без навеса та же башня недосягаема', () => {
+    // Штурмовику стена перекрывает линию огня целиком, и назначенная
+    // цель за ней не выбирается вовсе. Ровно это навес и отменяет.
+    const world = behindWall();
+
+    expect(
+      targetOf(world, {
+        range: TESLA_RANGE,
+        elevated: false,
+        globalTarget: structureIndex(world, TOWER_ID),
+      }),
+    ).not.toEqual(towerTarget(world));
+  });
+
+  it('скала не пропускает и навес', () => {
+    // Непрозрачность скалы — свойство мира, а не чья-то постройка,
+    // и исключений из неё нет ни у кого.
+    const world = arrange({
+      structures: [structure(TOWER_ID, FOE, StructureKind.TowerBasic, 3, 0)],
+      rocks: [cellOffset(2, 0)],
+    });
+
+    expect(
+      targetOf(world, {
+        range: TESLA_RANGE,
+        elevated: false,
+        indirect: true,
+        globalTarget: structureIndex(world, TOWER_ID),
+      }),
+    ).toBeUndefined();
+  });
+
+  it('машина за стеной по-прежнему укрыта', () => {
+    // Навес только по постройкам. Пусти его по живым — и Тесла из-за
+    // своей стены расстреливала бы тех, кто эту стену ломает, а ответить
+    // ей было бы нечем.
+    const world = arrange({
+      structures: [structure(WALL_ID, FOE, StructureKind.Wall, 2, 0)],
+      units: [unit(80, FOE, 3, 0)],
+    });
+
+    expect(targetOf(world, { range: TESLA_RANGE, elevated: false, indirect: true })).not.toEqual({
+      kind: TargetKind.Unit,
+      index: 0,
+    });
+  });
+
+  it('без назначенной цели ближайшей постройкой остаётся стена', () => {
+    // Порядок выбора цели навес не меняет: среди построек по-прежнему
+    // берётся ближайшая. Способность работает через назначенную игроком
+    // цель — первую ступень и единственный прямой приказ игрока в выборе
+    // цели. Тест закрепляет решение, чтобы следующий не «починил» его
+    // молча, приняв за недочёт.
+    const world = behindWall();
+
+    expect(targetOf(world, { range: TESLA_RANGE, elevated: false, indirect: true })).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, WALL_ID),
+    });
   });
 });
