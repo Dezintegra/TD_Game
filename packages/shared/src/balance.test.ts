@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import { TICKS_PER_SECOND } from './constants.js';
 import { cellsToUnits } from './units.js';
 import {
@@ -68,6 +68,14 @@ describe('баланс: соотношения из игрового замыс�
   it('Тесла достаёт ровно на клетку дальше базовой башни', () => {
     const tower = STRUCTURE_STATS[StructureKind.TowerBasic];
     expect(tesla.range).toBe(tower.range + cellsToUnits(1));
+  });
+
+  it('Тесла прочна ровно как базовая башня', () => {
+    // Число выведено из подвижности, а не подобрано: Тесла пересекает
+    // карту один раз за матч, то есть по подвижности она сооружение.
+    // Вернуть ей базовое здоровье значило бы снова сделать самый дорогой
+    // юнит самым дешёвым по прочности за энергию.
+    expect(tesla.health).toBe(STRUCTURE_STATS[StructureKind.TowerBasic].health);
   });
 
   it('Тесла втрое медленнее штурмовика и вдесятеро дороже', () => {
