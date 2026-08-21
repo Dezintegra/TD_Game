@@ -3,6 +3,7 @@ import type { Graphics } from 'pixi.js';
 import {
   DIRECTION_SOUTH,
   PPM_ONE,
+  ShotWeapon,
   StructureKind,
   UnitType,
   asEntityId,
@@ -18,11 +19,21 @@ import {
   playerStats,
   structureMaxHealth,
 } from '@td/sim';
-import type { WorldState } from '@td/sim';
+import type { ShotState, WorldState } from '@td/sim';
 import { drawEntities } from './entities.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { baseCrestPoint } from './base-structure.js';
-import { worldToScreen } from './iso.js';
+import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
+import type { Point } from './iso.js';
+import {
+  MIRROR_SQUASH,
+  SIDE_SELF,
+  UNIT_ALTITUDE,
+  hoverBob,
+  unitReflection,
+  unitSilhouette,
+} from './models.js';
+import type { Silhouette } from './models.js';
 
 /**
  * Порядок отрисовки проверяется не картинкой, а тем, в какую полосу
@@ -47,11 +58,17 @@ const SEED = 4242;
 interface Recorder {
   readonly graphics: Graphics;
   readonly counts: Record<string, number>;
+  /** Точки, через которые прошёл путь. По ним проверяется геометрия. */
+  readonly points: Point[];
+  /** Толщины обводок. По ним проверяется, что луч толще трассера. */
+  readonly widths: number[];
 }
 
 const recorder = (): Recorder => {
   const counts: Record<string, number> = {};
-  const stub: Record<string, () => unknown> = {};
+  const points: Point[] = [];
+  const widths: number[] = [];
+  const stub: Record<string, (...args: unknown[]) => unknown> = {};
 
   for (const name of [
     'moveTo',
@@ -63,13 +80,23 @@ const recorder = (): Recorder => {
     'rect',
     'clear',
   ]) {
-    stub[name] = () => {
+    stub[name] = (...args: unknown[]) => {
       counts[name] = (counts[name] ?? 0) + 1;
+
+      if ((name === 'moveTo' || name === 'lineTo') && args.length >= 2) {
+        points.push({ x: args[0] as number, y: args[1] as number });
+      }
+
+      if (name === 'stroke') {
+        const width = (args[0] as { width?: number } | undefined)?.width;
+        if (width !== undefined) widths.push(width);
+      }
+
       return stub;
     };
   }
 
-  return { graphics: stub as unknown as Graphics, counts };
+  return { graphics: stub as unknown as Graphics, counts, points, widths };
 };
 
 /** Экран заведомо больше карты: отсечение по видимости не должно мешать. */
@@ -84,6 +111,7 @@ const COLORS: EntityColors = {
   self: 0x00ff29,
   enemy: 0xd264ff,
   hullDark: 0x23271f,
+  ground: 0x191919,
   health: 0x00ff29,
   healthLow: 0xff5c5c,
   shot: 0xeaffef,
@@ -118,8 +146,11 @@ const wallAt = (cell: number) => ({
   demolishAtTick: asTickNumber(0),
 });
 
+/** Номер подопытного юнита. Из него же выводится фаза его покачивания. */
+const UNIT_ID = 600;
+
 const unitAt = (cell: number) => ({
-  id: asEntityId(600),
+  id: asEntityId(UNIT_ID),
   owner: asPlayerId(0),
   unitType: UnitType.Assault,
   position: cellCentre(cell),
@@ -135,10 +166,17 @@ interface DrawResult {
   readonly bandRects: number;
   /** Сколько прямоугольников ушло в слой поверх тел. */
   readonly overheadRects: number;
+  /** Точки тел — в порядке обхода. */
+  readonly bodyPoints: Point[];
+  /** Точки следов выстрелов. Слой у них свой, поэтому и точки отдельно. */
+  readonly shotPoints: Point[];
+  /** Толщины обводок следов выстрелов. */
+  readonly shotWidths: number[];
 }
 
 const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult => {
   const depth = recorder();
+  const shots = recorder();
   const overhead = recorder();
   const bands: number[] = [];
 
@@ -147,7 +185,7 @@ const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult =
       bands.push(index);
       return depth.graphics;
     },
-    shots: depth.graphics,
+    shots: shots.graphics,
     overhead: overhead.graphics,
   };
 
@@ -157,6 +195,9 @@ const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult =
     bands,
     bandRects: depth.counts['rect'] ?? 0,
     overheadRects: overhead.counts['rect'] ?? 0,
+    bodyPoints: depth.points,
+    shotPoints: shots.points,
+    shotWidths: shots.widths,
   };
 };
 
@@ -205,6 +246,160 @@ describe('полосы глубины', () => {
 
     expect(bands[0]).toBe(20);
     expect(Math.max(...bands)).toBe(21);
+  });
+});
+
+describe('парение и отражение', () => {
+  const CELL = cellIndex(10, 10);
+  const ANCHOR = worldToScreen(cellX(CELL) + 0.5, cellY(CELL) + 0.5);
+
+  /** Подъём машины на нулевом тике. Номер юнита задаёт фазу покачивания. */
+  const LIFT = (UNIT_ALTITUDE + hoverBob(UNIT_ID, 0)) * ELEVATION_PX_PER_CELL;
+
+  const model = (): Silhouette =>
+    unitSilhouette(COLORS, SIDE_SELF, UnitType.Assault, DIRECTION_SOUTH, 0, 0);
+  const mirror = (): Silhouette =>
+    unitReflection(COLORS, SIDE_SELF, UnitType.Assault, DIRECTION_SOUTH, 0, 0);
+
+  /** Самая верхняя и самая нижняя точки готовой геометрии. */
+  const span = (silhouette: Silhouette): { top: number; bottom: number } => {
+    let top = Infinity;
+    let bottom = -Infinity;
+
+    for (const run of silhouette.fills) {
+      for (const polygon of run.polygons) {
+        for (const point of polygon) {
+          top = Math.min(top, point.y);
+          bottom = Math.max(bottom, point.y);
+        }
+      }
+    }
+
+    return { top, bottom };
+  };
+
+  const drawUnit = (tick = 0): Point[] =>
+    drawInto({ ...bare(), tick: asTickNumber(tick), units: [unitAt(CELL)] }).bodyPoints;
+
+  it('машина поднята над землёй, а под ней лежит её отражение', () => {
+    // Целая машина полосы здоровья не получает, поэтому в слой попали
+    // только два тела: она сама и её отражение. Верх картины принадлежит
+    // ей, низ — отражению.
+    const points = drawUnit();
+
+    expect(Math.min(...points.map((point) => point.y))).toBeCloseTo(
+      ANCHOR.y - LIFT + span(model()).top,
+      6,
+    );
+    expect(Math.max(...points.map((point) => point.y))).toBeCloseTo(
+      ANCHOR.y + LIFT * MIRROR_SQUASH + span(mirror()).bottom,
+      6,
+    );
+  });
+
+  it('отражение рисуется раньше тела', () => {
+    // Отражение лежит в поверхности, машина висит над ней: нарисуй мы его
+    // после, оно перекрыло бы собственные колёса.
+    const points = drawUnit();
+    const highest = Math.min(...points.map((point) => point.y));
+    const deepest = Math.max(...points.map((point) => point.y));
+
+    expect(points.findIndex((point) => point.y === deepest)).toBeLessThan(
+      points.findIndex((point) => point.y === highest),
+    );
+  });
+
+  it('тело и отражение попадают в одну полосу глубины', () => {
+    // Отражение обязано прятаться за тем, что стоит ближе к зрителю,
+    // ровно как сама машина, — а это и есть механизм полос.
+    expect(new Set(drawInto({ ...bare(), units: [unitAt(CELL)] }).bands)).toEqual(new Set([21]));
+  });
+
+  it('в разные тики машина стоит на разной высоте', () => {
+    expect(drawUnit(18)).not.toEqual(drawUnit(0));
+  });
+});
+
+describe('облик выстрела', () => {
+  const FROM = cellIndex(10, 10);
+  const TO = cellIndex(14, 10);
+
+  const START = worldToScreen(cellX(FROM) + 0.5, cellY(FROM) + 0.5);
+  const FINISH = worldToScreen(cellX(TO) + 0.5, cellY(TO) + 0.5);
+
+  const shotOf = (weapon: ShotWeapon): ShotState => ({
+    owner: asPlayerId(0),
+    from: cellCentre(FROM),
+    to: cellCentre(TO),
+    expiresAtTick: asTickNumber(4),
+    lethal: false,
+    weapon,
+  });
+
+  const draw = (weapon: ShotWeapon, tick = 0): DrawResult =>
+    drawInto({ ...bare(), tick: asTickNumber(tick), shots: [shotOf(weapon)] });
+
+  it('трассер держится над землёй и не отражается', () => {
+    // Сравнивать надо каждый конец со своей точкой земли: экранная `y`
+    // растёт и от высоты, и от положения на плоскости, поэтому дальний
+    // конец трассера лежит ниже ближнего, оставаясь над землёй.
+    const points = draw(ShotWeapon.Bolt).shotPoints;
+    const [start, finish] = points;
+
+    expect(points).toHaveLength(2);
+    expect(start?.y).toBeLessThan(START.y);
+    expect(finish?.y).toBeLessThan(FINISH.y);
+  });
+
+  it('луч толще трассера', () => {
+    const bolt = Math.max(...draw(ShotWeapon.Bolt).shotWidths);
+    const beam = Math.max(...draw(ShotWeapon.Beam).shotWidths);
+
+    // Не на волосок: разницу должно быть видно, не приглядываясь.
+    expect(beam).toBeGreaterThan(bolt * 2);
+  });
+
+  it('луч отражается в поверхности', () => {
+    // У стрелка луч трижды проходит через одну и ту же вертикаль: ореол,
+    // ядро и отражение. Отражение — то из трёх, что ушло под землю.
+    const atShooter = draw(ShotWeapon.Beam).shotPoints.filter((point) => point.x === START.x);
+
+    expect(atShooter.length).toBeGreaterThan(1);
+    expect(atShooter.some((point) => point.y > START.y)).toBe(true);
+  });
+
+  it('разряд выходит из ствола и приходит в цель', () => {
+    // Излом — это облик, а не промах: концы обязаны стоять там же,
+    // где стояли бы концы трассера.
+    const points = draw(ShotWeapon.Arc).shotPoints;
+    const first = points[0];
+    const arrival = points.find((point) => point.x === FINISH.x);
+
+    if (first === undefined || arrival === undefined) throw new Error('разряд не дошёл до цели');
+
+    expect(first.x).toBe(START.x);
+    expect(arrival.y - first.y).toBeCloseTo(FINISH.y - START.y, 6);
+  });
+
+  it('разряд изломан, а не прям', () => {
+    const points = draw(ShotWeapon.Arc).shotPoints;
+    const first = points[0];
+    if (first === undefined) throw new Error('разряд не нарисован');
+
+    const alongX = FINISH.x - START.x;
+    const alongY = FINISH.y - START.y;
+    const offLine = points.some(
+      (point) => Math.abs((point.x - first.x) * alongY - (point.y - first.y) * alongX) > 1,
+    );
+
+    expect(offLine).toBe(true);
+  });
+
+  it('разряд держит форму весь тик и вспыхивает заново на следующем', () => {
+    const now = draw(ShotWeapon.Arc).shotPoints;
+
+    expect(draw(ShotWeapon.Arc).shotPoints).toEqual(now);
+    expect(draw(ShotWeapon.Arc, 1).shotPoints).not.toEqual(now);
   });
 });
 

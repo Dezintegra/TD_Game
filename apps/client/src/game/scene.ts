@@ -125,6 +125,9 @@ const readEntityColors = (): EntityColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
   hullDark: token('--td-hull-dark', 0x23271f),
+  // Цвет поверхности — тот же, которым залит фон сцены. Земля рисуется
+  // линиями и заливок не имеет, поэтому под отражением всегда именно он.
+  ground: token('--td-bg-page', 0x191919),
   health: token('--td-health-full', 0x00ff29),
   healthLow: token('--td-health-low', 0xff5c5c),
   shot: token('--td-projectile', 0xeaffef),

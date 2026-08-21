@@ -12,9 +12,13 @@ import {
   GENERAL_STATS,
   NUKE_COST,
   NUKE_RADIUS,
+  SHOT_LIFETIME_TICKS,
   STRUCTURE_STATS,
+  STRUCTURE_WEAPON,
+  ShotWeapon,
   StructureKind,
   UNIT_STATS,
+  UNIT_WEAPON,
   UPGRADE_BRANCHES,
   UnitType,
   UpgradeStat,
@@ -174,6 +178,40 @@ describe('баланс: время возведения', () => {
     expect(STRUCTURE_STATS[StructureKind.TowerSniper].buildTicks).toBeLessThan(
       savingTicks(StructureKind.TowerSniper),
     );
+  });
+});
+
+describe('оружие и след выстрела', () => {
+  it('снайперская башня стреляет тем же, чем снайпер', () => {
+    // Соответствие идёт по оружию, а не по тому, кто его держит:
+    // луч из башни и луч из машины — один и тот же луч.
+    expect(STRUCTURE_WEAPON[StructureKind.TowerSniper]).toBe(UNIT_WEAPON[UnitType.Sniper]);
+  });
+
+  it('три типа юнитов стреляют тремя разными видами оружия', () => {
+    const weapons = Object.values(UnitType).map((unitType) => UNIT_WEAPON[unitType]);
+
+    expect(new Set(weapons).size).toBe(weapons.length);
+  });
+
+  it('у каждого вида постройки задано оружие', () => {
+    // Таблица обходится по перечислению, а не по списку руками: иначе
+    // первый же новый вид постройки молча получил бы undefined.
+    for (const kind of Object.values(StructureKind)) {
+      expect(STRUCTURE_WEAPON[kind]).toBeDefined();
+    }
+  });
+
+  it('у каждого вида оружия задан срок жизни следа', () => {
+    for (const weapon of Object.values(ShotWeapon)) {
+      expect(SHOT_LIFETIME_TICKS[weapon]).toBeGreaterThan(0);
+    }
+  });
+
+  it('след луча живёт вдвое дольше следа трассера', () => {
+    // Трассеров в бою десятки в секунду, снайперский выстрел редок
+    // и весом: вдвое больший срок и делает из него событие.
+    expect(SHOT_LIFETIME_TICKS[ShotWeapon.Beam]).toBe(SHOT_LIFETIME_TICKS[ShotWeapon.Bolt] * 2);
   });
 });
 

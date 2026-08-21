@@ -2,7 +2,9 @@ import type { Graphics } from 'pixi.js';
 import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
+  SHOT_LIFETIME_TICKS,
   STRUCTURE_STATS,
+  ShotWeapon,
   StructureKind,
   UNIT_TYPES,
   UNIT_UPGRADE_TARGET,
@@ -11,7 +13,7 @@ import {
   upgradeBranchIndex,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import type { PlayerState, StructureState, WorldState } from '@td/sim';
+import type { PlayerState, ShotState, StructureState, WorldState } from '@td/sim';
 import { cellX, cellY, playerStats, structureMaxHealth } from '@td/sim';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
@@ -19,10 +21,15 @@ import { blend, drawPrism, tracePolygon, tracePolygonAt } from './prism.js';
 import type { Prism } from './prism.js';
 import { baseCrestPoint } from './base-structure.js';
 import {
+  MIRROR_SQUASH,
   SIDE_ENEMY,
   SIDE_SELF,
+  UNIT_ALTITUDE,
+  generalReflection,
   generalShadow,
   generalSilhouette,
+  hoverBob,
+  unitReflection,
   unitSilhouette,
   weaponTier,
 } from './models.js';
@@ -60,6 +67,8 @@ export interface EntityColors {
   readonly self: number;
   readonly enemy: number;
   readonly hullDark: number;
+  /** Цвет поверхности поля. К нему подмешиваются отражения. */
+  readonly ground: number;
   readonly health: number;
   readonly healthLow: number;
   readonly shot: number;
@@ -208,21 +217,34 @@ export const drawEntities = (
     const side = unit.owner === localPlayer ? SIDE_SELF : SIDE_ENEMY;
     const tier = tiers[unit.owner]?.[unit.unitType];
 
+    const attackTier = tier?.attack ?? 0;
+    const fireTier = tier?.fire ?? 0;
     const silhouette = unitSilhouette(
       colors,
       side,
       unit.unitType,
       unit.facing,
-      tier?.attack ?? 0,
-      tier?.fire ?? 0,
+      attackTier,
+      fireTier,
     );
+    const mirror = unitReflection(colors, side, unit.unitType, unit.facing, attackTier, fireTier);
     const anchor = worldToScreen(x, y);
+
+    // Машина висит над полем и медленно покачивается. Величина считается
+    // здесь, а не в кеше силуэтов: кеш общий для всех машин комбинации,
+    // а высота своя у каждой.
+    const altitude = UNIT_ALTITUDE + hoverBob(unit.id, world.tick);
+    const lift = altitude * ELEVATION_PX_PER_CELL;
 
     queue.push({
       depth: x + y,
       draw: (graphics) => {
-        paintSilhouette(graphics, silhouette, anchor.x, anchor.y, accent);
-        drawHealthBar(graphics, x, y, silhouette.height, unit.health, maxHealth, colors);
+        // Отражение первым: оно лежит в поверхности, машина висит над ней.
+        paintSilhouette(graphics, mirror, anchor.x, anchor.y + lift * MIRROR_SQUASH, accent);
+        paintSilhouette(graphics, silhouette, anchor.x, anchor.y - lift, accent);
+        // Полоса здоровья поднимается вместе с машиной, иначе повиснет
+        // отдельно от неё.
+        drawHealthBar(graphics, x, y, silhouette.height + altitude, unit.health, maxHealth, colors);
       },
     });
   }
@@ -239,16 +261,25 @@ export const drawEntities = (
     const side = general.owner === localPlayer ? SIDE_SELF : SIDE_ENEMY;
 
     const jet = generalSilhouette(colors, side, general.facing);
+    const mirror = generalReflection(colors, side, general.facing);
     const shadow = generalShadow(colors, general.facing);
     const anchor = worldToScreen(x, y);
+
+    // Высота истребителя зашита в саму модель, поэтому здесь остаётся
+    // одно покачивание. Фаза берётся от номера игрока: генералов двое,
+    // и качаться в такт им тоже незачем.
+    const bob = hoverBob(general.owner, world.tick);
+    const lift = bob * ELEVATION_PX_PER_CELL;
 
     queue.push({
       depth: x + y,
       draw: (graphics) => {
-        // Тень сначала: она лежит на земле, а машина идёт над ней.
+        // Порядок снизу вверх: отражение лежит в поверхности, тень —
+        // на поверхности, машина идёт над ней.
+        paintSilhouette(graphics, mirror, anchor.x, anchor.y + lift * MIRROR_SQUASH, accent);
         paintSilhouette(graphics, shadow, anchor.x, anchor.y, accent, SHADOW_ALPHA);
-        paintSilhouette(graphics, jet, anchor.x, anchor.y, accent);
-        drawHealthBar(graphics, x, y, jet.height, general.health, maxHealth, colors);
+        paintSilhouette(graphics, jet, anchor.x, anchor.y - lift, accent);
+        drawHealthBar(graphics, x, y, jet.height + bob, general.health, maxHealth, colors);
       },
     });
   }
@@ -518,29 +549,271 @@ const drawBaseHealthBar = (
     .stroke({ width: 1.5, color: accent, alpha: 0.95 });
 };
 
+/**
+ * Высота «плеча» стрелка, в клетках.
+ *
+ * Выстрел идёт не от земли: пальба из-под ног выглядит подкатом,
+ * а не стрельбой. Высота парения входит в неё слагаемым, а не числом,
+ * иначе после первой же правки парения выстрел стал бы выходить
+ * из-под днища.
+ */
+const SHOT_SHOULDER_CELLS = 0.35 + UNIT_ALTITUDE;
+
+/** Насколько виден свой выстрел и насколько — чужой. */
+const SHOT_ALPHA_SELF = 0.75;
+const SHOT_ALPHA_ENEMY = 0.5;
+
+/**
+ * До какой доли яркости догорает след к концу своей жизни.
+ *
+ * Не до нуля: исчезновение записи из мира и так обрывает показ,
+ * а след, потухший заранее, просто не виден последние тики.
+ */
+const SHOT_FADE_FLOOR = 0.4;
+
+/** Яркость следа по остатку его срока жизни. */
+const shotFade = (shot: ShotState, tick: number): number => {
+  const lifetime = SHOT_LIFETIME_TICKS[shot.weapon];
+  if (lifetime <= 0) return 1;
+
+  const left = Math.max(0, Math.min(1, (shot.expiresAtTick - tick) / lifetime));
+  return SHOT_FADE_FLOOR + (1 - SHOT_FADE_FLOOR) * left;
+};
+
 const drawShots = (
   graphics: Graphics,
   world: WorldState,
   colors: EntityColors,
   localPlayer: PlayerId,
 ): void => {
+  const lift = SHOT_SHOULDER_CELLS * ELEVATION_PX_PER_CELL;
+
   for (const shot of world.shots) {
     const from = worldToScreen(cellsOf(shot.from.x), cellsOf(shot.from.y));
     const to = worldToScreen(cellsOf(shot.to.x), cellsOf(shot.to.y));
+    const color = shot.lethal ? colors.shotLethal : colors.shot;
+    const alpha = shot.owner === localPlayer ? SHOT_ALPHA_SELF : SHOT_ALPHA_ENEMY;
 
-    // Трассер идёт не от земли, а от «плеча» стрелка: выстрел из-под ног
-    // выглядит как подкат, а не как стрельба.
-    const lift = 0.35 * ELEVATION_PX_PER_CELL;
-
-    graphics
-      .moveTo(from.x, from.y - lift)
-      .lineTo(to.x, to.y - lift)
-      .stroke({
-        width: shot.lethal ? 2 : 1,
-        color: shot.lethal ? colors.shotLethal : colors.shot,
-        alpha: shot.owner === localPlayer ? 0.75 : 0.5,
-      });
+    switch (shot.weapon) {
+      case ShotWeapon.Beam:
+        drawBeam(graphics, from, to, lift, color, alpha * shotFade(shot, world.tick), shot.lethal);
+        break;
+      case ShotWeapon.Arc:
+        drawArc(
+          graphics,
+          from,
+          to,
+          lift,
+          color,
+          alpha * shotFade(shot, world.tick),
+          shot.lethal,
+          arcSeed(shot, world.tick),
+        );
+        break;
+      default:
+        drawBolt(graphics, from, to, lift, color, alpha, shot.lethal);
+    }
   }
+};
+
+/**
+ * Трассер: тонкий отрезок от плеча к цели.
+ *
+ * Оставлен ровно таким, каким был до появления остальных видов оружия,
+ * и служит меркой, относительно которой читаются они: луч заметно толще
+ * трассера, разряд заметно изломаннее. Мерка, изменившаяся вместе
+ * с измеряемым, ничего не измеряет.
+ */
+const drawBolt = (
+  graphics: Graphics,
+  from: Point,
+  to: Point,
+  lift: number,
+  color: number,
+  alpha: number,
+  lethal: boolean,
+): void => {
+  graphics
+    .moveTo(from.x, from.y - lift)
+    .lineTo(to.x, to.y - lift)
+    .stroke({ width: lethal ? 2 : 1, color, alpha });
+};
+
+/** Во сколько раз ядро луча толще трассера. */
+const BEAM_WIDTH_SCALE = 2.4;
+
+/** Во сколько раз ореол шире ядра. Без ореола толстая линия читается палкой. */
+const BEAM_HALO_SCALE = 3.5;
+
+const BEAM_HALO_ALPHA = 0.3;
+
+/** Насколько луч в отражении слабее самого луча. */
+const BEAM_MIRROR_ALPHA = 0.35;
+
+/**
+ * Луч снайпера: ореол, ядро и отражение в поверхности.
+ *
+ * Отражается он по той же причине и по тем же правилам, что тела:
+ * поле — слабое зеркало, и висящая над ним линия обязана в нём
+ * отразиться, иначе зеркало кончается там, где начинается стрельба.
+ */
+const drawBeam = (
+  graphics: Graphics,
+  from: Point,
+  to: Point,
+  lift: number,
+  color: number,
+  alpha: number,
+  lethal: boolean,
+): void => {
+  const core = (lethal ? 2 : 1) * BEAM_WIDTH_SCALE;
+  const mirrorLift = lift * MIRROR_SQUASH;
+
+  // Отражение первым: оно лежит глубже и не должно перебивать сам луч.
+  graphics
+    .moveTo(from.x, from.y + mirrorLift)
+    .lineTo(to.x, to.y + mirrorLift)
+    .stroke({ width: core, color, alpha: alpha * BEAM_MIRROR_ALPHA });
+
+  graphics
+    .moveTo(from.x, from.y - lift)
+    .lineTo(to.x, to.y - lift)
+    .stroke({ width: core * BEAM_HALO_SCALE, color, alpha: alpha * BEAM_HALO_ALPHA });
+
+  graphics
+    .moveTo(from.x, from.y - lift)
+    .lineTo(to.x, to.y - lift)
+    .stroke({ width: core, color, alpha: Math.min(1, alpha * 1.3) });
+};
+
+/** Сколько изломов в разряде. Меньше — ломаная, больше — верёвка. */
+const ARC_STEPS = 7;
+
+/** Сколько ветвей уходит в сторону от основного разряда. */
+const ARC_BRANCHES = 2;
+
+/** Какую долю длины выстрела составляет поперечный размах. */
+const ARC_SPREAD_FRACTION = 0.12;
+
+/** Предел размаха в пикселях: на дальнем выстреле доля даёт слишком много. */
+const ARC_MAX_SPREAD_PX = 14;
+
+const ARC_HALO_SCALE = 3;
+const ARC_HALO_ALPHA = 0.2;
+
+/**
+ * Зерно для формы разряда.
+ *
+ * Считается из координат выстрела и номера тика, а не берётся случайным.
+ * Кадров в тике несколько, и разряд со случайной формой перестраивался бы
+ * шестьдесят раз в секунду — это читается шумом, а не молнией. С зерном
+ * от тика он держит форму весь тик и вспыхивает заново на следующем,
+ * то есть мигает тридцать раз в секунду, как настоящий разряд.
+ */
+const arcSeed = (shot: ShotState, tick: number): number => {
+  let hash = 0x811c9dc5;
+
+  for (const value of [shot.from.x, shot.from.y, shot.to.x, shot.to.y, tick]) {
+    hash = Math.imul(hash ^ (value | 0), 0x01000193) >>> 0;
+  }
+
+  return hash;
+};
+
+/** Поток чисел из [-1, 1) по зерну. Xorshift32: три сдвига на число. */
+const noiseFrom = (seed: number): (() => number) => {
+  let state = seed === 0 ? 1 : seed >>> 0;
+
+  return (): number => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+
+    return state / 0x80000000 - 1;
+  };
+};
+
+const tracePolyline = (graphics: Graphics, points: readonly Point[]): void => {
+  const first = points[0];
+  if (first === undefined) return;
+
+  graphics.moveTo(first.x, first.y);
+  for (let index = 1; index < points.length; index += 1) {
+    const point = points[index];
+    if (point !== undefined) graphics.lineTo(point.x, point.y);
+  }
+};
+
+/**
+ * Разряд гранатомётчика: ломаная с ветвями.
+ *
+ * Поперечное смещение гаснет к концам синусом: разряд обязан выйти
+ * из ствола и прийти в цель. Излом — это облик, а не промах, и уводить
+ * концы в сторону значило бы врать про то, куда пришёлся урон.
+ */
+const drawArc = (
+  graphics: Graphics,
+  from: Point,
+  to: Point,
+  lift: number,
+  color: number,
+  alpha: number,
+  lethal: boolean,
+  seed: number,
+): void => {
+  const start = { x: from.x, y: from.y - lift };
+  const end = { x: to.x, y: to.y - lift };
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+
+  // Выстрел в упор ломать не во что.
+  if (length === 0) return;
+
+  const acrossX = -dy / length;
+  const acrossY = dx / length;
+  const spread = Math.min(ARC_MAX_SPREAD_PX, length * ARC_SPREAD_FRACTION);
+  const noise = noiseFrom(seed);
+
+  const nodes: Point[] = [start];
+  for (let step = 1; step < ARC_STEPS; step += 1) {
+    const along = step / ARC_STEPS;
+    const swing = noise() * spread * Math.sin(Math.PI * along);
+
+    nodes.push({
+      x: start.x + dx * along + acrossX * swing,
+      y: start.y + dy * along + acrossY * swing,
+    });
+  }
+  nodes.push(end);
+
+  // Ветви уходят от середины: у ствола и у цели они читались бы промахом.
+  const branches: Point[][] = [];
+  for (let count = 0; count < ARC_BRANCHES; count += 1) {
+    const node = nodes[2 + Math.floor(Math.abs(noise()) * (ARC_STEPS - 3))];
+    if (node === undefined) continue;
+
+    branches.push([
+      node,
+      {
+        x: node.x + (acrossX * noise() + (dx / length) * 0.4) * spread * 1.6,
+        y: node.y + (acrossY * noise() + (dy / length) * 0.4) * spread * 1.6,
+      },
+    ]);
+  }
+
+  const core = lethal ? 2.4 : 1.6;
+
+  tracePolyline(graphics, nodes);
+  graphics.stroke({ width: core * ARC_HALO_SCALE, color, alpha: alpha * ARC_HALO_ALPHA });
+
+  // Ядро и ветви одной обводкой: ветвь — часть того же разряда, и обводить
+  // её отдельно значило бы платить лишним обращением к видеокарте.
+  tracePolyline(graphics, nodes);
+  for (const branch of branches) tracePolyline(graphics, branch);
+  graphics.stroke({ width: core, color, alpha: Math.min(1, alpha * 1.3) });
 };
 
 /** Тонкий контур клетки. Нужен подсказкам поверх поля. */

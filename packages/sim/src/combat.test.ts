@@ -6,6 +6,7 @@ import {
   MAP_WIDTH_CELLS,
   PPM_ONE,
   STRUCTURE_STATS,
+  ShotWeapon,
   StructureKind,
   Terrain,
   UNIT_STATS,
@@ -19,6 +20,7 @@ import type { PlayerId } from '@td/shared';
 import { createWorld } from './world.js';
 import type { GeneralState, StructureState, UnitState, WorldState } from './world.js';
 import { step } from './step.js';
+import { checksum } from './checksum.js';
 import { cellCentre, cellIndex } from './map.js';
 
 /**
@@ -188,6 +190,75 @@ describe('стрельба и урон', () => {
     // Десять тиков — это треть секунды, то есть не больше одного выстрела
     // при базовой скорострельности в выстрел в секунду.
     expect(damage).toBeLessThanOrEqual(attack);
+  });
+});
+
+/**
+ * След выстрела нужен одной лишь отрисовке, но записывает его ядро:
+ * опознать стрелка по точке выстрела клиент не может — след живёт дольше
+ * стрелка, и погибший снайпер посреди показа превратил бы свой луч
+ * в чужой трассер.
+ */
+describe('след выстрела', () => {
+  /** Расстановка «стрелок игрока 0 и живая мишень игрока 1 в клетке рядом». */
+  const duel = (
+    shooter: readonly StructureState[],
+    shooterUnits: readonly UnitState[],
+    generalAt?: { x: number; y: number },
+  ): WorldState =>
+    step(
+      arrange(shooter, [...shooterUnits, unit(61, 1, UnitType.Assault, 1, 0, 10_000)], generalAt),
+      [],
+    );
+
+  const weaponOf = (world: WorldState, owner: number): ShotWeapon | undefined =>
+    world.shots.find((shot) => shot.owner === asPlayerId(owner))?.weapon;
+
+  it('снайпер и снайперская башня помечают выстрел лучом', () => {
+    expect(weaponOf(duel([], [unit(60, 0, UnitType.Sniper, 0, 0, 100)]), 0)).toBe(ShotWeapon.Beam);
+    expect(
+      weaponOf(duel([structure(50, 0, StructureKind.TowerSniper, 0, 0, 200)], []), 0),
+    ).toBe(ShotWeapon.Beam);
+  });
+
+  it('гранатомётчик помечает выстрел разрядом', () => {
+    expect(weaponOf(duel([], [unit(60, 0, UnitType.Grenadier, 0, 0, 100)]), 0)).toBe(
+      ShotWeapon.Arc,
+    );
+  });
+
+  it('штурмовик, базовая башня и генерал помечают выстрел трассером', () => {
+    expect(weaponOf(duel([], [unit(60, 0, UnitType.Assault, 0, 0, 100)]), 0)).toBe(ShotWeapon.Bolt);
+    expect(weaponOf(duel([structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)], []), 0)).toBe(
+      ShotWeapon.Bolt,
+    );
+    expect(weaponOf(duel([], [], at(0, 0)), 0)).toBe(ShotWeapon.Bolt);
+  });
+
+  it('след луча живёт вдвое дольше следа трассера', () => {
+    // Оба выстрела сделаны в один тик, поэтому сравнивать можно остатки
+    // сроков: общее начало отсчёта сокращается.
+    const world = duel([], [unit(60, 0, UnitType.Sniper, 0, 0, 10_000)]);
+
+    const beam = world.shots.find((shot) => shot.weapon === ShotWeapon.Beam);
+    const bolt = world.shots.find((shot) => shot.weapon === ShotWeapon.Bolt);
+    if (beam === undefined || bolt === undefined) throw new Error('в тике не было обоих выстрелов');
+
+    expect(beam.expiresAtTick - world.tick).toBe((bolt.expiresAtTick - world.tick) * 2);
+  });
+
+  it('вид оружия не меняет контрольную сумму', () => {
+    // Следы не входят в сумму намеренно: они производны от боя и нужны
+    // рендеру. Войди вид оружия в неё — правка облика выстрела требовала бы
+    // нового эталона детерминизма, хотя правила не менялись.
+    const world = duel([], [unit(60, 0, UnitType.Sniper, 0, 0, 10_000)]);
+    const repainted = {
+      ...world,
+      shots: world.shots.map((shot) => ({ ...shot, weapon: ShotWeapon.Arc })),
+    };
+
+    expect(world.shots.length).toBeGreaterThan(0);
+    expect(checksum(repainted)).toBe(checksum(world));
   });
 });
 

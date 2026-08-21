@@ -2,19 +2,22 @@ import {
   DIRECTION_STOP,
   FIXED_POINT_SCALE,
   GENERAL_KILL_REWARD,
+  GENERAL_WEAPON,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   STRUCTURE_STATS,
+  STRUCTURE_WEAPON,
   StructureKind,
   TOWER_GROWTH_CAP_PPM,
   TOWER_KILL_GROWTH_PERCENT,
   UNIT_STATS,
+  UNIT_WEAPON,
   asTickNumber,
   clampPpm,
   directionTowards,
   growPpm,
 } from '@td/shared';
-import type { PlayerId, Vec2 } from '@td/shared';
+import type { PlayerId, ShotWeapon, Vec2 } from '@td/shared';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
 import { statsOf, structureAttack, structureMaxHealth } from './stats.js';
@@ -593,6 +596,7 @@ const fire = (
   target: Target,
   attack: number,
   structureDamagePercent: number,
+  weapon: ShotWeapon,
 ): void => {
   const aim = targetPosition(working, target);
   if (aim === undefined) return;
@@ -605,7 +609,7 @@ const fire = (
     damageAgainst(working, target, attack, structureDamagePercent),
   );
 
-  recordShot(working, shooter.owner, origin, aim, lethal);
+  recordShot(working, shooter.owner, origin, aim, lethal, weapon);
 };
 
 const globalTargetIndexOf = (working: Working, owner: PlayerId): number => {
@@ -688,6 +692,7 @@ const fireStructure = (
     target,
     attack,
     100,
+    STRUCTURE_WEAPON[structure.kind],
   );
 };
 
@@ -751,6 +756,7 @@ const fireUnit = (
     target,
     baseline.attack,
     baseline.structureDamagePercent,
+    UNIT_WEAPON[unit.unitType],
   );
 };
 
@@ -790,5 +796,6 @@ const fireGeneral = (
     target,
     baseline.attack,
     baseline.structureDamagePercent,
+    GENERAL_WEAPON,
   );
 };

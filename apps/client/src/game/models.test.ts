@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DIRECTION_SOUTH, UNIT_TYPES, UnitType } from '@td/shared';
 import {
+  GENERAL_ALTITUDE,
   SIDE_ENEMY,
   SIDE_SELF,
+  UNIT_ALTITUDE,
+  generalReflection,
   generalShadow,
   generalSilhouette,
+  hoverBob,
   resetModelCache,
+  unitReflection,
   unitSilhouette,
   weaponTier,
 } from './models.js';
@@ -24,6 +29,7 @@ const COLORS = {
   self: 0x00ff29,
   enemy: 0xd264ff,
   hullDark: 0x23271f,
+  ground: 0x191919,
 };
 
 /** Габариты силуэта на экране относительно основания модели. */
@@ -66,6 +72,20 @@ const ALONG_SCREEN = 8;
 
 const assault = (attack = 0, fire = 0, facing = DIRECTION_SOUTH): Silhouette =>
   unitSilhouette(COLORS, SIDE_SELF, UnitType.Assault, facing, attack, fire);
+
+const assaultMirror = (attack = 0, fire = 0, facing = DIRECTION_SOUTH): Silhouette =>
+  unitReflection(COLORS, SIDE_SELF, UnitType.Assault, facing, attack, fire);
+
+/** Насколько цвет далёк от цвета поверхности. Сумма по трём каналам. */
+const awayFromGround = (color: number): number => {
+  let distance = 0;
+
+  for (const shift of [16, 8, 0]) {
+    distance += Math.abs(((color >> shift) & 0xff) - ((COLORS.ground >> shift) & 0xff));
+  }
+
+  return distance;
+};
 
 /** Набор цветов, которыми залита модель. */
 const palette = (unitType: UnitType, side: number): Set<number> =>
@@ -252,6 +272,113 @@ describe('кеш силуэтов', () => {
     for (let index = 1; index < colors.length; index += 1) {
       expect(colors[index]).not.toBe(colors[index - 1]);
     }
+  });
+});
+
+describe('парение над полем', () => {
+  it('соседние номера качаются не в такт', () => {
+    // Строй, качающийся в такт, читается ошибкой синхронизации,
+    // а не парением: живые вещи не дышат в ногу.
+    expect(hoverBob(1, 0)).not.toBeCloseTo(hoverBob(2, 0), 3);
+    expect(hoverBob(2, 0)).not.toBeCloseTo(hoverBob(3, 0), 3);
+  });
+
+  it('высота меняется от тика к тику', () => {
+    expect(hoverBob(7, 0)).not.toBeCloseTo(hoverBob(7, 18), 3);
+  });
+
+  it('в нижней точке машина всё ещё не касается земли', () => {
+    // Иначе это уже не парение, а прыжки: отражение то отрывается,
+    // то слипается с колёсами.
+    for (let tick = 0; tick < 200; tick += 1) {
+      expect(UNIT_ALTITUDE + hoverBob(7, tick)).toBeGreaterThan(0);
+    }
+  });
+
+  it('генерал идёт выше парящего юнита с запасом', () => {
+    let highest = 0;
+    for (let tick = 0; tick < 200; tick += 1) {
+      highest = Math.max(highest, UNIT_ALTITUDE + hoverBob(7, tick));
+    }
+
+    // Втрое — это уже не «чуть выше», а другой ярус. Ровно на этом
+    // и держится опознавание генерала.
+    expect(GENERAL_ALTITUDE).toBeGreaterThan(highest * 3);
+  });
+});
+
+describe('отражение в поверхности', () => {
+  it('лежит под машиной, а не рядом с ней', () => {
+    const model = bounds(assault());
+    const mirror = bounds(assaultMirror());
+
+    // Опрокидывается только высота. Опрокинь мы экранную `y` целиком —
+    // отражение уехало бы вбок: в этой проекции `y` несёт и высоту,
+    // и положение на плоскости.
+    expect(mirror.minY).toBeGreaterThan(model.minY);
+    expect(mirror.maxY).toBeGreaterThan(model.maxY);
+    expect(mirror.minX).toBeCloseTo(model.minX, 6);
+    expect(mirror.maxX).toBeCloseTo(model.maxX, 6);
+  });
+
+  it('сплюснуто по высоте', () => {
+    // Зеркало мы видим под острым углом, и отражение в полную длину
+    // читалось бы второй машиной, стоящей вниз головой.
+    expect(bounds(assaultMirror()).height).toBeLessThan(bounds(assault()).height);
+  });
+
+  it('приглушено цветом поверхности, но не до пятна', () => {
+    const model = assault();
+    const mirror = assaultMirror();
+
+    const dimmest = Math.max(...mirror.fills.map((run) => awayFromGround(run.color)));
+    const brightest = Math.max(...model.fills.map((run) => awayFromGround(run.color)));
+
+    // Смешивание поканальное и линейное, поэтому доля должна упасть
+    // заметно — вдвое с запасом.
+    expect(dimmest).toBeGreaterThan(0);
+    expect(dimmest).toBeLessThan(brightest / 2);
+
+    // Затенение граней при этом сохраняется: отражение остаётся
+    // изображением машины, а не её тенью.
+    expect(new Set(mirror.fills.map((run) => run.color)).size).toBeGreaterThan(1);
+  });
+
+  it('не несёт неоновой окантовки', () => {
+    // Обводка сделала бы из отражения второй объект, а это изображение
+    // объекта.
+    expect(assaultMirror().outline).toHaveLength(0);
+    expect(generalReflection(COLORS, SIDE_SELF, DIRECTION_SOUTH).outline).toHaveLength(0);
+  });
+
+  it('у генерала уходит от машины дальше, чем у юнита', () => {
+    // Разрыв между машиной и отражением и есть мерка высоты. У генерала
+    // он обязан быть больше — на этом держится его опознавание.
+    const jetGap =
+      bounds(generalReflection(COLORS, SIDE_SELF, DIRECTION_SOUTH)).minY -
+      bounds(generalSilhouette(COLORS, SIDE_SELF, DIRECTION_SOUTH)).minY;
+    const unitGap = bounds(assaultMirror()).minY - bounds(assault()).minY;
+
+    expect(jetGap).toBeGreaterThan(unitGap * 3);
+  });
+
+  it('повторный запрос возвращает ту же запись', () => {
+    expect(assaultMirror(1, 2, 5)).toBe(assaultMirror(1, 2, 5));
+    expect(generalReflection(COLORS, SIDE_SELF, 4)).toBe(generalReflection(COLORS, SIDE_SELF, 4));
+  });
+
+  it('смена палитры перестраивает отражения', () => {
+    const before = assaultMirror();
+    const other = unitReflection(
+      { ...COLORS, ground: 0x123456 },
+      SIDE_SELF,
+      UnitType.Assault,
+      DIRECTION_SOUTH,
+      0,
+      0,
+    );
+
+    expect(other).not.toBe(before);
   });
 });
 

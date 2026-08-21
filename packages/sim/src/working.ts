@@ -5,6 +5,7 @@ import type {
   EntityId,
   PlayerId,
   RejectReason,
+  ShotWeapon,
   TickNumber,
   UnitType,
   Vec2,
@@ -248,19 +249,28 @@ export const recordRejection = (
   working.rejections.push({ player, kind, reason, index });
 };
 
+/**
+ * Записать след выстрела.
+ *
+ * Срок жизни следа не передаётся, а выводится из оружия: два источника
+ * одной величины разъехались бы при первой же правке таблицы, и луч
+ * снайпера стал бы гаснуть по сроку трассера.
+ */
 export const recordShot = (
   working: Working,
   owner: PlayerId,
   from: Vec2,
   to: Vec2,
   lethal: boolean,
+  weapon: ShotWeapon,
 ): void => {
   working.shots.push({
     owner,
     from,
     to,
-    expiresAtTick: asTickNumber(working.tick + SHOT_LIFETIME_TICKS),
+    expiresAtTick: asTickNumber(working.tick + SHOT_LIFETIME_TICKS[weapon]),
     lethal,
+    weapon,
   });
 };
 

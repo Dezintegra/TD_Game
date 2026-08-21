@@ -366,6 +366,59 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────
+// Парение над полем
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Высота, на которой висит боевая машина, в клетках.
+ *
+ * Поле — слабое зеркало, и машина, лежащая на нём вплотную, отражения
+ * не даёт: её отражение начиналось бы прямо от линии касания и читалось бы
+ * не отражением, а удвоенным вниз силуэтом. Отражение делает отражением
+ * разрыв, и вот этот разрыв здесь и задан.
+ *
+ * Восемь сотых клетки — около четырёх пикселей при высоте модели
+ * примерно в пятнадцать. Разрыв виден, но машина ещё не висит в воздухе:
+ * она именно парит над поверхностью, а не летит над ней.
+ *
+ * На правила высота не влияет ничем: в состоянии мира её нет вовсе,
+ * юнит по-прежнему занимает свою клетку и упирается в скалу.
+ */
+export const UNIT_ALTITUDE = 0.08;
+
+/** Размах покачивания, в клетках. Около полутора пикселей. */
+const BOB_AMPLITUDE = 0.03;
+
+/** Период покачивания, в тиках. Две с половиной секунды. */
+const BOB_PERIOD_TICKS = 72;
+
+/**
+ * Разброс фаз между соседними номерами, в тиках.
+ *
+ * Взаимно просто с периодом, поэтому соседние номера расходятся по фазе
+ * далеко и не сходятся обратно. Строй, качающийся в такт, читается
+ * не парением, а ошибкой синхронизации: живые вещи не дышат в ногу.
+ */
+const BOB_PHASE_STRIDE_TICKS = 29;
+
+const TWO_PI = Math.PI * 2;
+
+/**
+ * Покачивание парящей машины, в клетках. Может быть отрицательным.
+ *
+ * Время берётся из номера тика, а не из часов: всё остальное на поле
+ * движется с частотой тика, и покачивание по собственным часам разъехалось
+ * бы с движением при первой просадке кадров. Фаза берётся из номера
+ * сущности — он уже уникален и уже лежит в состоянии мира.
+ *
+ * Величина считается на кадре, а не кладётся в кеш силуэтов: кеш общий
+ * для всех машин одной комбинации, и величине, зависящей от конкретной
+ * машины, в нём места нет.
+ */
+export const hoverBob = (seed: number, tick: number): number =>
+  BOB_AMPLITUDE * Math.sin((TWO_PI * (tick + seed * BOB_PHASE_STRIDE_TICKS)) / BOB_PERIOD_TICKS);
+
+// ─────────────────────────────────────────────────────────────────────────
 // Истребитель генерала
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -373,8 +426,12 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
  * Высота, на которой идёт машина генерала.
  *
  * Генерал обязан опознаваться среди сотни юнитов мгновенно. Раньше это
- * делал вертикальный шпиль, теперь — единственный объект на поле, который
- * не касается земли. Высота читается боковым зрением надёжнее любой детали.
+ * делал вертикальный шпиль, потом — то, что он единственный на поле
+ * не касается земли. Теперь над полем парят все, и признаком стала
+ * величина отрыва: генерал идёт вшестеро выше юнита, и его отражение
+ * уходит дальше всех. Признак от этого не ослаб, а усилился — разрыв
+ * виден рядом с чужими разрывами, а сравнение нагляднее одиночного
+ * присутствия.
  *
  * Полклетки, а не больше: выше — и машина отрывается от собственной тени
  * настолько, что перестаёт быть понятно, где она стоит, а вокруг её клетки
@@ -471,6 +528,12 @@ const JET_PARTS: readonly Part[] = [
  * а вокруг клетки генерала считается радиус строительства — игрок обязан
  * видеть, где генерал стоит. Тень эту привязку возвращает.
  *
+ * Отражение эту обязанность не снимает и заменить тень не может.
+ * Отражение объекта, поднятого на высоту, лежит на той же глубине под
+ * поверхностью — так устроено плоское зеркало, — и у генерала с его
+ * полклетки оно целиком уходит ниже его клетки. Клетку оно отмечает
+ * приблизительно, тень — точно.
+ *
  * Рисуется плоским телом нулевой высоты, то есть одной верхней гранью.
  */
 const SHADOW_PARTS: readonly Part[] = [
@@ -514,6 +577,11 @@ export interface ModelColors {
   readonly self: number;
   readonly enemy: number;
   readonly hullDark: number;
+  /**
+   * Цвет поверхности поля. Нужен отражениям: они не полупрозрачные,
+   * а подмешанные к цвету поля. Почему именно так — ниже, у `mirrorOf`.
+   */
+  readonly ground: number;
 }
 
 /** Своя сторона и чужая. Индекс входит в ключ кеша. */
@@ -627,6 +695,100 @@ const buildSilhouette = (
 };
 
 // ─────────────────────────────────────────────────────────────────────────
+// Отражение в поверхности
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Насколько отражение сплюснуто по высоте.
+ *
+ * Зеркало мы видим под острым углом, и отражение в полную длину читалось бы
+ * не отражением, а второй машиной, стоящей вниз головой.
+ */
+export const MIRROR_SQUASH = 0.5;
+
+/**
+ * Какая доля цвета грани доживает до отражения.
+ *
+ * Зеркало слабое, и это требование, а не осторожность: на поле помещается
+ * две сотни машин, и отражение, спорящее с телом за внимание, превратило бы
+ * строй в кашу. Меньше пятой доли — уже пятно, больше четверти — уже
+ * вторая машина.
+ */
+const MIRROR_STRENGTH = 0.22;
+
+/**
+ * Детали, опрокинутые под поверхность.
+ *
+ * Отражение строится из деталей заново, а не переворачиванием готовой
+ * экранной геометрии, и вот почему. В нашей проекции экранная `y` несёт
+ * сразу две вещи: высоту над землёй и положение на плоскости. Точка
+ * северного крыла имеет отрицательную `y` не потому, что она высоко,
+ * а потому, что она далеко на север. Опрокинь мы `y` целиком —
+ * отражение уехало бы вбок от машины и перекосилось.
+ *
+ * Опрокидывать надо только высоту. Деталь, стоявшая от `base`
+ * до `base + height`, уходит под поверхность на ту же глубину:
+ * ближайшая к поверхности грань отражения соответствует нижней грани
+ * детали. Опора остаётся на месте — и отражение остаётся под машиной.
+ *
+ * Отсюда же берётся верный порядок отрисовки. Детали сортируются
+ * по удалённости, а при равной удалённости — по высоте опоры. У опрокинутых
+ * деталей порядок по высоте переворачивается сам: башня, лежавшая
+ * на корпусе, в отражении оказывается глубже него и рисуется раньше.
+ * Именно так и выглядит отражение.
+ *
+ * Окантовки у отражения нет: неоновая линия сделала бы из него второй
+ * объект, а это изображение объекта.
+ */
+const mirroredParts = (parts: readonly Part[]): Part[] =>
+  parts.map((part) => ({
+    ...part,
+    base: -(part.base + part.height) * MIRROR_SQUASH,
+    height: part.height * MIRROR_SQUASH,
+    outline: false,
+  }));
+
+/**
+ * Приглушение отражения цветом поверхности.
+ *
+ * Отражение непрозрачное, и это не небрежность. Полупрозрачность
+ * выглядела бы честнее, но модель собрана из десятка тел, и тела
+ * перекрывают друг друга — башня лежит на корпусе, ближнее колесо
+ * на борту. Прозрачные заливки в этих местах складываются, и отражение
+ * покрывается пятнами там, где у машины просто стык деталей. Отдельный
+ * слой с общей прозрачностью не помогает: PixiJS умножает прозрачность
+ * объекта в цвета вершин при пакетной отрисовке, то есть она попадает
+ * в каждую заливку по отдельности.
+ *
+ * Обойтись без прозрачности получается потому, что цвет поверхности
+ * известен заранее и одинаков по всей карте: земля рисуется линиями,
+ * заливок у неё нет. Подмешивание к цвету поля даёт тот же результат,
+ * что дала бы прозрачность, и стоит одного смешивания цветов
+ * при построении кеша.
+ *
+ * Затенение граней при этом сохраняется: верхняя грань в отражении
+ * светлее боковой, как и у машины. Ровно это отличает отражение
+ * от пятна и не стоит ничего.
+ */
+const dimmedToGround = (silhouette: Silhouette, ground: number): Silhouette => ({
+  fills: silhouette.fills.map((run) => ({
+    color: blend(ground, run.color, MIRROR_STRENGTH),
+    polygons: run.polygons,
+  })),
+  outline: [],
+  // Высота отражения бессмысленна: над ним ничего не ставится.
+  height: 0,
+});
+
+const buildReflection = (
+  parts: readonly Part[],
+  facing: number,
+  colors: ModelColors,
+  side: number,
+): Silhouette =>
+  dimmedToGround(buildSilhouette(mirroredParts(parts), facing, colors, side), colors.ground);
+
+// ─────────────────────────────────────────────────────────────────────────
 // Кеш
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -649,6 +811,17 @@ const generalCache: (Silhouette | undefined)[] = new Array<Silhouette | undefine
 const shadowCache: (Silhouette | undefined)[] = new Array<Silhouette | undefined>(DIRECTION_COUNT);
 
 /**
+ * Кеши отражений. Ключи те же самые: отражение однозначно выводится
+ * из силуэта, а значит, зависит ровно от того же.
+ */
+const unitMirrorCache: (Silhouette | undefined)[] = new Array<Silhouette | undefined>(
+  UNIT_CACHE_SIZE,
+);
+const generalMirrorCache: (Silhouette | undefined)[] = new Array<Silhouette | undefined>(
+  DIRECTION_COUNT * SIDE_COUNT,
+);
+
+/**
  * Палитра, для которой построен кеш.
  *
  * Цвета читаются из CSS один раз при запуске, и объект палитры живёт
@@ -665,10 +838,32 @@ const ensurePalette = (colors: ModelColors): void => {
   unitCache.fill(undefined);
   generalCache.fill(undefined);
   shadowCache.fill(undefined);
+  unitMirrorCache.fill(undefined);
+  generalMirrorCache.fill(undefined);
 };
 
 const normaliseFacing = (facing: number): number =>
   Number.isInteger(facing) && facing > 0 && facing < DIRECTION_COUNT ? facing : DIRECTION_SOUTH;
+
+/** Детали машины: шасси и стволы по ступеням прокачки. */
+const unitParts = (unitType: UnitType, attackTier: number, fireTier: number): readonly Part[] => {
+  const chassis = CHASSIS[unitType];
+  return [...chassis.parts, ...barrels(chassis.mount, attackTier, fireTier)];
+};
+
+/** Номер записи в кеше юнитов. Один на силуэт и его отражение. */
+const unitCacheIndex = (
+  unitType: UnitType,
+  facing: number,
+  attackTier: number,
+  fireTier: number,
+  side: number,
+): number =>
+  (((unitType * DIRECTION_COUNT + normaliseFacing(facing)) * TIER_COUNT + clampTier(attackTier)) *
+    TIER_COUNT +
+    clampTier(fireTier)) *
+    SIDE_COUNT +
+  side;
 
 /** Силуэт боевой машины. Одинаковые запросы возвращают одну и ту же запись. */
 export const unitSilhouette = (
@@ -684,20 +879,12 @@ export const unitSilhouette = (
   const rumb = normaliseFacing(facing);
   const attack = clampTier(attackTier);
   const fire = clampTier(fireTier);
-  const index =
-    (((unitType * DIRECTION_COUNT + rumb) * TIER_COUNT + attack) * TIER_COUNT + fire) * SIDE_COUNT +
-    side;
+  const index = unitCacheIndex(unitType, rumb, attack, fire, side);
 
   const cached = unitCache[index];
   if (cached !== undefined) return cached;
 
-  const chassis = CHASSIS[unitType];
-  const built = buildSilhouette(
-    [...chassis.parts, ...barrels(chassis.mount, attack, fire)],
-    rumb,
-    colors,
-    side,
-  );
+  const built = buildSilhouette(unitParts(unitType, attack, fire), rumb, colors, side);
 
   unitCache[index] = built;
   return built;
@@ -739,6 +926,51 @@ export const generalShadow = (colors: ModelColors, facing: number): Silhouette =
   return built;
 };
 
+/** Отражение боевой машины в поверхности поля. */
+export const unitReflection = (
+  colors: ModelColors,
+  side: number,
+  unitType: UnitType,
+  facing: number,
+  attackTier: number,
+  fireTier: number,
+): Silhouette => {
+  ensurePalette(colors);
+
+  const index = unitCacheIndex(unitType, facing, attackTier, fireTier, side);
+
+  const cached = unitMirrorCache[index];
+  if (cached !== undefined) return cached;
+
+  const built = buildReflection(
+    unitParts(unitType, clampTier(attackTier), clampTier(fireTier)),
+    normaliseFacing(facing),
+    colors,
+    side,
+  );
+
+  unitMirrorCache[index] = built;
+  return built;
+};
+
+/** Отражение истребителя генерала. */
+export const generalReflection = (
+  colors: ModelColors,
+  side: number,
+  facing: number,
+): Silhouette => {
+  ensurePalette(colors);
+
+  const index = normaliseFacing(facing) * SIDE_COUNT + side;
+
+  const cached = generalMirrorCache[index];
+  if (cached !== undefined) return cached;
+
+  const built = buildReflection(JET_PARTS, normaliseFacing(facing), colors, side);
+  generalMirrorCache[index] = built;
+  return built;
+};
+
 /**
  * Высота модели юнита в клетках — для полосы здоровья.
  *
@@ -759,4 +991,6 @@ export const resetModelCache = (): void => {
   unitCache.fill(undefined);
   generalCache.fill(undefined);
   shadowCache.fill(undefined);
+  unitMirrorCache.fill(undefined);
+  generalMirrorCache.fill(undefined);
 };
