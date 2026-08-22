@@ -259,6 +259,46 @@ export const mixInto = (
   });
 };
 
+/**
+ * Развернуть запись задом наперёд.
+ *
+ * Приём старый и в звуковом деле обыденный: разгон, проигранный
+ * наоборот, становится затуханием. Нужен там, где запись сама по себе
+ * нарастает, а событию положено начинаться с полной силы и гаснуть —
+ * то есть у выстрела.
+ *
+ * Разворот идёт ПЕРВЫМ, до срезания тишины: тишина, которая была
+ * в конце, после разворота оказывается в начале, и срезать её надо
+ * уже там.
+ */
+export const reverse = (channels: Channels): Channels =>
+  channels.map((channel) => {
+    const out = new Float32Array(channel.length);
+    for (let index = 0; index < channel.length; index += 1) {
+      out[index] = channel[channel.length - 1 - index] ?? 0;
+    }
+    return out;
+  });
+
+/**
+ * Размножить запись до нужной длины повторением.
+ *
+ * Нужно слою у зацикленного звука. Слой короче основы прозвучал бы
+ * один раз в начале круга и пропал до конца — а у петли начала и конца
+ * нет, круг идёт непрерывно. Стык между повторами сгладит замыкание
+ * петли, которое всё равно идёт следом.
+ */
+export const tile = (channels: Channels, length: number): Channels =>
+  channels.map((channel) => {
+    if (channel.length === 0) return channel;
+
+    const out = new Float32Array(length);
+    for (let index = 0; index < length; index += 1) {
+      out[index] = channel[index % channel.length] ?? 0;
+    }
+    return out;
+  });
+
 export interface PrepareOptions {
   readonly sampleRate: number;
   /** Множитель скорости для варианта. */
@@ -269,6 +309,8 @@ export interface PrepareOptions {
   readonly fadeFromSeconds?: number | undefined;
   /** Ниже какой частоты срезать. */
   readonly highPassHz?: number | undefined;
+  /** Развернуть задом наперёд: разгон становится затуханием. */
+  readonly reversed?: boolean | undefined;
   /** Вторая запись поверх первой, уже декодированная. */
   readonly layer?: { readonly channels: Channels; readonly gain: number } | undefined;
   /** Зацикленным сшивается стык, остальным сглаживаются края. */
@@ -287,25 +329,35 @@ export interface PrepareOptions {
 export const prepareFile = (channels: Channels, options: PrepareOptions): Channels => {
   const { sampleRate, rate, peak, looping } = options;
 
-  let result = trimLeadingSilence(channels, sampleRate);
+  let result = options.reversed === true ? reverse(channels) : channels;
+  result = trimLeadingSilence(result, sampleRate);
   result = resample(result, rate);
+
+  // Слой ложится ДО среза, затухания и нормировки: он часть звука,
+  // а не добавка к готовому. Отсюда и порядок — срез применяется
+  // к сумме, потому что причина среза (непрерывный гул) относится
+  // и к слою тоже.
+  //
+  // У зацикленного звука слой ещё и размножается: короткий прозвучал бы
+  // один раз в начале круга и пропал, а у петли начала и конца нет.
+  if (options.layer !== undefined) {
+    const trimmed = trimLeadingSilence(options.layer.channels, sampleRate);
+    const base = result[0]?.length ?? 0;
+    const layer = looping && (trimmed[0]?.length ?? 0) < base ? tile(trimmed, base) : trimmed;
+
+    result = mixInto(
+      result.map((channel) => channel.slice()),
+      layer,
+      options.layer.gain,
+      sampleRate,
+    );
+  }
 
   // Срез идёт ДО сшивания петли: у фильтра есть память, и запущенный
   // после сшивания он разошёлся бы на стыке ровно тем щелчком,
   // от которого сшивание и спасает.
   if (options.highPassHz !== undefined) {
     result = highPass(result, sampleRate, options.highPassHz);
-  }
-
-  // Слой ложится ДО затухания и нормировки: он часть звука, а не добавка
-  // к готовому, и хвост уводить надо у суммы.
-  if (options.layer !== undefined) {
-    result = mixInto(
-      result.map((channel) => channel.slice()),
-      trimLeadingSilence(options.layer.channels, sampleRate),
-      options.layer.gain,
-      sampleRate,
-    );
   }
 
   if (options.fadeFromSeconds !== undefined) {

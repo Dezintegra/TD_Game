@@ -3,6 +3,7 @@ import type { Pool } from './budget.js';
 import type { Candidate } from './budget.js';
 import { SOUND_FILES } from './assets.js';
 import { prepareFile } from './prepare.js';
+import { renderSound } from './sounds.js';
 import { LOOPING, SOUNDS, SOUND_PEAK, SOUND_PRIORITY, STEALS_FROM, Sound } from './sounds.js';
 import { place } from './placement.js';
 import type { Listener } from './placement.js';
@@ -365,10 +366,26 @@ export const createEngine = (): Engine => {
             // звучит одна основа, и это по-прежнему тот же звук.
             const layerChannels =
               file.layer === undefined ? undefined : await decode(file.layer.url);
-            const layer =
-              file.layer === undefined || layerChannels === undefined
+            // Посчитанный слой считается прямо здесь, на главном потоке.
+            // Это единственное исключение из правила «выкладка живёт
+            // в рабочем потоке», и оправдано оно величиной: ротор —
+            // полсекунды звука, около пятнадцати миллисекунд работы,
+            // один раз за сеанс и во время загрузки. Городить ради
+            // этого ещё один канал обмена с потоком дороже, чем один
+            // пропущенный кадр в меню.
+            const computed =
+              file.layerComputed === undefined
                 ? undefined
-                : { channels: layerChannels, gain: file.layer.gain };
+                : {
+                    channels: [renderSound(file.layerComputed.sound, 0, context.sampleRate)],
+                    gain: file.layerComputed.gain,
+                  };
+
+            const layer =
+              computed ??
+              (file.layer === undefined || layerChannels === undefined
+                ? undefined
+                : { channels: layerChannels, gain: file.layer.gain });
 
             for (const rate of file.rates) {
               ready.push(
@@ -384,6 +401,7 @@ export const createEngine = (): Engine => {
                     peak: SOUND_PEAK[sound],
                     fadeFromSeconds: file.fadeFrom,
                     highPassHz: file.highPass,
+                    reversed: file.reverse,
                     layer,
                     looping: LOOPING[sound],
                   },

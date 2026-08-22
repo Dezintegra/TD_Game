@@ -7,6 +7,8 @@ import {
   normaliseChannels,
   prepareFile,
   resample,
+  reverse,
+  tile,
   smoothEdges,
   trimLeadingSilence,
 } from './prepare.js';
@@ -267,6 +269,61 @@ describe('наложение слоя', () => {
     });
 
     expect(peakOf(prepared[0] as Float32Array)).toBeCloseTo(0.6, 5);
+  });
+});
+
+describe('разворот и размножение', () => {
+  it('разворот переставляет отсчёты задом наперёд', () => {
+    const [out] = reverse([new Float32Array([1, 2, 3, 4])]);
+    expect(Array.from(out as Float32Array)).toEqual([4, 3, 2, 1]);
+  });
+
+  it('разворот превращает разгон в затухание', () => {
+    // Ровно то, ради чего он заведён: запись луча нарастает от начала
+    // до конца, а выстрелу положено начинаться с полной силы.
+    const rising = new Float32Array(1000);
+    for (let index = 0; index < rising.length; index += 1) {
+      rising[index] = (index / rising.length) * Math.sin(index);
+    }
+
+    const [out] = reverse([rising]);
+    const samples = out as Float32Array;
+    expect(rms(samples, 0, 200)).toBeGreaterThan(rms(samples, 800));
+    expect(rms(rising, 0, 200)).toBeLessThan(rms(rising, 800));
+  });
+
+  it('разворот не меняет длину и не теряет каналов', () => {
+    const out = reverse(stereo(withSilence(0, 0.1)));
+    expect(out).toHaveLength(2);
+    expect(out[0]?.length).toBe(Math.round(0.1 * SAMPLE_RATE));
+  });
+
+  it('размножение доводит до нужной длины повторением', () => {
+    const [out] = tile([new Float32Array([1, 2, 3])], 8);
+    expect(Array.from(out as Float32Array)).toEqual([1, 2, 3, 1, 2, 3, 1, 2]);
+  });
+
+  it('размножение пустого не делит на ноль', () => {
+    expect(tile([new Float32Array(0)], 8)[0]?.length).toBe(0);
+  });
+
+  it('у зацикленного короткий слой звучит по всей петле', () => {
+    // Иначе лопасти прозвучали бы раз в начале круга и пропали,
+    // а у петли начала и конца нет.
+    const base = new Float32Array(SAMPLE_RATE).fill(0.2);
+    const short = new Float32Array(Math.round(SAMPLE_RATE * 0.1)).fill(0.2);
+
+    const prepared = prepareFile([base], {
+      sampleRate: SAMPLE_RATE,
+      rate: 1,
+      peak: 1,
+      looping: true,
+      layer: { channels: [short], gain: 1 },
+    });
+
+    const a = prepared[0] as Float32Array;
+    // Слой добавил громкости и в начале, и в конце петли.
+    expect(rms(a, 0, 1000)).toBeCloseTo(rms(a, a.length - 1000), 2);
   });
 });
 
