@@ -223,6 +223,42 @@ export const highPass = (channels: Channels, sampleRate: number, cutoffHz: numbe
     return out;
   });
 
+/**
+ * Подмешать вторую запись поверх первой.
+ *
+ * Нужно там, где одной записи не хватает по устройству, а не по качеству.
+ * Разряд Теслы должен и трещать, и греметь: треск сообщает «электричество»,
+ * гром — «попало». Записи такой в природе не нашлось, зато нашлись
+ * две — искры без низа и молния без внятного треска, — и сложенные они
+ * дают ровно то, что нужно.
+ *
+ * Складывается прямо, без выравнивания: уровни у обеих уже приведены,
+ * а общий пик выправит нормировка в конце. Слой короче основы — просто
+ * кончается раньше; длиннее — обрезается по ней, потому что длину звука
+ * задаёт основа.
+ */
+export const mixInto = (
+  base: Channels,
+  layer: Channels,
+  gain: number,
+  sampleRate: number,
+  atSeconds = 0,
+): Channels => {
+  const offset = Math.max(0, Math.round(atSeconds * sampleRate));
+
+  return base.map((channel, index) => {
+    // Каналов у слоя может быть меньше: моно поверх стерео ложится
+    // в оба канала одинаково, и это правильнее, чем молчащий правый.
+    const source = layer[index] ?? layer[0];
+    if (source === undefined) return channel;
+
+    for (let at = 0; at + offset < channel.length && at < source.length; at += 1) {
+      channel[at + offset] = (channel[at + offset] ?? 0) + (source[at] ?? 0) * gain;
+    }
+    return channel;
+  });
+};
+
 export interface PrepareOptions {
   readonly sampleRate: number;
   /** Множитель скорости для варианта. */
@@ -233,6 +269,8 @@ export interface PrepareOptions {
   readonly fadeFromSeconds?: number | undefined;
   /** Ниже какой частоты срезать. */
   readonly highPassHz?: number | undefined;
+  /** Вторая запись поверх первой, уже декодированная. */
+  readonly layer?: { readonly channels: Channels; readonly gain: number } | undefined;
   /** Зацикленным сшивается стык, остальным сглаживаются края. */
   readonly looping: boolean;
 }
@@ -257,6 +295,17 @@ export const prepareFile = (channels: Channels, options: PrepareOptions): Channe
   // от которого сшивание и спасает.
   if (options.highPassHz !== undefined) {
     result = highPass(result, sampleRate, options.highPassHz);
+  }
+
+  // Слой ложится ДО затухания и нормировки: он часть звука, а не добавка
+  // к готовому, и хвост уводить надо у суммы.
+  if (options.layer !== undefined) {
+    result = mixInto(
+      result.map((channel) => channel.slice()),
+      trimLeadingSilence(options.layer.channels, sampleRate),
+      options.layer.gain,
+      sampleRate,
+    );
   }
 
   if (options.fadeFromSeconds !== undefined) {

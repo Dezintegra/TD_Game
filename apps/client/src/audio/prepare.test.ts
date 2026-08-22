@@ -3,6 +3,7 @@ import { peakOf, rms } from './dsp.js';
 import {
   closeLoop,
   fadeFrom,
+  mixInto,
   normaliseChannels,
   prepareFile,
   resample,
@@ -202,6 +203,70 @@ describe('замыкание петли', () => {
   it('слишком короткую запись не трогает', () => {
     const source = new Float32Array(4);
     expect(closeLoop([source], SAMPLE_RATE, 0.05)[0]?.length).toBe(4);
+  });
+});
+
+describe('наложение слоя', () => {
+  it('складывает вторую запись с первой', () => {
+    // Сравнение приближённое: отсчёты хранятся в одинарной точности,
+    // и 0,1 плюс 0,5 в ней не равно ровно 0,6.
+    const base = new Float32Array([0.1, 0.2, 0.3, 0.4]);
+    mixInto([base], [new Float32Array([1, 1, 1, 1])], 0.5, SAMPLE_RATE);
+    for (const [index, want] of [0.6, 0.7, 0.8, 0.9].entries()) {
+      expect(base[index]).toBeCloseTo(want, 6);
+    }
+  });
+
+  it('слой короче основы просто кончается раньше', () => {
+    const base = new Float32Array([1, 1, 1, 1]);
+    mixInto([base], [new Float32Array([1, 1])], 1, SAMPLE_RATE);
+    expect(Array.from(base)).toEqual([2, 2, 1, 1]);
+  });
+
+  it('слой длиннее основы обрезается по ней', () => {
+    // Длину звука задаёт основа: слой — добавка, а не продолжение.
+    const base = new Float32Array([1, 1]);
+    const result = mixInto([base], [new Float32Array([1, 1, 1, 1, 1])], 1, SAMPLE_RATE);
+    expect(result[0]?.length).toBe(2);
+    expect(Array.from(base)).toEqual([2, 2]);
+  });
+
+  it('моно поверх стерео ложится в оба канала', () => {
+    // Иначе правый канал остался бы без слоя, и стереообраз разъехался бы.
+    const left = new Float32Array([1, 1]);
+    const right = new Float32Array([1, 1]);
+    mixInto([left, right], [new Float32Array([1, 1])], 0.5, SAMPLE_RATE);
+    expect(Array.from(left)).toEqual([1.5, 1.5]);
+    expect(Array.from(right)).toEqual([1.5, 1.5]);
+  });
+
+  it('смещение сдвигает слой во времени', () => {
+    const base = new Float32Array(4);
+    mixInto([base], [new Float32Array([1, 1])], 1, 1000, 0.002);
+    expect(Array.from(base)).toEqual([0, 0, 1, 1]);
+  });
+
+  it('пустой слой ничего не меняет', () => {
+    const base = new Float32Array([0.5, 0.5]);
+    mixInto([base], [], 1, SAMPLE_RATE);
+    expect(Array.from(base)).toEqual([0.5, 0.5]);
+  });
+
+  it('в подготовке слой ложится до нормировки, а не после', () => {
+    // Иначе сумма выходила бы за единицу: обе записи приведены
+    // к своему пику по отдельности.
+    const base = stereo(withSilence(0, 0.2));
+    const layer = stereo(withSilence(0, 0.2, 880));
+
+    const prepared = prepareFile(base, {
+      sampleRate: SAMPLE_RATE,
+      rate: 1,
+      peak: 0.6,
+      looping: false,
+      layer: { channels: layer, gain: 1 },
+    });
+
+    expect(peakOf(prepared[0] as Float32Array)).toBeCloseTo(0.6, 5);
   });
 });
 

@@ -1,4 +1,7 @@
 import arcUrl from './assets/arc.mp3';
+import sparksOneUrl from './assets/sparks-1.mp3';
+import sparksTwoUrl from './assets/sparks-2.mp3';
+import sparksThreeUrl from './assets/sparks-3.mp3';
 import beamUrl from './assets/beam.mp3';
 import blastGeneralUrl from './assets/blast-general.mp3';
 import blastStructureOneUrl from './assets/blast-structure-1.mp3';
@@ -90,6 +93,14 @@ export interface SoundFile {
    * герц непрерывно, и вместе со свёрткой это давало не простор, а хрип.
    */
   readonly highPass?: number;
+
+  /**
+   * Вторая запись, накладываемая поверх этой.
+   *
+   * Не вариант и не замена, а слой: обе звучат одновременно и вместе
+   * составляют одно событие.
+   */
+  readonly layer?: { readonly url: string; readonly gain: number };
 }
 
 const one: readonly number[] = [1];
@@ -137,11 +148,22 @@ export const SOUND_FILES: Partial<Record<Sound, readonly SoundFile[]>> = {
   [Sound.BeamUnit]: [{ url: beamUrl, rates: [1, 1.05, 0.95], fadeFrom: 0.32 }],
   [Sound.BeamTower]: [{ url: beamUrl, rates: [0.78, 0.74], fadeFrom: 0.42 }],
 
-  // Разряд бьёт раз в пару секунд — для записи это уже часто, поэтому
-  // вариантов три. Начало записи срезано до самого удара: там перед ним
-  // шла четверть секунды нарастающего треска, и на поле это читалось
-  // опозданием — молния успевала погаснуть раньше грома.
-  [Sound.Arc]: [{ url: arcUrl, rates: [1, 1.06, 0.95], fadeFrom: 1.8 }],
+  // Разряд собран из двух записей, и ни одна поодиночке не годится.
+  //
+  // Молния даёт тело и раскат, но трещит невнятно. Искры трещат
+  // отменно — и не имеют низа вовсе: их яркость держится на трёх
+  // килогерцах от начала до конца, то есть это чистый верх. Сложенные,
+  // они дают то самое «птыщщщ» и гром вдогонку.
+  //
+  // Вариантов три, и различаются они не скоростью, а дублем искр:
+  // в исходной записи их было десять, и три самых внятных разведены
+  // по файлам. Разряд бьёт раз в пару секунд, для записи это часто,
+  // и повторяющийся рисунок треска слышен раньше всего.
+  [Sound.Arc]: [
+    { url: arcUrl, rates: [1], fadeFrom: 1.8, layer: { url: sparksOneUrl, gain: 0.8 } },
+    { url: arcUrl, rates: [1.06], fadeFrom: 1.8, layer: { url: sparksTwoUrl, gain: 0.8 } },
+    { url: arcUrl, rates: [0.95], fadeFrom: 1.8, layer: { url: sparksThreeUrl, gain: 0.8 } },
+  ],
 
   // Семь секунд, из них последние три — затухание. Дальше гул держал бы
   // внимание дольше, чем длится само событие: картинка ядерного удара

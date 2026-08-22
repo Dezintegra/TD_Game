@@ -343,16 +343,32 @@ export const createEngine = (): Engine => {
       void (async () => {
         const ready: Float32Array[][] = [];
 
+        /** Декодировать запись в независимые массивы отсчётов. */
+        const decode = async (url: string): Promise<Float32Array[] | undefined> => {
+          const response = await fetch(url);
+          if (!response.ok) return undefined;
+
+          const decoded = await context.decodeAudioData(await response.arrayBuffer());
+          const channels: Float32Array[] = [];
+          for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+            channels.push(decoded.getChannelData(channel).slice());
+          }
+          return channels;
+        };
+
         for (const file of files) {
           try {
-            const response = await fetch(file.url);
-            if (!response.ok) continue;
+            const source = await decode(file.url);
+            if (source === undefined) continue;
 
-            const decoded = await context.decodeAudioData(await response.arrayBuffer());
-            const source: Float32Array[] = [];
-            for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
-              source.push(decoded.getChannelData(channel).slice());
-            }
+            // Слой не обязателен и не обязан загрузиться: не вышло —
+            // звучит одна основа, и это по-прежнему тот же звук.
+            const layerChannels =
+              file.layer === undefined ? undefined : await decode(file.layer.url);
+            const layer =
+              file.layer === undefined || layerChannels === undefined
+                ? undefined
+                : { channels: layerChannels, gain: file.layer.gain };
 
             for (const rate of file.rates) {
               ready.push(
@@ -368,6 +384,7 @@ export const createEngine = (): Engine => {
                     peak: SOUND_PEAK[sound],
                     fadeFromSeconds: file.fadeFrom,
                     highPassHz: file.highPass,
+                    layer,
                     looping: LOOPING[sound],
                   },
                 ) as Float32Array[],
