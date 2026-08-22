@@ -55,6 +55,8 @@ export interface ControlHandlers {
   jumpTo(cell: number): void;
   /** Вернуть камеру к генералу и включить слежение. */
   recentre(): void;
+  /** Выключить или включить звук целиком. */
+  toggleSound(): void;
   /** Выделить объект в клетке, либо снять выделение при -1. */
   select(cell: number): void;
   cellAtScreen(x: number, y: number): number;
@@ -120,6 +122,7 @@ const STANCE_KEYS: Readonly<Record<string, AttackStance>> = {
 const NUKE_KEY = 'KeyF';
 const CANCEL_KEY = 'Escape';
 const RECENTRE_KEY = 'Space';
+const MUTE_KEY = 'KeyM';
 
 /**
  * Экранное направление в направление мира.
@@ -236,6 +239,13 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
 
     if (event.code === CANCEL_KEY) {
       cancelModes();
+      return;
+    }
+
+    // Выключить звук — самое частое из того, что игрок делает
+    // с настройками, и лезть за этим мышью в панель незачем.
+    if (event.code === MUTE_KEY) {
+      handlers.toggleSound();
       return;
     }
 

@@ -11,6 +11,7 @@ import { ActionBar } from './ActionBar.js';
 import { NoticeStack, Nudge } from './Notices.js';
 import { StructureInfo } from './StructureInfo.js';
 import { UpgradePanel } from './UpgradePanel.js';
+import { SoundPanel } from './SoundPanel.js';
 import { HOTKEYS } from './labels.js';
 
 const statusLabel: Record<ConnectionStatus, string> = {
@@ -105,6 +106,8 @@ const StatusColumn = () => (
       <StatRow label="Скалы" value={<RockValue />} />
       <MatchControls />
     </Panel>
+
+    <SoundPanel />
 
     <Panel title="Управление">
       {HOTKEYS.map((hint) => (

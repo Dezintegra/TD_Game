@@ -1,6 +1,8 @@
 ﻿import { AttackStance } from '@td/shared';
 import { create } from 'zustand';
 import type { Notice } from './rejections.js';
+import { DEFAULT_SOUND_SETTINGS } from '../audio/settings.js';
+import type { SoundSettings } from '../audio/settings.js';
 
 /**
  * Store — единственный канал связи между игровым циклом и React.
@@ -206,6 +208,14 @@ interface HudState {
   readonly outcome: MatchOutcomeView | null;
   /** Выделенная постройка, либо null. Состояние интерфейса, не мира. */
   readonly selection: SelectionView | null;
+  /**
+   * Громкости и выключатель звука.
+   *
+   * Состояние интерфейса того же рода, что `selection`: мира оно
+   * не касается, на сервер не уезжает и переживает перезагрузку
+   * страницы своими силами (`audio/settings.ts`).
+   */
+  readonly sound: SoundSettings;
 
   setStatus(status: ConnectionStatus): void;
   setTick(tick: number): void;
@@ -219,6 +229,7 @@ interface HudState {
   setSync(tick: number, checksum: number): void;
   setOutcome(outcome: MatchOutcomeView | null): void;
   setSelection(selection: SelectionView | null): void;
+  setSound(sound: SoundSettings): void;
 }
 
 export const useHudStore = create<HudState>((set) => ({
@@ -240,6 +251,7 @@ export const useHudStore = create<HudState>((set) => ({
   syncChecksum: 0,
   outcome: null,
   selection: null,
+  sound: DEFAULT_SOUND_SETTINGS,
 
   setStatus: (status) => set({ status }),
   setTick: (tick) => set({ tick }),
@@ -265,6 +277,7 @@ export const useHudStore = create<HudState>((set) => ({
   setSync: (syncTick, syncChecksum) => set({ syncTick, syncChecksum }),
   setOutcome: (outcome) => set({ outcome }),
   setSelection: (selection) => set({ selection }),
+  setSound: (sound) => set({ sound }),
 }));
 
 /**
@@ -287,6 +300,7 @@ export const hudActions = {
   setOutcome: (outcome: MatchOutcomeView | null) => useHudStore.getState().setOutcome(outcome),
   setSelection: (selection: SelectionView | null) =>
     useHudStore.getState().setSelection(selection),
+  setSound: (sound: SoundSettings) => useHudStore.getState().setSound(sound),
 };
 
 /**
@@ -331,3 +345,25 @@ export const setMatchCommands = (next: MatchCommands | null): void => {
 };
 
 export const matchCommands = (): MatchCommands => commands;
+
+/**
+ * Тот же обратный канал, но для звука.
+ *
+ * Отдельно от `MatchCommands` потому, что живёт по другим правилам:
+ * команды матча уезжают на сервер и осмысленны только в матче,
+ * а громкость — настройка клиента, и менять её игрок вправе когда
+ * угодно.
+ */
+export interface SoundCommands {
+  apply(settings: SoundSettings): void;
+}
+
+const NO_SOUND_COMMANDS: SoundCommands = { apply: () => undefined };
+
+let sound: SoundCommands = NO_SOUND_COMMANDS;
+
+export const setSoundCommands = (next: SoundCommands | null): void => {
+  sound = next ?? NO_SOUND_COMMANDS;
+};
+
+export const soundCommands = (): SoundCommands => sound;

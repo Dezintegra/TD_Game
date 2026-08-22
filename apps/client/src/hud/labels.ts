@@ -103,5 +103,6 @@ export const HOTKEYS: readonly Hotkey[] = [
   { keys: 'ЛКМ', what: 'поставить выбранное' },
   { keys: 'ПКМ', what: 'назначить цель атаки' },
   { keys: 'Пробел', what: 'камера к генералу' },
+  { keys: 'M', what: 'выключить звук' },
   { keys: 'Esc', what: 'отменить режим' },
 ];
