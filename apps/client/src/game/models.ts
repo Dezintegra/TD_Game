@@ -581,6 +581,32 @@ export const hoverBob = (seed: number, tick: number): number =>
 export const GENERAL_ALTITUDE = 0.5;
 
 /**
+ * Пилон: перемычка от борта кабины к хуверу.
+ *
+ * Числа вынесены из формы детали, потому что на них теперь смотрит
+ * не только модель: с внешнего конца пилона уходят ракеты, и точка
+ * пуска обязана ехать за геометрией, а не жить отдельным числом.
+ */
+const PYLON_INNER_SIDE = 0.07;
+const PYLON_OUTER_SIDE = 0.215;
+
+/**
+ * Насколько вылетает точка пуска ракеты от оси машины, в клетках.
+ *
+ * Внешний конец пилона — там, где у ударной машины и была бы
+ * направляющая. Отсюда борта расходятся на 0,43 клетки, то есть на
+ * двадцать семь пикселей при масштабе клетки в шестьдесят три, — почти
+ * на весь размах хуверов. У внутреннего конца пилона расхождение вышло
+ * бы девять пикселей, и «то слева, то справа» не читалось бы вовсе:
+ * это меньше длины самой ракеты.
+ *
+ * С хувером точка пуска не спорит, хотя и попадает под его кольцо
+ * сверху: кольцо лежит НАД пилоном, а ракета висит ПОД ним — высота
+ * подвески задана в `shots.ts` и меньше высоты машины.
+ */
+export const GENERAL_PYLON_SIDE = PYLON_OUTER_SIDE;
+
+/**
  * Машина генерала — ударный вертолёт, а не самолёт.
  *
  * Разница здесь не в украшении, а в обещании. Самолёт обещает скорость
@@ -675,10 +701,10 @@ const GUNSHIP_PARTS: readonly Part[] = [
   {
     label: 'левый пилон',
     shape: [
-      { forward: 0.07, side: -0.07 },
-      { forward: -0.03, side: -0.07 },
-      { forward: -0.025, side: -0.215 },
-      { forward: 0.045, side: -0.215 },
+      { forward: 0.07, side: -PYLON_INNER_SIDE },
+      { forward: -0.03, side: -PYLON_INNER_SIDE },
+      { forward: -0.025, side: -PYLON_OUTER_SIDE },
+      { forward: 0.045, side: -PYLON_OUTER_SIDE },
     ],
     base: GENERAL_ALTITUDE + 0.045,
     height: 0.024,
@@ -690,10 +716,10 @@ const GUNSHIP_PARTS: readonly Part[] = [
   {
     label: 'правый пилон',
     shape: [
-      { forward: 0.045, side: 0.215 },
-      { forward: -0.025, side: 0.215 },
-      { forward: -0.03, side: 0.07 },
-      { forward: 0.07, side: 0.07 },
+      { forward: 0.045, side: PYLON_OUTER_SIDE },
+      { forward: -0.025, side: PYLON_OUTER_SIDE },
+      { forward: -0.03, side: PYLON_INNER_SIDE },
+      { forward: 0.07, side: PYLON_INNER_SIDE },
     ],
     base: GENERAL_ALTITUDE + 0.045,
     height: 0.024,
