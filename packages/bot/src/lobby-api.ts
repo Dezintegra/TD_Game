@@ -63,6 +63,16 @@ const post = async (
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
+
+    // Отказ сервера слышен наравне с обрывом связи, и это не мелочь.
+    // Служба на неудачу отвечает повторной попыткой, поэтому молчаливый
+    // отказ выглядит как «дежурный нанят, а комнаты нет» — без единой
+    // строки о причине. Ровно так пропала комната с названием длиннее
+    // предела в двадцать знаков.
+    if (!response.ok) {
+      options.log?.(`Запрос ${path} отклонён сервером: ${String(response.status)}`);
+    }
+
     return response.ok;
   } catch (error) {
     options.log?.(`Запрос ${path} не удался: ${String(error)}`);

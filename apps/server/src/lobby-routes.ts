@@ -81,8 +81,11 @@ export interface LobbyRoutesOptions {
   readonly onMatchStart?: ((start: MatchStart) => void) | undefined;
   /** Игрок вышел из идущего матча — это сдача. */
   readonly onMatchAbandon?: ((ticket: string) => void) | undefined;
-  /** Этот игрок — компьютер? Знает только тот, кто запускал его службу. */
-  readonly isComputer?: ((playerId: string) => boolean) | undefined;
+  /**
+   * Каким профилем играет этот игрок; `undefined` — человек. Знает
+   * только тот, кто запускал службу компьютера.
+   */
+  readonly computerProfileOf?: ((playerId: string) => string | undefined) | undefined;
 }
 
 export const registerLobbyRoutes = (
@@ -97,7 +100,7 @@ export const registerLobbyRoutes = (
       randomTicket: () => randomBytes(TICKET_BYTES).toString('hex'),
       onMatchStart: options.onMatchStart,
       onMatchAbandon: options.onMatchAbandon,
-      isComputer: options.isComputer,
+      computerProfileOf: options.computerProfileOf,
     });
 
   const allowOrigin = options.allowOrigin ?? '*';
