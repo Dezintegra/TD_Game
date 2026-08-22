@@ -4,8 +4,10 @@ import {
   StructureKind,
   UNIT_STATS,
   UnitType,
+  UpgradeStat,
   UpgradeTarget,
 } from '@td/shared';
+import { CONTROL_LAYOUT } from '../game/controls.js';
 
 /**
  * Подписи для HUD.
@@ -34,6 +36,13 @@ export const STRUCTURE_SHORT: Readonly<Record<StructureKind, string>> = {
   [StructureKind.TowerSniper]: 'Снайп. башня',
 };
 
+/**
+ * Названия плиток тулбара — по цели прокачки.
+ *
+ * Цель 7 называется «База», а не «Экономика». Группы без объекта на поле
+ * больше нет: по игровому замыслу энергию начисляет база, и ветка добычи
+ * принадлежит ей.
+ */
 export const UPGRADE_GROUP: Readonly<Record<UpgradeTarget, string>> = {
   [UpgradeTarget.UnitAssault]: 'Штурмовик',
   [UpgradeTarget.UnitSniper]: 'Снайпер',
@@ -42,7 +51,46 @@ export const UPGRADE_GROUP: Readonly<Record<UpgradeTarget, string>> = {
   [UpgradeTarget.TowerSniper]: 'Снайперская башня',
   [UpgradeTarget.Wall]: 'Стена',
   [UpgradeTarget.General]: 'Генерал',
-  [UpgradeTarget.Base]: 'Экономика',
+  [UpgradeTarget.Base]: 'База',
+};
+
+/**
+ * В чём измеряется характеристика — для строки под плиткой.
+ *
+ * Единица пишется рядом с числом, а не подразумевается: «дальность 6»
+ * без «кл» читается то ли клетками, то ли внутренними единицами,
+ * а решение о покупке принимается по величине.
+ */
+/**
+ * Короткие подписи характеристик — для строк под плиткой.
+ *
+ * Полные названия из таблицы веток («Скорострельность», «Радиус стройки»)
+ * в столбец не помещаются: плиток девять, и каждая лишняя дюжина точек
+ * на строке выталкивает тулбар за край экрана на ноутбуке.
+ *
+ * Сокращения общепринятые и читаются без обучения; там, где сокращать
+ * нечего, стоит полное слово.
+ */
+export const UPGRADE_STAT_SHORT: Readonly<Record<UpgradeStat, string>> = {
+  [UpgradeStat.Attack]: 'атака',
+  [UpgradeStat.Health]: 'прочн.',
+  [UpgradeStat.FireRate]: 'темп',
+  [UpgradeStat.Range]: 'дальн.',
+  [UpgradeStat.Speed]: 'скор.',
+  [UpgradeStat.BuildRadius]: 'радиус',
+  [UpgradeStat.RespawnTime]: 'возрожд.',
+  [UpgradeStat.Income]: 'добыча',
+};
+
+export const UPGRADE_UNIT: Readonly<Record<UpgradeStat, string>> = {
+  [UpgradeStat.Attack]: '',
+  [UpgradeStat.Health]: '',
+  [UpgradeStat.FireRate]: '/с',
+  [UpgradeStat.Range]: ' кл',
+  [UpgradeStat.Speed]: ' кл/с',
+  [UpgradeStat.BuildRadius]: ' кл',
+  [UpgradeStat.RespawnTime]: ' с',
+  [UpgradeStat.Income]: '/с',
 };
 
 /**
@@ -63,7 +111,13 @@ export const REJECT_LABEL: Readonly<Record<RejectReason, string>> = {
   [RejectReason.CellBlocked]: 'Клетка занята',
   [RejectReason.CellOccupiedByLiving]: 'В клетке техника — подождите',
   [RejectReason.OutsideBuildRadius]: 'Далеко от генерала — подойдите ближе',
-  [RejectReason.QueueFull]: 'Очередь производства заполнена',
+  // Про очередь игроку больше не сообщается: её убрали с экрана, потому
+  // что очередью в прежнем смысле она быть перестала. Сообщать об отказе
+  // словом, которого в интерфейсе нет, значит объяснять непонятное через
+  // неизвестное. Отказ этот приходит, когда выводить войска некуда —
+  // упёрлись в потолок численности либо вокруг базы нет свободной клетки, —
+  // и сказано ровно это.
+  [RejectReason.QueueFull]: 'Некуда выводить войска — подождите',
   [RejectReason.GeneralDead]: 'Генерал уничтожен',
   [RejectReason.NukeNearBase]: 'Слишком близко к базе',
   [RejectReason.InvalidCell]: 'Мимо карты',
@@ -79,29 +133,15 @@ export const REJECT_LABEL: Readonly<Record<RejectReason, string>> = {
   [RejectReason.CannotDemolishBase]: 'Командный центр снести нельзя',
 };
 
-export interface Hotkey {
-  readonly keys: string;
-  readonly what: string;
-}
-
 /**
  * Подсказки по управлению.
  *
- * Держатся на экране постоянно, а не прячутся в меню помощи: игра
- * с полной информацией и десятком горячих клавиш требует, чтобы игрок
- * не тратил внимание на вспоминание.
+ * Не свой список, а та же таблица, по которой разбираются нажатия.
+ * Два независимых перечня разошлись бы при первой же правке раскладки,
+ * и игрок читал бы подсказку, которая врёт, — а врущая подсказка выглядит
+ * достоверной, и сверять её нечем.
+ *
+ * Живут в меню матча, а не постоянно на экране: нужны они раз за партию,
+ * а место занимали весь матч.
  */
-export const HOTKEYS: readonly Hotkey[] = [
-  { keys: 'WASD', what: 'движение генерала' },
-  { keys: '1 2 3', what: 'заказать юнита' },
-  // Ctrl+цифра браузер оставляет себе — это переключение вкладок,
-  // и перехватить его со страницы нельзя. Поэтому у пакета два модификатора:
-  // Ctrl работает по кнопке панели, Shift — и по кнопке, и с клавиатуры.
-  { keys: 'Ctrl / Shift', what: 'заказать сразу десять' },
-  { keys: 'Q E R', what: 'стена, башня, снайперская' },
-  { keys: 'F', what: 'ядерный удар' },
-  { keys: 'ЛКМ', what: 'поставить выбранное' },
-  { keys: 'ПКМ', what: 'назначить цель атаки' },
-  { keys: 'Пробел', what: 'камера к генералу' },
-  { keys: 'Esc', what: 'отменить режим' },
-];
+export const HOTKEYS = CONTROL_LAYOUT;

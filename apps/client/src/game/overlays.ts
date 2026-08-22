@@ -26,6 +26,8 @@ export interface OverlayColors {
 }
 
 export interface OverlayIntent {
+  /** Включён режим строительства — даже если вид ещё не выбран. */
+  readonly building: boolean;
   /** Что игрок собирается строить, либо null. */
   readonly buildKind: StructureKindType | null;
   /** Игрок наводит ядерный удар. */
@@ -88,6 +90,11 @@ const traceWorldCircle = (
  * Показывается только в режиме строительства. Постоянно висящий круг
  * быстро перестаёт читаться и превращается в фон — а он должен отвечать
  * на конкретный вопрос «дотянусь ли я отсюда».
+ *
+ * По РЕЖИМУ, а не по выбранному виду постройки. Разница появилась вместе
+ * с клавишей `Q`: игрок включает режим прежде, чем решил, что ставить,
+ * и вопрос «докуда я дотянусь» у него возникает именно в этот момент —
+ * от ответа зависит, стену класть или башню.
  */
 const drawBuildRadius = (
   graphics: Graphics,
@@ -96,7 +103,7 @@ const drawBuildRadius = (
   intent: OverlayIntent,
   colors: OverlayColors,
 ): void => {
-  if (intent.buildKind === null) return;
+  if (!intent.building) return;
 
   const general = world.generals[localPlayer];
   if (general === undefined || !general.alive) return;

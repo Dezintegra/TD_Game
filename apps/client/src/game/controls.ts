@@ -16,6 +16,15 @@ import { screenToWorld } from './iso.js';
  */
 
 export interface ControlState {
+  /**
+   * Включён режим строительства.
+   *
+   * Отдельно от выбранного вида, и это не дублирование. Режим включается
+   * клавишей `Q` и сразу показывает круг радиуса — то есть отвечает
+   * на вопрос «докуда я дотянусь» ДО того, как игрок решил, что ставить.
+   * Вид выбирается уже внутри режима, цифрой.
+   */
+  readonly building: boolean;
   /** Что игрок собирается строить, либо null. */
   readonly buildKind: StructureKind | null;
   /** Игрок наводит ядерный удар. */
@@ -57,15 +66,32 @@ export interface ControlHandlers {
   recentre(): void;
   /** Выделить объект в клетке, либо снять выделение при -1. */
   select(cell: number): void;
+  /**
+   * Меню матча открылось или закрылось.
+   *
+   * Управление владеет этим состоянием само, потому что от него зависит,
+   * разбирать ли нажатия. Наружу оно только сообщается — HUD должен знать,
+   * что рисовать.
+   */
+  menuChanged(open: boolean): void;
+  /** Игрок свернул или развернул характеристики в тулбаре. */
+  toggleStats(): void;
   cellAtScreen(x: number, y: number): number;
   minimapCellAtScreen(x: number, y: number): number;
 }
 
 export interface Controls {
   readonly state: ControlState;
-  /** Программная смена режима — из кнопок HUD. */
+  /**
+   * Программная смена вида постройки — из плиток тулбара.
+   *
+   * Выбор вида включает и сам режим: игрок, нажавший плитку стены,
+   * собирается строить, и требовать от него ещё и `Q` было бы придиркой.
+   */
   setBuildKind(kind: StructureKind | null): void;
   setAimingNuke(aiming: boolean): void;
+  /** Программное открытие и закрытие меню — из кнопок HUD. */
+  setMenuOpen(open: boolean): void;
   detach(): void;
 }
 
@@ -95,17 +121,29 @@ const MOVE_KEYS: Readonly<Record<string, readonly [number, number]>> = {
   KeyD: [1, 0],
 };
 
-const BUILD_KEYS: Readonly<Record<string, StructureKind>> = {
-  KeyQ: StructureKind.Wall,
-  KeyE: StructureKind.TowerBasic,
-  KeyR: StructureKind.TowerSniper,
-};
+/**
+ * Цифры. Что они значат — зависит от режима, и это единственное место,
+ * где смысл клавиши меняется.
+ *
+ * Вне режима строительства цифра заказывает юнита, внутри — выбирает вид
+ * постройки. Порядок в обоих списках совпадает с порядком плиток
+ * в тулбаре: третья слева плитка и третья цифра — одно и то же.
+ *
+ * Почему режим заведён для стройки и НЕ заведён для юнитов. Режим меняет
+ * смысл нажатия мышью: левая кнопка ставит постройку вместо того, чтобы
+ * выделять объект. У заказа юнита нажатия по полю нет вовсе — размещать
+ * нечего, — и режим не дал бы ничего, кроме лишнего нажатия на самом
+ * частом действии матча.
+ */
+const SLOT_KEYS: readonly string[] = ['Digit1', 'Digit2', 'Digit3'];
 
-const TRAIN_KEYS: Readonly<Record<string, UnitType>> = {
-  Digit1: UnitType.Assault,
-  Digit2: UnitType.Sniper,
-  Digit3: UnitType.Tesla,
-};
+const SLOT_UNITS: readonly UnitType[] = [UnitType.Assault, UnitType.Sniper, UnitType.Tesla];
+
+const SLOT_STRUCTURES: readonly StructureKind[] = [
+  StructureKind.Wall,
+  StructureKind.TowerBasic,
+  StructureKind.TowerSniper,
+];
 
 /**
  * Клавиши режима атаки.
@@ -117,9 +155,63 @@ const STANCE_KEYS: Readonly<Record<string, AttackStance>> = {
   KeyX: AttackStance.Engage,
 };
 
+/** Войти в режим строительства и выйти из него. */
+const BUILD_MODE_KEY = 'KeyQ';
+const UNITS_MODE_KEY = 'KeyE';
+
+/** Свернуть и развернуть характеристики в тулбаре. */
+const STATS_KEY = 'KeyR';
+
 const NUKE_KEY = 'KeyF';
 const CANCEL_KEY = 'Escape';
 const RECENTRE_KEY = 'Space';
+
+export interface ControlHint {
+  /** Как группа клавиш называется для игрока. */
+  readonly keys: string;
+  readonly what: string;
+  /**
+   * Коды клавиш, которые сюда попадают. Пусто у мыши и у модификаторов:
+   * отдельными клавишами они не разбираются.
+   */
+  readonly codes: readonly string[];
+}
+
+/**
+ * Раскладка управления — одной таблицей.
+ *
+ * Отсюда и разбираются нажатия, и строится перечень горячих клавиш
+ * в меню матча. Две таблицы — одна для разбора, другая для показа —
+ * разошлись бы при первой же правке, и игрок читал бы подсказку, которая
+ * врёт. Заметить это трудно: врущая подсказка выглядит достоверной,
+ * и сверять её нечем.
+ *
+ * Коды берутся из тех же констант, по которым идёт разбор, а не
+ * переписываются сюда строками.
+ */
+export const CONTROL_LAYOUT: readonly ControlHint[] = [
+  { keys: 'WASD', what: 'движение генерала', codes: Object.keys(MOVE_KEYS) },
+  { keys: 'Стрелки', what: 'прокрутка карты', codes: Object.keys(ARROW_KEYS) },
+  {
+    keys: '1 2 3',
+    what: 'заказать юнита; в режиме стройки — выбрать постройку',
+    codes: SLOT_KEYS,
+  },
+  // Ctrl+цифра браузер оставляет себе — это переключение вкладок,
+  // и перехватить его со страницы нельзя. Поэтому у пакета два
+  // модификатора: Ctrl работает по кнопке панели, Shift — и по кнопке,
+  // и с клавиатуры.
+  { keys: 'Shift + цифра', what: 'заказать сразу десять', codes: [] },
+  { keys: 'Q', what: 'режим строительства', codes: [BUILD_MODE_KEY] },
+  { keys: 'E', what: 'выйти из режима строительства', codes: [UNITS_MODE_KEY] },
+  { keys: 'R', what: 'свернуть характеристики', codes: [STATS_KEY] },
+  { keys: 'F', what: 'ядерный удар', codes: [NUKE_KEY] },
+  { keys: 'Z X', what: 'режим атаки: прорыв, бой', codes: Object.keys(STANCE_KEYS) },
+  { keys: 'ЛКМ', what: 'поставить выбранное либо выделить', codes: [] },
+  { keys: 'ПКМ', what: 'назначить цель атаки', codes: [] },
+  { keys: 'Пробел', what: 'камера к генералу', codes: [RECENTRE_KEY] },
+  { keys: 'Esc', what: 'отменить режим, иначе меню', codes: [CANCEL_KEY] },
+];
 
 /**
  * Экранное направление в направление мира.
@@ -139,6 +231,7 @@ const worldDirection = (screenX: number, screenY: number): number => {
 export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Controls => {
   const pressed = new Set<string>();
 
+  let building = false;
   let buildKind: StructureKind | null = null;
   let aimingNuke = false;
   let hoverCell = -1;
@@ -149,6 +242,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   let lastX = 0;
   let lastY = 0;
   let rafHandle = 0;
+  let menuOpen = false;
 
   const localPoint = (event: PointerEvent): { x: number; y: number } => {
     const box = host.getBoundingClientRect();
@@ -173,8 +267,32 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     handlers.setDirection(next);
   };
 
-  const cancelModes = (): void => {
-    buildKind = null;
+  /**
+   * Снять всё, что игрок мог «включить».
+   *
+   * Возвращает признак того, что снимать было что. От него зависит второе
+   * значение Esc: меню открывается только тогда, когда отменять нечего.
+   * Иначе меню перехватывало бы Esc всегда и отняло бы у игрока привычный
+   * способ передумать — а передумывает он в разы чаще, чем открывает меню.
+   */
+  /**
+   * Включить или выключить режим строительства.
+   *
+   * Выход из режима снимает и выбранный вид: круг исчез, значит строить
+   * больше нечем, и оставленный вид сработал бы на следующем нажатии
+   * мышью — то есть поставил бы постройку, которую игрок уже передумал
+   * ставить.
+   */
+  const setBuilding = (on: boolean): void => {
+    building = on;
+    if (!on) buildKind = null;
+    else aimingNuke = false;
+  };
+
+  const cancelModes = (): boolean => {
+    const had = building || buildKind !== null || aimingNuke || selectedCell >= 0;
+
+    setBuilding(false);
     aimingNuke = false;
     // Esc снимает и выделение: игрок нажимает его, чтобы «ничего
     // не было выбрано», и оставлять подсветку на поле было бы обманом.
@@ -182,10 +300,42 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       selectedCell = -1;
       handlers.select(-1);
     }
+
+    return had;
+  };
+
+  /**
+   * Открыть или закрыть меню матча.
+   *
+   * При открытии набор нажатых клавиш очищается и направление
+   * пересчитывается — тем же способом, что при потере фокуса окном.
+   * Без этого генерал, шедший с зажатой W, продолжал бы идти, пока игрок
+   * читает меню: браузер не пришлёт keyup за то время, что клавиши
+   * не разбираются.
+   */
+  const setMenu = (open: boolean): void => {
+    if (menuOpen === open) return;
+
+    menuOpen = open;
+
+    if (open) {
+      pressed.clear();
+      syncDirection();
+    }
+
+    handlers.menuChanged(open);
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.repeat) return;
+
+    // Пока меню открыто, из всей клавиатуры действует один Esc — он его
+    // и закрывает. Разбирать остальное значило бы двигать генерала
+    // и заказывать войска, пока игрок читает список горячих клавиш.
+    if (menuOpen) {
+      if (event.code === CANCEL_KEY) setMenu(false);
+      return;
+    }
 
     if (event.code in ARROW_KEYS) {
       pressed.add(event.code);
@@ -199,17 +349,38 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       return;
     }
 
-    const build = BUILD_KEYS[event.code];
-    if (build !== undefined) {
-      // Повторное нажатие той же клавиши выключает режим: это дешевле,
-      // чем тянуться к Escape, и потому именно так и будут делать.
-      buildKind = buildKind === build ? null : build;
-      aimingNuke = false;
+    if (event.code === BUILD_MODE_KEY) {
+      // Повторное нажатие выключает режим: это дешевле, чем тянуться
+      // к Escape, и потому именно так и будут делать.
+      setBuilding(!building);
       return;
     }
 
-    const train = TRAIN_KEYS[event.code];
-    if (train !== undefined) {
+    if (event.code === UNITS_MODE_KEY) {
+      // «Вернуться к юнитам». Отдельная клавиша, хотя `Q` делает то же
+      // самое: у неё другой смысл в голове игрока — не «передумал»,
+      // а «хочу заказывать войска», — и после серии построек рука тянется
+      // именно к ней.
+      setBuilding(false);
+      return;
+    }
+
+    if (event.code === STATS_KEY) {
+      handlers.toggleStats();
+      return;
+    }
+
+    const slot = SLOT_KEYS.indexOf(event.code);
+    if (slot >= 0) {
+      if (building) {
+        buildKind = SLOT_STRUCTURES[slot] ?? null;
+        aimingNuke = false;
+        return;
+      }
+
+      const unit = SLOT_UNITS[slot];
+      if (unit === undefined) return;
+
       // Пакет — это десять обычных заказов, а не отдельная команда. Ядро
       // проверяет каждый по отдельности, поэтому «заказать десять, когда
       // хватает на четыре» само собой превращается в четыре заказа.
@@ -218,7 +389,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       // оставляет себе — это переключение вкладок, и до страницы событие
       // просто не доходит. Shift ничем не занят и работает всегда.
       const batch = event.ctrlKey || event.shiftKey;
-      handlers.train(train, batch ? BATCH_ORDER_COUNT : 1);
+      handlers.train(unit, batch ? BATCH_ORDER_COUNT : 1);
       return;
     }
 
@@ -230,12 +401,13 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
 
     if (event.code === NUKE_KEY) {
       aimingNuke = !aimingNuke;
-      buildKind = null;
+      if (aimingNuke) setBuilding(false);
       return;
     }
 
     if (event.code === CANCEL_KEY) {
-      cancelModes();
+      // Сначала отмена, и только если отменять нечего — меню.
+      if (!cancelModes()) setMenu(true);
       return;
     }
 
@@ -263,6 +435,11 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   };
 
   const onPointerDown = (event: PointerEvent): void => {
+    // Меню накрывает поле собой, поэтому нажатие сюда и так не дойдёт.
+    // Проверка стоит на случай, если меню когда-нибудь станет уже поля:
+    // строить вслепую под открытым меню игрок не просил.
+    if (menuOpen) return;
+
     const point = localPoint(event);
 
     if (event.button === 2) {
@@ -373,17 +550,24 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
 
   return {
     get state(): ControlState {
-      return { buildKind, aimingNuke, hoverCell, selectedCell };
+      return { building, buildKind, aimingNuke, hoverCell, selectedCell };
     },
 
     setBuildKind(kind) {
+      // Нажатие плитки в тулбаре включает и сам режим: игрок, выбравший
+      // стену, собирается строить, и требовать от него ещё и `Q` было бы
+      // придиркой.
+      setBuilding(kind !== null);
       buildKind = kind;
-      if (kind !== null) aimingNuke = false;
     },
 
     setAimingNuke(aiming) {
       aimingNuke = aiming;
-      if (aiming) buildKind = null;
+      if (aiming) setBuilding(false);
+    },
+
+    setMenuOpen(open) {
+      setMenu(open);
     },
 
     detach() {

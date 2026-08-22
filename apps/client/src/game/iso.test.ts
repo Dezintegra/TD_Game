@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { MAP_CELL_COUNT, PROJECTION_YAW_DEG } from '@td/shared';
 import {
@@ -86,6 +88,40 @@ describe('видимая доля карты', () => {
 
   it('число видимых клеток меньше размера карты', () => {
     expect(visibleCellCount(1920, 1080)).toBeLessThan(MAP_CELL_COUNT);
+  });
+
+  it('полосы интерфейса не съедают поле ниже четверти карты', () => {
+    // Доля считается по площади ПОЛЯ, а не окна. Пока панели лежали
+    // поверх поля, разницы не было: перекрытые клетки числились видимыми,
+    // хотя игрок их не видел. Теперь полосы занимают свою высоту,
+    // и вычесть её обязательно — иначе проверка сторожит величину,
+    // которой никто не видит.
+    //
+    // Высоты читаются из самих токенов, а не переписываются сюда числами.
+    // Скопированное число разошлось бы с настоящим при первой же правке
+    // вёрстки, и проверка продолжила бы показывать зелёный.
+    const tokens = readFileSync(
+      fileURLToPath(new URL('../../../../packages/ui/src/tokens.css', import.meta.url)),
+      'utf8',
+    );
+
+    const heightOf = (name: string): number => {
+      const found = new RegExp(`${name}:\\s*(\\d+)px`).exec(tokens);
+      if (found?.[1] === undefined) throw new Error(`В токенах не найдена высота ${name}`);
+      return Number(found[1]);
+    };
+
+    // Берётся РАЗВЁРНУТАЯ нижняя полоса — худший случай. Свёрнутая
+    // отнимает у поля меньше, и проверять её отдельно незачем: если
+    // проходит худший, проходит и он.
+    const chrome = heightOf('--td-hud-top') + heightOf('--td-hud-bottom-open');
+
+    // Предел из спецификации isometric-view. Он не выведен из вкуса:
+    // при окне 1080 полное поле даёт около 40 процентов карты, и доля
+    // падает пропорционально отнятой высоте. 397 точек — та высота,
+    // на которой доля садится ровно на нижнюю границу в 25 процентов.
+    expect(chrome).toBeLessThanOrEqual(340);
+    expect(visibleMapPercent(1920, 1080 - chrome)).toBeGreaterThanOrEqual(25);
   });
 
   it('вдвое большее окно показывает вдвое больше клеток', () => {

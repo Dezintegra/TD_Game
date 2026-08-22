@@ -44,7 +44,7 @@ export const bootGame = async (page: Page): Promise<void> => {
   await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 15_000 });
   // Дожидаемся первого подтверждённого тика: до него мир стоит на нуле,
   // и проверки вроде «энергия копится» ловили бы не игру, а ожидание.
-  await expect(page.getByTestId('hud')).toHaveAttribute('data-sync-tick', /[1-9]/, {
+  await expect(page.getByTestId('diagnostics')).toHaveAttribute('data-sync-tick', /[1-9]/, {
     timeout: 20_000,
   });
   // Клика по полю здесь намеренно нет. Горячие клавиши слушает window,
@@ -67,3 +67,32 @@ export const uniqueTitle = (): string => `Комн-${Math.random().toString(36).
 /** Число из подписи HUD: отбрасывает единицы измерения и проценты. */
 export const number = async (page: Page, testId: string): Promise<number> =>
   Number((await page.getByTestId(testId).textContent())?.replace(/[^\d.-]/g, ''));
+
+/**
+ * Диагностическая величина из разметки.
+ *
+ * Seed, номер тика, частота кадров и доля скал игроку не показываются:
+ * они ничего ему не говорят и занимают внимание, которого в матче
+ * реального времени нет. Но убрать их совсем нельзя — seed единственное,
+ * чем ОТСЮДА проверяется, что у обоих участников одна и та же карта.
+ * Поэтому они живут атрибутами на отдельном элементе, и читать их надо
+ * так, а не по тексту на экране.
+ */
+export const diagnostic = async (page: Page, name: string): Promise<string> =>
+  (await page.getByTestId('diagnostics').getAttribute(`data-${name}`)) ?? '';
+
+export const diagnosticNumber = async (page: Page, name: string): Promise<number> =>
+  Number(await diagnostic(page, name));
+
+/**
+ * Открыть меню матча.
+ *
+ * Выход и перезапуск переехали в него с постоянных панелей: они нужны раз
+ * за партию, а место занимали весь матч. Esc открывает меню только тогда,
+ * когда отменять нечего, поэтому перед вызовом не должно быть ни выбранной
+ * постройки, ни наведённого удара, ни выделения.
+ */
+export const openMatchMenu = async (page: Page): Promise<void> => {
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('match-menu')).toBeVisible();
+};
