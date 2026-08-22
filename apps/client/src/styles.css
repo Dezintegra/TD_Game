@@ -70,6 +70,117 @@ body {
   background: var(--td-bg-page);
 }
 
+/* Раскладка меню.
+
+   По умолчанию — одна колонка: клеймо и панели друг под другом.
+   Стартовый экран добавляет вторую, со списком комнат справа, и тогда
+   ширина складывается из обеих. */
+.td-menu {
+  width: 100%;
+  max-width: 620px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--td-space-4);
+}
+
+/* 620 меню + 16 промежутка + 420 списка. */
+.td-menu--wide {
+  max-width: 1056px;
+}
+
+.td-menu-columns {
+  display: flex;
+  gap: var(--td-space-4);
+
+  /* По верху, а не растягиванием: высота списка задана числом
+     и от высоты меню зависеть не должна, а высота меню — от списка.
+     Растяни колонки друг по другу, и любая из двух начнёт двигать
+     соседнюю. */
+  align-items: flex-start;
+}
+
+.td-menu-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--td-space-4);
+}
+
+/* Колонка списка.
+
+   Оба размера заданы числами, и это главное правило здесь. Список
+   комнат меняется сам: дежурные комнаты компьютера сменяются, соседи
+   создают свои и уходят. Меню при этом отцентровано по вертикали —
+   выведи высоту из содержимого, и каждая появившаяся комната поднимала
+   бы кнопки на 33 пикселя ровно в момент прицеливания.
+
+   470 — это шесть строк списка по 66 и початая седьмая. Неполная
+   строка внизу и есть признак того, что список продолжается; ровно
+   шесть выглядели бы полным списком, даже когда он обрезан. */
+.td-menu-aside {
+  flex: 0 0 420px;
+  height: 470px;
+  display: flex;
+  min-width: 0;
+}
+
+/* Окно, которому две колонки не по ширине: 620 + 16 + 420 и 48 полей
+   дают 1104, и всё, что уже, показывало бы сжатое меню вместо
+   задуманного. Колонки встают одна под другой; высота списка
+   не меняется и здесь. */
+@media (max-width: 1120px) {
+  .td-menu--wide {
+    max-width: 620px;
+  }
+
+  .td-menu-columns {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .td-menu-aside {
+    flex: 0 0 auto;
+  }
+}
+
+/* Область прокрутки внутри панели: прокручиваются строки, заголовок
+   с их числом остаётся на месте.
+
+   scrollbar-gutter обязателен. Без него полоса прокрутки появляется
+   вместе с седьмой комнатой и подрезает все строки разом — тот же
+   рывок, от которого экран и лечится, только поперёк. */
+.td-menu-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+
+  /* Оформление полосы записано дважды. Стандартные свойства понимают
+     все нынешние движки, а `::-webkit-scrollbar` — только свои, зато
+     в них задаётся точная ширина из токена. В Chromium побеждает
+     второе, в Firefox — первое, и обе полосы выходят одной гаммы. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--td-scrollbar-thumb) transparent;
+}
+
+.td-menu-scroll::-webkit-scrollbar {
+  width: var(--td-scrollbar-size);
+}
+
+.td-menu-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.td-menu-scroll::-webkit-scrollbar-thumb {
+  background: var(--td-scrollbar-thumb);
+  border-radius: var(--td-radius-control);
+}
+
+.td-menu-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--td-scrollbar-thumb-hover);
+}
+
 /* HUD-оверлей.
    pointer-events: none пропускает клики сквозь пустые места оверлея
    к игровому полю; сами элементы HUD включают события обратно. */

@@ -7,24 +7,35 @@ import { useSessionStore } from '../session/session-store.js';
  * Меню — единственное место, где React отвечает за всё, что видно:
  * игрового поля здесь ещё нет. Поэтому обычная вёрстка по центру,
  * без оверлеев и слоёв, которыми живёт HUD.
+ *
+ * Колонок бывает две: стартовый экран ставит список комнат справа
+ * от меню и передаёт его сюда. Сама раскладка лежит в `styles.css`,
+ * а не рядом с разметкой, как заведено в остальном меню: складывать
+ * ли колонки, решает ширина окна, а медиазапрос инлайновым стилем
+ * не выражается вовсе.
  */
-const layoutStyle: CSSProperties = {
-  width: '100%',
-  maxWidth: 620,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--td-space-4)',
-};
-
 export interface MenuShellProps {
   readonly children: ReactNode;
+  /**
+   * Правая колонка. Размер ей задаёт оболочка, и содержимое обязано
+   * в него укладываться — прокруткой, а не ростом: колонка, выросшая
+   * изнутри, утянет за собой отцентрованное меню.
+   */
+  readonly aside?: ReactNode;
 }
 
-export const MenuShell = ({ children }: MenuShellProps) => (
+export const MenuShell = ({ children, aside }: MenuShellProps) => (
   <div id="menu" data-testid="menu">
-    <div style={layoutStyle}>
+    <div className={aside === undefined ? 'td-menu' : 'td-menu td-menu--wide'}>
       <Brand />
-      {children}
+      {aside === undefined ? (
+        children
+      ) : (
+        <div className="td-menu-columns">
+          <div className="td-menu-main">{children}</div>
+          <div className="td-menu-aside">{aside}</div>
+        </div>
+      )}
     </div>
   </div>
 );

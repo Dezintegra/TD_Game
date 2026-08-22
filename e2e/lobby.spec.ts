@@ -22,6 +22,37 @@ const createRoom = async (page: Page, title: string): Promise<void> => {
 const rowOf = (page: Page, title: string) =>
   page.getByTestId('lobby-row').filter({ hasText: title });
 
+/**
+ * Рамки того, что от списка комнат зависеть не должно.
+ *
+ * Строкой, а не числами: несовпадение сразу читается в отчёте, и видно,
+ * уехало ли оно вбок, вниз или изменилось в размере.
+ *
+ * Панель списка здесь же и по той же причине: постоянная высота панели
+ * и есть способ не двигать меню, поэтому её рамка проверяется наравне
+ * с кнопками.
+ */
+const frames = async (page: Page): Promise<Record<string, string>> => {
+  const measured: Record<string, string> = {};
+
+  for (const id of [
+    'profile-bar',
+    'lobby-title',
+    'lobby-create',
+    'practice-start',
+    'lobby-panel',
+  ]) {
+    const box = await page.getByTestId(id).boundingBox();
+
+    measured[id] =
+      box === null
+        ? 'элемента нет'
+        : [box.x, box.y, box.width, box.height].map(Math.round).join(', ');
+  }
+
+  return measured;
+};
+
 test('профиль переживает перезагрузку и удаляется по требованию', async ({ page }) => {
   await identify(page, 'Аня');
 
@@ -87,6 +118,44 @@ test('созданная комната появляется у соседа б�
   }
 });
 
+test('комната появляется и закрывается, не сдвинув меню', async ({ browser }) => {
+  const watching = await browser.newContext();
+  const creating = await browser.newContext();
+
+  try {
+    const watcher = await watching.newPage();
+    const creator = await creating.newPage();
+    const title = uniqueTitle();
+
+    await identify(watcher, 'Аня');
+    await identify(creator, 'Боря');
+
+    // Список стоит справа от меню, а не под ним: видны разом оба.
+    const create = await watcher.getByTestId('lobby-create').boundingBox();
+    const rooms = await watcher.getByTestId('lobby-panel').boundingBox();
+    expect(rooms).not.toBeNull();
+    expect(rooms?.x ?? 0).toBeGreaterThanOrEqual((create?.x ?? 0) + (create?.width ?? 0));
+
+    const before = await frames(watcher);
+
+    await createRoom(creator, title);
+    await expect(rowOf(watcher, title)).toBeVisible();
+
+    // Комнаты появляются без участия наблюдателя — дежурные комнаты
+    // компьютера сменяются сами, соседи создают свои. Ни одно такое
+    // событие не вправе увести кнопку из-под курсора.
+    expect(await frames(watcher)).toEqual(before);
+
+    await creator.getByTestId('room-leave').click();
+    await expect(rowOf(watcher, title)).toHaveCount(0);
+
+    expect(await frames(watcher)).toEqual(before);
+  } finally {
+    await watching.close();
+    await creating.close();
+  }
+});
+
 test('двое сходятся в комнате, и обоюдная готовность начинает матч', async ({ browser }) => {
   const firstContext = await browser.newContext();
   const secondContext = await browser.newContext();
@@ -109,9 +178,10 @@ test('двое сходятся в комнате, и обоюдная гото�
 
     // Готовность одного видна другому.
     await anya.getByTestId('room-ready').click();
-    await expect(
-      borya.getByTestId('room-slot').filter({ hasText: 'Аня' }),
-    ).toHaveAttribute('data-ready', 'yes');
+    await expect(borya.getByTestId('room-slot').filter({ hasText: 'Аня' })).toHaveAttribute(
+      'data-ready',
+      'yes',
+    );
 
     // Пока готов один — матч не начинается.
     await expect(anya.locator('#scene canvas')).toBeHidden();
@@ -202,9 +272,7 @@ test('двое сходятся в комнате, и обоюдная гото�
   }
 });
 
-test('готовность недоступна в одиночестве и сбрасывается уходом соперника', async ({
-  browser,
-}) => {
+test('готовность недоступна в одиночестве и сбрасывается уходом соперника', async ({ browser }) => {
   const firstContext = await browser.newContext();
   const secondContext = await browser.newContext();
 
