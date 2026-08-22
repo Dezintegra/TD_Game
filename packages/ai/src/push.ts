@@ -6,11 +6,11 @@
   UnitType,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import { cellCentre } from '@td/sim';
+import { cellAt, cellCentre } from '@td/sim';
 import type { PlayerStats, WorldState } from '@td/sim';
 import type { Approach } from './approach.js';
 import { otherPlayer } from './approach.js';
-import { incomingAt } from './posture.js';
+import { ENERGY_PER_LIVE_DAMAGE, incomingAt } from './posture.js';
 import { horizonTicks } from './profile.js';
 import type { AiProfile } from './profile.js';
 
@@ -112,6 +112,142 @@ const defenceAtBase = (
   if (cell === undefined) return 0;
 
   return incomingAt(world, me, enemyStats, cellCentre(cell)).total;
+};
+
+/**
+ * Прикрыт ли вероятный путь вражескими стреляющими постройками.
+ *
+ * Живёт здесь, а не в двух местах сразу: по этому же признаку рывок
+ * выбирает состав волны, а производство — отвечать ли на потери осадным
+ * оружием. Вопрос один, и ответ на него обязан быть один.
+ */
+export const pathGuarded = (
+  world: WorldState,
+  me: PlayerId,
+  enemyStats: PlayerStats,
+  approach: Approach,
+): boolean => defenceOnPath(world, me, enemyStats, approach).hp > 0;
+
+/** Что стоит на пути: сколько его сносить и сколько оно наносит. */
+export interface Defence {
+  /** Суммарное оставшееся здоровье стреляющих построек. */
+  readonly hp: number;
+  /** Их суммарный урон в тик. */
+  readonly dps: number;
+  /** Сумма цен: сколько за них заплачено. */
+  readonly cost: number;
+}
+
+const NO_DEFENCE: Defence = { hp: 0, dps: 0, cost: 0 };
+
+/**
+ * Оборона противника на вероятном пути.
+ *
+ * Перебор тот же, каким прежде отвечали на вопрос «прикрыт ли путь», —
+ * и это не совпадение, а требование: вопросов теперь два, но обстановка
+ * у них одна, и считать её дважды разными способами значило бы завести
+ * два расходящихся представления об одной дороге.
+ */
+export const defenceOnPath = (
+  world: WorldState,
+  me: PlayerId,
+  enemyStats: PlayerStats,
+  approach: Approach,
+): Defence => {
+  let hp = 0;
+  let dps = 0;
+  let cost = 0;
+
+  for (const structure of world.structures) {
+    if (structure.owner === me || structure.kind === StructureKind.Base) continue;
+
+    const baseline = enemyStats.structures[structure.kind];
+    if (baseline.attack <= 0 || baseline.range <= 0) continue;
+
+    const onPath =
+      approach.onPath[structure.cell] === 1 || approach.fromHome[structure.cell] !== undefined;
+    if (!onPath) continue;
+
+    hp += structure.health;
+    dps += baseline.attack / Math.max(1, baseline.cooldownTicks);
+    cost += baseline.cost;
+  }
+
+  return hp > 0 ? { hp, dps, cost } : NO_DEFENCE;
+};
+
+/**
+ * Во что оборона обходится нападающему, в энергии.
+ *
+ * Не цена покупки, а нанесённый урон: башня стоит на пути не ради своей
+ * цены и не обязана сносить базу — её работа в том, чтобы чужие машины
+ * не доходили. Скопление из семи базовых башен стоило противнику 420
+ * энергии при цене ядерного удара в 1250, и по цене покупки такой удар
+ * не окупался никогда; за минуту те же башни наносят в несколько раз
+ * больше энергии урона, чем стоили сами.
+ *
+ * Берётся БОЛЬШЕЕ из двух. Цена покупки не отбрасывается: только что
+ * поставленная башня, не сделавшая ни выстрела, иначе оказалась бы
+ * бесплатной мишенью.
+ *
+ * Курс перевода урона в энергию не новый: им уже меряются и рубеж,
+ * и польза собственной башни. Второго курса быть не должно.
+ */
+export const defenceWorth = (defence: Defence, profile: AiProfile): number =>
+  Math.max(defence.cost, defence.dps * horizonTicks(profile) * ENERGY_PER_LIVE_DAMAGE);
+
+/**
+ * Пора ли выпускать прикрытие осадной волне.
+ *
+ * Осадная машина втрое медленнее дешёвой: путь, который штурмовик
+ * проходит за двадцать пять секунд, Тесла ползёт восемьдесят три.
+ * Выпусти прикрытие вместе с волной — оно придёт задолго до неё, погибнет
+ * в одиночку и никого не прикроет. Поэтому части разводятся во времени.
+ *
+ * Условие выводится из мира и читается так: машина прикрытия,
+ * отправленная СЕЙЧАС от своей базы, дойдёт не раньше осадных.
+ *
+ *     остаток пути осадных / скорость осадных ≤ весь путь / скорость прикрытия
+ *
+ * Поля состояния «идёт волна» рядом не заводится намеренно. Признак,
+ * выведенный из мира, перестаёт выполняться сам, когда осадные машины
+ * гибнут по дороге; поле в памяти рассказывало бы о волне, которой
+ * уже нет.
+ */
+export const screenDue = (
+  world: WorldState,
+  me: PlayerId,
+  myStats: PlayerStats,
+  approach: Approach,
+  screen: UnitType,
+): boolean => {
+  if (approach.shortest <= 0) return false;
+
+  const screenSpeed = myStats.units[screen].speed;
+  if (screenSpeed <= 0) return false;
+
+  // Весь путь для машины прикрытия, в тиках.
+  const screenTicks = (approach.shortest * FIXED_POINT_SCALE) / screenSpeed;
+  const towerRange = STRUCTURE_STATS[StructureKind.TowerBasic].range;
+
+  for (const unit of world.units) {
+    if (unit.owner !== me) continue;
+
+    const baseline = myStats.units[unit.unitType];
+    // Осадная машина — та, что достаёт дальше башни. То же правило,
+    // по которому выбирается состав волны.
+    if (baseline.range <= towerRange || baseline.speed <= 0) continue;
+
+    const travelled = approach.fromHome[cellAt(unit.position)] ?? -1;
+    if (travelled < 0) continue;
+
+    const left = Math.max(0, approach.shortest - travelled);
+    const siegeTicks = (left * FIXED_POINT_SCALE) / baseline.speed;
+
+    if (siegeTicks <= screenTicks) return true;
+  }
+
+  return false;
 };
 
 export interface WaveOutcome {
