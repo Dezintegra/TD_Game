@@ -206,7 +206,7 @@ describe('экономика', () => {
   });
 
   it('прокачка экономики ускоряет доход', () => {
-    const branch = UPGRADE_BRANCHES.findIndex((entry) => entry.target === UpgradeTarget.Economy);
+    const branch = UPGRADE_BRANCHES.findIndex((entry) => entry.target === UpgradeTarget.Base);
     const world = step(richWorld(), [buy(0, branch)]);
 
     expect(playerStats(playerOf(world, 0)).incomePerTick).toBeGreaterThan(BASE_INCOME_PER_TICK);

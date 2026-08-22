@@ -303,7 +303,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
   {
     untilSecond: 90,
     // Только экономика: вложенное в первую минуту окупается весь матч.
-    upgrades: { [UpgradeTarget.Economy]: 1 },
+    upgrades: { [UpgradeTarget.Base]: 1 },
     mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Tesla]: 0 },
     // Экономика вперёд всего: вложенное в первую минуту окупается весь матч.
     spend: ['upgrade', 'build', 'train'],
@@ -315,7 +315,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
     // весами. Разница в том, что теперь до второй и третьей цели очередь
     // доходит, а не только называется.
     upgrades: {
-      [UpgradeTarget.Economy]: 3,
+      [UpgradeTarget.Base]: 3,
       [UpgradeTarget.UnitAssault]: 2,
       [UpgradeTarget.TowerBasic]: 1,
     },
@@ -333,7 +333,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
       [UpgradeTarget.UnitTesla]: 4,
       [UpgradeTarget.TowerSniper]: 3,
       [UpgradeTarget.General]: 2,
-      [UpgradeTarget.Economy]: 1,
+      [UpgradeTarget.Base]: 1,
     },
     mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 2, [UnitType.Tesla]: 3 },
     spend: ['upgrade', 'train', 'build'],

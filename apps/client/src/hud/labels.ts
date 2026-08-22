@@ -42,7 +42,7 @@ export const UPGRADE_GROUP: Readonly<Record<UpgradeTarget, string>> = {
   [UpgradeTarget.TowerSniper]: 'Снайперская башня',
   [UpgradeTarget.Wall]: 'Стена',
   [UpgradeTarget.General]: 'Генерал',
-  [UpgradeTarget.Economy]: 'Экономика',
+  [UpgradeTarget.Base]: 'Экономика',
 };
 
 /**

@@ -167,6 +167,16 @@ const structureBaseline = (player: PlayerState, kind: StructureKind): StructureB
 
   // База не прокачивается: у неё нет цели прокачки, и множители к ней
   // не применяются вовсе.
+  //
+  // ⚠️ Здесь мина на будущее, и она уже заряжена. Цель `UpgradeTarget.Base`
+  // существует и держит ветку добычи энергии; появятся у базы прочность
+  // или атака — их припишут туда же, к цели 7. А этот ранний выход
+  // останется, и ветка будет ПРОДАВАТЬСЯ И НЕ РАБОТАТЬ: энергия спишется,
+  // уровень вырастет, множитель посчитается — и будет отброшен здесь.
+  //
+  // Молча. Ни ошибки, ни отказа, ни признака: игрок просто не поймёт,
+  // почему база не крепчает. Заводите ветку базы — снимайте выход
+  // и заводите `STRUCTURE_UPGRADE_TARGET[Base]`.
   if (target === undefined) {
     return {
       health: base.health,
@@ -230,7 +240,7 @@ export const playerStats = (player: PlayerState): PlayerStats => ({
   general: generalBaseline(player),
   incomePerTick: applyPpm(
     BASE_INCOME_PER_TICK,
-    effectPpm(player, UpgradeTarget.Economy, UpgradeStat.Income),
+    effectPpm(player, UpgradeTarget.Base, UpgradeStat.Income),
   ),
 });
 
