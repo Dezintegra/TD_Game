@@ -82,6 +82,14 @@ export interface SoundFile {
    * декодирования.
    */
   readonly fadeFrom?: number;
+
+  /**
+   * Ниже какой частоты срезать.
+   *
+   * Заведено для ротора и по жалобе: запись двигателя гудела на полсотне
+   * герц непрерывно, и вместе со свёрткой это давало не простор, а хрип.
+   */
+  readonly highPass?: number;
 }
 
 const one: readonly number[] = [1];
@@ -142,7 +150,7 @@ export const SOUND_FILES: Partial<Record<Sound, readonly SoundFile[]>> = {
 
   // Зацикленный. Стык сшивается перекрёстным затуханием при загрузке:
   // в записи двигателя нет ни малейшего повода сойтись концу с началом.
-  [Sound.Rotor]: [{ url: rotorUrl, rates: one }],
+  [Sound.Rotor]: [{ url: rotorUrl, rates: one, highPass: 150 }],
 };
 
 /** Сколько вариантов даст запись, если она есть. */

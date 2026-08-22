@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { PER_FRAME, chooseCues } from './budget.js';
+import { PER_FRAME, POOL_LIMIT, POOL_OF, Pool, chooseCues } from './budget.js';
 import type { Candidate } from './budget.js';
-import { Sound } from './sounds.js';
+import { SOUNDS, SOUND_PRIORITY, Sound } from './sounds.js';
 import {
   DEFAULT_SOUND_SETTINGS,
   parseSoundSettings,
@@ -88,6 +88,68 @@ describe('бюджет одновременных звуков', () => {
 
   it('ротор через бюджет не проходит: он не событие', () => {
     expect(chooseCues([candidate(Sound.Rotor, 1)])).toEqual([]);
+  });
+});
+
+describe('важность и наборы мест', () => {
+  it('ядерный удар идёт первым, даже когда рядом гибнет полсотни машин', () => {
+    // Ровно тот случай, из-за которого удара не было слышно вовсе:
+    // он гибнет одновременно с толпой, и хлопки занимали все места
+    // раньше него.
+    const swarm: Candidate[] = Array.from({ length: 50 }, (_, index) =>
+      candidate(Sound.BlastUnit, 1, index),
+    );
+    // Сам удар вдобавок дальше от центра обзора, то есть тише каждого.
+    swarm.push(candidate(Sound.NukeBlast, 0.2, 9999));
+
+    const chosen = chooseCues(swarm);
+    expect(chosen[0]?.sound).toBe(Sound.NukeBlast);
+  });
+
+  it('порядок — по важности, внутри неё по громкости', () => {
+    const chosen = chooseCues([
+      candidate(Sound.BoltUnit, 1, 1),
+      candidate(Sound.BlastStructure, 0.3, 2),
+      candidate(Sound.BlastUnit, 0.9, 3),
+      candidate(Sound.NukeFall, 0.1, 4),
+    ]);
+
+    expect(chosen.map((cue) => cue.sound)).toEqual([
+      Sound.NukeFall,
+      Sound.BlastStructure,
+      Sound.BlastUnit,
+      Sound.BoltUnit,
+    ]);
+  });
+
+  it('у каждого звука есть важность и набор', () => {
+    for (const sound of SOUNDS) {
+      expect(SOUND_PRIORITY[sound]).toBeGreaterThanOrEqual(0);
+      expect(POOL_OF[sound]).toBeDefined();
+    }
+  });
+
+  it('ядерный набор занят только ядерным', () => {
+    // Главная гарантия: место под удар свободно всегда, потому что
+    // занять его больше нечем.
+    const inNuke = SOUNDS.filter((sound) => POOL_OF[sound] === Pool.Nuke);
+    expect(inNuke.sort()).toEqual([Sound.NukeBlast, Sound.NukeFall].sort());
+    expect(POOL_LIMIT[Pool.Nuke]).toBe(inNuke.length);
+  });
+
+  it('выстрелы и взрывы лежат в разных наборах', () => {
+    expect(POOL_OF[Sound.BoltUnit]).toBe(Pool.Shots);
+    expect(POOL_OF[Sound.Arc]).toBe(Pool.Shots);
+    expect(POOL_OF[Sound.BlastUnit]).toBe(Pool.Blasts);
+    expect(POOL_OF[Sound.BlastStructure]).toBe(Pool.Blasts);
+    expect(POOL_OF[Sound.BoltUnit]).not.toBe(POOL_OF[Sound.BlastUnit]);
+  });
+
+  it('мест в наборах хватает на покадровый потолок', () => {
+    // Иначе кадр отбирал бы больше, чем движок способен начать,
+    // и разница молча пропадала бы.
+    const total = POOL_LIMIT[Pool.Shots] + POOL_LIMIT[Pool.Blasts] + POOL_LIMIT[Pool.Nuke];
+    expect(total).toBeGreaterThanOrEqual(PER_FRAME);
   });
 });
 

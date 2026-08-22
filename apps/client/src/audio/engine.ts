@@ -1,8 +1,9 @@
-import { MAX_ACTIVE, chooseCues } from './budget.js';
+import { POOL_LIMIT, POOL_OF, chooseCues } from './budget.js';
+import type { Pool } from './budget.js';
 import type { Candidate } from './budget.js';
 import { SOUND_FILES } from './assets.js';
 import { prepareFile } from './prepare.js';
-import { LOOPING, SOUNDS, SOUND_PEAK, Sound } from './sounds.js';
+import { LOOPING, SOUNDS, SOUND_PEAK, SOUND_PRIORITY, STEALS_FROM, Sound } from './sounds.js';
 import { place } from './placement.js';
 import type { Listener } from './placement.js';
 import { MUSIC_VOICES, STEP_SECONDS, musicBaseHz, notesAt } from './music.js';
@@ -54,7 +55,7 @@ export interface RotorState {
 }
 
 /** Ротор на месте не молчит: висящая машина, из которой не доносится ничего, читается сломанной. */
-const ROTOR_IDLE_GAIN = 0.15;
+const ROTOR_IDLE_GAIN = 0.09;
 const ROTOR_MOVING_GAIN = 1;
 /** В движении винт «поддают»: чуть выше по тону. */
 const ROTOR_IDLE_RATE = 1;
@@ -86,6 +87,17 @@ interface Voice {
   readonly cellX: number;
   readonly cellY: number;
   readonly level: number;
+  readonly priority: number;
+  readonly pool: Pool;
+  /**
+   * Насколько этому источнику урезан посыл в отражения.
+   *
+   * Единица у всего, кроме непрерывного. Непрерывный источник кормит
+   * свёртку без перерыва, полуторасекундный хвост накапливается сам
+   * на себя, и вместо простора получается хрип — ровно то, во что
+   * превращался ротор.
+   */
+  readonly wetScale: number;
 }
 
 /** Пустышка на случай, когда звука в окружении нет вовсе. */
@@ -123,6 +135,16 @@ export const createEngine = (): Engine => {
   let ctx: AudioContext | undefined;
   let master: GainNode | undefined;
   let battle: GainNode | undefined;
+  /**
+   * Шина того, что приглушает мир и потому не может быть приглушено само.
+   *
+   * Ядерный удар шёл через общую боевую шину и приглушал её вместе
+   * со всем прочим — то есть сам себя, в ту же миллисекунду, в которую
+   * начинался. Громкость его при этом задаёт тот же ползунок «бой»:
+   * от игрока это по-прежнему один регулятор, а разведены шины только
+   * ради приглушения.
+   */
+  let impact: GainNode | undefined;
   let music: GainNode | undefined;
   let convolver: ConvolverNode | undefined;
 
@@ -132,6 +154,20 @@ export const createEngine = (): Engine => {
   const buffers = new Map<Sound, AudioBuffer[]>();
   const voices = new Set<Voice>();
   const rotorVoices = new Map<number, Voice>();
+
+  /**
+   * Звуки, для которых загрузилась запись.
+   *
+   * Нужен из-за гонки, которая иначе решается не в ту сторону. Выпечка
+   * идёт в рабочем потоке по очереди, и до обвала постройки она доходит
+   * девятой, а до ядерного удара — последним; загрузка же файла к этому
+   * моменту давно закончилась. Кто пришёл позже, тот и остаётся —
+   * и позже оказывалась выпечка, начисто затирая выбранную запись.
+   *
+   * Поэтому направление подмены теперь одностороннее: запись перекрывает
+   * выпечку, выпечка запись — никогда.
+   */
+  const fromFile = new Set<Sound>();
 
   const musicBuffers = new Map<MusicVoice, AudioBuffer>();
   let musicTimer: ReturnType<typeof setInterval> | undefined;
@@ -201,6 +237,7 @@ export const createEngine = (): Engine => {
     const now = ctx.currentTime;
     master.gain.setTargetAtTime(settings.enabled ? settings.master : 0, now, 0.02);
     battle.gain.setTargetAtTime(settings.battle, now, 0.02);
+    impact?.gain.setTargetAtTime(settings.battle, now, 0.02);
     music.gain.setTargetAtTime(settings.music, now, 0.02);
   };
 
@@ -210,6 +247,9 @@ export const createEngine = (): Engine => {
 
     battle = context.createGain();
     battle.connect(master);
+
+    impact = context.createGain();
+    impact.connect(master);
 
     music = context.createGain();
     music.connect(master);
@@ -272,9 +312,10 @@ export const createEngine = (): Engine => {
       }
 
       if (message.kind === 'sound') {
-        // Запись, если она есть, перекроет посчитанное позже — но до тех
-        // пор играет посчитанное, и это ровно то, ради чего оно считается
-        // для всего подряд.
+        // Выпечка занимает место, только пока записи нет. Успела
+        // загрузиться — посчитанное молча выбрасывается: оно своё дело
+        // уже сделало, продержав звук до прихода файла.
+        if (fromFile.has(message.sound)) return;
         putBuffer(context, message.sound, message.variant, [message.samples]);
       }
     };
@@ -326,6 +367,7 @@ export const createEngine = (): Engine => {
                     // от того, кто и как сводил исходник.
                     peak: SOUND_PEAK[sound],
                     fadeFromSeconds: file.fadeFrom,
+                    highPassHz: file.highPass,
                     looping: LOOPING[sound],
                   },
                 ) as Float32Array[],
@@ -342,6 +384,7 @@ export const createEngine = (): Engine => {
         // иначе часть звука была бы записью, часть выкладкой,
         // и в бою это слышалось бы разнобоем.
         buffers.delete(sound);
+        fromFile.add(sound);
         ready.forEach((channels, variant) => {
           putBuffer(context, sound, variant, channels);
         });
@@ -361,6 +404,9 @@ export const createEngine = (): Engine => {
     level: number,
     rate: number,
     loop: boolean,
+    priority: number,
+    pool: Pool,
+    wetScale: number,
   ): Voice => {
     const source = context.createBufferSource();
     source.buffer = buffer;
@@ -384,13 +430,15 @@ export const createEngine = (): Engine => {
     filter.connect(send);
     if (convolver !== undefined) send.connect(convolver);
 
-    const voice: Voice = { source, filter, panner, dry, send, cellX, cellY, level };
+    const voice: Voice = {
+      source, filter, panner, dry, send, cellX, cellY, level, priority, pool, wetScale,
+    };
     const placement = place(cellX, cellY, listener);
 
     filter.frequency.value = placement.cutoff;
     panner.pan.value = placement.pan;
     dry.gain.value = placement.gain * level;
-    send.gain.value = placement.gain * level * placement.wet;
+    send.gain.value = placement.gain * level * placement.wet * wetScale;
 
     return voice;
   };
@@ -405,7 +453,11 @@ export const createEngine = (): Engine => {
     voice.filter.frequency.setTargetAtTime(placement.cutoff, now, FOLLOW_TIME);
     voice.panner.pan.setTargetAtTime(placement.pan, now, FOLLOW_TIME);
     voice.dry.gain.setTargetAtTime(placement.gain * voice.level, now, FOLLOW_TIME);
-    voice.send.gain.setTargetAtTime(placement.gain * voice.level * placement.wet, now, FOLLOW_TIME);
+    voice.send.gain.setTargetAtTime(
+      placement.gain * voice.level * placement.wet * voice.wetScale,
+      now,
+      FOLLOW_TIME,
+    );
   };
 
   const duck = (context: AudioContext): void => {
@@ -417,6 +469,8 @@ export const createEngine = (): Engine => {
     // в радиусе юнитов он вышел бы за единицу.
     const now = context.currentTime;
 
+    // Шина удара здесь намеренно не упоминается: приглушать то, что
+    // приглушение и вызвало, значит не слышать самого события.
     battle.gain.cancelScheduledValues(now);
     battle.gain.setTargetAtTime(settings.battle * DUCK_BATTLE_TO, now, DUCK_IN);
     battle.gain.setTargetAtTime(settings.battle, now + DUCK_IN * 4, DUCK_BATTLE_OUT / 4);
@@ -424,6 +478,46 @@ export const createEngine = (): Engine => {
     music.gain.cancelScheduledValues(now);
     music.gain.setTargetAtTime(settings.music * DUCK_MUSIC_TO, now, DUCK_IN);
     music.gain.setTargetAtTime(settings.music, now + DUCK_IN * 4, DUCK_MUSIC_OUT / 4);
+  };
+
+  const poolCount = (pool: Pool): number => {
+    let count = 0;
+    for (const voice of voices) if (voice.pool === pool) count += 1;
+    return count;
+  };
+
+  /**
+   * Освободить место под важное событие ВНУТРИ его набора.
+   *
+   * Мест ограниченное число, и без этого ядерный удар мог не прозвучать
+   * вовсе: он гибнет одновременно с полусотней машин, их хлопки живут
+   * по секунде с лишним и занимают всё. Проигрыш мелочи здесь дешевле:
+   * оборванный на полуслове хлопок машины теряется в общем грохоте,
+   * а неслышный ядерный удар не теряется ничем.
+   *
+   * Прерывается самый тихий из тех, кто заведомо мельче. Равного
+   * по важности не трогаем никогда.
+   */
+  const freeSlot = (sound: Sound): boolean => {
+    if (SOUND_PRIORITY[sound] < STEALS_FROM) return false;
+
+    const pool = POOL_OF[sound];
+    let weakest: Voice | undefined;
+    for (const voice of voices) {
+      if (voice.pool !== pool) continue;
+      if (voice.priority >= SOUND_PRIORITY[sound]) continue;
+      if (weakest === undefined || voice.dry.gain.value < weakest.dry.gain.value) weakest = voice;
+    }
+
+    if (weakest === undefined) return false;
+
+    try {
+      weakest.source.stop();
+    } catch {
+      // Уже кончился сам — место и так свободно.
+    }
+    voices.delete(weakest);
+    return true;
   };
 
   const play = (
@@ -438,6 +532,10 @@ export const createEngine = (): Engine => {
     const list = buffers.get(sound);
     if (list === undefined || battle === undefined) return;
 
+    // Удар идёт мимо приглушаемой шины: он её и приглушает.
+    const bus = sound === Sound.NukeBlast && impact !== undefined ? impact : battle;
+    const priority = SOUND_PRIORITY[sound];
+
     // Вариант и разброс скорости — из ключа события. Одно и то же
     // событие обязано звучать одинаково при повторной отрисовке.
     const ready = list.filter((buffer) => buffer !== undefined);
@@ -447,7 +545,10 @@ export const createEngine = (): Engine => {
     if (buffer === undefined) return;
 
     const rate = 1 + (((key % 1000) / 1000) * 2 - 1) * 0.06;
-    const voice = attach(context, battle, buffer, cellX, cellY, listener, gain, rate, false);
+    const voice = attach(
+      context, bus, buffer, cellX, cellY, listener, gain, rate, false,
+      priority, POOL_OF[sound], 1,
+    );
 
     voice.source.onended = (): void => {
       voices.delete(voice);
@@ -478,7 +579,12 @@ export const createEngine = (): Engine => {
       const buffer = list?.find((entry) => entry !== undefined);
       if (buffer === undefined || battle === undefined) return;
 
-      voice = attach(context, battle, buffer, state.cellX, state.cellY, listener, 0, 1, true);
+      // Доля отражений урезана вчетверо сверх общей: непрерывный
+      // источник накапливает свёртку сам на себя.
+      voice = attach(
+        context, battle, buffer, state.cellX, state.cellY, listener, 0, 1, true,
+        SOUND_PRIORITY[Sound.Rotor], POOL_OF[Sound.Rotor], 0.25,
+      );
       voice.source.start();
       rotorVoices.set(state.owner, voice);
     }
@@ -492,7 +598,11 @@ export const createEngine = (): Engine => {
     voice.filter.frequency.setTargetAtTime(placement.cutoff, now, FOLLOW_TIME);
     voice.panner.pan.setTargetAtTime(placement.pan, now, FOLLOW_TIME);
     voice.dry.gain.setTargetAtTime(placement.gain * level, now, rise / 3);
-    voice.send.gain.setTargetAtTime(placement.gain * level * placement.wet, now, rise / 3);
+    voice.send.gain.setTargetAtTime(
+      placement.gain * level * placement.wet * voice.wetScale,
+      now,
+      rise / 3,
+    );
     voice.source.playbackRate.setTargetAtTime(
       state.moving ? ROTOR_MOVING_RATE : ROTOR_IDLE_RATE,
       now,
@@ -569,7 +679,12 @@ export const createEngine = (): Engine => {
       }
 
       for (const chosen of chooseCues(candidates)) {
-        if (voices.size >= MAX_ACTIVE) break;
+        // Именно `continue`, а не `break`. С `break` переполненный набор
+        // выстрелов обрывал разбор всего списка — и обвал башни, стоящий
+        // в нём следом, не звучал из-за чужой перестрелки.
+        const pool = POOL_OF[chosen.sound];
+        if (poolCount(pool) >= POOL_LIMIT[pool] && !freeSlot(chosen.sound)) continue;
+
         play(
           context,
           chosen.sound,

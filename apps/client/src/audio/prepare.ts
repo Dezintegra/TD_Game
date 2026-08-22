@@ -1,4 +1,4 @@
-import { peakOf } from './dsp.js';
+import { createFilter, peakOf } from './dsp.js';
 
 /**
  * Приведение загруженной записи к тому виду, в котором её можно играть.
@@ -202,6 +202,27 @@ export const closeLoop = (
   });
 };
 
+/**
+ * Срезать низ.
+ *
+ * Записи техники приходят с гулом в полсотни герц и ниже. На отдельном
+ * прослушивании он читается «мощно», а в игре — гулко: этот низ ничего
+ * не сообщает, ни от чего не отличается и просто заполняет собой
+ * диапазон, в котором живут взрывы.
+ *
+ * Особенно достаётся зацикленному: он звучит непрерывно, и его гул
+ * не гаснет никогда.
+ */
+export const highPass = (channels: Channels, sampleRate: number, cutoffHz: number): Channels =>
+  channels.map((channel) => {
+    const filter = createFilter(sampleRate, 'high');
+    const out = new Float32Array(channel.length);
+    for (let index = 0; index < channel.length; index += 1) {
+      out[index] = filter(channel[index] ?? 0, cutoffHz, 0.7);
+    }
+    return out;
+  });
+
 export interface PrepareOptions {
   readonly sampleRate: number;
   /** Множитель скорости для варианта. */
@@ -210,6 +231,8 @@ export interface PrepareOptions {
   readonly peak: number;
   /** С какой секунды уводить в тишину. */
   readonly fadeFromSeconds?: number | undefined;
+  /** Ниже какой частоты срезать. */
+  readonly highPassHz?: number | undefined;
   /** Зацикленным сшивается стык, остальным сглаживаются края. */
   readonly looping: boolean;
 }
@@ -228,6 +251,13 @@ export const prepareFile = (channels: Channels, options: PrepareOptions): Channe
 
   let result = trimLeadingSilence(channels, sampleRate);
   result = resample(result, rate);
+
+  // Срез идёт ДО сшивания петли: у фильтра есть память, и запущенный
+  // после сшивания он разошёлся бы на стыке ровно тем щелчком,
+  // от которого сшивание и спасает.
+  if (options.highPassHz !== undefined) {
+    result = highPass(result, sampleRate, options.highPassHz);
+  }
 
   if (options.fadeFromSeconds !== undefined) {
     result = fadeFrom(result, sampleRate, options.fadeFromSeconds);

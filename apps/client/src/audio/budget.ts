@@ -1,4 +1,4 @@
-import { Sound } from './sounds.js';
+import { SOUND_PRIORITY, Sound } from './sounds.js';
 
 /**
  * Сколько звуков начинать в этом кадре и насколько громко.
@@ -102,21 +102,70 @@ export const chooseCues = (candidates: readonly Candidate[]): readonly Chosen[] 
     }
   }
 
-  if (chosen.length <= PER_FRAME) return chosen;
+  // Сортировка идёт ВСЕГДА, а не только при переполнении, и порядок
+  // здесь важнее отсева. Мест может хватить в этом кадре и не хватить
+  // в движке — там свой потолок на одновременно звучащее, — и кто
+  // окажется в начале списка, тот и прозвучит. Ядерный удар обязан
+  // оказаться первым, даже когда рядом гибнет полсотни машин.
+  chosen.sort(
+    (a, b) =>
+      SOUND_PRIORITY[b.sound] - SOUND_PRIORITY[a.sound] || b.gain * b.boost - a.gain * a.boost,
+  );
 
-  // Общий потолок срабатывает редко — только когда одновременно
-  // случилось несколько разных видов событий. Отбор тот же: громче
-  // значит важнее.
-  chosen.sort((a, b) => b.gain * b.boost - a.gain * a.boost);
-  return chosen.slice(0, PER_FRAME);
+  return chosen.length <= PER_FRAME ? chosen : chosen.slice(0, PER_FRAME);
 };
 
 /**
- * Потолок одновременно звучащих источников.
+ * Пулы одновременно звучащего.
  *
- * Держится сверх покадрового: тот ограничивает начатое за кадр,
- * а этот — накопившееся. Ядерный удар звучит семь секунд, обвал
- * постройки три, и без общего потолка к середине осады их набралось бы
- * несколько десятков разом.
+ * Общий потолок был один на всех, и это оказалось прямой ошибкой:
+ * стрельба и гибель машин выедали его подчистую, а ядерный удар —
+ * событие, ради которого копят полматча, — не звучал вовсе. Ждать,
+ * что важное само пробьётся сквозь мелочь, нельзя: мелочи всегда
+ * больше.
+ *
+ * Поэтому мест теперь три набора, и они не сообщаются. Сколько бы
+ * ни шло стрельбы, она занимает только свой набор; сколько бы ни гибло
+ * машин — только свой. Под ядерный удар место свободно ВСЕГДА, потому
+ * что занять его больше нечем: в его наборе только он и свист
+ * его же ракеты.
  */
-export const MAX_ACTIVE = 24;
+export const Pool = {
+  Shots: 'shots',
+  Blasts: 'blasts',
+  Nuke: 'nuke',
+} as const;
+
+export type Pool = (typeof Pool)[keyof typeof Pool];
+
+export const POOL_OF: Readonly<Record<Sound, Pool>> = {
+  [Sound.BoltUnit]: Pool.Shots,
+  [Sound.BoltTower]: Pool.Shots,
+  [Sound.BeamUnit]: Pool.Shots,
+  [Sound.BeamTower]: Pool.Shots,
+  [Sound.Arc]: Pool.Shots,
+  [Sound.Missile]: Pool.Shots,
+  [Sound.BlastUnit]: Pool.Blasts,
+  [Sound.BlastGeneral]: Pool.Blasts,
+  [Sound.BlastStructure]: Pool.Blasts,
+  [Sound.NukeFall]: Pool.Nuke,
+  [Sound.NukeBlast]: Pool.Nuke,
+  // Ротор не событие и через эти наборы не проходит: у него свой
+  // источник на генерала, живущий столько же, сколько сам генерал.
+  [Sound.Rotor]: Pool.Shots,
+};
+
+/**
+ * Сколько мест в каждом наборе.
+ *
+ * Выстрелов больше всех, потому что их и происходит больше всех, а живут
+ * они десятые доли секунды. Взрывов вдвое меньше: каждый тянется секунду
+ * с лишним, и восьми одновременных хватает на любую свалку. Ядерных
+ * ровно два — сам удар и свист падающей ракеты; больше двух ядерных
+ * событий разом в игре не бывает.
+ */
+export const POOL_LIMIT: Readonly<Record<Pool, number>> = {
+  [Pool.Shots]: 12,
+  [Pool.Blasts]: 8,
+  [Pool.Nuke]: 2,
+};
