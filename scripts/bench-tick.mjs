@@ -5,6 +5,7 @@
  *   pnpm bench:tick                   замерить
  *   pnpm bench:tick -- --ticks 4000   сколько тиков считать за прогон
  *   pnpm bench:tick -- --repeats 5    сколько прогонов, берётся медиана
+ *   pnpm bench:tick -- --seed 7       какой мир считать
  *   pnpm bench:tick -- --force        мерить, не глядя на занятость машины
  *   pnpm bench:tick -- --history      показать прошлые замеры
  *
@@ -54,6 +55,19 @@ const numeric = (name, fallback) => {
 const ticks = numeric('--ticks', 3000);
 const repeats = numeric('--repeats', 3);
 
+// Повторы гоняют ОДНО И ТО ЖЕ зерно, а не разные.
+//
+// Это принципиально. Симуляция детерминирована: при одном зерне работа
+// повторяется тик в тик, и любой разброс между прогонами — машинный шум,
+// то есть ровно то, что повтор и должен измерять. Разные зёрна дают миры
+// разной тяжести (разные карты, разное число юнитов), и их разброс
+// говорил бы о выборе зерна, а не о состоянии машины: замер выглядел бы
+// шумным там, где шума нет.
+//
+// Сменить мир можно ключом --seed; сравнивать замеры имеет смысл только
+// при одном и том же зерне.
+const seed = numeric('--seed', 1);
+
 if (argv.includes('--history')) {
   printHistory();
   process.exit(0);
@@ -64,9 +78,9 @@ if (argv.includes('--history')) {
 // Повторяет цикл арены: обе стороны думают, их команды уходят в шаг мира.
 // Ровно то, что происходит на сервере в живом матче, — за вычетом сети
 // и записи, которые к стоимости счёта отношения не имеют.
-const oneRun = (seed) => {
-  let world = createWorld(seed);
-  const opponents = [createOpponent(0, seed), createOpponent(1, seed + 1)];
+const oneRun = (worldSeed) => {
+  let world = createWorld(worldSeed);
+  const opponents = [createOpponent(0, worldSeed), createOpponent(1, worldSeed + 1)];
 
   const started = process.hrtime.bigint();
 
@@ -85,17 +99,17 @@ const oneRun = (seed) => {
 step('Смотрю, свободна ли машина');
 const busy = await requireQuietMachine({ force });
 
-step(`Считаю ${ticks} тиков ${repeats} раз`);
+step(`Считаю ${ticks} тиков ${repeats} раз на зерне ${seed}`);
 if (force && busy > BUSY_LIMIT) warn('машина занята, к цифре относитесь как к оценке');
 
 // Первый прогон выбрасывается: на нём JIT ещё разогревается, и он
 // стабильно медленнее остальных — то есть измерял бы разогрев, а не код.
-oneRun(1);
+oneRun(seed);
 
 const runs = [];
-for (let seed = 1; seed <= repeats; seed += 1) {
+for (let attempt = 1; attempt <= repeats; attempt += 1) {
   const result = oneRun(seed);
-  note(`зерно ${seed}: ${result.micros.toFixed(1)} мкс на тик (${result.done} тиков)`);
+  note(`прогон ${attempt}: ${result.micros.toFixed(1)} мкс на тик (${result.done} тиков)`);
   runs.push(result.micros);
 }
 
