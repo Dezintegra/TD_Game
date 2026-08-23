@@ -35,7 +35,12 @@ export const TextField = ({ error, label, style, id, ...rest }: TextFieldProps) 
     borderRadius: 'var(--td-radius-control)',
     padding: 'var(--td-space-2) var(--td-space-3)',
     fontFamily: 'var(--td-font-ui)',
-    fontSize: 'var(--td-text-md)',
+    // Кегль поля ввода — отдельный токен, и это не прихоть оформления.
+    // Safari на iOS ПРИБЛИЖАЕТ страницу, когда фокус попадает в поле
+    // с кеглем меньше шестнадцати точек, и обратно её не отпускает:
+    // игрок вводит имя комнаты, а дальше вся игра идёт увеличенной
+    // и сдвинутой. Поэтому на пальце здесь ровно шестнадцать.
+    fontSize: 'var(--td-input-size)',
     transition: 'border-color var(--td-transition-item)',
   };
 

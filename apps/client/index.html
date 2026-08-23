@@ -2,7 +2,16 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover обязателен для двух вещей сразу.
+         Без него Safari на iOS в ландшафте отступает от безопасной зоны
+         С ОБЕИХ сторон симметрично — и по краям экрана появляются чёрные
+         поля шириной с вырез, хотя вырез только с одной стороны.
+         И он же включает env(safe-area-inset-*): без cover они всегда
+         нули, то есть отодвинуть содержимое от выреза нечем.
+         Отступы розданы вручную в styles.css: полосы отступают
+         на величину врезки, а высота полос на неё же вырастает,
+         поэтому содержимого не убавляется. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>TD Game</title>
   </head>
   <body>
