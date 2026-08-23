@@ -67,7 +67,7 @@ const tileStyle: CSSProperties = {
   flexDirection: 'column',
   alignItems: 'stretch',
   gap: 2,
-  minWidth: 96,
+  minWidth: 'var(--td-tile-min)',
 
   // Плитка НЕ сжимается, и это не украшение.
   //
@@ -121,7 +121,7 @@ const monoStyle: CSSProperties = {
 
 const hotkeyStyle: CSSProperties = {
   color: 'var(--td-text-muted-4)',
-  fontSize: 11,
+  fontSize: 'var(--td-text-xs)',
   marginLeft: 'auto',
 };
 
@@ -190,7 +190,7 @@ const Tile = ({
       </button>
 
       {cost > 0 && (
-        <span style={{ ...monoStyle, fontSize: 11 }} data-testid={`${testId}-cost`}>
+        <span style={{ ...monoStyle, fontSize: 'var(--td-text-xs)' }} data-testid={`${testId}-cost`}>
           цена {cost}
         </span>
       )}
@@ -214,7 +214,18 @@ const StatColumn = ({ target }: { readonly target: UpgradeTarget }) => {
   if (count === 0) return null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginTop: 2 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        // Промежуток между строками — полоса безопасности, а не отступ.
+        // На маленьком экране стрелка ужимается по высоте, и промах
+        // становится вероятнее; попасть он должен в пустоту, а не
+        // в соседнюю ветку, иначе деньги уйдут не туда.
+        gap: 'var(--td-stat-row-gap)',
+        marginTop: 2,
+      }}
+    >
       {Array.from({ length: count }, (_, index) => (
         <StatLine key={index} target={target} index={index} />
       ))}
@@ -227,7 +238,7 @@ const lineStyle: CSSProperties = {
   gridTemplateColumns: '1fr auto auto',
   alignItems: 'center',
   gap: 'var(--td-space-1)',
-  fontSize: 11,
+  fontSize: 'var(--td-text-xs)',
   lineHeight: 1.5,
 };
 
@@ -240,8 +251,13 @@ const arrowStyle = (affordable: boolean): CSSProperties => ({
   // Самая мелкая цель во всём интерфейсе, и промах по ней не молчалив:
   // соседняя строка — другая ветка, и деньги уходят не туда, куда игрок
   // целился. На мыши токен мал, на пальце вырастает до сорока четырёх.
+  //
+  // Высота отдельным токеном, и это вынужденно: строки стоят стопкой,
+  // высота строки равна высоте стрелки, и пять строк по сорок четыре
+  // не помещаются в полосу телефона. Ширина при этом не ужимается —
+  // она ничего не стоит, строка и так во всю плитку.
   minWidth: 'var(--td-hit-target)',
-  minHeight: 'var(--td-hit-target)',
+  minHeight: 'var(--td-hit-target-y)',
   border: `1px solid ${affordable ? 'var(--td-accent)' : 'var(--td-border-control)'}`,
   borderRadius: 2,
   background: 'transparent',
@@ -328,11 +344,49 @@ const STRUCTURE_HOTKEY: Readonly<Record<StructureKind, string>> = {
   [StructureKind.TowerSniper]: 'Q 3',
 };
 
+/**
+ * Кнопка «свернуть — развернуть характеристики».
+ *
+ * На мониторе её нет: там то же самое делает клавиша R, и лишний элемент
+ * в тулбаре, где на ноутбуке 1366 запаса нет, стоил бы места ни за что.
+ *
+ * На телефоне нажать R нечем. Без этой кнопки режим переключить нельзя
+ * вовсе, и игрок остаётся в том состоянии, какое сохранилось с прошлого
+ * раза, — то есть, как правило, с развёрнутыми характеристиками поверх
+ * половины экрана.
+ *
+ * Прилипает к левому краю (`position: sticky`), потому что тулбар едет
+ * вбок: уехав вместе с плитками, кнопка стала бы недостижимой ровно
+ * тогда, когда нужна, — когда столбцы открыты и до края далеко.
+ *
+ * Показывается и прячется правилом CSS по размеру экрана, а не ветвлением
+ * здесь: React о размере экрана знать не должен.
+ */
+const StatsToggle = () => {
+  const statsOpen = useHudStore((state) => state.statsOpen);
+
+  return (
+    <button
+      type="button"
+      className="td-stats-toggle"
+      data-testid="stats-toggle"
+      data-open={String(statsOpen)}
+      title={statsOpen ? 'Свернуть характеристики' : 'Показать характеристики'}
+      onClick={() => matchCommands().toggleStats()}
+    >
+      <span aria-hidden>{statsOpen ? '▾' : '▴'}</span>
+      <span>стат</span>
+    </button>
+  );
+};
+
 export const ActionBar = () => {
   const match = useHudStore((state) => state.match);
 
   return (
     <div style={barStyle} data-testid="toolbar">
+      <StatsToggle />
+
       <div style={groupStyle} data-testid="production-panel">
         {UNIT_TYPES.map((type) => {
           const Icon = UNIT_GLYPH[type];

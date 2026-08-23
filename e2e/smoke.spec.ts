@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { bootGame, diagnostic, diagnosticNumber, number, openMatchMenu } from './helpers.js';
 
 /**
@@ -48,6 +49,11 @@ test('панели не перекрывают игровое поле', async (
   // значит мерить не ту величину: в узком окне тулбар из десяти плиток
   // намеренно едет вбок, и это задуманное поведение, а не поломка.
   await page.setViewportSize({ width: 1920, height: 1080 });
+
+  // Переключателя характеристик на мониторе быть не должно: там то же
+  // самое делает клавиша R, а места в тулбаре на ноутбуке 1366 нет
+  // ни на что лишнее.
+  await expect(page.getByTestId('stats-toggle')).toBeHidden();
 
   // Главное свойство раскладки, и проверять его глазами нельзя: панель,
   // наехавшая на поле, закрывает собой клетки, на которых идёт бой,
@@ -386,3 +392,111 @@ test('частота кадров держится, когда на поле п�
   expect(await diagnosticNumber(page, 'fps')).toBeGreaterThanOrEqual(55);
 });
 
+
+/**
+ * Телефон.
+ *
+ * Проверяется не «красиво ли», а два измеримых свойства, каждое из которых
+ * уже ломалось молча: содержимое верхней полосы не шире самой полосы,
+ * и полю остаётся большая часть экрана.
+ *
+ * Молчаливость тут главное. Полоса прокрутки у верхней полосы запрещена,
+ * поэтому переполнение не показывает себя ничем — просто у своей сводки
+ * уезжает за левый край имя, а у чужой за правый прочность базы. Измерено
+ * до правки: содержимому нужно было 811 точек при 375 в портрете
+ * и 984 при 812 в ландшафте.
+ *
+ * `isMobile` и `hasTouch` обязательны, а не для красоты: без них
+ * не срабатывает медиазапрос грубого указателя, цель нажатия остаётся
+ * мышиной, и столбцы характеристик выходят вчетверо ниже настоящих.
+ */
+
+/** Ширина содержимого полосы и её собственная ширина. */
+const barOverflow = async (page: Page): Promise<number> =>
+  page.evaluate(() => {
+    const el = document.querySelector('#hud-top');
+    if (el === null) return -1;
+    return el.scrollWidth - el.clientWidth;
+  });
+
+/** На сколько содержимое тулбара выше отведённой ему полосы. */
+const columnOverflow = async (page: Page): Promise<number> =>
+  page.evaluate(() => {
+    const el = document.querySelector('#hud-bottom');
+    if (el === null) return -1;
+    return el.scrollHeight - el.clientHeight;
+  });
+
+/** Доля высоты окна, доставшаяся полю. */
+const fieldShare = async (page: Page): Promise<number> => {
+  const box = await page.locator('#scene canvas').boundingBox();
+  if (box === null) return 0;
+  return (box.height / page.viewportSize()!.height) * 100;
+};
+
+/** Обе сводки видны целиком, ни одна не уехала за край экрана. */
+const sidesVisible = async (page: Page): Promise<void> => {
+  const own = await page.getByTestId('side-own').boundingBox();
+  const enemy = await page.getByTestId('match-opponent').boundingBox();
+  const width = page.viewportSize()!.width;
+
+  expect(own).not.toBeNull();
+  expect(enemy).not.toBeNull();
+  if (own === null || enemy === null) return;
+
+  expect(own.x).toBeGreaterThanOrEqual(0);
+  expect(enemy.x + enemy.width).toBeLessThanOrEqual(width + 1);
+};
+
+test.describe('телефон в портрете', () => {
+  test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+
+  test('раскладка портрета', async ({ page }) => {
+    await bootGame(page);
+
+    expect(await barOverflow(page)).toBeLessThanOrEqual(0);
+    await sidesVisible(page);
+
+    // Столбец характеристик обязан помещаться целиком. Прокрутка вниз тут
+    // не годится в принципе: полоса не сообщает о себе ничем, и пятая
+    // строка — дальность — для игрока просто отсутствует.
+    expect(await columnOverflow(page)).toBeLessThanOrEqual(0);
+
+    // Свёрнутые характеристики — обычная игра, и экран принадлежит полю.
+    await page.keyboard.press('KeyR');
+    await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(72);
+  });
+});
+
+test.describe('телефон в ландшафте', () => {
+  test.use({ viewport: { width: 812, height: 375 }, hasTouch: true, isMobile: true });
+
+  test('раскладка ландшафта', async ({ page }) => {
+    await bootGame(page);
+
+    expect(await barOverflow(page)).toBeLessThanOrEqual(0);
+    await sidesVisible(page);
+
+    // Полоса центрировала содержимое при запрете переполнения: столбец
+    // выше полосы срезался сразу с двух сторон, и до цены нельзя было
+    // добраться ничем. На экране это выглядело обрубленным словом,
+    // то есть опечаткой, а не пропажей.
+    await expect(page.getByTestId('train-0-cost')).toBeVisible();
+    expect(await columnOverflow(page)).toBeLessThanOrEqual(0);
+
+    // Свернуть характеристики на телефоне можно только нажатием: клавиши R
+    // там нет. Без этой кнопки игрок остаётся в том состоянии, какое
+    // сохранилось с прошлого раза, и поля ему не видно вовсе.
+    const toggle = page.getByTestId('stats-toggle');
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
+
+    // Плитки и ядерный удар при этом остаются: сворачиваются только столбцы.
+    await expect(page.getByTestId('train-0')).toBeVisible();
+    await expect(page.getByTestId('aim-nuke')).toBeVisible();
+
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(54);
+  });
+});

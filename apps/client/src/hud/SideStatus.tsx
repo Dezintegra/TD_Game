@@ -48,7 +48,7 @@ const blockStyle = (own: boolean): CSSProperties => ({
   display: 'flex',
   flexDirection: 'column',
   alignItems: own ? 'flex-end' : 'flex-start',
-  gap: 3,
+  gap: 'var(--td-side-row-gap)',
   justifySelf: own ? 'end' : 'start',
   color: own ? 'var(--td-player-self)' : 'var(--td-player-enemy)',
   minWidth: 0,
@@ -57,34 +57,40 @@ const blockStyle = (own: boolean): CSSProperties => ({
 const rowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 'var(--td-space-2)',
+  gap: 'var(--td-side-gap)',
 };
 
 const nameStyle: CSSProperties = {
   fontWeight: 700,
-  fontSize: 'var(--td-text-md)',
+  fontSize: 'var(--td-side-name-size)',
   letterSpacing: 'var(--td-ls-button)',
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
-  maxWidth: 220,
+  maxWidth: 'var(--td-side-name-max)',
 };
 
 const mutedStyle: CSSProperties = {
   color: 'var(--td-text-muted-3)',
-  fontSize: 11,
+  fontSize: 'var(--td-text-xs)',
   textTransform: 'uppercase',
   letterSpacing: 'var(--td-ls-label)',
   whiteSpace: 'nowrap',
 };
 
-/** Полоса прочности базы. Ширина постоянна: прыгающая полоса не читается. */
-const BAR_WIDTH_PX = 168;
-
+/**
+ * Полоса прочности базы.
+ *
+ * Ширина постоянна — прыгающая полоса не читается — но постоянна она
+ * в пределах одного размера экрана: на телефоне те же сто шестьдесят
+ * восемь точек заняли бы почти половину своей половины полосы. Полоса
+ * показывает ДОЛЮ, а доля читается и на шестидесяти; само число стоит
+ * рядом и не меняется.
+ */
 const barTrackStyle: CSSProperties = {
   position: 'relative',
-  width: BAR_WIDTH_PX,
-  height: 6,
+  width: 'var(--td-side-bar-width)',
+  height: 'var(--td-side-bar-height)',
   borderRadius: 1,
   background: 'var(--td-bg-input)',
   border: '1px solid var(--td-border-control)',
@@ -93,7 +99,7 @@ const barTrackStyle: CSSProperties = {
 
 const numberStyle: CSSProperties = {
   fontFamily: 'var(--td-font-mono)',
-  fontSize: 'var(--td-text-sm)',
+  fontSize: 'var(--td-side-number-size)',
   color: 'var(--td-text-secondary)',
   whiteSpace: 'nowrap',
 };
@@ -157,8 +163,8 @@ const Tally = ({ glyph, value, title, testId }: TallyProps) => (
     data-testid={testId}
     style={{
       position: 'relative',
-      width: 26,
-      height: 24,
+      width: 'var(--td-tally-width)',
+      height: 'var(--td-tally-height)',
       opacity: value === 0 ? 0.35 : 1,
     }}
   >
@@ -169,7 +175,7 @@ const Tally = ({ glyph, value, title, testId }: TallyProps) => (
         right: -2,
         bottom: -3,
         fontFamily: 'var(--td-font-mono)',
-        fontSize: 11,
+        fontSize: 'var(--td-text-xs)',
         lineHeight: 1,
         fontWeight: 700,
         color: 'var(--td-text-primary)',
@@ -210,7 +216,22 @@ export const SideStatus = ({
             компьютер
           </span>
         )}
-        <span style={mutedStyle} data-testid={own ? 'general-own' : 'general-enemy'}>
+        {/* Атрибут `data-alive` нужен не проверкам, а вёрстке: на узком
+            экране «генерал в строю» прячется правилом CSS, а отсчёт
+            до возрождения остаётся. Спрятать надо ровно тогда, когда
+            строка не сообщает новости, и различить эти два случая
+            можно только по состоянию.
+
+            Через атрибут, а не ветвлением в компоненте: React о размере
+            экрана знать не должен — узнав, он начал бы подписываться
+            на изменение размера окна и перекладывать дерево при повороте
+            телефона. */}
+        <span
+          style={mutedStyle}
+          className="td-side-general"
+          data-alive={String(side.generalAlive)}
+          data-testid={own ? 'general-own' : 'general-enemy'}
+        >
           {side.generalAlive ? 'генерал в строю' : `генерал ${String(side.respawnInSeconds)} с`}
         </span>
       </div>
@@ -234,7 +255,13 @@ export const SideStatus = ({
         {/* Разделитель между войском и постройками. Без него шесть значков
             читаются одним рядом, и «две башни» легко принять за «два
             снайпера». */}
-        <span style={{ width: 1, height: 18, background: 'var(--td-border-divider)' }} />
+        <span
+          style={{
+            width: 1,
+            height: 'var(--td-tally-height)',
+            background: 'var(--td-border-divider)',
+          }}
+        />
 
         {BUILDABLE_KINDS.map((kind: StructureKind) => {
           const Icon = STRUCTURE_GLYPH[kind];

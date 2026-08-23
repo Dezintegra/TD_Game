@@ -130,7 +130,7 @@ const ConnectionLine = () => {
         justifyContent: 'flex-end',
         alignItems: 'center',
         gap: 'var(--td-space-2)',
-        fontSize: 11,
+        fontSize: 'var(--td-text-xs)',
         lineHeight: 1,
         color: 'var(--td-text-muted-3)',
         fontFamily: 'var(--td-font-mono)',
@@ -189,17 +189,13 @@ const TopBar = () => {
   const enemy = sides[localPlayer === 0 ? 1 : 0] ?? EMPTY_SIDE;
 
   return (
-    <div
-      data-testid="match-bar"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr auto 1fr',
-        alignItems: 'center',
-        gap: 'var(--td-space-6)',
-        flex: 1,
-        minHeight: 0,
-      }}
-    >
+    // Сетка задана классом, а не встроенным стилем, и это единственное
+    // место, где пришлось отойти от общего приёма. Всё остальное
+    // подчиняется размеру экрана через значения переменных, а здесь
+    // на узком экране меняется САМА структура колонок: сводки встают
+    // рядом двумя половинами, общее уезжает строкой ниже. Переменной
+    // структуру не выразить.
+    <div data-testid="match-bar" className="td-match-bar">
       <SideStatus
         side={own}
         name={ownName}
@@ -244,7 +240,10 @@ const CentreBlock = () => {
   const rest = Math.floor(seconds % 60);
 
   return (
-    <div style={{ display: 'flex', gap: 'var(--td-space-6)', alignItems: 'baseline' }}>
+    <div
+      className="td-match-centre"
+      style={{ display: 'flex', gap: 'var(--td-hud-centre-gap)', alignItems: 'baseline' }}
+    >
       <Metric
         label="Энергия"
         value={
@@ -311,11 +310,18 @@ interface MetricProps {
 }
 
 const Metric = ({ label, value, hint, accent }: MetricProps) => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 74 }}>
+  <div
+    style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 1,
+      minWidth: 'var(--td-metric-min)',
+    }}
+  >
     <span
       style={{
         color: 'var(--td-text-muted-3)',
-        fontSize: 11,
+        fontSize: 'var(--td-text-xs)',
         textTransform: 'uppercase',
         letterSpacing: 'var(--td-ls-label)',
       }}
@@ -325,14 +331,14 @@ const Metric = ({ label, value, hint, accent }: MetricProps) => (
     <span
       style={{
         fontFamily: 'var(--td-font-mono)',
-        fontSize: 'var(--td-text-lg)',
+        fontSize: 'var(--td-metric-value-size)',
         color: accent === true ? 'var(--td-accent)' : 'var(--td-text-primary)',
       }}
     >
       {value}
     </span>
     {hint !== undefined && (
-      <span style={{ color: 'var(--td-text-muted-4)', fontSize: 11 }}>{hint}</span>
+      <span style={{ color: 'var(--td-text-muted-4)', fontSize: 'var(--td-text-xs)' }}>{hint}</span>
     )}
   </div>
 );
