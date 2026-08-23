@@ -55,6 +55,7 @@ test('панели не перекрывают игровое поле', async (
   // ни на что лишнее.
   await expect(page.getByTestId('stats-toggle')).toBeHidden();
   await expect(page.getByTestId('menu-open')).toBeHidden();
+  expect(await coveredButtons(page)).toBe(0);
 
   // Главное свойство раскладки, и проверять его глазами нельзя: панель,
   // наехавшая на поле, закрывает собой клетки, на которых идёт бой,
@@ -428,6 +429,33 @@ const columnOverflow = async (page: Page): Promise<number> =>
     return el.scrollHeight - el.clientHeight;
   });
 
+/**
+ * Сколько кнопок тулбара нельзя нажать, потому что поверх их середины
+ * лежит что-то другое.
+ *
+ * Проверять это глазами нельзя: кнопка видна целиком и выглядит рабочей,
+ * а нажатие достаётся соседней плитке. Так и было — плитки не сжимались,
+ * а группы плиток сжимались; плитки вылезали за границу своей группы,
+ * и следующая группа вставала поверх них.
+ *
+ * Считаются только кнопки, чья середина ВНУТРИ окна: тулбар едет вбок,
+ * и уехавшая за край кнопка не перекрыта, а просто не показана.
+ */
+const coveredButtons = async (page: Page): Promise<number> =>
+  page.evaluate(() => {
+    let covered = 0;
+    for (const button of document.querySelectorAll('#hud-bottom button')) {
+      const box = button.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) continue;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) continue;
+      const top = document.elementFromPoint(cx, cy);
+      if (top === null || !button.contains(top)) covered += 1;
+    }
+    return covered;
+  });
+
 /** Доля высоты окна, доставшаяся полю. */
 const fieldShare = async (page: Page): Promise<number> => {
   const box = await page.locator('#scene canvas').boundingBox();
@@ -463,6 +491,9 @@ test.describe('телефон в портрете', () => {
     // строка — дальность — для игрока просто отсутствует.
     expect(await columnOverflow(page)).toBeLessThanOrEqual(0);
 
+    // Ни одна кнопка не должна быть перекрыта соседней плиткой.
+    expect(await coveredButtons(page)).toBe(0);
+
     // Свёрнутые характеристики — обычная игра, и экран принадлежит полю.
     await page.keyboard.press('KeyR');
     await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
@@ -485,6 +516,7 @@ test.describe('телефон в ландшафте', () => {
     // то есть опечаткой, а не пропажей.
     await expect(page.getByTestId('train-0-cost')).toBeVisible();
     expect(await columnOverflow(page)).toBeLessThanOrEqual(0);
+    expect(await coveredButtons(page)).toBe(0);
 
     // Свернуть характеристики на телефоне можно только нажатием: клавиши R
     // там нет. Без этой кнопки игрок остаётся в том состоянии, какое

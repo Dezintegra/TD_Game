@@ -37,10 +37,27 @@ import { STRUCTURE_SHORT, UNIT_SHORT, UPGRADE_STAT_SHORT, UPGRADE_UNIT } from '.
  * в этой клетке, принимает ядро симуляции, а не кнопка.
  */
 
+/**
+ * Запрет сжатия здесь ОБЯЗАТЕЛЕН, и не для красоты.
+ *
+ * Плитка сжиматься не умеет (см. `tileStyle`). Если при этом сжимается
+ * группа, в которой плитки лежат, получается вот что: группа ужимается
+ * под ширину экрана, плитки из неё вылезают за её границу, а СЛЕДУЮЩАЯ
+ * группа встаёт по ужатой границе предыдущей — то есть поверх её плиток.
+ *
+ * Видно это было как «блок прокачки стены перекрыл Теслу», а нажималось
+ * как «кнопки не работают»: стрелки покупки оказывались физически
+ * под соседней плиткой, и нажатие доставалось ей.
+ *
+ * Не сжимается вся цепочка до плитки: сам тулбар, каждая группа
+ * и разделитель. Достаточно одного сжимаемого звена, чтобы беда
+ * вернулась.
+ */
 const barStyle: CSSProperties = {
   display: 'flex',
   gap: 'var(--td-space-3)',
   alignItems: 'flex-start',
+  flexShrink: 0,
 };
 
 /**
@@ -52,6 +69,7 @@ const groupStyle: CSSProperties = {
   display: 'flex',
   gap: 'var(--td-space-1)',
   alignItems: 'flex-start',
+  flexShrink: 0,
 };
 
 /** Граница между заказываемым и своими объектами. */
@@ -60,6 +78,7 @@ const dividerStyle: CSSProperties = {
   alignSelf: 'stretch',
   background: 'var(--td-border-divider)',
   margin: '0 var(--td-space-1)',
+  flexShrink: 0,
 };
 
 const tileStyle: CSSProperties = {
@@ -97,7 +116,10 @@ const headStyle: CSSProperties = {
   // тулбару без этого не хватало семи точек.
   gap: 'var(--td-space-1)',
   width: '100%',
-  minHeight: 'var(--td-hit-target)',
+  // Своя высота, а не общая цель нажатия: плитка широкая, мимо неё
+  // в соседнюю попасть трудно, а каждая её точка отнимается у поля
+  // десятикратно — плиток десять, а высота у них общая.
+  minHeight: 'var(--td-tile-head-height)',
   padding: 0,
   border: 'none',
   background: 'transparent',
@@ -186,11 +208,16 @@ const Tile = ({
         <span style={{ ...nameStyle, color: active === true ? 'var(--td-accent)' : undefined }}>
           {label}
         </span>
-        <span style={hotkeyStyle}>{hotkey}</span>
+        <span style={hotkeyStyle} className="td-key-hint">
+          {hotkey}
+        </span>
       </button>
 
       {cost > 0 && (
-        <span style={{ ...monoStyle, fontSize: 'var(--td-text-xs)' }} data-testid={`${testId}-cost`}>
+        <span
+          style={{ ...monoStyle, fontSize: 'var(--td-text-xs)', lineHeight: 1.2 }}
+          data-testid={`${testId}-cost`}
+        >
           цена {cost}
         </span>
       )}
