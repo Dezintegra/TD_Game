@@ -5,7 +5,14 @@ import type { GameMap } from '@td/sim';
 import { GRAIN_SLOPE_SCALE, GRAIN_TILE_PIXELS, buildGrainTile } from './grain.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import { diagonalCells } from './prism.js';
-import { GRAIN_TILE_CELLS, fbm, isRockCell, surfaceHeight, wideHeight } from './relief.js';
+import {
+  GRAIN_TILE_CELLS,
+  fbm,
+  isRockCell,
+  rockCoverage,
+  surfaceHeight,
+  wideHeight,
+} from './relief.js';
 
 /**
  * Отрисовка скальной клетки: сетка вершин плюс свет в каждом пикселе.
@@ -76,7 +83,7 @@ const VERTEX = `#version 300 es
 in vec2 aPosition;
 in vec2 aWorld;
 in vec2 aSlope;
-in vec2 aShade;
+in vec3 aShade;
 
 uniform mat3 uProjectionMatrix;
 uniform mat3 uWorldTransformMatrix;
@@ -84,7 +91,7 @@ uniform mat3 uTransformMatrix;
 
 out vec2 vWorld;
 out vec2 vSlope;
-out vec2 vShade;
+out vec3 vShade;
 
 void main() {
   mat3 mvp = uProjectionMatrix * uWorldTransformMatrix * uTransformMatrix;
@@ -99,7 +106,7 @@ precision highp float;
 
 in vec2 vWorld;
 in vec2 vSlope;
-in vec2 vShade;
+in vec3 vShade;
 
 uniform sampler2D uGrain;
 uniform vec3 uLight;
@@ -141,7 +148,14 @@ void main() {
   // солнца.
   colour += uSky * (uSkyStrength * max(0.0, normal.z) * ao);
 
-  fragColor = vec4(colour, 1.0);
+  // Прозрачность вырезает клетку по неровному очертанию породы, а не
+  // по ровному ромбу. Без этого крайняя клетка массива целиком закрыта
+  // камнем, и гряда читается набором квадратов.
+  //
+  // Цвет умножается на прозрачность заранее: слой рисуется в режиме
+  // с предумноженной альфой, и без этого по краю пошла бы светлая кайма.
+  float coverage = clamp(vShade.z, 0.0, 1.0);
+  fragColor = vec4(colour * coverage, coverage);
 }`;
 
 /** Плитка фактуры как текстура. Строится один раз на запуск. */
@@ -227,7 +241,7 @@ export const buildCellMesh = (
 
   const world = new Float32Array(count * 2);
   const slope = new Float32Array(count * 2);
-  const shade = new Float32Array(count * 2);
+  const shade = new Float32Array(count * 3);
   const screen = new Float32Array(count * 2);
 
   const step = 1 / RESOLUTION;
@@ -267,11 +281,13 @@ export const buildCellMesh = (
         (2 * differential);
 
       // Затенение без слагаемого от наклона: его добавит шейдер в точке.
-      shade[index * 2] = 0.7 + (height - wideHeight(map, u, v) * 0.9) * 0.55;
+      shade[index * 3] = 0.7 + (height - wideHeight(map, u, v) * 0.9) * 0.55;
       // Крупная неоднородность породы. Частота низкая (3,8 на клетку
       // против 24 у крошки), поэтому вершин хватает и в плитку её класть
       // незачем — она считается тут же, на процессоре.
-      shade[index * 2 + 1] = TONE_BASE + TONE_RANGE * fbm(u * 3.8, v * 3.8, 3, 3);
+      shade[index * 3 + 1] = TONE_BASE + TONE_RANGE * fbm(u * 3.8, v * 3.8, 3, 3);
+      // Доля породы: по ней шейдер вырежет клетку по неровному краю.
+      shade[index * 3 + 2] = rockCoverage(map, u, v);
     }
   }
 
@@ -305,7 +321,7 @@ export const buildCellMesh = (
       aPosition: { buffer: position, format: 'float32x2' },
       aWorld: { buffer: world, format: 'float32x2' },
       aSlope: { buffer: slope, format: 'float32x2' },
-      aShade: { buffer: shade, format: 'float32x2' },
+      aShade: { buffer: shade, format: 'float32x3' },
     },
     indexBuffer: indices,
   });

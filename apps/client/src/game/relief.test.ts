@@ -3,17 +3,20 @@ import { MAP_CELL_COUNT, MAP_WIDTH_CELLS, Terrain } from '@td/shared';
 import type { GameMap } from '@td/sim';
 import {
   FOOT_WIDTH_CELLS,
+  MAX_RELIEF_HEIGHT,
+  OUTLINE_INSET_MAX,
   cellHeight,
   edgeDistance,
   fbm,
   footFactor,
   grainOffset,
   isRockCell,
+  rockCoverage,
   surfaceHeight,
   surfaceNormal,
   valueNoise,
 } from './relief.js';
-import { rockHeight } from './rocks.js';
+import { BASE_ANTENNA_HEIGHT } from './base-structure.js';
 
 const mapWithRockBlock = (left: number, top: number, size: number): GameMap => {
   const cells = new Uint8Array(MAP_CELL_COUNT);
@@ -89,12 +92,18 @@ describe('след скалы на карте', () => {
     expect(surfaceHeight(BLOCK, 10.001, 12.5)).toBeLessThan(0.01);
   });
 
-  it('подножие занимает меньше половины клетки', () => {
-    // Пологий скат во всю клетку обещал бы подъём, которого правила
-    // не дают; нулевая ширина вернула бы отвесный уступ.
-    expect(FOOT_WIDTH_CELLS).toBeLessThan(0.5 + 0.13);
+  it('отступ и подножие вместе умещаются в клетку', () => {
+    // Порода отступает от края клетки внутрь на неровную величину,
+    // и уже от этого очертания поднимается подошва. Сумма обязана
+    // остаться меньше клетки: иначе клетка целиком уходит под скат,
+    // и высоты в ней не набирается нигде.
+    expect(OUTLINE_INSET_MAX + FOOT_WIDTH_CELLS).toBeLessThan(1);
     expect(FOOT_WIDTH_CELLS).toBeGreaterThan(0.2);
-    expect(footFactor(BLOCK, 10 + FOOT_WIDTH_CELLS, 12.5)).toBe(1);
+  });
+
+  it('подножие поднимается от очертания, а не от края клетки', () => {
+    expect(footFactor(BLOCK, 10, 12.5)).toBe(0);
+    expect(footFactor(BLOCK, 10 + OUTLINE_INSET_MAX + FOOT_WIDTH_CELLS, 12.5)).toBe(1);
   });
 
   it('внутри массива высоту на общей границе клеток не теряет', () => {
@@ -102,6 +111,43 @@ describe('след скалы на карте', () => {
     // Это не край массива, и подножию здесь взяться неоткуда.
     expect(edgeDistance(BLOCK, 12, 12.5)).toBeGreaterThan(FOOT_WIDTH_CELLS);
     expect(surfaceHeight(BLOCK, 12, 12.5)).toBeGreaterThan(0);
+  });
+
+  it('очертание породы неровное, а не по клетке', () => {
+    // Ради этого всё и заведено: пока след совпадал с клетками ровно,
+    // массив читался набором квадратов.
+    const insets: number[] = [];
+    for (let v = 10.1; v < 15.9; v += 0.13) {
+      let outline = 0;
+      for (let d = 0; d < 0.6; d += 0.01) {
+        if (rockCoverage(BLOCK, 10 + d, v) > 0.5) {
+          outline = d;
+          break;
+        }
+      }
+      insets.push(outline);
+    }
+
+    const smallest = Math.min(...insets);
+    const largest = Math.max(...insets);
+
+    // Край гуляет вдоль границы, а не стоит на одном расстоянии.
+    expect(largest - smallest).toBeGreaterThan(0.1);
+    // И никогда не выходит за клетку наружу.
+    expect(smallest).toBeGreaterThanOrEqual(0);
+  });
+
+  it('за очертанием породы нет', () => {
+    expect(rockCoverage(BLOCK, 9.5, 12.5)).toBe(0);
+    expect(rockCoverage(BLOCK, 10, 12.5)).toBe(0);
+  });
+
+  it('в глубине массива порода сплошная', () => {
+    for (let v = 11.5; v < 14.5; v += 0.5) {
+      for (let u = 11.5; u < 14.5; u += 0.5) {
+        expect(rockCoverage(BLOCK, u, v)).toBe(1);
+      }
+    }
   });
 
   it('поверхность внутри массива непрерывна', () => {
@@ -116,17 +162,46 @@ describe('след скалы на карте', () => {
     expect(biggest).toBeLessThan(0.05);
   });
 
-  it('высота не превосходит самой высокой клетки массива', () => {
-    let tallest = 0;
-    for (let y = 10; y < 16; y += 1) {
-      for (let x = 10; x < 16; x += 1) tallest = Math.max(tallest, rockHeight(x, y));
-    }
+  it('высота держится под потолком и под антенной базы', () => {
+    // База обязана оставаться выше любой скалы: иначе её не видно
+    // из-за гряды, а это главная цель матча.
+    expect(MAX_RELIEF_HEIGHT).toBeLessThan(BASE_ANTENNA_HEIGHT);
 
     for (let v = 10.1; v < 15.9; v += 0.25) {
       for (let u = 10.1; u < 15.9; u += 0.25) {
-        expect(surfaceHeight(BLOCK, u, v)).toBeLessThanOrEqual(tallest);
+        expect(surfaceHeight(BLOCK, u, v)).toBeLessThanOrEqual(MAX_RELIEF_HEIGHT);
       }
     }
+  });
+});
+
+describe('высота растёт с размером массива', () => {
+  const peakOf = (side: number): number => {
+    const map = mapWithRockBlock(10, 10, side);
+    let tallest = 0;
+    for (let v = 10; v < 10 + side; v += 0.2) {
+      for (let u = 10; u < 10 + side; u += 0.2) {
+        tallest = Math.max(tallest, surfaceHeight(map, u, v));
+      }
+    }
+    return tallest;
+  };
+
+  it('три на три выше одиночной клетки', () => {
+    // Высота бралась из хеша клетки и только, поэтому одиночная скала
+    // и середина большой гряды получали одинаковые шансы. В природе
+    // наоборот: чем шире подошва, тем выше может стоять вершина.
+    expect(peakOf(3)).toBeGreaterThan(peakOf(1) * 1.1);
+  });
+
+  it('пять на пять выше трёх на три', () => {
+    expect(peakOf(5)).toBeGreaterThan(peakOf(3));
+  });
+
+  it('рост затухает, а не идёт без предела', () => {
+    // Без потолка середина крупного поля скал ушла бы за антенну базы.
+    expect(peakOf(11)).toBeLessThanOrEqual(MAX_RELIEF_HEIGHT);
+    expect(peakOf(11) / peakOf(7)).toBeLessThan(1.15);
   });
 });
 
