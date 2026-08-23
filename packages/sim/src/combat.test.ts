@@ -369,6 +369,32 @@ describe('линия огня', () => {
     expect(unitById(after, 60)?.health).toBeLessThan(100);
   });
 
+  it('стена перекрывает выстрел генералу в пределах его дальности', () => {
+    // На прежних двух клетках правило существовало, но почти не проявлялось:
+    // между стрелком и целью в упор стена не помещается. С пятёркой оно
+    // работает по-настоящему, и проверять его надо на расстоянии, которое
+    // прежней дальности было недоступно.
+    //
+    // Три клетки выбраны именно поэтому: они за старой дальностью
+    // и внутри новой. Первое сравнение поэтому сторожит заодно и саму
+    // дальность — откатите её к двойке, и оно покраснеет.
+    const health = UNIT_STATS[UnitType.Assault].health;
+    const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
+
+    const open = step(arrange([], [unit(70, 1, UnitType.Assault, 3, 0, health)], at(0, 0)), []);
+    const blocked = step(
+      arrange(
+        [structure(50, 1, StructureKind.Wall, 1, 0, wallHealth)],
+        [unit(70, 1, UnitType.Assault, 3, 0, health)],
+        at(0, 0),
+      ),
+      [],
+    );
+
+    expect(unitById(open, 70)?.health).toBeLessThan(health);
+    expect(unitById(blocked, 70)?.health).toBe(health);
+  });
+
   it('юнит не стреляет сквозь стену', () => {
     const world = arrange(
       [structure(51, 1, StructureKind.Wall, 1, 0, 10_000)],

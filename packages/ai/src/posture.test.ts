@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BASE_COOLDOWN_TICKS,
+  GENERAL_STATS,
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   PPM_ONE,
@@ -55,6 +56,8 @@ interface Scene {
   readonly units?: readonly UnitState[];
   /** Убрать ли генерала человека с поля: он тоже стреляет и тоже пугает. */
   readonly hideFoeGeneral?: boolean;
+  /** Поставить генерала человека в заданную точку. Сильнее `hideFoeGeneral`. */
+  readonly foeGeneralAt?: Vec2;
 }
 
 /**
@@ -71,11 +74,12 @@ const clearMap = (scene: Scene = {}): WorldState => {
     map: { cells: new Uint8Array(MAP_CELL_COUNT), baseCells: world.map.baseCells },
     structures: [...world.structures, ...(scene.structures ?? [])],
     units: [...(scene.units ?? [])],
-    generals: world.generals.map((general) =>
-      general.owner === FOE && scene.hideFoeGeneral === true
-        ? { ...general, position: OFF_PATH }
-        : general,
-    ),
+    generals: world.generals.map((general) => {
+      if (general.owner !== FOE) return general;
+      if (scene.foeGeneralAt !== undefined) return { ...general, position: scene.foeGeneralAt };
+
+      return scene.hideFoeGeneral === true ? { ...general, position: OFF_PATH } : general;
+    }),
   };
 };
 
@@ -188,6 +192,41 @@ describe('входящий урон', () => {
     const armed = clearMap({ structures: [tower(FOE, cellAtFraction(0.1))] });
 
     expect(incomingAt(armed, AI, situate(armed).enemyStats, cellCentre(middle)).total).toBe(0);
+  });
+
+  describe('круг угрозы от чужого генерала', () => {
+    // Дальность генерала выросла с двух клеток до пяти. `incomingAt` берёт
+    // её из таблицы, поэтому «подхватится само» — но это ровно тот довод,
+    // который стоит проверить, а не принять на слово: между таблицей
+    // и оценкой лежит перевод в квадрат расстояния, и ошибка в нём
+    // выглядела бы как осторожный противник, а не как поломка.
+    //
+    // Генерал ставится в дальний угол по побочной диагонали: базы стоят
+    // на главной, и оттуда до них дальше всего. Иначе в счёт вошла бы
+    // ещё и база, и тест говорил бы о ней.
+    const spot = OFF_PATH;
+
+    const threatAt = (cells: number): number => {
+      const world = clearMap({ foeGeneralAt: spot });
+      const point: Vec2 = { x: spot.x + cellsToUnits(cells), y: spot.y };
+
+      return incomingAt(world, AI, situate(world).enemyStats, point).total;
+    };
+
+    it('в четырёх клетках точка под угрозой', () => {
+      expect(threatAt(4)).toBeGreaterThan(0);
+    });
+
+    it('в шести клетках — уже нет', () => {
+      expect(threatAt(6)).toBe(0);
+    });
+
+    it('граница проходит там же, где кончается дальность из таблицы', () => {
+      const inside = rangeInCells(GENERAL_STATS.range);
+
+      expect(threatAt(inside)).toBeGreaterThan(0);
+      expect(threatAt(inside + 1)).toBe(0);
+    });
   });
 });
 
