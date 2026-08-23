@@ -270,7 +270,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
       // setMap перестраивает геометрию только при смене карты, поэтому
       // безопасно вызывать его каждый кадр.
-      scene.setMap(world.map);
+      scene.setMap(world.map, localPlayer);
 
       const general = world.generals[localPlayer];
       if (general !== undefined && general.alive) {
