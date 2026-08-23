@@ -135,19 +135,21 @@ describe('состав войска доходит до Теслы', () => {
 const PUSH_HORIZON_SECONDS = 600;
 
 describe('волна отправляется, когда её хватает', () => {
-  it('роевой профиль совершает рывок', () => {
-    const played = play(SWARM_PROFILE, PUSH_HORIZON_SECONDS);
+  // Один матч на обе роевые проверки — тот же приём и по той же причине,
+  // что в первом describe этого файла: профиль, seed и длина у них
+  // совпадают, значит и прогон один и тот же, а считать его дважды
+  // означало бы платить минуту за копию.
+  const swarm = play(SWARM_PROFILE, PUSH_HORIZON_SECONDS);
 
-    expect(played.records.some((record) => record.pushed)).toBe(true);
+  it('роевой профиль совершает рывок', () => {
+    expect(swarm.records.some((record) => record.pushed)).toBe(true);
   });
 
   it('рывок заказывает волну целиком, а не по машине', () => {
-    const played = play(SWARM_PROFILE, PUSH_HORIZON_SECONDS);
-
     // Тик рывка отличается от прочих числом заказов: обычное производство
     // покупает не больше одной машины за решение.
     const byTick = new Map<number, number>();
-    for (const command of played.commands) {
+    for (const command of swarm.commands) {
       if (command.kind !== CommandKind.TrainUnit) continue;
       byTick.set(command.tick, (byTick.get(command.tick) ?? 0) + 1);
     }
