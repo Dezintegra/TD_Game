@@ -1,8 +1,10 @@
-import { Geometry, GlProgram, Mesh, Shader, Texture } from 'pixi.js';
-import type { Renderer, RenderTexture } from 'pixi.js';
+import { Geometry, GlProgram, Mesh, RenderTexture, Shader, Sprite, Texture } from 'pixi.js';
+import type { Container, Renderer } from 'pixi.js';
+import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
 import type { GameMap } from '@td/sim';
 import { GRAIN_SLOPE_SCALE, GRAIN_TILE_PIXELS, buildGrainTile } from './grain.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
+import { diagonalCells } from './prism.js';
 import { GRAIN_TILE_CELLS, fbm, isRockCell, surfaceHeight, wideHeight } from './relief.js';
 
 /**
@@ -141,7 +143,12 @@ export interface CellMesh {
  * Позиции вершин лежат в пикселях спрайта, а не мира: клетка запекается
  * в свою маленькую текстуру, и начало координат у неё своё.
  */
-export const buildCellMesh = (map: GameMap, cellX: number, cellY: number): CellMesh => {
+export const buildCellMesh = (
+  map: GameMap,
+  cellX: number,
+  cellY: number,
+  rock: number,
+): CellMesh => {
   // Нахлёст на соседа. Спрайты соседних клеток не стыкуются пиксель
   // в пиксель — по границам проступают тёмные швы, — поэтому сетка
   // заходит на шаг за край ТУДА, ГДЕ СОСЕД ТОЖЕ СКАЛА. За край массива
@@ -247,7 +254,16 @@ export const buildCellMesh = (map: GameMap, cellX: number, cellY: number): CellM
       uGrain: ensureGrainTexture().source,
       reliefUniforms: {
         uLight: { value: new Float32Array(LIGHT), type: 'vec3<f32>' },
-        uRock: { value: new Float32Array([108 / 255, 104 / 255, 99 / 255]), type: 'vec3<f32>' },
+        // Цвет берётся из палитры, а не зашит числом: правило проекта —
+        // цвета только через переменные `tokens.css`.
+        uRock: {
+          value: new Float32Array([
+            ((rock >> 16) & 255) / 255,
+            ((rock >> 8) & 255) / 255,
+            (rock & 255) / 255,
+          ]),
+          type: 'vec3<f32>',
+        },
         uAmbient: { value: AMBIENT, type: 'f32' },
         uGrainScale: { value: GRAIN_SLOPE_SCALE, type: 'f32' },
         uTileCells: { value: GRAIN_TILE_CELLS, type: 'f32' },
@@ -265,10 +281,59 @@ export const buildCellMesh = (map: GameMap, cellX: number, cellY: number): CellM
 };
 
 /** Запечь клетку в текстуру. Вызывается один раз на клетку за матч. */
-export const bakeCell = (
-  renderer: Renderer,
-  target: RenderTexture,
-  cell: CellMesh,
-): void => {
+export const bakeCell = (renderer: Renderer, target: RenderTexture, cell: CellMesh): void => {
   renderer.render({ container: cell.mesh, target, clear: true });
+};
+
+/**
+ * Снять слой скал и освободить его текстуры.
+ *
+ * Уничтожать обязательно, и это не педантизм: текстура клетки живёт
+ * в видеопамяти, а сборщик мусора о видеопамяти не знает. Слой снимается
+ * при каждой смене карты, то есть каждый матч, — утечка накапливалась бы
+ * матч за матчем.
+ */
+export const clearRockLayer = (layer: Container): void => {
+  for (const child of layer.removeChildren()) {
+    if (child instanceof Sprite) child.texture.destroy(true);
+    child.destroy();
+  }
+};
+
+/**
+ * Разложить скалы одной диагонали по слою.
+ *
+ * Диагональ — единица слоя, а не только группировки: между диагоналями
+ * сцена вклинивает подвижные объекты, иначе юнит за скалой рисовался бы
+ * поверх неё. Клетки внутри диагонали друг друга не перекрывают, поэтому
+ * порядок между ними безразличен.
+ */
+export const mountRockDiagonal = (
+  layer: Container,
+  renderer: Renderer,
+  map: GameMap,
+  diagonal: number,
+  rock: number,
+): void => {
+  clearRockLayer(layer);
+
+  for (const [x, y] of diagonalCells(MAP_WIDTH_CELLS, MAP_HEIGHT_CELLS, diagonal)) {
+    if (!isRockCell(map, x, y)) continue;
+
+    const cell = buildCellMesh(map, x, y, rock);
+    const texture = RenderTexture.create({
+      width: cell.width,
+      height: cell.height,
+      resolution: 1,
+      antialias: true,
+    });
+
+    bakeCell(renderer, texture, cell);
+    // Сетка больше не нужна: всё, что она умела, лежит в текстуре.
+    cell.mesh.destroy(true);
+
+    const sprite = new Sprite(texture);
+    sprite.position.set(cell.offsetX, cell.offsetY);
+    layer.addChild(sprite);
+  }
 };

@@ -6,6 +6,7 @@ import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, createCamera, moveCamera } from './camera.js';
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawGround, drawTerrainDiagonal } from './terrain.js';
+import { mountRockDiagonal } from './relief-render.js';
 import type { TerrainColors } from './terrain.js';
 import { drawEntities } from './entities.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
@@ -126,9 +127,6 @@ const readTerrainColors = (): TerrainColors => ({
   grid: token('--td-border-subtle', 0x3a3a3a),
   gridMajor: token('--td-border-control', 0x4d4d4d),
   rock: token('--td-rock', 0x6e6a63),
-  rockFacet: token('--td-rock-facet', 0x817b71),
-  rockEdge: token('--td-rock-edge', 0x4a4741),
-  rockSnow: token('--td-rock-snow', 0xdfe6ef),
   border: token('--td-text-muted-4', 0x6b6b6b),
   // Читаем --td-accent, а не --td-player-self: последний объявлен через
   // var(), и получить из него готовый цвет средствами getComputedStyle
@@ -230,6 +228,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   // при этом не прибавляется ни одной — они просто разъехались по разным
   // объектам.
   const terrainBands: Graphics[] = [];
+  const rockBands: Container[] = [];
   const entityBands: Graphics[] = [];
 
   for (let band = 0; band <= TERRAIN_DIAGONAL_COUNT; band += 1) {
@@ -238,6 +237,13 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     worldContainer.addChild(entities);
 
     if (band < TERRAIN_DIAGONAL_COUNT) {
+      // Скалы отдельным слоем, потому что они больше не рисуются линиями:
+      // это запечённые спрайты, а спрайт в Graphics не положишь. Слой свой,
+      // но диагональ у него та же, поэтому порядок перекрытия не меняется.
+      const rocks = new Container();
+      rockBands.push(rocks);
+      worldContainer.addChild(rocks);
+
       const terrain = new Graphics();
       terrainBands.push(terrain);
       worldContainer.addChild(terrain);
@@ -441,6 +447,9 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       drawGround(groundGraphics, terrainColors);
       terrainBands.forEach((graphics, diagonal) => {
         drawTerrainDiagonal(graphics, map, diagonal, terrainColors);
+      });
+      rockBands.forEach((layer, diagonal) => {
+        mountRockDiagonal(layer, app.renderer, map, diagonal, terrainColors.rock);
       });
       drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
     },
