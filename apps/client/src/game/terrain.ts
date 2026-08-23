@@ -4,7 +4,6 @@ import { cellX, cellY } from '@td/sim';
 import type { GameMap } from '@td/sim';
 import { worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
-import { drawRockDiagonal } from './rocks.js';
 import { drawBase } from './base-structure.js';
 
 /**
@@ -38,10 +37,13 @@ import { drawBase } from './base-structure.js';
 export interface TerrainColors {
   readonly grid: number;
   readonly gridMajor: number;
+  /**
+   * Цвет камня. Грань, скол, ребро и снег отсюда ушли вместе с гранёной
+   * отрисовкой: у непрерывной поверхности оттенок в каждой точке свой
+   * и считается светом, а не выбирается из палитры. Снега на скалах
+   * больше нет вовсе.
+   */
   readonly rock: number;
-  readonly rockFacet: number;
-  readonly rockEdge: number;
-  readonly rockSnow: number;
   readonly border: number;
   readonly baseSelf: number;
   readonly baseEnemy: number;
@@ -76,12 +78,11 @@ export const drawTerrainDiagonal = (
 ): void => {
   graphics.clear();
 
-  drawRockDiagonal(graphics, map, diagonal, {
-    rock: colors.rock,
-    facet: colors.rockFacet,
-    edge: colors.rockEdge,
-    snow: colors.rockSnow,
-  });
+  // Скал здесь больше нет. Они перестали быть телом из граней и стали
+  // участком непрерывной поверхности, которую считает шейдер и запекает
+  // в текстуру `relief-render.ts`; сцена кладёт её спрайтом в свой слой
+  // той же диагонали. Порядок перекрытия от этого не меняется —
+  // диагональ как была единицей слоя, так и осталась.
 
   map.baseCells.forEach((cell, index) => {
     const x = cellX(cell);
