@@ -63,7 +63,14 @@ import {
   savingLimit,
 } from './profile.js';
 import { islandAim } from './islands.js';
-import { defenceOnPath, defenceWorth, pathGuarded, screenDue, waveOutcome, waveType } from './push.js';
+import {
+  defenceOnPath,
+  defenceWorth,
+  pathGuarded,
+  screenDue,
+  waveOutcome,
+  waveType,
+} from './push.js';
 import type { AiProfile, PhaseProfile, Spending } from './profile.js';
 import {
   discountedEfficiency,
@@ -580,7 +587,8 @@ const record = (
   // значило бы подсунуть разбору два миллиарда клеток вместо «неизвестно».
   // Один такой матч ломает всю сводку по пачке: в ней появляется генерал,
   // зашедший на пятьдесят миллионов долей пути.
-  const fromHome = generalCell < 0 ? UNREACHABLE : (seen.approach.fromHome[generalCell] ?? UNREACHABLE);
+  const fromHome =
+    generalCell < 0 ? UNREACHABLE : (seen.approach.fromHome[generalCell] ?? UNREACHABLE);
 
   return {
     tick: world.tick,
@@ -983,10 +991,7 @@ const tryPush = (
   // или нет, скажет расчёт, а вот отказ копить не отвечает ни на какой
   // вопрос.
   const affordable = Math.floor(savingLimit(stats.incomePerTick, profile, guarded) / price);
-  const wanted = Math.max(
-    1,
-    Math.min(profile.push.waveSize, PRODUCTION_QUEUE_CAP, affordable),
-  );
+  const wanted = Math.max(1, Math.min(profile.push.waveSize, PRODUCTION_QUEUE_CAP, affordable));
   const wavePrice = price * wanted;
 
   // Волна ограничена и казной, и свободным местом в очереди производства:
@@ -1061,10 +1066,7 @@ const SCREEN_MIX: Readonly<Record<UnitType, Readonly<Record<UnitType, number>>>>
 };
 
 /** Виды башен в постоянном порядке: жребий обязан быть воспроизводимым. */
-const TOWER_KINDS: readonly StructureKind[] = [
-  StructureKind.TowerBasic,
-  StructureKind.TowerSniper,
-];
+const TOWER_KINDS: readonly StructureKind[] = [StructureKind.TowerBasic, StructureKind.TowerSniper];
 
 /**
  * Какую башню возводить.
@@ -1222,7 +1224,8 @@ const tryBuild = (
     // с десяти стен подряд и поставил первую башню уже за щитом.
     const number = nextBuildNumber();
     const opening = number <= (profile.building.wallsFirst ?? 0);
-    const shielding = opening || (number % profile.building.wallEvery === 0 && towerCells.length > 0);
+    const shielding =
+      opening || (number % profile.building.wallEvery === 0 && towerCells.length > 0);
     const kind = shielding ? StructureKind.Wall : towerKind(phase, profile, roll);
     if (!BUILDABLE_KINDS.includes(kind)) {
       stopped = passing(AttemptNote.NotBuildable);
@@ -1231,7 +1234,13 @@ const tryBuild = (
 
     const price = stats.structures[kind].cost + reserve;
     if (purse < price) {
-      stopped = waitOrPass(price, stats.incomePerTick, profile, AttemptNote.StructureUnaffordable, guarded);
+      stopped = waitOrPass(
+        price,
+        stats.incomePerTick,
+        profile,
+        AttemptNote.StructureUnaffordable,
+        guarded,
+      );
       break;
     }
 

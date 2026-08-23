@@ -44,7 +44,9 @@ const pixels = (value: string): number => {
 describe('цель нажатия', () => {
   it('задана и на точном указателе, и на грубом', () => {
     expect(() => valueIn(':root', '--td-hit-target')).not.toThrow();
-    expect(() => valueIn('@media \\(pointer: coarse\\)\\s*\\{\\s*:root', '--td-hit-target')).not.toThrow();
+    expect(() =>
+      valueIn('@media \\(pointer: coarse\\)\\s*\\{\\s*:root', '--td-hit-target'),
+    ).not.toThrow();
   });
 
   it('на пальце не меньше сорока четырёх точек', () => {
@@ -79,7 +81,9 @@ describe('поле ввода на пальце', () => {
     //
     // Поймать это иначе нечем: в headless-браузере такого поведения нет,
     // и сквозная проверка промолчит.
-    const coarse = pixels(valueIn('@media \\(pointer: coarse\\)\\s*\\{\\s*:root', '--td-input-size'));
+    const coarse = pixels(
+      valueIn('@media \\(pointer: coarse\\)\\s*\\{\\s*:root', '--td-input-size'),
+    );
 
     expect(coarse).toBeGreaterThanOrEqual(16);
   });

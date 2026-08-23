@@ -179,9 +179,7 @@ test('карта показывается и матч начинается за�
   await page.getByTestId('restart').click();
   await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 20_000 });
 
-  await expect
-    .poll(async () => diagnostic(page, 'seed'), { timeout: 20_000 })
-    .not.toBe(seedBefore);
+  await expect.poll(async () => diagnostic(page, 'seed'), { timeout: 20_000 }).not.toBe(seedBefore);
 });
 
 test('матч идёт: энергия копится, обе стороны видны', async ({ page }) => {
@@ -368,7 +366,6 @@ test('R сворачивает характеристики, оставляя п
 // Замеры частоты кадров переехали в `framerate.perf.spec.ts`: это измерение,
 // а не проверка правильности, и ему нужна тихая машина. Запуск —
 // `pnpm e2e:perf`.
-
 
 /**
  * Телефон.

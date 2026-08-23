@@ -208,7 +208,8 @@ describe('ведущая сторона матча', () => {
     const second = table.sent
       .filter((entry) => entry.player === P1 && entry.message.type === MessageType.Ping)
       .at(-1);
-    if (second === undefined || second.message.type !== MessageType.Ping) throw new Error('нет ping');
+    if (second === undefined || second.message.type !== MessageType.Ping)
+      throw new Error('нет ping');
 
     table.host.observePong(P1, second.message.nonce);
 
@@ -441,7 +442,9 @@ describe('наблюдатель матча', () => {
 
     const sent = table.sent
       .filter((entry) => entry.player === P0 && entry.message.type === MessageType.Checksum)
-      .map((entry) => entry.message as Extract<ServerMessage, { type: typeof MessageType.Checksum }>)
+      .map(
+        (entry) => entry.message as Extract<ServerMessage, { type: typeof MessageType.Checksum }>,
+      )
       .map((message) => ({ tick: message.tick, value: message.value }));
 
     expect(seen.sums).toEqual(sent);

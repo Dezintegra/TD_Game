@@ -172,9 +172,7 @@ export const SOUND_FILES: Partial<Record<Sound, readonly SoundFile[]>> = {
   // разгорается по ходу дела, читается зарядкой, а не попаданием,
   // и обрезкой это не лечится — начала, которого в записи нет,
   // обрезка не создаст. Развёрнутый разгон и есть затухание.
-  [Sound.BeamUnit]: [
-    { url: beamUrl, rates: [1, 1.05, 0.95], reverse: true, fadeFrom: 0.34 },
-  ],
+  [Sound.BeamUnit]: [{ url: beamUrl, rates: [1, 1.05, 0.95], reverse: true, fadeFrom: 0.34 }],
   [Sound.BeamTower]: [{ url: beamUrl, rates: [0.78, 0.74], reverse: true, fadeFrom: 0.44 }],
 
   // Разряд собран из двух записей, и ни одна поодиночке не годится.

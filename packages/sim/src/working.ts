@@ -304,12 +304,7 @@ export const recordShot = (
  * выстрела, и по той же причине: два источника одной величины разъезжаются
  * при первой правке таблицы.
  */
-export const recordBlast = (
-  working: Working,
-  kind: BlastKind,
-  owner: PlayerId,
-  at: Vec2,
-): void => {
+export const recordBlast = (working: Working, kind: BlastKind, owner: PlayerId, at: Vec2): void => {
   working.blasts.push({
     at,
     kind,

@@ -2,11 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PER_FRAME, POOL_LIMIT, POOL_OF, Pool, chooseCues } from './budget.js';
 import type { Candidate } from './budget.js';
 import { SOUNDS, SOUND_PRIORITY, Sound } from './sounds.js';
-import {
-  DEFAULT_SOUND_SETTINGS,
-  parseSoundSettings,
-  serializeSoundSettings,
-} from './settings.js';
+import { DEFAULT_SOUND_SETTINGS, parseSoundSettings, serializeSoundSettings } from './settings.js';
 
 const candidate = (sound: Sound, gain: number, key = Math.round(gain * 1e6)): Candidate => ({
   sound,
@@ -61,9 +57,7 @@ describe('бюджет одновременных звуков', () => {
   });
 
   it('прибавка не превышает предела даже при сотне событий', () => {
-    const storm = Array.from({ length: 100 }, (_, index) =>
-      candidate(Sound.BlastUnit, 0.5, index),
-    );
+    const storm = Array.from({ length: 100 }, (_, index) => candidate(Sound.BlastUnit, 0.5, index));
     for (const cue of chooseCues(storm)) expect(cue.boost).toBeLessThanOrEqual(1.6);
   });
 

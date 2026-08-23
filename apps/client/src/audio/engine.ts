@@ -120,8 +120,7 @@ const SILENT: Engine = {
  * мы не создаём нигде, поэтому сужение безопасно, и главное — оно
  * не копирует: массивы здесь бывают по мегабайту.
  */
-const owned = (data: Float32Array): Float32Array<ArrayBuffer> =>
-  data as Float32Array<ArrayBuffer>;
+const owned = (data: Float32Array): Float32Array<ArrayBuffer> => data as Float32Array<ArrayBuffer>;
 
 const contextClass = (): typeof AudioContext | undefined => {
   if (typeof globalThis === 'undefined') return undefined;
@@ -466,7 +465,17 @@ export const createEngine = (): Engine => {
     if (convolver !== undefined) send.connect(convolver);
 
     const voice: Voice = {
-      source, filter, panner, dry, send, cellX, cellY, level, priority, pool, wetScale,
+      source,
+      filter,
+      panner,
+      dry,
+      send,
+      cellX,
+      cellY,
+      level,
+      priority,
+      pool,
+      wetScale,
     };
     const placement = place(cellX, cellY, listener);
 
@@ -581,8 +590,18 @@ export const createEngine = (): Engine => {
 
     const rate = 1 + (((key % 1000) / 1000) * 2 - 1) * 0.06;
     const voice = attach(
-      context, bus, buffer, cellX, cellY, listener, gain, rate, false,
-      priority, POOL_OF[sound], 1,
+      context,
+      bus,
+      buffer,
+      cellX,
+      cellY,
+      listener,
+      gain,
+      rate,
+      false,
+      priority,
+      POOL_OF[sound],
+      1,
     );
 
     voice.source.onended = (): void => {
@@ -617,8 +636,18 @@ export const createEngine = (): Engine => {
       // Доля отражений урезана вчетверо сверх общей: непрерывный
       // источник накапливает свёртку сам на себя.
       voice = attach(
-        context, battle, buffer, state.cellX, state.cellY, listener, 0, 1, true,
-        SOUND_PRIORITY[Sound.Rotor], POOL_OF[Sound.Rotor], 0.25,
+        context,
+        battle,
+        buffer,
+        state.cellX,
+        state.cellY,
+        listener,
+        0,
+        1,
+        true,
+        SOUND_PRIORITY[Sound.Rotor],
+        POOL_OF[Sound.Rotor],
+        0.25,
       );
       voice.source.start();
       rotorVoices.set(state.owner, voice);
@@ -771,4 +800,3 @@ export const createEngine = (): Engine => {
     },
   };
 };
-

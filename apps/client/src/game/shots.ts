@@ -14,12 +14,7 @@ import type { ShotState, StructureState, WorldState } from '@td/sim';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 import type { ViewBounds } from './entities.js';
-import {
-  GENERAL_ALTITUDE,
-  GENERAL_PYLON_SIDE,
-  MIRROR_SQUASH,
-  UNIT_ALTITUDE,
-} from './models.js';
+import { GENERAL_ALTITUDE, GENERAL_PYLON_SIDE, MIRROR_SQUASH, UNIT_ALTITUDE } from './models.js';
 import { blend } from './prism.js';
 import { hashOf, noiseFrom } from './noise.js';
 import { fadeOver, glowFill, particleHeight, riseOver, smokeFill, travel } from './effects.js';
@@ -1280,11 +1275,7 @@ const drawMissileSmoke = (
     // строилась бы заново на каждый кадр.
     const heat = Math.round(fadeOver(age, 0.02, 0.16) * 4) / 4;
 
-    trails.circle(
-      point.x + drift * age * 26,
-      point.y - age * rise + drift * age * 8,
-      radius,
-    );
+    trails.circle(point.x + drift * age * 26, point.y - age * rise + drift * age * 8, radius);
     trails.fill({ fill: smokeFill(heat <= 0 ? exhaust : blend(exhaust, hot, heat)), alpha });
   }
 };

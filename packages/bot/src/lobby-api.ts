@@ -104,8 +104,7 @@ export const parseEvents = (chunk: string): string[] => {
 };
 
 export const createLobbyApi = (options: LobbyApiOptions): LobbyApi => ({
-  create: (playerId, name, title) =>
-    post(options, '/api/lobbies', { playerId, name, title }),
+  create: (playerId, name, title) => post(options, '/api/lobbies', { playerId, name, title }),
 
   setReady: (playerId, ready) => post(options, '/api/lobbies/ready', { playerId, ready }),
 
