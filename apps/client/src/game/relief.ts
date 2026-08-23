@@ -173,13 +173,103 @@ const around = (
   return sum / weights;
 };
 
-/** Высоты клеток, сглаженные в непрерывную поверхность. */
-export const smoothHeight = (map: GameMap, u: number, v: number): number =>
+const smoothExact = (map: GameMap, u: number, v: number): number =>
   around(map, u, v, SMOOTH_TIGHTNESS, (x, y) => cellHeight(map, x, y));
 
-/** То же, но окном пошире. Нужно затенению: с чем сравнивать точку. */
-export const wideHeight = (map: GameMap, u: number, v: number): number =>
+const wideExact = (map: GameMap, u: number, v: number): number =>
   around(map, u, v, 0.22, (x, y) => cellHeight(map, x, y));
+
+// ─────────────────────────────────────────────────────────────────────────
+// Сетка сглаженного поля
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Сглаженное поле считается один раз на карту, а не при каждом обращении.
+ *
+ * Гауссиана по тридцати шести соседям — это тридцать шесть `Math.exp`,
+ * и вызывается она по шесть раз на каждую вершину сетки. Замерено:
+ * вершины семидесяти клеток стоили 2594 мс, то есть около тринадцати
+ * секунд на карту с обычной долей скал — выше бюджета загрузки.
+ *
+ * Брать поле с сетки законно, потому что оно НИЗКОЧАСТОТНОЕ по своей
+ * природе: это высоты клеток, размазанные гауссианой шириной больше
+ * клетки. Четырёх узлов на клетку хватает с запасом.
+ *
+ * Хребтовой шум и подножие с сетки НЕ берутся и считаются точно.
+ * У подножия перепад укладывается в 0,62 клетки, а у шума излом острый —
+ * оба на такой сетке размазались бы, и как раз они отвечают за силуэт.
+ */
+const FIELD_PER_CELL = 4;
+
+/** Запас по краю: поле спрашивают и чуть за границей карты. */
+const FIELD_MARGIN_CELLS = 1;
+
+interface SmoothField {
+  readonly base: Float32Array;
+  readonly wide: Float32Array;
+  readonly pitch: number;
+}
+
+const fields = new WeakMap<GameMap, SmoothField>();
+
+const fieldOf = (map: GameMap): SmoothField => {
+  const cached = fields.get(map);
+  if (cached !== undefined) return cached;
+
+  const pitch = (MAP_WIDTH_CELLS + 2 * FIELD_MARGIN_CELLS) * FIELD_PER_CELL + 1;
+  const base = new Float32Array(pitch * pitch);
+  const wide = new Float32Array(pitch * pitch);
+
+  for (let row = 0; row < pitch; row += 1) {
+    const v = row / FIELD_PER_CELL - FIELD_MARGIN_CELLS;
+    for (let column = 0; column < pitch; column += 1) {
+      const u = column / FIELD_PER_CELL - FIELD_MARGIN_CELLS;
+      const index = row * pitch + column;
+      base[index] = smoothExact(map, u, v);
+      wide[index] = wideExact(map, u, v);
+    }
+  }
+
+  const field: SmoothField = { base, wide, pitch };
+  fields.set(map, field);
+
+  return field;
+};
+
+/** Билинейная выборка с сетки. За её краем возвращает ноль. */
+const sampleField = (data: Float32Array, pitch: number, u: number, v: number): number => {
+  const x = (u + FIELD_MARGIN_CELLS) * FIELD_PER_CELL;
+  const y = (v + FIELD_MARGIN_CELLS) * FIELD_PER_CELL;
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  if (x0 < 0 || y0 < 0 || x0 + 1 >= pitch || y0 + 1 >= pitch) return 0;
+
+  const fx = x - x0;
+  const fy = y - y0;
+  const a = data[y0 * pitch + x0] ?? 0;
+  const b = data[y0 * pitch + x0 + 1] ?? 0;
+  const c = data[(y0 + 1) * pitch + x0] ?? 0;
+  const d = data[(y0 + 1) * pitch + x0 + 1] ?? 0;
+
+  return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+};
+
+/** Высоты клеток, сглаженные в непрерывную поверхность. */
+export const smoothHeight = (map: GameMap, u: number, v: number): number => {
+  const field = fieldOf(map);
+  return sampleField(field.base, field.pitch, u, v);
+};
+
+/** То же, но окном пошире. Нужно затенению: с чем сравнивать точку. */
+export const wideHeight = (map: GameMap, u: number, v: number): number => {
+  const field = fieldOf(map);
+  return sampleField(field.wide, field.pitch, u, v);
+};
+
+/** Забыть сетку карты. Нужна при выходе из матча и тестам. */
+export const forgetReliefField = (map: GameMap): void => {
+  fields.delete(map);
+};
 
 /**
  * Расстояние от точки до края каменной области, в клетках.
