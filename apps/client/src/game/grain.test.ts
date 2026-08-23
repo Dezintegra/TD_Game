@@ -7,6 +7,9 @@ import {
 } from './grain.js';
 import { GRAIN_TILE_CELLS, grainOffset, grainSlope, valueNoise } from './relief.js';
 
+// `grainSlope` остаётся в проверках как образец: плитка обязана идти
+// за ним по знаку, пусть и грубее по числу.
+
 describe('фактура замыкается на себя', () => {
   it('шум с периодом повторяется через период', () => {
     for (let index = 0; index < 40; index += 1) {
@@ -84,16 +87,42 @@ describe('плитка', () => {
   });
 
   it('в плитке лежит уклон, а не яркость', () => {
-    // Сверяем точку плитки с прямым расчётом: если в текстуру попадёт
-    // само значение фактуры вместо её уклона, здесь и обнаружится.
+    // Сверяем с разностью, взятой на шаге самой плитки, а не с `grainSlope`:
+    // тот берёт разность на своём мелком шаге, и на грубой плитке числа
+    // законно расходятся. Проверяем устройство, а не совпадение шагов.
     const perPixel = GRAIN_TILE_CELLS / 64;
     const column = 21;
     const row = 13;
-    const expected = grainSlope(column * perPixel, row * perPixel);
+    const expected =
+      (grainOffset((column + 1) * perPixel, row * perPixel) -
+        grainOffset((column - 1) * perPixel, row * perPixel)) /
+      (2 * perPixel);
     const offset = (row * 64 + column) * 4;
 
-    expect(decodeSlope(tile.pixels[offset] ?? 0)).toBeCloseTo(expected.du, 1);
-    expect(decodeSlope(tile.pixels[offset + 1] ?? 0)).toBeCloseTo(expected.dv, 1);
+    expect(decodeSlope(tile.pixels[offset] ?? 0)).toBeCloseTo(expected, 1);
+  });
+
+  it('уклон плитки идёт следом за уклоном фактуры', () => {
+    // Грубее по числу, но по знаку и порядку обязан совпадать: если
+    // в текстуру попадёт само значение фактуры вместо уклона, здесь
+    // это и обнаружится.
+    const perPixel = GRAIN_TILE_CELLS / 64;
+    let agree = 0;
+    let counted = 0;
+
+    for (let row = 4; row < 60; row += 7) {
+      for (let column = 4; column < 60; column += 7) {
+        const exact = grainSlope(column * perPixel, row * perPixel).du;
+        const stored = decodeSlope(tile.pixels[(row * 64 + column) * 4] ?? 0);
+        if (Math.abs(exact) < 0.05) continue;
+
+        counted += 1;
+        if (Math.sign(exact) === Math.sign(stored)) agree += 1;
+      }
+    }
+
+    expect(counted).toBeGreaterThan(10);
+    expect(agree / counted).toBeGreaterThan(0.8);
   });
 
   it('шкала подобрана так, что обрезание — редкость', () => {
@@ -117,13 +146,15 @@ describe('плитка', () => {
   });
 
   it('противоположные края плитки сходятся', () => {
-    // Главная проверка замощения: последний столбец обязан продолжаться
-    // первым. Сравниваем с расчётом в точке ровно за краем.
+    // Главная проверка замощения. Разность на нулевом столбце обязана
+    // брать значение с последнего, а не упираться в край: иначе по шву
+    // пойдёт полоса неверного уклона.
     const perPixel = GRAIN_TILE_CELLS / 64;
     const row = 30;
-    const beyond = grainSlope(64 * perPixel, row * perPixel);
-    const first = (row * 64 + 0) * 4;
+    const expected =
+      (grainOffset(1 * perPixel, row * perPixel) - grainOffset(-1 * perPixel, row * perPixel)) /
+      (2 * perPixel);
 
-    expect(decodeSlope(tile.pixels[first] ?? 0)).toBeCloseTo(beyond.du, 1);
+    expect(decodeSlope(tile.pixels[(row * 64 + 0) * 4] ?? 0)).toBeCloseTo(expected, 1);
   });
 });

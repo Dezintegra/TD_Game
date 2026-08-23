@@ -1,4 +1,4 @@
-import { GRAIN_TILE_CELLS, grainSlope } from './relief.js';
+import { GRAIN_TILE_CELLS, grainOffset } from './relief.js';
 
 /**
  * Плитка фактуры породы.
@@ -23,10 +23,17 @@ import { GRAIN_TILE_CELLS, grainSlope } from './relief.js';
 /**
  * Сторона плитки в пикселях.
  *
- * При пяти клетках это 205 пикселей на клетку: самая мелкая крошка
- * фактуры занимает восемь пикселей — ещё различима, уже не рябит.
+ * Пятьсот двенадцать, а не тысяча с лишним, и число выведено, а не взято
+ * покрупнее «на всякий случай». Клетка занимает на экране 63 пикселя,
+ * плитка укрывает пять клеток, то есть 315 экранных пикселей. При стороне
+ * 512 на клетку приходится 102 точки против 63 экранных — полуторный
+ * запас, которого хватает и при увеличении.
+ *
+ * Тысяча двадцать четыре давали четырёхкратный запас и стоили вчетверо
+ * дороже: замерено 10 секунд против 1,1. Разглядеть эту разницу нельзя —
+ * ни один пиксель плитки не доходит до экрана в натуральную величину.
  */
-export const GRAIN_TILE_PIXELS = 1024;
+export const GRAIN_TILE_PIXELS = 512;
 
 /**
  * Во сколько раз уклон уменьшается при укладке в байт.
@@ -66,13 +73,37 @@ export const buildGrainTile = (size: number = GRAIN_TILE_PIXELS): GrainTile => {
   const pixels = new Uint8ClampedArray(size * size * 4);
   const perPixel = GRAIN_TILE_CELLS / size;
 
+  // Сначала значение фактуры в каждой точке, и только один раз.
+  //
+  // Прямой путь — спросить `grainSlope` на каждый пиксель — обходится
+  // вчетверо дороже: он сам считает фактуру четырежды, по разу
+  // на каждую сторону разности. При стороне 1024 это тридцать три
+  // миллиона обращений к шуму и десять секунд (замерено). Здесь
+  // фактура считается по разу на пиксель, а уклон берётся разностью
+  // с соседями — теми же значениями, что уже посчитаны.
+  const field = new Float32Array(size * size);
   for (let row = 0; row < size; row += 1) {
     for (let column = 0; column < size; column += 1) {
-      const slope = grainSlope(column * perPixel, row * perPixel);
-      const offset = (row * size + column) * 4;
+      field[row * size + column] = grainOffset(column * perPixel, row * perPixel);
+    }
+  }
 
-      pixels[offset] = encodeSlope(slope.du);
-      pixels[offset + 1] = encodeSlope(slope.dv);
+  // Индекс с заворотом: плитка периодична, и разность на её краю обязана
+  // брать значение с противоположной стороны, иначе по шву появится
+  // полоса неверного уклона.
+  const wrap = (n: number): number => (n + size) % size;
+  const span = 2 * perPixel;
+
+  for (let row = 0; row < size; row += 1) {
+    for (let column = 0; column < size; column += 1) {
+      const east = field[row * size + wrap(column + 1)] ?? 0;
+      const west = field[row * size + wrap(column - 1)] ?? 0;
+      const south = field[wrap(row + 1) * size + column] ?? 0;
+      const north = field[wrap(row - 1) * size + column] ?? 0;
+
+      const offset = (row * size + column) * 4;
+      pixels[offset] = encodeSlope((east - west) / span);
+      pixels[offset + 1] = encodeSlope((south - north) / span);
       pixels[offset + 2] = 0;
       pixels[offset + 3] = 255;
     }
