@@ -115,6 +115,51 @@ const renderHistogram = (series: Series, snapshot: HistogramSnapshot): string =>
   return lines.join('\n');
 };
 
+/**
+ * Наибольшее число наблюдений в одном присланном снимке.
+ *
+ * Матч длиной в двадцать минут при ста двадцати кадрах в секунду даёт
+ * сто сорок четыре тысячи кадров. Миллион — запас в семь раз, и вместе
+ * с тем предел, за которым отчёт заведомо выдуман: принимать его
+ * значило бы позволить одному запросу перевесить все настоящие.
+ */
+const MAX_REPORT_OBSERVATIONS = 1_000_000;
+
+/**
+ * Влить присланный снимок, если он на снимок похож.
+ *
+ * Тело запроса — `unknown` не для строгости ради строгости: это
+ * браузер игрока, и прислать он может что угодно, включая
+ * правдоподобную чепуху. Форму проверяем здесь, числа — в `merge`.
+ */
+export const mergeReport = (histogram: Histogram, value: unknown): boolean => {
+  if (typeof value !== 'object' || value === null) return false;
+
+  const candidate = value as Partial<HistogramSnapshot>;
+  if (!Array.isArray(candidate.buckets)) return false;
+  if (typeof candidate.count !== 'number') return false;
+  if (candidate.count > MAX_REPORT_OBSERVATIONS) return false;
+
+  for (const bucket of candidate.buckets) {
+    if (typeof bucket !== 'object' || bucket === null) return false;
+    if (typeof bucket.bound !== 'number' || typeof bucket.count !== 'number') return false;
+  }
+
+  return histogram.merge({
+    count: candidate.count,
+    sum: typeof candidate.sum === 'number' ? candidate.sum : Number.NaN,
+    max: typeof candidate.max === 'number' ? candidate.max : Number.NaN,
+    overBudget: typeof candidate.overBudget === 'number' ? candidate.overBudget : 0,
+    overflow: typeof candidate.overflow === 'number' ? candidate.overflow : 0,
+    buckets: candidate.buckets,
+    // Перцентили присланные не используются вовсе: они пересчитаются
+    // из корзин при отдаче. Складывать их было бы неверно.
+    p50: 0,
+    p95: 0,
+    p99: 0,
+  });
+};
+
 export const createMetrics = (): Metrics => {
   const series = new Map<string, Series>();
   const gauges = new Map<string, { help: string; read: () => number }>();

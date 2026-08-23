@@ -11,7 +11,7 @@ import { createMatchRegistry } from './matches.js';
 import { createMatchRecorder } from './recording.js';
 import { registerLobbyRoutes } from './lobby-routes.js';
 import { createWsTransport } from './ws-transport.js';
-import { createMetrics } from './metrics.js';
+import { createMetrics, mergeReport } from './metrics.js';
 import type { GameTransport } from './transport.js';
 
 /**
@@ -93,6 +93,65 @@ export const buildServer = async (options: BuildOptions = {}) => {
     void reply.type('text/plain; version=0.0.4; charset=utf-8');
     return metrics.render();
   });
+
+  /**
+   * Показания клиента.
+   *
+   * Приходят одним запросом после исхода матча, вне игрового
+   * соединения: слать их в горячем пути значило бы, что измерение
+   * влияет на измеряемое.
+   *
+   * Присылаются **корзины**, а не перцентили. Медиана двух выборок
+   * не равна средней их медиан, поэтому перцентили сложить нельзя,
+   * а корзины складываются честно: в них лежат числа наблюдений.
+   *
+   * Всё содержимое запроса недоверенное — это браузер игрока. Разметка
+   * из тела не берётся ни в каком виде: `source="client"` проставляется
+   * здесь, иначе первый же желающий завёл бы сервером тысячу рядов
+   * с любыми именами и раздул отдачу до неразбираемой. Числа проверяет
+   * `merge`; порченый снимок отвергается целиком, а не портит выборку.
+   *
+   * Чего здесь сознательно нет: защиты от игрока, который шлёт
+   * правдоподобные, но выдуманные показания. Отличить его от честного
+   * невозможно в принципе — показания снимаются на его машине, — и
+   * городить ради этого подписи значило бы делать вид, что задача
+   * решаема. Величины эти диагностические, решений по ним никто
+   * не принимает автоматически.
+   */
+  const clientFrame = metrics.histogram(
+    'td_client_frame_gap_ms',
+    'Промежуток между кадрами отрисовки у игрока',
+    { source: 'client' },
+  );
+  const clientNetGap = metrics.histogram(
+    'td_client_tick_frame_gap_ms',
+    'Промежуток между приходами кадров команд к игроку',
+    { source: 'client' },
+  );
+  const reportsAccepted = metrics.counter(
+    'td_client_reports_total',
+    'Сколько отчётов о плавности принято от игроков',
+  );
+  const reportsRejected = metrics.counter(
+    'td_client_reports_rejected_total',
+    'Сколько отчётов отвергнуто как неразбираемые',
+  );
+
+  app.post<{ Body: { frame?: unknown; netGap?: unknown } }>(
+    '/api/telemetry',
+    (request, reply) => {
+      const ok =
+        mergeReport(clientFrame, request.body?.frame) &&
+        mergeReport(clientNetGap, request.body?.netGap);
+
+      if (ok) reportsAccepted.add();
+      else reportsRejected.add();
+
+      // Отказ не объясняется подробно и не мешает игроку: отчёт
+      // о плавности — не то, ради чего он сюда пришёл.
+      void reply.code(ok ? 204 : 400).send();
+    },
+  );
 
   // Транспорт нужен обработчикам, а обработчики — транспорту.
   // Классическая circular dependency. Разрываем её через ссылку-держатель:

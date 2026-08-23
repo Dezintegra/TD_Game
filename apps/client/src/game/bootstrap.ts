@@ -88,6 +88,15 @@ export interface GameOptions {
 const WS_URL = import.meta.env['VITE_WS_URL'] ?? 'ws://127.0.0.1:3001/game';
 
 /**
+ * Куда уходят показания плавности после матча.
+ *
+ * Тот же адрес, что у комнат, и берётся он так же — из переменной
+ * сборки. Второе место, где этот адрес выводился бы своими силами,
+ * однажды разошлось бы с первым.
+ */
+const API_URL = import.meta.env['VITE_API_URL'] ?? 'http://127.0.0.1:3001';
+
+/**
  * Как часто снимок матча уезжает в HUD, в тиках.
  *
  * Шесть тиков — это пять обновлений в секунду. Чаще незачем: человек
@@ -167,6 +176,30 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   const frameGap = createHistogram();
   const netGap = createHistogram();
   let lastFrameArrivalMs = Number.NaN;
+
+  /**
+   * Отдать показания серверу — один раз, после исхода матча.
+   *
+   * Присылаются корзины целиком, а не перцентили: сложить перцентили
+   * двух выборок нельзя, а корзины складываются честно. Пересчитает
+   * их сервер сам.
+   *
+   * Неудача отправки на матч влиять не должна ни в каком виде:
+   * диагностика не имеет права ломать игру. Отсюда и молчаливый
+   * перехват, и `void` у вызова.
+   */
+  const reportSmoothness = async (): Promise<void> => {
+    try {
+      await fetch(`${API_URL}/api/telemetry`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ frame: frameGap.snapshot(), netGap: netGap.snapshot() }),
+        keepalive: true,
+      });
+    } catch {
+      // Не дошло — не беда. Игрок об этом знать не должен.
+    }
+  };
 
   const publishSmoothness = (): void => {
     const frame = frameGap.snapshot();
@@ -262,8 +295,13 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       }
     },
 
-    onOutcome: (outcome) =>
-      hudActions.setOutcome({ winner: outcome.winner, reason: outcome.reason }),
+    onOutcome: (outcome) => {
+      hudActions.setOutcome({ winner: outcome.winner, reason: outcome.reason });
+      // Показания уезжают после исхода, а не во время матча: слать их
+      // в игровом соединении значило бы добавить в горячий путь работу
+      // ради диагностики, то есть дать измерению влиять на измеряемое.
+      void reportSmoothness();
+    },
 
     onDesync: (tick, recovering) => {
       console.warn(

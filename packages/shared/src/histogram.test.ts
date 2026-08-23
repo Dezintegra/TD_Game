@@ -76,6 +76,52 @@ describe('гистограмма длительностей', () => {
     expect(snap.max).toBe(0);
   });
 
+  it('чужой снимок вливается корзинами, а не перцентилями', () => {
+    // Медиана двух выборок не равна средней их медиан, а корзины
+    // складываются честно: в них лежат числа наблюдений.
+    const here = createHistogram();
+    const there = createHistogram();
+
+    for (let i = 0; i < 10; i += 1) here.add(1);
+    for (let i = 0; i < 10; i += 1) there.add(100);
+
+    expect(here.merge(there.snapshot())).toBe(true);
+
+    const snap = here.snapshot();
+    expect(snap.count).toBe(20);
+    expect(snap.sum).toBe(10 + 1000);
+    expect(snap.max).toBe(100);
+    expect(snap.overBudget).toBe(10);
+  });
+
+  it('снимок с чужими границами отвергается', () => {
+    // Корзины с разными потолками означают разное, и сложение их —
+    // тихая ложь. Лучше отказ.
+    const here = createHistogram();
+    const alien = createHistogram({ bounds: [1, 2, 3] });
+    alien.add(1);
+
+    expect(here.merge(alien.snapshot())).toBe(false);
+    expect(here.snapshot().count).toBe(0);
+  });
+
+  it('порченый снимок не портит выборку', () => {
+    // Числа приходят из браузера игрока, то есть из недоверенного
+    // источника: прислать он может что угодно.
+    const here = createHistogram();
+    here.add(5);
+
+    const good = createHistogram();
+    good.add(5);
+    const snapshot = good.snapshot();
+
+    expect(here.merge({ ...snapshot, count: Number.NaN })).toBe(false);
+    expect(here.merge({ ...snapshot, sum: -1 })).toBe(false);
+    expect(here.merge({ ...snapshot, max: Number.POSITIVE_INFINITY })).toBe(false);
+    // Ни одна из попыток не оставила следа.
+    expect(here.snapshot().count).toBe(1);
+  });
+
   it('забывает накопленное по просьбе', () => {
     const hist = createHistogram();
     hist.add(100);

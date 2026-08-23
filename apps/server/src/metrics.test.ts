@@ -1,5 +1,6 @@
+import { createHistogram } from '@td/shared';
 import { describe, expect, it } from 'vitest';
-import { createMetrics } from './metrics.js';
+import { createMetrics, mergeReport } from './metrics.js';
 
 /**
  * Приборы отдают показания в интернет.
@@ -83,6 +84,54 @@ describe('отдача показаний', () => {
 
     expect(text).toContain('td_probe_total 5');
     expect(text).toContain('td_probe_now 7');
+  });
+
+  it('отчёт игрока вливается корзинами', () => {
+    const here = createHistogram();
+    const fromBrowser = createHistogram();
+    fromBrowser.add(1);
+    fromBrowser.add(100);
+
+    expect(mergeReport(here, JSON.parse(JSON.stringify(fromBrowser.snapshot())))).toBe(true);
+
+    const snap = here.snapshot();
+    expect(snap.count).toBe(2);
+    expect(snap.max).toBe(100);
+  });
+
+  it('чепуха из браузера отвергается целиком', () => {
+    // Тело запроса приходит от игрока. Прислать он может что угодно,
+    // и каждая из этих попыток однажды случится.
+    const here = createHistogram();
+    here.add(5);
+
+    const good = JSON.parse(JSON.stringify(createHistogram().snapshot())) as unknown;
+
+    expect(mergeReport(here, undefined)).toBe(false);
+    expect(mergeReport(here, null)).toBe(false);
+    expect(mergeReport(here, 'не снимок')).toBe(false);
+    expect(mergeReport(here, {})).toBe(false);
+    expect(mergeReport(here, { ...(good as object), buckets: 'не массив' })).toBe(false);
+    expect(mergeReport(here, { ...(good as object), count: '10' })).toBe(false);
+    expect(mergeReport(here, { ...(good as object), buckets: [{ bound: 1 }] })).toBe(false);
+
+    // Ни одна попытка не оставила следа в настоящей выборке.
+    expect(here.snapshot().count).toBe(1);
+  });
+
+  it('невозможно большой отчёт не принимается', () => {
+    // Матч в двадцать минут при ста двадцати кадрах в секунду даёт
+    // сто сорок четыре тысячи кадров. Миллион — заведомо выдумка,
+    // и принять её значило бы дать одному запросу перевесить все
+    // настоящие.
+    const here = createHistogram();
+    const huge = createHistogram();
+    huge.add(1);
+
+    expect(mergeReport(here, { ...JSON.parse(JSON.stringify(huge.snapshot())), count: 5_000_000 })).toBe(
+      false,
+    );
+    expect(here.snapshot().count).toBe(0);
   });
 
   it('мгновенная величина читается в момент опроса, а не при заведении', () => {

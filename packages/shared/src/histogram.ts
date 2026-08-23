@@ -74,6 +74,20 @@ export interface HistogramSnapshot {
 
 export interface Histogram {
   add(value: number): void;
+  /**
+   * Влить чужой снимок в свой.
+   *
+   * Нужно там, где наблюдения сделаны не здесь: клиент копит свою
+   * гистограмму у себя в браузере и присылает её целиком.
+   *
+   * Складывать присланные **перцентили** нельзя вовсе — медиана двух
+   * выборок не равна средней их медиан, — а корзины складываются
+   * честно: в них лежат числа наблюдений, и сумма двух наблюдений
+   * есть наблюдение. Отсюда и требование одинаковых границ: корзины
+   * с разными потолками означают разное, и сложение их — тихая ложь.
+   * Снимок с чужими границами отвергается.
+   */
+  merge(snapshot: HistogramSnapshot): boolean;
   /** Забыть накопленное. Нужно замерам «до и после» в одном процессе. */
   reset(): void;
   snapshot(): HistogramSnapshot;
@@ -154,6 +168,38 @@ export const createHistogram = (options: HistogramOptions = {}): Histogram => {
       }
 
       overflow += 1;
+    },
+
+    merge(snapshot) {
+      if (snapshot.buckets.length !== bounds.length) return false;
+      for (let index = 0; index < bounds.length; index += 1) {
+        if (snapshot.buckets[index]?.bound !== bounds[index]) return false;
+      }
+
+      // Числа приходят из недоверенного источника: браузер игрока
+      // прислать может что угодно. Отрицательное или нечисловое
+      // наблюдение испортило бы всю выборку молча, поэтому здесь
+      // проверка, а не доверие.
+      if (!Number.isFinite(snapshot.count) || snapshot.count < 0) return false;
+      if (!Number.isFinite(snapshot.sum) || snapshot.sum < 0) return false;
+      if (!Number.isFinite(snapshot.max) || snapshot.max < 0) return false;
+
+      for (let index = 0; index < bounds.length; index += 1) {
+        const inBucket = snapshot.buckets[index]?.count ?? 0;
+        if (!Number.isFinite(inBucket) || inBucket < 0) return false;
+      }
+
+      for (let index = 0; index < bounds.length; index += 1) {
+        counts[index] = (counts[index] ?? 0) + (snapshot.buckets[index]?.count ?? 0);
+      }
+
+      overflow += Math.max(0, snapshot.overflow);
+      count += snapshot.count;
+      sum += snapshot.sum;
+      overBudget += Math.max(0, snapshot.overBudget);
+      if (snapshot.max > max) max = snapshot.max;
+
+      return true;
     },
 
     reset() {
