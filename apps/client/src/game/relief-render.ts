@@ -34,6 +34,44 @@ const RESOLUTION = 24;
 const AMBIENT = 0.34;
 const LIGHT: readonly [number, number, number] = [0.72 - AMBIENT, 0.48 - AMBIENT, 1 - AMBIENT];
 
+/**
+ * Сила света неба.
+ *
+ * Держится скромной намеренно. Небо здесь не второе солнце, а поправка:
+ * его задача — не осветить теневую сторону, а перестать делать её
+ * одинаковой. Заметно больше — и массив теряет объём, потому что разница
+ * между обращённым к источнику и отвёрнутым от него смазывается.
+ */
+export const SKY_STRENGTH = 0.18;
+
+/**
+ * Разброс неоднородности породы: множитель яркости от `TONE_BASE`
+ * до `TONE_BASE + TONE_RANGE`.
+ *
+ * Сумма ровно единица, и это не совпадение, а правило: **токен
+ * `--td-rock` задаёт цвет камня на полном свету, и отрисовка не имеет
+ * права его превышать.** Множитель больше единицы означал бы, что
+ * палитра говорит одно, а поле показывает другое.
+ *
+ * Поймано проверкой. Сначала здесь стояли 0,84 и 0,3, то есть максимум
+ * 1,14; вместе с тёплой добавкой и светом неба самый яркий камень
+ * выходил на 72 процента яркости против 51 у токена. На картинке это
+ * читалось светлым песком, который спорит с полем за внимание, —
+ * при том что замысел требует от скал обратного.
+ */
+export const TONE_BASE = 0.72;
+export const TONE_RANGE = 0.28;
+
+/**
+ * Насколько освещённый камень теплее затенённого, в долях канала.
+ *
+ * Вынесено в константы, а не оставлено числами в тексте шейдера,
+ * ровно затем, чтобы проверка приглушённости цвета могла до них
+ * добраться. Два набора чисел — в GLSL и в тесте — разъехались бы
+ * при первой же правке.
+ */
+export const WARM_BOOST: readonly [number, number, number] = [16 / 255, 10 / 255, 2 / 255];
+
 const VERTEX = `#version 300 es
 in vec2 aPosition;
 in vec2 aWorld;
@@ -66,7 +104,10 @@ in vec2 vShade;
 uniform sampler2D uGrain;
 uniform vec3 uLight;
 uniform vec3 uRock;
+uniform vec3 uSky;
+uniform vec3 uWarm;
 uniform float uAmbient;
+uniform float uSkyStrength;
 uniform float uGrainScale;
 uniform float uTileCells;
 
@@ -86,9 +127,21 @@ void main() {
 
   // Освещённый камень чуть теплее, затенённый чуть холоднее.
   float warm = clamp((lit - uAmbient) * 1.4, 0.0, 1.0);
-  vec3 base = uRock + vec3(16.0, 10.0, 2.0) / 255.0 * warm;
+  vec3 base = uRock + uWarm * warm;
 
-  fragColor = vec4(base * vShade.y * key, 1.0);
+  vec3 colour = base * vShade.y * key;
+
+  // Второй источник — небо. Рассеянный свет сверху, тем больший, чем
+  // ближе поверхность к горизонтальной, и холоднее основного. Без него
+  // теневая сторона массива остаётся одинаковой тёмной заливкой:
+  // у одного направленного источника всё, что от него отвёрнуто,
+  // получает ровно ambient и различий не имеет.
+  //
+  // Затенение множится и сюда: в расщелину неба видно не больше, чем
+  // солнца.
+  colour += uSky * (uSkyStrength * max(0.0, normal.z) * ao);
+
+  fragColor = vec4(colour, 1.0);
 }`;
 
 /** Плитка фактуры как текстура. Строится один раз на запуск. */
@@ -143,12 +196,21 @@ export interface CellMesh {
  * Позиции вершин лежат в пикселях спрайта, а не мира: клетка запекается
  * в свою маленькую текстуру, и начало координат у неё своё.
  */
+export interface ReliefColors {
+  /** Цвет породы. */
+  readonly rock: number;
+  /** Цвет неба: холодный подсвет сверху. */
+  readonly sky: number;
+}
+
 export const buildCellMesh = (
   map: GameMap,
   cellX: number,
   cellY: number,
-  rock: number,
+  colors: ReliefColors,
 ): CellMesh => {
+  const { rock, sky } = colors;
+
   // Нахлёст на соседа. Спрайты соседних клеток не стыкуются пиксель
   // в пиксель — по границам проступают тёмные швы, — поэтому сетка
   // заходит на шаг за край ТУДА, ГДЕ СОСЕД ТОЖЕ СКАЛА. За край массива
@@ -209,7 +271,7 @@ export const buildCellMesh = (
       // Крупная неоднородность породы. Частота низкая (3,8 на клетку
       // против 24 у крошки), поэтому вершин хватает и в плитку её класть
       // незачем — она считается тут же, на процессоре.
-      shade[index * 2 + 1] = 0.84 + 0.3 * fbm(u * 3.8, v * 3.8, 3, 3);
+      shade[index * 2 + 1] = TONE_BASE + TONE_RANGE * fbm(u * 3.8, v * 3.8, 3, 3);
     }
   }
 
@@ -264,7 +326,17 @@ export const buildCellMesh = (
           ]),
           type: 'vec3<f32>',
         },
+        uSky: {
+          value: new Float32Array([
+            ((sky >> 16) & 255) / 255,
+            ((sky >> 8) & 255) / 255,
+            (sky & 255) / 255,
+          ]),
+          type: 'vec3<f32>',
+        },
+        uWarm: { value: new Float32Array(WARM_BOOST), type: 'vec3<f32>' },
         uAmbient: { value: AMBIENT, type: 'f32' },
+        uSkyStrength: { value: SKY_STRENGTH, type: 'f32' },
         uGrainScale: { value: GRAIN_SLOPE_SCALE, type: 'f32' },
         uTileCells: { value: GRAIN_TILE_CELLS, type: 'f32' },
       },
@@ -313,14 +385,14 @@ export const mountRockDiagonal = (
   renderer: Renderer,
   map: GameMap,
   diagonal: number,
-  rock: number,
+  colors: ReliefColors,
 ): void => {
   clearRockLayer(layer);
 
   for (const [x, y] of diagonalCells(MAP_WIDTH_CELLS, MAP_HEIGHT_CELLS, diagonal)) {
     if (!isRockCell(map, x, y)) continue;
 
-    const cell = buildCellMesh(map, x, y, rock);
+    const cell = buildCellMesh(map, x, y, colors);
     const texture = RenderTexture.create({
       width: cell.width,
       height: cell.height,

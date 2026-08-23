@@ -127,6 +127,7 @@ const readTerrainColors = (): TerrainColors => ({
   grid: token('--td-border-subtle', 0x3a3a3a),
   gridMajor: token('--td-border-control', 0x4d4d4d),
   rock: token('--td-rock', 0x6e6a63),
+  rockSky: token('--td-rock-sky', 0x5c7ea8),
   border: token('--td-text-muted-4', 0x6b6b6b),
   // Читаем --td-accent, а не --td-player-self: последний объявлен через
   // var(), и получить из него готовый цвет средствами getComputedStyle
@@ -449,7 +450,10 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
         drawTerrainDiagonal(graphics, map, diagonal, terrainColors);
       });
       rockBands.forEach((layer, diagonal) => {
-        mountRockDiagonal(layer, app.renderer, map, diagonal, terrainColors.rock);
+        mountRockDiagonal(layer, app.renderer, map, diagonal, {
+          rock: terrainColors.rock,
+          sky: terrainColors.rockSky,
+        });
       });
       drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
     },
