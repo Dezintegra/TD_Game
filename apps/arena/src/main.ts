@@ -10,6 +10,7 @@ import { runMatch } from './match.js';
 import { replayAndReport } from './replay.js';
 import { ingestFile, openDatabase } from './ingest.js';
 import { reportBatch, reportMatch } from './report.js';
+import { printTempo } from './tempo.js';
 
 /**
  * Арена — инструмент разработки, а не часть игры.
@@ -32,6 +33,12 @@ const USAGE = `
       компьютерных сторон восстанавливаются прогоном, мир ведут
       записанные команды. Сверяются и контрольные суммы, и команды
       компьютера; расхождение — остановка с указанием тика, без лога.
+
+  arena tempo <файл>
+      Показать, вовремя ли шёл записанный матч. Контрольные суммы
+      снимаются раз в игровую секунду, значит между двумя соседними
+      обязана пройти секунда реального времени; всё сверх — отставание
+      сервера, то самое, что игрок видит рывком.
 
   arena ingest [каталог]
       Собрать базу SQLite из логов. Идемпотентно: повторный прогон
@@ -275,6 +282,14 @@ const main = async (): Promise<void> => {
       if (path === undefined) throw new Error('укажите файл записи: arena replay <файл>');
 
       replayAndReport(resolve(path), LOG_DIR);
+      return;
+    }
+
+    case 'tempo': {
+      const path = rest[0];
+      if (path === undefined) throw new Error('укажите файл записи: arena tempo <файл>');
+
+      printTempo(resolve(path));
       return;
     }
 
