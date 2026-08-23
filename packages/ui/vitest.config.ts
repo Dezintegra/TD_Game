@@ -4,7 +4,9 @@ export default defineConfig({
   test: {
     name: 'ui',
     environment: 'jsdom',
-    include: ['src/**/*.test.tsx'],
+    // И `.tsx`, и `.ts`: в пакете есть не только компоненты, но и токены,
+    // а их проверка разметки не рисует и в `.tsx` попадать не должна.
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     // Testing Library вешает автоматическую очистку DOM на глобальный
     // afterEach. Без globals: true этого хука нет, и разметка предыдущего
     // теста остаётся в документе — запросы начинают находить по два элемента.

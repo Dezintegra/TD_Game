@@ -12,7 +12,7 @@ import {
 import { BATCH_ORDER_COUNT } from '../game/controls.js';
 import { matchCommands, useHudStore } from '../game/store.js';
 import type { StatRow } from '../game/store.js';
-import { BaseGlyph, GeneralGlyph, STRUCTURE_GLYPH, UNIT_GLYPH } from './icons.js';
+import { BaseGlyph, GeneralGlyph, STRUCTURE_GLYPH, TargetGlyph, UNIT_GLYPH } from './icons.js';
 import { STRUCTURE_SHORT, UNIT_SHORT, UPGRADE_STAT_SHORT, UPGRADE_UNIT } from './labels.js';
 
 /**
@@ -68,6 +68,18 @@ const tileStyle: CSSProperties = {
   alignItems: 'stretch',
   gap: 2,
   minWidth: 96,
+
+  // Плитка НЕ сжимается, и это не украшение.
+  //
+  // Флекс, ужимая плитки под узкое окно, переносит подписи внутри строк
+  // характеристик — и полоса молча вырастает по высоте, наезжая на поле.
+  // Проверено: при окне 1280 тулбар ужимался с 1279 до 1248 точек
+  // и вырастал со 156 до 187 при отведённых 177.
+  //
+  // Отказ от сжатия делает беду видимой: не влезло — значит поехало вбок,
+  // и это видно сразу, а не в бою.
+  flexShrink: 0,
+
   padding: 'var(--td-space-1)',
   border: '1px solid var(--td-border-control)',
   borderRadius: 'var(--td-radius-control)',
@@ -80,8 +92,12 @@ const tileStyle: CSSProperties = {
 const headStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 'var(--td-space-2)',
+  // Промежуток мельче обычного: плиток десять, и каждая лишняя четвёрка
+  // точек между значком и подписью умножается на десять. При окне 1280
+  // тулбару без этого не хватало семи точек.
+  gap: 'var(--td-space-1)',
   width: '100%',
+  minHeight: 'var(--td-hit-target)',
   padding: 0,
   border: 'none',
   background: 'transparent',
@@ -218,8 +234,14 @@ const lineStyle: CSSProperties = {
 const arrowStyle = (affordable: boolean): CSSProperties => ({
   display: 'flex',
   alignItems: 'center',
+  justifyContent: 'center',
   gap: 2,
   padding: '0 3px',
+  // Самая мелкая цель во всём интерфейсе, и промах по ней не молчалив:
+  // соседняя строка — другая ветка, и деньги уходят не туда, куда игрок
+  // целился. На мыши токен мал, на пальце вырастает до сорока четырёх.
+  minWidth: 'var(--td-hit-target)',
+  minHeight: 'var(--td-hit-target)',
   border: `1px solid ${affordable ? 'var(--td-accent)' : 'var(--td-border-control)'}`,
   borderRadius: 2,
   background: 'transparent',
@@ -368,6 +390,26 @@ export const ActionBar = () => {
           affordable={match.energy >= match.nukeCost}
           active={match.aimingNuke}
           onSelect={() => matchCommands().toggleNukeAim()}
+        />
+
+        {/* Цель атаки стоит рядом с ударом, а не с постройками: у них
+            одна грамматика — «нажал кнопку, ткнул клетку», и режим
+            снимается указанием клетки. Постройку ставят подряд, цель
+            назначают одну.
+
+            Существует эта плитка ради касания: цель ставит правая кнопка
+            мыши, а у пальца кнопок нет вовсе. Правая кнопка при этом
+            работает как прежде — два пути к одному действию отличаются
+            ценой: кнопка заметнее, правая кнопка быстрее. */}
+        <Tile
+          testId="aim-target"
+          icon={<TargetGlyph />}
+          label="Цель"
+          hotkey="ПКМ"
+          cost={0}
+          affordable
+          active={match.aimingTarget}
+          onSelect={() => matchCommands().toggleTargetAim()}
         />
       </div>
 

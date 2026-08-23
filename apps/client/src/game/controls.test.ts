@@ -56,6 +56,26 @@ const release = (code: string): void => {
   window.dispatchEvent(new KeyboardEvent('keyup', { code }));
 };
 
+/** Касание: pointer-событие с типом `touch`. */
+const touch = (
+  host: HTMLElement,
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  x: number,
+  y: number,
+): void => {
+  const event = new Event(type, { bubbles: true }) as PointerEvent & Record<string, unknown>;
+  Object.assign(event, { pointerType: 'touch', pointerId: 1, clientX: x, clientY: y, button: 0 });
+  host.dispatchEvent(event);
+};
+
+/** Нажатие мышью — для сравнения с касанием. */
+const mouseDown = (host: HTMLElement, x: number, y: number): void => {
+  const event = new Event('pointerdown', { bubbles: true }) as PointerEvent &
+    Record<string, unknown>;
+  Object.assign(event, { pointerType: 'mouse', pointerId: 1, clientX: x, clientY: y, button: 0 });
+  host.dispatchEvent(event);
+};
+
 afterEach(() => {
   attached?.detach();
   attached = undefined;
@@ -271,6 +291,196 @@ describe('открытое меню глушит управление', () => {
 
     expect(controls.state.building).toBe(false);
     expect(handlers.menuChanged).toHaveBeenCalledWith(true);
+  });
+});
+
+describe('замирающий свайп', () => {
+  const withHost = (): { controls: Controls; handlers: ControlHandlers; host: HTMLElement } => {
+    const handlers = handlersOf();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+
+    const controls = attachControls(host, handlers);
+    attached = controls;
+
+    return { controls, handlers, host };
+  };
+
+  it('свайп за порог трогает генерала с места', () => {
+    const { controls, handlers, host } = withHost();
+
+    touch(host, 'pointerdown', 100, 100);
+    expect(controls.state.touch?.engaged).toBe(false);
+    expect(handlers.setDirection).not.toHaveBeenCalled();
+
+    touch(host, 'pointermove', 160, 100);
+
+    expect(controls.state.touch?.engaged).toBe(true);
+    expect(vi.mocked(handlers.setDirection).mock.calls.at(-1)?.[0]).not.toBe(DIRECTION_STOP);
+  });
+
+  it('замерший палец держит направление', () => {
+    // Ключевое свойство. Держать направление, непрерывно водя пальцем,
+    // физически невозможно; неподвижный палец — единственный способ
+    // идти долго. Проверяется тем, что после свайпа команд больше нет,
+    // а последняя из них — не «стоп».
+    const { handlers, host } = withHost();
+
+    touch(host, 'pointerdown', 100, 100);
+    touch(host, 'pointermove', 160, 100);
+
+    const afterSwipe = vi.mocked(handlers.setDirection).mock.calls.length;
+
+    // Палец лежит и не двигается: событий больше не приходит вовсе.
+    expect(vi.mocked(handlers.setDirection).mock.calls.length).toBe(afterSwipe);
+    expect(vi.mocked(handlers.setDirection).mock.calls.at(-1)?.[0]).not.toBe(DIRECTION_STOP);
+  });
+
+  it('малый сдвиг генерала не трогает', () => {
+    const { controls, handlers, host } = withHost();
+
+    touch(host, 'pointerdown', 100, 100);
+    touch(host, 'pointermove', 105, 103);
+
+    expect(controls.state.touch?.engaged).toBe(false);
+    expect(handlers.setDirection).not.toHaveBeenCalled();
+  });
+
+  it('отрыв останавливает генерала', () => {
+    const { controls, handlers, host } = withHost();
+
+    touch(host, 'pointerdown', 100, 100);
+    touch(host, 'pointermove', 160, 100);
+    touch(host, 'pointerup', 160, 100);
+
+    expect(controls.state.touch).toBeNull();
+    expect(handlers.setDirection).toHaveBeenLastCalledWith(DIRECTION_STOP);
+  });
+
+  it('перехваченный палец останавливает так же, как отрыв', () => {
+    // `pointercancel` приходит ВМЕСТО `pointerup`, а не вместе с ним.
+    // Не обработай его — и генерал уйдёт навсегда: останавливать будет
+    // уже нечем.
+    const { controls, handlers, host } = withHost();
+
+    touch(host, 'pointerdown', 100, 100);
+    touch(host, 'pointermove', 160, 100);
+    touch(host, 'pointercancel', 160, 100);
+
+    expect(controls.state.touch).toBeNull();
+    expect(handlers.setDirection).toHaveBeenLastCalledWith(DIRECTION_STOP);
+  });
+
+  it('направление свайпа совпадает с клавиатурным', () => {
+    // Своей таблицы соответствий нет: и клавиши, и свайп идут через одно
+    // преобразование экранного смещения в направление мира. Разойдись
+    // они — рука и глаз разошлись бы вместе с ними.
+    const byKey = handlersOf();
+    const keyHost = document.createElement('div');
+    document.body.appendChild(keyHost);
+    const keyControls = attachControls(keyHost, byKey);
+
+    press('KeyW');
+    const keyDirection = vi.mocked(byKey.setDirection).mock.calls.at(-1)?.[0];
+    keyControls.detach();
+
+    const { handlers, host } = withHost();
+    touch(host, 'pointerdown', 200, 200);
+    // Вверх по экрану — тот же вектор, что даёт `W`.
+    touch(host, 'pointermove', 200, 120);
+
+    expect(vi.mocked(handlers.setDirection).mock.calls.at(-1)?.[0]).toBe(keyDirection);
+  });
+});
+
+describe('касание действует по отрыву', () => {
+  const setupCells = (): { controls: Controls; handlers: ControlHandlers; host: HTMLElement } => {
+    const handlers = handlersOf();
+    handlers.cellAtScreen = vi.fn(() => 42);
+
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+
+    const controls = attachControls(host, handlers);
+    attached = controls;
+
+    return { controls, handlers, host };
+  };
+
+  it('нажатие пальцем само по себе ничего не выделяет', () => {
+    const { controls, handlers, host } = setupCells();
+
+    touch(host, 'pointerdown', 100, 100);
+
+    expect(controls.state.selectedCell).toBe(-1);
+    expect(handlers.select).not.toHaveBeenCalled();
+  });
+
+  it('тап выделяет по отрыву', () => {
+    const { controls, host } = setupCells();
+
+    touch(host, 'pointerdown', 100, 100);
+    touch(host, 'pointerup', 100, 100);
+
+    expect(controls.state.selectedCell).toBe(42);
+  });
+
+  it('свайп не выделяет и не строит', () => {
+    // Иначе первое же движение свайпа успевало бы заложить постройку,
+    // а отменить отправленную команду нельзя.
+    const { controls, handlers, host } = setupCells();
+
+    touch(host, 'pointerdown', 100, 100);
+    touch(host, 'pointermove', 200, 100);
+    touch(host, 'pointerup', 200, 100);
+
+    expect(controls.state.selectedCell).toBe(-1);
+    expect(handlers.select).not.toHaveBeenCalled();
+    expect(handlers.build).not.toHaveBeenCalled();
+  });
+
+  it('мышь по-прежнему отвечает в момент нажатия', () => {
+    // У мыши свайпа нет, спорить за кнопку не с кем, и ждать отпускания
+    // означало бы платить задержкой ни за что.
+    const { controls, host } = setupCells();
+
+    mouseDown(host, 100, 100);
+
+    expect(controls.state.selectedCell).toBe(42);
+  });
+});
+
+describe('цель атаки кнопкой-режимом', () => {
+  it('режим цели гасит режим стройки и наоборот', () => {
+    const { controls } = setup();
+
+    press('KeyQ');
+    controls.setAimingTarget(true);
+    expect(controls.state.building).toBe(false);
+    expect(controls.state.aimingTarget).toBe(true);
+
+    controls.setBuildKind(StructureKind.Wall);
+    expect(controls.state.aimingTarget).toBe(false);
+  });
+
+  it('Esc снимает режим цели и меню не открывает', () => {
+    const { controls, handlers } = setup();
+
+    controls.setAimingTarget(true);
+    press('Escape');
+
+    expect(controls.state.aimingTarget).toBe(false);
+    expect(handlers.menuChanged).not.toHaveBeenCalled();
+  });
+
+  it('наведение удара и наведение цели не совмещаются', () => {
+    const { controls } = setup();
+
+    controls.setAimingTarget(true);
+    controls.setAimingNuke(true);
+
+    expect(controls.state.aimingTarget).toBe(false);
+    expect(controls.state.aimingNuke).toBe(true);
   });
 });
 

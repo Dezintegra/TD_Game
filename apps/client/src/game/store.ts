@@ -154,6 +154,13 @@ export interface MatchSnapshot {
   /** Вид постройки, выбранный для размещения, либо null. */
   readonly buildKind: number | null;
   readonly aimingNuke: boolean;
+  /**
+   * Игрок наводит цель атаки.
+   *
+   * Существует ради касания: цель ставит правая кнопка мыши,
+   * а у пальца кнопок нет вовсе.
+   */
+  readonly aimingTarget: boolean;
   /** Режим атаки войска: приказ отдаётся всему войску сразу. */
   readonly stance: AttackStance;
 }
@@ -184,6 +191,7 @@ const EMPTY_MATCH: MatchSnapshot = {
   building: false,
   buildKind: null,
   aimingNuke: false,
+  aimingTarget: false,
   stance: AttackStance.Breakthrough,
 };
 
@@ -449,6 +457,8 @@ export interface MatchCommands {
   train(unitType: number, count: number): void;
   setBuildKind(kind: number | null): void;
   toggleNukeAim(): void;
+  /** Включить или выключить наведение цели атаки. */
+  toggleTargetAim(): void;
   /** Сменить режим атаки войска. */
   setStance(stance: number): void;
   buyUpgrade(branch: number): void;
@@ -473,6 +483,7 @@ const NO_COMMANDS: MatchCommands = {
   train: () => undefined,
   setBuildKind: () => undefined,
   toggleNukeAim: () => undefined,
+  toggleTargetAim: () => undefined,
   setStance: () => undefined,
   buyUpgrade: () => undefined,
   demolish: () => undefined,

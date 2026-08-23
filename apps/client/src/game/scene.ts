@@ -16,6 +16,8 @@ import type { BlastColors, BlastLayers } from './blasts.js';
 import { createFrameClock } from './clock.js';
 import { drawOverlays } from './overlays.js';
 import type { OverlayColors, OverlayIntent } from './overlays.js';
+import { drawTouchStick } from './touch-stick.js';
+import type { TouchStickColors } from './touch-stick.js';
 import {
   drawMinimapEntities,
   drawMinimapTerrain,
@@ -340,7 +342,13 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   // к точке карты и ездить с камерой не должна. Миникарта — выше неё:
   // засветить единственный прибор ориентирования значило бы отнять
   // ориентирование ровно тогда, когда оно нужнее всего.
-  app.stage.addChild(shakeContainer, flashGraphics, minimapContainer);
+  // Джойстик — поверх всего, включая миникарту: палец физически лежит
+  // на экране, и всё, что окажется над ним, будет выглядеть налипшим
+  // на палец. Живёт он вне мирового контейнера: привязан к пальцу,
+  // а не к клетке, и ездить с камерой не должен.
+  const touchGraphics = new Graphics();
+
+  app.stage.addChild(shakeContainer, flashGraphics, minimapContainer, touchGraphics);
 
   const terrainColors = readTerrainColors();
   const entityColors = readEntityColors();
@@ -348,6 +356,10 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const blastColors = readBlastColors();
   const overlayColors = readOverlayColors();
   const minimapColors = readMinimapColors();
+  const touchColors: TouchStickColors = {
+    self: token('--td-player-self', 0x00ff29),
+    idle: token('--td-text-muted-3', 0x808080),
+  };
 
   let camera: Camera = createCamera();
   let currentMap: GameMap | undefined;
@@ -462,6 +474,11 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       applyShake(shake, time);
 
       drawOverlays(overlayGraphics, world, localPlayer, intent, overlayColors);
+
+      // Каждый кадр, а не раз в шесть, как миникарта: джойстик лежит
+      // под пальцем, и запаздывание в шесть кадров игрок читает как
+      // «экран меня не слышит» — то есть ровно как поломку.
+      drawTouchStick(touchGraphics, intent.touch, touchColors);
 
       frame += 1;
       if (frame % MINIMAP_EVERY_FRAMES === 0) {

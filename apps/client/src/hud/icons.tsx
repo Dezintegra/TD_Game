@@ -133,6 +133,24 @@ export const BaseGlyph = () => (
   </Glyph>
 );
 
+/**
+ * Цель атаки: перекрестие с кольцом.
+ *
+ * Тот же знак, которым цель отмечена на поле, — окружность
+ * с перекрестием. Пиктограмма, не совпадающая с меткой на карте,
+ * заставляла бы игрока запоминать два обозначения одного.
+ */
+export const TargetGlyph = () => (
+  <Glyph>
+    <circle cx="12" cy="12" r="7" />
+    <path d="M12 2 V7" />
+    <path d="M12 17 V22" />
+    <path d="M2 12 H7" />
+    <path d="M17 12 H22" />
+    <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+  </Glyph>
+);
+
 export const UNIT_GLYPH: Readonly<Record<UnitType, () => ReactNode>> = {
   [UnitType.Assault]: AssaultGlyph,
   [UnitType.Sniper]: SniperGlyph,

@@ -15,6 +15,25 @@ import { screenToWorld } from './iso.js';
  * одинаков в любой раскладке.
  */
 
+/**
+ * Замирающий свайп: где палец опустился и где он сейчас.
+ *
+ * «Замирающий» — ключевое свойство, и оно про то, чего у мыши нет.
+ * Свайп не кончается вместе с движением пальца: держать направление,
+ * непрерывно водя пальцем, физически невозможно, а держать его
+ * неподвижным пальцем — единственный способ идти долго.
+ */
+export interface TouchStick {
+  /** Точка, где палец опустился. Здесь встаёт центр джойстика. */
+  readonly originX: number;
+  readonly originY: number;
+  /** Где палец сейчас. */
+  readonly x: number;
+  readonly y: number;
+  /** Сдвиг превысил порог: джойстик включён и ведёт генерала. */
+  readonly engaged: boolean;
+}
+
 export interface ControlState {
   /**
    * Включён режим строительства.
@@ -29,6 +48,27 @@ export interface ControlState {
   readonly buildKind: StructureKind | null;
   /** Игрок наводит ядерный удар. */
   readonly aimingNuke: boolean;
+  /**
+   * Игрок наводит цель атаки.
+   *
+   * Существует ради касания: цель ставит правая кнопка мыши, а у пальца
+   * кнопок нет вовсе. Устроено как наведение удара — нажал, ткнул
+   * клетку, режим снялся, — потому что грамматика у них одна.
+   */
+  readonly aimingTarget: boolean;
+  /**
+   * Джойстик замирающего свайпа, либо null.
+   *
+   * Координаты экранные, относительно контейнера сцены. Состояние
+   * интерфейса одного игрока: по сети не уходит, в мир не попадает,
+   * в контрольную сумму не входит — как выделение и режимы.
+   *
+   * Хранится здесь, а не в store, по той же причине, по какой там нет
+   * позиций сущностей: палец двигается до шестидесяти раз в секунду,
+   * и возить его через React значило бы перерисовывать дерево
+   * с той же частотой. До сцены оно доезжает снимком намерения.
+   */
+  readonly touch: TouchStick | null;
   /** Клетка под курсором, либо -1. */
   readonly hoverCell: number;
   /**
@@ -92,6 +132,8 @@ export interface Controls {
    */
   setBuildKind(kind: StructureKind | null): void;
   setAimingNuke(aiming: boolean): void;
+  /** Программное наведение цели атаки — из плитки тулбара. */
+  setAimingTarget(aiming: boolean): void;
   /** Программное открытие и закрытие меню — из кнопок HUD. */
   setMenuOpen(open: boolean): void;
   detach(): void;
@@ -163,6 +205,19 @@ const UNITS_MODE_KEY = 'KeyE';
 
 /** Свернуть и развернуть характеристики в тулбаре. */
 const STATS_KEY = 'KeyR';
+
+/**
+ * Насколько палец должен уехать, чтобы это считалось свайпом, а не тапом.
+ *
+ * Шестнадцать точек — примерно половина подушечки пальца. Меньше — и
+ * любой тап уводил бы генерала: палец при нажатии всегда чуть едет.
+ * Больше — и свайп пришлось бы начинать с размаха.
+ *
+ * Порог служит сразу двум делам, и это не совпадение, а причина, по
+ * которой он один: он же отделяет «палец что-то делает» от «палец
+ * указал клетку». За порогом действие по отрыву уже не выполняется.
+ */
+const TOUCH_STICK_THRESHOLD_PX = 16;
 
 const NUKE_KEY = 'KeyF';
 const CANCEL_KEY = 'Escape';
@@ -238,8 +293,12 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   let building = false;
   let buildKind: StructureKind | null = null;
   let aimingNuke = false;
+  let aimingTarget = false;
   let hoverCell = -1;
   let selectedCell = -1;
+
+  /** Замирающий свайп. Живёт только пока палец на экране. */
+  let stick: TouchStick | null = null;
 
   let direction = DIRECTION_STOP;
   let dragging = false;
@@ -247,6 +306,34 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   let lastY = 0;
   let rafHandle = 0;
   let menuOpen = false;
+
+  /**
+   * Захват указателя — удобство, а не условие.
+   *
+   * Он нужен затем, чтобы события продолжали приходить, когда палец
+   * или курсор ушли за край элемента: без захвата свайп, доехавший
+   * до края экрана, обрывается на полпути.
+   *
+   * Но если захвата нет — метода не оказалось, указатель уже отпущен,
+   * браузер отказал, — жест обязан продолжать работать. Уронить весь
+   * разбор нажатия из-за неудавшегося удобства значит потерять ввод
+   * целиком там, где он лишь ухудшился бы.
+   */
+  const capture = (pointerId: number): void => {
+    try {
+      host.setPointerCapture?.(pointerId);
+    } catch {
+      // Захват не удался — жест идёт дальше без него.
+    }
+  };
+
+  const releaseCapture = (pointerId: number): void => {
+    try {
+      if (host.hasPointerCapture?.(pointerId) === true) host.releasePointerCapture(pointerId);
+    } catch {
+      // Освобождать нечего.
+    }
+  };
 
   const localPoint = (event: PointerEvent): { x: number; y: number } => {
     const box = host.getBoundingClientRect();
@@ -294,10 +381,11 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   };
 
   const cancelModes = (): boolean => {
-    const had = building || buildKind !== null || aimingNuke || selectedCell >= 0;
+    const had = building || buildKind !== null || aimingNuke || aimingTarget || selectedCell >= 0;
 
     setBuilding(false);
     aimingNuke = false;
+    aimingTarget = false;
     // Esc снимает и выделение: игрок нажимает его, чтобы «ничего
     // не было выбрано», и оставлять подсветку на поле было бы обманом.
     if (selectedCell >= 0) {
@@ -451,6 +539,84 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     syncDirection();
   };
 
+  /**
+   * Действие указателя по клетке: удар, цель, постройка, выделение.
+   *
+   * Вынесено отдельно, потому что вызывается из двух мест и в разные
+   * моменты: мышь делает это в нажатии, палец — в отрыве. Причина
+   * у пальца та же, по которой он вообще ждёт: тот же палец водит
+   * генерала, и действуй интерфейс сразу, первое же движение свайпа
+   * успевало бы заложить постройку. Отменить отправленную команду
+   * нельзя.
+   */
+  const actAt = (x: number, y: number): boolean => {
+    const minimapCell = handlers.minimapCellAtScreen(x, y);
+    if (minimapCell >= 0) {
+      handlers.jumpTo(minimapCell);
+      return true;
+    }
+
+    if (aimingNuke) {
+      const cell = handlers.cellAtScreen(x, y);
+      if (cell >= 0) handlers.nuke(cell);
+      aimingNuke = false;
+      return true;
+    }
+
+    // Наведение цели снимается указанием клетки — как у удара, а не как
+    // у постройки. Постройку ставят подряд, цель назначают одну.
+    if (aimingTarget) {
+      const cell = handlers.cellAtScreen(x, y);
+      if (cell >= 0) handlers.setTarget(cell);
+      aimingTarget = false;
+      return true;
+    }
+
+    if (buildKind !== null) {
+      const cell = handlers.cellAtScreen(x, y);
+      if (cell >= 0) handlers.build(cell, buildKind);
+      return true;
+    }
+
+    // Нажатие БЕЗ выбранного вида постройки выделяет объект. Свободного
+    // нажатия у нас нет, и придумывать третью кнопку не хочется; зато
+    // в этом состоянии оно до сих пор не делало ничего — новое поведение
+    // занимает пустоту, а не отбирает существующее.
+    const picked = handlers.cellAtScreen(x, y);
+    if (picked >= 0) {
+      // Повторное указание выделенного снимает выделение: так же,
+      // как повторное нажатие клавиши постройки выключает режим.
+      selectedCell = selectedCell === picked ? -1 : picked;
+      handlers.select(selectedCell);
+      return true;
+    }
+
+    // Мимо всего: ни клетки, ни миникарты. Для мыши это значит
+    // «тянуть карту», для пальца — не значит ничего.
+    return false;
+  };
+
+  /**
+   * Направление джойстика.
+   *
+   * Считается той же `worldDirection`, что и для клавиш движения.
+   * Своей таблицы «вверх — это северо-запад» здесь нет намеренно:
+   * она разошлась бы с клавиатурной при первой правке угла проекции,
+   * а привязка выводится из самой проекции.
+   */
+  const syncStick = (): void => {
+    let next = DIRECTION_STOP;
+
+    if (stick !== null && stick.engaged) {
+      next = worldDirection(stick.x - stick.originX, stick.y - stick.originY);
+    }
+
+    if (next === direction) return;
+
+    direction = next;
+    handlers.setDirection(next);
+  };
+
   const onPointerDown = (event: PointerEvent): void => {
     // Меню накрывает поле собой, поэтому нажатие сюда и так не дойдёт.
     // Проверка стоит на случай, если меню когда-нибудь станет уже поля:
@@ -458,6 +624,15 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     if (menuOpen) return;
 
     const point = localPoint(event);
+
+    // Касание: нажатие само по себе не делает ничего, оно лишь ставит
+    // точку отсчёта. Что это было — тап или свайп, — станет известно
+    // только по тому, уедет ли палец за порог.
+    if (event.pointerType === 'touch') {
+      stick = { originX: point.x, originY: point.y, x: point.x, y: point.y, engaged: false };
+      capture(event.pointerId);
+      return;
+    }
 
     if (event.button === 2) {
       const cell = handlers.cellAtScreen(point.x, point.y);
@@ -467,49 +642,43 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
 
     if (event.button !== 0) return;
 
-    const minimapCell = handlers.minimapCellAtScreen(point.x, point.y);
-    if (minimapCell >= 0) {
-      handlers.jumpTo(minimapCell);
-      return;
-    }
-
-    if (aimingNuke) {
-      const cell = handlers.cellAtScreen(point.x, point.y);
-      if (cell >= 0) handlers.nuke(cell);
-      aimingNuke = false;
-      return;
-    }
-
-    if (buildKind !== null) {
-      const cell = handlers.cellAtScreen(point.x, point.y);
-      if (cell >= 0) handlers.build(cell, buildKind);
-      return;
-    }
-
-    // Левая кнопка БЕЗ выбранного вида постройки выделяет объект под
-    // курсором. Свободного нажатия у нас нет, и придумывать третью кнопку
-    // не хочется; зато в этом состоянии левая кнопка до сих пор не делала
-    // ничего — новое поведение занимает пустоту, а не отбирает
-    // существующее. Пока вид постройки выбран, левая кнопка строит,
-    // как строила.
-    const picked = handlers.cellAtScreen(point.x, point.y);
-    if (picked >= 0) {
-      // Повторный щелчок по выделенному снимает выделение: так же,
-      // как повторное нажатие клавиши постройки выключает режим.
-      selectedCell = selectedCell === picked ? -1 : picked;
-      handlers.select(selectedCell);
-      return;
-    }
+    // Мышь действует В МОМЕНТ НАЖАТИЯ, и ждать отпускания ей незачем:
+    // у неё нет свайпа, спорить за кнопку не с кем, а главное
+    // нефункциональное требование проекта — отклик в том же кадре.
+    //
+    // Тянуть карту можно только когда нажатие не сделало НИЧЕГО:
+    // иначе щелчок по миникарте переносил бы камеру и тут же начинал
+    // тащить её следом за курсором.
+    if (actAt(point.x, point.y)) return;
 
     dragging = true;
     lastX = event.clientX;
     lastY = event.clientY;
-    host.setPointerCapture(event.pointerId);
+    capture(event.pointerId);
   };
 
   const onPointerMove = (event: PointerEvent): void => {
     const point = localPoint(event);
     hoverCell = handlers.cellAtScreen(point.x, point.y);
+
+    // Замирающий свайп. Палец ведёт джойстик, пока он на экране, —
+    // и держит направление, даже когда сам остановился. Держать
+    // направление, непрерывно водя пальцем, физически невозможно;
+    // неподвижный палец — единственный способ идти долго.
+    if (stick !== null) {
+      const dx = point.x - stick.originX;
+      const dy = point.y - stick.originY;
+
+      // Включившись, джойстик уже не выключается сдвигом обратно
+      // к центру: вернувшийся в центр палец означает «стоп», а не
+      // «это был тап». Тапом он быть перестал в тот миг, когда уехал.
+      const engaged =
+        stick.engaged || Math.hypot(dx, dy) >= TOUCH_STICK_THRESHOLD_PX;
+
+      stick = { ...stick, x: point.x, y: point.y, engaged };
+      syncStick();
+      return;
+    }
 
     if (!dragging) return;
 
@@ -524,10 +693,40 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   };
 
   const onPointerUp = (event: PointerEvent): void => {
-    dragging = false;
-    if (host.hasPointerCapture(event.pointerId)) {
-      host.releasePointerCapture(event.pointerId);
+    // Отрыв пальца: генерал останавливается, а действие выполняется —
+    // но только если палец так и не уехал за порог, то есть это был тап,
+    // а не свайп.
+    if (stick !== null) {
+      const tapped = !stick.engaged;
+      const point = localPoint(event);
+
+      stick = null;
+      syncStick();
+
+      if (tapped) void actAt(point.x, point.y);
     }
+
+    dragging = false;
+    releaseCapture(event.pointerId);
+  };
+
+  /**
+   * Палец, уведённый за край экрана или перехваченный системой.
+   *
+   * Отдельно от отрыва, и это не перестраховка: `pointercancel`
+   * приходит вместо `pointerup`, а не вместе с ним. Не обработай его —
+   * и генерал уйдёт навсегда, потому что остановить его будет уже нечем.
+   * Та же беда, что с зажатой клавишей при потере фокуса окном, и лечится
+   * тем же: состояние сбрасывается, направление пересчитывается.
+   *
+   * Действие при этом НЕ выполняется: жест не завершён, а прерван.
+   */
+  const onPointerCancel = (event: PointerEvent): void => {
+    stick = null;
+    syncStick();
+
+    dragging = false;
+    releaseCapture(event.pointerId);
   };
 
   const onContextMenu = (event: MouseEvent): void => {
@@ -558,7 +757,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   host.addEventListener('pointerdown', onPointerDown);
   host.addEventListener('pointermove', onPointerMove);
   host.addEventListener('pointerup', onPointerUp);
-  host.addEventListener('pointercancel', onPointerUp);
+  host.addEventListener('pointercancel', onPointerCancel);
   host.addEventListener('contextmenu', onContextMenu);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
@@ -567,7 +766,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
 
   return {
     get state(): ControlState {
-      return { building, buildKind, aimingNuke, hoverCell, selectedCell };
+      return { building, buildKind, aimingNuke, aimingTarget, touch: stick, hoverCell, selectedCell };
     },
 
     setBuildKind(kind) {
@@ -576,11 +775,23 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       // придиркой.
       setBuilding(kind !== null);
       buildKind = kind;
+      if (kind !== null) aimingTarget = false;
     },
 
     setAimingNuke(aiming) {
       aimingNuke = aiming;
-      if (aiming) setBuilding(false);
+      if (aiming) {
+        aimingTarget = false;
+        setBuilding(false);
+      }
+    },
+
+    setAimingTarget(aiming) {
+      aimingTarget = aiming;
+      if (aiming) {
+        aimingNuke = false;
+        setBuilding(false);
+      }
     },
 
     setMenuOpen(open) {
@@ -591,7 +802,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       host.removeEventListener('pointerdown', onPointerDown);
       host.removeEventListener('pointermove', onPointerMove);
       host.removeEventListener('pointerup', onPointerUp);
-      host.removeEventListener('pointercancel', onPointerUp);
+      host.removeEventListener('pointercancel', onPointerCancel);
       host.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
