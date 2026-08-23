@@ -12,6 +12,7 @@
   PPM_ONE,
   UNIT_CAP,
   asPlayerId,
+  createHistogram,
   distanceSquared,
   energyToVisible,
   unitsToCells,
@@ -151,6 +152,36 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   let lastHudTick = -1;
   let lastPingMs = 0;
 
+  /**
+   * Приборы плавности.
+   *
+   * Копятся распределением, а не средним, и это главное решение:
+   * частота кадров усредняет ровно так же, как минутные графики
+   * виртуальной машины, и рывок в неё не попадает.
+   *
+   * Два прибора, и вместе они отвечают на вопрос, на который поодиночке
+   * не отвечает ни один: **дёргается браузер или дёргается сервер.**
+   * Длинный кадр при ровном приходе кадров команд — это браузер;
+   * ровные кадры при рваном приходе — это сервер или сеть.
+   */
+  const frameGap = createHistogram();
+  const netGap = createHistogram();
+  let lastFrameArrivalMs = Number.NaN;
+
+  const publishSmoothness = (): void => {
+    const frame = frameGap.snapshot();
+    const net = netGap.snapshot();
+
+    hudActions.setSmoothness({
+      frameP50: Math.round(frame.p50 * 10) / 10,
+      frameP95: Math.round(frame.p95 * 10) / 10,
+      frameMax: Math.round(frame.max * 10) / 10,
+      frameLong: frame.overBudget,
+      netGapP95: Math.round(net.p95 * 10) / 10,
+      netGapMax: Math.round(net.max * 10) / 10,
+    });
+  };
+
   // Участник матча и сетевой клиент нужны друг другу: один отдаёт
   // сообщения, второй их доставляет и приносит ответы. Кольцо разорвано
   // порядком: `net` объявлен ниже, но к моменту первой отправки уже
@@ -171,6 +202,14 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
     onFrame: (tick) => {
       if (tick === 0) hudActions.setPhase('playing');
+
+      // Промежуток между приходами кадров команд. Ожидается длительность
+      // тика; несколько промежутков около нуля подряд означают пачку
+      // после серверной заминки. Часы читаются здесь, а не в `@td/netplay`:
+      // тому платформенные вызовы запрещены.
+      const arrivedAt = performance.now();
+      if (!Number.isNaN(lastFrameArrivalMs)) netGap.add(arrivedAt - lastFrameArrivalMs);
+      lastFrameArrivalMs = arrivedAt;
 
       const confirmed = guest.confirmed;
       if (confirmed === null) return;
@@ -210,6 +249,12 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
       if (world.tick !== lastHudTick && world.tick % HUD_EVERY_TICKS === 0) {
         lastHudTick = world.tick;
+        // Показания плавности уезжают с той же частотой, что снимок
+        // матча, а не каждый кадр: запись атрибута — работа с DOM,
+        // и делать её шестьдесят раз в секунду ради числа, которого
+        // никто не читает в реальном времени, значит портить
+        // измеряемое.
+        publishSmoothness();
         hudActions.setMatch(snapshot(world, localPlayer, controls.state));
         // Сведения обновляются вместе со снимком: здоровье убывает,
         // стройка и снос идут, и застывшее окно врало бы.
@@ -310,6 +355,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     },
 
     onFps: (fps) => hudActions.setFps(fps),
+    onFrameGap: (ms) => frameGap.add(ms),
   });
 
   /**

@@ -405,6 +405,14 @@ const Diagnostics = () => {
   const pongCount = useHudStore((state) => state.pongCount);
   const syncTick = useHudStore((state) => state.syncTick);
   const syncChecksum = useHudStore((state) => state.syncChecksum);
+  // Плавность. Частота кадров рядом остаётся, но мерой больше
+  // не считается: она усредняет, а рывок живёт в хвосте.
+  const frameP50 = useHudStore((state) => state.frameP50);
+  const frameP95 = useHudStore((state) => state.frameP95);
+  const frameMax = useHudStore((state) => state.frameMax);
+  const frameLong = useHudStore((state) => state.frameLong);
+  const netGapP95 = useHudStore((state) => state.netGapP95);
+  const netGapMax = useHudStore((state) => state.netGapMax);
 
   return (
     <div
@@ -417,6 +425,12 @@ const Diagnostics = () => {
       data-pong-count={String(pongCount)}
       data-sync-tick={String(syncTick)}
       data-sync-checksum={String(syncChecksum)}
+      data-frame-p50={String(frameP50)}
+      data-frame-p95={String(frameP95)}
+      data-frame-max={String(frameMax)}
+      data-frame-long={String(frameLong)}
+      data-net-gap-p95={String(netGapP95)}
+      data-net-gap-max={String(netGapMax)}
       style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }}
     />
   );

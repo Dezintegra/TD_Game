@@ -228,6 +228,22 @@ export interface SelectionView {
   /** Почему снести нельзя. Пусто, когда можно. */
   readonly demolishBlocked: string;
 }
+/**
+ * Показания плавности — то, чем частота кадров заменяется по существу.
+ *
+ * Собраны в один вид потому, что и снимаются, и читаются вместе:
+ * поодиночке ни одно из этих чисел на вопрос «дёргается ли» не отвечает.
+ */
+export interface SmoothnessView {
+  readonly frameP50: number;
+  readonly frameP95: number;
+  readonly frameMax: number;
+  /** Сколько кадров вышло длиннее тика. Точное число, а не оценка. */
+  readonly frameLong: number;
+  readonly netGapP95: number;
+  readonly netGapMax: number;
+}
+
 interface HudState {
   readonly status: ConnectionStatus;
   readonly tick: number;
@@ -237,6 +253,31 @@ interface HudState {
   readonly latencyMs: number;
   /** Кадров в секунду, усреднённо. */
   readonly fps: number;
+  /**
+   * Плавность: распределение промежутка между кадрами, миллисекунды.
+   *
+   * Хранится рядом с `fps`, но заменяет его по смыслу. Частота кадров
+   * усредняет, а рывок живёт в хвосте: один кадр длиной в двести
+   * миллисекунд опускает шестьдесят кадров в секунду до пятидесяти
+   * пяти, и в это число не попадает.
+   *
+   * `frameLong` — сколько кадров вышло длиннее тика. Точное число,
+   * а не оценка по корзинам: именно на него и смотрят.
+   */
+  readonly frameP50: number;
+  readonly frameP95: number;
+  readonly frameMax: number;
+  readonly frameLong: number;
+  /**
+   * Разброс промежутков между приходами кадров команд от сервера.
+   *
+   * Ожидается длительность тика. Несколько промежутков около нуля
+   * подряд означают, что сервер прислал пачку после заминки, — и это
+   * единственный способ отличить дрожание сервера от дрожания
+   * браузера, не имея показаний с обеих сторон разом.
+   */
+  readonly netGapP95: number;
+  readonly netGapMax: number;
   /** Seed текущей карты. Карта восстанавливается из него целиком. */
   readonly seed: number;
   /** Какая доля карты помещается на экран, в процентах. */
@@ -315,6 +356,8 @@ interface HudState {
   setTick(tick: number): void;
   registerPong(latencyMs: number): void;
   setFps(fps: number): void;
+  /** Показания плавности разом: они меняются вместе и читаются вместе. */
+  setSmoothness(smoothness: SmoothnessView): void;
   setMapInfo(seed: number, visiblePercent: number, rockPercent: number): void;
   setMatch(match: MatchSnapshot): void;
   setNotices(notices: readonly Notice[]): void;
@@ -363,6 +406,12 @@ export const useHudStore = create<HudState>((set) => ({
   pongCount: 0,
   latencyMs: 0,
   fps: 0,
+  frameP50: 0,
+  frameP95: 0,
+  frameMax: 0,
+  frameLong: 0,
+  netGapP95: 0,
+  netGapMax: 0,
   seed: 0,
   visiblePercent: 0,
   rockPercent: 0,
@@ -384,6 +433,21 @@ export const useHudStore = create<HudState>((set) => ({
   setTick: (tick) => set({ tick }),
   registerPong: (latencyMs) => set((state) => ({ pongCount: state.pongCount + 1, latencyMs })),
   setFps: (fps) => set({ fps }),
+
+  // Одним изменением состояния, а не шестью: величины меняются вместе
+  // и читаются вместе, а шесть отдельных вызовов означали бы шесть
+  // перерисовок панели на каждое обновление.
+  setSmoothness: (smoothness) =>
+    set((state) =>
+      state.frameP50 === smoothness.frameP50 &&
+      state.frameP95 === smoothness.frameP95 &&
+      state.frameMax === smoothness.frameMax &&
+      state.frameLong === smoothness.frameLong &&
+      state.netGapP95 === smoothness.netGapP95 &&
+      state.netGapMax === smoothness.netGapMax
+        ? state
+        : smoothness,
+    ),
   setMapInfo: (seed, visiblePercent, rockPercent) => set({ seed, visiblePercent, rockPercent }),
   setMatch: (match) => set({ match }),
   setNotices: (notices) => set({ notices }),
@@ -424,6 +488,8 @@ export const hudActions = {
   setTick: (tick: number) => useHudStore.getState().setTick(tick),
   registerPong: (latencyMs: number) => useHudStore.getState().registerPong(latencyMs),
   setFps: (fps: number) => useHudStore.getState().setFps(fps),
+  setSmoothness: (smoothness: SmoothnessView) =>
+    useHudStore.getState().setSmoothness(smoothness),
   setMapInfo: (seed: number, visiblePercent: number, rockPercent: number) =>
     useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent),
   setMatch: (match: MatchSnapshot) => useHudStore.getState().setMatch(match),
