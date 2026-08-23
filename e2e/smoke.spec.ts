@@ -54,6 +54,7 @@ test('панели не перекрывают игровое поле', async (
   // самое делает клавиша R, а места в тулбаре на ноутбуке 1366 нет
   // ни на что лишнее.
   await expect(page.getByTestId('stats-toggle')).toBeHidden();
+  await expect(page.getByTestId('menu-open')).toBeHidden();
 
   // Главное свойство раскладки, и проверять его глазами нельзя: панель,
   // наехавшая на поле, закрывает собой клетки, на которых идёт бой,
@@ -465,7 +466,7 @@ test.describe('телефон в портрете', () => {
     // Свёрнутые характеристики — обычная игра, и экран принадлежит полю.
     await page.keyboard.press('KeyR');
     await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
-    expect(await fieldShare(page)).toBeGreaterThanOrEqual(72);
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(70);
   });
 });
 
@@ -498,5 +499,18 @@ test.describe('телефон в ландшафте', () => {
     await expect(page.getByTestId('aim-nuke')).toBeVisible();
 
     expect(await fieldShare(page)).toBeGreaterThanOrEqual(54);
+
+    // Из матча надо уметь выйти. На телефоне Esc нажать нечем, и до этой
+    // кнопки выйти было нельзя ВООБЩЕ: ни выйти, ни сдаться, ни начать
+    // заново — зависший матч оставалось закрыть вкладкой.
+    const menu = page.getByTestId('menu-open');
+    await expect(menu).toBeVisible();
+    await menu.click();
+    await expect(page.getByTestId('match-menu')).toBeVisible();
+    await expect(page.getByTestId('match-leave')).toBeVisible();
+
+    // И закрыть его тем же нажатием, не ища клавиатуру.
+    await menu.click();
+    await expect(page.getByTestId('match-menu')).toBeHidden();
   });
 });

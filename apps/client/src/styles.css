@@ -384,6 +384,75 @@ body {
   }
 }
 
+/* Первая строка верхней полосы: кнопка меню слева, состояние связи справа.
+
+   На мониторе кнопки нет, и строка выглядит ровно как прежде — одна
+   строка состояния, прижатая вправо. */
+.td-hud-headline {
+  display: flex;
+  align-items: center;
+  gap: var(--td-space-2);
+}
+
+.td-hud-headline > [data-testid='connection-status'] {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Вход в меню матча нажатием.
+
+   На мониторе его нет: там меню открывает Esc.
+
+   На телефоне Esc нажать нечем, и до этой кнопки выйти из матча было
+   нельзя ВООБЩЕ — ни выйти, ни сдаться, ни начать заново. Зависший матч
+   оставалось только закрыть вкладку.
+
+   Стоит в верхней полосе, а не поверх поля, и это важно именно для того
+   случая, ради которого кнопка нужна: полоса не зависит от игрового
+   цикла и работает, когда мир встал. */
+.td-menu-button {
+  display: none;
+}
+
+/* Подсказки клавиш там, где клавиш нет.
+
+   Список горячих клавиш и приписка «(Esc)» на телефоне не помогают,
+   а обещают возможности, которых у игрока не будет. */
+.td-hotkey-list,
+.td-key-hint {
+  display: initial;
+}
+
+@media (max-width: 620px), (max-height: 520px) {
+  .td-menu-button {
+    display: flex;
+    align-items: center;
+    gap: var(--td-space-1);
+    flex-shrink: 0;
+
+    min-height: var(--td-hud-button-height);
+    padding: 0 var(--td-space-2);
+    border: 1px solid var(--td-border-control);
+    border-radius: var(--td-radius-control);
+    background: transparent;
+    color: var(--td-text-muted-2);
+    font-family: var(--td-font-ui);
+    font-size: var(--td-text-xs);
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .td-menu-button[data-open='true'] {
+    color: var(--td-accent);
+    border-color: var(--td-accent);
+  }
+
+  .td-hotkey-list,
+  .td-key-hint {
+    display: none;
+  }
+}
+
 /* Кнопка «свернуть — развернуть характеристики».
 
    На мониторе её нет вовсе: там то же самое делает клавиша R, а места

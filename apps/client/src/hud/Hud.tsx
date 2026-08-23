@@ -76,7 +76,10 @@ export const Hud = () => {
       data-stats={statsOpen ? 'open' : 'closed'}
     >
       <div id="hud-top">
-        <ConnectionLine />
+        <div className="td-hud-headline">
+          <MatchMenuButton />
+          <ConnectionLine />
+        </div>
         <TopBar />
         <Diagnostics />
       </div>
@@ -98,6 +101,42 @@ export const Hud = () => {
 // ─────────────────────────────────────────────────────────────────────────
 // Верхняя полоса
 // ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Вход в меню матча нажатием.
+ *
+ * На мониторе его нет: там меню открывает Esc, и лишняя кнопка в полосе
+ * стоила бы места ни за что.
+ *
+ * На телефоне Esc нажать нечем, и до этой кнопки выйти из матча было
+ * НЕЛЬЗЯ ВООБЩЕ. Не «неудобно» — никак: ни выйти, ни сдаться, ни начать
+ * заново. Зависший матч оставалось только закрыть вкладку.
+ *
+ * Живёт в верхней полосе, а не поверх поля, и это важно именно для того
+ * случая, ради которого кнопка и нужна. Полоса не зависит от игрового
+ * цикла: она рисуется React из store, и когда мир встал — расхождение,
+ * обрыв, остановка, — кнопка работает по-прежнему.
+ *
+ * Показывается и прячется правилом CSS по размеру экрана, а не ветвлением
+ * здесь: React о размере экрана знать не должен.
+ */
+const MatchMenuButton = () => {
+  const open = useHudStore((state) => state.menuOpen);
+
+  return (
+    <button
+      type="button"
+      className="td-menu-button"
+      data-testid="menu-open"
+      data-open={String(open)}
+      title={open ? 'Закрыть меню матча' : 'Меню матча'}
+      onClick={() => matchCommands().setMenuOpen(!open)}
+    >
+      <span aria-hidden>{open ? '✕' : '☰'}</span>
+      <span>меню</span>
+    </button>
+  );
+};
 
 /**
  * Связь — строкой текста, а не панелью.
@@ -529,7 +568,7 @@ const MatchMenu = () => {
             onClick={() => matchCommands().setMenuOpen(false)}
             style={controlStyle}
           >
-            Продолжить (Esc)
+            Продолжить <span className="td-key-hint">(Esc)</span>
           </Button>
 
           {/* Звук живёт здесь по той же причине, что и перечень клавиш:
@@ -540,7 +579,10 @@ const MatchMenu = () => {
             <SoundPanel />
           </div>
 
-          <div style={{ marginTop: 'var(--td-space-4)' }}>
+          {/* Перечень клавиш прячется на телефоне: там этих клавиш нет,
+              и список сообщает игроку о возможностях, которых у него
+              не будет. */}
+          <div className="td-hotkey-list" style={{ marginTop: 'var(--td-space-4)' }}>
             {HOTKEYS.map((hint) => (
               <div
                 key={hint.keys}
