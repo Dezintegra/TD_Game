@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { bootGame, diagnosticNumber, number } from './helpers.js';
+import { record } from './perf-record.js';
 
 /**
  * Замеры частоты кадров.
@@ -38,6 +39,7 @@ test('частота кадров держится при непрерывном
 
   await page.keyboard.up('ArrowRight');
 
+  record('камера в движении', fps);
   expect(fps).toBeGreaterThanOrEqual(55);
 });
 
@@ -51,5 +53,9 @@ test('частота кадров держится, когда на поле п�
   await page.waitForTimeout(8000);
 
   expect(await number(page, 'unit-count')).toBeGreaterThan(0);
-  expect(await diagnosticNumber(page, 'fps')).toBeGreaterThanOrEqual(55);
+
+  const fps = await diagnosticNumber(page, 'fps');
+
+  record('войска на поле', fps);
+  expect(fps).toBeGreaterThanOrEqual(55);
 });
