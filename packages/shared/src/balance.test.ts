@@ -3,6 +3,7 @@ import { TICKS_PER_SECOND } from './constants.js';
 import { cellsToUnits } from './units.js';
 import {
   BASE_ATTACK,
+  BASE_COOLDOWN_TICKS,
   BASE_HEALTH,
   BASE_TOWER_RANGE_CELLS,
   BASE_UNIT_COST,
@@ -11,6 +12,7 @@ import {
   BUILDABLE_KINDS,
   BlastKind,
   ENERGY_SCALE,
+  FIRST_MISSILE_SIDE,
   GENERAL_STATS,
   GENERAL_WEAPON,
   NUKE_COST,
@@ -19,6 +21,7 @@ import {
   SHOT_LIFETIME_TICKS,
   STRUCTURE_STATS,
   STRUCTURE_WEAPON,
+  ShotSide,
   ShotWeapon,
   StructureKind,
   UNIT_STATS,
@@ -125,15 +128,35 @@ describe('баланс: дальность генерала', () => {
     expect(GENERAL_STATS.range).toBe(GENERAL_STATS.buildRadius);
   });
 
-  it('дуэль с непрокачанной башней генерал проигрывает', () => {
-    // Главная проверка изменения. Начни генерал выигрывать у башни —
-    // и отменяется центральная механика замысла: укрепление позиции.
-    const shotsToKillGeneral = Math.ceil(GENERAL_STATS.health / tower.attack);
-    const shotsToKillTower = Math.ceil(tower.health / GENERAL_STATS.attack);
+  /** За сколько тиков генерал снимает одну непрокачанную башню. */
+  const ticksToTakeTower = Math.ceil(tower.health / GENERAL_STATS.attack) *
+    GENERAL_STATS.cooldownTicks;
 
-    expect(shotsToKillGeneral * tower.cooldownTicks).toBeLessThan(
-      shotsToKillTower * GENERAL_STATS.cooldownTicks,
-    );
+  /** Сколько тиков генерал живёт под огнём `count` таких башен. */
+  const ticksAlive = (count: number): number =>
+    Math.ceil(GENERAL_STATS.health / (tower.attack * count)) * tower.cooldownTicks;
+
+  it('одиночную непрокачанную башню генерал разбирает и остаётся жив', () => {
+    // Прежде здесь стояло обратное требование — «дуэль генерал
+    // проигрывает». Оно отменено сознательно вместе с сокращением
+    // перезарядки: генерал перестал быть стрелком уровня штурмовика.
+    // Центральную механику замысла отменяет не победа над одной башней,
+    // а безнаказанность против укреплённой позиции, и стерегут её
+    // две проверки ниже.
+    expect(ticksToTakeTower).toBeLessThan(ticksAlive(1));
+  });
+
+  it('на паре башен генерал разменивается один к одному', () => {
+    // Первую снять успевает, вторую — уже нет: на неё нужно вдвое
+    // больше времени, чем ему осталось жить.
+    expect(ticksToTakeTower).toBeLessThan(ticksAlive(2));
+    expect(ticksToTakeTower * 2).toBeGreaterThan(ticksAlive(2));
+  });
+
+  it('трёх башен генерал не переживает вовсе', () => {
+    // Вот это и есть укреплённая позиция. Пока линия обороны бьёт
+    // втроём, генерал не снимает с неё ни одной башни.
+    expect(ticksAlive(3)).toBeLessThan(ticksToTakeTower);
   });
 
   it('снайпер, Тесла и снайперская башня по-прежнему перестреливают генерала', () => {
@@ -143,14 +166,57 @@ describe('баланс: дальность генерала', () => {
   });
 
   it('добывать энергию убийствами невыгоднее, чем просто ждать доход', () => {
-    // Тест защищает не от этой правки, а от будущих: стоит атаке генерала
-    // подрасти, и охота за юнитами станет выгоднее позиционной борьбы,
-    // а игра превратится в ферму.
+    // Стоит охоте за юнитами стать выгоднее позиционной борьбы —
+    // и игра превращается в ферму.
+    //
+    // Запас здесь БОЛЬШЕ НЕ ОГРОМНЫЙ, и это заявленное последствие
+    // сокращения перезарядки: было 2,5 против 10, стало 9,375 против 10.
+    // Двух ступеней прокачки атаки хватает, чтобы граница была перейдена.
+    // Держит явление не число, а то, что награду даёт только ДОБИВАЮЩИЙ
+    // удар генерала: за ним надо стоять в пяти клетках от боя под
+    // ответным огнём.
     const assault = UNIT_STATS[UnitType.Assault];
     const shots = Math.ceil(assault.health / GENERAL_STATS.attack);
     const perTick = assault.cost / (shots * GENERAL_STATS.cooldownTicks);
 
     expect(perTick).toBeLessThan(BASE_INCOME_PER_TICK);
+  });
+});
+
+describe('баланс: скорострельность генерала', () => {
+  it('вчетверо чаще базовой перезарядки, с точностью до целого тика', () => {
+    // Ровно вчетверо не выражается: четверть от тридцати тиков —
+    // это семь с половиной, а номер тика дробным не бывает.
+    expect(GENERAL_STATS.cooldownTicks).toBe(Math.round(BASE_COOLDOWN_TICKS / 4));
+  });
+
+  it('урон за выстрел остался базовым', () => {
+    // Растёт частота, а не сила удара. Иначе пришлось бы двигать
+    // и награду за убийство, и цену прокачки атаки.
+    expect(GENERAL_STATS.attack).toBe(BASE_ATTACK);
+  });
+
+  it('в воздухе висят ровно два следа ракеты одной машины', () => {
+    // То самое, ради чего борта чередуются: залп читается залпом.
+    // Больше двух — и небо над генералом превратится в сплошной дым.
+    const trails = SHOT_LIFETIME_TICKS[ShotWeapon.Missile] / GENERAL_STATS.cooldownTicks;
+
+    expect(trails).toBe(2);
+  });
+});
+
+describe('баланс: борта ракеты', () => {
+  it('борта противоположны по знаку, а ось даёт ноль', () => {
+    // Значения работают множителем смещения, а не порядковым номером:
+    // отрисовка умножает на них вылет подвески и обходится без условий.
+    expect(ShotSide.Left).toBe(-ShotSide.Right);
+    expect(ShotSide.Centre).toBe(0);
+  });
+
+  it('первая ракета уходит с борта, а не по оси', () => {
+    // По оси у генерала не стреляет ни один выстрел, включая самый
+    // первый: «по оси» — это про всех остальных.
+    expect(FIRST_MISSILE_SIDE).not.toBe(ShotSide.Centre);
   });
 });
 

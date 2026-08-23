@@ -11,6 +11,7 @@ import {
   SPLASH_OUTER_RADIUS,
   STRUCTURE_STATS,
   STRUCTURE_WEAPON,
+  ShotSide,
   ShotWeapon,
   StructureKind,
   TOWER_GROWTH_CAP_PPM,
@@ -720,6 +721,7 @@ const fire = (
   attack: number,
   structureDamagePercent: number,
   weapon: ShotWeapon,
+  side: ShotSide,
 ): void => {
   const aim = targetPosition(working, target);
   if (aim === undefined) return;
@@ -739,7 +741,7 @@ const fire = (
     splash(working, statsTable, indices, shooter, aim, target, attack);
   }
 
-  recordShot(working, shooter.owner, origin, aim, lethal, weapon);
+  recordShot(working, shooter.owner, origin, aim, lethal, weapon, side);
 };
 
 const globalTargetIndexOf = (working: Working, owner: PlayerId): number => {
@@ -829,6 +831,7 @@ const fireStructure = (
     attack,
     100,
     STRUCTURE_WEAPON[structure.kind],
+    ShotSide.Centre,
   );
 };
 
@@ -894,6 +897,7 @@ const fireUnit = (
     baseline.attack,
     baseline.structureDamagePercent,
     UNIT_WEAPON[unit.unitType],
+    ShotSide.Centre,
   );
 };
 
@@ -925,6 +929,13 @@ const fireGeneral = (
 
   general.facing = aimFacing(working, target, general.x, general.y, general.facing);
   general.readyAtTick = asTickNumber(working.tick + baseline.cooldownTicks);
+
+  // Борт переключается ровно здесь — после того, как выстрел признан
+  // состоявшимся. Все выходы «цели нет» и «перезарядка не вышла» уже
+  // позади, и промолчавший генерал очередь бортов не сбивает.
+  const side = general.nextMissileSide;
+  general.nextMissileSide = side === ShotSide.Left ? ShotSide.Right : ShotSide.Left;
+
   fire(
     working,
     statsTable,
@@ -935,5 +946,6 @@ const fireGeneral = (
     baseline.attack,
     baseline.structureDamagePercent,
     GENERAL_WEAPON,
+    side,
   );
 };

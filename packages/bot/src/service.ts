@@ -1,4 +1,5 @@
 import { LOBBY_CAPACITY } from '@td/protocol';
+import { DEFAULT_PROFILE_ID } from '@td/ai';
 import type { PlayerView } from '@td/protocol';
 import { createLobbyApi } from './lobby-api.js';
 import type { FetchLike, LobbyApi } from './lobby-api.js';
@@ -44,6 +45,15 @@ export interface ComputerServiceOptions {
   /** Как называется его комната. */
   readonly title?: string;
   /**
+   * Какой манерой играют все дежурные этой службы.
+   *
+   * Одна служба — одна манера. Дежурные различаются только порядковым
+   * номером, и объяснять игроку, чем «Компьютер 2» отличается
+   * от «Компьютера 3», было бы нечем; разные манеры показываются разными
+   * комнатами.
+   */
+  readonly profile?: string;
+  /**
    * Как выдаются идентификаторы дежурных.
    *
    * Случайные и известные только серверу, который эту службу запустил:
@@ -58,6 +68,14 @@ export interface ComputerServiceOptions {
 export interface ComputerService {
   /** Принадлежит ли идентификатор этой службе. */
   owns(playerId: string): boolean;
+  /**
+   * Каким профилем играет этот дежурный. Чужой идентификатор — `undefined`.
+   *
+   * Тот же источник, что и `owns`, и это не удобство, а требование:
+   * два обработчика — «это компьютер» и «вот его профиль» — однажды
+   * разойдутся, и сторона запишется человеческой при живом компьютере.
+   */
+  profileOf(playerId: string): string | undefined;
   /** Сколько матчей ведётся сейчас. */
   readonly matchCount: number;
   /** Сколько дежурных ждёт соперника. */
@@ -152,6 +170,7 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
         ticket: match.ticket,
         seed: match.seed,
         side: match.side,
+        ...(options.profile === undefined ? {} : { profile: options.profile }),
         openSocket: options.openSocket,
         ...(options.log === undefined ? {} : { log: options.log }),
         onOutcome: (outcome) => {
@@ -238,6 +257,8 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
 
   return {
     owns: (playerId) => issued.has(playerId),
+    profileOf: (playerId) =>
+      issued.has(playerId) ? (options.profile ?? DEFAULT_PROFILE_ID) : undefined,
     get matchCount() {
       return matchCount();
     },

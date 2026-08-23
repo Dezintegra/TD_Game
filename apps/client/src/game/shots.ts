@@ -1,7 +1,9 @@
 import type { Graphics } from 'pixi.js';
 import {
+  MISSILE_FLIGHT_SHARE,
   SHOT_LIFETIME_TICKS,
   SPLASH_OUTER_RADIUS,
+  ShotSide,
   ShotWeapon,
   TICKS_PER_SECOND,
   unitsToCells,
@@ -12,7 +14,12 @@ import type { ShotState, StructureState, WorldState } from '@td/sim';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 import type { ViewBounds } from './entities.js';
-import { GENERAL_ALTITUDE, MIRROR_SQUASH, UNIT_ALTITUDE } from './models.js';
+import {
+  GENERAL_ALTITUDE,
+  GENERAL_PYLON_SIDE,
+  MIRROR_SQUASH,
+  UNIT_ALTITUDE,
+} from './models.js';
 import { blend } from './prism.js';
 import { hashOf, noiseFrom } from './noise.js';
 import { fadeOver, glowFill, particleHeight, riseOver, smokeFill, travel } from './effects.js';
@@ -86,10 +93,55 @@ const SHOULDER_CELLS = 0.35 + UNIT_ALTITUDE;
 /**
  * Высота, на которой ракета выходит из-под машины генерала.
  *
- * Чуть ниже самой машины: подвеска висит под фюзеляжем, а не растёт
- * из его спины.
+ * Чуть ниже самой машины: подвеска висит под пилоном, а не растёт
+ * у него из спины. Пилон вынесен вбок и вверх, кольцо хувера — ещё
+ * выше, и ракета проходит под обоими.
  */
 const MISSILE_MOUNT_CELLS = GENERAL_ALTITUDE - 0.04;
+
+/**
+ * Сдвиг точки пуска на борт, в экранных пикселях.
+ *
+ * Откладывается поперёк линии огня В КЛЕТКАХ и переводится в экран той же
+ * проекцией, что и всё прочее. Отложить его прямо в экранных пикселях
+ * было бы короче и неверно: пилон лежит в горизонтальной плоскости
+ * машины и обязан сокращаться проекцией, иначе вылет подвески окажется
+ * одинаковым при стрельбе вдоль оси и поперёк — то есть пилон начнёт
+ * менять длину от того, куда машина смотрит. Приём не новый: так же
+ * переведено растекание разряда Теслы.
+ *
+ * Поперечное направление — поворот вектора «стрелок → цель» на прямой
+ * угол. Оси мира: X растёт на восток, Y на юг, поэтому (-y, x) — это
+ * правая рука машины, и знак борта из `ShotSide` подходит множителем
+ * без единой поправки.
+ *
+ * Направление берётся от НЕСМЕЩЁННОЙ точки: сдвиг меняет его на доли
+ * градуса, и учитывать эту поправку в самом сдвиге значило бы решать
+ * уравнение там, где хватает порядка действий.
+ *
+ * Поперёк ЛИНИИ ОГНЯ, а не поперёк румба машины, и расходятся они
+ * до 22,5 градуса: румбов восемь, а цель стоит где угодно. На вылете
+ * в 0,215 клетки это до пяти пикселей мимо нарисованного пилона —
+ * заметно меньше самой вспышки. Взять румб было бы точнее по картинке
+ * и неверно по существу: в следе выстрела разворота стрелка нет, а сам
+ * стрелок к моменту показа мог погибнуть. Ракета уходит поперёк того,
+ * куда летит, — это утверждение проверяемо по самой записи.
+ *
+ * Выстрел в упор поперечного направления не имеет — борт тогда
+ * не показывается вовсе. Случай вырожденный: в собственной точке
+ * генерала чужая машина стоять не может.
+ */
+const pylonShift = (shot: ShotState): Point => {
+  if (shot.side === ShotSide.Centre) return { x: 0, y: 0 };
+
+  const dx = unitsToCells(shot.to.x - shot.from.x);
+  const dy = unitsToCells(shot.to.y - shot.from.y);
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return { x: 0, y: 0 };
+
+  const reach = (GENERAL_PYLON_SIDE * shot.side) / length;
+  return worldToScreen(-dy * reach, dx * reach);
+};
 
 /**
  * Куда приходит выстрел по высоте, в клетках.
@@ -317,8 +369,14 @@ const drawShot = (
   const toY = unitsToCells(shot.to.y);
 
   const landing = impactHeight(shot, world, colors);
-  const muzzle = screenAt(fromX, fromY, muzzleHeight(shot, world));
   const impact = screenAt(toX, toY, landing);
+
+  // Точка пуска — над стрелком, а у генерала ещё и на борту. Вспышка
+  // у ствола считается от неё же: свет, оставшийся на оси, показывал бы
+  // пуск оттуда, откуда ракета не выходила.
+  const axis = screenAt(fromX, fromY, muzzleHeight(shot, world));
+  const shift = pylonShift(shot);
+  const muzzle = { x: axis.x + shift.x, y: axis.y + shift.y };
 
   const color = shot.lethal ? colors.shotLethal : colors.shot;
   const accent = shot.owner === localPlayer ? colors.self : colors.enemy;
@@ -893,8 +951,11 @@ const drawSplash = (
  * вместе с записью о выстреле, поэтому дым обязан уложиться ВНУТРЬ срока,
  * а не после него: остаток срока и есть то время, за которое клубы
  * расходятся и тают.
+ *
+ * Само число переехало в `@td/shared`, когда у ракеты появился голос:
+ * звуку нужно ровно то же деление срока, а две копии одной величины
+ * разошлись бы первой же правкой.
  */
-const MISSILE_FLIGHT_SHARE = 0.5;
 
 /**
  * Сколько клубов оставляет ракета по дороге.

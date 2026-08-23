@@ -49,6 +49,12 @@ export interface NodeComputerOptions {
   readonly apiUrl: string;
   readonly wsUrl: string;
   readonly maxMatches?: number;
+  /** Манера этой службы. Не указана — умолчание библиотеки. */
+  readonly profile?: string;
+  /** Как зовут компьютер в списке комнат. */
+  readonly name?: string;
+  /** Как называется его комната. */
+  readonly title?: string;
   readonly log?: (message: string) => void;
 }
 
@@ -65,6 +71,9 @@ export const startComputerService = (options: NodeComputerOptions): ComputerServ
     openSocket: openWsSocket,
     makeId: (index) => `computer-${secret}-${String(index)}`,
     ...(options.maxMatches === undefined ? {} : { maxMatches: options.maxMatches }),
+    ...(options.profile === undefined ? {} : { profile: options.profile }),
+    ...(options.name === undefined ? {} : { name: options.name }),
+    ...(options.title === undefined ? {} : { title: options.title }),
     ...(options.log === undefined ? {} : { log: options.log }),
   });
 };

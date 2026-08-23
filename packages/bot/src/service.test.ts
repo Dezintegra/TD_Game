@@ -1,5 +1,6 @@
 import { LOBBY_CAPACITY } from '@td/protocol';
 import type { PlayerView } from '@td/protocol';
+import { DEFAULT_PROFILE_ID } from '@td/ai';
 import { describe, expect, it } from 'vitest';
 import { parseEvents } from './lobby-api.js';
 import type { FetchLike } from './lobby-api.js';
@@ -233,6 +234,39 @@ describe('служба компьютерных соперников', () => {
     // Назваться компьютером со стороны нельзя: идентификаторы выдаёт
     // служба, а не тот, кто представляется.
     expect(running.owns('computer-999')).toBe(false);
+
+    running.close();
+  });
+
+  it('отвечает своей манерой на свой идентификатор и молчит на чужой', async () => {
+    // Один источник правды: тот же набор идентификаторов, по которому
+    // служба отвечает `owns`. Два обработчика однажды разошлись бы,
+    // и сторона записалась бы человеческой при живом компьютере.
+    const fake = createFake();
+    const running = createComputerService({
+      apiUrl: 'http://bench',
+      wsUrl: 'ws://bench/game',
+      fetch: fake.fetch,
+      openSocket: fake.openSocket,
+      maxMatches: 2,
+      idleTarget: 1,
+      profile: 'swarm-2026-08',
+      makeId: (index) => `computer-${String(index)}`,
+    });
+    await settle();
+
+    expect(running.profileOf('computer-0')).toBe('swarm-2026-08');
+    expect(running.profileOf('человек')).toBeUndefined();
+
+    running.close();
+  });
+
+  it('без назначенной манеры отвечает умолчанием библиотеки', async () => {
+    const fake = createFake();
+    const running = service(fake);
+    await settle();
+
+    expect(running.profileOf('computer-0')).toBe(DEFAULT_PROFILE_ID);
 
     running.close();
   });

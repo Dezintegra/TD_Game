@@ -39,6 +39,8 @@ export interface ParticipantOptions {
   /** Seed мира: из него выводится и seed решений. */
   readonly seed: number;
   readonly side: number;
+  /** Какой манерой играть. Не указана — умолчание библиотеки. */
+  readonly profile?: string;
   readonly openSocket: OpenSocket;
   readonly onOutcome?: (outcome: GuestOutcome) => void;
   readonly log?: (message: string) => void;
@@ -72,10 +74,20 @@ export const aiSeedOf = (seed: number, side: number): number =>
  *
  * Тем же значением пользуется и `joinMatch` ниже: у ответа и у дела один
  * источник.
+ *
+ * Профиль приходит снаружи, а не подставляется здесь постоянной. Пока
+ * манера была одна, постоянная совпадала с правдой; со второй манерой
+ * совпадать перестаёт — и молча: запись матча получила бы профиль,
+ * которым никто не играл, а воспроизведение собрало бы не того
+ * противника и разошлось бы не сразу, а через десятки решений.
  */
-export const computerMindOf = (worldSeed: number, side: number): ComputerSide => ({
+export const computerMindOf = (
+  worldSeed: number,
+  side: number,
+  profile: string = DEFAULT_PROFILE_ID,
+): ComputerSide => ({
   who: 'computer',
-  profile: DEFAULT_PROFILE_ID,
+  profile,
   seed: aiSeedOf(worldSeed, side),
 });
 
@@ -89,7 +101,7 @@ export const joinMatch = (options: ParticipantOptions): Participant => {
   const me = asPlayerId(options.side);
   // Профиль и seed берутся оттуда же, откуда о них узнаёт запись матча.
   // Разойтись они не могут по построению.
-  const mind = computerMindOf(options.seed, options.side);
+  const mind = computerMindOf(options.seed, options.side, options.profile);
   const opponent = createOpponent(me, mind.seed, profileByName(mind.profile));
 
   let socket: BotSocket | undefined;

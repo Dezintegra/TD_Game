@@ -11,6 +11,7 @@ import { ActionBar } from './ActionBar.js';
 import { NoticeStack, Nudge } from './Notices.js';
 import { SideStatus } from './SideStatus.js';
 import { StructureInfo } from './StructureInfo.js';
+import { SoundPanel } from './SoundPanel.js';
 import { HOTKEYS } from './labels.js';
 
 const statusLabel: Record<ConnectionStatus, string> = {
@@ -524,6 +525,14 @@ const MatchMenu = () => {
           >
             Продолжить (Esc)
           </Button>
+
+          {/* Звук живёт здесь по той же причине, что и перечень клавиш:
+              настройку меняют раз за партию, а место она занимала весь
+              матч. Прежде обе панели стояли в левой колонке — колонки
+              больше нет, и обе переехали сюда. */}
+          <div style={{ marginTop: 'var(--td-space-4)' }}>
+            <SoundPanel />
+          </div>
 
           <div style={{ marginTop: 'var(--td-space-4)' }}>
             {HOTKEYS.map((hint) => (

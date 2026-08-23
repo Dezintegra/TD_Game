@@ -4,6 +4,7 @@ import {
   DIRECTION_SOUTH,
   PPM_ONE,
   SHOT_LIFETIME_TICKS,
+  ShotSide,
   ShotWeapon,
   StructureKind,
   asEntityId,
@@ -90,13 +91,19 @@ const TO = cellIndex(14, 10);
 const START = worldToScreen(cellX(FROM) + 0.5, cellY(FROM) + 0.5);
 const FINISH = worldToScreen(cellX(TO) + 0.5, cellY(TO) + 0.5);
 
-const shotOf = (weapon: ShotWeapon, from = FROM, to = TO): ShotState => ({
+const shotOf = (
+  weapon: ShotWeapon,
+  from = FROM,
+  to = TO,
+  side: ShotSide = ShotSide.Centre,
+): ShotState => ({
   owner: asPlayerId(0),
   from: cellCentre(from),
   to: cellCentre(to),
   expiresAtTick: asTickNumber(SHOT_LIFETIME_TICKS[weapon]),
   lethal: false,
   weapon,
+  side,
 });
 
 /** Мир без построек, кроме заказанных: базы отрисовке выстрелов не мешают. */
@@ -324,6 +331,20 @@ describe('высота дульного среза', () => {
     expect(plain.y).toBeGreaterThan(withTower.y);
   });
 
+  it('выстрел не с пилона стартует ровно над стрелком', () => {
+    // Борт есть только у ракеты генерала. У всех прочих он «по оси»,
+    // и вбок их выстрел уезжать не должен ни на пиксель.
+    //
+    // Смотрим на круг, а не на путь: первый круг в слое света — это
+    // ореол вспышки, и он лежит ровно в точке выстрела. Лепесток пламени
+    // рядом сдвинут назад вдоль ствола, и на него опираться нельзя.
+    const start = draw([shotOf(ShotWeapon.Bolt)]).glow.circles[0];
+
+    if (start === undefined) throw new Error('трассер не нарисован');
+
+    expect(start.x).toBeCloseTo(START.x, 6);
+  });
+
   it('попадание по башне вспыхивает на башне, а не у её подножия', () => {
     // Снайперская башня выше полутора клеток, и вспышка внизу читалась бы
     // промахом под неё, а не попаданием в неё.
@@ -366,7 +387,10 @@ describe('высота дульного среза', () => {
 });
 
 describe('ракета генерала', () => {
-  const MISSILE = shotOf(ShotWeapon.Missile);
+  // Борт настоящий, а не «по оси»: по оси генерал не стреляет никогда,
+  // и проверять его полёт на положении, которого в игре не бывает,
+  // значило бы проверять не то, что летает.
+  const MISSILE = shotOf(ShotWeapon.Missile, FROM, TO, ShotSide.Left);
   const SPAN = SHOT_LIFETIME_TICKS[ShotWeapon.Missile];
 
   it('снижается по ходу полёта', () => {
@@ -448,6 +472,47 @@ describe('ракета генерала', () => {
     expect(body.length).toBeGreaterThan(0);
     expect(flame.length).toBeGreaterThan(0);
     expect(Math.min(...flame)).toBeLessThan(Math.min(...body));
+  });
+
+  it('борта расходятся симметрично относительно машины', () => {
+    // Первый круг в слое света — ореол вспышки у ствола, то есть сама
+    // точка пуска: в свежем выстреле он рисуется раньше всего прочего.
+    const launchOf = (side: ShotSide): Point | undefined =>
+      draw([shotOf(ShotWeapon.Missile, FROM, TO, side)]).glow.circles[0];
+
+    const left = launchOf(ShotSide.Left);
+    const right = launchOf(ShotSide.Right);
+    const axis = launchOf(ShotSide.Centre);
+
+    expect(left).toBeDefined();
+    expect(right).toBeDefined();
+    expect(axis).toBeDefined();
+    if (left === undefined || right === undefined || axis === undefined) return;
+
+    // Расхождение бортов при вылете подвески 0,215 клетки и масштабе
+    // клетки в 63 пикселя выходит от 21 до 23 пикселей — в зависимости
+    // от того, куда машина стреляет: проекция сжимает оси по-разному.
+    // Порог взят ниже наименьшего, потому что проверяется не число,
+    // а то, что сдвиг не выродился в ноль.
+    expect(Math.hypot(left.x - right.x, left.y - right.y)).toBeGreaterThan(18);
+
+    // Симметрия: середина между бортами — это и есть ось машины.
+    expect((left.x + right.x) / 2).toBeCloseTo(axis.x, 6);
+    expect((left.y + right.y) / 2).toBeCloseTo(axis.y, 6);
+  });
+
+  it('вспышка вспыхивает там же, откуда уходит ракета', () => {
+    // Свет, оставшийся на оси, показывал бы пуск оттуда, откуда ракета
+    // не выходила.
+    const result = draw([shotOf(ShotWeapon.Missile, FROM, TO, ShotSide.Right)]);
+
+    const flash = result.glow.circles[0];
+    const nose = result.trails.points[0];
+
+    expect(flash).toBeDefined();
+    expect(nose).toBeDefined();
+    expect(flash?.x).toBeCloseTo(nose?.x ?? 0, 6);
+    expect(flash?.y).toBeCloseTo(nose?.y ?? 0, 6);
   });
 
   it('клубы дыма расходятся по дороге, а не висят в одной точке', () => {

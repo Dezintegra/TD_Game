@@ -6,6 +6,7 @@ import type {
   EntityId,
   PlayerId,
   RejectReason,
+  ShotSide,
   ShotWeapon,
   TickNumber,
   UnitType,
@@ -102,6 +103,8 @@ export interface WorkingGeneral {
   readyAtTick: TickNumber;
   alive: boolean;
   respawnAtTick: TickNumber;
+  /** Борт следующей ракеты. Переключается выстрелом — см. GeneralState. */
+  nextMissileSide: ShotSide;
 }
 
 export interface WorkingNuke {
@@ -197,6 +200,7 @@ export const toWorking = (state: WorldState): Working => ({
     readyAtTick: general.readyAtTick,
     alive: general.alive,
     respawnAtTick: general.respawnAtTick,
+    nextMissileSide: general.nextMissileSide,
   })),
   nukes: state.nukes.map((nuke) => ({ ...nuke })),
   shots: [...state.shots],
@@ -263,6 +267,10 @@ export const recordRejection = (
  * Срок жизни следа не передаётся, а выводится из оружия: два источника
  * одной величины разъехались бы при первой же правке таблицы, и луч
  * снайпера стал бы гаснуть по сроку трассера.
+ *
+ * Борт, в отличие от срока, передаётся: вывести его отсюда нельзя.
+ * Он свойство не оружия, а последовательности выстрелов конкретной
+ * машины, и знает её только вызывающий.
  */
 export const recordShot = (
   working: Working,
@@ -271,6 +279,7 @@ export const recordShot = (
   to: Vec2,
   lethal: boolean,
   weapon: ShotWeapon,
+  side: ShotSide,
 ): void => {
   working.shots.push({
     owner,
@@ -279,6 +288,7 @@ export const recordShot = (
     expiresAtTick: asTickNumber(working.tick + SHOT_LIFETIME_TICKS[weapon]),
     lethal,
     weapon,
+    side,
   });
 };
 
@@ -364,6 +374,7 @@ export const fromWorking = (working: Working): WorldState => ({
     readyAtTick: general.readyAtTick,
     alive: general.alive,
     respawnAtTick: general.respawnAtTick,
+    nextMissileSide: general.nextMissileSide,
   })),
   nukes: working.nukes.map((nuke) => ({ ...nuke })),
   shots: working.shots.filter((shot) => shot.expiresAtTick > working.tick),

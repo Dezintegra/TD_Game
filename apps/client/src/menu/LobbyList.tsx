@@ -55,7 +55,7 @@ export const LobbyList = () => {
   };
 
   return (
-    <MenuShell>
+    <MenuShell aside={<RoomsPanel lobbies={lobbies} />}>
       <ProfileBar />
 
       <Panel title="Начать игру">
@@ -114,30 +114,46 @@ export const LobbyList = () => {
           {lobbyErrorText[error]}
         </div>
       )}
-
-      <Panel title={`Открытые комнаты — ${String(lobbies.length)}`}>
-        {lobbies.length === 0 ? (
-          <p
-            data-testid="lobby-empty"
-            style={{ margin: 0, color: 'var(--td-text-muted-3)', lineHeight: 1.6 }}
-          >
-            Пока никто не ждёт соперника. Создайте комнату — она сразу появится у всех, кто
-            смотрит на этот список.
-          </p>
-        ) : (
-          <div
-            data-testid="lobby-list"
-            style={{ display: 'flex', flexDirection: 'column', gap: 'var(--td-space-2)' }}
-          >
-            {lobbies.map((lobby) => (
-              <LobbyRow key={lobby.id} lobby={lobby} />
-            ))}
-          </div>
-        )}
-      </Panel>
     </MenuShell>
   );
 };
+
+/**
+ * Колонка открытых комнат — справа от меню и постоянного размера.
+ *
+ * Размер постоянен намеренно. Список меняется сам, без действий игрока,
+ * и растущая панель двигала бы кнопки меню ровно в тот момент, когда
+ * игрок в них целится. Комнаты сверх помещающихся прокручиваются
+ * внутри списка; заголовок с их числом при этом остаётся на месте.
+ */
+const RoomsPanel = ({ lobbies }: { lobbies: readonly LobbySummary[] }) => (
+  <Panel
+    title={`Открытые комнаты — ${String(lobbies.length)}`}
+    data-testid="lobby-panel"
+    style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}
+  >
+    <div className="td-menu-scroll">
+      {lobbies.length === 0 ? (
+        <p
+          data-testid="lobby-empty"
+          style={{ margin: 0, color: 'var(--td-text-muted-3)', lineHeight: 1.6 }}
+        >
+          Пока никто не ждёт соперника. Создайте комнату — она сразу появится у всех, кто смотрит на
+          этот список.
+        </p>
+      ) : (
+        <div
+          data-testid="lobby-list"
+          style={{ display: 'flex', flexDirection: 'column', gap: 'var(--td-space-2)' }}
+        >
+          {lobbies.map((lobby) => (
+            <LobbyRow key={lobby.id} lobby={lobby} />
+          ))}
+        </div>
+      )}
+    </div>
+  </Panel>
+);
 
 const rowStyle: CSSProperties = {
   display: 'flex',
@@ -150,32 +166,68 @@ const rowStyle: CSSProperties = {
   borderRadius: 'var(--td-radius-control)',
 };
 
+/**
+ * Строка в одну линию с многоточием.
+ *
+ * Обе подписи строки урезаются, а не переносятся: строка комнаты обязана
+ * быть одной и той же высоты при любом названии и любом имени хозяина.
+ * Иначе шесть комнат занимают то четыре строки, то шесть, и список
+ * то помещается в колонку, то нет.
+ */
+const clipStyle: CSSProperties = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
 const LobbyRow = ({ lobby }: { lobby: LobbySummary }) => {
   const full = lobby.players >= lobby.capacity;
 
   return (
     <div style={rowStyle} data-testid="lobby-row" data-computer={String(lobby.computer)}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-        <span
-          style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          data-testid="lobby-row-title"
-        >
+        <span style={clipStyle} data-testid="lobby-row-title">
           {lobby.title}
         </span>
-        <span style={{ color: 'var(--td-text-muted-4)', fontSize: 'var(--td-text-sm)' }}>
+        <span
+          style={{
+            display: 'flex',
+            gap: 'var(--td-space-1)',
+            color: 'var(--td-text-muted-4)',
+            fontSize: 'var(--td-text-sm)',
+          }}
+        >
+          <span style={clipStyle}>создал {lobby.hostName}</span>
+
           {/* Пометка обязательна: игрок должен знать, с кем садится
               играть, а «Компьютер» вполне может оказаться прозвищем
-              человека. */}
-          создал {lobby.hostName}
-          {lobby.computer ? ' — компьютер' : ''}
+              человека. Поэтому урезается имя хозяина, а не она: длинное
+              имя иначе съедало бы её многоточием целиком. */}
+          {lobby.computer && (
+            <span style={{ flexShrink: 0 }} data-testid="lobby-row-computer">
+              — компьютер
+            </span>
+          )}
         </span>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--td-space-3)' }}>
+      {/* Правая половина не сжимается: заполненность и кнопка входа —
+          то, ради чего строку читают, и подрезать их в пользу названия
+          нельзя. */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--td-space-3)',
+          flexShrink: 0,
+        }}
+      >
         <span
           data-testid="lobby-row-players"
           style={{
             fontFamily: 'var(--td-font-mono)',
+            whiteSpace: 'nowrap',
             color: full ? 'var(--td-text-muted-4)' : 'var(--td-accent)',
           }}
         >

@@ -36,13 +36,14 @@ import { createNetClient } from './net.js';
 import type { NetClient } from './net.js';
 import { createScene } from './scene.js';
 import { visibleMapPercent } from './iso.js';
-import { EMPTY_SIDE, hudActions, setMatchCommands } from './store.js';
+import { EMPTY_SIDE, hudActions, setMatchCommands, setSoundCommands } from './store.js';
 import type { MatchPhaseView, MatchSnapshot, SelectionView } from './store.js';
 import { sidesOf } from './sides.js';
 import { statRowsOf } from './stat-rows.js';
 import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
 import { createRejectionFeed } from './rejections.js';
+import { createAudio } from '../audio/index.js';
 
 /**
  * Сборка игры воедино: сцена, сеть, участие в матче, управление.
@@ -117,6 +118,30 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   // а отказ, которого на самом деле не было, — хотя бы раз.
   const rejections = createRejectionFeed(localPlayer);
 
+  /**
+   * Звук. Живёт столько же, сколько игра, и кормится в том же кадре,
+   * в котором рисуется мир, — иначе он отстал бы от собственной вспышки.
+   *
+   * Контекст он заводит сам, по первому действию игрока: браузеры
+   * запрещают звук до жеста.
+   */
+  const audio = createAudio();
+  hudActions.setSound(audio.settings);
+  setSoundCommands({
+    apply: (next) => {
+      audio.setSettings(next);
+      hudActions.setSound(next);
+    },
+  });
+
+  /**
+   * Идёт ли сейчас пересборка мира.
+   *
+   * Пока она идёт, бой обязан молчать: восстановление проигрывает минуту
+   * матча за доли секунды, и озвучивать это нельзя ни в каком виде.
+   */
+  let replaying = false;
+
   // Записи матча здесь нет намеренно. Её ведёт сервер: клиент видит матч
   // со своей стороны и не знает ни состава сторон, ни профиля
   // компьютерного участника, а в партии двух людей записывали бы оба
@@ -140,6 +165,8 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       // читается игроком как поломка.
       const waiting = status === 'playing' && (guest.confirmed?.tick ?? 0) === 0;
       hudActions.setPhase(waiting ? 'awaiting-opponent' : (PHASES[status] ?? 'playing'));
+
+      replaying = status === 'catching-up' || status === 'desynced' || status === 'stopped';
     },
 
     onFrame: (tick) => {
@@ -262,6 +289,20 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         hoverAllowed: isHoverAllowed(world, localPlayer, state, occupancyOf(world)),
         selectedCell: state.selectedCell,
       });
+
+      // Звук кормится после отрисовки и тем же миром. Слушатель —
+      // центр обзора, а не генерал: игрок слушает оттуда, куда смотрит,
+      // и прокрутка карты обязана уводить источники в другое ухо.
+      const centre = scene.viewCentre;
+      audio.frame(
+        world,
+        {
+          cellX: centre.x,
+          cellY: centre.y,
+          halfWidth: scene.viewportSize.width / 2,
+        },
+        replaying,
+      );
     },
 
     onFps: (fps) => hudActions.setFps(fps),
@@ -302,6 +343,11 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     pan: (dx, dy) => scene.panBy(dx, dy),
     jumpTo: (cell) => scene.centreOnCell(cell),
     recentre: () => scene.setFollowing(true),
+    toggleSound: () => {
+      const next = { ...audio.settings, enabled: !audio.settings.enabled };
+      audio.setSettings(next);
+      hudActions.setSound(next);
+    },
     // Выделение обновляется немедленно, а не со снимком матча: снимок
     // снимается раз в несколько тиков, а отклик на нажатие обязан быть
     // в том же кадре.
@@ -403,9 +449,11 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       observer.disconnect();
       window.removeEventListener('resize', relayout);
       setMatchCommands(null);
+      setSoundCommands(null);
       controls.detach();
       loop.stop();
       net.disconnect();
+      audio.stop();
       scene.destroy();
     },
   };

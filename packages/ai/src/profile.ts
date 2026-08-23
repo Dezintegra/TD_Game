@@ -2,8 +2,10 @@
   AI_DECISION_INTERVAL_TICKS,
   NUKE_COST,
   PRODUCTION_QUEUE_CAP,
+  StructureKind,
   TICKS_PER_SECOND,
   UnitType,
+  UpgradeStat,
   UpgradeTarget,
 } from '@td/shared';
 import type { PlayerStats } from '@td/sim';
@@ -59,7 +61,7 @@ export type Spending = 'upgrade' | 'build' | 'train';
  * удара. Поменяется цена в балансе, а профиль останется со старой,
  * и противник начнёт копить не то, что нужно.
  */
-export type Reserve = 'none' | 'nuke';
+export type Reserve = 'none' | 'nuke' | 'wave';
 
 export interface PhaseProfile {
   /** До какой секунды матча действует фаза. */
@@ -77,6 +79,34 @@ export interface PhaseProfile {
    * записывается единственным способом, а не двумя.
    */
   readonly upgrades: Readonly<Partial<Record<UpgradeTarget, number>>>;
+  /**
+   * Какие характеристики покупать внутри выпавшей цели прокачки.
+   *
+   * Поля нет — разрешены все, то есть прежний выбор: самая дешёвая ветка
+   * цели. Список нужен там, где дешевизна ведёт не туда: дальность стоит
+   * вчетверо дороже прочих веток и растёт на четверть за уровень,
+   * поэтому самой дешёвой не бывает никогда и не покупается вовсе.
+   * Между тем для снайперской башни дальность и есть главное — она
+   * единственная перекрывает осадную машину.
+   *
+   * Список, а не веса. У характеристик внутри одной цели нет той беды,
+   * из-за которой веса понадобились самим целям: их четыре, они однородны
+   * по смыслу, и «разрешено брать вот эти» исчерпывающе описывает
+   * намерение.
+   */
+  readonly upgradeStats?: readonly UpgradeStat[];
+  /**
+   * Веса видов башни на эту фазу. Поля нет — берутся веса профиля.
+   *
+   * Заведено по итогу чемпионата, а не про запас. Остров из башен по 60
+   * складывается в половине матчей, из башен по 150 — ни разу за 144:
+   * при доходе в десять единиц дорогую башню сносят раньше, чем встанет
+   * соседняя. Но это верно для НАЧАЛА матча; к десятой минуте доход уже
+   * другой, и снайперская башня из недостижимой становится обычной
+   * покупкой. Выражается это только фазой: профиль на весь матч один,
+   * а обстановка к середине меняется до неузнаваемости.
+   */
+  readonly towerMix?: Readonly<Partial<Record<StructureKind, number>>>;
   /** Доля юнитов каждого типа: сумма весов задаёт вероятности. */
   readonly mix: Readonly<Record<UnitType, number>>;
   /**
@@ -85,6 +115,55 @@ export interface PhaseProfile {
    */
   readonly spend: readonly Spending[];
   readonly reserve: Reserve;
+}
+
+/**
+ * Доктрина островов: башни скоплениями, ползущими к чужой базе.
+ *
+ * Необязательная. Профиль без неё ведёт себя ровно как прежде, и это
+ * проверяется эталоном базового профиля.
+ */
+export interface IslandsDoctrine {
+  /**
+   * Доли вероятного пути, на которых стоят середины островов.
+   *
+   * Порядок значим: он же порядок работы, от своей базы к чужой.
+   * Доли, а не клетки: путь на разных картах разной длины, и в клетках
+   * список пришлось бы подбирать под карту.
+   */
+  readonly fractions: readonly number[];
+  /** Сколько башен считать островом. */
+  readonly clusterSize: number;
+  /** В каком радиусе от середины башни считаются принадлежащими острову. */
+  readonly clusterRadiusCells: number;
+  /**
+   * Сколько решений отводится на один остров.
+   *
+   * Предел обязателен. Полнота считается по числу башен вокруг середины,
+   * и если клеток там меньше, чем нужно башен, остров не станет полным
+   * никогда — противник остался бы возле него до конца матча.
+   */
+  readonly patienceDecisions: number;
+  /**
+   * Во сколько раз своё войско должно превосходить чужое, чтобы доктрина
+   * включилась. Поля нет — доктрина работает с первой секунды.
+   *
+   * Нужно для передового лагеря: разбивать его у чужой базы осмысленно
+   * только тому, кто уже держит поле. Условие взято по войску, а не
+   * по здоровью баз, потому что именно живое войско решает исход —
+   * в 93% результативных матчей чемпионата побеждала сторона, у которой
+   * его больше.
+   */
+  readonly whenUnitLead?: number;
+  /**
+   * До какой секунды матча доктрина работает. Отсутствует — до конца.
+   *
+   * Нужна манере, которая начинает обороной, а продолжает нападением:
+   * острова ставятся в первые минуты, дальше генерал возвращается
+   * к обычному выбору рубежа, а построенное продолжает стоять
+   * и стрелять.
+   */
+  readonly untilSecond?: number;
 }
 
 export interface AiProfile {
@@ -105,10 +184,90 @@ export interface AiProfile {
   readonly building: {
     /** Каждая N-я постройка — стена, прикрывающая уже стоящие башни. */
     readonly wallEvery: number;
+    /**
+     * Сколько ПЕРВЫХ построек ставить стенами, не дожидаясь башен.
+     *
+     * Отсутствует — стена ставится только при готовой башне, как прежде.
+     *
+     * Заведено по разбору живой игры человека, выигравшего у роя, не
+     * построив ни одного юнита. Его первые десять построек — стены,
+     * с пятой по одиннадцатую секунду, до единой башни: стартовые триста
+     * энергии обращены в десять тысяч очков прочности по цене двадцать
+     * за штуку, и первая башня встала уже за щитом.
+     *
+     * Компьютер так не мог по правилу: стена ставится, только когда есть
+     * что прикрывать, — то есть его порядок был обратным человеческому.
+     */
+    readonly wallsFirst?: number;
     /** В каком радиусе от генерала ищутся свои башни, которые стоит прикрыть. */
     readonly cellsAroundGeneral: number;
     /** В скольких клетках от своей башни имеет смысл ставить стену. */
     readonly shieldRadiusCells: number;
+    /**
+     * Доли видов башни: сумма весов задаёт вероятности, как у состава войска.
+     *
+     * Веса, а не список предпочтений, по причине, уже стоившей проекту
+     * одной беды: список вырождается. У прокачек он выродился в две цели
+     * из восьми, потому что до второй строки очередь не доходила ни разу.
+     * Список видов башни выродился бы так же — до первого доступного, —
+     * и второй вид не строился бы никогда. Ноль записывает «никогда»
+     * единственным способом, а не двумя.
+     *
+     * Стены здесь нет: она ставится не вместо башни, а вместо неё по счёту
+     * `wallEvery`, и в один выбор эти два решения не складываются.
+     */
+    readonly towerMix: Readonly<Partial<Record<StructureKind, number>>>;
+  };
+
+  readonly push: {
+    /**
+     * Какую долю здоровья вражеской базы волна должна снять, чтобы ворота
+     * рывка открылись.
+     *
+     * Единица — прежнее правило «волна обязана разрушить базу целиком».
+     * Оно оказалось невыполнимо арифметически: при потолке очереди
+     * в двадцать машин и базе в пятьдесят тысяч здоровья ни одна волна
+     * не снимает всё, и за 3644 решения живого матча рывка не случилось
+     * ни разу.
+     *
+     * Доля не подменяет расчёт волны и не является подобранным порогом:
+     * расчёт остаётся прежним и целиком опирается на величины игры,
+     * а доля отвечает на единственный вопрос — какой успех считать
+     * достаточным.
+     */
+    readonly baseShare: number;
+    /**
+     * Сколько машин копить под волну, когда фаза назначила запас `'wave'`.
+     *
+     * Желаемое число. Настоящий размер волны ограничен ещё и пределом
+     * терпения: волна из шестнадцати осадных машин стоит вдвое больше,
+     * чем противник согласен ждать, и собирается из скольких получится.
+     *
+     * Число упирается сверху и в потолок очереди производства: волна
+     * заказывается за одно решение, и заказать больше свободных мест
+     * в очереди невозможно.
+     */
+    readonly waveSize: number;
+    /**
+     * Состав прикрытия осадной волны. Отсутствует — прикрытия нет.
+     *
+     * Работа прикрытия — быть ближе к башне, чем осадная машина, и
+     * принимать огонь на себя, пока та расстреливает башню с расстояния,
+     * на которое башня не отвечает. Гибель прикрытия — не потеря, а
+     * его работа; мерка успеха здесь не потери, а дошедшие осадные.
+     *
+     * Частью волны прикрытие не является: волна уходит одним залпом,
+     * а прикрытие — позже и растянуто, иначе оно придёт на минуту раньше
+     * прикрываемых.
+     */
+    readonly screen?: UnitType;
+    /**
+     * Вторые ворота рывка: волна уходит, если вскроет оборону дороже
+     * себя, — даже когда базу не сносит.
+     *
+     * Отсутствует — рывок знает одну цель, снести базу, как и прежде.
+     */
+    readonly crackDefence?: boolean;
   };
 
   readonly spending: {
@@ -124,6 +283,23 @@ export interface AiProfile {
      * без исключения — то есть накопление не завершалось никогда.
      */
     readonly savingHorizonSeconds: number;
+    /**
+     * Горизонт накопления, когда путь прикрыт вражескими башнями.
+     * Отсутствует — горизонт один на все обстановки.
+     *
+     * Заведён по замеру, показавшему, что терпение — это размен, а не
+     * достоинство. Против нападающего оно вредит: накопленное не стоит
+     * на поле, а исход решает как раз войско на поле. Против обороны
+     * выручает: без него волна не собирается вовсе, и машины уходят
+     * в башни по одной.
+     *
+     * Числа замера: рой с горизонтом в 45 секунд выигрывает 80% матчей
+     * чемпионата и проигрывает человеку, построившему линию башен;
+     * он же со 150 секундами выигрывает у того человека за 6,7 минуты,
+     * но в чемпионате падает до 68%. Одно число на обе обстановки
+     * не годится.
+     */
+    readonly guardedHorizonSeconds?: number;
     /** Сколько заказов держать в очереди производства. */
     readonly queueTarget: number;
   };
@@ -138,6 +314,15 @@ export interface AiProfile {
   readonly nuke: {
     /** Шаг сетки при поиске места для удара, в клетках. */
     readonly scanStep: number;
+    /**
+     * Считать ли стреляющие постройки по нанесённому ими урону, а не
+     * по цене покупки.
+     *
+     * Отсутствует — оценка прежняя. Со включённым скопление башен
+     * становится видимой целью: семь базовых стоят 420 при цене удара
+     * в 1250, но за минуту наносят в несколько раз больше.
+     */
+    readonly countDefence?: boolean;
   };
 
   readonly posture: {
@@ -158,6 +343,38 @@ export interface AiProfile {
      * под огнём от чистой, и мало, чтобы это стоило заметного времени.
      */
     readonly pathProbes: number;
+  };
+
+  /**
+   * Доктрина островов. Отсутствует — противник строит как строил.
+   *
+   * Живёт на уровне профиля, а не фазы: это способ вести войну целиком,
+   * а не то, что меняют к середине матча.
+   */
+  readonly islands?: IslandsDoctrine;
+
+  /**
+   * Ответ на потери: чем воевать, когда своих машин перемалывают.
+   *
+   * Отсутствует — состав войска задаётся одной лишь фазой.
+   *
+   * Зачем. Чемпионат показал, что штурмовики вязнут в башнях: дешёвые
+   * острова — единственный профиль, отбирающий у роя очки, и отбирает
+   * он их ничьими. Ручеёк штурмовиков в башни это не просто плохой
+   * размен, а бесплатная прокачка чужой обороны: каждая гибель даёт
+   * башне пять процентов к атаке и прочности.
+   *
+   * Правило поэтому связывает две наблюдаемые вещи, а не одну: свои
+   * потери И вражеские стреляющие постройки на пути. Потери сами
+   * по себе означают лишь бой; потери при чужих башнях означают, что
+   * машины гибнут ИМЕННО о башни, и отвечать на это надо осадным
+   * оружием, которое достаёт дальше башни.
+   */
+  readonly adapt?: {
+    /** Сколько своих машин надо потерять, чтобы правило вступило в силу. */
+    readonly losses: number;
+    /** Состав войска после этого. */
+    readonly mix: Readonly<Record<UnitType, number>>;
   };
 
   readonly phases: readonly PhaseProfile[];
@@ -186,8 +403,23 @@ export const horizonTicks = (profile: AiProfile): number =>
  * накопление, и «копить» на деле означало «потерять четыре секунды
  * и купить что подвернулось».
  */
-export const patienceDecisions = (profile: AiProfile): number =>
-  (profile.spending.savingHorizonSeconds * TICKS_PER_SECOND) / AI_DECISION_INTERVAL_TICKS;
+export const patienceDecisions = (profile: AiProfile, guarded = false): number =>
+  (horizonSecondsOf(profile, guarded) * TICKS_PER_SECOND) / AI_DECISION_INTERVAL_TICKS;
+
+/**
+ * Сколько секунд противник согласен копить в этой обстановке.
+ *
+ * Обстановок две, и различает их одно: стоят ли на пути вражеские
+ * башни. Против нападающего копить вредно — накопленное не стоит
+ * на поле, а исход решает войско на поле. Против обороны копить
+ * необходимо: волна, посланная по частям, гибнет по частям.
+ *
+ * Профиль, назвавший одно число, ведёт себя как прежде в обеих.
+ */
+const horizonSecondsOf = (profile: AiProfile, guarded: boolean): number =>
+  guarded
+    ? (profile.spending.guardedHorizonSeconds ?? profile.spending.savingHorizonSeconds)
+    : profile.spending.savingHorizonSeconds;
 
 /**
  * Радиус, в котором свои юниты считаются прикрытием генерала.
@@ -216,8 +448,11 @@ export const escortRadius = (stats: PlayerStats): number =>
  * что ждать покупки в тридцать тысяч разумно, а держать под неё запас
  * нет, или наоборот.
  */
-export const savingLimit = (incomePerTick: number, profile: AiProfile): number =>
-  incomePerTick * TICKS_PER_SECOND * profile.spending.savingHorizonSeconds;
+export const savingLimit = (
+  incomePerTick: number,
+  profile: AiProfile,
+  guarded = false,
+): number => incomePerTick * TICKS_PER_SECOND * horizonSecondsOf(profile, guarded);
 
 /**
  * Неприкосновенный запас фазы в единицах энергии ядра.
@@ -239,10 +474,23 @@ export const reserveOf = (
   phase: PhaseProfile,
   incomePerTick: number,
   profile: AiProfile,
+  /**
+   * Цена волны, под которую копит фаза с запасом `'wave'`.
+   *
+   * Приходит снаружи, а не считается здесь: тип волны зависит от того,
+   * прикрыт ли путь вражескими башнями, и знает об этом рывок. Считать
+   * тип второй раз значило бы завести второй источник истины о нём —
+   * и однажды они разойдутся.
+   */
+  wavePrice = 0,
+  /** Прикрыт ли путь: от этого зависит, сколько противник готов копить. */
+  guarded = false,
 ): number => {
-  if (phase.reserve !== 'nuke') return 0;
+  const wanted =
+    phase.reserve === 'nuke' ? NUKE_COST : phase.reserve === 'wave' ? wavePrice : 0;
+  if (wanted <= 0) return 0;
 
-  return NUKE_COST <= savingLimit(incomePerTick, profile) ? NUKE_COST : 0;
+  return wanted <= savingLimit(incomePerTick, profile, guarded) ? wanted : 0;
 };
 
 /**
@@ -375,6 +623,20 @@ export const BASELINE_PROFILE: AiProfile = deepFreeze({
     wallEvery: 4,
     cellsAroundGeneral: 8,
     shieldRadiusCells: 2,
+    // Только базовые башни — ровно то, что было зашито в коде до появления
+    // весов. Снайперская получает ноль, и это не забывчивость, а прежнее
+    // поведение, записанное явно.
+    towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
+  },
+
+  push: {
+    // Единица — прежнее правило: волна отправляется, только если разрушит
+    // базу целиком. Базовый профиль обязан повторять поведение до правки,
+    // включая и то, что рывка при таком условии не случается никогда.
+    baseShare: 1,
+    // Не используется, пока ни одна фаза не назначила запас `'wave'`;
+    // стоит здесь потому, что поле обязано быть у каждого профиля.
+    waveSize: 8,
   },
 
   spending: {
@@ -439,11 +701,770 @@ export const WALL_LIGHT_PROFILE: AiProfile = deepFreeze({
   building: { ...BASELINE_PROFILE.building, wallEvery: 8 },
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// Соперники базовому: манеры игры для чемпионата
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Пять манер игры, различающихся ТОЛЬКО значениями полей.
+ *
+ * Условие «только значения» — не аккуратность, а условие опыта. Сравнивать
+ * манеры игры можно лишь тогда, когда всё остальное совпадает; профиль,
+ * отличающийся ещё и кодом, сравнивался бы сам с собой.
+ *
+ * Ранняя фаза у всех одинаковая — чистая экономика. Разница начинается
+ * там, где начинается выбор: с середины матча.
+ */
+
+/** Ранняя фаза: вложенное в первую минуту окупается весь матч. */
+const EARLY_ECONOMY: PhaseProfile = {
+  untilSecond: 90,
+  upgrades: { [UpgradeTarget.Base]: 1 },
+  mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Tesla]: 0 },
+  spend: ['upgrade', 'build', 'train'],
+  reserve: 'none',
+};
+
+/**
+ * Осадный: Тесла и волны.
+ *
+ * Проверяет прямую догадку из разбора живого матча — что осадная машина,
+ * которой человек нанёс 78,8% урона по постройкам, столь же сильна
+ * и в руках компьютера.
+ */
+export const SIEGE_PROFILE: AiProfile = deepFreeze({
+  ...BASELINE_PROFILE,
+  id: 'siege-2026-08',
+  // Горизонт накопления втрое длиннее базового, и без этого профиль
+  // не существует. Тесла стоит двадцать пять секунд дохода, волна из
+  // четырёх — сто; при базовых сорока пяти секундах терпения оба желания
+  // объявляются недостижимыми и отбрасываются, а противник покупает
+  // штурмовиков, то есть играет чужую манеру.
+  spending: { ...BASELINE_PROFILE.spending, savingHorizonSeconds: 150 },
+  // Рывка у осадного нет намеренно: волна из Тесл стоит сто секунд дохода
+  // и недостижима, а волна из штурмовиков — это уже чужая манера. Осада
+  // здесь идёт непрерывным давлением, и проверяется именно она.
+  push: { baseShare: 1, waveSize: 4 },
+  phases: [
+    EARLY_ECONOMY,
+    {
+      untilSecond: 300,
+      // Вес уходит в экономику, а не в Теслу, и это не осторожность.
+      // Прокачка типа удорожает САМУ ПОКУПКУ на два процента за уровень
+      // (`purchaseCost` в `stats.ts`), поэтому профиль, вкладывающийся
+      // в Теслу, к середине матча перестаёт её покупать: в пробном прогоне
+      // цена дошла до 2359 при доходе, которого хватало на 250.
+      upgrades: { [UpgradeTarget.Base]: 4, [UpgradeTarget.UnitTesla]: 1 },
+      mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 3 },
+      spend: ['upgrade', 'build', 'train'],
+      reserve: 'none',
+    },
+    {
+      // Только Тесла, без единого штурмовика. По той же причине, по которой
+      // у крепости только снайперские башни: при смеси дешёвое выигрывает
+      // гонку жребия и казна не доживает до дорогого. В пробном прогоне
+      // при доле «три Теслы на три штурмовика» куплено 407 штурмовиков
+      // и 4 Теслы.
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: {
+        [UpgradeTarget.Base]: 3,
+        [UpgradeTarget.UnitTesla]: 1,
+        [UpgradeTarget.General]: 1,
+      },
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 1 },
+      spend: ['train', 'upgrade', 'build'],
+      reserve: 'none',
+    },
+  ],
+});
+
+/**
+ * Крепостной: снайперские башни и стены, наступления нет вовсе.
+ *
+ * Играет ту манеру, которой человек выиграл живой матч. Нужен как проверка
+ * второго рода: если он выигрывает у всех, дело не в компьютере, а в том,
+ * что оборона в игре сильнее нападения.
+ */
+export const FORTRESS_PROFILE: AiProfile = deepFreeze({
+  ...BASELINE_PROFILE,
+  id: 'fortress-2026-08',
+  building: {
+    ...BASELINE_PROFILE.building,
+    wallEvery: 3,
+    // Только снайперские, и это не крайность, а условие опыта. При смеси
+    // дешёвое выигрывает гонку: жребий бросается на каждой попытке, дорогая
+    // башня в момент броска не по карману, а базовая по карману всегда —
+    // и покупает она же, оставляя казну пустой к следующему броску.
+    // В пробном прогоне из 18 башен снайперскими вышли две.
+    towerMix: { [StructureKind.TowerBasic]: 0, [StructureKind.TowerSniper]: 1 },
+  },
+  // Снайперская башня стоит пятнадцать секунд дохода, и при базовом
+  // терпении её ждать некогда.
+  spending: { ...BASELINE_PROFILE.spending, savingHorizonSeconds: 90 },
+  phases: [
+    EARLY_ECONOMY,
+    {
+      untilSecond: 300,
+      // Прокачка башен держится лёгкой по той же причине, что у осадного:
+      // она удорожает саму постройку, а крепости нужно много башен,
+      // а не несколько дорогих.
+      upgrades: {
+        [UpgradeTarget.Base]: 3,
+        [UpgradeTarget.TowerSniper]: 1,
+        [UpgradeTarget.TowerBasic]: 1,
+      },
+      mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+    {
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: {
+        [UpgradeTarget.Base]: 3,
+        [UpgradeTarget.TowerSniper]: 1,
+        [UpgradeTarget.TowerBasic]: 1,
+        [UpgradeTarget.Wall]: 1,
+      },
+      mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 2, [UnitType.Tesla]: 1 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+  ],
+});
+
+/**
+ * Роевой: дешёвая масса и частые крупные волны, построек почти нет.
+ *
+ * Проверяет вторую догадку из разбора: Тесла осталась безнаказанной
+ * потому, что её некому было задавить числом. Десять штурмовиков стоят
+ * столько же и убивают её за пару секунд — но только если приходят разом.
+ */
+export const SWARM_PROFILE: AiProfile = deepFreeze({
+  ...BASELINE_PROFILE,
+  id: 'swarm-2026-08',
+  building: { ...BASELINE_PROFILE.building, wallEvery: 8 },
+  push: { baseShare: 0.2, waveSize: 16 },
+  phases: [
+    EARLY_ECONOMY,
+    {
+      untilSecond: 300,
+      upgrades: { [UpgradeTarget.Base]: 4, [UpgradeTarget.UnitAssault]: 1 },
+      mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['train', 'upgrade', 'build'],
+      reserve: 'wave',
+    },
+    {
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.UnitAssault]: 1 },
+      mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['upgrade', 'train', 'build'],
+      reserve: 'wave',
+    },
+  ],
+});
+
+/** Смешанный: снайперские башни в обороне, Тесла в нападении, волны с половины. */
+export const COMBINED_PROFILE: AiProfile = deepFreeze({
+  ...BASELINE_PROFILE,
+  id: 'combined-2026-08',
+  building: {
+    ...BASELINE_PROFILE.building,
+    towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 1 },
+  },
+  spending: { ...BASELINE_PROFILE.spending, savingHorizonSeconds: 120 },
+  push: { baseShare: 0.5, waveSize: 6 },
+  phases: [
+    EARLY_ECONOMY,
+    {
+      untilSecond: 300,
+      upgrades: {
+        [UpgradeTarget.Base]: 3,
+        [UpgradeTarget.UnitTesla]: 2,
+        [UpgradeTarget.TowerSniper]: 2,
+      },
+      mix: { [UnitType.Assault]: 3, [UnitType.Sniper]: 1, [UnitType.Tesla]: 3 },
+      spend: ['upgrade', 'build', 'train'],
+      reserve: 'none',
+    },
+    {
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: {
+        [UpgradeTarget.UnitTesla]: 4,
+        [UpgradeTarget.TowerSniper]: 3,
+        [UpgradeTarget.UnitAssault]: 2,
+        [UpgradeTarget.Base]: 1,
+      },
+      mix: { [UnitType.Assault]: 3, [UnitType.Sniper]: 1, [UnitType.Tesla]: 3 },
+      spend: ['upgrade', 'train', 'build'],
+      reserve: 'wave',
+    },
+  ],
+});
+
+/**
+ * Экономический: до пятой минуты только экономика, дальше нападение.
+ *
+ * Проверяет третью догадку: в живом матче доход человека к двадцатой
+ * минуте вдвое с половиной превосходил компьютерный, и матч был решён
+ * этим раньше, чем чем бы то ни было ещё.
+ */
+export const ECONOMY_PROFILE: AiProfile = deepFreeze({
+  ...BASELINE_PROFILE,
+  id: 'economy-2026-08',
+  spending: { ...BASELINE_PROFILE.spending, savingHorizonSeconds: 150 },
+  push: { baseShare: 0.3, waveSize: 12 },
+  phases: [
+    EARLY_ECONOMY,
+    {
+      untilSecond: 300,
+      upgrades: { [UpgradeTarget.Base]: 1 },
+      mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Tesla]: 0 },
+      spend: ['upgrade', 'build', 'train'],
+      reserve: 'none',
+    },
+    {
+      untilSecond: Number.POSITIVE_INFINITY,
+      // Прокачки почти нет намеренно: этот профиль проверяет чистую жадность —
+      // всё в доход, а поздние деньги в количество, а не в качество.
+      upgrades: { [UpgradeTarget.Base]: 4, [UpgradeTarget.UnitTesla]: 1 },
+      mix: { [UnitType.Assault]: 3, [UnitType.Sniper]: 0, [UnitType.Tesla]: 3 },
+      spend: ['train', 'upgrade', 'build'],
+      reserve: 'wave',
+    },
+  ],
+});
+
+/**
+ * Островной: только снайперские башни, скоплениями, ползущими к врагу.
+ *
+ * Воспроизводит манеру, которой человек выиграл живой матч: башни
+ * группой, немедленно прикрытые стенами, и перенос узла вперёд,
+ * когда группа готова. Ни одного юнита, ни одного наступления —
+ * наступают сами башни.
+ *
+ * Прокачка — атака и дальность снайперской башни, и только они. Без
+ * `upgradeStats` дальность не покупалась бы никогда: внутри цели берётся
+ * самая дешёвая ветка, а дальность стоит вчетверо дороже прочих.
+ */
+export const ISLANDS_PROFILE: AiProfile = deepFreeze({
+  ...BASELINE_PROFILE,
+  id: 'islands-2026-08',
+
+  building: {
+    ...BASELINE_PROFILE.building,
+    // Стена через одну и есть «прикрывать немедленно»: башня, стена,
+    // башня, стена. Отдельного правила для этого не нужно.
+    wallEvery: 2,
+    towerMix: { [StructureKind.TowerBasic]: 0, [StructureKind.TowerSniper]: 1 },
+  },
+
+  // Снайперская башня стоит пятнадцать секунд дохода, а ветка дальности
+  // вчетверо дороже прочих. При базовом терпении в сорок пять секунд
+  // и та и другая объявлялись бы недостижимыми.
+  spending: { ...BASELINE_PROFILE.spending, savingHorizonSeconds: 180 },
+
+  // Сопровождение выключено: юнитов у этой манеры нет вовсе, и признак
+  // «ушёл вперёд без прикрытия» иначе выполнялся бы всегда, меняя порядок
+  // трат на бесполезный здесь «юниты первыми».
+  escort: { ...BASELINE_PROFILE.escort, units: 0 },
+
+  // Рывка нет: доля, равная единице, оставляет ворота закрытыми,
+  // а состав войска пуст.
+  push: { baseShare: 1, waveSize: 1 },
+
+  islands: {
+    // Четыре узла: у себя, на подходе, посередине и у чужого порога.
+    fractions: [0.12, 0.32, 0.52, 0.72],
+    clusterSize: 7,
+    // Пять клеток — радиус строительства генерала и дальность базовой
+    // башни разом. Скопление получается ровно тем, что генерал стоит
+    // в его середине.
+    clusterRadiusCells: 5,
+    // Двести решений — сто секунд игры на остров. Предел нужен на случай,
+    // когда клеток вокруг середины меньше, чем нужно башен: без него
+    // противник остался бы у неполного острова до конца матча.
+    patienceDecisions: 200,
+  },
+
+  phases: [
+    {
+      // Фаза одна: манера не меняется по ходу матча. Разделение на раннюю
+      // и позднюю существует ради выбора между экономикой, войском
+      // и постройками, а здесь выбора нет — только башни.
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: { [UpgradeTarget.TowerSniper]: 1 },
+      upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range],
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+  ],
+});
+
+/**
+ * Островной с экономикой.
+ *
+ * Заведён не как «улучшенный островной», а как вторая половина опыта.
+ * Чистый островной не качает доход вовсе, и по первому прогону видно,
+ * что при доходе в десять единиц семь снайперских башен по сто пятьдесят
+ * строятся сто секунд — дольше, чем живут. Без этого профиля проигрыш
+ * чистого островного означал бы сразу две вещи, «доктрина плоха»
+ * и «бедность губит», и различить их было бы нечем.
+ *
+ * Отличие ровно одно: половина веса прокачки уходит в экономику.
+ */
+export const RICH_ISLANDS_PROFILE: AiProfile = deepFreeze({
+  ...ISLANDS_PROFILE,
+  id: 'islands-rich-2026-08',
+  phases: [
+    {
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: { [UpgradeTarget.Base]: 2, [UpgradeTarget.TowerSniper]: 2 },
+      // Добыча энергии названа явно, и это не мелочь: список отсекает
+      // ветки по характеристике, а не по цели. У экономики характеристика
+      // своя — «добыча», — и без неё в списке выпавшая цель «экономика»
+      // не находила бы ни одной разрешённой ветки, то есть профиль
+      // с экономикой в весах не покупал бы её ни разу.
+      upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+  ],
+});
+
+/**
+ * Островной на дешёвых башнях.
+ *
+ * Первый чемпионат показал, что остров из снайперских башен не
+ * складывается никогда: пик живых башен 2,1 при семи нужных, и ни разу
+ * за 112 матчей семи не набралось. Причина арифметическая — башня стоит
+ * пятнадцать секунд дохода, возводится девять секунд и держит 150 очков,
+ * то есть гибнет раньше, чем встанет соседняя.
+ *
+ * Осадный профиль при этом набирает скопления по восемь башен и до
+ * двадцати семи в лучшем матче — но башни у него базовые: втрое дешевле
+ * и на треть прочнее. Этот профиль проверяет ровно ту замену: остров тот
+ * же, башни другие.
+ */
+export const CHEAP_ISLANDS_PROFILE: AiProfile = deepFreeze({
+  ...ISLANDS_PROFILE,
+  id: 'islands-cheap-2026-08',
+  building: {
+    ...ISLANDS_PROFILE.building,
+    towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
+  },
+  phases: [
+    {
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: { [UpgradeTarget.TowerBasic]: 1 },
+      upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range],
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+  ],
+});
+
+/**
+ * Островной с прикрытием.
+ *
+ * Вторая догадка о причине провала: генерал островных мёртв 23–26%
+ * времени — больше всех в чемпионате, — а мёртвый генерал не строит
+ * вовсе. Он стоит в середине острова под огнём, и заступиться за него
+ * некому.
+ *
+ * Отличие от чистого островного ровно в намерении «завести прикрытие»:
+ * в составе войска появляются штурмовики, сопровождение снова считается,
+ * и производство стоит в порядке трат сразу за постройкой. Башни, доли
+ * островов и прокачка — те же.
+ */
+export const GUARDED_ISLANDS_PROFILE: AiProfile = deepFreeze({
+  ...ISLANDS_PROFILE,
+  id: 'islands-guard-2026-08',
+  escort: { ...BASELINE_PROFILE.escort, units: 3 },
+  phases: [
+    {
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: { [UpgradeTarget.TowerSniper]: 1 },
+      upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range],
+      mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'train', 'upgrade'],
+      reserve: 'none',
+    },
+  ],
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Четыре манеры по итогам опытов
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Ступенчатый остров: сперва дешёвые башни, потом снайперские.
+ *
+ * Вывод первого опыта прямо: остров из башен по 60 складывается
+ * в половине матчей, из башен по 150 — ни разу за 144. Но мешала цена,
+ * а не башня: при поднятой до 200 прочности снайперской не изменилось
+ * ничего. Значит, дело в скорости накопления, а она к десятой минуте
+ * другая — доход вырос, и дорогая башня из недостижимой становится
+ * обычной покупкой.
+ */
+export const STAGED_ISLANDS_PROFILE: AiProfile = deepFreeze({
+  ...ISLANDS_PROFILE,
+  id: 'islands-stage-2026-08',
+  building: {
+    ...ISLANDS_PROFILE.building,
+    towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
+  },
+  phases: [
+    {
+      // Первые четыре минуты — дешёвые башни и экономика: остров должен
+      // успеть сложиться, а доход — вырасти до цены снайперской башни.
+      untilSecond: 240,
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.TowerBasic]: 1 },
+      upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
+      towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+    {
+      // Дальше — только снайперские: доход к этому времени вдвое выше,
+      // а первый остров уже прикрывает генерала, пока он строит второй.
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: { [UpgradeTarget.Base]: 2, [UpgradeTarget.TowerSniper]: 2 },
+      upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
+      towerMix: { [StructureKind.TowerBasic]: 0, [StructureKind.TowerSniper]: 1 },
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+  ],
+});
+
+/**
+ * Бастион: закрепиться, разбогатеть, ударить Теслами.
+ *
+ * Вывод второго опыта. Сложившаяся оборона не проигрывает, но и не
+ * выигрывает: 60 ничьих из 144 при 7% побед — базу в пятьдесят тысяч
+ * нечем снести. Значит, оборона должна быть не целью, а опорой: под её
+ * прикрытием растёт доход, а на выросший доход покупается то, чем
+ * оборона снимается, — осадные машины волной.
+ */
+export const BASTION_PROFILE: AiProfile = deepFreeze({
+  ...ISLANDS_PROFILE,
+  id: 'bastion-2026-08',
+  building: {
+    ...ISLANDS_PROFILE.building,
+    towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
+  },
+  islands: {
+    // Два острова, оба у себя: этот профиль не ползёт вперёд башнями,
+    // он ими закрывается.
+    fractions: [0.15, 0.32],
+    clusterSize: 7,
+    clusterRadiusCells: 5,
+    patienceDecisions: 200,
+  },
+  spending: { ...BASELINE_PROFILE.spending, savingHorizonSeconds: 180 },
+  push: { baseShare: 0.35, waveSize: 4 },
+  phases: [
+    {
+      // Закрепиться: дешёвый остров и экономика, войска нет.
+      untilSecond: 240,
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.TowerBasic]: 1 },
+      upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+    {
+      // Разбогатеть: остров стоит, деньги идут в доход.
+      untilSecond: 420,
+      upgrades: { [UpgradeTarget.Base]: 1 },
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['upgrade', 'build', 'train'],
+      reserve: 'none',
+    },
+    {
+      // Ударить: только Теслы, и волной. Запас под волну обязателен —
+      // без него ручеёк выгребает казну раньше, чем волна соберётся.
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: { [UpgradeTarget.Base]: 2, [UpgradeTarget.UnitTesla]: 1 },
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 1 },
+      spend: ['train', 'upgrade', 'build'],
+      reserve: 'wave',
+    },
+  ],
+});
+
+/**
+ * Рой, отвечающий на потери.
+ *
+ * Вывод третий. Дешёвые острова — единственный профиль, отбирающий у роя
+ * очки, и отбирает он их ничьими: штурмовики вязнут в башнях, а рой
+ * продолжает слать штурмовиков. Правило `adapt` связывает две
+ * наблюдаемые вещи — свои потери и чужие башни на пути — и переводит
+ * производство на осадные машины, когда обе налицо.
+ */
+export const ADAPTIVE_SWARM_PROFILE: AiProfile = deepFreeze({
+  ...SWARM_PROFILE,
+  id: 'swarm-adapt-2026-08',
+  // Сорок потерянных машин — это примерно четверть всего, что рой успевает
+  // купить за матч, и потерять их, не сдвинув оборону, значит упереться.
+  adapt: {
+    losses: 40,
+    mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 2 },
+  },
+  spending: { ...SWARM_PROFILE.spending, savingHorizonSeconds: 150 },
+});
+
+/**
+ * Рой с передовым лагерем.
+ *
+ * Вывод четвёртый. Добившись перевеса, рой ставит остров у чужой базы:
+ * держать поле войском он уже умеет, а башни у чужого порога превращают
+ * перевес в осаду. Доктрина включается по перевесу вдвое — по войску,
+ * потому что именно оно решает исход.
+ */
+export const CAMP_SWARM_PROFILE: AiProfile = deepFreeze({
+  ...SWARM_PROFILE,
+  id: 'swarm-camp-2026-08',
+  building: {
+    ...SWARM_PROFILE.building,
+    wallEvery: 3,
+    towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
+  },
+  islands: {
+    // Один остров, и сразу у чужого порога. Задних не нужно: рой
+    // защищается наступлением.
+    fractions: [0.82],
+    clusterSize: 5,
+    clusterRadiusCells: 5,
+    patienceDecisions: 300,
+    whenUnitLead: 2,
+  },
+});
+
+/**
+ * Рой с осадной волной под прикрытием.
+ *
+ * Заведён по разбору живого матча, в котором человек выиграл у роя,
+ * не построив ни одного юнита. Рой тогда заказал 297 штурмовиков
+ * по одному, и все они погибли, не дойдя: путь был прикрыт башнями
+ * с прокачанной дальностью.
+ *
+ * Три отличия от простого роя, и все три — из того разбора.
+ *
+ * Первое: волна осадная. Против башен расчёт и прежде выбирал Теслу,
+ * но волна из шестнадцати Тесл стоила вдвое больше предела терпения,
+ * поэтому не собиралась никогда. Здесь их просят три — и волна
+ * становится достижимой.
+ *
+ * Второе: дальность Теслы качается намеренно. Именно ею человек и брал:
+ * башня, достающая дальше, стреляет безнаказанно, и то же верно
+ * для осадной машины.
+ *
+ * Третье: у волны есть прикрытие. Штурмовики покупаются не всегда,
+ * а когда успеют подойти вместе с Теслами, и работа их — принять огонь
+ * башен на себя.
+ */
+export const SIEGE_SWARM_PROFILE: AiProfile = deepFreeze({
+  ...SWARM_PROFILE,
+  id: 'swarm-siege-2026-08',
+  // Терпения нужно больше: три Теслы стоят семьдесят пять секунд дохода.
+  spending: { ...SWARM_PROFILE.spending, savingHorizonSeconds: 150 },
+  // Вторые ворота и зрячий удар — то, чего этому профилю не хватало.
+  // Без них волна из трёх Тесл не уходила ни разу: прежние ворота
+  // требуют снести базу, а три машины наносят за горизонт 1620 очков
+  // при базе в 50 000.
+  push: { baseShare: 0.2, waveSize: 3, screen: UnitType.Assault, crackDefence: true },
+  nuke: { ...SWARM_PROFILE.nuke, countDefence: true },
+  phases: [
+    EARLY_ECONOMY,
+    {
+      untilSecond: 300,
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.UnitAssault]: 1 },
+      mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['train', 'upgrade', 'build'],
+      reserve: 'wave',
+    },
+    {
+      untilSecond: Number.POSITIVE_INFINITY,
+      // Дальность Теслы — главная покупка поздней фазы. Без неё осадная
+      // машина входит в круг ответного огня башни и гибнет так же, как
+      // штурмовик, только вдесятеро дороже.
+      upgrades: {
+        [UpgradeTarget.UnitTesla]: 3,
+        [UpgradeTarget.Base]: 2,
+        [UpgradeTarget.UnitAssault]: 1,
+      },
+      upgradeStats: [UpgradeStat.Range, UpgradeStat.Attack, UpgradeStat.Income],
+      mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['train', 'upgrade', 'build'],
+      reserve: 'wave',
+    },
+  ],
+});
+
+/**
+ * Терпеливый рой: та же манера, но копить он согласен полторы минуты.
+ *
+ * Заведён, чтобы выделить причину. Разбор живого матча показал, что
+ * прежний рой при сорока пяти секундах терпения бросает копить и тратит
+ * на одиночную машину: за весь матч против башен он сделал ноль рывков
+ * и держал на поле 6,2 машины. Тот же рой с поднятым терпением собрал
+ * пять волн, держал 20,1 и выиграл там, где прежний проиграл.
+ *
+ * Отличие от `swarm-2026-08` — ровно одно поле. Всё прочее совпадает
+ * до числа, иначе сравнение измеряло бы не терпение.
+ */
+export const PATIENT_SWARM_PROFILE: AiProfile = deepFreeze({
+  ...SWARM_PROFILE,
+  id: 'swarm-patient-2026-08',
+  spending: { ...SWARM_PROFILE.spending, savingHorizonSeconds: 150 },
+});
+
+/**
+ * Рой, меняющий терпение по обстановке.
+ *
+ * Ответ на замер, разведший «самое эффективное» надвое. Обычный рой
+ * выигрывает 80% чемпионата и проигрывает человеку, построившему линию
+ * башен. Он же с полутора минутами терпения выигрывает у того человека
+ * за 6,7 минуты, но в чемпионате падает до 68%: накопленное не стоит
+ * на поле, а против нападающего исход решает как раз войско на поле.
+ *
+ * Одно число на обе обстановки не годится, поэтому их два. Различает
+ * обстановки признак, который и так считается каждое решение: стоят ли
+ * на пути вражеские стреляющие постройки.
+ */
+export const FLEXIBLE_SWARM_PROFILE: AiProfile = deepFreeze({
+  ...SWARM_PROFILE,
+  id: 'swarm-flex-2026-08',
+  spending: {
+    ...SWARM_PROFILE.spending,
+    // Путь чист — тратим сразу: против нападающего побеждает тот,
+    // у кого больше живых машин прямо сейчас.
+    savingHorizonSeconds: 45,
+    // Путь в башнях — копим: ручеёк в башни это не атака, а бесплатная
+    // прокачка чужой обороны, ведь каждая гибель добавляет башне
+    // пять процентов к атаке и прочности.
+    guardedHorizonSeconds: 150,
+  },
+});
+
+/**
+ * Оплот: четыре минуты обороны человеческой манерой, дальше терпеливый рой.
+ *
+ * Собран из разбора живой игры человека, выигравшего у роя, не построив
+ * ни одного юнита, и не потеряв ни очка базы. Четыре его приёма
+ * воспроизводятся здесь по отдельности:
+ *
+ *   - **стены первыми**: десять стен подряд, до единой башни. Стартовые
+ *     триста энергии обращаются в десять тысяч очков прочности;
+ *   - **дешёвые башни, пока копится на дорогие**: у человека двенадцать
+ *     базовых и двадцать две снайперские, причём базовые в первую минуту;
+ *   - **дальность**: восемь уровней в дальность снайперской башни дают
+ *     ей девятнадцать клеток — вдвое дальше, чем достаёт ответ;
+ *   - **генерал дома**: у человека он не погиб ни разу, у роя был мёртв
+ *     21% времени.
+ *
+ * А дальше — то, чего человеку не потребовалось, а компьютеру нужно:
+ * переход в наступление. Оборона выигрывает время и доход, но снести
+ * базу в пятьдесят тысяч ей нечем — это измерено: чистые островные
+ * профили дают 60 ничьих из 144 при 7% побед.
+ *
+ * Терпение после перехода переключается по обстановке, как у гибкого
+ * роя: путь чист — тратим, путь в башнях — копим.
+ */
+export const BULWARK_PROFILE: AiProfile = deepFreeze({
+  ...SWARM_PROFILE,
+  id: 'bulwark-2026-08',
+
+  building: {
+    ...BASELINE_PROFILE.building,
+    // Десять стен открытия — ровно как у человека.
+    wallsFirst: 10,
+    wallEvery: 3,
+    towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
+  },
+
+  spending: {
+    ...SWARM_PROFILE.spending,
+    savingHorizonSeconds: 45,
+    guardedHorizonSeconds: 150,
+  },
+
+  escort: { ...BASELINE_PROFILE.escort, units: 0 },
+
+  islands: {
+    // Один остров, и дома: генерал у человека не отходил от базы.
+    fractions: [0.08],
+    clusterSize: 8,
+    clusterRadiusCells: 5,
+    patienceDecisions: 400,
+    // Четыре минуты — и в наступление. Построенное остаётся стоять.
+    untilSecond: 240,
+  },
+
+  push: { baseShare: 0.2, waveSize: 16, screen: UnitType.Assault },
+
+  phases: [
+    {
+      // Оборона: стены, дешёвые башни, экономика. Ни одного юнита —
+      // они в эти минуты только отвлекали бы деньги от щита.
+      untilSecond: 120,
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.TowerBasic]: 1 },
+      upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
+      towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+    {
+      // Вторая половина обороны: снайперские башни и дальность им.
+      untilSecond: 240,
+      upgrades: { [UpgradeTarget.TowerSniper]: 3, [UpgradeTarget.Base]: 2 },
+      upgradeStats: [UpgradeStat.Range, UpgradeStat.Attack, UpgradeStat.Income],
+      towerMix: { [StructureKind.TowerBasic]: 0, [StructureKind.TowerSniper]: 1 },
+      mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['build', 'upgrade', 'train'],
+      reserve: 'none',
+    },
+    {
+      // Наступление: терпеливый рой. Башни позади продолжают стоять
+      // и прикрывать базу, пока войско уходит вперёд.
+      untilSecond: Number.POSITIVE_INFINITY,
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.UnitAssault]: 1 },
+      mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
+      spend: ['train', 'upgrade', 'build'],
+      reserve: 'wave',
+    },
+  ],
+});
+
 export const DEFAULT_PROFILE_ID = BASELINE_PROFILE.id;
 
 export const PROFILES: Readonly<Record<string, AiProfile>> = deepFreeze({
   [BASELINE_PROFILE.id]: BASELINE_PROFILE,
   [WALL_LIGHT_PROFILE.id]: WALL_LIGHT_PROFILE,
+  [SIEGE_PROFILE.id]: SIEGE_PROFILE,
+  [FORTRESS_PROFILE.id]: FORTRESS_PROFILE,
+  [SWARM_PROFILE.id]: SWARM_PROFILE,
+  [COMBINED_PROFILE.id]: COMBINED_PROFILE,
+  [ECONOMY_PROFILE.id]: ECONOMY_PROFILE,
+  [ISLANDS_PROFILE.id]: ISLANDS_PROFILE,
+  [RICH_ISLANDS_PROFILE.id]: RICH_ISLANDS_PROFILE,
+  [CHEAP_ISLANDS_PROFILE.id]: CHEAP_ISLANDS_PROFILE,
+  [GUARDED_ISLANDS_PROFILE.id]: GUARDED_ISLANDS_PROFILE,
+  [STAGED_ISLANDS_PROFILE.id]: STAGED_ISLANDS_PROFILE,
+  [BASTION_PROFILE.id]: BASTION_PROFILE,
+  [ADAPTIVE_SWARM_PROFILE.id]: ADAPTIVE_SWARM_PROFILE,
+  [CAMP_SWARM_PROFILE.id]: CAMP_SWARM_PROFILE,
+  [SIEGE_SWARM_PROFILE.id]: SIEGE_SWARM_PROFILE,
+  [PATIENT_SWARM_PROFILE.id]: PATIENT_SWARM_PROFILE,
+  [FLEXIBLE_SWARM_PROFILE.id]: FLEXIBLE_SWARM_PROFILE,
+  [BULWARK_PROFILE.id]: BULWARK_PROFILE,
 });
 
 /** Профиль по имени. Неизвестное имя — ошибка, а не молчаливый откат. */

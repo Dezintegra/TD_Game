@@ -292,7 +292,7 @@ describe('старт матча по обоюдной готовности', () 
       now: () => clock,
       randomSeed: () => 555,
       randomTicket: () => `ticket-${String(ticketIndex++)}`,
-      isComputer: (playerId) => playerId === 'bot',
+      computerProfileOf: (playerId) => (playerId === 'bot' ? 'swarm-2026-08' : undefined),
       onMatchStart: (start) => started.push(start),
     });
 
@@ -308,8 +308,10 @@ describe('старт матча по обоюдной готовности', () 
     expect(sides[0]).toEqual({ who: 'human' });
     // Seed решений спрошен у самого компьютера и выведен из seed мира:
     // ни нулей, ни пустых профилей, которые писал прежний клиент.
-    expect(sides[1]).toEqual(computerMindOf(555, 1));
-    expect(sides[1]).toMatchObject({ who: 'computer', profile: expect.any(String) });
+    expect(sides[1]).toEqual(computerMindOf(555, 1, 'swarm-2026-08'));
+    // Профиль — тот, которым играет эта служба, а не умолчание. Иначе
+    // запись матча назвала бы манеру, которой никто не играл.
+    expect(sides[1]).toMatchObject({ who: 'computer', profile: 'swarm-2026-08' });
     expect((sides[1] as { seed: number }).seed).not.toBe(0);
   });
 
@@ -318,7 +320,7 @@ describe('старт матча по обоюдной готовности', () 
       now: () => clock,
       randomSeed: () => 1,
       randomTicket: () => 'ticket',
-      isComputer: (playerId) => playerId === 'bot',
+      computerProfileOf: (playerId) => (playerId === 'bot' ? 'swarm-2026-08' : undefined),
     });
 
     withBot.connect('bot');

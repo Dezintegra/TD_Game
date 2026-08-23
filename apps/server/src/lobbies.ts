@@ -106,13 +106,19 @@ export interface LobbyStoreOptions {
   readonly randomTicket: () => string;
   readonly graceMs?: number;
   /**
-   * Этот игрок — компьютер?
+   * Каким профилем играет этот игрок; `undefined` — это человек.
    *
    * Комнаты сами этого знать не могут и не должны: идентификатор игрока
    * приходит из запроса и подделывается тривиально. Отвечает тот, кто
    * запускал службу компьютера и знает выданный ей идентификатор.
+   *
+   * Один вопрос вместо двух. Отдельные «это компьютер?» и «вот его
+   * профиль» — два источника правды об одном, и однажды первый ответил
+   * бы утвердительно, а второй не нашёл бы профиля: сторона записалась бы
+   * человеческой при живом компьютере. Человек выражается отсутствием
+   * профиля, а не отдельным признаком.
    */
-  readonly isComputer?: ((playerId: string) => boolean) | undefined;
+  readonly computerProfileOf?: ((playerId: string) => string | undefined) | undefined;
   /** Матч начался — самое время завести для него симуляцию. */
   readonly onMatchStart?: ((start: MatchStart) => void) | undefined;
   /**
@@ -259,11 +265,12 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
     // за какой стороной, и кто из игроков компьютер. Seed решений
     // и профиль спрашиваются у самого компьютера: второй источник этих
     // сведений рано или поздно разошёлся бы с настоящим.
-    const composition: MatchSide[] = lobby.slots.map((slot, index) =>
-      (options.isComputer?.(slot.id) ?? false)
-        ? computerMindOf(match.seed, index)
-        : { who: 'human' },
-    );
+    const composition: MatchSide[] = lobby.slots.map((slot, index) => {
+      const profile = options.computerProfileOf?.(slot.id);
+      return profile === undefined
+        ? { who: 'human' }
+        : computerMindOf(match.seed, index, profile);
+    });
 
     options.onMatchStart?.({
       matchId: match.id,
@@ -297,7 +304,7 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
     for (const [id, name] of match.names) {
       if (id === playerId) continue;
       opponentName = name;
-      opponentIsComputer = options.isComputer?.(id) ?? false;
+      opponentIsComputer = options.computerProfileOf?.(id) !== undefined;
     }
 
     return {
@@ -457,7 +464,7 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
           hostName: host?.name ?? '',
           players: lobby.slots.length,
           capacity: LOBBY_CAPACITY,
-          computer: host === undefined ? false : (options.isComputer?.(host.id) ?? false),
+          computer: host === undefined ? false : options.computerProfileOf?.(host.id) !== undefined,
         });
       }
 

@@ -64,6 +64,8 @@ export interface ControlHandlers {
   jumpTo(cell: number): void;
   /** Вернуть камеру к генералу и включить слежение. */
   recentre(): void;
+  /** Выключить или включить звук целиком. */
+  toggleSound(): void;
   /** Выделить объект в клетке, либо снять выделение при -1. */
   select(cell: number): void;
   /**
@@ -165,6 +167,7 @@ const STATS_KEY = 'KeyR';
 const NUKE_KEY = 'KeyF';
 const CANCEL_KEY = 'Escape';
 const RECENTRE_KEY = 'Space';
+const MUTE_KEY = 'KeyM';
 
 export interface ControlHint {
   /** Как группа клавиш называется для игрока. */
@@ -210,6 +213,7 @@ export const CONTROL_LAYOUT: readonly ControlHint[] = [
   { keys: 'ЛКМ', what: 'поставить выбранное либо выделить', codes: [] },
   { keys: 'ПКМ', what: 'назначить цель атаки', codes: [] },
   { keys: 'Пробел', what: 'камера к генералу', codes: [RECENTRE_KEY] },
+  { keys: 'M', what: 'выключить звук', codes: [MUTE_KEY] },
   { keys: 'Esc', what: 'отменить режим, иначе меню', codes: [CANCEL_KEY] },
 ];
 
@@ -329,11 +333,17 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.repeat) return;
 
-    // Пока меню открыто, из всей клавиатуры действует один Esc — он его
-    // и закрывает. Разбирать остальное значило бы двигать генерала
-    // и заказывать войска, пока игрок читает список горячих клавиш.
+    // Пока меню открыто, из всей клавиатуры действуют две клавиши.
+    // Разбирать остальное значило бы двигать генерала и заказывать
+    // войска, пока игрок читает список горячих клавиш.
+    //
+    // Esc закрывает меню. Звук пропущен намеренно: выключение звука —
+    // не игровое действие, оно не двигает генерала и не тратит энергию,
+    // а запрет на него в меню выглядел бы поломкой ровно там, где игрок
+    // и разбирается с настройками.
     if (menuOpen) {
       if (event.code === CANCEL_KEY) setMenu(false);
+      else if (event.code === MUTE_KEY) handlers.toggleSound();
       return;
     }
 
@@ -408,6 +418,13 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     if (event.code === CANCEL_KEY) {
       // Сначала отмена, и только если отменять нечего — меню.
       if (!cancelModes()) setMenu(true);
+      return;
+    }
+
+    // Выключить звук — самое частое из того, что игрок делает
+    // с настройками, и лезть за этим мышью в панель незачем.
+    if (event.code === MUTE_KEY) {
+      handlers.toggleSound();
       return;
     }
 

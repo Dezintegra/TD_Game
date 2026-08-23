@@ -1,5 +1,6 @@
 ﻿import {
   AttackStance,
+  FIRST_MISSILE_SIDE,
   GENERAL_STATS,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
@@ -21,6 +22,7 @@ import type {
   EntityId,
   PlayerId,
   RejectReason,
+  ShotSide,
   ShotWeapon,
   TickNumber,
   UnitType,
@@ -181,6 +183,18 @@ export interface GeneralState {
   readonly alive: boolean;
   /** Тик возвращения в игру. Осмысленно только когда генерал мёртв. */
   readonly respawnAtTick: TickNumber;
+  /**
+   * Борт, с которого уйдёт следующая ракета. Никогда не «по оси».
+   *
+   * Хранится здесь, а не выводится отрисовкой, потому что чередование —
+   * свойство последовательности выстрелов, а последовательность знает
+   * только стрелок. Клиент её знать не может: он переигрывает тики при
+   * откате предсказания, и счётчик выстрелов у него насчитал бы лишнее.
+   *
+   * Возрождение борт не сбрасывает — ровно как не сбрасывает `facing`.
+   * Машина возвращается на поле такой же, какой ушла.
+   */
+  readonly nextMissileSide: ShotSide;
 }
 
 export interface NukeState {
@@ -215,6 +229,16 @@ export interface ShotState {
    * в чужой трассер.
    */
   readonly weapon: ShotWeapon;
+  /**
+   * Борт, с которого ушёл выстрел. У всех, кроме генерала, — по оси.
+   *
+   * Величина того же рода, что `weapon` и `lethal` выше, и лежит здесь
+   * по той же причине: спросить у стрелка в момент показа уже нельзя.
+   * След живёт шестнадцать тиков, перезарядка генерала — восемь, значит
+   * к моменту отрисовки он успел выстрелить ещё раз и борт у него уже
+   * другой. А мог и погибнуть.
+   */
+  readonly side: ShotSide;
 }
 
 /**
@@ -417,6 +441,7 @@ export const createWorld = (seed: number): WorldState => {
       readyAtTick: asTickNumber(0),
       alive: true,
       respawnAtTick: asTickNumber(0),
+      nextMissileSide: FIRST_MISSILE_SIDE,
     };
   });
 

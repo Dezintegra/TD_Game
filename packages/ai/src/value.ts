@@ -215,6 +215,16 @@ export const nukeOutcome = (
   myStats: PlayerStats,
   enemyStats: PlayerStats,
   homeCells: (cell: number) => number,
+  /**
+   * Считать ли стреляющие постройки по нанесённому ими урону.
+   *
+   * За выключателем, потому что оценка удара общая для всех профилей:
+   * включи её всем — и профиль по умолчанию начнёт бить иначе, то есть
+   * изменится поведение, которое стережёт эталон.
+   */
+  countDefence = false,
+  /** Горизонт планирования в тиках. Нужен только при `countDefence`. */
+  horizon = 0,
 ): NukeOutcome => {
   const reach = NUKE_RADIUS * NUKE_RADIUS;
 
@@ -239,7 +249,26 @@ export const nukeOutcome = (
     if (distanceSquared(cellCentre(structure.cell), centre) > reach) continue;
 
     const mine = structure.owner === me;
-    const worth = (mine ? myStats : enemyStats).structures[structure.kind].cost;
+    const baseline = (mine ? myStats : enemyStats).structures[structure.kind];
+
+    // Стреляющая постройка стоит большего из двух: цены, за которую
+    // куплена, и урона, который успеет нанести за горизонт.
+    //
+    // Иначе скопление башен для удара невидимо. Семь базовых стоят 420
+    // при цене удара в 1250 — размен не сходится никогда, хотя именно
+    // это скопление и запирает дорогу. Те же семь за минуту наносят
+    // в несколько раз больше энергии урона, чем стоили сами.
+    //
+    // Цена не отбрасывается: только что поставленная башня, не сделавшая
+    // ни выстрела, иначе оказалась бы бесплатной мишенью. Правило
+    // одинаково для обеих сторон — взрыв не различает, чьё жжёт.
+    const dealt =
+      countDefence && baseline.attack > 0 && baseline.range > 0
+        ? (baseline.attack / Math.max(1, baseline.cooldownTicks)) *
+          horizon *
+          ENERGY_PER_LIVE_DAMAGE
+        : 0;
+    const worth = Math.max(baseline.cost, dealt);
 
     if (mine) loss += worth;
     else gain += worth;

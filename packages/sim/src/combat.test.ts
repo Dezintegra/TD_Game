@@ -1,6 +1,7 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
   DIRECTION_SOUTH,
+  FIRST_MISSILE_SIDE,
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   GENERAL_STATS,
@@ -8,6 +9,7 @@ import {
   PPM_ONE,
   SPLASH_OUTER_DIVISOR,
   STRUCTURE_STATS,
+  ShotSide,
   ShotWeapon,
   StructureKind,
   Terrain,
@@ -254,6 +256,87 @@ describe('след выстрела', () => {
     if (beam === undefined || bolt === undefined) throw new Error('в тике не было обоих выстрелов');
 
     expect(beam.expiresAtTick - world.tick).toBe((bolt.expiresAtTick - world.tick) * 2);
+  });
+
+  it('прочие стрелки бьют по оси, без борта', () => {
+    // Борт есть только у ракеты: у неё под него нарисованы пилоны.
+    const world = duel([structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)], [
+      unit(60, 0, UnitType.Sniper, 0, 0, 10_000),
+    ]);
+
+    const sides = world.shots
+      .filter((shot) => shot.weapon !== ShotWeapon.Missile)
+      .map((shot) => shot.side);
+
+    expect(sides.length).toBeGreaterThan(1);
+    expect(sides.every((side) => side === ShotSide.Centre)).toBe(true);
+  });
+
+  it('ракеты генерала уходят с бортов по очереди', () => {
+    // Чередование — свойство последовательности выстрелов, и знает её
+    // только стрелок. Клиент вывести её не может: он переигрывает тики
+    // при откате предсказания, и счётчик у него насчитал бы лишнее.
+    const rounds = 3;
+    let world = arrange([], [unit(61, 1, UnitType.Assault, 1, 0, 10_000)], at(0, 0));
+
+    // Ракеты опознаются по сроку истечения: он у каждой свой, потому что
+    // выстрелы сделаны на разных тиках. Так пересчёт одного и того же
+    // следа на нескольких тиках не превращается в лишний выстрел.
+    const seen = new Map<number, number>();
+
+    for (let tick = 0; tick < GENERAL_STATS.cooldownTicks * rounds; tick += 1) {
+      world = step(world, []);
+
+      for (const shot of world.shots) {
+        if (shot.weapon === ShotWeapon.Missile) seen.set(shot.expiresAtTick, shot.side);
+      }
+    }
+
+    const order = [...seen.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, side]) => side);
+
+    expect(order.length).toBeGreaterThanOrEqual(rounds);
+    order.forEach((side, index) => {
+      expect(side).toBe(index % 2 === 0 ? FIRST_MISSILE_SIDE : -FIRST_MISSILE_SIDE);
+    });
+  });
+
+  it('промолчавший генерал очередь бортов не сбивает', () => {
+    // Борт переключается только состоявшимся выстрелом. Иначе очередь
+    // считала бы тики, а не пуски, и «по очереди» превратилось бы
+    // в «когда как».
+    const idle = step(arrange([], [], at(0, 0)), []);
+
+    expect(idle.shots).toHaveLength(0);
+    expect(idle.generals[0]?.nextMissileSide).toBe(FIRST_MISSILE_SIDE);
+  });
+
+  it('оба генерала начинают с одного борта', () => {
+    // Карта симметрична поворотом, а поворот сохраняет право и лево.
+    // Разные борта у двух генералов были бы асимметрией там, где её нет.
+    const sides = createWorld(SEED).generals.map((general) => general.nextMissileSide);
+
+    expect(sides).toHaveLength(2);
+    expect(new Set(sides).size).toBe(1);
+    expect(sides[0]).toBe(FIRST_MISSILE_SIDE);
+  });
+
+  it('борт не меняет контрольную сумму', () => {
+    // Борт полностью выводится из последовательности выстрелов, а она
+    // в сумме уже есть. Войди он в неё — и правка облика требовала бы
+    // нового эталона детерминизма, хотя правила не менялись.
+    const world = duel([], [], at(0, 0));
+    const swapped = {
+      ...world,
+      generals: world.generals.map((general) => ({
+        ...general,
+        nextMissileSide: -general.nextMissileSide as ShotSide,
+      })),
+    };
+
+    expect(world.shots.length).toBeGreaterThan(0);
+    expect(checksum(swapped)).toBe(checksum(world));
   });
 
   it('вид оружия не меняет контрольную сумму', () => {

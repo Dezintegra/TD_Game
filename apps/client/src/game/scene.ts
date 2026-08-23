@@ -92,6 +92,15 @@ export interface Scene {
   minimapCellAtScreen(screenX: number, screenY: number): number;
   resize(): void;
   destroy(): void;
+  /**
+   * Центр обзора в клетках карты.
+   *
+   * Камера хранит точку в экранных координатах мира, а звуку нужно
+   * мировое удаление: громкость зависит от того, как далеко событие
+   * произошло на самом деле, а не от того, во сколько пикселей это
+   * вылилось в косой проекции.
+   */
+  readonly viewCentre: CellPoint;
   /** Сколько раз перестраивалась геометрия территории. Нужно тестам. */
   readonly terrainRebuildCount: number;
   readonly viewportSize: { readonly width: number; readonly height: number };
@@ -540,6 +549,10 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
     get viewportSize() {
       return { width: app.screen.width, height: app.screen.height };
+    },
+
+    get viewCentre() {
+      return screenToWorld(camera.x, camera.y);
     },
   };
 };

@@ -30,6 +30,7 @@ const handlersOf = (): ControlHandlers => ({
   select: vi.fn(),
   menuChanged: vi.fn(),
   toggleStats: vi.fn(),
+  toggleSound: vi.fn(),
   cellAtScreen: vi.fn(() => -1),
   minimapCellAtScreen: vi.fn(() => -1),
 });
@@ -231,6 +232,18 @@ describe('открытое меню глушит управление', () => {
     expect(handlers.setDirection).toHaveBeenLastCalledWith(DIRECTION_STOP);
   });
 
+  it('звук выключается и при открытом меню', () => {
+    // Звук — не игровое действие: он не двигает генерала и не тратит
+    // энергию. Запрет на него ровно там, где игрок разбирается
+    // с настройками, выглядел бы поломкой.
+    const { handlers } = setup();
+
+    press('Escape');
+    press('KeyM');
+
+    expect(handlers.toggleSound).toHaveBeenCalledTimes(1);
+  });
+
   it('цифры не заказывают юнитов', () => {
     const { handlers } = setup();
 
@@ -287,6 +300,7 @@ describe('раскладка описана одной таблицей', () => 
       'KeyX',
       'Space',
       'Escape',
+      'KeyM',
     ]) {
       expect(listed.has(code)).toBe(true);
     }

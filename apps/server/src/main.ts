@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { PROTOCOL_VERSION } from '@td/protocol';
 import { startComputerService } from '@td/bot';
+import { ADAPTIVE_SWARM_PROFILE, BULWARK_PROFILE } from '@td/ai';
 import type { ComputerService } from '@td/bot';
 import { MATCHLOG_DIR, MATCHLOG_ENABLED, SERVER_HOST, SERVER_PORT } from './config.js';
 import { createGameHandlers } from './game-server.js';
@@ -83,12 +84,22 @@ export const buildServer = async (options: BuildOptions = {}) => {
   // по сети, как и все прочие клиенты, и до открытия порта ходить ей
   // некуда. Отсюда же и ссылка-держатель — маршруты нужно объявить
   // раньше, чем служба появится.
-  const computerRef: { current?: ComputerService } = {};
+  const computerRef: { current: ComputerService[] } = { current: [] };
 
   const lobbies = registerLobbyRoutes(app, {
     onMatchStart: (start) => matches.start(start),
     onMatchAbandon: (ticket) => matches.forfeit(ticket),
-    isComputer: (playerId) => computerRef.current?.owns(playerId) ?? false,
+    // Службы спрашиваются по очереди, и берётся первый непустой ответ.
+    // Наборы идентификаторов у них не пересекаются: секрет выдаётся
+    // службе при запуске.
+    computerProfileOf: (playerId) => {
+      for (const service of computerRef.current) {
+        const profile = service.profileOf(playerId);
+        if (profile !== undefined) return profile;
+      }
+
+      return undefined;
+    },
   });
 
   const handlers = createGameHandlers(transport, matches, log);
@@ -101,26 +112,68 @@ export const buildServer = async (options: BuildOptions = {}) => {
   app.addHook('onClose', () => {
     lobbies.close();
     matches.close();
-    computerRef.current?.close();
+    for (const service of computerRef.current) service.close();
   });
 
   /**
-   * Поднять службу компьютерных соперников.
+   * Поднять службы компьютерных соперников — по одной на манеру.
    *
    * Вызывается после `listen`, потому что адрес до этого момента
    * неизвестен: в бою он берётся из настроек, а в тестах порт выдаёт
-   * система. Тесты службу не поднимают вовсе — им нужен сервер,
+   * система. Тесты службы не поднимают вовсе — им нужен сервер,
    * а не соперник.
+   *
+   * Манер две, и обе выбраны замером — 2017 матчей чемпионата плюс
+   * прогон против записи живого матча с человеком.
+   *
+   * Основная — рой, отвечающий на потери: 72% побед в чемпионате
+   * и победа над записью человека за 6,7 минуты. Он единственный силён
+   * по обеим меркам сразу. Обычный рой сильнее в чемпионате (76%),
+   * но именно ему человек и выиграл; манеры, бьющие человека надёжнее,
+   * заметно слабее в чемпионате.
+   *
+   * Вторая — «Оплот»: четыре минуты обороны человеческой манерой
+   * (стены первыми, дешёвые башни, дальность, генерал дома), затем
+   * переход в наступление. В чемпионате он слаб — 27%, потому что
+   * четыре минуты без войска не наверстать, — но играет ЗАМЕТНО иначе,
+   * и запись человека он тоже обыграл. Вторая комната нужна ради
+   * разнообразия соперника, а не ради второй ступени сложности.
+   *
+   * Прежний базовый профиль в игре не встречается: 40% побед, двенадцатое
+   * место из восемнадцати. Умолчанием библиотеки он при этом остаётся —
+   * там оно значит другое и стережётся эталоном.
    */
-  const startComputer = (host: string, port: number): ComputerService => {
-    const service = startComputerService({
-      apiUrl: `http://${host}:${String(port)}`,
-      wsUrl: `ws://${host}:${String(port)}/game`,
-      log: (message) => console.info(`[bot] ${message}`),
-    });
+  const startComputer = (host: string, port: number): readonly ComputerService[] => {
+    const apiUrl = `http://${host}:${String(port)}`;
+    const wsUrl = `ws://${host}:${String(port)}/game`;
+    const botLog = (message: string): void => {
+      console.info(`[bot] ${message}`);
+    };
 
-    computerRef.current = service;
-    return service;
+    const services = [
+      startComputerService({
+        apiUrl,
+        wsUrl,
+        profile: ADAPTIVE_SWARM_PROFILE.id,
+        name: 'Компьютер',
+        title: 'Матч с компьютером',
+        log: botLog,
+      }),
+      startComputerService({
+        apiUrl,
+        wsUrl,
+        profile: BULWARK_PROFILE.id,
+        name: 'Компьютер-оплот',
+        // Двадцать знаков — предел для названия комнаты, общий с именем
+        // игрока. «Матч с компьютером: рой» в него не влезал, и комната
+        // молча не создавалась вовсе.
+        title: 'Матч с оплотом',
+        log: botLog,
+      }),
+    ];
+
+    computerRef.current = services;
+    return services;
   };
 
   return { app, lobbies, matches, startComputer, getTransport: () => transportRef.current };
