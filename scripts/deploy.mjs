@@ -31,6 +31,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
       '  --host <алиас>    куда (по умолчанию dezintegra или $TD_DEPLOY_HOST)',
       '  --dir <каталог>   каталог на сервере (по умолчанию td)',
       '  --no-cache        собрать образы с нуля, не доверяя кешу слоёв',
+      '  --no-perf         выложить без замера частоты кадров (осознанно!)',
       '',
       'Пример: pnpm run deploy -- --ref origin/main',
     ].join('\n'),
@@ -47,6 +48,7 @@ const host = flag('--host', process.env.TD_DEPLOY_HOST ?? 'dezintegra');
 const remoteDir = flag('--dir', 'td');
 const dirty = argv.includes('--dirty');
 const noCache = argv.includes('--no-cache');
+const skipPerf = argv.includes('--no-perf');
 let ref = flag('--ref', 'HEAD');
 
 // ── Мелкие помощники ─────────────────────────────────────────────────
@@ -96,6 +98,25 @@ note('связь есть');
 const dockerFiles = ['Dockerfile', 'docker-compose.yml', '.dockerignore', '.env.example', 'docker'];
 const missing = dockerFiles.filter((name) => !existsSync(join(root, name)));
 if (missing.length > 0) die(`в дереве нет файлов сборки: ${missing.join(', ')}`);
+
+// ── Замер частоты кадров ─────────────────────────────────────────────
+//
+// Шаг обязательный, и вот почему он именно здесь, а не в CI. На runner'ах
+// GitHub видеокарты нет: Chromium рисует программно и выдаёт около
+// шестнадцати кадров на любой сцене, так что порог 55 там недостижим
+// в принципе. Значит единственное место, где просадку отрисовки вообще
+// можно поймать, — живая машина, и последний момент, когда это ещё
+// дёшево, — прямо перед выкладкой. После неё просадку увидит игрок.
+//
+// Обёртка сама откажется мерить на занятой машине: цифра, снятая под
+// нагрузкой, говорит о нагрузке, а не о коде.
+if (skipPerf) {
+  note('ВНИМАНИЕ: замер частоты кадров пропущен по ключу --no-perf');
+} else {
+  step('Замеряю частоту кадров перед выкладкой');
+  run('pnpm', ['e2e:perf'], { cwd: root, shell: true });
+  note('отрисовка держит порог');
+}
 
 // ── Что именно выкладываем ───────────────────────────────────────────
 if (dirty) {

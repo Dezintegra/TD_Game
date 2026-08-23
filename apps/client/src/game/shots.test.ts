@@ -319,9 +319,8 @@ describe('высота дульного среза', () => {
   });
 
   it('выстрел юнита выходит с прежней высоты плеча', () => {
-    const withTower = draw([shotOf(ShotWeapon.Bolt)], 0, [
-      towerAt(FROM, StructureKind.TowerBasic),
-    ]).glow.points[0];
+    const withTower = draw([shotOf(ShotWeapon.Bolt)], 0, [towerAt(FROM, StructureKind.TowerBasic)])
+      .glow.points[0];
     const plain = draw([shotOf(ShotWeapon.Bolt)]).glow.points[0];
 
     if (withTower === undefined || plain === undefined) throw new Error('трассер не нарисован');
@@ -517,8 +516,8 @@ describe('ракета генерала', () => {
 
   it('клубы дыма расходятся по дороге, а не висят в одной точке', () => {
     const smoke = draw([MISSILE], SPAN * 0.35).trails.circles;
-    const spread = Math.max(...smoke.map((point) => point.x)) -
-      Math.min(...smoke.map((point) => point.x));
+    const spread =
+      Math.max(...smoke.map((point) => point.x)) - Math.min(...smoke.map((point) => point.x));
 
     expect(smoke.length).toBeGreaterThan(1);
     expect(spread).toBeGreaterThan(10);

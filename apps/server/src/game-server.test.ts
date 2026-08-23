@@ -175,7 +175,10 @@ describe('игровой сервер', () => {
 
     const first = await openSocket();
     const second = await openSocket();
-    const ready = Promise.all([waitFor(first, MessageType.Welcome), waitFor(second, MessageType.Welcome)]);
+    const ready = Promise.all([
+      waitFor(first, MessageType.Welcome),
+      waitFor(second, MessageType.Welcome),
+    ]);
 
     first.send(encode({ type: MessageType.Join, ticket: 'e'.repeat(32) }));
     second.send(encode({ type: MessageType.Join, ticket: 'f'.repeat(32) }));
@@ -212,7 +215,9 @@ describe('игровой сервер', () => {
     await welcome;
 
     const intruder = await openSocket();
-    const closed = new Promise<number>((resolve) => intruder.once('close', (code) => resolve(code)));
+    const closed = new Promise<number>((resolve) =>
+      intruder.once('close', (code) => resolve(code)),
+    );
     intruder.send(encode({ type: MessageType.Join, ticket: 'c'.repeat(32) }));
 
     await expect(closed).resolves.toBe(CloseCode.BadTicket);

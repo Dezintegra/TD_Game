@@ -48,11 +48,7 @@ const target = (player: PlayerId, tick: number, cell: number): Command => ({
  * Обе заказывают войска и назначают целью чужую базу; дальше войска
  * сами доходят до встречи и начинают стрелять и гибнуть.
  */
-const playMatch = (
-  ticks: number,
-  onTick: (world: WorldState) => void,
-  seed = 4242,
-): WorldState => {
+const playMatch = (ticks: number, onTick: (world: WorldState) => void, seed = 4242): WorldState => {
   let world = createWorld(seed);
 
   const enemyBase = (player: PlayerId): number => world.map.baseCells[player === 0 ? 1 : 0] ?? 0;

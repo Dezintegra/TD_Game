@@ -92,7 +92,10 @@ export const unitPrice = (stats: PlayerStats, phase: PhaseProfile): number => {
   const total = UNIT_TYPES.reduce<number>((sum, type) => sum + phase.mix[type], 0);
   if (total <= 0) return 0;
 
-  return UNIT_TYPES.reduce<number>((sum, type) => sum + stats.units[type].cost * phase.mix[type], 0) / total;
+  return (
+    UNIT_TYPES.reduce<number>((sum, type) => sum + stats.units[type].cost * phase.mix[type], 0) /
+    total
+  );
 };
 
 /** Сколько урона в тик игрок уже имеет по этой цели прокачки. */
@@ -264,9 +267,7 @@ export const nukeOutcome = (
     // одинаково для обеих сторон — взрыв не различает, чьё жжёт.
     const dealt =
       countDefence && baseline.attack > 0 && baseline.range > 0
-        ? (baseline.attack / Math.max(1, baseline.cooldownTicks)) *
-          horizon *
-          ENERGY_PER_LIVE_DAMAGE
+        ? (baseline.attack / Math.max(1, baseline.cooldownTicks)) * horizon * ENERGY_PER_LIVE_DAMAGE
         : 0;
     const worth = Math.max(baseline.cost, dealt);
 

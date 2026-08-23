@@ -379,7 +379,7 @@ describe('подготовка целиком', () => {
     });
 
     const samples = slow[0] as Float32Array;
-    expect(samples.length).toBe(Math.floor(2 * SAMPLE_RATE / 0.5));
+    expect(samples.length).toBe(Math.floor((2 * SAMPLE_RATE) / 0.5));
     // На первой секунде звук ещё в полную силу, на третьей уже нет.
     expect(rms(samples, 0, SAMPLE_RATE)).toBeGreaterThan(rms(samples, 3 * SAMPLE_RATE) * 3);
   });

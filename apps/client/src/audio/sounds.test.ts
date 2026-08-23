@@ -232,7 +232,11 @@ describe('выстрелы', () => {
     // луч держится столько, сколько его видно на поле.
     const plateau = (sound: Sound): number => {
       const samples = first(sound);
-      const middle = rms(samples, Math.floor(samples.length * 0.4), Math.floor(samples.length * 0.6));
+      const middle = rms(
+        samples,
+        Math.floor(samples.length * 0.4),
+        Math.floor(samples.length * 0.6),
+      );
       const loudest = rms(samples, 0, Math.floor(samples.length * 0.2));
       return middle / loudest;
     };

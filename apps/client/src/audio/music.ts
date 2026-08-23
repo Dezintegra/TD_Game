@@ -172,9 +172,7 @@ const renderLead = (sampleRate: number): Float32Array => {
 
     // Атака в двадцать миллисекунд: резкая превратила бы ведущую линию
     // в ещё один ударный, а её задача — наоборот, разбавлять их.
-    return (
-      (triangle(first) * 0.55 + triangle(second) * 0.45) * decay() * attackAt(time, 0.02)
-    );
+    return (triangle(first) * 0.55 + triangle(second) * 0.45) * decay() * attackAt(time, 0.02);
   });
 };
 

@@ -156,7 +156,8 @@ const insideBaseExclusion = (working: Working, cell: number): boolean => {
   const centre = cellCentre(cell);
 
   return working.map.baseCells.some(
-    (base) => distanceSquared(centre, cellCentre(base)) <= BASE_BUILD_EXCLUSION * BASE_BUILD_EXCLUSION,
+    (base) =>
+      distanceSquared(centre, cellCentre(base)) <= BASE_BUILD_EXCLUSION * BASE_BUILD_EXCLUSION,
   );
 };
 

@@ -96,7 +96,7 @@ export interface MatchResult {
   readonly recovered: ReadonlyMap<number, readonly Command[]>;
 }
 
-const sampleOf =(world: WorldState, player: PlayerId): SampleRecord => {
+const sampleOf = (world: WorldState, player: PlayerId): SampleRecord => {
   const state = world.players[player];
   const general = world.generals[player];
   const stats = state === undefined ? undefined : playerStats(state);

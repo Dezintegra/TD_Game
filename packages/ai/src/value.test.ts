@@ -160,7 +160,12 @@ describe('ядерный удар считается в энергии, со с�
   const ENEMY: PlayerId = asPlayerId(1);
 
   /** Мир, где вокруг точки стоит заданное число юнитов игрока. */
-  const crowdAt = (world: WorldState, owner: PlayerId, cell: number, count: number): WorldState => ({
+  const crowdAt = (
+    world: WorldState,
+    owner: PlayerId,
+    cell: number,
+    count: number,
+  ): WorldState => ({
     ...world,
     units: [
       ...world.units,

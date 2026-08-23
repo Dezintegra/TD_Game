@@ -104,13 +104,7 @@ export const valueNoise = (x: number, y: number, seed: number, period = 0): numb
  * количества, и подбирать множители пришлось бы заново при каждой
  * правке подробности.
  */
-export const fbm = (
-  x: number,
-  y: number,
-  seed: number,
-  octaves: number,
-  period = 0,
-): number => {
+export const fbm = (x: number, y: number, seed: number, octaves: number, period = 0): number => {
   let sum = 0;
   let amplitude = 0.5;
   let frequency = 1;
@@ -119,7 +113,8 @@ export const fbm = (
   for (let octave = 0; octave < octaves; octave += 1) {
     // Период удваивается вместе с частотой: у каждой октавы своя решётка,
     // и замкнуться на себя обязана каждая, иначе шов даст самая мелкая.
-    sum += amplitude * valueNoise(x * frequency, y * frequency, seed + octave * 7, period * frequency);
+    sum +=
+      amplitude * valueNoise(x * frequency, y * frequency, seed + octave * 7, period * frequency);
     total += amplitude;
     amplitude *= 0.5;
     frequency *= 2;
@@ -235,8 +230,7 @@ const cellDepth = (map: GameMap): Float32Array => {
   for (let y = 0; y < MAP_HEIGHT_CELLS; y += 1) {
     for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
       const index = y * MAP_WIDTH_CELLS + x;
-      const border =
-        x === 0 || y === 0 || x === MAP_WIDTH_CELLS - 1 || y === MAP_HEIGHT_CELLS - 1;
+      const border = x === 0 || y === 0 || x === MAP_WIDTH_CELLS - 1 || y === MAP_HEIGHT_CELLS - 1;
 
       if (!isRockCell(map, x, y) || border) {
         depth[index] = isRockCell(map, x, y) ? 1 : 0;

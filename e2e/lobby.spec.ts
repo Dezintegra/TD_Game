@@ -226,13 +226,104 @@ test('двое сходятся в комнате, и обоюдная гото�
     // из одного потока команд. Ради этого всё и затевалось.
     await expect(anya.getByTestId('diagnostics')).toHaveAttribute('data-sync-tick', /[1-9]/);
 
-    const syncTick = await diagnostic(anya, 'sync-tick');
-    await expect(borya.getByTestId('diagnostics')).toHaveAttribute('data-sync-tick', syncTick);
-    const anyaChecksum = await diagnostic(anya, 'sync-checksum');
-    await expect(borya.getByTestId('diagnostics')).toHaveAttribute(
-      'data-sync-checksum',
-      anyaChecksum,
-    );
+    /** Снимок подтверждённого мира: тик и сумма читаются ОДНИМ обращением. */
+    const syncSnapshot = (page: Page) =>
+      page.getByTestId('diagnostics').evaluate((el) => ({
+        tick: el.getAttribute('data-sync-tick') ?? '',
+        checksum: el.getAttribute('data-sync-checksum') ?? '',
+      }));
+
+    /**
+     * Дождаться тика, который видели ОБЕ стороны, и сравнить суммы на нём.
+     *
+     * Читать тик и сумму порознь нельзя, и это не педантизм: мир не стоит.
+     * Между чтением тика у Ани и чтением её суммы проходит несколько тиков,
+     * и сумма оказывается уже от другого мгновения; а Боря может нужный тик
+     * проскочить между опросами — тогда совпадения не случится никогда.
+     *
+     * На runner'е GitHub так и вышло: клиент рисует там четыре кадра
+     * в секунду, тик уезжал 600 → 630 → 660 → 690 → 720, сумма менялась
+     * вместе с ним, и проверка ждала снимок, которого уже нет. На быстрой
+     * машине то же самое проскакивало по случайности.
+     *
+     * Возвращает тик, на котором стороны сошлись, — чтобы следующая проверка
+     * могла потребовать совпадения ПОЗЖЕ этого места, а не зачесть прежнее.
+     */
+    const agreeOnCommonTick = async (after: number): Promise<number> => {
+      const seen = new Map<string, { who: string; checksum: string }>();
+      let agreedAt = 0;
+
+      await expect
+        .poll(
+          async () => {
+            // Обе стороны читаются ОДНОВРЕМЕННО, а не по очереди.
+            //
+            // По очереди не годится: опрос идёт раз в секунду, подтверждённый
+            // тик тоже меняется примерно раз в секунду, и каждая сторона
+            // даёт свою разрежённую выборку тиков. Две такие выборки могут
+            // не пересечься вовсе — что и вышло на runner'е, где клиент
+            // рисует четыре кадра в секунду: проверка честно ждала общий
+            // тик все тридцать секунд и не дождалась.
+            const [ofAnya, ofBorya] = await Promise.all([syncSnapshot(anya), syncSnapshot(borya)]);
+
+            const usable = (it: { tick: string; checksum: string }) =>
+              it.checksum !== '' && Number(it.tick) > after;
+
+            // Быстрый путь: обе стороны показывают один тик прямо сейчас.
+            if (usable(ofAnya) && usable(ofBorya) && ofAnya.tick === ofBorya.tick) {
+              agreedAt = Number(ofAnya.tick);
+              return ofAnya.checksum === ofBorya.checksum
+                ? 'совпало'
+                : `расхождение на тике ${ofAnya.tick}`;
+            }
+
+            const sampled = [
+              { who: 'Аня', ...ofAnya },
+              { who: 'Боря', ...ofBorya },
+            ].filter(usable);
+
+            // Медленный путь: одна сторона могла показать тик, который другая
+            // проходила в промежутке между опросами. Память о виденном это
+            // ловит — записи не стираются, и совпадение засчитывается позже.
+            for (const { who, tick, checksum } of sampled) {
+              const known = seen.get(tick);
+              if (known === undefined) {
+                seen.set(tick, { who, checksum });
+                continue;
+              }
+
+              // Своя же запись свидетельством не является: сравниваем стороны.
+              if (known.who === who) continue;
+              if (known.checksum !== checksum) return `расхождение на тике ${tick}`;
+
+              agreedAt = Number(tick);
+              return 'совпало';
+            }
+
+            // В сообщении стоят оба тика: если проверка всё же не дождётся,
+            // из отчёта будет видно, стороны разъехались или одна отстала, —
+            // а не только то, что «не совпало».
+            return `ждём общий тик (Аня ${ofAnya.tick}, Боря ${ofBorya.tick})`;
+          },
+          {
+            timeout: 45_000,
+            // Ровный частый опрос вместо растущих пауз по умолчанию.
+            //
+            // Подтверждённый тик держится около секунды, и при опросе раз
+            // в секунду каждая сторона даёт свою разрежённую выборку —
+            // выборки могут не пересечься подолгу. Проверено 24.08.2026:
+            // при опросе раз в 250 мс тест прошёл за 28.9 с при пороге
+            // в 30 с, то есть впритык. Десять выборок на тик оставляют запас.
+            intervals: [100],
+            message: 'подтверждённые миры Ани и Бори должны совпасть на общем тике',
+          },
+        )
+        .toBe('совпало');
+
+      return agreedAt;
+    };
+
+    const agreedAt = await agreeOnCommonTick(0);
 
     // Действия одного доходят до мира другого. Аня двигает генерала —
     // и оба мира остаются одинаковыми, хотя команду отдавала только она.
@@ -241,19 +332,10 @@ test('двое сходятся в комнате, и обоюдная гото�
     await anya.waitForTimeout(600);
     await anya.keyboard.up('w');
 
-    await expect
-      .poll(
-        async () => {
-          const tick = await diagnostic(anya, 'sync-tick');
-          const mine = await diagnostic(anya, 'sync-checksum');
-          const theirs = await diagnostic(borya, 'sync-checksum');
-          const theirTick = await diagnostic(borya, 'sync-tick');
-
-          return tick === theirTick && mine === theirs && Number(tick) > Number(syncTick);
-        },
-        { timeout: 15_000 },
-      )
-      .toBe(true);
+    // Совпасть должны на тике ПОЗЖЕ прежнего: иначе проверку зачло бы
+    // прошлое согласие, снятое ещё до того, как Аня тронула генерала,
+    // и команда могла бы не доехать вовсе.
+    await agreeOnCommonTick(agreedAt);
 
     // С живым соперником перезапуск на новой карте недоступен.
     //

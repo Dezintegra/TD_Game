@@ -243,7 +243,9 @@ export const reportMatch = (db: DatabaseSync, matchId: string): string => {
             `${num(row, 'hit') > 0 ? `  из них уперлось в предел ${String(num(row, 'hit'))}` : ''}`,
         );
       }
-      out.push(`    уперлось в предел терпения: ${String(hits)} из ${String(runs)} (${percent(hits, runs)})`);
+      out.push(
+        `    уперлось в предел терпения: ${String(hits)} из ${String(runs)} (${percent(hits, runs)})`,
+      );
     }
 
     // ── Заказанные юниты против объявленных профилем весов ──────────
@@ -343,7 +345,9 @@ export const reportMatch = (db: DatabaseSync, matchId: string): string => {
 
       const bought = new Set([...targets.keys()].map((key) => key.split(' / ')[0] ?? key));
 
-      out.push(`  куплено прокачки по целям (целей с ненулевым весом в профиле: ${String(declaredTargets.size)}):`);
+      out.push(
+        `  куплено прокачки по целям (целей с ненулевым весом в профиле: ${String(declaredTargets.size)}):`,
+      );
       const upgradePeak = Math.max(...targets.values(), 1);
       for (const [key, count] of [...targets.entries()].sort((a, b) => b[1] - a[1])) {
         out.push(`    ${padEnd(key, 32)} ${pad(count, 5)} ${bar(count, upgradePeak, 14)}`);
@@ -379,9 +383,7 @@ export const reportMatch = (db: DatabaseSync, matchId: string): string => {
         `    медиана ${at(0.5).toFixed(1)}   ` +
           `нижние 10% ${at(0.1).toFixed(1)}   верхние 10% ${at(0.9).toFixed(1)}`,
       );
-      out.push(
-        `    решений с отрывом меньше единицы: ${String(tiny)} из ${String(gaps.length)}`,
-      );
+      out.push(`    решений с отрывом меньше единицы: ${String(tiny)} из ${String(gaps.length)}`);
     }
 
     // ── Отклонённые команды ─────────────────────────────────────────
@@ -560,7 +562,9 @@ export const reportBatch = (db: DatabaseSync): string => {
     const byLive = num(escort, 'by_live');
 
     out.push('');
-    out.push(`  сопровождение генерала на дальнем рубеже (решений ${String(num(escort, 'decisions'))}):`);
+    out.push(
+      `  сопровождение генерала на дальнем рубеже (решений ${String(num(escort, 'decisions'))}):`,
+    );
     out.push(
       `    живые юниты есть где угодно: ${pad(byLive, 6)}   ` +
         `из них рядом с генералом никого: ${percent(num(escort, 'live_but_alone'), byLive)}`,

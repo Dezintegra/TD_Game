@@ -16,7 +16,12 @@
   energyToVisible,
   unitsToCells,
 } from '@td/shared';
-import type { CommandIntent, PlayerId, StructureKind as StructureKindType, UnitType } from '@td/shared';
+import type {
+  CommandIntent,
+  PlayerId,
+  StructureKind as StructureKindType,
+  UnitType,
+} from '@td/shared';
 import {
   buildOccupancy,
   cellAt,
@@ -390,8 +395,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
       const world = guest.predicted;
       const base = world?.structures.find(
-        (structure) =>
-          structure.owner === localPlayer && structure.kind === StructureKind.Base,
+        (structure) => structure.owner === localPlayer && structure.kind === StructureKind.Base,
       );
 
       if (base !== undefined) scene.centreOnCell(base.cell);
@@ -542,11 +546,7 @@ const isHoverAllowed = (
  * с причиной. Спрятанная кнопка оставляет игрока гадать, а причин ровно
  * три, и каждая ему что-то говорит.
  */
-const selectionOf = (
-  world: WorldState,
-  playerId: PlayerId,
-  cell: number,
-): SelectionView | null => {
+const selectionOf = (world: WorldState, playerId: PlayerId, cell: number): SelectionView | null => {
   if (cell < 0) return null;
 
   const structure = world.structures.find((entry) => entry.cell === cell);

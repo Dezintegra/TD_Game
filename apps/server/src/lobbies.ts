@@ -2,12 +2,7 @@ import { LOBBY_CAPACITY, LobbyError } from '@td/protocol';
 import { checkName } from '@td/shared';
 import { computerMindOf } from '@td/bot';
 import type { MatchSide } from '@td/shared';
-import type {
-  LobbySummary,
-  LobbyView,
-  MatchView,
-  PlayerView,
-} from '@td/protocol';
+import type { LobbySummary, LobbyView, MatchView, PlayerView } from '@td/protocol';
 
 /**
  * Комнаты ожидания: где двое находят друг друга и договариваются начать.
@@ -35,8 +30,7 @@ import type {
 export const DISCONNECT_GRACE_MS = 15_000;
 
 export type LobbyResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: LobbyError };
+  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: LobbyError };
 
 interface Slot {
   readonly id: string;
@@ -267,9 +261,7 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
     // сведений рано или поздно разошёлся бы с настоящим.
     const composition: MatchSide[] = lobby.slots.map((slot, index) => {
       const profile = options.computerProfileOf?.(slot.id);
-      return profile === undefined
-        ? { who: 'human' }
-        : computerMindOf(match.seed, index, profile);
+      return profile === undefined ? { who: 'human' } : computerMindOf(match.seed, index, profile);
     });
 
     options.onMatchStart?.({

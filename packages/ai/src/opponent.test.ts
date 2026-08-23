@@ -334,10 +334,7 @@ describe('генерал противника', () => {
     const approach = approachOf(createWorld(SEED), AI_PLAYER);
     if (approach === undefined) throw new Error('вероятный путь не посчитан');
 
-    const furthest = trail.reduce(
-      (best, cell) => Math.max(best, approach.fromHome[cell] ?? 0),
-      0,
-    );
+    const furthest = trail.reduce((best, cell) => Math.max(best, approach.fromHome[cell] ?? 0), 0);
 
     expect(furthest / approach.shortest).toBeGreaterThan(0.5);
   });

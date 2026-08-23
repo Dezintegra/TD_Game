@@ -89,8 +89,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: calc(var(--td-space-6) + var(--td-safe-top)) calc(var(--td-space-6) + var(--td-safe-right))
-    calc(var(--td-space-6) + var(--td-safe-bottom)) calc(var(--td-space-6) + var(--td-safe-left));
+  padding: calc(var(--td-space-6) + var(--td-safe-top))
+    calc(var(--td-space-6) + var(--td-safe-right)) calc(var(--td-space-6) + var(--td-safe-bottom))
+    calc(var(--td-space-6) + var(--td-safe-left));
   overflow-y: auto;
   background: var(--td-bg-page);
 }
@@ -259,8 +260,9 @@ body {
   /* Фон полосы идёт во всю ширину экрана, а содержимое отодвинуто
      от выреза. Иначе либо имя игрока уедет под вырез, либо по краю
      появится чёрная полоса — то самое, от чего лечит cover. */
-  padding: calc(var(--td-hud-pad-y) + var(--td-safe-top)) calc(var(--td-hud-pad-x) + var(--td-safe-right))
-    var(--td-hud-pad-y) calc(var(--td-hud-pad-x) + var(--td-safe-left));
+  padding: calc(var(--td-hud-pad-y) + var(--td-safe-top))
+    calc(var(--td-hud-pad-x) + var(--td-safe-right)) var(--td-hud-pad-y)
+    calc(var(--td-hud-pad-x) + var(--td-safe-left));
   border-bottom: 1px solid var(--td-border-subtle);
 }
 
@@ -349,7 +351,8 @@ body {
   /* Нижний отступ учитывает полосу «домой»: на iOS она лежит ПОВЕРХ
      содержимого, и без отступа под ней оказались бы плитки заказа. */
   padding: var(--td-hud-pad-y) calc(var(--td-hud-pad-x) + var(--td-safe-right))
-    calc(var(--td-hud-pad-y) + var(--td-safe-bottom)) calc(var(--td-hud-pad-x) + var(--td-safe-left));
+    calc(var(--td-hud-pad-y) + var(--td-safe-bottom))
+    calc(var(--td-hud-pad-x) + var(--td-safe-left));
   border-top: 1px solid var(--td-border-subtle);
 
   /* Не влезло по ширине — едет вбок, а не вниз.

@@ -122,11 +122,7 @@ export const fadeFrom = (channels: Channels, sampleRate: number, seconds: number
  * щелчок. Два миллисекундных ската короче различимой длительности
  * и на слышимую форму не влияют.
  */
-export const smoothEdges = (
-  channels: Channels,
-  sampleRate: number,
-  seconds = 0.002,
-): Channels => {
+export const smoothEdges = (channels: Channels, sampleRate: number, seconds = 0.002): Channels => {
   const length = channels[0]?.length ?? 0;
   const ramp = Math.max(1, Math.min(Math.floor(length / 2), Math.round(seconds * sampleRate)));
 
@@ -176,11 +172,7 @@ export const normaliseChannels = (channels: Channels, peak: number): Channels =>
  * Плата — потерянные миллисекунды в конце и слегка приглушённая
  * дисперсия в зоне склейки. На ровном гуле и то и другое неразличимо.
  */
-export const closeLoop = (
-  channels: Channels,
-  sampleRate: number,
-  seconds = 0.05,
-): Channels => {
+export const closeLoop = (channels: Channels, sampleRate: number, seconds = 0.05): Channels => {
   const length = channels[0]?.length ?? 0;
   const overlap = Math.min(Math.floor(length / 3), Math.round(seconds * sampleRate));
   if (overlap < 2) return channels;

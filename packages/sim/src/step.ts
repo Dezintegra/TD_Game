@@ -166,10 +166,7 @@ const advanceConstruction = (working: Working, stats: readonly PlayerStats[]): v
     if (baseline.buildTicks <= 0) continue;
 
     const maxHealth = structureMaxHealth(baseline, structure.growthPpm);
-    const startHealth = Math.max(
-      1,
-      Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100),
-    );
+    const startHealth = Math.max(1, Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100));
     const total = maxHealth - startHealth;
 
     const elapsed = baseline.buildTicks - (structure.builtAtTick - working.tick);

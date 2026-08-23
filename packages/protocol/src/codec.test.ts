@@ -60,7 +60,10 @@ describe('бинарный кодек', () => {
         type: MessageType.Command,
         command: { kind: CommandKind.TrainUnit, tick: asTickNumber(7), unitType: UnitType.Tesla },
       },
-      { type: MessageType.Command, command: { kind: CommandKind.SetTarget, tick: asTickNumber(7), cell: 0 } },
+      {
+        type: MessageType.Command,
+        command: { kind: CommandKind.SetTarget, tick: asTickNumber(7), cell: 0 },
+      },
       {
         type: MessageType.Command,
         command: {
@@ -69,7 +72,10 @@ describe('бинарный кодек', () => {
           branch: UPGRADE_BRANCHES.length - 1,
         },
       },
-      { type: MessageType.Command, command: { kind: CommandKind.LaunchNuke, tick: asTickNumber(7), cell: 5 } },
+      {
+        type: MessageType.Command,
+        command: { kind: CommandKind.LaunchNuke, tick: asTickNumber(7), cell: 5 },
+      },
       {
         type: MessageType.Command,
         command: { kind: CommandKind.Demolish, tick: asTickNumber(7), cell: MAP_CELL_COUNT - 1 },
@@ -204,7 +210,12 @@ describe('бинарный кодек', () => {
   it('отклоняет постройку, которую строить нельзя', () => {
     const buffer = encode({
       type: MessageType.Command,
-      command: { kind: CommandKind.Build, tick: asTickNumber(1), cell: 1, structure: StructureKind.Wall },
+      command: {
+        kind: CommandKind.Build,
+        tick: asTickNumber(1),
+        cell: 1,
+        structure: StructureKind.Wall,
+      },
     });
     new DataView(buffer).setUint8(9, StructureKind.Base);
 
