@@ -14,7 +14,7 @@ import {
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { applyCommand } from './apply.js';
-import { killGeneral, buildCombatIndices, buildSpatialIndex, resolveCombat } from './combat.js';
+import { killGeneral, buildCombatIndices, resolveCombat } from './combat.js';
 import { cellCentre } from './map.js';
 import { findFreeCellNear, moveGenerals, moveUnits } from './movement.js';
 import { buildNavField } from './navigation.js';
@@ -86,13 +86,16 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
   runProduction(working, stats);
   refreshNavigation(working);
 
-  // Индекс по положениям на начало тика. Движение спрашивает у него,
-  // есть ли поблизости противник, и ответ не должен зависеть от того,
-  // кто из юнитов успел сдвинуться раньше в этом же тике.
-  const beforeMove = buildSpatialIndex(working.units.length, (index) => {
-    const unit = working.units[index];
-    return unit === undefined || !unit.alive ? undefined : { x: unit.x, y: unit.y };
-  });
+  // Индексы по положениям на начало тика. Движение спрашивает у них,
+  // есть ли поблизости противник и есть ли поблизости стреляющая
+  // постройка, и ответ не должен зависеть от того, кто из юнитов успел
+  // сдвинуться раньше в этом же тике.
+  //
+  // Собираются той же функцией, что и индексы для стрельбы ниже, —
+  // постройки за время движения не сдвигаются, а юниты индексируются
+  // тем же условием. Отдельная ручная сборка одного индекса тут стояла
+  // ровно до тех пор, пока движению хватало одних живых.
+  const beforeMove = buildCombatIndices(working);
 
   moveUnits(working, stats, beforeMove);
   moveGenerals(working, stats);

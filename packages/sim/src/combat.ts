@@ -23,6 +23,7 @@ import {
   clampPpm,
   directionTowards,
   growPpm,
+  isArmedStructure,
 } from '@td/shared';
 import type { PlayerId, UnitType, Vec2 } from '@td/shared';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
@@ -76,9 +77,16 @@ export type ShooterKind = (typeof ShooterKind)[keyof typeof ShooterKind];
  * сравнений за тик только среди юнитов, шесть миллионов проверок
  * расстояния в секунду. Корзины сводят перебор к соседям.
  *
- * Восемь клеток выбраны под самую большую дальность в игре (десять клеток
- * у снайперской башни): при таком размере запрос покрывается сеткой
- * три на три корзины, а сама сетка остаётся маленькой — 12 × 12.
+ * Восемь клеток выбраны под самую большую дальность в игре — её держит
+ * снайперская башня, и после её снижения до восьми клеток размер корзины
+ * с этой дальностью совпал ровно. Запрос покрывается сеткой три на три
+ * корзины, а сама сетка остаётся маленькой — 6 × 6.
+ *
+ * Прокачка дальность увеличивает, и покрытие тогда расширяется до пяти
+ * корзин по стороне. Ошибки в этом нет: границы запроса считаются
+ * по самому радиусу (`forEachNear`), а не по обещанию уложиться
+ * в три на три. Размер корзины влияет только на то, сколько лишних
+ * соседей перебирается.
  */
 const BUCKET_CELLS = 8;
 const BUCKET_UNITS = BUCKET_CELLS * FIXED_POINT_SCALE;
@@ -267,7 +275,14 @@ const nearestUnit = (
   return best.target;
 };
 
-/** Ближайшая видимая вражеская постройка. */
+/**
+ * Ближайшая видимая вражеская постройка.
+ *
+ * `armedOnly` отбирает только стреляющие. Отдельного обхода рядом
+ * не заведено намеренно: два похожих перебора с почти одинаковыми
+ * условиями разъехались бы на первой же правке — в одном не забыли бы
+ * про основание базы, в другом забыли.
+ */
 const nearestStructure = (
   working: Working,
   indices: CombatIndices,
@@ -276,6 +291,7 @@ const nearestStructure = (
   range: number,
   reach: number,
   elevated: boolean,
+  armedOnly: boolean,
 ): Target | undefined => {
   const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
 
@@ -286,6 +302,7 @@ const nearestStructure = (
   forEachNear(indices.structures, origin, range + LARGEST_FOOTPRINT, (index) => {
     const structure = working.structures[index];
     if (structure === undefined || !structure.alive || structure.owner === owner) return;
+    if (armedOnly && !isArmedStructure(structure.kind)) return;
 
     const distance = structureDistance(origin, structure);
     if (distance > reach) return;
@@ -304,7 +321,8 @@ const nearestStructure = (
  *   2) вражеский генерал;
  *   3) постройка, перегородившая путь;
  *   4) вражеский юнит;
- *   5) любая вражеская постройка.
+ *   5) вражеская стреляющая постройка;
+ *   6) любая вражеская постройка.
  *
  * Ступени перебираются сверху вниз, и первая, на которой нашлась цель
  * в радиусе и на линии огня, останавливает перебор. Внутри ступени
@@ -326,6 +344,17 @@ const nearestStructure = (
  * Почему назначенная цель всё-таки выше генерала. Это единственный
  * прямой приказ игрока в выборе цели, и автоматика перебивать его
  * не должна.
+ *
+ * Почему стреляющая постройка отделена от прочих. Внутри ступени
+ * выбирается ближайшая цель, а ближе башни почти всегда стоит
+ * прикрывающая её стена — на то она и поставлена. Без отдельной ступени
+ * юнит, остановившийся ради башни, ломал бы эту стену, пока башня
+ * расстреливает его в упор, и правило остановки не работало бы вовсе.
+ *
+ * Почему она всё же ниже юнитов. Тот же довод, по которому генерал
+ * выше преграды, только прочитанный наоборот: живой противник уйдёт,
+ * а башня останется там же. Остановке это не мешает — юнит стоит, пока
+ * башня жива, и доберётся до неё, разобравшись с пехотой.
  *
  * На каждой ступени цель обязана быть видимой: расстояния мало, нужна
  * ещё и свободная линия. Проверка стоит обхода нескольких клеток
@@ -366,7 +395,8 @@ export const chooseTarget = (
 
   return (
     nearestUnit(working, indices, owner, origin, range, reach, elevation.living) ??
-    nearestStructure(working, indices, owner, origin, range, reach, elevation.structures)
+    nearestStructure(working, indices, owner, origin, range, reach, elevation.structures, true) ??
+    nearestStructure(working, indices, owner, origin, range, reach, elevation.structures, false)
   );
 };
 
@@ -448,6 +478,63 @@ export const hasHostileInSight = (
   }
 
   return false;
+};
+
+/**
+ * Есть ли в радиусе вражеская СТРЕЛЯЮЩАЯ постройка, по которой можно
+ * стрелять.
+ *
+ * Нужен движению ровно затем же, зачем `hasHostileInSight` выше: юнит
+ * останавливается, встретив башню, и снимает её, вместо того чтобы
+ * пройти строй башен насквозь под их огнём. Стена сюда не попадает —
+ * она не стреляет, и сносить её просто так незачем.
+ *
+ * Радиус — САМОГО юнита, а не постройки. Правило «останавливаться,
+ * когда башня достаёт до тебя» выглядит справедливее, но означало бы
+ * остановку вне собственного радиуса: юнит встал бы и не выстрелил.
+ * И оно же отменило бы Теслу, которая обязана расстреливать башню,
+ * не входя в её круг.
+ *
+ * `elevated` — высота стрельбы ПО ПОСТРОЙКАМ, не по живым. У Теслы это
+ * навес поверх стен: башню за стеной она достаёт, а значит, и стоять
+ * ради неё обязана. Пехота за той же стеной башни не видит и потому
+ * идёт дальше.
+ *
+ * Индекс, как и у живых, передаётся построенный ДО движения: иначе ответ
+ * зависел бы от порядка обхода массива, а от него в детерминированном
+ * ядре зависеть не должно ничто. Постройки за время движения и так
+ * не сдвигаются, но брать оба индекса из одного места дешевле, чем
+ * помнить, что одно из двух правил исключение.
+ */
+export const hasArmedStructureInSight = (
+  working: Working,
+  structures: SpatialIndex,
+  owner: PlayerId,
+  origin: Vec2,
+  range: number,
+  elevated: boolean,
+): boolean => {
+  if (range <= 0) return false;
+
+  const reach = range * range;
+  let found = false;
+
+  // Расширение радиуса поиска — то же и по той же причине, что
+  // в `nearestStructure`: корзины индексируют постройку по центру,
+  // а расстояние меряется до края основания.
+  forEachNear(structures, origin, range + LARGEST_FOOTPRINT, (index) => {
+    if (found) return;
+
+    const structure = working.structures[index];
+    if (structure === undefined || !structure.alive || structure.owner === owner) return;
+    if (!isArmedStructure(structure.kind)) return;
+    if (structureDistance(origin, structure) > reach) return;
+    if (!seesStructure(working, elevated, origin, structure)) return;
+
+    found = true;
+  });
+
+  return found;
 };
 
 // ─────────────────────────────────────────────────────────────────────────
