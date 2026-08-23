@@ -207,8 +207,73 @@ const FIELD_MARGIN_CELLS = 1;
 interface SmoothField {
   readonly base: Float32Array;
   readonly wide: Float32Array;
+  /** Глубина массива: сглаженное расстояние до ближайшей проходимой клетки. */
+  readonly bulk: Float32Array;
   readonly pitch: number;
 }
+
+/**
+ * Расстояние каждой клетки до ближайшей проходимой, в клетках.
+ *
+ * Обход в ширину от всех проходимых клеток разом. За краем карты
+ * считается проходимо: скала у границы массивом не является, и высоты
+ * ей набирать не за что.
+ *
+ * Зачем это нужно. Высота клетки берётась из хеша её координат, то есть
+ * одиночная скала и середина большого массива получали одинаковые
+ * шансы на высоту. В природе наоборот: чем шире подошва, тем выше может
+ * стоять вершина, и гряда три на три обязана быть заметно ниже гряды
+ * пять на пять. Глубина и есть та величина, которой этого не хватало.
+ */
+const cellDepth = (map: GameMap): Float32Array => {
+  const size = MAP_WIDTH_CELLS * MAP_HEIGHT_CELLS;
+  const depth = new Float32Array(size).fill(-1);
+  const queue = new Int32Array(size);
+  let head = 0;
+  let tail = 0;
+
+  for (let y = 0; y < MAP_HEIGHT_CELLS; y += 1) {
+    for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
+      const index = y * MAP_WIDTH_CELLS + x;
+      const border =
+        x === 0 || y === 0 || x === MAP_WIDTH_CELLS - 1 || y === MAP_HEIGHT_CELLS - 1;
+
+      if (!isRockCell(map, x, y) || border) {
+        depth[index] = isRockCell(map, x, y) ? 1 : 0;
+        queue[tail] = index;
+        tail += 1;
+      }
+    }
+  }
+
+  while (head < tail) {
+    const index = queue[head] ?? 0;
+    head += 1;
+    const x = index % MAP_WIDTH_CELLS;
+    const y = (index - x) / MAP_WIDTH_CELLS;
+    const next = (depth[index] ?? 0) + 1;
+
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= MAP_WIDTH_CELLS || ny >= MAP_HEIGHT_CELLS) continue;
+
+      const at = ny * MAP_WIDTH_CELLS + nx;
+      if ((depth[at] ?? -1) >= 0) continue;
+
+      depth[at] = next;
+      queue[tail] = at;
+      tail += 1;
+    }
+  }
+
+  return depth;
+};
 
 const fields = new WeakMap<GameMap, SmoothField>();
 
@@ -219,6 +284,13 @@ const fieldOf = (map: GameMap): SmoothField => {
   const pitch = (MAP_WIDTH_CELLS + 2 * FIELD_MARGIN_CELLS) * FIELD_PER_CELL + 1;
   const base = new Float32Array(pitch * pitch);
   const wide = new Float32Array(pitch * pitch);
+  const bulk = new Float32Array(pitch * pitch);
+
+  const depth = cellDepth(map);
+  const depthAt = (x: number, y: number): number =>
+    x < 0 || y < 0 || x >= MAP_WIDTH_CELLS || y >= MAP_HEIGHT_CELLS
+      ? 0
+      : (depth[y * MAP_WIDTH_CELLS + x] ?? 0);
 
   for (let row = 0; row < pitch; row += 1) {
     const v = row / FIELD_PER_CELL - FIELD_MARGIN_CELLS;
@@ -227,10 +299,13 @@ const fieldOf = (map: GameMap): SmoothField => {
       const index = row * pitch + column;
       base[index] = smoothExact(map, u, v);
       wide[index] = wideExact(map, u, v);
+      // Глубина сглаживается тем же окном, что и высоты: ступенька
+      // в целых клетках дала бы на склоне заметный уступ.
+      bulk[index] = around(map, u, v, 0.55, depthAt);
     }
   }
 
-  const field: SmoothField = { base, wide, pitch };
+  const field: SmoothField = { base, wide, bulk, pitch };
   fields.set(map, field);
 
   return field;
@@ -264,6 +339,17 @@ export const smoothHeight = (map: GameMap, u: number, v: number): number => {
 export const wideHeight = (map: GameMap, u: number, v: number): number => {
   const field = fieldOf(map);
   return sampleField(field.wide, field.pitch, u, v);
+};
+
+/**
+ * Глубина массива в точке, в клетках.
+ *
+ * Единица у самого края, дальше растёт вглубь: у гряды три на три
+ * середина лежит на полутора, у пять на пять — на двух с половиной.
+ */
+export const massifBulk = (map: GameMap, u: number, v: number): number => {
+  const field = fieldOf(map);
+  return sampleField(field.bulk, field.pitch, u, v);
 };
 
 /** Забыть сетку карты. Нужна при выходе из матча и тестам. */
@@ -316,8 +402,31 @@ export const edgeDistance = (map: GameMap, u: number, v: number): number => {
   return Number.isFinite(distance) ? distance : 1;
 };
 
-/** Ширина подножия, в клетках: на этом расстоянии от края высота набирается полностью. */
-export const FOOT_WIDTH_CELLS = 0.62;
+/** Ширина подножия, в клетках: на этом расстоянии от очертания высота набирается полностью. */
+export const FOOT_WIDTH_CELLS = 0.35;
+
+/**
+ * Насколько порода отступает от края клетки, в клетках.
+ *
+ * Ради этого отступа всё и заведено. Пока след совпадал с клетками
+ * ровно, массив читался набором квадратов: у настоящей горы подошва
+ * по сетке не выровнена, и глаз ловит выравнивание мгновенно.
+ *
+ * Отступ только внутрь. Наружу нельзя ни на волос: порода, вылезшая
+ * на соседнюю клетку, легла бы на проходимую землю, и игрок читал бы
+ * непроходимым то, по чему войско проходит. Недобор клетки — огрех
+ * вида, перебор — обман.
+ */
+export const OUTLINE_INSET_MAX = 0.4;
+
+/** Зерно очертания. Своё, чтобы не повторять рисунок хребта. */
+const OUTLINE_SEED = 71;
+
+export const outlineInset = (u: number, v: number): number =>
+  OUTLINE_INSET_MAX * fbm(u * 1.9, v * 1.9, OUTLINE_SEED, 3);
+
+/** Ширина мягкого края очертания, в клетках. */
+const OUTLINE_FADE_CELLS = 0.06;
 
 /**
  * Множитель подножия: ноль на границе клетки, единица вглубь массива.
@@ -329,11 +438,30 @@ export const FOOT_WIDTH_CELLS = 0.62;
  * не дают.
  */
 export const footFactor = (map: GameMap, u: number, v: number): number => {
-  const distance = edgeDistance(map, u, v);
+  // Отсчёт идёт не от края клетки, а от очертания породы: подошва
+  // поднимается оттуда, где порода начинается, а не оттуда, где
+  // кончается клетка.
+  const distance = edgeDistance(map, u, v) - outlineInset(u, v);
   if (distance <= 0) return 0;
   if (distance >= FOOT_WIDTH_CELLS) return 1;
 
   return smoothstep(distance / FOOT_WIDTH_CELLS);
+};
+
+/**
+ * Доля породы в точке: единица внутри очертания, ноль за ним.
+ *
+ * Нужна отдельно от высоты, потому что у очертания высота нулевая
+ * с обеих сторон, и по ней «есть тут камень или уже земля» не отличить.
+ * Шейдер берёт её прозрачностью и тем самым вырезает клетку по неровному
+ * краю вместо ровного ромба.
+ */
+export const rockCoverage = (map: GameMap, u: number, v: number): number => {
+  const distance = edgeDistance(map, u, v) - outlineInset(u, v);
+  if (distance <= 0) return 0;
+  if (distance >= OUTLINE_FADE_CELLS) return 1;
+
+  return smoothstep(distance / OUTLINE_FADE_CELLS);
 };
 
 /** Зерно хребтового шума. Своё у каждого слоя, чтобы слои не совпадали. */
@@ -346,13 +474,47 @@ const RIDGE_SEED = 11;
  * а у этого на месте среднего значения получается излом. Гряда из него
  * выходит с рёбрами, а не из холмиков.
  */
+/**
+ * Общий подъём породы.
+ *
+ * Скалы обязаны читаться непреодолимыми, а на прежней высоте они
+ * выглядели складками земли, через которые можно перевалить. Цифра
+ * скромная намеренно: вдвое выше — и массив начинает загораживать
+ * то, что за ним, а поле с полной информацией на этом ломается.
+ */
+const HEIGHT_GAIN = 1.24;
+
+/**
+ * Прибавка за глубину массива и глубина, на которой она набирается.
+ *
+ * Ради этого заведена `massifBulk`. Одиночная скала и середина большой
+ * гряды прежде получали одинаковые шансы на высоту, потому что высота
+ * бралась из хеша клетки и только. Теперь три на три поднимается заметно
+ * выше одиночной, пять на пять — выше трёх, и дальше рост затухает:
+ * без потолка середина крупного поля скал ушла бы за антенну базы.
+ */
+const BULK_GAIN = 0.34;
+const BULK_FULL_CELLS = 3;
+
+/**
+ * Потолок высоты рельефа, в клетках.
+ *
+ * Держится ниже антенны командного центра (3,2): база обязана
+ * оставаться выше любой скалы, иначе её перестанет быть видно
+ * из-за гряды.
+ */
+export const MAX_RELIEF_HEIGHT = 3;
+
 export const surfaceHeight = (map: GameMap, u: number, v: number): number => {
   const base = smoothHeight(map, u, v);
   if (base < 0.004) return 0;
 
   const ridged = 1 - Math.abs(fbm(u * 0.66, v * 0.66, RIDGE_SEED, 3) * 2 - 1);
+  const bulk = Math.min(massifBulk(map, u, v), BULK_FULL_CELLS) / BULK_FULL_CELLS;
+  const height =
+    base * (0.72 + 0.52 * ridged) * HEIGHT_GAIN * (1 + BULK_GAIN * bulk) * footFactor(map, u, v);
 
-  return base * (0.72 + 0.52 * ridged) * footFactor(map, u, v);
+  return Math.min(height, MAX_RELIEF_HEIGHT);
 };
 
 // ─────────────────────────────────────────────────────────────────────────
