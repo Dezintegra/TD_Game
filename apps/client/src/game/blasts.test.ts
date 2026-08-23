@@ -14,7 +14,7 @@ import {
   cellsToUnits,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import { cellIndex, createWorld } from '@td/sim';
+import { cellIndex, cellX as cellColumn, cellY as cellRow, createWorld } from '@td/sim';
 import type { BlastState, NukeState, WorldState } from '@td/sim';
 import {
   drawBlasts,
@@ -24,7 +24,8 @@ import {
   shakeOffset,
   travel,
 } from './blasts.js';
-import type { BlastColors, BlastLayers } from './blasts.js';
+import type { BlastColors, BlastLayers, FlightPoint } from './blasts.js';
+import { BASE_ANTENNA_HEIGHT, BASE_LAUNCH_POINT } from './base-structure.js';
 import type { ViewBounds } from './entities.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
@@ -452,40 +453,171 @@ describe('ядерный взрыв', () => {
 });
 
 describe('ракета', () => {
-  const nuke = (owner: number): NukeState => ({
+  const MAP = createWorld(SEED).map;
+
+  const nuke = (owner: number, cell: number = CENTRE_CELL): NukeState => ({
     id: asEntityId(900),
     owner: asPlayerId(owner),
-    cell: CENTRE_CELL,
+    cell,
     detonateAtTick: asTickNumber(NUKE_DELAY_TICKS),
   });
 
-  const flightAt = (progress: number): number => missileFlight(24, 24, 1, 0, progress).height;
+  /**
+   * Срез пусковой установки на базе игрока, в мировых координатах.
+   *
+   * Складывается с клеткой базы БЕЗ полклетки: точка привязки модели
+   * базы — узел сетки, то есть угол клетки, а не её середина.
+   */
+  const launchOf = (owner: number): FlightPoint => {
+    const cell = MAP.baseCells[owner] ?? 0;
 
-  it('снижается', () => {
-    expect(flightAt(0.7)).toBeLessThan(flightAt(0.3));
+    return {
+      x: cellColumn(cell) + BASE_LAUNCH_POINT.x,
+      y: cellRow(cell) + BASE_LAUNCH_POINT.y,
+      height: BASE_LAUNCH_POINT.z,
+    };
+  };
+
+  const targetOf = (cell: number): Point => ({ x: cellColumn(cell) + 0.5, y: cellRow(cell) + 0.5 });
+
+  const flight = (progress: number, cell: number = CENTRE_CELL): FlightPoint => {
+    const target = targetOf(cell);
+
+    return missileFlight(launchOf(0), target.x, target.y, progress);
+  };
+
+  const heightAt = (progress: number): number => flight(progress).height;
+
+  /** Мировая точка полёта → точка на экране, с учётом высоты. */
+  const screenOf = (point: FlightPoint): Point => {
+    const flat = worldToScreen(point.x, point.y);
+
+    return { x: flat.x, y: flat.y - point.height * ELEVATION_PX_PER_CELL };
+  };
+
+  /** Половина полёта, в секундах. */
+  const HALF_FLIGHT = NUKE_DELAY_TICKS / TICKS_PER_SECOND / 2;
+
+  it('стартует на пусковой установке своей базы', () => {
+    const start = flight(0);
+    const launch = launchOf(0);
+
+    expect(start.x).toBeCloseTo(launch.x);
+    expect(start.y).toBeCloseTo(launch.y);
+    expect(start.height).toBeCloseTo(launch.height);
+
+    // И это заведомо не цель: иначе «стартует на базе» выполнялось бы
+    // само собой на ударе, наведённом у собственной площадки.
+    const target = targetOf(CENTRE_CELL);
+    expect(Math.hypot(start.x - target.x, start.y - target.y)).toBeGreaterThan(NUKE_RADIUS_CELLS);
+  });
+
+  it('поднимается, а потом снижается', () => {
+    expect(heightAt(0.3)).toBeGreaterThan(heightAt(0));
+    expect(heightAt(0.3)).toBeGreaterThan(heightAt(0.9));
   });
 
   it('снижается ускоряясь, а не тормозя перед землёй', () => {
-    // Половина пути пройдена — а высоты потеряна четверть. Обратное
+    // Равные доли времени на снижении, ранняя и поздняя. Обратное
     // соотношение означало бы посадку, а не удар.
-    const early = flightAt(0) - flightAt(0.5);
-    const late = flightAt(0.5) - flightAt(1);
+    const early = heightAt(0.4) - heightAt(0.6);
+    const late = heightAt(0.8) - heightAt(1);
 
     expect(late).toBeGreaterThan(early);
   });
 
   it('приходит к земле к моменту взрыва', () => {
-    expect(flightAt(1)).toBe(0);
+    expect(heightAt(1)).toBe(0);
   });
 
-  it('входит в кадр выше верхней кромки экрана', () => {
-    // Ракета обязана прилететь, а не проявиться на месте. Сравнение
-    // с половиной высоты окна, а не со всей: цель на экране посередине,
-    // и до верхней кромки от неё ровно половина.
-    expect(flightAt(0) * ELEVATION_PX_PER_CELL).toBeGreaterThan(VIEWPORT.height / 2);
+  it('сходит с направляющей почти отвесно', () => {
+    const start = flight(0);
+    const soon = flight(0.1);
+    const target = targetOf(CENTRE_CELL);
+
+    const span = Math.hypot(target.x - start.x, target.y - start.y);
+    const gone = Math.hypot(soon.x - start.x, soon.y - start.y);
+
+    // Десятая доля времени — и меньше двадцатой доли пути: ракета в это
+    // время занята подъёмом, а не сближением.
+    expect(gone / span).toBeLessThan(0.05);
+    expect(soon.height).toBeGreaterThan(start.height * 2);
   });
 
-  it('заходит со стороны базы владельца', () => {
+  it('уходит за верхнюю кромку окна и возвращается из-за неё', () => {
+    // Вершина берётся перебором, а не формулой: тест не должен повторять
+    // выкладку, которую проверяет.
+    const apexOf = (cell: number): number => {
+      let top = 0;
+      for (let step = 0; step <= 100; step += 1) {
+        top = Math.max(top, flight(step / 100, cell).height);
+      }
+
+      return top;
+    };
+
+    // Выше ВСЕГО окна, а не половины: тогда ракета за кромкой при любом
+    // положении камеры, а не только когда цель ровно посередине.
+    expect(apexOf(CENTRE_CELL) * ELEVATION_PX_PER_CELL).toBeGreaterThan(VIEWPORT.height);
+
+    // «За кромкой окна» — свойство экрана, а не карты: ближний удар
+    // обязан уйти ровно так же высоко, как дальний.
+    expect(apexOf(cellTowardsCentre(MAP.baseCells[0] ?? 0, 8))).toBeCloseTo(apexOf(CENTRE_CELL));
+
+    // И к последней десятой доле пути ракета уже вернулась в кадр.
+    expect(heightAt(0.9)).toBeGreaterThan(BASE_ANTENNA_HEIGHT);
+    expect(heightAt(0.9) * ELEVATION_PX_PER_CELL).toBeLessThan(VIEWPORT.height / 2);
+  });
+
+  it('входит в кадр отвесно над целью', () => {
+    // Отвесность обычно и порицают — растущая на месте точка не сообщает
+    // направления. Но ракета не возникает над целью, а входит в кадр
+    // сверху со следом: направление сообщает появление, а не наклон.
+    const target = targetOf(CENTRE_CELL);
+    const start = flight(0);
+    const diving = flight(0.9);
+
+    const span = Math.hypot(target.x - start.x, target.y - start.y);
+    const aside = Math.hypot(diving.x - target.x, diving.y - target.y);
+
+    expect(aside).toBeLessThan(span * 0.05);
+  });
+
+  it('след тянется от базы владельца', () => {
+    const { debris } = draw(worldWith([], [nuke(0)]), HALF_FLIGHT);
+    const start = screenOf(flight(0));
+
+    const nearest = debris.points.reduce(
+      (near, point) => Math.min(near, Math.hypot(point.x - start.x, point.y - start.y)),
+      Number.POSITIVE_INFINITY,
+    );
+
+    // Дальний конец следа — это и есть точка схода: след протянут
+    // от площадки до ракеты целиком, а не коротким хвостом за ней.
+    expect(nearest).toBeLessThan(1);
+  });
+
+  it('факел держится у сопла, а не растягивается вместе со следом', () => {
+    // Горящий участок задан долей полёта. Будь он задан номером звена,
+    // к концу полёта он растянулся бы вместе со следом на четверть карты.
+    const { debris, glow } = draw(
+      worldWith([], [nuke(0)]),
+      (NUKE_DELAY_TICKS * 0.95) / TICKS_PER_SECOND,
+    );
+    const nose = screenOf(flight(0.95));
+
+    expect(reachFrom(glow.points, nose)).toBeLessThan(reachFrom(debris.points, nose) / 4);
+  });
+
+  it('на старте корпус не схлопывается в точку', () => {
+    // Направление полёта берётся центральной разностью: односторонняя
+    // на нулевой доле дала бы нулевую длину и выродила бы ромб корпуса.
+    const { debris } = draw(worldWith([], [nuke(0)]), 0);
+
+    expect(reachFrom(debris.points, screenOf(flight(0)))).toBeGreaterThan(5);
+  });
+
+  it('ракеты двух игроков уходят с разных мест', () => {
     const world = (owner: number): WorldState => worldWith([], [nuke(owner)]);
 
     const mine = draw(world(0), 0).debris.points;
@@ -501,3 +633,17 @@ describe('ракета', () => {
     expect(draw(worldWith([]), 0).debris.counts).toEqual({});
   });
 });
+
+/** Клетка в стольких-то клетках от заданной в сторону середины карты. */
+const cellTowardsCentre = (from: number, cells: number): number => {
+  const fromX = cellColumn(from);
+  const fromY = cellRow(from);
+  const toX = MAP_WIDTH_CELLS / 2;
+  const toY = MAP_HEIGHT_CELLS / 2;
+  const share = cells / Math.hypot(toX - fromX, toY - fromY);
+
+  return cellIndex(
+    Math.round(fromX + (toX - fromX) * share),
+    Math.round(fromY + (toY - fromY) * share),
+  );
+};
