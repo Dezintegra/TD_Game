@@ -1,13 +1,15 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import { cellIndex } from '@td/sim';
+import { cellIndex, cellX, cellY } from '@td/sim';
 import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, createCamera, moveCamera } from './camera.js';
 import type { Camera } from './camera.js';
-import { TERRAIN_DIAGONAL_COUNT, drawGround, drawTerrainDiagonal } from './terrain.js';
+import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
 import { mountRockDiagonal } from './relief-render.js';
 import type { TerrainColors } from './terrain.js';
+import { placeBase } from './base-structure.js';
+import type { BaseColors } from './base-structure.js';
 import { drawEntities } from './entities.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { drawShots } from './shots.js';
@@ -77,8 +79,14 @@ import type { CellPoint } from './iso.js';
  * Так палитра остаётся в одном месте, а не расползается по двум рендерерам.
  */
 export interface Scene {
-  /** Показывает карту. Геометрия перестраивается только при смене карты. */
-  setMap(map: GameMap): void;
+  /**
+   * Показывает карту. Геометрия перестраивается только при смене карты.
+   *
+   * Кто здесь играет — нужно самой карте, а не только сущностям: базы
+   * стоят на ней, и красятся они по принадлежности, а принадлежность
+   * без номера местного игрока не выводится.
+   */
+  setMap(map: GameMap, localPlayer: PlayerId): void;
   /** Рисует текущее состояние мира и подсказки. */
   render(world: WorldState, localPlayer: PlayerId, intent: OverlayIntent): void;
   /** Сдвигает камеру на заданное число экранных пикселей и снимает слежение. */
@@ -129,11 +137,22 @@ const readTerrainColors = (): TerrainColors => ({
   rock: token('--td-rock', 0x6e6a63),
   rockSky: token('--td-rock-sky', 0x5c7ea8),
   border: token('--td-text-muted-4', 0x6b6b6b),
-  // Читаем --td-accent, а не --td-player-self: последний объявлен через
-  // var(), и получить из него готовый цвет средствами getComputedStyle
-  // надёжно не выйдет.
-  baseSelf: token('--td-accent', 0x00ff29),
-  baseEnemy: token('--td-player-enemy', 0xd264ff),
+});
+
+/**
+ * Цвета командного центра.
+ *
+ * Цвет стороны приходит отдельным доводом: базы две, и различаются они
+ * только им. Читаем --td-accent, а не --td-player-self: последний
+ * объявлен через var(), и получить из него готовый цвет средствами
+ * getComputedStyle надёжно не выйдет.
+ */
+const readBaseColors = (accent: number): BaseColors => ({
+  concrete: token('--td-concrete', 0x6b6f72),
+  metal: token('--td-metal', 0x8b9299),
+  accent,
+  // Свет неба тот же, что у скал: источник один на весь мир.
+  sky: token('--td-rock-sky', 0x5c7ea8),
 });
 
 const readEntityColors = (): EntityColors => ({
@@ -145,6 +164,7 @@ const readEntityColors = (): EntityColors => ({
   ground: token('--td-bg-page', 0x191919),
   health: token('--td-health-full', 0x00ff29),
   healthLow: token('--td-health-low', 0xff5c5c),
+  beacon: token('--td-beacon', 0xff3b30),
 });
 
 /**
@@ -228,8 +248,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   // не рисует, а обход четырёхсот детей на кадр не измеряется. Заливок
   // при этом не прибавляется ни одной — они просто разъехались по разным
   // объектам.
-  const terrainBands: Graphics[] = [];
-  const rockBands: Container[] = [];
+  const terrainBands: Container[] = [];
   const entityBands: Graphics[] = [];
 
   for (let band = 0; band <= TERRAIN_DIAGONAL_COUNT; band += 1) {
@@ -238,14 +257,11 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     worldContainer.addChild(entities);
 
     if (band < TERRAIN_DIAGONAL_COUNT) {
-      // Скалы отдельным слоем, потому что они больше не рисуются линиями:
-      // это запечённые спрайты, а спрайт в Graphics не положишь. Слой свой,
-      // но диагональ у него та же, поэтому порядок перекрытия не меняется.
-      const rocks = new Container();
-      rockBands.push(rocks);
-      worldContainer.addChild(rocks);
-
-      const terrain = new Graphics();
+      // Территория — контейнер, а не Graphics: и скалы, и командный центр
+      // теперь запечённые спрайты, а спрайт в Graphics не положишь.
+      // Диагональ при этом осталась единицей слоя, поэтому порядок
+      // перекрытия не меняется.
+      const terrain = new Container();
       terrainBands.push(terrain);
       worldContainer.addChild(terrain);
     }
@@ -358,6 +374,8 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   app.stage.addChild(shakeContainer, flashGraphics, minimapContainer, touchGraphics);
 
   const terrainColors = readTerrainColors();
+  const baseSelfColors = readBaseColors(token('--td-accent', 0x00ff29));
+  const baseEnemyColors = readBaseColors(token('--td-player-enemy', 0xd264ff));
   const entityColors = readEntityColors();
   const shotColors = readShotColors();
   const blastColors = readBlastColors();
@@ -437,7 +455,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   relayoutMinimap();
 
   return {
-    setMap(map) {
+    setMap(map, localPlayer) {
       // Перестраиваем только если карта действительно другая. Вызов на
       // каждом кадре с той же картой — обычное дело для игрового цикла,
       // и он не должен стоить ничего.
@@ -446,15 +464,39 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       currentMap = map;
       terrainRebuildCount += 1;
       drawGround(groundGraphics, terrainColors);
-      terrainBands.forEach((graphics, diagonal) => {
-        drawTerrainDiagonal(graphics, map, diagonal, terrainColors);
-      });
-      rockBands.forEach((layer, diagonal) => {
+      terrainBands.forEach((layer, diagonal) => {
         mountRockDiagonal(layer, app.renderer, map, diagonal, {
           rock: terrainColors.rock,
           sky: terrainColors.rockSky,
         });
       });
+
+      // Базы ставятся ПОСЛЕ скал: `mountRockDiagonal` чистит слой своей
+      // диагонали целиком, и база, положенная раньше, была бы уничтожена
+      // вместе со скалами. Заодно это и порядок внутри диагонали —
+      // безразличный, потому что вокруг базы расчищена площадка и скал
+      // на её диагонали рядом нет.
+      //
+      // Цвет берётся по ВЛАДЕЛЬЦУ, а не по номеру базы в списке. База
+      // с индексом `i` принадлежит игроку `i` (см. `createWorld`), и
+      // прежний код красил нулевую в свой цвет всегда — то есть у второго
+      // игрока свою базу показывал чужим цветом, а чужую своим. На поле,
+      // где цвет означает принадлежность, это худшая из возможных ошибок.
+      map.baseCells.forEach((cell, index) => {
+        const x = cellX(cell);
+        const y = cellY(cell);
+        const layer = terrainBands[x + y];
+        if (layer === undefined) return;
+
+        placeBase(
+          layer,
+          app.renderer,
+          x,
+          y,
+          index === localPlayer ? baseSelfColors : baseEnemyColors,
+        );
+      });
+
       drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
     },
 

@@ -113,6 +113,7 @@ const COLORS: EntityColors = {
   ground: 0x191919,
   health: 0x00ff29,
   healthLow: 0xff5c5c,
+  beacon: 0xff3b30,
 };
 
 /**

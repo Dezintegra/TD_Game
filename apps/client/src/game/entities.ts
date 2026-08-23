@@ -16,7 +16,7 @@ import { cellX, cellY, playerStats, structureMaxHealth } from '@td/sim';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 import { tracePolygon, tracePolygonAt } from './prism.js';
-import { baseCrestPoint } from './base-structure.js';
+import { baseBeaconPoint, baseCrestPoint, beaconGlow } from './base-structure.js';
 import {
   MIRROR_SQUASH,
   SIDE_ENEMY,
@@ -73,6 +73,8 @@ export interface EntityColors {
   readonly ground: number;
   readonly health: number;
   readonly healthLow: number;
+  /** Проблесковый огонь на мачте базы. */
+  readonly beacon: number;
 }
 
 export interface ViewBounds {
@@ -167,6 +169,12 @@ export const drawEntities = (
           accentOf(structure.owner),
           colors,
         );
+
+        // Проблесковый огонь на вершине мачты. Единственная часть базы,
+        // которая рисуется в кадре: тело её запечено в текстуру, а огонь
+        // мигает. Фаза берётся от номера тика — у игроков разная частота
+        // кадров, а тик общий.
+        drawBeacon(layers.overhead, baseBeaconPoint(x, y), beaconGlow(world.tick), colors.beacon);
       }
 
       continue;
@@ -488,6 +496,27 @@ const drawBaseHealthBar = (
   graphics
     .rect(left, top, BASE_BAR_WIDTH_PX, BASE_BAR_HEIGHT_PX)
     .stroke({ width: 1.5, color: accent, alpha: 0.95 });
+};
+
+/** Радиус огня и его ореола, в экранных пикселях. */
+const BEACON_RADIUS_PX = 2.4;
+const BEACON_HALO_PX = 7;
+
+/**
+ * Проблесковый огонь на вершине мачты.
+ *
+ * Две окружности: сама лампа и ореол вокруг неё. Ореол — не украшение:
+ * лампа в два пикселя на тёмном поле читается как пылинка на экране,
+ * а с ореолом — как источник света.
+ *
+ * Погасший огонь не рисуется вовсе. Тусклая точка на вершине означала бы
+ * «горит слабо», а он либо горит, либо нет.
+ */
+const drawBeacon = (graphics: Graphics, at: Point, glow: number, color: number): void => {
+  if (glow <= 0.01) return;
+
+  graphics.circle(at.x, at.y, BEACON_HALO_PX).fill({ color, alpha: 0.22 * glow });
+  graphics.circle(at.x, at.y, BEACON_RADIUS_PX).fill({ color, alpha: 0.6 + 0.4 * glow });
 };
 
 /** Тонкий контур клетки. Нужен подсказкам поверх поля. */
