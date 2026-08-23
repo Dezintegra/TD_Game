@@ -1,0 +1,186 @@
+# Раздача клиента, обратный прокси к игровому серверу и TLS.
+#
+# Файл — ШАБЛОН: официальный образ nginx прогоняет всё из
+# /etc/nginx/templates через envsubst и кладёт результат в conf.d.
+# Подставляется только `${TD_DOMAIN}`: переменные самого nginx
+# (`$http_upgrade`, `$uri` и прочие) уцелели благодаря фильтру
+# NGINX_ENVSUBST_FILTER='^TD_' в docker-compose.yml. Без фильтра
+# envsubst съел бы их все и оставил пустые строки.
+
+# WebSocket живёт на «апгрейде» соединения, и заголовок Connection нельзя
+# прошить константой: для обычных запросов он обязан остаться пустым,
+# иначе nginx будет рвать keep-alive к серверу на каждом запросе.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+upstream game_server {
+    # Имя разрешается встроенным DNS docker compose. Отсюда две
+    # особенности, обе намеренные.
+    #
+    # Первая: адрес ищется при старте, и nginx, не нашедший upstream,
+    # не поднимется вовсе — поэтому у веба стоит `depends_on` с условием
+    # `service_healthy`.
+    #
+    # Вторая: найденный адрес запоминается навсегда. Если пересоздать
+    # ОДИН сервер (`docker compose up -d --force-recreate server`)
+    # и compose выдаст ему новый адрес, прокси будет стучаться в пустоту.
+    # Лечится перезапуском веба следом: `docker compose restart web`.
+    # Скрипт выкладки делает это всегда, не разбираясь.
+    server server:3001;
+
+    # Держим соединения к серверу открытыми: комнаты опрашиваются часто,
+    # и тратить рукопожатие TCP на каждый чих незачем.
+    keepalive 32;
+}
+
+# ── Голый HTTP ───────────────────────────────────────────────────────
+# Игру он больше не раздаёт: его работа — пропустить проверку
+# Let's Encrypt и увести всех остальных на HTTPS.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name _;
+    server_tokens off;
+
+    # Проверка владения доменом. Файл-ответ certbot кладёт в общий том,
+    # nginx отдаёт его отсюда — так продление обходится без остановки
+    # игры. Префикс `^~` важен: он выигрывает у всех регулярных
+    # location'ов, сколько бы их ни появилось ниже.
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    # Отдельный адрес для docker healthcheck. Без него проверка живости
+    # упиралась бы в редирект на HTTPS и уходила во внешнюю сеть
+    # за собственным доменом — из контейнера это и медленно, и хрупко.
+    location = /nginx-alive {
+        access_log off;
+        return 200 "ok\n";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ── HTTPS ────────────────────────────────────────────────────────────
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name _;
+
+    # Пути с именем домена внутри: certbot складывает сертификаты
+    # в каталог по первому имени из запроса. Если сертификата ещё нет,
+    # nginx не запустится вовсе — поэтому первичный выпуск идёт
+    # отдельным режимом, см. docker/tls-init.sh.
+    ssl_certificate     /etc/letsencrypt/live/${TD_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${TD_DOMAIN}/privkey.pem;
+
+    # Только TLS 1.2 и 1.3. Всё, что старше, дырявое, а клиентов,
+    # которым это нужно, у браузерной игры не бывает.
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Версию наружу не называем: это подарок тому, кто подбирает
+    # эксплойт под конкретный выпуск.
+    server_tokens off;
+
+    # Бандл игры — это мегабайты текста. Сжатие обязательно.
+    # Картинки и шрифты в этом списке отсутствуют намеренно: они уже
+    # сжаты, и второй проход только греет процессор.
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_types
+        text/css
+        text/plain
+        application/javascript
+        application/json
+        application/wasm
+        image/svg+xml;
+
+    # Загрузку страницы в чужой рамке запрещаем: кликджекинг на игре
+    # с покупками башен в один клик — не выдумка. Почему include,
+    # а не три строки прямо здесь, написано в самом файле.
+    include /etc/nginx/snippets/security-headers.conf;
+
+    # ── Игровой сокет ────────────────────────────────────────────────
+    # Точное совпадение: /game — единственный адрес реалтайма, и отдавать
+    # ему всё, что начинается на эти буквы, повода нет.
+    location = /game {
+        proxy_pass http://game_server;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Матч — это открытое соединение на всю партию. Умолчание в минуту
+        # разорвало бы его на первой же паузе между пакетами.
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    # ── Комнаты ожидания ─────────────────────────────────────────────
+    location /api/ {
+        proxy_pass http://game_server;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # /api/lobbies/stream — это SSE, поток событий. Буферизация
+        # превращает его в один большой ответ, приходящий разом и с
+        # опозданием: список комнат замирает, игроки «пропадают».
+        # Сервер просит о том же заголовком x-accel-buffering, но
+        # полагаться на просьбу, когда можно написать правило, не стоит.
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
+
+    location = /health {
+        proxy_pass http://game_server;
+        proxy_http_version 1.1;
+        proxy_set_header Connection '';
+        proxy_set_header Host $host;
+        access_log off;
+    }
+
+    # ── Статика ──────────────────────────────────────────────────────
+    # У файлов из /assets хэш содержимого в имени: меняется содержимое —
+    # меняется имя. Значит, кэшировать их можно навсегда.
+    location /assets/ {
+        try_files $uri =404;
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+
+    # Всё остальное — приложение. index.html кэшировать нельзя: он
+    # единственный, кто знает имена свежих файлов из /assets, и старая
+    # копия увела бы игрока на давно удалённый бандл.
+    location / {
+        try_files $uri $uri/ /index.html;
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "no-cache" always;
+    }
+}

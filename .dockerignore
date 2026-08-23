@@ -1,0 +1,40 @@
+# Что НЕ уезжает в контекст сборки.
+#
+# Контекст — это архив, который демон Docker получает целиком перед
+# первой командой. Каждый лишний мегабайт здесь оплачивается на каждой
+# сборке, а node_modules с хоста ещё и опасны: они собраны под Windows,
+# а внутри образа Linux.
+
+node_modules
+**/node_modules
+
+# Результаты сборки берутся из образа, а не с машины разработчика:
+# иначе в боевой образ однажды уедет вчерашний dist.
+dist
+**/dist
+**/*.tsbuildinfo
+.turbo
+**/.turbo
+
+# История, черновики и всё, что сборке не нужно.
+.git
+.github
+.claude
+.vscode
+.idea
+docs
+openspec
+e2e
+coverage
+playwright-report
+test-results
+.matchlog
+
+# Настройки конкретной машины и сама инфраструктура запуска:
+# их читает docker compose, внутрь образа они не попадают.
+.env
+.env.*
+!.env.example
+docker-compose*.yml
+Dockerfile
+.dockerignore

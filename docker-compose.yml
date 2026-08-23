@@ -1,0 +1,152 @@
+# Боевой запуск игры целиком: сборка обоих образов и их связка.
+#
+#   docker compose up --build -d      поднять
+#   docker compose logs -f            смотреть, что происходит
+#   docker compose down               остановить
+#
+# Настройки — в `.env` рядом с этим файлом, образец в `.env.example`.
+# Ключа `version` здесь нет намеренно: современный compose его игнорирует
+# и ругается на него предупреждением.
+
+name: td-game
+
+services:
+  # ── Игровой сервер ───────────────────────────────────────────────
+  # Наружу не публикуется. Единственный, кто с ним разговаривает, —
+  # nginx во внутренней сети compose. Открытый порт 3001 на хосте дал бы
+  # второй адрес игры, мимо прокси, со своими правилами CORS и без TLS.
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    image: td-game-server:latest
+    restart: unless-stopped
+
+    # tini первым процессом. Без него node становится PID 1, а для PID 1
+    # сигналы не имеют действия по умолчанию: `docker compose down` ждал бы
+    # десять секунд и убивал сервер посреди матча.
+    init: true
+
+    environment:
+      # Внутри контейнера слушать надо все адреса: 127.0.0.1 виден
+      # только самому контейнеру, и nginx до него не достучится.
+      HOST: 0.0.0.0
+      PORT: '3001'
+      NODE_ENV: production
+
+      # Запись матчей по умолчанию выключена, и это не экономия места.
+      # Сервер, доступный кому-то кроме разработчика, пишет партии живых
+      # людей — до решения вопроса о согласии игрока такого быть не должно
+      # (см. комментарий в apps/server/src/config.ts).
+      MATCHLOG: ${MATCHLOG:-0}
+      MATCHLOG_DIR: /data/matchlog
+
+    volumes:
+      # Том, а не каталог хоста: записи должны пережить пересборку образа,
+      # но не обязаны лежать в рабочем дереве.
+      - matchlog:/data/matchlog
+
+    # Проверка живости объявлена в Dockerfile, здесь только сроки.
+    healthcheck:
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+    networks:
+      - td
+
+  # ── Клиент и прокси ──────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+      args:
+        # Адреса вшиваются в бандл на сборке. Пусто и /game означают
+        # «туда же, откуда пришла страница»: путь относительный, и тот же
+        # образ работает и на localhost, и на боевом домене, и под TLS.
+        # Менять их нужно, только если сервер вынесен на другой адрес,
+        # и тогда после правки обязательна пересборка: `--build`.
+        VITE_API_URL: ${VITE_API_URL-}
+        VITE_WS_URL: ${VITE_WS_URL:-/game}
+    image: td-game-web:latest
+    restart: unless-stopped
+    init: true
+
+    depends_on:
+      server:
+        # Именно service_healthy, а не service_started: nginx запоминает
+        # адрес сервера при старте и, не найдя его, не поднимается вовсе.
+        condition: service_healthy
+
+    environment:
+      # Домен подставляется в пути к сертификату внутри шаблона nginx.
+      # Двоеточие с вопросом — это не украшение: без домена контейнер
+      # обязан упасть сразу и с внятной жалобой, а не подняться
+      # с пустым путём и отдавать невнятную ошибку TLS.
+      TD_DOMAIN: ${TD_DOMAIN:?задайте TD_DOMAIN в .env}
+      # Фильтр обязателен. Без него envsubst подставит и переменные
+      # самого nginx — $host, $uri, $http_upgrade, — превратив их
+      # в пустые строки, и конфигурация развалится молча.
+      NGINX_ENVSUBST_FILTER: '^TD_'
+
+    ports:
+      - '${WEB_PORT:-80}:80'
+      - '${TLS_PORT:-443}:443'
+
+    volumes:
+      # Сертификаты — только на чтение: выписывает и продлевает их
+      # certbot, дело nginx — показывать.
+      - letsencrypt:/etc/letsencrypt:ro
+      # Общий каталог для проверки владения доменом: certbot кладёт
+      # сюда файл-ответ, nginx его отдаёт. Благодаря этому продление
+      # проходит без остановки игры.
+      - certbot-www:/var/www/certbot
+
+    healthcheck:
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    networks:
+      - td
+
+  # ── Сертификаты ──────────────────────────────────────────────────
+  # Служба живёт вечно и раз в двенадцать часов спрашивает Let's Encrypt,
+  # не пора ли продлить. Сам certbot продлевает не раньше чем за месяц
+  # до истечения, так что почти все запуски заканчиваются словом «рано» —
+  # и это правильно: расписание должно быть чаще срока, а не равно ему.
+  #
+  # ПЕРВЫЙ сертификат эта служба не выпускает: до его появления nginx
+  # не стартует, а без nginx некому отдать файл-ответ. Круг разрывается
+  # отдельным сценарием docker/tls-init.sh — он нужен ровно один раз.
+  certbot:
+    image: certbot/certbot:latest
+    restart: unless-stopped
+    init: true
+
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+
+    # trap на TERM обязателен: без него `docker compose down` ждал бы
+    # десять секунд, пока оболочку не убьют силой.
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'
+
+    networks:
+      - td
+
+networks:
+  td:
+    driver: bridge
+
+volumes:
+  matchlog:
+  letsencrypt:
+  certbot-www:
