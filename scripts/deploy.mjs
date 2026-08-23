@@ -122,9 +122,15 @@ const tarball = join(work, 'td-src.tar');
 try {
   step('Собираю архив исходников');
   run('git', ['archive', '--format=tar', '-o', tarball, ref], { cwd: root });
-  // tar есть и в Windows 10+, и в любом Linux; ключ -r дописывает файлы
-  // в уже готовый несжатый архив.
-  run('tar', ['-rf', tarball, '-C', root, ...dockerFiles]);
+  // Имя архива передаётся коротким, а каталог задаётся через cwd —
+  // и это не стилистика. В Windows таких tar два: bsdtar из системы
+  // и GNU tar, который приезжает с Git и оказывается первым в PATH
+  // внутри Git Bash. GNU tar разбирает «C:/путь» после -f как «хост C,
+  // путь после двоеточия» — наследие лент, писавшихся по сети, — и
+  // падает с «Cannot connect to C: resolve failed». Без двоеточия
+  // в имени этой беды нет ни у одного из них. Ключ -r дописывает
+  // файлы в уже готовый несжатый архив.
+  run('tar', ['-rf', 'td-src.tar', '-C', root, ...dockerFiles], { cwd: work });
   note('архив готов');
 
   step('Заливаю на сервер');
