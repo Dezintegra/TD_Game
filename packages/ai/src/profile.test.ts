@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   AI_DECISION_INTERVAL_TICKS,
   CommandKind,
@@ -14,6 +14,7 @@ import { createWorld, playerStats, step } from '@td/sim';
 import { createOpponent } from './opponent.js';
 import {
   BASELINE_PROFILE,
+  STRATEGIST_PROFILE,
   escortRadius,
   patienceDecisions,
   reserveOf,
@@ -205,6 +206,40 @@ describe('неприкосновенный запас держится, толь
     // о каждой отдельной покупке, задан о запасе, и ответ на него один.
     expect(savingLimit(Math.ceil(enough), BASELINE_PROFILE)).toBeGreaterThanOrEqual(NUKE_COST);
     expect(savingLimit(Math.floor(enough) - 1, BASELINE_PROFILE)).toBeLessThan(NUKE_COST);
+  });
+
+  it('у стратега при том же доходе запас держится', () => {
+    // Здесь и живёт вся манера «Стратега». Правило одно на оба профиля,
+    // доход один и тот же — четырнадцать за тик, — а исход разный,
+    // потому что горизонт накопления у стратега полтораста секунд
+    // против сорока пяти.
+    //
+    // Отсюда и единственное наблюдаемое отличие манеры: базовый профиль
+    // не наносит ядерных ударов НИКОГДА (запас нулевой, копить не на что),
+    // а стратег наносит — 18 на 24 матчах арены против нуля.
+    //
+    // Проверяется правило, а не матч, и это осознанно: удар — событие
+    // поздней фазы, в отдельном матче его законно может не случиться,
+    // и тест на одном прогоне был бы неустойчив.
+    const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
+    if (late === undefined) throw new Error('в профиле стратега нет фаз');
+
+    expect(reserveOf(late, 14, STRATEGIST_PROFILE)).toBe(NUKE_COST);
+    expect(reserveOf(withReserve, 14, BASELINE_PROFILE)).toBe(0);
+  });
+
+  it('стратег отличается от базового ровно горизонтом', () => {
+    // Свидетель того, что манера сделана настройкой, а не веткой в коде:
+    // всё, кроме одного числа, у профилей совпадает. Сломается этот тест
+    // — значит, «Стратег» перестал быть базовым профилем с другим
+    // терпением, и разбор в его замысле надо переписывать.
+    expect(STRATEGIST_PROFILE.spending.savingHorizonSeconds).toBeGreaterThan(
+      BASELINE_PROFILE.spending.savingHorizonSeconds,
+    );
+    expect({ ...STRATEGIST_PROFILE, id: '', spending: BASELINE_PROFILE.spending }).toEqual({
+      ...BASELINE_PROFILE,
+      id: '',
+    });
   });
 
   it('фаза без запаса не держит его ни при каком доходе', () => {
