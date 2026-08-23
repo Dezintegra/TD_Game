@@ -1607,7 +1607,7 @@ const tryUpgrade = (
   if (totalWeight <= 0) return passing(AttemptNote.NothingToUpgrade);
 
   let pick = roll(totalWeight);
-  let target: UpgradeTarget = UpgradeTarget.Economy;
+  let target: UpgradeTarget = UpgradeTarget.Base;
   for (const [candidate, weight] of weights) {
     if (pick < weight) {
       target = candidate;

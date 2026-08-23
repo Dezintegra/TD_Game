@@ -395,7 +395,7 @@ describe('баланс: дальность юнитов прокачиваетс
 
     for (const branch of tail) expect(branch.stat).toBe(UpgradeStat.Range);
     expect(upgradeBranchIndex(UpgradeTarget.UnitAssault, UpgradeStat.Attack)).toBe(0);
-    expect(upgradeBranchIndex(UpgradeTarget.Economy, UpgradeStat.Income)).toBe(
+    expect(upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.Income)).toBe(
       UPGRADE_BRANCHES.length - added - 1,
     );
   });
@@ -425,7 +425,7 @@ describe('баланс: ветки прокачки', () => {
         UpgradeTarget.TowerSniper,
         UpgradeTarget.Wall,
         UpgradeTarget.General,
-        UpgradeTarget.Economy,
+        UpgradeTarget.Base,
       ]),
     );
   });
@@ -435,7 +435,7 @@ describe('баланс: ветки прокачки', () => {
     // у которой уровень меняет не количество, а качество. У экономики это
     // самоусиление, у дальности юнита — выход за круг ответного огня.
     const steep = (entry: (typeof UPGRADE_BRANCHES)[number]): boolean =>
-      entry.target === UpgradeTarget.Economy ||
+      entry.target === UpgradeTarget.Base ||
       (entry.stat === UpgradeStat.Range &&
         (entry.target === UpgradeTarget.UnitSniper ||
           entry.target === UpgradeTarget.UnitTesla));

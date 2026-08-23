@@ -36,8 +36,10 @@ import { createNetClient } from './net.js';
 import type { NetClient } from './net.js';
 import { createScene } from './scene.js';
 import { visibleMapPercent } from './iso.js';
-import { hudActions, setMatchCommands, setSoundCommands } from './store.js';
+import { EMPTY_SIDE, hudActions, setMatchCommands, setSoundCommands } from './store.js';
 import type { MatchPhaseView, MatchSnapshot, SelectionView } from './store.js';
+import { sidesOf } from './sides.js';
+import { statRowsOf } from './stat-rows.js';
 import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
 import { createRejectionFeed } from './rejections.js';
@@ -280,6 +282,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
       const state = controls.state;
       scene.render(world, localPlayer, {
+        building: state.building,
         buildKind: state.buildKind,
         aimingNuke: state.aimingNuke,
         hoverCell: state.hoverCell,
@@ -352,6 +355,11 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       const world = guest.predicted;
       hudActions.setSelection(world === null ? null : selectionOf(world, localPlayer, cell));
     },
+    // Меню владеет управлением, а не наоборот: от него зависит, разбирать
+    // ли нажатия. Сюда состояние только доносится, чтобы HUD знал,
+    // что рисовать.
+    menuChanged: (open) => hudActions.setMenuOpen(open),
+    toggleStats: () => hudActions.toggleStats(),
     cellAtScreen: (x, y) => scene.cellAtScreen(x, y),
     minimapCellAtScreen: (x, y) => scene.minimapCellAtScreen(x, y),
   });
@@ -363,15 +371,73 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, branch }),
     demolish: (cell) => send({ kind: CommandKind.Demolish, cell }),
+    setMenuOpen: (open) => controls.setMenuOpen(open),
+    toggleStats: () => hudActions.toggleStats(),
+
+    // Перенос камеры к своему генералу или базе — по нажатию плитки
+    // в тулбаре. Плитка, нажатие по которой не делает ничего, была бы
+    // ловушкой: игрок нажмёт и решит, что интерфейс сломался.
+    focusOwn: (what) => {
+      if (what === 'general') {
+        scene.setFollowing(true);
+        return;
+      }
+
+      const world = guest.predicted;
+      const base = world?.structures.find(
+        (structure) =>
+          structure.owner === localPlayer && structure.kind === StructureKind.Base,
+      );
+
+      if (base !== undefined) scene.centreOnCell(base.cell);
+    },
+
     restart: () => options.onRestart?.(),
   });
 
-  const onResize = (): void => {
+  /**
+   * Пересчёт при смене размера поля.
+   *
+   * Источников два, и это не перестраховка ради перестраховки.
+   *
+   * Наблюдатель за контейнером нужен потому, что поле теперь отступает
+   * от краёв экрана на высоту полос интерфейса, а высота эта меняется
+   * без участия окна. Обработчик у окна о таком изменении не узнал бы.
+   *
+   * Обработчик у окна оставлен потому, что наблюдатель молчит, пока
+   * вкладка не рисуется: он доставляет уведомления в шаге отрисовки,
+   * а в скрытой вкладке этого шага нет. Проверено — в скрытой вкладке
+   * наблюдатель не срабатывает ни разу. Для игрока это безвредно (что
+   * не рисуется, того он и не видит), но остаться с одним молчащим
+   * источником не хочется: цена второго — три строки.
+   *
+   * Двойного пересчёта не выходит: работа делается, только если размер
+   * действительно изменился.
+   */
+  let laidOutWidth = 0;
+  let laidOutHeight = 0;
+
+  const relayout = (): void => {
+    const width = host.clientWidth;
+    const height = host.clientHeight;
+
+    // Нулевой размер бывает при первом срабатывании наблюдателя — оно
+    // происходит сразу при подписке, ещё до того, как контейнер получил
+    // высоту. Считать по нему камеру значило бы уложить мир в точку.
+    if (width === 0 || height === 0) return;
+    if (width === laidOutWidth && height === laidOutHeight) return;
+
+    laidOutWidth = width;
+    laidOutHeight = height;
+
     scene.resize();
     const world = guest.predicted;
     if (world !== null) publishMapInfo(world);
   };
-  window.addEventListener('resize', onResize);
+
+  const observer = new ResizeObserver(relayout);
+  observer.observe(host);
+  window.addEventListener('resize', relayout);
 
   hudActions.setPhase('connecting');
   hudActions.setOutcome(null);
@@ -380,7 +446,8 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
   return {
     stop() {
-      window.removeEventListener('resize', onResize);
+      observer.disconnect();
+      window.removeEventListener('resize', relayout);
       setMatchCommands(null);
       setSoundCommands(null);
       controls.detach();
@@ -537,18 +604,16 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
       localPlayer: playerId,
       energy: 0,
       incomePerSecond: 0,
-      unitCount: 0,
       unitCap: UNIT_CAP,
-      queue: [],
+      sides: [EMPTY_SIDE, EMPTY_SIDE],
       unitCosts: [],
       structureCosts: [],
       nukeCost: energyToVisible(NUKE_COST),
-      upgrades: [],
+      stats: [],
       targetLabel: '—',
-      generalAlive: false,
-      respawnInSeconds: 0,
       matchSeconds: 0,
       winner: world.winner,
+      building: state.building,
       buildKind: state.buildKind,
       aimingNuke: state.aimingNuke,
       stance: AttackStance.Breakthrough,
@@ -557,13 +622,7 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
 
   const stats = playerStats(player);
   const costs = upgradeCosts(player);
-  const general = world.generals[playerId];
   const target = world.structures.find((structure) => structure.id === player.targetStructure);
-
-  let unitCount = 0;
-  for (const unit of world.units) {
-    if (unit.owner === playerId) unitCount += 1;
-  }
 
   const structureCosts: number[] = [];
   for (const kind of [
@@ -579,25 +638,16 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
     localPlayer: playerId,
     energy: energyToVisible(player.energy),
     incomePerSecond: energyToVisible(stats.incomePerTick * TICKS_PER_SECOND),
-    unitCount,
     unitCap: UNIT_CAP,
-    queue: [...player.queue],
+    sides: sidesOf(world),
     unitCosts: [0, 1, 2].map((type) => energyToVisible(stats.units[type as UnitType].cost)),
     structureCosts,
     nukeCost: energyToVisible(NUKE_COST),
-    upgrades: player.upgrades.map((upgrade, index) => ({
-      level: upgrade.level,
-      cost: energyToVisible(costs[index] ?? 0),
-      affordable: player.energy >= (costs[index] ?? Number.POSITIVE_INFINITY),
-    })),
+    stats: statRowsOf(stats, costs, player.energy),
     targetLabel: target === undefined ? '—' : STRUCTURE_STATS[target.kind].label,
-    generalAlive: general?.alive ?? false,
-    respawnInSeconds:
-      general === undefined || general.alive
-        ? 0
-        : Math.max(0, Math.ceil((general.respawnAtTick - world.tick) / TICKS_PER_SECOND)),
     matchSeconds: world.tick / TICKS_PER_SECOND,
     winner: world.winner,
+    building: state.building,
     buildKind: state.buildKind,
     aimingNuke: state.aimingNuke,
     stance: player.stance,

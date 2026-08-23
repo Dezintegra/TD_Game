@@ -47,11 +47,63 @@ export interface MatchOutcomeView {
   readonly reason: number;
 }
 
-/** Строка панели прокачки. Ровно то, что видно игроку. */
-export interface UpgradeRow {
-  readonly level: number;
+/**
+ * Строка характеристики под плиткой тулбара.
+ *
+ * Здесь ДЕЙСТВУЮЩЕЕ значение, а не номер уровня, и это главная разница
+ * с прежней панелью прокачки. «Ур. 7» не отвечает на вопрос, ради которого
+ * игрок смотрит на строку: решая, покупать ли восьмой, он сравнивает силу.
+ *
+ * Величина уже переведена в те единицы, в которых характеристику читают:
+ * скорострельность — выстрелами в секунду, дальность — клетками, время
+ * возрождения — секундами. Переводить это в компонентах значило бы
+ * размазать знание о внутреннем представлении по всему интерфейсу.
+ *
+ * Подпись здесь не хранится: она берётся из таблицы веток по индексу.
+ * Две копии одного названия неизбежно разойдутся.
+ */
+export interface StatRow {
+  /** Индекс ветки в `UPGRADE_BRANCHES` — с ним уходит команда покупки. */
+  readonly branch: number;
+  readonly value: number;
+  /** Сколько знаков после запятой показывать. */
+  readonly fraction: number;
+  /** Цена следующего уровня, в «видимых» единицах. */
   readonly cost: number;
   readonly affordable: boolean;
+}
+
+/**
+ * Положение дел одной стороны матча — своей или чужой.
+ *
+ * Чужая сторона показывается наравне со своей, и это не поблажка,
+ * а следствие уже принятого решения: тумана войны в игре нет. Всё
+ * перечисленное игрок и так видит на поле, разница только в том, что
+ * считать вручную ему больше не нужно.
+ *
+ * Имени участника здесь нет намеренно. Имя приходит из комнаты, а не
+ * из мира, и живёт в `session-store`; игровой цикл о нём не знает.
+ * Класть его сюда значило бы поставить снимок матча в зависимость
+ * от лобби — и снабжать поддельным именем матч, запущенный без комнаты.
+ */
+export interface SideView {
+  /** Прочность командного центра. Ноль, если он уже разрушен. */
+  readonly baseHealth: number;
+  readonly baseMaxHealth: number;
+  readonly generalAlive: boolean;
+  /** Секунд до возрождения генерала. Ноль, пока он в строю. */
+  readonly respawnInSeconds: number;
+  /** Число живых юнитов по типу. Индекс — значение `UnitType`. */
+  readonly unitCounts: readonly number[];
+  /**
+   * Число построек по виду. Индекс — значение `StructureKind`.
+   *
+   * База считается наравне с остальными: отдельная ветка в цикле стоила бы
+   * дороже лишнего числа в массиве. Показывается она не отсюда, а полосой
+   * прочности — у неё своя роль, и в ряду «сколько чего построено» единица
+   * не значит ничего.
+   */
+  readonly structureCounts: readonly number[];
 }
 
 /**
@@ -73,22 +125,32 @@ export interface MatchSnapshot {
   readonly localPlayer: number;
   readonly energy: number;
   readonly incomePerSecond: number;
-  readonly unitCount: number;
   readonly unitCap: number;
-  /** Типы юнитов в очереди производства, в порядке заказа. */
-  readonly queue: readonly number[];
+  /**
+   * Положение дел по каждой стороне, по индексу стороны.
+   *
+   * Именно здесь живут числа, которые прежде были только своими: войска,
+   * постройки, прочность базы, состояние генерала. Верхняя полоса
+   * показывает обе стороны, и держать свою сторону отдельным набором
+   * полей значило бы описывать одно и то же дважды.
+   */
+  readonly sides: readonly SideView[];
   /** Цены юнитов по типу, с учётом подорожания от прокачки. */
   readonly unitCosts: readonly number[];
   /** Цены построек по виду. */
   readonly structureCosts: readonly number[];
   readonly nukeCost: number;
-  readonly upgrades: readonly UpgradeRow[];
+  /**
+   * Строки характеристик по целям прокачки: индекс — значение
+   * `UpgradeTarget`. Пустой список означает, что качать у этой цели нечего.
+   */
+  readonly stats: readonly (readonly StatRow[])[];
   readonly targetLabel: string;
-  readonly generalAlive: boolean;
-  readonly respawnInSeconds: number;
   readonly matchSeconds: number;
   /** Номер победившего игрока, либо null, пока матч идёт. */
   readonly winner: number | null;
+  /** Включён режим строительства — даже если вид ещё не выбран. */
+  readonly building: boolean;
   /** Вид постройки, выбранный для размещения, либо null. */
   readonly buildKind: number | null;
   readonly aimingNuke: boolean;
@@ -96,22 +158,30 @@ export interface MatchSnapshot {
   readonly stance: AttackStance;
 }
 
+/** Сторона, о которой ещё ничего не известно: матч не начался. */
+export const EMPTY_SIDE: SideView = {
+  baseHealth: 0,
+  baseMaxHealth: 0,
+  generalAlive: true,
+  respawnInSeconds: 0,
+  unitCounts: [],
+  structureCounts: [],
+};
+
 const EMPTY_MATCH: MatchSnapshot = {
   localPlayer: 0,
   energy: 0,
   incomePerSecond: 0,
-  unitCount: 0,
   unitCap: 0,
-  queue: [],
+  sides: [],
   unitCosts: [],
   structureCosts: [],
   nukeCost: 0,
-  upgrades: [],
+  stats: [],
   targetLabel: '—',
-  generalAlive: true,
-  respawnInSeconds: 0,
   matchSeconds: 0,
   winner: null,
+  building: false,
   buildKind: null,
   aimingNuke: false,
   stance: AttackStance.Breakthrough,
@@ -209,6 +279,22 @@ interface HudState {
   /** Выделенная постройка, либо null. Состояние интерфейса, не мира. */
   readonly selection: SelectionView | null;
   /**
+   * Открыто ли меню матча.
+   *
+   * Состояние интерфейса одного игрока, как и выделение: по сети
+   * не передаётся, в состояние мира не попадает, в контрольную сумму
+   * не входит. Владеет им управление — от него зависит, разбирать ли
+   * нажатия, — а сюда оно попадает затем, чтобы HUD знал, что рисовать.
+   */
+  readonly menuOpen: boolean;
+  /**
+   * Развёрнуты ли столбцы характеристик в нижнем тулбаре.
+   *
+   * Переживает перезапуск матча: игрок настраивает это под себя один раз,
+   * и возвращать ему каждый матч чужое умолчание незачем.
+   */
+  readonly statsOpen: boolean;
+  /**
    * Громкости и выключатель звука.
    *
    * Состояние интерфейса того же рода, что `selection`: мира оно
@@ -229,8 +315,39 @@ interface HudState {
   setSync(tick: number, checksum: number): void;
   setOutcome(outcome: MatchOutcomeView | null): void;
   setSelection(selection: SelectionView | null): void;
+  setMenuOpen(open: boolean): void;
+  toggleStats(): void;
   setSound(sound: SoundSettings): void;
 }
+
+/**
+ * Где хранится выбор игрока «показывать характеристики или нет».
+ *
+ * localStorage, а не состояние матча: это настройка интерфейса, она
+ * не имеет отношения ни к миру, ни к сессии и должна пережить и новый
+ * матч, и перезагрузку страницы.
+ *
+ * Чтение обёрнуто в try: в приватном режиме некоторых браузеров обращение
+ * к хранилищу бросает исключение, и падать из-за настройки внешнего вида
+ * было бы нелепо.
+ */
+const STATS_OPEN_KEY = 'td:toolbar-stats';
+
+const readStatsOpen = (): boolean => {
+  try {
+    return localStorage.getItem(STATS_OPEN_KEY) !== '0';
+  } catch {
+    return true;
+  }
+};
+
+const writeStatsOpen = (open: boolean): void => {
+  try {
+    localStorage.setItem(STATS_OPEN_KEY, open ? '1' : '0');
+  } catch {
+    // Не сохранилось — не беда: настройка вернётся к умолчанию, и только.
+  }
+};
 
 export const useHudStore = create<HudState>((set) => ({
   status: 'offline',
@@ -251,6 +368,8 @@ export const useHudStore = create<HudState>((set) => ({
   syncChecksum: 0,
   outcome: null,
   selection: null,
+  menuOpen: false,
+  statsOpen: readStatsOpen(),
   sound: DEFAULT_SOUND_SETTINGS,
 
   setStatus: (status) => set({ status }),
@@ -277,6 +396,14 @@ export const useHudStore = create<HudState>((set) => ({
   setSync: (syncTick, syncChecksum) => set({ syncTick, syncChecksum }),
   setOutcome: (outcome) => set({ outcome }),
   setSelection: (selection) => set({ selection }),
+  setMenuOpen: (menuOpen) => set({ menuOpen }),
+
+  toggleStats: () =>
+    set((state) => {
+      const statsOpen = !state.statsOpen;
+      writeStatsOpen(statsOpen);
+      return { statsOpen };
+    }),
   setSound: (sound) => set({ sound }),
 }));
 
@@ -300,6 +427,8 @@ export const hudActions = {
   setOutcome: (outcome: MatchOutcomeView | null) => useHudStore.getState().setOutcome(outcome),
   setSelection: (selection: SelectionView | null) =>
     useHudStore.getState().setSelection(selection),
+  setMenuOpen: (open: boolean) => useHudStore.getState().setMenuOpen(open),
+  toggleStats: () => useHudStore.getState().toggleStats(),
   setSound: (sound: SoundSettings) => useHudStore.getState().setSound(sound),
 };
 
@@ -325,6 +454,18 @@ export interface MatchCommands {
   buyUpgrade(branch: number): void;
   /** Снести выделенную постройку. */
   demolish(cell: number): void;
+  /**
+   * Открыть или закрыть меню матча.
+   *
+   * Идёт через управление, а не прямо в store: меню гасит разбор нажатий,
+   * и два источника правды здесь означали бы открытое меню при живой
+   * клавиатуре.
+   */
+  setMenuOpen(open: boolean): void;
+  /** Свернуть или развернуть характеристики в тулбаре. */
+  toggleStats(): void;
+  /** Перенести камеру к своему генералу либо к своей базе. */
+  focusOwn(what: 'general' | 'base'): void;
   restart(): void;
 }
 
@@ -335,6 +476,9 @@ const NO_COMMANDS: MatchCommands = {
   setStance: () => undefined,
   buyUpgrade: () => undefined,
   demolish: () => undefined,
+  setMenuOpen: () => undefined,
+  toggleStats: () => undefined,
+  focusOwn: () => undefined,
   restart: () => undefined,
 };
 

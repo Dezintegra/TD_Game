@@ -551,7 +551,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
   {
     untilSecond: 90,
     // Только экономика: вложенное в первую минуту окупается весь матч.
-    upgrades: { [UpgradeTarget.Economy]: 1 },
+    upgrades: { [UpgradeTarget.Base]: 1 },
     mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Tesla]: 0 },
     // Экономика вперёд всего: вложенное в первую минуту окупается весь матч.
     spend: ['upgrade', 'build', 'train'],
@@ -563,7 +563,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
     // весами. Разница в том, что теперь до второй и третьей цели очередь
     // доходит, а не только называется.
     upgrades: {
-      [UpgradeTarget.Economy]: 3,
+      [UpgradeTarget.Base]: 3,
       [UpgradeTarget.UnitAssault]: 2,
       [UpgradeTarget.TowerBasic]: 1,
     },
@@ -581,7 +581,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
       [UpgradeTarget.UnitTesla]: 4,
       [UpgradeTarget.TowerSniper]: 3,
       [UpgradeTarget.General]: 2,
-      [UpgradeTarget.Economy]: 1,
+      [UpgradeTarget.Base]: 1,
     },
     mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 2, [UnitType.Tesla]: 3 },
     spend: ['upgrade', 'train', 'build'],
@@ -719,7 +719,7 @@ export const WALL_LIGHT_PROFILE: AiProfile = deepFreeze({
 /** Ранняя фаза: вложенное в первую минуту окупается весь матч. */
 const EARLY_ECONOMY: PhaseProfile = {
   untilSecond: 90,
-  upgrades: { [UpgradeTarget.Economy]: 1 },
+  upgrades: { [UpgradeTarget.Base]: 1 },
   mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Tesla]: 0 },
   spend: ['upgrade', 'build', 'train'],
   reserve: 'none',
@@ -754,7 +754,7 @@ export const SIEGE_PROFILE: AiProfile = deepFreeze({
       // (`purchaseCost` в `stats.ts`), поэтому профиль, вкладывающийся
       // в Теслу, к середине матча перестаёт её покупать: в пробном прогоне
       // цена дошла до 2359 при доходе, которого хватало на 250.
-      upgrades: { [UpgradeTarget.Economy]: 4, [UpgradeTarget.UnitTesla]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 4, [UpgradeTarget.UnitTesla]: 1 },
       mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 3 },
       spend: ['upgrade', 'build', 'train'],
       reserve: 'none',
@@ -767,7 +767,7 @@ export const SIEGE_PROFILE: AiProfile = deepFreeze({
       // и 4 Теслы.
       untilSecond: Number.POSITIVE_INFINITY,
       upgrades: {
-        [UpgradeTarget.Economy]: 3,
+        [UpgradeTarget.Base]: 3,
         [UpgradeTarget.UnitTesla]: 1,
         [UpgradeTarget.General]: 1,
       },
@@ -809,7 +809,7 @@ export const FORTRESS_PROFILE: AiProfile = deepFreeze({
       // она удорожает саму постройку, а крепости нужно много башен,
       // а не несколько дорогих.
       upgrades: {
-        [UpgradeTarget.Economy]: 3,
+        [UpgradeTarget.Base]: 3,
         [UpgradeTarget.TowerSniper]: 1,
         [UpgradeTarget.TowerBasic]: 1,
       },
@@ -820,7 +820,7 @@ export const FORTRESS_PROFILE: AiProfile = deepFreeze({
     {
       untilSecond: Number.POSITIVE_INFINITY,
       upgrades: {
-        [UpgradeTarget.Economy]: 3,
+        [UpgradeTarget.Base]: 3,
         [UpgradeTarget.TowerSniper]: 1,
         [UpgradeTarget.TowerBasic]: 1,
         [UpgradeTarget.Wall]: 1,
@@ -848,14 +848,14 @@ export const SWARM_PROFILE: AiProfile = deepFreeze({
     EARLY_ECONOMY,
     {
       untilSecond: 300,
-      upgrades: { [UpgradeTarget.Economy]: 4, [UpgradeTarget.UnitAssault]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 4, [UpgradeTarget.UnitAssault]: 1 },
       mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
       spend: ['train', 'upgrade', 'build'],
       reserve: 'wave',
     },
     {
       untilSecond: Number.POSITIVE_INFINITY,
-      upgrades: { [UpgradeTarget.Economy]: 3, [UpgradeTarget.UnitAssault]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.UnitAssault]: 1 },
       mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
       spend: ['upgrade', 'train', 'build'],
       reserve: 'wave',
@@ -878,7 +878,7 @@ export const COMBINED_PROFILE: AiProfile = deepFreeze({
     {
       untilSecond: 300,
       upgrades: {
-        [UpgradeTarget.Economy]: 3,
+        [UpgradeTarget.Base]: 3,
         [UpgradeTarget.UnitTesla]: 2,
         [UpgradeTarget.TowerSniper]: 2,
       },
@@ -892,7 +892,7 @@ export const COMBINED_PROFILE: AiProfile = deepFreeze({
         [UpgradeTarget.UnitTesla]: 4,
         [UpgradeTarget.TowerSniper]: 3,
         [UpgradeTarget.UnitAssault]: 2,
-        [UpgradeTarget.Economy]: 1,
+        [UpgradeTarget.Base]: 1,
       },
       mix: { [UnitType.Assault]: 3, [UnitType.Sniper]: 1, [UnitType.Tesla]: 3 },
       spend: ['upgrade', 'train', 'build'],
@@ -917,7 +917,7 @@ export const ECONOMY_PROFILE: AiProfile = deepFreeze({
     EARLY_ECONOMY,
     {
       untilSecond: 300,
-      upgrades: { [UpgradeTarget.Economy]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 1 },
       mix: { [UnitType.Assault]: 4, [UnitType.Sniper]: 1, [UnitType.Tesla]: 0 },
       spend: ['upgrade', 'build', 'train'],
       reserve: 'none',
@@ -926,7 +926,7 @@ export const ECONOMY_PROFILE: AiProfile = deepFreeze({
       untilSecond: Number.POSITIVE_INFINITY,
       // Прокачки почти нет намеренно: этот профиль проверяет чистую жадность —
       // всё в доход, а поздние деньги в количество, а не в качество.
-      upgrades: { [UpgradeTarget.Economy]: 4, [UpgradeTarget.UnitTesla]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 4, [UpgradeTarget.UnitTesla]: 1 },
       mix: { [UnitType.Assault]: 3, [UnitType.Sniper]: 0, [UnitType.Tesla]: 3 },
       spend: ['train', 'upgrade', 'build'],
       reserve: 'wave',
@@ -1019,7 +1019,7 @@ export const RICH_ISLANDS_PROFILE: AiProfile = deepFreeze({
   phases: [
     {
       untilSecond: Number.POSITIVE_INFINITY,
-      upgrades: { [UpgradeTarget.Economy]: 2, [UpgradeTarget.TowerSniper]: 2 },
+      upgrades: { [UpgradeTarget.Base]: 2, [UpgradeTarget.TowerSniper]: 2 },
       // Добыча энергии названа явно, и это не мелочь: список отсекает
       // ветки по характеристике, а не по цели. У экономики характеристика
       // своя — «добыча», — и без неё в списке выпавшая цель «экономика»
@@ -1121,7 +1121,7 @@ export const STAGED_ISLANDS_PROFILE: AiProfile = deepFreeze({
       // Первые четыре минуты — дешёвые башни и экономика: остров должен
       // успеть сложиться, а доход — вырасти до цены снайперской башни.
       untilSecond: 240,
-      upgrades: { [UpgradeTarget.Economy]: 3, [UpgradeTarget.TowerBasic]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.TowerBasic]: 1 },
       upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
       towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
       mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
@@ -1132,7 +1132,7 @@ export const STAGED_ISLANDS_PROFILE: AiProfile = deepFreeze({
       // Дальше — только снайперские: доход к этому времени вдвое выше,
       // а первый остров уже прикрывает генерала, пока он строит второй.
       untilSecond: Number.POSITIVE_INFINITY,
-      upgrades: { [UpgradeTarget.Economy]: 2, [UpgradeTarget.TowerSniper]: 2 },
+      upgrades: { [UpgradeTarget.Base]: 2, [UpgradeTarget.TowerSniper]: 2 },
       upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
       towerMix: { [StructureKind.TowerBasic]: 0, [StructureKind.TowerSniper]: 1 },
       mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
@@ -1172,7 +1172,7 @@ export const BASTION_PROFILE: AiProfile = deepFreeze({
     {
       // Закрепиться: дешёвый остров и экономика, войска нет.
       untilSecond: 240,
-      upgrades: { [UpgradeTarget.Economy]: 3, [UpgradeTarget.TowerBasic]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.TowerBasic]: 1 },
       upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
       mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
       spend: ['build', 'upgrade', 'train'],
@@ -1181,7 +1181,7 @@ export const BASTION_PROFILE: AiProfile = deepFreeze({
     {
       // Разбогатеть: остров стоит, деньги идут в доход.
       untilSecond: 420,
-      upgrades: { [UpgradeTarget.Economy]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 1 },
       mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
       spend: ['upgrade', 'build', 'train'],
       reserve: 'none',
@@ -1190,7 +1190,7 @@ export const BASTION_PROFILE: AiProfile = deepFreeze({
       // Ударить: только Теслы, и волной. Запас под волну обязателен —
       // без него ручеёк выгребает казну раньше, чем волна соберётся.
       untilSecond: Number.POSITIVE_INFINITY,
-      upgrades: { [UpgradeTarget.Economy]: 2, [UpgradeTarget.UnitTesla]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 2, [UpgradeTarget.UnitTesla]: 1 },
       mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 1 },
       spend: ['train', 'upgrade', 'build'],
       reserve: 'wave',
@@ -1284,7 +1284,7 @@ export const SIEGE_SWARM_PROFILE: AiProfile = deepFreeze({
     EARLY_ECONOMY,
     {
       untilSecond: 300,
-      upgrades: { [UpgradeTarget.Economy]: 3, [UpgradeTarget.UnitAssault]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.UnitAssault]: 1 },
       mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
       spend: ['train', 'upgrade', 'build'],
       reserve: 'wave',
@@ -1296,7 +1296,7 @@ export const SIEGE_SWARM_PROFILE: AiProfile = deepFreeze({
       // штурмовик, только вдесятеро дороже.
       upgrades: {
         [UpgradeTarget.UnitTesla]: 3,
-        [UpgradeTarget.Economy]: 2,
+        [UpgradeTarget.Base]: 2,
         [UpgradeTarget.UnitAssault]: 1,
       },
       upgradeStats: [UpgradeStat.Range, UpgradeStat.Attack, UpgradeStat.Income],
@@ -1414,7 +1414,7 @@ export const BULWARK_PROFILE: AiProfile = deepFreeze({
       // Оборона: стены, дешёвые башни, экономика. Ни одного юнита —
       // они в эти минуты только отвлекали бы деньги от щита.
       untilSecond: 120,
-      upgrades: { [UpgradeTarget.Economy]: 3, [UpgradeTarget.TowerBasic]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.TowerBasic]: 1 },
       upgradeStats: [UpgradeStat.Attack, UpgradeStat.Range, UpgradeStat.Income],
       towerMix: { [StructureKind.TowerBasic]: 1, [StructureKind.TowerSniper]: 0 },
       mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
@@ -1424,7 +1424,7 @@ export const BULWARK_PROFILE: AiProfile = deepFreeze({
     {
       // Вторая половина обороны: снайперские башни и дальность им.
       untilSecond: 240,
-      upgrades: { [UpgradeTarget.TowerSniper]: 3, [UpgradeTarget.Economy]: 2 },
+      upgrades: { [UpgradeTarget.TowerSniper]: 3, [UpgradeTarget.Base]: 2 },
       upgradeStats: [UpgradeStat.Range, UpgradeStat.Attack, UpgradeStat.Income],
       towerMix: { [StructureKind.TowerBasic]: 0, [StructureKind.TowerSniper]: 1 },
       mix: { [UnitType.Assault]: 0, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
@@ -1435,7 +1435,7 @@ export const BULWARK_PROFILE: AiProfile = deepFreeze({
       // Наступление: терпеливый рой. Башни позади продолжают стоять
       // и прикрывать базу, пока войско уходит вперёд.
       untilSecond: Number.POSITIVE_INFINITY,
-      upgrades: { [UpgradeTarget.Economy]: 3, [UpgradeTarget.UnitAssault]: 1 },
+      upgrades: { [UpgradeTarget.Base]: 3, [UpgradeTarget.UnitAssault]: 1 },
       mix: { [UnitType.Assault]: 1, [UnitType.Sniper]: 0, [UnitType.Tesla]: 0 },
       spend: ['train', 'upgrade', 'build'],
       reserve: 'wave',

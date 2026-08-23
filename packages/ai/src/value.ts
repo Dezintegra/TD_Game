@@ -163,7 +163,7 @@ export const upgradeGain = (
 
   UPGRADE_BRANCHES.forEach((branch, index) => {
     if ((phase.upgrades[branch.target] ?? 0) <= 0) return;
-    if (branch.target === UpgradeTarget.Economy) return;
+    if (branch.target === UpgradeTarget.Base) return;
     if (branch.stat === UpgradeStat.BuildRadius) return;
     if (branch.stat === UpgradeStat.RespawnTime) return;
 
@@ -294,7 +294,7 @@ export const nukeOutcome = (
 /** Есть ли в фазе хоть одна боевая цель прокачки, кроме экономики. */
 export const hasComparableUpgrade = (phase: PhaseProfile): boolean =>
   Object.entries(phase.upgrades).some(
-    ([target, weight]) => Number(target) !== UpgradeTarget.Economy && (weight ?? 0) > 0,
+    ([target, weight]) => Number(target) !== UpgradeTarget.Base && (weight ?? 0) > 0,
   );
 
 /**

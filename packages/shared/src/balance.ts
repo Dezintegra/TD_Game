@@ -586,6 +586,20 @@ export const NUKE_BASE_EXCLUSION = cellsToUnits(NUKE_RADIUS_CELLS + 2);
 /**
  * Что именно прокачивается. Совпадает с «типом» из требования
  * «прокачивается для каждого типа независимо».
+ *
+ * Цель 7 называется `Base`, а не `Economy`, и число у неё прежнее —
+ * переименование ничего не двигает ни в мире, ни на проводе.
+ *
+ * Смысл в том, что будет потом. По игровому замыслу энергию начисляет
+ * база, и ветка добычи принадлежит ей, а не отдельной «экономике»,
+ * которой на поле не соответствует ничего. Появятся у базы прочность
+ * и атака — они лягут сюда же двумя дописанными в конец таблицы ветками.
+ *
+ * Заводить под них ОТДЕЛЬНУЮ цель нельзя, и это не вкусовщина:
+ * `UPGRADE_TARGET_COUNT` задаёт длину массива `purchasePpm` у игрока,
+ * а тот целиком входит в контрольную сумму мира. Девятая цель изменила бы
+ * сумму каждого мира и уронила бы оба эталона — и детерминизма,
+ * и профилей противника.
  */
 export const UpgradeTarget = {
   UnitAssault: 0,
@@ -595,7 +609,7 @@ export const UpgradeTarget = {
   TowerSniper: 4,
   Wall: 5,
   General: 6,
-  Economy: 7,
+  Base: 7,
 } as const;
 
 export type UpgradeTarget = (typeof UpgradeTarget)[keyof typeof UpgradeTarget];
@@ -618,7 +632,7 @@ export const UPGRADE_TARGETS: readonly UpgradeTarget[] = [
   UpgradeTarget.TowerSniper,
   UpgradeTarget.Wall,
   UpgradeTarget.General,
-  UpgradeTarget.Economy,
+  UpgradeTarget.Base,
 ];
 
 /** Какая характеристика улучшается. */
@@ -727,7 +741,7 @@ export const UPGRADE_BRANCHES: readonly UpgradeBranch[] = [
   branch(UpgradeTarget.General, UpgradeStat.BuildRadius, 'Радиус стройки', energy(80), GAIN),
   branch(UpgradeTarget.General, UpgradeStat.RespawnTime, 'Воскрешение', energy(80), REDUCE),
   {
-    target: UpgradeTarget.Economy,
+    target: UpgradeTarget.Base,
     stat: UpgradeStat.Income,
     label: 'Добыча энергии',
     baseCost: energy(100),
@@ -813,7 +827,7 @@ export const INFLATES_PURCHASE: Readonly<Record<UpgradeTarget, boolean>> = {
   [UpgradeTarget.TowerSniper]: true,
   [UpgradeTarget.Wall]: true,
   [UpgradeTarget.General]: false,
-  [UpgradeTarget.Economy]: false,
+  [UpgradeTarget.Base]: false,
 };
 
 /** Соответствие типа юнита цели прокачки. */

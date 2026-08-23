@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { identify, uniqueTitle } from './helpers.js';
+import { diagnostic, identify, openMatchMenu, uniqueTitle } from './helpers.js';
 
 /**
  * Мета-слой: представление, комнаты, обоюдная готовность.
@@ -193,8 +193,17 @@ test('двое сходятся в комнате, и обоюдная гото�
     await expect(borya.locator('#scene canvas')).toBeVisible();
 
     // Карта общая: seed совпадает.
-    const seedOfAnya = await anya.getByTestId('seed').textContent();
-    await expect(borya.getByTestId('seed')).toHaveText(seedOfAnya ?? '');
+    //
+    // Seed игроку не показывается — ему он ни о чём не говорит, — но живёт
+    // атрибутом в разметке: это единственное, чем ОТСЮДА можно убедиться,
+    // что двоим досталась одна и та же карта, а не две похожие.
+    // Ждём, а не читаем разом: seed попадает в разметку с первым снимком
+    // карты, а тот приходит на кадр-другой позже, чем появляется холст.
+    await expect(anya.getByTestId('diagnostics')).not.toHaveAttribute('data-seed', '0');
+
+    const seedOfAnya = await diagnostic(anya, 'seed');
+    expect(Number(seedOfAnya)).toBeGreaterThan(0);
+    await expect(borya.getByTestId('diagnostics')).toHaveAttribute('data-seed', seedOfAnya);
 
     // Стороны разные, и каждый видит имя соперника, а не своё.
     await expect(anya.getByTestId('match-opponent')).toHaveAttribute('data-side', '0');
@@ -215,14 +224,14 @@ test('двое сходятся в комнате, и обоюдная гото�
     // Картинка сказала бы лишь «оба что-то рисуют»; сумма говорит, что
     // это один и тот же мир, посчитанный независимо с двух сторон
     // из одного потока команд. Ради этого всё и затевалось.
-    await expect(anya.getByTestId('hud')).toHaveAttribute('data-sync-tick', /[1-9]/);
+    await expect(anya.getByTestId('diagnostics')).toHaveAttribute('data-sync-tick', /[1-9]/);
 
-    const syncTick = await anya.getByTestId('hud').getAttribute('data-sync-tick');
-    await expect(borya.getByTestId('hud')).toHaveAttribute('data-sync-tick', syncTick ?? '');
-    const anyaChecksum = await anya.getByTestId('hud').getAttribute('data-sync-checksum');
-    await expect(borya.getByTestId('hud')).toHaveAttribute(
+    const syncTick = await diagnostic(anya, 'sync-tick');
+    await expect(borya.getByTestId('diagnostics')).toHaveAttribute('data-sync-tick', syncTick);
+    const anyaChecksum = await diagnostic(anya, 'sync-checksum');
+    await expect(borya.getByTestId('diagnostics')).toHaveAttribute(
       'data-sync-checksum',
-      anyaChecksum ?? '',
+      anyaChecksum,
     );
 
     // Действия одного доходят до мира другого. Аня двигает генерала —
@@ -235,10 +244,10 @@ test('двое сходятся в комнате, и обоюдная гото�
     await expect
       .poll(
         async () => {
-          const tick = await anya.getByTestId('hud').getAttribute('data-sync-tick');
-          const mine = await anya.getByTestId('hud').getAttribute('data-sync-checksum');
-          const theirs = await borya.getByTestId('hud').getAttribute('data-sync-checksum');
-          const theirTick = await borya.getByTestId('hud').getAttribute('data-sync-tick');
+          const tick = await diagnostic(anya, 'sync-tick');
+          const mine = await diagnostic(anya, 'sync-checksum');
+          const theirs = await diagnostic(borya, 'sync-checksum');
+          const theirTick = await diagnostic(borya, 'sync-tick');
 
           return tick === theirTick && mine === theirs && Number(tick) > Number(syncTick);
         },
@@ -247,7 +256,13 @@ test('двое сходятся в комнате, и обоюдная гото�
       .toBe(true);
 
     // С живым соперником перезапуск на новой карте недоступен.
+    //
+    // Меню открывается явно: без этого проверка прошла бы и в том случае,
+    // если бы перезапуск просто лежал в закрытом меню, — то есть перестала
+    // бы что-либо доказывать.
+    await openMatchMenu(anya);
     await expect(anya.getByTestId('restart')).toHaveCount(0);
+    await expect(anya.getByTestId('match-leave')).toBeVisible();
 
     // Комната ушла из списка открытых: войти в неё уже нельзя.
     const onlooker = await firstContext.newPage();
@@ -324,20 +339,20 @@ test('компьютер держит комнату и играет как об
   await expect(page.getByTestId('match-opponent')).toHaveAttribute('data-computer', 'true');
 
   // Мир идёт: сервер считает тики и рассылает кадры.
-  await expect(page.getByTestId('hud')).toHaveAttribute('data-sync-tick', /[1-9]/, {
+  await expect(page.getByTestId('diagnostics')).toHaveAttribute('data-sync-tick', /[1-9]/, {
     timeout: 15_000,
   });
 
   // Компьютер действительно играет: его команды доходят до общего мира,
   // а значит контрольная сумма меняется от тика к тику.
-  const first = await page.getByTestId('hud').getAttribute('data-sync-checksum');
+  const first = await diagnostic(page, 'sync-checksum');
   await expect
-    .poll(async () => page.getByTestId('hud').getAttribute('data-sync-checksum'), {
-      timeout: 15_000,
-    })
+    .poll(async () => diagnostic(page, 'sync-checksum'), { timeout: 15_000 })
     .not.toBe(first);
 
-  // Против компьютера перезапуск на новой карте осмыслен и доступен.
+  // Против компьютера перезапуск на новой карте осмыслен и доступен —
+  // но живёт он в меню матча, а не постоянной кнопкой на экране.
+  await openMatchMenu(page);
   await expect(page.getByTestId('restart')).toBeVisible();
 });
 
