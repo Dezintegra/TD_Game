@@ -1,4 +1,18 @@
-import { TICKS_PER_SECOND } from '@td/shared';
+import {
+  AI_DECISION_INTERVAL_TICKS,
+  CommandKind,
+  GENERAL_STATS,
+  NUKE_DELAY_TICKS,
+  STRUCTURE_STATS,
+  StructureKind,
+  TICKS_PER_SECOND,
+  UNIT_STATS,
+  UPGRADE_BRANCHES,
+  UpgradeTarget,
+} from '@td/shared';
+import type { UnitType } from '@td/shared';
+import { profileByName } from '@td/ai';
+import type { AiProfile } from '@td/ai';
 import type { DatabaseSync } from 'node:sqlite';
 
 /**
@@ -39,6 +53,55 @@ const query = (db: DatabaseSync, sql: string, ...params: (string | number)[]): R
 
 /** Доли пути, по которым раскладывается путь генерала. */
 const BUCKETS = 10;
+
+/**
+ * Горизонт «ближайшего времени» в сверке предсказания с исходом.
+ *
+ * Не подобран: это то же время отхода, которым пользуется сама оценка
+ * риска (`escapeTicks` в `posture.ts`) — одно решение на то, чтобы
+ * заметить обстрел, плюс время пересечь дальность башни на скорости
+ * генерала. Сверять предсказание на другом горизонте значит спрашивать
+ * формулу не о том, что она обещала.
+ *
+ * Берутся базовые характеристики: у сторон прокачка разная, а горизонт
+ * сводки один на всю пачку.
+ */
+const ESCAPE_TICKS = Math.round(
+  AI_DECISION_INTERVAL_TICKS +
+    STRUCTURE_STATS[StructureKind.TowerBasic].range / Math.max(1, GENERAL_STATS.speed),
+);
+
+/**
+ * Через сколько тиков после команды удара смотреть последствия.
+ *
+ * Задержка удара плюс секунда: взрыв случается не в тик команды, а спустя
+ * `NUKE_DELAY_TICKS`, и снимки идут раз в секунду — без запаса можно
+ * попасть на снимок, снятый до взрыва.
+ */
+const NUKE_AFTER_TICKS = NUKE_DELAY_TICKS + TICKS_PER_SECOND;
+
+/** Имена целей прокачки. Берутся из самой таблицы, чтобы не разъезжались. */
+const TARGET_NAME: Readonly<Record<number, string>> = Object.fromEntries(
+  Object.entries(UpgradeTarget).map(([name, value]) => [value, name]),
+);
+
+const percent = (part: number, whole: number): string =>
+  whole > 0 ? `${((part / whole) * 100).toFixed(1)}%` : '—';
+
+/**
+ * Профиль по имени из записи матча — или ничего.
+ *
+ * Молча, без исключения: в базе лежат матчи, сыгранные прежним кодом,
+ * и профиль с тех пор могли переименовать или убрать. Сводка по такому
+ * матчу должна печататься без заявленных весов, а не падать.
+ */
+const profileOf = (id: string): AiProfile | undefined => {
+  try {
+    return profileByName(id);
+  } catch {
+    return undefined;
+  }
+};
 
 export const reportMatch = (db: DatabaseSync, matchId: string): string => {
   const out: string[] = [];
@@ -144,6 +207,154 @@ export const reportMatch = (db: DatabaseSync, matchId: string): string => {
       );
     }
 
+    // ── Длина накопления ────────────────────────────────────────────
+    //
+    // Накопление — череда решений подряд, в которых куплено ничего.
+    // Интересна не каждая ступень, а вершина: докуда накопление дошло,
+    // прежде чем оборвалось покупкой или пределом терпения. Предел,
+    // срабатывающий на каждом накоплении, означает, что копить
+    // не дают вовсе.
+    const streaks = query(
+      db,
+      `with runs as (
+         select wait_streak, impatient,
+                lead(wait_streak) over (order by tick) as next
+           from decision where match_id = ? and player = ?
+       )
+       select wait_streak as len, count(*) as n, sum(impatient) as hit
+         from runs
+        where wait_streak > 0 and (next is null or next < wait_streak)
+        group by len order by len`,
+      matchId,
+      player,
+    );
+
+    if (streaks.length > 0) {
+      const runs = streaks.reduce((sum, row) => sum + num(row, 'n'), 0);
+      const hits = streaks.reduce((sum, row) => sum + num(row, 'hit'), 0);
+      const streakPeak = Math.max(...streaks.map((row) => num(row, 'n')), 1);
+
+      out.push('');
+      out.push(`  длина накопления (накоплений ${String(runs)}, решений подряд):`);
+      for (const row of streaks) {
+        out.push(
+          `    ${pad(num(row, 'len'), 4)} ${pad(num(row, 'n'), 5)} ` +
+            `${bar(num(row, 'n'), streakPeak, 16)}` +
+            `${num(row, 'hit') > 0 ? `  из них уперлось в предел ${String(num(row, 'hit'))}` : ''}`,
+        );
+      }
+      out.push(`    уперлось в предел терпения: ${String(hits)} из ${String(runs)} (${percent(hits, runs)})`);
+    }
+
+    // ── Заказанные юниты против объявленных профилем весов ──────────
+    //
+    // Профиль объявляет состав войска. Исполняется он или нет — видно
+    // только рядом: сами по себе «девяносто штурмовиков» не говорят
+    // ничего, а рядом с заявленными сорока четырьмя процентами говорят всё.
+    //
+    // Решение записывается ДО шага, команда — после, отсюда `c.tick - 1`.
+    const trained = query(
+      db,
+      `select d.phase_index as phase, c.arg0 as unit_type, count(*) as n
+         from command c
+         join decision d
+           on d.match_id = c.match_id and d.player = c.player and d.tick = c.tick - 1
+        where c.match_id = ? and c.player = ? and c.kind = ${String(CommandKind.TrainUnit)}
+          and c.accepted = 1
+        group by phase, unit_type
+        order by phase, unit_type`,
+      matchId,
+      player,
+    );
+
+    const profile = profileOf(str(match, player === 0 ? 'profile_0' : 'profile_1'));
+
+    if (trained.length > 0) {
+      out.push('');
+      out.push('  заказано юнитов (фаза / тип / сколько / заявлено профилем):');
+
+      const byPhase = new Map<number, number>();
+      for (const row of trained) {
+        const phase = num(row, 'phase');
+        byPhase.set(phase, (byPhase.get(phase) ?? 0) + num(row, 'n'));
+      }
+
+      for (const row of trained) {
+        const phase = num(row, 'phase');
+        const unitType = num(row, 'unit_type') as UnitType;
+        const stats = UNIT_STATS[unitType] as { label: string } | undefined;
+        const total = byPhase.get(phase) ?? 0;
+
+        const mix = profile?.phases[phase]?.mix;
+        const declaredTotal =
+          mix === undefined ? 0 : Object.values(mix).reduce((sum, weight) => sum + weight, 0);
+        const declared =
+          mix === undefined || declaredTotal <= 0
+            ? '—'
+            : percent(mix[unitType] ?? 0, declaredTotal);
+
+        out.push(
+          `    фаза ${pad(phase, 1)}  ${padEnd(stats?.label ?? `тип ${String(unitType)}`, 12)}` +
+            ` ${pad(num(row, 'n'), 5)} ${pad(percent(num(row, 'n'), total), 7)}` +
+            `   заявлено ${declared}`,
+        );
+      }
+    }
+
+    // ── Покупки прокачки по целям ───────────────────────────────────
+    //
+    // Профиль называет несколько целей. Список, из которого покупается
+    // одна и та же цель, списком предпочтения не является, и увидеть это
+    // можно только разложив покупки по целям.
+    const upgrades = query(
+      db,
+      `select d.phase_index as phase, c.arg0 as branch, count(*) as n
+         from command c
+         join decision d
+           on d.match_id = c.match_id and d.player = c.player and d.tick = c.tick - 1
+        where c.match_id = ? and c.player = ? and c.kind = ${String(CommandKind.BuyUpgrade)}
+          and c.accepted = 1
+        group by phase, branch
+        order by phase, n desc`,
+      matchId,
+      player,
+    );
+
+    out.push('');
+    if (upgrades.length === 0) {
+      out.push('  прокачка не покупалась ни разу');
+    } else {
+      const targets = new Map<string, number>();
+      for (const row of upgrades) {
+        const branch = UPGRADE_BRANCHES[num(row, 'branch')];
+        const key =
+          branch === undefined
+            ? `ветка ${String(num(row, 'branch'))}`
+            : `${TARGET_NAME[branch.target] ?? String(branch.target)} / ${branch.label}`;
+        targets.set(key, (targets.get(key) ?? 0) + num(row, 'n'));
+      }
+
+      const declaredTargets = new Set<string>();
+      for (const phase of profile?.phases ?? []) {
+        for (const [target, weight] of Object.entries(phase.upgrades)) {
+          if (weight > 0) declaredTargets.add(TARGET_NAME[Number(target)] ?? target);
+        }
+      }
+
+      const bought = new Set([...targets.keys()].map((key) => key.split(' / ')[0] ?? key));
+
+      out.push(`  куплено прокачки по целям (целей с ненулевым весом в профиле: ${String(declaredTargets.size)}):`);
+      const upgradePeak = Math.max(...targets.values(), 1);
+      for (const [key, count] of [...targets.entries()].sort((a, b) => b[1] - a[1])) {
+        out.push(`    ${padEnd(key, 32)} ${pad(count, 5)} ${bar(count, upgradePeak, 14)}`);
+      }
+
+      const untouched = [...declaredTargets].filter((target) => !bought.has(target));
+      if (untouched.length > 0) {
+        out.push(`    объявлены, но не куплены ни разу: ${untouched.join(', ')}`);
+      }
+    }
+
     // ── Отрыв выбранного рубежа от следующего ───────────────────────
     const gaps = query(
       db,
@@ -214,8 +425,12 @@ export const reportBatch = (db: DatabaseSync): string => {
 
   out.push('# пачка матчей');
   out.push(`  всего ${String(num(totals, 'n'))}`);
+  // Доля ничьих и средняя длительность — две величины, по которым видно,
+  // попадает ли игра в проектную вилку. Доля печатается рядом со счётом:
+  // «семь ничьих» без знаменателя ни о чём не говорит.
   out.push(
-    `  ничьих по времени: ${String(num(totals, 'timeouts'))}   ` +
+    `  ничьих по времени: ${String(num(totals, 'timeouts'))} ` +
+      `(${percent(num(totals, 'timeouts'), num(totals, 'n'))})   ` +
       `средняя длительность ${seconds(num(totals, 'avg_ticks'))}   ` +
       `средний счёт ${(num(totals, 'avg_wall') / 1000).toFixed(1)} с`,
   );
@@ -263,6 +478,150 @@ export const reportBatch = (db: DatabaseSync): string => {
     out.push(
       `    минимум ${at(0).toFixed(2)}   медиана ${at(0.5).toFixed(2)}   ` +
         `максимум ${(sorted[sorted.length - 1] ?? 0).toFixed(2)}`,
+    );
+  }
+
+  // ── Сверка предсказания с исходом ─────────────────────────────────
+  //
+  // Оценка рубежа обещает вероятность гибели генерала. Обещание проверяемо:
+  // группируем решения по обещанной вероятности и смотрим, в какой доле
+  // из них генерал действительно погиб за время отхода. Без этой сверки
+  // всякая правка формулы риска проверяется ощущением.
+  const calibration = query(
+    db,
+    `with picked as (
+       select match_id, player, tick, death_chance from frontier where chosen = 1
+     )
+     select case
+              when p.death_chance <= 0   then '0'
+              when p.death_chance < 0.05 then '0–5%'
+              when p.death_chance < 0.20 then '5–20%'
+              when p.death_chance < 0.50 then '20–50%'
+              else '50%+'
+            end as bucket,
+            count(*) as decisions,
+            avg(p.death_chance) as predicted,
+            sum(case when exists (
+                  select 1 from sample s
+                   where s.match_id = p.match_id and s.player = p.player
+                     and s.tick > p.tick and s.tick <= p.tick + ${String(ESCAPE_TICKS)}
+                     and s.general_alive = 0
+                ) then 1 else 0 end) as died
+       from picked p
+      group by bucket
+      order by predicted`,
+  );
+
+  const picked = calibration.reduce((sum, row) => sum + num(row, 'decisions'), 0);
+
+  if (picked > 0) {
+    const dead = query(db, `select avg(1.0 - general_alive) as share from sample`)[0];
+
+    out.push('');
+    out.push(
+      `  предсказание против исхода (горизонт отхода ${String(ESCAPE_TICKS)} тиков, ` +
+        `решений ${String(picked)}):`,
+    );
+    out.push('    обещано     решений   в среднем   погиб на деле');
+    for (const row of calibration) {
+      const decisions = num(row, 'decisions');
+      out.push(
+        `    ${padEnd(str(row, 'bucket'), 10)} ${pad(decisions, 8)}` +
+          `   ${pad(`${(num(row, 'predicted') * 100).toFixed(1)}%`, 9)}` +
+          `   ${pad(percent(num(row, 'died'), decisions), 13)}`,
+      );
+    }
+    out.push(
+      `    доля времени с мёртвым генералом по всем матчам: ` +
+        `${(num(dead ?? {}, 'share') * 100).toFixed(1)}%`,
+    );
+  }
+
+  // ── Сопровождение генерала ────────────────────────────────────────
+  //
+  // Признак «прикрыт» управляет тратами, и обоснование требования говорит
+  // про юнитов РЯДОМ. В записи решения лежат оба числа сразу, поэтому
+  // старая мерка и новая сравниваются без переигрывания матчей.
+  const far = `approach_shortest > 0 and general_from_home >= 0
+               and cast(general_from_home as real) / approach_shortest > 0.5`;
+
+  const escort = query(
+    db,
+    `select count(*) as decisions,
+            sum(case when live_units > 0 then 1 else 0 end) as by_live,
+            sum(case when live_units > 0 and nearby_units = 0 then 1 else 0 end) as live_but_alone,
+            sum(case when nearby_units > 0 then 1 else 0 end) as by_nearby,
+            avg(nearby_units) as avg_nearby,
+            avg(live_units) as avg_live
+       from decision where ${far}`,
+  )[0];
+
+  if (escort !== undefined && num(escort, 'decisions') > 0) {
+    const byLive = num(escort, 'by_live');
+
+    out.push('');
+    out.push(`  сопровождение генерала на дальнем рубеже (решений ${String(num(escort, 'decisions'))}):`);
+    out.push(
+      `    живые юниты есть где угодно: ${pad(byLive, 6)}   ` +
+        `из них рядом с генералом никого: ${percent(num(escort, 'live_but_alone'), byLive)}`,
+    );
+    out.push(`    свои юниты есть рядом:       ${pad(num(escort, 'by_nearby'), 6)}`);
+    out.push(
+      `    своих рядом в среднем ${num(escort, 'avg_nearby').toFixed(2)}, ` +
+        `всего живых ${num(escort, 'avg_live').toFixed(2)}`,
+    );
+  }
+
+  // ── Последствия ядерного удара ────────────────────────────────────
+  //
+  // Взрыв не разбирает, чьё накрыл. Считаем по снимкам до и после: разность
+  // числа живых и построек у обеих сторон. Величина приблизительная — в то же
+  // окно попадает и обычный бой, — но систематической ошибки в ней нет,
+  // и до и после правки она считается одинаково.
+  const nukes = query(
+    db,
+    `with strike as (
+       select c.match_id, c.player, c.tick,
+              (select s.tick from sample s
+                where s.match_id = c.match_id and s.player = c.player and s.tick <= c.tick
+                order by s.tick desc limit 1) as before_tick,
+              (select s.tick from sample s
+                where s.match_id = c.match_id and s.player = c.player
+                  and s.tick >= c.tick + ${String(NUKE_AFTER_TICKS)}
+                order by s.tick asc limit 1) as after_tick
+         from command c
+        where c.kind = ${String(CommandKind.LaunchNuke)} and c.accepted = 1
+     )
+     select count(*) as strikes,
+            avg(foe.units_alive - foe_after.units_alive) as foe_units,
+            avg(mine.units_alive - mine_after.units_alive) as own_units,
+            avg(mine.structures - mine_after.structures) as own_structures,
+            sum(case when mine.general_alive = 1 and mine_after.general_alive = 0
+                     then 1 else 0 end) as own_generals
+       from strike k
+       join sample mine on mine.match_id = k.match_id and mine.player = k.player
+                       and mine.tick = k.before_tick
+       join sample mine_after on mine_after.match_id = k.match_id and mine_after.player = k.player
+                             and mine_after.tick = k.after_tick
+       join sample foe on foe.match_id = k.match_id and foe.player <> k.player
+                      and foe.tick = k.before_tick
+       join sample foe_after on foe_after.match_id = k.match_id and foe_after.player <> k.player
+                            and foe_after.tick = k.after_tick`,
+  )[0];
+
+  const strikes = nukes === undefined ? 0 : num(nukes, 'strikes');
+
+  out.push('');
+  if (strikes === 0) {
+    out.push('  ядерных ударов в пачке не было');
+  } else {
+    out.push(`  последствия ядерного удара (принятых ударов ${String(strikes)}, на удар):`);
+    out.push(`    чужих юнитов          ${num(nukes ?? {}, 'foe_units').toFixed(2)}`);
+    out.push(`    своих юнитов          ${num(nukes ?? {}, 'own_units').toFixed(2)}`);
+    out.push(`    своих построек        ${num(nukes ?? {}, 'own_structures').toFixed(2)}`);
+    out.push(
+      `    своих генералов       ${String(num(nukes ?? {}, 'own_generals'))} ` +
+        `на ${String(strikes)} ударов`,
     );
   }
 

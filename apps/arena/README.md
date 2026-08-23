@@ -163,6 +163,91 @@ node --no-warnings apps/arena/dist/main.js replay .matchlog/20260821-143005-m1.j
 sqlite3 .matchlog/arena.sqlite "select note, result, count(*) from attempt group by note, result order by 3 desc"
 ```
 
+**`sqlite3` в PATH может не оказаться.** Он и не нужен: в Node есть
+встроенный `node:sqlite`, на котором написан сам `ingest`. Разовый
+запрос удобно прогнать так:
+
+```bash
+node --input-type=module -e "import{DatabaseSync}from'node:sqlite';const d=new DatabaseSync('.matchlog/arena.sqlite',{readOnly:true});console.log(d.prepare('select note, count(*) as n from attempt group by note order by n desc').all())"
+```
+
+**Осторожно с соединением решения и команды.** Решение записывается
+до шага мира, команда — после, поэтому `command.tick` на единицу больше
+`decision.tick` того же решения. Наивный `on d.tick = c.tick` возвращает
+пусто; нужен `on d.tick = c.tick - 1`. Таблицы `attempt` и `frontier`
+приходят из той же записи решения и соединяются с `decision` по тику
+напрямую. В логах воспроизведения живых матчей связи нет вовсе —
+там между решением и исполнением лежит меняющаяся входная задержка.
+
+### Величины, которые печатает сводка, и чем они сняты
+
+Сводка пачки (`arena report` без аргумента) считает четыре величины,
+за которыми стоит смысл, а не любопытство. Здесь записано, каким
+запросом каждая снимается, — чтобы после правки мерить тем же,
+а не похожим.
+
+**Сверка предсказания с исходом.** Оценка рубежа обещает вероятность
+гибели генерала; обещание проверяемо. Решения группируются по обещанной
+вероятности, и по каждой группе считается доля тех, где генерал
+действительно погиб за время отхода. Горизонт не подобран: это
+`escapeTicks` из `posture.ts` — одно решение на то, чтобы заметить
+обстрел, плюс время пересечь дальность башни на скорости генерала.
+
+```sql
+with picked as (select match_id, player, tick, death_chance from frontier where chosen = 1)
+select round(death_chance, 1) as bucket, count(*) as n,
+       sum(case when exists (select 1 from sample s
+                              where s.match_id = picked.match_id and s.player = picked.player
+                                and s.tick > picked.tick and s.tick <= picked.tick + 65
+                                and s.general_alive = 0) then 1 else 0 end) as died
+  from picked group by bucket order by bucket;
+```
+
+**Сопровождение генерала.** В записи решения лежат ОБА числа сразу —
+`live_units` (юниты где угодно) и `nearby_units` (юниты рядом), — поэтому
+старая мерка и новая сравниваются без переигрывания матчей.
+
+```sql
+select count(*) as far_decisions,
+       sum(case when live_units > 0 then 1 else 0 end) as by_live,
+       sum(case when live_units > 0 and nearby_units = 0 then 1 else 0 end) as live_but_alone,
+       sum(case when nearby_units > 0 then 1 else 0 end) as by_nearby
+  from decision
+ where approach_shortest > 0 and general_from_home >= 0
+   and cast(general_from_home as real) / approach_shortest > 0.5;
+```
+
+**Длина накопления.** Накопление — череда решений подряд, в которых
+не куплено ничего. Интересна не каждая ступень, а вершина: докуда
+накопление дошло, прежде чем оборвалось покупкой или пределом терпения.
+
+```sql
+with runs as (select wait_streak, impatient,
+                     lead(wait_streak) over (partition by match_id, player order by tick) as next
+                from decision)
+select wait_streak as len, count(*) as n, sum(impatient) as hit
+  from runs where wait_streak > 0 and (next is null or next < wait_streak)
+ group by len order by len;
+```
+
+**Состав заказанного войска и покупки прокачки.** Профиль объявляет
+и то, и другое; исполняется ли объявленное — видно только рядом
+с весами. Здесь и нужен сдвиг на тик:
+
+```sql
+select d.phase_index as phase, c.arg0 as unit_type, count(*) as n
+  from command c
+  join decision d on d.match_id = c.match_id and d.player = c.player and d.tick = c.tick - 1
+ where c.kind = 2 and c.accepted = 1   -- 2 — TrainUnit, 4 — BuyUpgrade
+ group by phase, unit_type order by phase, unit_type;
+```
+
+**Последствия ядерного удара** считаются по снимкам до и после команды
+удара: разность числа живых и построек у обеих сторон. Величина
+приблизительная — в то же окно попадает и обычный бой, — но
+систематической ошибки в ней нет, и до и после правки она считается
+одинаково. Запрос целиком — в `src/report.ts`, он длинный.
+
 ## Чего арена не делает
 
 Не оценивает, стал ли противник лучше. Она считает величины: долю
