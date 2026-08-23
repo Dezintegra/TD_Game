@@ -1,10 +1,15 @@
-import { MS_PER_TICK, TICKS_PER_SECOND, asPlayerId } from '@td/shared';
+import { AI_DECISION_INTERVAL_TICKS, MS_PER_TICK, TICKS_PER_SECOND, asPlayerId } from '@td/shared';
 import { applyClientMessage, createMatchHost } from '@td/netplay';
 import { MessageType, decode, encode } from '@td/protocol';
 import type { ClientMessage } from '@td/protocol';
 import { describe, expect, it } from 'vitest';
 import { aiSeedOf, joinMatch } from './participant.js';
-import type { BotSocket, OpenSocket, SocketHandlers } from './participant.js';
+import type {
+  BotSocket,
+  OpenSocket,
+  ParticipantMeasure,
+  SocketHandlers,
+} from './participant.js';
 
 /**
  * Компьютер играет по протоколу — вот что здесь проверяется.
@@ -24,7 +29,7 @@ interface Bench {
   runMs(ms: number): void;
 }
 
-const bench = (side: number): Bench => {
+const bench = (side: number, measure?: ParticipantMeasure): Bench => {
   let nowMs = 1000;
   let botHandlers: SocketHandlers | undefined;
   const me = asPlayerId(side);
@@ -65,7 +70,14 @@ const bench = (side: number): Bench => {
     };
   };
 
-  joinMatch({ wsUrl: 'ws://bench/game', ticket: TICKET, seed: SEED, side, openSocket });
+  joinMatch({
+    wsUrl: 'ws://bench/game',
+    ticket: TICKET,
+    seed: SEED,
+    side,
+    openSocket,
+    ...(measure === undefined ? {} : { measure }),
+  });
 
   // Второй участник — не наше дело: он просто присутствует, иначе матч
   // не тронется с места.
@@ -109,6 +121,31 @@ describe('компьютер как участник', () => {
     const first = table.host.history[0];
     expect(first).toBeDefined();
     expect(first?.tick).toBeGreaterThanOrEqual(table.host.delayTicks);
+  });
+
+  it('прибор считает решения, а не вызовы', async () => {
+    // Регрессия на настоящую ошибку. Первый прибор обнимал каждый вызов
+    // `decide`, а тот зовётся каждый тик и в четырнадцати случаях
+    // из пятнадцати возвращается сразу. Живой матч показал 4165
+    // «решений» на 3613 тиков вместо расписанных двухсот сорока:
+    // цена раздумий выходила заниженной, частота — завышенной.
+    let calls = 0;
+    const table = bench(1, {
+      decision: (run) => {
+        calls += 1;
+        return run();
+      },
+    });
+    await Promise.resolve();
+
+    table.runMs(10_000);
+
+    const seconds = 10;
+    const perSecond = TICKS_PER_SECOND / AI_DECISION_INTERVAL_TICKS;
+    // Допуск в одно решение с каждого края: матч трогается не с нуля,
+    // и последнее решение может не успеть попасть в окно.
+    expect(calls).toBeGreaterThanOrEqual(seconds * perSecond - 1);
+    expect(calls).toBeLessThanOrEqual(seconds * perSecond + 1);
   });
 
   it('решает не чаще, чем позволено', async () => {

@@ -72,6 +72,35 @@ export interface MatchHostOptions {
   readonly maxTicksPerAdvance?: number;
   /** Сколько истории отдавать одним сообщением. */
   readonly historyChunk?: number;
+  /** Приборы. Отсутствуют — не меряется ничего и не тратится ничего. */
+  readonly measure?: HostMeasure | undefined;
+}
+
+/**
+ * Приборы ведущего.
+ *
+ * Часов здесь нет намеренно, и это не мелочь. `now` у ведущего —
+ * миллисекундный: он отмеряет тики и просрочки, и большего ему
+ * не нужно. Шаг мира при этом стоит десятые доли миллисекунды,
+ * то есть таким часам он показался бы нулём.
+ *
+ * Поэтому ведущий не меряет сам, а отдаёт работу обёртке: он говорит
+ * «вот шаг мира», а чем его засечь — решает тот, кто прибор поставил.
+ * Заодно `packages/netplay` остаётся без платформенных вызовов,
+ * как того требует его спецификация.
+ */
+export interface HostMeasure {
+  /** Обернуть шаг мира замером. Обязана вызвать `run` ровно один раз. */
+  readonly step: <T>(run: () => T) => T;
+  /** Сколько тиков посчитано за один вызов `advance`. */
+  readonly advanced: (ticks: number) => void;
+  /**
+   * Матч признал отставание и сдвинул точку отсчёта.
+   *
+   * Сегодня это происходит молча, и понять постфактум, что матч
+   * спотыкался, не по чему.
+   */
+  readonly debt: (ticks: number) => void;
 }
 
 export interface MatchHost {
@@ -244,7 +273,8 @@ export const createMatchHost = (options: MatchHostOptions): MatchHost => {
     const commands = pending.get(tick) ?? [];
     pending.delete(tick);
 
-    world = step(world, commands);
+    const measure = options.measure;
+    world = measure === undefined ? step(world, commands) : measure.step(() => step(world, commands));
 
     if (commands.length > 0) history.push(...commands);
 
@@ -397,15 +427,23 @@ export const createMatchHost = (options: MatchHostOptions): MatchHost => {
       const target = Math.floor(elapsed / MS_PER_TICK);
 
       let budget = maxTicks;
+      let counted = 0;
       while (world.tick < target && budget > 0 && phase === 'running') {
         tickOnce();
+        counted += 1;
         budget -= 1;
       }
+
+      options.measure?.advanced(counted);
 
       // Не успели наверстать — признаём отставание, а не копим долг.
       // Иначе после долгой заминки матч будет вечно догонять несуществующее
       // прошлое, тратя на это каждый вызов целиком.
       if (world.tick < target) {
+        // Списание перестало быть молчаливым: приборы видят и сам факт,
+        // и величину. Раньше о том, что матч спотыкался, не оставалось
+        // никакого следа.
+        options.measure?.debt(target - world.tick);
         startedAtMs += (target - world.tick) * MS_PER_TICK;
       }
     },

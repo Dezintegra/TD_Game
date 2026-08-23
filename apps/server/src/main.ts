@@ -1,14 +1,17 @@
 import Fastify from 'fastify';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { PROTOCOL_VERSION } from '@td/protocol';
 import { startComputerService } from '@td/bot';
 import { ADAPTIVE_SWARM_PROFILE, BULWARK_PROFILE, STRATEGIST_PROFILE } from '@td/ai';
 import type { ComputerService } from '@td/bot';
+import type { Command } from '@td/shared';
 import { MATCHLOG_DIR, MATCHLOG_ENABLED, SERVER_HOST, SERVER_PORT } from './config.js';
 import { createGameHandlers } from './game-server.js';
 import { createMatchRegistry } from './matches.js';
 import { createMatchRecorder } from './recording.js';
 import { registerLobbyRoutes } from './lobby-routes.js';
 import { createWsTransport } from './ws-transport.js';
+import { createMetrics } from './metrics.js';
 import type { GameTransport } from './transport.js';
 
 /**
@@ -42,6 +45,55 @@ export const buildServer = async (options: BuildOptions = {}) => {
 
   app.get('/health', () => ({ status: 'ok', protocol: PROTOCOL_VERSION }));
 
+  /**
+   * Приборы.
+   *
+   * Заведены после того, как разбор рывков дважды дал разные ответы
+   * на один вопрос: мерить снаружи процесса нельзя — настенное время
+   * ловит вытеснение планировщиком заодно с работой, — а изнутри было
+   * нечем.
+   *
+   * Задержка цикла событий меряется средствами среды, а не своим
+   * таймером. Свой таймер жил бы в том самом цикле, который меряет,
+   * и добавлял бы в него работу; `monitorEventLoopDelay` реализован
+   * в libuv, семплирует вне JavaScript и стоит практически ничего.
+   * Это и есть главный ответ на вопрос «стоял ли процесс колом,
+   * пока должен был рассылать кадры».
+   */
+  const metrics = createMetrics();
+  const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+  loopDelay.enable();
+
+  const asMs = (ns: number): number => Math.round(ns / 1000) / 1000;
+
+  metrics.gauge(
+    'td_event_loop_delay_ms_p50',
+    'Медиана задержки цикла событий процесса',
+    () => asMs(loopDelay.percentile(50)),
+  );
+  metrics.gauge(
+    'td_event_loop_delay_ms_p99',
+    '99-й перцентиль задержки цикла событий процесса',
+    () => asMs(loopDelay.percentile(99)),
+  );
+  metrics.gauge(
+    'td_event_loop_delay_ms_max',
+    'Наибольшая задержка цикла событий за время работы процесса',
+    () => asMs(loopDelay.max),
+  );
+
+  /**
+   * Отдача показаний.
+   *
+   * Здесь только величины времени и счётчики. Ни прозвищ, ни номеров
+   * комнат, ни билетов: точка по природе своей доступна тому, кто
+   * дотянулся до порта, а игровой сервер стоит в интернете.
+   */
+  app.get('/metrics', (_request, reply) => {
+    void reply.type('text/plain; version=0.0.4; charset=utf-8');
+    return metrics.render();
+  });
+
   // Транспорт нужен обработчикам, а обработчики — транспорту.
   // Классическая circular dependency. Разрываем её через ссылку-держатель:
   // обработчики получают функцию доступа, а не сам объект, и к моменту
@@ -72,7 +124,12 @@ export const buildServer = async (options: BuildOptions = {}) => {
     log(`Запись матчей включена, каталог ${MATCHLOG_DIR}`);
   }
 
-  const matches = createMatchRegistry({ transport, log, recorder });
+  const matches = createMatchRegistry({ transport, log, recorder, metrics });
+
+  // Число идущих матчей — сведение о службе, а не о людях, и отдавать
+  // его можно. Читается в момент опроса, а не копится: величина
+  // мгновенная, и история у неё есть у того, кто опрашивает.
+  metrics.gauge('td_matches_running', 'Сколько матчей идёт сейчас', () => matches.size);
 
   // Компьютер — обычный участник, но сервер обязан знать, кто из игроков
   // им является: иначе комнату компьютера нечем пометить, а врать
@@ -167,6 +224,49 @@ export const buildServer = async (options: BuildOptions = {}) => {
       console.info(`[bot] ${message}`);
     };
 
+    /**
+     * Прибор раздумий, размеченный манерой.
+     *
+     * Имя манеры берётся из того же значения, которым служба и играет,
+     * а не выводится заново: два источника одного сведения однажды
+     * разойдутся, и в показаниях появится манера, которой никто
+     * не играл. Ровно так когда-то запись матча получала
+     * правдоподобную неправду.
+     */
+    const measureFor = (profile: string) => {
+      const duration = metrics.histogram(
+        'td_ai_decision_duration_ms',
+        'Длительность одного решения компьютерного соперника',
+        { profile },
+      );
+      // Границы в штуках: команд за решение бывает от нуля до десятка,
+      // и миллисекундные корзины сложили бы их все в первую.
+      const commands = metrics.histogram(
+        'td_ai_decision_commands',
+        'Сколько команд дало одно решение',
+        { profile },
+        { bounds: [0, 1, 2, 4, 8, 16, 32], budget: Number.POSITIVE_INFINITY },
+      );
+      const decisions = metrics.counter(
+        'td_ai_decisions_total',
+        'Сколько решений принято. Частота выводится из него производной',
+      );
+
+      return {
+        decision: (run: () => readonly Command[]): readonly Command[] => {
+          const started = performance.now();
+          try {
+            const result = run();
+            commands.add(result.length);
+            return result;
+          } finally {
+            duration.add(performance.now() - started);
+            decisions.add();
+          }
+        },
+      };
+    };
+
     const services = [
       startComputerService({
         apiUrl,
@@ -175,6 +275,7 @@ export const buildServer = async (options: BuildOptions = {}) => {
         name: 'Компьютер',
         title: 'Матч с компьютером',
         log: botLog,
+        measure: measureFor(ADAPTIVE_SWARM_PROFILE.id),
       }),
       startComputerService({
         apiUrl,
@@ -186,6 +287,7 @@ export const buildServer = async (options: BuildOptions = {}) => {
         // молча не создавалась вовсе.
         title: 'Матч с оплотом',
         log: botLog,
+        measure: measureFor(BULWARK_PROFILE.id),
       }),
       startComputerService({
         apiUrl,
@@ -197,6 +299,7 @@ export const buildServer = async (options: BuildOptions = {}) => {
         // названия.
         title: 'Матч со стратегом',
         log: botLog,
+        measure: measureFor(STRATEGIST_PROFILE.id),
       }),
     ];
 
