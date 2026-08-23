@@ -285,6 +285,10 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         building: state.building,
         buildKind: state.buildKind,
         aimingNuke: state.aimingNuke,
+        // Наведение цели в намерение не идёт: подсветки клетки у него нет.
+        // На касании наведения не существует вовсе, а мыши хватает правой
+        // кнопки, которая работает и без режима.
+        touch: state.touch,
         hoverCell: state.hoverCell,
         hoverAllowed: isHoverAllowed(world, localPlayer, state, occupancyOf(world)),
         selectedCell: state.selectedCell,
@@ -368,6 +372,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     train: (unitType, count) => train(unitType as UnitType, count),
     setBuildKind: (kind) => controls.setBuildKind(kind as StructureKindType | null),
     toggleNukeAim: () => controls.setAimingNuke(!controls.state.aimingNuke),
+    toggleTargetAim: () => controls.setAimingTarget(!controls.state.aimingTarget),
     setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, branch }),
     demolish: (cell) => send({ kind: CommandKind.Demolish, cell }),
@@ -616,6 +621,7 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
       building: state.building,
       buildKind: state.buildKind,
       aimingNuke: state.aimingNuke,
+      aimingTarget: state.aimingTarget,
       stance: AttackStance.Breakthrough,
     };
   }
@@ -650,6 +656,7 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
     building: state.building,
     buildKind: state.buildKind,
     aimingNuke: state.aimingNuke,
+    aimingTarget: state.aimingTarget,
     stance: player.stance,
   };
 };

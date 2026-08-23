@@ -5,6 +5,7 @@ import { cellX, cellY, playerStats } from '@td/sim';
 import type { WorldState } from '@td/sim';
 import { worldToScreen } from './iso.js';
 import { traceCell } from './entities.js';
+import type { TouchStick } from './controls.js';
 
 /**
  * Подсказки поверх поля: радиус строительства, метка цели, места ядерных
@@ -28,6 +29,8 @@ export interface OverlayColors {
 export interface OverlayIntent {
   /** Включён режим строительства — даже если вид ещё не выбран. */
   readonly building: boolean;
+  /** Замирающий свайп, либо null. Рисуется отдельным экранным слоем. */
+  readonly touch: TouchStick | null;
   /** Что игрок собирается строить, либо null. */
   readonly buildKind: StructureKindType | null;
   /** Игрок наводит ядерный удар. */
