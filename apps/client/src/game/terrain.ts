@@ -44,6 +44,8 @@ export interface TerrainColors {
    * больше нет вовсе.
    */
   readonly rock: number;
+  /** Холодный подсвет сверху: второй источник у скал. */
+  readonly rockSky: number;
   readonly border: number;
   readonly baseSelf: number;
   readonly baseEnemy: number;
