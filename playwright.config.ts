@@ -18,6 +18,11 @@ const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
 
 export default defineConfig({
   testDir: './e2e',
+  // Замеры частоты кадров сюда не входят. Им нужна тихая машина и живая
+  // видеокарта, а обычный прогон идёт и на занятой машине, и на runner'ах
+  // GitHub, где видеокарты нет вовсе. Их набор — `playwright.perf.config.ts`,
+  // запуск — `pnpm e2e:perf`.
+  testIgnore: ['**/*.perf.spec.ts'],
   fullyParallel: true,
   reporter: 'list',
   use: {

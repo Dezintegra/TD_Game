@@ -365,34 +365,9 @@ test('R сворачивает характеристики, оставляя п
   await expect(page.getByTestId('stat-value-0')).toBeVisible();
 });
 
-test('частота кадров держится при непрерывном движении камеры', async ({ page }) => {
-  await bootGame(page);
-
-  // Прокручиваем карту стрелкой и смотрим, что показывает счётчик кадров.
-  // Счётчик считает сам игровой цикл, то есть меряем ровно то, что видит
-  // игрок, а не синтетический бенчмарк.
-  await page.keyboard.down('ArrowRight');
-  await page.waitForTimeout(3000);
-
-  const fps = await diagnosticNumber(page, 'fps');
-
-  await page.keyboard.up('ArrowRight');
-
-  expect(fps).toBeGreaterThanOrEqual(55);
-});
-
-test('частота кадров держится, когда на поле появились войска', async ({ page }) => {
-  await bootGame(page);
-
-  // Выводим войско на поле и даём противнику развернуться.
-  for (let order = 0; order < 8; order += 1) {
-    await page.keyboard.press('Shift+Digit1');
-  }
-  await page.waitForTimeout(8000);
-
-  expect(await number(page, 'unit-count')).toBeGreaterThan(0);
-  expect(await diagnosticNumber(page, 'fps')).toBeGreaterThanOrEqual(55);
-});
+// Замеры частоты кадров переехали в `framerate.perf.spec.ts`: это измерение,
+// а не проверка правильности, и ему нужна тихая машина. Запуск —
+// `pnpm e2e:perf`.
 
 
 /**
