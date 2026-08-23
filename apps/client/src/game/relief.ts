@@ -70,17 +70,28 @@ const smoothstep = (t: number): number => t * t * (3 - 2 * t);
  * Именно гладкий, а не поток случайных чисел из `noise.ts`: там числа
  * независимы, а здесь соседние точки обязаны быть близки — иначе
  * поверхность не получится, получится помеха.
+ *
+ * `period` замыкает решётку на себя. Он нужен фактуре: её уклон
+ * запекается в замощаемую плитку, а плитка сходится без шва только
+ * тогда, когда узлы решётки повторяются целое число раз. Ноль означает
+ * «не замыкать» — так работает рельеф, которому замощение ни к чему.
  */
-export const valueNoise = (x: number, y: number, seed: number): number => {
+export const valueNoise = (x: number, y: number, seed: number, period = 0): number => {
   const xi = Math.floor(x);
   const yi = Math.floor(y);
   const u = smoothstep(x - xi);
   const v = smoothstep(y - yi);
 
-  const a = latticeValue(xi, yi, seed);
-  const b = latticeValue(xi + 1, yi, seed);
-  const c = latticeValue(xi, yi + 1, seed);
-  const d = latticeValue(xi + 1, yi + 1, seed);
+  const wrap = (n: number): number => (period > 0 ? ((n % period) + period) % period : n);
+  const x0 = wrap(xi);
+  const y0 = wrap(yi);
+  const x1 = wrap(xi + 1);
+  const y1 = wrap(yi + 1);
+
+  const a = latticeValue(x0, y0, seed);
+  const b = latticeValue(x1, y0, seed);
+  const c = latticeValue(x0, y1, seed);
+  const d = latticeValue(x1, y1, seed);
 
   return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
 };
@@ -93,14 +104,22 @@ export const valueNoise = (x: number, y: number, seed: number): number => {
  * количества, и подбирать множители пришлось бы заново при каждой
  * правке подробности.
  */
-export const fbm = (x: number, y: number, seed: number, octaves: number): number => {
+export const fbm = (
+  x: number,
+  y: number,
+  seed: number,
+  octaves: number,
+  period = 0,
+): number => {
   let sum = 0;
   let amplitude = 0.5;
   let frequency = 1;
   let total = 0;
 
   for (let octave = 0; octave < octaves; octave += 1) {
-    sum += amplitude * valueNoise(x * frequency, y * frequency, seed + octave * 7);
+    // Период удваивается вместе с частотой: у каждой октавы своя решётка,
+    // и замкнуться на себя обязана каждая, иначе шов даст самая мелкая.
+    sum += amplitude * valueNoise(x * frequency, y * frequency, seed + octave * 7, period * frequency);
     total += amplitude;
     amplitude *= 0.5;
     frequency *= 2;
@@ -250,20 +269,45 @@ export const surfaceHeight = (map: GameMap, u: number, v: number): number => {
 // Фактура
 // ─────────────────────────────────────────────────────────────────────────
 
+/** Шаг численной производной, в клетках. Общий у рельефа и у фактуры. */
+const STEP = 0.02;
+
+/**
+ * Сторона плитки фактуры, в клетках.
+ *
+ * Пять, а не любое круглое число. Замощение бесшовно только тогда, когда
+ * период решётки — целое число узлов у КАЖДОЙ октавы; самая низкая
+ * частота фактуры — 2,6 на клетку, и первое `T`, при котором 2,6 × `T`
+ * целое, это пятёрка (13 узлов).
+ */
+export const GRAIN_TILE_CELLS = 5;
+
 /**
  * Возмущение поверхности фактурой породы, в клетках высоты.
  *
  * В геометрию НЕ входит — только в нормаль. Три слоя отвечают за разное:
  * складки дают крупный рисунок породы, зерно — шероховатость, крошка —
  * мелкую сыпь на границе различимости.
+ *
+ * Функция периодична с шагом `GRAIN_TILE_CELLS`, и это не украшение:
+ * её уклон запекается в замощаемую плитку, а образцовая реализация
+ * на процессоре обязана считать ровно то же, что видеокарта, — иначе
+ * сверять их будет нечем.
  */
 export const grainOffset = (u: number, v: number): number => {
-  const folds = fbm(u * 2.6, v * 2.6, 31, 3) - 0.5;
-  const grain = fbm(u * 9, v * 9, 47, 3) - 0.5;
-  const crumb = fbm(u * 24, v * 24, 61, 2) - 0.5;
+  const period = GRAIN_TILE_CELLS;
+  const folds = fbm(u * 2.6, v * 2.6, 31, 3, 2.6 * period) - 0.5;
+  const grain = fbm(u * 9, v * 9, 47, 3, 9 * period) - 0.5;
+  const crumb = fbm(u * 24, v * 24, 61, 2, 24 * period) - 0.5;
 
   return folds * 0.24 + grain * 0.055 + crumb * 0.012;
 };
+
+/** Уклон фактуры в точке: то, что кладётся в плитку и складывается с уклоном рельефа. */
+export const grainSlope = (u: number, v: number): { readonly du: number; readonly dv: number } => ({
+  du: (grainOffset(u + STEP, v) - grainOffset(u - STEP, v)) / (2 * STEP),
+  dv: (grainOffset(u, v + STEP) - grainOffset(u, v - STEP)) / (2 * STEP),
+});
 
 /** Направление, куда смотрит поверхность. Единичной длины. */
 export interface SurfaceNormal {
@@ -271,9 +315,6 @@ export interface SurfaceNormal {
   readonly y: number;
   readonly z: number;
 }
-
-/** Шаг численной производной, в клетках. */
-const STEP = 0.02;
 
 /**
  * Нормаль поверхности с учётом фактуры.
