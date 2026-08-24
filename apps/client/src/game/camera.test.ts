@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { CELL_SCREEN_HEIGHT_PX } from './iso.js';
+import { CELL_SCREEN_HEIGHT_PX, MAP_BOUNDS } from './iso.js';
 import {
+  clampCamera,
   clampZoom,
+  createCamera,
   defaultScale,
   MAX_ZOOM,
   MIN_SCALE,
   MIN_VISIBLE_ROWS,
   scaleOf,
   visibleRows,
+  zoomAt,
 } from './camera.js';
 
 /**
@@ -108,5 +111,100 @@ describe('приближение', () => {
     expect(scaleOf(FIELD_HEIGHT.landscape, 99)).toBe(
       defaultScale(FIELD_HEIGHT.landscape) * MAX_ZOOM,
     );
+  });
+});
+
+describe('точка под пальцем', () => {
+  /**
+   * Мировая точка под экранной — та же формула, по которой сцена
+   * переводит нажатие в клетку. Записана здесь отдельно намеренно:
+   * проверка обязана считать своим способом, а не звать проверяемый код.
+   */
+  const worldUnder = (
+    camera: { readonly x: number; readonly y: number },
+    scale: number,
+    anchor: { readonly x: number; readonly y: number },
+    viewport: { readonly width: number; readonly height: number },
+  ) => ({
+    x: camera.x + (anchor.x - viewport.width / 2) / scale,
+    y: camera.y + (anchor.y - viewport.height / 2) / scale,
+  });
+
+  const viewport = { width: 812, height: 311 } as const;
+
+  it('не уезжает при приближении', () => {
+    const camera = createCamera();
+    const anchor = { x: 640, y: 90, ...viewport };
+    const before = worldUnder(camera, 0.611, anchor, viewport);
+
+    const moved = zoomAt(camera, 0.611, 1.222, anchor);
+    const after = worldUnder(moved, 1.222, anchor, viewport);
+
+    expect(after.x).toBeCloseTo(before.x, 9);
+    expect(after.y).toBeCloseTo(before.y, 9);
+  });
+
+  it('не уезжает при отдалении', () => {
+    const camera = createCamera();
+    const anchor = { x: 100, y: 260, ...viewport };
+    const before = worldUnder(camera, 2, anchor, viewport);
+
+    const moved = zoomAt(camera, 2, 1, anchor);
+    const after = worldUnder(moved, 1, anchor, viewport);
+
+    expect(after.x).toBeCloseTo(before.x, 9);
+    expect(after.y).toBeCloseTo(before.y, 9);
+  });
+
+  it('середина экрана камеру не двигает', () => {
+    // Вырожденный случай, и он же объясняет, чем приближение к пальцу
+    // отличается от приближения к центру: во втором случае камера
+    // не двигается никогда.
+    const camera = createCamera();
+    const anchor = { x: viewport.width / 2, y: viewport.height / 2, ...viewport };
+
+    expect(zoomAt(camera, 1, 3, anchor)).toEqual(camera);
+  });
+
+  it('одинаковый масштаб до и после камеру не двигает', () => {
+    const camera = createCamera();
+    const anchor = { x: 10, y: 20, ...viewport };
+
+    expect(zoomAt(camera, 1.5, 1.5, anchor)).toEqual(camera);
+  });
+});
+
+describe('ограничение камеры границами карты', () => {
+  const far = { x: MAP_BOUNDS.maxX * 2, y: MAP_BOUNDS.maxY * 2 };
+
+  it('при уменьшенной картинке карта доходит до края экрана', () => {
+    // Окно приходит в точках экрана, а камера живёт в координатах мира.
+    // Забудь деление на масштаб — камера упрётся в границу раньше, чем
+    // карта дойдёт до края, и по краям останется полоса пустоты.
+    const atFull = clampCamera(far, 812, 311, 1);
+    const atHalf = clampCamera(far, 812, 311, 0.5);
+
+    // При вдвое уменьшенной картинке окно охватывает вдвое больше мира,
+    // значит камера обязана остановиться ДАЛЬШЕ от края карты.
+    expect(atHalf.x).toBeLessThan(atFull.x);
+    expect(atHalf.y).toBeLessThan(atFull.y);
+
+    // И ровно на половину окна от края — то есть край карты совпал
+    // с краем экрана, а не остановился перед ним.
+    expect(atHalf.y).toBeCloseTo(MAP_BOUNDS.maxY - 311 / 0.5 / 2, 9);
+  });
+
+  it('умолчание масштаба ничего не меняет для прежних вызовов', () => {
+    expect(clampCamera(far, 1920, 794)).toEqual(clampCamera(far, 1920, 794, 1));
+  });
+
+  it('карту мельче окна центрирует, а не прижимает к краю', () => {
+    // Уменьшив картинку достаточно сильно, окно охватит карту целиком.
+    // Тогда камере болтаться нельзя: она показывала бы пустоту то с одной
+    // стороны, то с другой.
+    const centred = clampCamera({ x: 0, y: 0 }, 812, 311, 0.05);
+
+    expect(centred.x).toBeCloseTo((MAP_BOUNDS.minX + MAP_BOUNDS.maxX) / 2, 9);
+    expect(centred.y).toBeCloseTo((MAP_BOUNDS.minY + MAP_BOUNDS.maxY) / 2, 9);
   });
 });

@@ -100,14 +100,22 @@ export const createCamera = (): Camera => ({
  * Если карта по какому-то измерению меньше окна, камера по этому измерению
  * центрируется: иначе она болталась бы, показывая пустоту то с одной
  * стороны, то с другой.
+ *
+ * Окно приходит в ТОЧКАХ ЭКРАНА, а камера живёт в координатах мира,
+ * поэтому масштаб обязателен: при уменьшенной картинке то же окно
+ * охватывает больше мира, и делить надо именно здесь. Забудь мы это
+ * деление — камера упёрлась бы в границу раньше, чем карта дошла бы
+ * до края экрана, и по краям осталась бы полоса пустоты. Беда тихая:
+ * выглядит как «карта почему-то не доезжает», а не как ошибка.
  */
 export const clampCamera = (
   camera: Camera,
   viewportWidth: number,
   viewportHeight: number,
+  scale = 1,
 ): Camera => ({
-  x: clampAxis(camera.x, MAP_BOUNDS.minX, MAP_BOUNDS.maxX, viewportWidth),
-  y: clampAxis(camera.y, MAP_BOUNDS.minY, MAP_BOUNDS.maxY, viewportHeight),
+  x: clampAxis(camera.x, MAP_BOUNDS.minX, MAP_BOUNDS.maxX, viewportWidth / scale),
+  y: clampAxis(camera.y, MAP_BOUNDS.minY, MAP_BOUNDS.maxY, viewportHeight / scale),
 });
 
 const clampAxis = (value: number, min: number, max: number, viewport: number): number => {
@@ -122,3 +130,53 @@ export const moveCamera = (camera: Camera, dx: number, dy: number): Camera => ({
   x: camera.x + dx,
   y: camera.y + dy,
 });
+
+/** Точка на экране, вокруг которой меняется масштаб. */
+export interface ZoomAnchor {
+  /** Точка в координатах контейнера сцены, от его левого верхнего угла. */
+  readonly x: number;
+  readonly y: number;
+  /** Размер контейнера сцены в точках экрана. */
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * Куда переехать камере, чтобы точка под пальцем осталась на месте.
+ *
+ * Выводится из того, как камера применяется к контейнеру:
+ *
+ * ```
+ * контейнер.x = ширина / 2 − камера.x · масштаб
+ * ```
+ *
+ * Отсюда мировая точка под экранной `a`:
+ *
+ * ```
+ * мир = камера + (a − центр) / масштаб
+ * ```
+ *
+ * Приравняв мир до и после смены масштаба, получаем сдвиг камеры —
+ * ту самую разность обратных масштабов, что ниже.
+ *
+ * Почему не относительно центра экрана: игрок наводит палец на то,
+ * что хочет разглядеть. Приближение относительно центра уводит цель
+ * за край ровно в тот миг, когда игрок к ней присматривается,
+ * и заставляет доводить камеру вторым жестом. Для колеса точкой служит
+ * курсор, для щипка — середина между пальцами.
+ */
+export const zoomAt = (
+  camera: Camera,
+  scaleBefore: number,
+  scaleAfter: number,
+  anchor: ZoomAnchor,
+): Camera => {
+  const offsetX = anchor.x - anchor.width / 2;
+  const offsetY = anchor.y - anchor.height / 2;
+  const difference = 1 / scaleBefore - 1 / scaleAfter;
+
+  return {
+    x: camera.x + offsetX * difference,
+    y: camera.y + offsetY * difference,
+  };
+};
