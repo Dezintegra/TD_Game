@@ -61,6 +61,7 @@ import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
 import { createRejectionFeed } from './rejections.js';
 import { createDisplayGauge } from './display-gauge.js';
+import { createJumpGauge } from './jump-gauge.js';
 import { createAudio } from '../audio/index.js';
 
 /**
@@ -255,6 +256,14 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
    * ненулевой сдвиг.
    */
   const commandShift = createHistogram({ bounds: COUNT_BOUNDS, budget: COUNT_BUDGET });
+  /**
+   * Скачки генерала и очередь своих команд в момент скачка.
+   *
+   * Ровно та пара, которую описал игрок: генерал дёргается, и в этот
+   * момент справа сверху мигает «в пути 1–2». Одним прибором, потому
+   * что вторая величина имеет смысл только вместе с первой.
+   */
+  const jumpGauge = createJumpGauge();
   let lastFrameArrivalMs = Number.NaN;
 
   /**
@@ -278,6 +287,8 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
           netGap: netGap.snapshot(),
           displayGap: displayGap.snapshot(),
           shift: commandShift.snapshot(),
+          jump: jumpGauge.jumps(),
+          pendingOnJump: jumpGauge.pending(),
         }),
         keepalive: true,
       });
@@ -290,6 +301,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     const frame = frameGap.snapshot();
     const net = netGap.snapshot();
     const display = displayGap.snapshot();
+    const jumps = jumpGauge.jumps();
 
     hudActions.setSmoothness({
       frameP50: Math.round(frame.p50 * 10) / 10,
@@ -300,6 +312,9 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       netGapMax: Math.round(net.max * 10) / 10,
       displayGapP95: Math.round(display.p95 * 10) / 10,
       displayGapLong: display.overBudget,
+      shiftedCommands: commandShift.snapshot().overBudget,
+      jumpCount: jumps.count,
+      jumpMaxCells: Math.round(jumps.max * 100) / 100,
     });
   };
 
@@ -375,6 +390,20 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       // здесь, а не внутри прибора, — тот остаётся чистой функцией
       // от своих входов.
       displayGap.observe(world.tick, performance.now());
+
+      // Прибор скачков. Скорость берётся с учётом прокачки: постоянная
+      // из баланса дала бы ложные телепорты у прокачанного генерала.
+      const mine = world.generals[localPlayer];
+      const me = world.players[localPlayer];
+      if (mine !== undefined && mine.alive && me !== undefined) {
+        jumpGauge.observe(
+          world.tick,
+          mine.position.x,
+          mine.position.y,
+          playerStats(me).general.speed,
+          guest.pendingCount,
+        );
+      }
 
       const serverTick = guest.serverTick;
       hudActions.setNetwork(

@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { COUNT_BOUNDS, COUNT_BUDGET, MS_PER_TICK, createHistogram } from '@td/shared';
+import {
+  COUNT_BOUNDS,
+  COUNT_BUDGET,
+  JUMP_BOUNDS_CELLS,
+  MS_PER_TICK,
+  createHistogram,
+} from '@td/shared';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from './main.js';
 
@@ -29,6 +35,14 @@ afterAll(async () => {
 /** Правдоподобный набор корзин — тот же, что копит клиент. */
 const snapshotOf = (values: readonly number[]): unknown => {
   const histogram = createHistogram();
+  for (const value of values) histogram.add(value);
+
+  return histogram.snapshot();
+};
+
+/** Скачки: границы в клетках. */
+const jumpsOf = (values: readonly number[]): unknown => {
+  const histogram = createHistogram({ bounds: JUMP_BOUNDS_CELLS, budget: COUNT_BUDGET });
   for (const value of values) histogram.add(value);
 
   return histogram.snapshot();
@@ -150,6 +164,41 @@ describe('отчёт о плавности', () => {
       frame: snapshotOf([16]),
       netGap: snapshotOf([33]),
       shift: { buckets: [{ bound: 0, count: 1 }], count: 'много' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await rowValue('td_client_reports_rejected_total')).toBe(rejected + 1);
+  });
+  it('скачки и очередь при них доезжают своими рядами', async () => {
+    // Две величины, которые имеют смысл только вместе: насколько
+    // дёрнулось и сколько своих команд висело в этот момент.
+    const jumps = await rowValue('td_client_general_jump_cells_count{source="client"}');
+    const queue = await rowValue('td_client_pending_on_jump_count{source="client"}');
+
+    const response = await report({
+      frame: snapshotOf([16]),
+      netGap: snapshotOf([33]),
+      jump: jumpsOf([0.4, 1.2, 2.5]),
+      pendingOnJump: countsOf([1, 2, 4]),
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(await rowValue('td_client_general_jump_cells_count{source="client"}')).toBe(jumps + 3);
+    expect(await rowValue('td_client_pending_on_jump_count{source="client"}')).toBe(queue + 3);
+    // Самый большой скачок — точное число, а не оценка по корзинам:
+    // именно на него и смотрят.
+    expect(
+      await rowValue('td_client_general_jump_cells_max{source="client"}'),
+    ).toBeGreaterThanOrEqual(2.5);
+  });
+
+  it('порченый набор скачков отвергает отчёт целиком', async () => {
+    const rejected = await rowValue('td_client_reports_rejected_total');
+
+    const response = await report({
+      frame: snapshotOf([16]),
+      netGap: snapshotOf([33]),
+      jump: { buckets: [{ bound: 0.25, count: -1 }], count: 1, sum: -5 },
     });
 
     expect(response.statusCode).toBe(400);

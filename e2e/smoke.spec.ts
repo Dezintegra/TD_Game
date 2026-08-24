@@ -51,6 +51,16 @@ test('клиент поднимается, рисует поле и общает
   await expect(page.getByTestId('diagnostics')).not.toHaveAttribute('data-display-gap-p95', '0', {
     timeout: 10_000,
   });
+
+  // Приборы скачков подключены. Проверяется наличие, а не величина,
+  // и это осознанно: порог здесь стал бы плавающим отказом. На петлевом
+  // соединении команды не опаздывают, скачков быть не должно — но
+  // на загруженном runner'е доставка проседает, и «ноль» превратился бы
+  // в проверку расторопности железа. Величину снимают на боевом стенде.
+  const diagnostics = page.getByTestId('diagnostics');
+  await expect(diagnostics).toHaveAttribute('data-shifted-commands', /\d+/);
+  await expect(diagnostics).toHaveAttribute('data-jump-count', /\d+/);
+  await expect(diagnostics).toHaveAttribute('data-jump-max-cells', /[\d.]+/);
 });
 
 test('панели не перекрывают игровое поле', async ({ page }) => {
