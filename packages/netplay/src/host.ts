@@ -115,6 +115,14 @@ export interface HostMeasure {
    * доставляет их канал. Поодиночке на него не отвечает ни один прибор.
    */
   readonly sent: (gapMs: number) => void;
+  /**
+   * Время кругового обхода, измеренное ответом участника на замер канала.
+   *
+   * Величина уже считается — по ней назначается задержка ввода, — но
+   * живёт внутри места и наружу не выходит. Без неё разбор «сервер или
+   * канал» приходится вести чужими инструментами с чужой машины.
+   */
+  readonly rtt: (ms: number) => void;
 }
 
 export interface MatchHost {
@@ -438,6 +446,7 @@ export const createMatchHost = (options: MatchHostOptions): MatchHost => {
       if (seat === undefined || seat.pingNonce !== nonce) return;
 
       seat.rttMs = Math.max(0, options.now() - seat.pingSentAtMs);
+      options.measure?.rtt(seat.rttMs);
       reconsiderDelay();
     },
 

@@ -107,4 +107,29 @@ describe('приборы реестра матчей', () => {
 
     bench.registry.close();
   });
+
+  it('время обхода отдаётся без разметки', () => {
+    // Сама величина проверена у ведущего; здесь проверяется ровно одно —
+    // что наружу она уходит без меток. Разметка номером стороны
+    // выглядела бы уместно и была бы враньём: сторона нумеруется внутри
+    // матча, и «сторона 0» — разные люди в разных матчах.
+    const bench = table();
+    bench.runMs(MS_PER_TICK * 2);
+
+    const rows = bench.metrics
+      .render()
+      .split('\n')
+      .filter((line) => line.startsWith('td_player_rtt_ms'));
+
+    expect(rows.length).toBeGreaterThan(0);
+    // Границу корзины (`le`) разметкой не считаем: она часть самой
+    // гистограммы, а не сведение о том, чей это обход.
+    const labels = rows
+      .flatMap((line) => /\{(.*)\}/.exec(line)?.[1]?.split(',') ?? [])
+      .map((pair) => pair.split('=')[0]);
+
+    expect([...new Set(labels)]).toEqual(['le']);
+
+    bench.registry.close();
+  });
 });

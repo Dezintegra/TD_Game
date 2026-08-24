@@ -1,4 +1,5 @@
 import { CommandKind, MS_PER_TICK, asPlayerId, asTickNumber } from '@td/shared';
+import { MessageType } from '@td/protocol';
 import { checksum } from '@td/sim';
 import type { UnownedCommand } from '@td/shared';
 import { describe, expect, it } from 'vitest';
@@ -66,6 +67,7 @@ describe('приборы ведущего', () => {
       advanced: (ticks) => counted.push(ticks),
       debt: () => undefined,
       sent: () => undefined,
+      rtt: () => undefined,
     });
     const without = play();
 
@@ -86,6 +88,7 @@ describe('приборы ведущего', () => {
       advanced: () => undefined,
       debt: () => undefined,
       sent: () => undefined,
+      rtt: () => undefined,
     });
 
     expect(passthrough.tick).toBeGreaterThan(0);
@@ -111,6 +114,7 @@ describe('приборы ведущего', () => {
         advanced: () => undefined,
         debt: () => undefined,
         sent: (gapMs) => gaps.push(gapMs),
+        rtt: () => undefined,
       },
     });
 
@@ -149,6 +153,7 @@ describe('приборы ведущего', () => {
         advanced: () => undefined,
         debt: () => undefined,
         sent: (gapMs) => gaps.push(gapMs),
+        rtt: () => undefined,
       },
     });
 
@@ -164,5 +169,73 @@ describe('приборы ведущего', () => {
 
     expect(host.world.tick).toBe(4);
     expect(gaps).toEqual([0, 0, 0]);
+  });
+  it('ответ на замер канала попадает в прибор', () => {
+    // Время обхода сервер считает и без приборов — по нему назначается
+    // задержка ввода, — но живёт оно внутри места и наружу не выходит.
+    // Проверяется, что наружу уходит именно измеренное, а не округлённое
+    // до тиков: округляет задержка ввода, а прибор обязан отдавать то,
+    // что показали часы.
+    const clock = createClock();
+    const rtts: number[] = [];
+    let nonce = 0;
+    const host = createMatchHost({
+      seed: SEED,
+      now: () => clock.now(),
+      send: (player, message) => {
+        if (player === P0 && message.type === MessageType.Ping) nonce = message.nonce;
+      },
+      measure: {
+        step: (run) => run(),
+        advanced: () => undefined,
+        debt: () => undefined,
+        sent: () => undefined,
+        rtt: (ms) => rtts.push(ms),
+      },
+    });
+
+    host.join(P0);
+    host.join(P1);
+
+    // Замер канала сервер затевает раз в секунду, поэтому до него надо
+    // дожить: секунда игры — это тридцать тиков. Дальше первого замера
+    // не идём — иначе к обходу примешалось бы время, прошедшее после
+    // отправки, и проверка мерила бы не то.
+    for (let ms = 0; ms < MS_PER_TICK * 40 && nonce === 0; ms += 1) {
+      clock.advance(1);
+      host.advance();
+    }
+    expect(nonce).toBeGreaterThan(0);
+
+    clock.advance(40);
+    host.observePong(P0, nonce);
+
+    expect(rtts).toEqual([40]);
+  });
+
+  it('чужой ответ на замер прибора не трогает', () => {
+    // Номер замера сверяется, и это не формальность: ответ с чужим
+    // номером означает либо давно устаревший замер, либо подделку.
+    // И то и другое, попав в прибор, испортило бы выборку молча.
+    const clock = createClock();
+    const rtts: number[] = [];
+    const host = createMatchHost({
+      seed: SEED,
+      now: () => clock.now(),
+      send: () => undefined,
+      measure: {
+        step: (run) => run(),
+        advanced: () => undefined,
+        debt: () => undefined,
+        sent: () => undefined,
+        rtt: (ms) => rtts.push(ms),
+      },
+    });
+
+    host.join(P0);
+    host.join(P1);
+    host.observePong(P0, 999);
+
+    expect(rtts).toEqual([]);
   });
 });
