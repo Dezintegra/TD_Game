@@ -579,7 +579,11 @@ const visibleRows = async (page: Page): Promise<number> => {
   const yaw = (40 * Math.PI) / 180;
   const cellHeight = 63 * (Math.sin(yaw) + Math.cos(yaw)) * Math.sin((35 * Math.PI) / 180);
 
-  return box.height / (cellHeight * scale);
+  // Округление до сотых намеренно. Дефолтный масштаб подобран так, чтобы
+  // клеток вышло РОВНО десять, и величина упирается в порог снизу:
+  // последний бит двоичной дроби решает, будет это 10 или 9,999999.
+  // Сотые доли клетки игроку не видны, а проверке дают устойчивость.
+  return Number((box.height / (cellHeight * scale)).toFixed(2));
 };
 
 /** Все ветки прокачки, показанные на экране. */
