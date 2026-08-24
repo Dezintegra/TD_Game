@@ -6,7 +6,7 @@ import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, createCamera, moveCamera } from './camera.js';
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
-import { mountRockDiagonal } from './relief-render.js';
+import { clearRockLayer, mountRockDiagonal } from './relief-render.js';
 import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
@@ -93,6 +93,15 @@ export interface Scene {
    * без номера местного игрока не выводится.
    */
   setMap(map: GameMap, localPlayer: PlayerId): void;
+  /**
+   * Продолжить запекание скал, потратив не больше отпущенного.
+   *
+   * Возвращает `true`, пока осталась работа. Вызывать положено каждый
+   * кадр: скалы карты стоят около полутора секунд счёта, и одним куском
+   * их печь нельзя — столько же простоял бы главный поток, а вместе с ним
+   * и разбор кадров матча, которые всё это время копятся в сокете.
+   */
+  bakeTerrain(budgetMs: number): boolean;
   /** Рисует текущее состояние мира и подсказки. */
   render(world: WorldState, localPlayer: PlayerId, intent: OverlayIntent): void;
   /** Сдвигает камеру на заданное число экранных пикселей и снимает слежение. */
@@ -122,6 +131,29 @@ export interface Scene {
   readonly terrainRebuildCount: number;
   readonly viewportSize: { readonly width: number; readonly height: number };
 }
+
+/**
+ * В каком порядке печь диагонали территории.
+ *
+ * От базы местного игрока наружу, а не от нулевой диагонали к последней.
+ * Порядок ПЕРЕКРЫТИЯ от этого не зависит вовсе: слои созданы заранее
+ * и лежат в контейнере мира в своём порядке, так что кто кого заслоняет,
+ * решено до всякого запекания. Зависит другое — что игрок увидит первым.
+ *
+ * А это существенно, потому что печётся теперь не всё разом. Камера
+ * в начале матча стоит на базе игрока, и при обходе с нулевой диагонали
+ * его собственный командный центр появлялся бы через полсотни кадров
+ * после начала матча — на пустом поле, посреди уже идущей игры.
+ * Проверено снимком: выглядит поломкой.
+ */
+const bakeOrderOf = (map: GameMap, localPlayer: PlayerId, count: number): number[] => {
+  const home = map.baseCells[localPlayer];
+  const centre = home === undefined ? 0 : cellX(home) + cellY(home);
+
+  return Array.from({ length: count }, (_unused, diagonal) => diagonal).sort(
+    (left, right) => Math.abs(left - centre) - Math.abs(right - centre),
+  );
+};
 
 const readToken = (name: string, fallback: string): string => {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -535,6 +567,22 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
   let camera: Camera = createCamera();
   let currentMap: GameMap | undefined;
+  /**
+   * Незаконченное запекание скал; `undefined` — работы нет.
+   *
+   * Карта и местный игрок лежат вместе с курсором намеренно: они нужны
+   * каждому шагу, а порознь их легко рассогласовать — карту сменить,
+   * а курсор забыть.
+   */
+  let baking:
+    | {
+        readonly map: GameMap;
+        readonly localPlayer: PlayerId;
+        /** Диагонали в порядке запекания, а не по возрастанию номера. */
+        readonly order: readonly number[];
+        at: number;
+      }
+    | undefined;
   let terrainRebuildCount = 0;
   let following = true;
   let layout: MinimapLayout = minimapLayout(app.screen.width, app.screen.height);
@@ -610,41 +658,88 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
       currentMap = map;
       terrainRebuildCount += 1;
+
+      // Дешёвое делается сразу: земля — одна заливка, миникарта — обход
+      // клеток без запекания. Игрок видит поле и свою карту немедленно.
       drawGround(groundGraphics, terrainColors);
-      terrainBands.forEach((layer, diagonal) => {
-        mountRockDiagonal(layer, app.renderer, map, diagonal, {
-          rock: terrainColors.rock,
-          sky: terrainColors.rockSky,
-        });
-      });
-
-      // Базы ставятся ПОСЛЕ скал: `mountRockDiagonal` чистит слой своей
-      // диагонали целиком, и база, положенная раньше, была бы уничтожена
-      // вместе со скалами. Заодно это и порядок внутри диагонали —
-      // безразличный, потому что вокруг базы расчищена площадка и скал
-      // на её диагонали рядом нет.
-      //
-      // Цвет берётся по ВЛАДЕЛЬЦУ, а не по номеру базы в списке. База
-      // с индексом `i` принадлежит игроку `i` (см. `createWorld`), и
-      // прежний код красил нулевую в свой цвет всегда — то есть у второго
-      // игрока свою базу показывал чужим цветом, а чужую своим. На поле,
-      // где цвет означает принадлежность, это худшая из возможных ошибок.
-      map.baseCells.forEach((cell, index) => {
-        const x = cellX(cell);
-        const y = cellY(cell);
-        const layer = terrainBands[x + y];
-        if (layer === undefined) return;
-
-        placeBase(
-          layer,
-          app.renderer,
-          x,
-          y,
-          index === localPlayer ? baseSelfColors : baseEnemyColors,
-        );
-      });
-
       drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
+
+      // Скалы — нет. Их запекание стоит около полутора секунд, и одним
+      // куском оно перекрыло бы начало матча целиком: пока главный поток
+      // занят, браузер не разбирает кадры, пришедшие по сокету, и первый
+      // подтверждённый тик доезжает до игрока не раньше конца запекания.
+      //
+      // Замерено на боевой сборке: 2,8 с от «играть» до первого
+      // подтверждённого тика, из них около 1,3 с — вот эта самая работа.
+      // На сборке для разработки и на занятой машине выходило до шести
+      // секунд, и всё это время игрок смотрел на неподвижный мир.
+      //
+      // Слои чистятся здесь, все разом: иначе на смене карты под новыми
+      // скалами остались бы старые.
+      for (const layer of terrainBands) clearRockLayer(layer);
+
+      baking = {
+        map,
+        localPlayer,
+        order: bakeOrderOf(map, localPlayer, terrainBands.length),
+        at: 0,
+      };
+    },
+
+    bakeTerrain(budgetMs) {
+      const job = baking;
+      if (job === undefined) return false;
+
+      const started = performance.now();
+
+      // Бюджет проверяется МЕЖДУ диагоналями, а не внутри. Диагональ —
+      // это слой перекрытия целиком, и брошенная на середине оставила бы
+      // соседние клетки одной гряды в разных кадрах, то есть видимый шов.
+      // Одна диагональ печётся всегда, даже при нулевом бюджете: иначе
+      // на медленной машине работа не сдвинулась бы вовсе.
+      do {
+        const diagonal = job.order[job.at] ?? 0;
+        const layer = terrainBands[diagonal];
+        if (layer !== undefined) {
+          mountRockDiagonal(layer, app.renderer, job.map, diagonal, {
+            rock: terrainColors.rock,
+            sky: terrainColors.rockSky,
+          });
+
+          // База ставится ПОСЛЕ скал своей диагонали: `mountRockDiagonal`
+          // чистит слой целиком, и база, положенная раньше, была бы
+          // уничтожена вместе со скалами. Порядок внутри диагонали
+          // безразличен — вокруг базы расчищена площадка, и скал на её
+          // диагонали рядом нет.
+          //
+          // Цвет берётся по ВЛАДЕЛЬЦУ, а не по номеру базы в списке. База
+          // с индексом `i` принадлежит игроку `i` (см. `createWorld`), и
+          // прежний код красил нулевую в свой цвет всегда — то есть
+          // у второго игрока свою базу показывал чужим цветом, а чужую
+          // своим. На поле, где цвет означает принадлежность, это худшая
+          // из возможных ошибок.
+          job.map.baseCells.forEach((cell, index) => {
+            const x = cellX(cell);
+            const y = cellY(cell);
+            if (x + y !== diagonal) return;
+
+            placeBase(
+              layer,
+              app.renderer,
+              x,
+              y,
+              index === job.localPlayer ? baseSelfColors : baseEnemyColors,
+            );
+          });
+        }
+
+        job.at += 1;
+      } while (job.at < job.order.length && performance.now() - started < budgetMs);
+
+      if (job.at < job.order.length) return true;
+
+      baking = undefined;
+      return false;
     },
 
     render(world, localPlayer, intent) {
