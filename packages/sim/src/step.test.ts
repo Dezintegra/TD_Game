@@ -1187,3 +1187,129 @@ describe('остановка юнита на противнике', () => {
     expect(mine?.position).not.toEqual(cellCentre(MINE));
   });
 });
+
+describe('расталкивание в связке с движением и боем', () => {
+  /** Скальная гряда через всю карту с единственным проходом в клетку. */
+  const GAP_X = 24;
+  const WALL_Y = 24;
+
+  const walledWorld = (): WorldState => {
+    const world = openWorld();
+    const cells = new Uint8Array(MAP_CELL_COUNT);
+
+    for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
+      if (x === GAP_X) continue;
+      cells[cellIndex(x, WALL_Y)] = Terrain.Rock;
+    }
+
+    return { ...world, map: { cells, baseCells: world.map.baseCells } };
+  };
+
+  const stacked = (count: number, at: { x: number; y: number }): WorldState => ({
+    ...walledWorld(),
+    units: Array.from({ length: count }, (_unused, index) => ({
+      id: asEntityId(700 + index),
+      owner: asPlayerId(0),
+      unitType: UnitType.Assault,
+      position: { ...at },
+      health: 1_000_000,
+      facing: DIRECTION_SOUTH,
+      readyAtTick: asTickNumber(0),
+    })),
+  });
+
+  const CROWD = 40;
+  const START = cellCentre(cellIndex(GAP_X, WALL_Y - 4));
+
+  it('слипшаяся толпа протискивается сквозь проход шириной в клетку', () => {
+    // Главная проверка мягкости правила. Жёсткий запрет на сближение
+    // запер бы войско перед узким местом навсегда, и увидеть это можно
+    // только на полном шаге: расталкивание, движение и занятость клеток
+    // должны ужиться втроём.
+    const after = run(stacked(CROWD, START), 900);
+    const passed = after.units.filter((unit) => unit.position.y > (WALL_Y + 1) * 1000);
+
+    expect(passed).toHaveLength(CROWD);
+  });
+
+  it('ни одна машина при этом не оказывается внутри скалы', () => {
+    const after = run(stacked(CROWD, START), 900);
+    const occupancy = buildOccupancy(after.map, after.structures);
+    const inside = after.units.filter((unit) => occupancy.blocked[cellAt(unit.position)] === 1);
+
+    expect(inside).toHaveLength(0);
+  });
+
+  it('установившаяся толпа не переминается на месте', () => {
+    // Требование про затухание толчка. Без него хвост войска каждый тик
+    // заново вдавливает передних друг в друга, и обложившая цель толпа
+    // шевелится до конца матча — на поле это читается как муравейник,
+    // а не как войско на позиции.
+    const spot = cellCentre(cellIndex(41, 37));
+    const crowd = 40;
+
+    let world: WorldState = {
+      ...openWorld(),
+      units: Array.from({ length: crowd }, (_unused, index) => ({
+        id: asEntityId(700 + index),
+        owner: asPlayerId(0),
+        unitType: UnitType.Assault,
+        position: { ...spot },
+        health: 1_000_000,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(0),
+      })),
+    };
+
+    // Даём войску дойти и разойтись.
+    world = run(world, 300);
+
+    const before = world.units.map((unit) => unit.position);
+    let path = 0;
+
+    for (let tick = 0; tick < 100; tick += 1) {
+      const previous = world.units.map((unit) => unit.position);
+      world = step(world, []);
+      world.units.forEach((unit, index) => {
+        const was = previous[index];
+        if (was === undefined) return;
+        path += Math.abs(unit.position.x - was.x) + Math.abs(unit.position.y - was.y);
+      });
+    }
+
+    const perMachine = path / world.units.length;
+
+    // Клетка за сто тиков — это чуть больше трёх секунд еле заметного
+    // шевеления. Полный толчок без затухания давал вчетверо больше.
+    expect(perMachine).toBeLessThan(1000);
+    // И толпа при этом действительно стоит на месте, а не уползает.
+    expect(before.length).toBe(world.units.length);
+  });
+
+  it('остановившаяся у цели машина стреляет в тот же тик, когда её сдвинуло', () => {
+    // Толчок — это не движение. Машина, дошедшая до цели, остаётся
+    // дошедшей: правило остановки продолжает действовать, стрельба тоже.
+    const spot = cellCentre(cellIndex(41, 38));
+    const world: WorldState = {
+      ...openWorld(),
+      units: [700, 701].map((id) => ({
+        id: asEntityId(id),
+        owner: asPlayerId(0),
+        unitType: UnitType.Assault,
+        position: { ...spot },
+        health: 1_000_000,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(0),
+      })),
+    };
+
+    const before = world.structures.find((entry) => entry.owner === asPlayerId(1));
+    const after = step(world, []);
+    const afterBase = after.structures.find((entry) => entry.owner === asPlayerId(1));
+
+    // Сдвинуло — значит расталкивание сработало...
+    expect(after.units[0]?.position).not.toEqual(spot);
+    // ...и при этом выстрел по назначенной цели состоялся в том же тике.
+    expect(afterBase?.health ?? 0).toBeLessThan(before?.health ?? 0);
+  });
+});

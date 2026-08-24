@@ -157,6 +157,30 @@ test('комната появляется и закрывается, не сдв
 });
 
 test('двое сходятся в комнате, и обоюдная готовность начинает матч', async ({ browser }) => {
+  /**
+   * Своё время, и вот почему тридцати секунд по умолчанию не хватало.
+   *
+   * Проверка ведёт ДВА браузера через всю дорогу: представление, комната,
+   * вход соседа, обоюдная готовность, начало матча, общая карта, стороны,
+   * два согласия на общем тике и выход из матча с подтверждением. Замер
+   * 24.08.2026 на рабочей машине: 20,1 с с видеокартой и 33,8 с
+   * с программной отрисовкой — то есть в режиме runner'а проверка
+   * не укладывалась в срок вовсе, а на быстрой машине жила с запасом
+   * в секунду.
+   *
+   * Арифметика при этом была невозможной: у `agreeOnCommonTick` внутри
+   * стоит терпение в 45 с, а всему тесту отпускалось 30. До своего срока
+   * внутреннее ожидание не доживало никогда — тест умирал раньше.
+   * Соседний комментарий это и признаёт: «прошёл за 28,9 с при пороге
+   * в 30 с, то есть впритык». Опрос тогда починили, бюджет поднять
+   * забыли.
+   *
+   * Сто двадцать секунд сходятся с внутренними сроками: два согласия
+   * по 45 с в худшем случае плюс два десятка секунд на остальную дорогу.
+   * Это потолок, а не стоимость: здоровый прогон занимает 20–34 с.
+   */
+  test.setTimeout(120_000);
+
   const firstContext = await browser.newContext();
   const secondContext = await browser.newContext();
 
@@ -189,8 +213,14 @@ test('двое сходятся в комнате, и обоюдная гото�
     await borya.getByTestId('room-ready').click();
 
     // Матч начался у обоих.
-    await expect(anya.locator('#scene canvas')).toBeVisible();
-    await expect(borya.locator('#scene canvas')).toBeVisible();
+    //
+    // Сроки здесь проставлены явно, теми же числами, что в `bootGame`:
+    // пять секунд по умолчанию рассчитаны на щелчок по кнопке, а не
+    // на поднятие сцены и сетевой обмен. На runner'е, где два браузера
+    // и сервер делят два ядра, пяти секунд не хватало — и проверка
+    // падала на первом же ожидании после начала матча.
+    await expect(anya.locator('#scene canvas')).toBeVisible({ timeout: 15_000 });
+    await expect(borya.locator('#scene canvas')).toBeVisible({ timeout: 15_000 });
 
     // Карта общая: seed совпадает.
     //
@@ -199,11 +229,15 @@ test('двое сходятся в комнате, и обоюдная гото�
     // что двоим досталась одна и та же карта, а не две похожие.
     // Ждём, а не читаем разом: seed попадает в разметку с первым снимком
     // карты, а тот приходит на кадр-другой позже, чем появляется холст.
-    await expect(anya.getByTestId('diagnostics')).not.toHaveAttribute('data-seed', '0');
+    await expect(anya.getByTestId('diagnostics')).not.toHaveAttribute('data-seed', '0', {
+      timeout: 20_000,
+    });
 
     const seedOfAnya = await diagnostic(anya, 'seed');
     expect(Number(seedOfAnya)).toBeGreaterThan(0);
-    await expect(borya.getByTestId('diagnostics')).toHaveAttribute('data-seed', seedOfAnya);
+    await expect(borya.getByTestId('diagnostics')).toHaveAttribute('data-seed', seedOfAnya, {
+      timeout: 20_000,
+    });
 
     // Стороны разные, и каждый видит имя соперника, а не своё.
     await expect(anya.getByTestId('match-opponent')).toHaveAttribute('data-side', '0');
@@ -215,8 +249,12 @@ test('двое сходятся в комнате, и обоюдная гото�
     // Атрибут берётся из снимка матча, который заполняет игровой цикл,
     // поэтому проверка отличает «сервер назначил сторону 1»
     // от «игрок действительно играет стороной 1».
-    await expect(anya.getByTestId('hud')).toHaveAttribute('data-local-player', '0');
-    await expect(borya.getByTestId('hud')).toHaveAttribute('data-local-player', '1');
+    await expect(anya.getByTestId('hud')).toHaveAttribute('data-local-player', '0', {
+      timeout: 20_000,
+    });
+    await expect(borya.getByTestId('hud')).toHaveAttribute('data-local-player', '1', {
+      timeout: 20_000,
+    });
 
     // Матч общий: миры сходятся тик в тик.
     //
@@ -224,7 +262,13 @@ test('двое сходятся в комнате, и обоюдная гото�
     // Картинка сказала бы лишь «оба что-то рисуют»; сумма говорит, что
     // это один и тот же мир, посчитанный независимо с двух сторон
     // из одного потока команд. Ради этого всё и затевалось.
-    await expect(anya.getByTestId('diagnostics')).toHaveAttribute('data-sync-tick', /[1-9]/);
+    // Двадцать секунд, как в `bootGame`, и это не запас на всякий случай:
+    // замер показал, что от начала матча до первого подтверждённого тика
+    // проходит около шести секунд, и цифра одинакова с видеокартой
+    // и без неё — она сетевая, а не отрисовочная.
+    await expect(anya.getByTestId('diagnostics')).toHaveAttribute('data-sync-tick', /[1-9]/, {
+      timeout: 20_000,
+    });
 
     /** Снимок подтверждённого мира: тик и сумма читаются ОДНИМ обращением. */
     const syncSnapshot = (page: Page) =>
