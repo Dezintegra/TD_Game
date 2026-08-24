@@ -21,11 +21,13 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import {
   BUSY_LIMIT,
   die,
   lockPath,
+  note,
   ok,
   printHistory,
   recordEntry,
@@ -55,8 +57,62 @@ const measurementsPath = join(repoRoot, 'test-results', 'perf-measurements.jsonl
 step('Смотрю, свободна ли машина');
 const busy = await requireQuietMachine({ force });
 
+/**
+ * Свободен ли порт.
+ *
+ * Спрашивается не у списка соединений, а у самой системы: пробуем занять
+ * порт и смотрим, пустят ли. Так ответ не зависит ни от прав на чужие
+ * процессы, ни от того, каким инструментом их перечислять.
+ */
+const portFree = (port) =>
+  new Promise((resolve) => {
+    const probe = createServer();
+    probe.once('error', () => resolve(false));
+    probe.once('listening', () => probe.close(() => resolve(true)));
+    probe.listen(port, '127.0.0.1');
+  });
+
+/**
+ * Порты замера обязаны быть свободны, и это не придирка к аккуратности.
+ *
+ * Замер поднимает свои клиент и сервер и никогда не цепляется к чужим
+ * (`playwright.perf.config.ts`). Занятый порт означает, что рядом живёт
+ * чужой сервер — из другого дерева или просто забытый с утра, — и без
+ * этой проверки Playwright упал бы на невнятном «порт занят» посреди
+ * прогона.
+ *
+ * Ключ `--force` сюда НЕ распространяется, и разница принципиальна.
+ * Занятая машина портит цифру: она становится хуже, но остаётся про этот
+ * код. Чужой сервер подменяет предмет: цифра выходит правдоподобная,
+ * только относится к другому дереву. Первое можно осознанно перетерпеть,
+ * второе — нельзя ни при каких обстоятельствах.
+ */
+step('Смотрю, свободны ли порты');
+const clientPort = Number(process.env['CLIENT_PORT'] ?? 5173);
+const serverPort = Number(process.env['PORT'] ?? 3001);
+const taken = [];
+if (!(await portFree(clientPort))) taken.push(`клиентский ${clientPort} (CLIENT_PORT)`);
+if (!(await portFree(serverPort))) taken.push(`серверный ${serverPort} (PORT)`);
+
+if (taken.length > 0) {
+  die(
+    [
+      `порты замера заняты: ${taken.join(', ')}`,
+      '',
+      '  Замер поднимает свои клиент и сервер и к чужим не цепляется:',
+      '  подхваченный сервер отдал бы цифру про чужое дерево, и узнать',
+      '  об этом было бы неоткуда. 24.08.2026 так и вышло — сравнение',
+      '  «до и после» дважды измерило одну и ту же сборку.',
+      '',
+      '  Погасите чужой сервер либо возьмите свои порты:',
+      '      CLIENT_PORT=5199 PORT=3055 pnpm e2e:perf',
+    ].join('\n'),
+  );
+}
+note(`порты свободны: клиентский ${clientPort}, серверный ${serverPort}`);
+
 if (checkOnly) {
-  ok('машина свободна, замерять можно');
+  ok('машина свободна и порты свободны, замерять можно');
   process.exit(0);
 }
 
