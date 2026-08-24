@@ -35,6 +35,7 @@ import {
   upgradeCosts,
 } from '@td/sim';
 import type { Occupancy, WorldState } from '@td/sim';
+import type { ServerMessage } from '@td/protocol';
 import { createMatchGuest } from '@td/netplay';
 import type { GuestStatus } from '@td/netplay';
 import { createRenderLoop } from './loop.js';
@@ -109,6 +110,18 @@ const HUD_EVERY_TICKS = 6;
 /** Как часто меряется задержка канала. */
 const PING_EVERY_MS = 1000;
 
+/**
+ * Сколько времени за кадр отдаётся запеканию скал.
+ *
+ * Восемь миллисекунд — это «одна диагональ, и хватит»: диагональ обходится
+ * примерно в двадцать, и меньший бюджет её всё равно не разрежет
+ * (см. `bakeTerrain`). Смысл числа в другом — в том, что между
+ * диагоналями главный поток освобождается, и браузер успевает разобрать
+ * пришедшие кадры матча. Печь всю карту разом значило бы задержать первый
+ * подтверждённый тик на всё время запекания.
+ */
+const TERRAIN_BAKE_BUDGET_MS = 8;
+
 const PHASES: Readonly<Record<GuestStatus, MatchPhaseView>> = {
   idle: 'connecting',
   'catching-up': 'catching-up',
@@ -119,7 +132,49 @@ const PHASES: Readonly<Record<GuestStatus, MatchPhaseView>> = {
 };
 
 export const startGame = async (host: HTMLElement, options: GameOptions): Promise<Game> => {
-  const scene = await createScene(host);
+  // Состояние матча сбрасывается ДО подключения: иначе показания прошлой
+  // партии дожили бы до первых кадров этой.
+  hudActions.setPhase('connecting');
+  hudActions.setOutcome(null);
+
+  /**
+   * Сокет открывается ДО сцены, а не после неё.
+   *
+   * Прежде порядок был обратный, и это стоило времени на ровном месте:
+   * соединение, приветствие и сведение с соперником идут по сети, а сцена
+   * строится процессором. Держать одно за другим незачем — они друг другу
+   * не нужны. Замерено: сцена поднимается за 210–520 мс, и ровно столько
+   * сокет простаивал закрытым.
+   *
+   * Сообщения, пришедшие раньше участника, копятся в `early`. Терять их
+   * нельзя: приветствие приходит первым же ответом на билет, а без него
+   * не будет ни стороны, ни мира.
+   */
+  const early: ServerMessage[] = [];
+  let deliver = (message: ServerMessage): void => {
+    early.push(message);
+  };
+
+  const net: NetClient = createNetClient({
+    url: WS_URL,
+    ticket: options.ticket,
+    onMessage: (message) => {
+      deliver(message);
+    },
+    ...(options.onRejected === undefined ? {} : { onRejected: options.onRejected }),
+  });
+  net.connect();
+
+  let scene;
+  try {
+    scene = await createScene(host);
+  } catch (error) {
+    // Сцена не поднялась — сокет закрываем сами. Иначе он остался бы
+    // открытым и переподключался бы вечно: погасить его через `stop`
+    // будет уже некому, эта функция наверх ничего не вернёт.
+    net.disconnect();
+    throw error;
+  }
 
   const localPlayer: PlayerId = asPlayerId(options.localPlayer);
   const seed = options.seed;
@@ -241,13 +296,6 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     },
   });
 
-  const net: NetClient = createNetClient({
-    url: WS_URL,
-    ticket: options.ticket,
-    onMessage: (message) => guest.receive(message),
-    ...(options.onRejected === undefined ? {} : { onRejected: options.onRejected }),
-  });
-
   /**
    * Сетка занятости пересобирается не каждый кадр, а при смене набора
    * построек. Она нужна только подсказке «сюда можно строить», и обходить
@@ -281,8 +329,10 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       if (world === null) return;
 
       // setMap перестраивает геометрию только при смене карты, поэтому
-      // безопасно вызывать его каждый кадр.
+      // безопасно вызывать его каждый кадр. Скалы он при этом не печёт —
+      // их допекает `bakeTerrain` понемногу, кадр за кадром.
       scene.setMap(world.map, localPlayer);
+      scene.bakeTerrain(TERRAIN_BAKE_BUDGET_MS);
 
       const general = world.generals[localPlayer];
       if (general !== undefined && general.alive) {
@@ -504,9 +554,22 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   observer.observe(host);
   window.addEventListener('resize', relayout);
 
-  hudActions.setPhase('connecting');
-  hudActions.setOutcome(null);
-  net.connect();
+  // Накопленное отдаётся участнику ЗДЕСЬ, а не сразу после его создания,
+  // и это не вкусовщина. Приветствие тянет за собой `onPredicted`, а тот —
+  // `publishMapInfo` и показания HUD, объявленные ниже участника. Отдай мы
+  // сообщения раньше, обращение к ещё не созданной константе уронило бы
+  // обработчик сокета — молча, потому что бросает он внутрь браузера.
+  // Проверено: матч при этом идёт, тики капают, а карта не публикуется
+  // и цикл отрисовки не запускается вовсе.
+  //
+  // Порядок передачи важен так же: приветствие заводит мир, и кадр,
+  // применённый раньше него, применять некуда.
+  deliver = (message) => {
+    guest.receive(message);
+  };
+  for (const message of early) guest.receive(message);
+  early.length = 0;
+
   loop.start();
 
   return {
