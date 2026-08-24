@@ -1,6 +1,6 @@
 import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS, Terrain } from '@td/shared';
 import type { GameMap } from '@td/sim';
-import { hashOf } from './noise.js';
+import { hash3 } from './noise.js';
 import { rockHeight } from './rocks.js';
 
 /**
@@ -59,7 +59,15 @@ export const cellHeight = (map: GameMap, x: number, y: number): number =>
  * в одном рендере рано или поздно разъедутся в поведении.
  */
 const latticeValue = (x: number, y: number, seed: number): number =>
-  hashOf([x, y, seed]) / 0x1_0000_0000;
+  hash3(x, y, seed) / 0x1_0000_0000;
+
+/**
+ * Приведение узла решётки к периоду.
+ *
+ * Живёт снаружи `valueNoise` намеренно: внутри это было замыкание,
+ * то есть новый объект на каждый из миллионов вызовов.
+ */
+const wrapNode = (n: number, period: number): number => ((n % period) + period) % period;
 
 /** Сглаживающая кривая Эрмита. Даёт нулевую производную на концах. */
 const smoothstep = (t: number): number => t * t * (3 - 2 * t);
@@ -82,11 +90,20 @@ export const valueNoise = (x: number, y: number, seed: number, period = 0): numb
   const u = smoothstep(x - xi);
   const v = smoothstep(y - yi);
 
-  const wrap = (n: number): number => (period > 0 ? ((n % period) + period) % period : n);
-  const x0 = wrap(xi);
-  const y0 = wrap(yi);
-  const x1 = wrap(xi + 1);
-  const y1 = wrap(yi + 1);
+  // Замыкание здесь было бы создано заново на каждый вызов, а вызовов
+  // на карту миллионы; отсюда и вынесенная наружу `wrapNode`, и ветка
+  // без замыкания для рельефа, который решётку не замыкает вовсе.
+  let x0 = xi;
+  let y0 = yi;
+  let x1 = xi + 1;
+  let y1 = yi + 1;
+
+  if (period > 0) {
+    x0 = wrapNode(x0, period);
+    y0 = wrapNode(y0, period);
+    x1 = wrapNode(x1, period);
+    y1 = wrapNode(y1, period);
+  }
 
   const a = latticeValue(x0, y0, seed);
   const b = latticeValue(x1, y0, seed);
