@@ -385,6 +385,25 @@ test('цель атаки назначается кнопкой-режимом',
   await expect(page.getByTestId('match-menu')).toBeHidden();
 });
 
+test('заказ постройки снимает выделение', async ({ page }) => {
+  await bootGame(page);
+
+  // Камера переносится к своей базе, и середина холста оказывается на ней.
+  // Способ надёжнее, чем гадать координаты клетки: база крупная, а кнопка
+  // ставит её ровно в центр.
+  await page.getByTestId('focus-base-select').click();
+
+  // Без `position`: Playwright сам целит в середину холста.
+  await page.locator('#scene canvas').click();
+  await expect(page.getByTestId('structure-info')).toBeVisible();
+
+  // Выбор вида постройки означает, что следующее нажатие по полю значит
+  // не «выбери», а «поставь». Окно сведений в этот момент закрывает игроку
+  // клетки — ровно те, в которые он прицеливается.
+  await page.getByTestId('build-1-select').click();
+  await expect(page.getByTestId('structure-info')).toBeHidden();
+});
+
 test('R сворачивает характеристики, оставляя плитки, и поле растёт', async ({ page }) => {
   await bootGame(page);
 
@@ -553,8 +572,7 @@ const visibleRows = async (page: Page): Promise<number> => {
   const box = await page.locator('#scene canvas').boundingBox();
   if (box === null) return 0;
 
-  const attribute = await page.getByTestId('diagnostics').getAttribute('data-view-scale');
-  const scale = Number(attribute ?? 0);
+  const scale = await diagnosticNumber(page, 'view-scale');
   if (!Number.isFinite(scale) || scale === 0) return 0;
 
   // 63 × (sin 40° + cos 40°) × sin 35° — высота ромба клетки на экране.
