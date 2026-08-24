@@ -64,7 +64,8 @@ export interface WorkingStructure {
   kind: StructureKind;
   cell: number;
   health: number;
-  growthPpm: number;
+  /** Набранные убийства. Ранг выводится из них — см. StructureState. */
+  kills: number;
   readyAtTick: TickNumber;
   builtAtTick: TickNumber;
   demolishAtTick: TickNumber;
@@ -83,6 +84,8 @@ export interface WorkingUnit {
   /** Румб, в который повёрнута машина. Ноля здесь не бывает — см. UnitState. */
   facing: number;
   readyAtTick: TickNumber;
+  /** Набранные убийства. Ранг выводится из них — см. UnitState. */
+  kills: number;
   alive: boolean;
   /**
    * Постройка, перегородившая юниту следующий шаг, либо -1.
@@ -112,6 +115,9 @@ export interface WorkingNuke {
   owner: PlayerId;
   cell: number;
   detonateAtTick: TickNumber;
+  /** Радиус поражения и мощность заряда, замороженные в момент пуска. */
+  radius: number;
+  damage: number;
 }
 
 export interface Working {
@@ -171,7 +177,7 @@ export const toWorking = (state: WorldState): Working => ({
     kind: structure.kind,
     cell: structure.cell,
     health: structure.health,
-    growthPpm: structure.growthPpm,
+    kills: structure.kills,
     readyAtTick: structure.readyAtTick,
     builtAtTick: structure.builtAtTick,
     demolishAtTick: structure.demolishAtTick,
@@ -187,6 +193,7 @@ export const toWorking = (state: WorldState): Working => ({
     health: unit.health,
     facing: unit.facing,
     readyAtTick: unit.readyAtTick,
+    kills: unit.kills,
     alive: true,
     blockedBy: -1,
   })),
@@ -303,18 +310,25 @@ export const recordShot = (
  * Срок жизни не передаётся, а выводится из вида взрыва — как и у следа
  * выстрела, и по той же причине: два источника одной величины разъезжаются
  * при первой правке таблицы.
+ *
+ * А радиус, наоборот, передаётся: он есть только у ядерного взрыва,
+ * и вывести его не из чего — у каждого удара он свой. Всем прочим
+ * взрывам достаётся ноль, и это не «неизвестно», а «размера нет»:
+ * гибель машины рисуется своим размером, а не радиусом.
  */
 export const recordBlast = (
   working: Working,
   kind: BlastKind,
   owner: PlayerId,
   at: Vec2,
+  radius = 0,
 ): void => {
   working.blasts.push({
     at,
     kind,
     owner,
     expiresAtTick: asTickNumber(working.tick + BLAST_LIFETIME_TICKS[kind]),
+    radius,
   });
 };
 
@@ -348,7 +362,7 @@ export const fromWorking = (working: Working): WorldState => ({
       kind: structure.kind,
       cell: structure.cell,
       health: structure.health,
-      growthPpm: structure.growthPpm,
+      kills: structure.kills,
       readyAtTick: structure.readyAtTick,
       builtAtTick: structure.builtAtTick,
       demolishAtTick: structure.demolishAtTick,
@@ -364,6 +378,7 @@ export const fromWorking = (working: Working): WorldState => ({
       health: unit.health,
       facing: unit.facing,
       readyAtTick: unit.readyAtTick,
+      kills: unit.kills,
     })),
   generals: working.generals.map((general) => ({
     owner: general.owner,

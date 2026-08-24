@@ -2,7 +2,7 @@ import type { Graphics } from 'pixi.js';
 import {
   MISSILE_FLIGHT_SHARE,
   SHOT_LIFETIME_TICKS,
-  SPLASH_OUTER_RADIUS,
+  SPLASH_FULL_RADIUS,
   ShotSide,
   ShotWeapon,
   TICKS_PER_SECOND,
@@ -14,16 +14,13 @@ import type { ShotState, StructureState, WorldState } from '@td/sim';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 import type { ViewBounds } from './entities.js';
-import {
-  GENERAL_ALTITUDE,
-  GENERAL_PYLON_SIDE,
-  MIRROR_SQUASH,
-  UNIT_ALTITUDE,
-} from './models.js';
+import { GENERAL_ALTITUDE, GENERAL_PYLON_SIDE, MIRROR_SQUASH, UNIT_ALTITUDE } from './models.js';
 import { blend } from './prism.js';
 import { hashOf, noiseFrom } from './noise.js';
 import { fadeOver, glowFill, particleHeight, riseOver, smokeFill, travel } from './effects.js';
-import { structureModelHeight, structureMuzzleHeight } from './towers.js';
+import { arcWaveFront } from './arc-shape.js';
+import type { ArcSink } from './arc-shape.js';
+import { structureModelHeight, structureMuzzleHeight } from './structures.js';
 
 /**
  * Облик выстрела: вспышка у ствола, след, попадание, ракета.
@@ -59,6 +56,16 @@ export interface ShotLayers {
   readonly trails: Graphics;
   /** Свет: следы, вспышки, искры, факел. Сложение цвета. */
   readonly glow: Graphics;
+  /**
+   * Куда складываются разряды Теслы.
+   *
+   * Отдельно от `glow`, потому что разряд единственный из выстрелов
+   * рисуется не линиями, а запечёнными спрайтами: ломаные в `Graphics`
+   * режутся на треугольники заново каждый кадр, и пятнадцать
+   * одновременных разрядов стоили половину кадра. Подробности —
+   * в `arc-render.ts`.
+   */
+  readonly arcs: ArcSink;
 }
 
 export interface ShotColors {
@@ -69,6 +76,15 @@ export interface ShotColors {
   readonly shot: number;
   /** Цвет добивающего следа. */
   readonly shotLethal: number;
+  /**
+   * Сине-белое тело молнии.
+   *
+   * Отдельно от `shot`, потому что разряд обязан отличаться от очереди
+   * штурмовика не только формой: в общей свалке форму разглядеть некогда,
+   * а холодный цвет виден сразу. Принадлежность несёт не он, а свечение
+   * вокруг: оно красится цветом стороны.
+   */
+  readonly arc: number;
   /** Белое ядро вспышки. Тот же, что у взрыва. */
   readonly core: number;
   /** Огонь. Тот же, что у взрыва: пламя выстрела и пламя гибели — одно. */
@@ -248,11 +264,11 @@ const muzzleHeight = (shot: ShotState, world: WorldState): number => {
  * и вспышка у её подножия читалась бы промахом под неё, а не попаданием
  * в неё.
  */
-const impactHeight = (shot: ShotState, world: WorldState, colors: ShotColors): number => {
+const impactHeight = (shot: ShotState, world: WorldState): number => {
   const target = structureAt(world, unitsToCells(shot.to.x), unitsToCells(shot.to.y));
   if (target === undefined) return IMPACT_CELLS;
 
-  return Math.max(IMPACT_CELLS, structureModelHeight(colors, target.kind) * modelShare(shot));
+  return Math.max(IMPACT_CELLS, structureModelHeight(target.kind) * modelShare(shot));
 };
 
 /** Доля высоты модели, в которую приходит попадание: примерно середина. */
@@ -368,7 +384,7 @@ const drawShot = (
   const toX = unitsToCells(shot.to.x);
   const toY = unitsToCells(shot.to.y);
 
-  const landing = impactHeight(shot, world, colors);
+  const landing = impactHeight(shot, world);
   const impact = screenAt(toX, toY, landing);
 
   // Точка пуска — над стрелком, а у генерала ещё и на борту. Вспышка
@@ -428,17 +444,42 @@ const drawShot = (
         trail,
         shot.lethal,
         lean,
+        colors,
       );
       break;
-    case ShotWeapon.Arc:
-      drawArc(layers.glow, muzzle, impact, color, trail, shot.lethal, arcSeed(shot, time), lean);
+    case ShotWeapon.Arc: {
+      const shape = arcSeed(shot, time);
+      // Разряд кладут спрайтами, а не линиями: см. `arc-render.ts`.
+      // Отрезка два — сам разряд на высоте ствола и его наземная тень:
+      // свет от молнии ложится на землю, а не висит на её высоте.
+      layers.arcs.place(
+        { from: muzzle, to: impact },
+        { from: worldToScreen(fromX, fromY), to: worldToScreen(toX, toY) },
+        {
+          accent,
+          // Разряд заметнее прочих следов, и намеренно: Тесла редка,
+          // бьёт по площади и стоит дороже всех. Общая доля видимости
+          // здесь та же, что у остальных выстрелов, только приподнятая, —
+          // иначе чужой разряд при своих полутора десятых видимости
+          // теряется ровно тогда, когда о нём важнее всего знать.
+          alpha: Math.min(1, trail * 1.4),
+          lethal: shot.lethal,
+          seed: shape,
+          // Целый номер тика: внутри тика форма обязана стоять,
+          // иначе разряд перестраивается по шестьдесят раз в секунду
+          // и читается шумом, а не молнией.
+          phase: Math.floor(time),
+          front: arcWaveFront(seconds, span),
+        },
+      );
       // Растекание идёт по земле под точкой попадания, а не от неё самой:
       // урон накрытия достаётся тем, кто стоит на земле вокруг, и облик
       // обязан показывать именно это. У выстрела по башне точка попадания
       // висит на её вершине, и разряд, растекающийся оттуда, читался бы
       // короной над крышей.
-      drawSplash(layers.glow, worldToScreen(toX, toY), color, trail, arcSeed(shot, time), lean);
+      drawSplash(layers.glow, worldToScreen(toX, toY), colors.arc, trail, shape, lean);
       break;
+    }
     default:
       drawBolt(layers.glow, muzzle, impact, color, trail, shot.lethal, lean);
   }
@@ -697,13 +738,62 @@ const drawBolt = (
 /** Во сколько раз ядро луча толще трассера. */
 const BEAM_WIDTH_SCALE = 2.4;
 
-/** Во сколько раз ореол шире ядра. Без ореола толстая линия читается палкой. */
-const BEAM_HALO_SCALE = 3.5;
+/**
+ * Свечение луча: лесенка вложенных обводок «во сколько раз шире ядра —
+ * какая доля яркости».
+ *
+ * Свечение — это НЕ «ещё одна широкая линия», а спад яркости от центра
+ * к краю. Одна широкая обводка спада не даёт вовсе: у неё ровная
+ * заливка и резкий край, и на слое сложения она читается прямоугольной
+ * плашкой вокруг луча. Проверено картинкой 23.08.2026 — двух ступеней
+ * не хватило, плашка была отчётливо видна.
+ *
+ * Отсюда пять ступеней вместо двух и осторожная арифметика по краю.
+ * Слой складывает цвет, и самая внешняя ступень добавляет к земле
+ * `0,03 · 234 ≈ 7` уровней яркости из 255 — это ниже порога, на котором
+ * глаз замечает границу. Дальше шаг растёт (12, 17, 26, 47), но каждый
+ * следующий край прячется в сиянии предыдущего.
+ *
+ * Ширина самой внешней — десять ядер, около двадцати пяти пикселей
+ * на обычном выстреле. Больше — и свечение перестаёт держаться за луч,
+ * начиная жить само по себе.
+ *
+ * Цена — пять сплошных обводок отрезка вместо двух. Замерено
+ * 23.08.2026 в настоящем PixiJS на этой машине: обводка отрезка стоит
+ * около 0,004 мс, то есть весь прирост на восьми подробных лучах кадра —
+ * около сотой доли миллисекунды при бюджете в 16,7. Дорого в этом модуле
+ * стоят заливки градиентом, а не обводки.
+ */
+const BEAM_GLOW_RAMP: readonly (readonly [number, number])[] = [
+  [10, 0.03],
+  [7, 0.05],
+  [4.6, 0.075],
+  [3.2, 0.11],
+  [2.1, 0.2],
+];
 
-const BEAM_HALO_ALPHA = 0.3;
+/**
+ * Белая нить внутри ядра.
+ *
+ * Ядро луча окрашено цветом выстрела, и на слое сложения оно светится
+ * своим цветом. Раскалённой сердцевины у него при этом нет: цветная
+ * линия любой яркости остаётся цветной линией. Нить в треть толщины,
+ * взятая цветом ядра вспышки, и есть то место, где луч «горит».
+ */
+const BEAM_FILAMENT_SCALE = 0.34;
 
 /** Насколько луч в отражении слабее самого луча. */
 const BEAM_MIRROR_ALPHA = 0.35;
+
+/**
+ * Во сколько раз ореол отражения шире ореола самого луча.
+ *
+ * Шире, а не уже. Отражение в неидеальном зеркале размывается тем
+ * сильнее, чем дальше отражённое от поверхности, и резкая копия
+ * светящейся линии выдаёт подделку сразу. Заодно это разводит луч
+ * и его отражение: у них разная не только яркость, но и мягкость.
+ */
+const BEAM_MIRROR_BLOOM_SCALE = 1.6;
 
 /**
  * Конец луча: сама точка и точка под ней на земле.
@@ -720,11 +810,19 @@ interface BeamEnd {
 }
 
 /**
- * Луч снайпера: ореол, ядро и отражение в поверхности.
+ * Луч снайпера: свечение, ядро, раскалённая нить и отражение.
  *
- * Отражается он по той же причине и по тем же правилам, что тела:
+ * Слоёв света три, и они вложены друг в друга: широкий бледный ореол,
+ * ореол поуже и поярче, ядро. Слой рисуется в режиме сложения, поэтому
+ * там, где все три накладываются, яркость складывается — и получается
+ * спад от белого центра к темноте без различимой границы. Это и есть
+ * свечение; одна линия, сколь угодно яркая, светиться не умеет.
+ *
+ * Отражается луч по той же причине и по тем же правилам, что тела:
  * поле — слабое зеркало, и висящая над ним линия обязана в нём
  * отразиться, иначе зеркало кончается там, где начинается стрельба.
+ * Отражение получает свой ореол — приглушённый и более размытый,
+ * чем у самого луча.
  */
 const drawBeam = (
   glow: Graphics,
@@ -734,8 +832,11 @@ const drawBeam = (
   alpha: number,
   lethal: boolean,
   lean: boolean,
+  colors: ShotColors,
 ): void => {
   const core = (lethal ? 2 : 1) * BEAM_WIDTH_SCALE;
+
+  const trace = (): Graphics => glow.moveTo(from.head.x, from.head.y).lineTo(to.head.x, to.head.y);
 
   // Отражение первым: оно лежит глубже и не должно перебивать сам луч.
   // Высота над землёй у концов луча теперь разная — выстрел выходит
@@ -745,29 +846,50 @@ const drawBeam = (
     const mirror = (end: BeamEnd): number =>
       end.ground.y + (end.ground.y - end.head.y) * MIRROR_SQUASH;
 
-    glow.moveTo(from.head.x, mirror(from)).lineTo(to.head.x, mirror(to));
+    const traceMirror = (): Graphics =>
+      glow.moveTo(from.head.x, mirror(from)).lineTo(to.head.x, mirror(to));
+
+    // Отражению достаётся не вся лесенка, а две последние ступени,
+    // растянутые вширь. Причина — цена: у отражения сияние и так втрое
+    // бледнее, ступени по краю там ниже порога различимости и без
+    // лесенки, а платить за них приходится наравне с лучом. Замерено
+    // 23.08.2026: полная лесенка у отражения стоила примерно столько же,
+    // сколько всё свечение самого луча, и не давала ничего видимого.
+    for (const [width, share] of BEAM_GLOW_RAMP.slice(-2)) {
+      traceMirror();
+      glow.stroke({
+        width: core * width * BEAM_MIRROR_BLOOM_SCALE,
+        color,
+        alpha: alpha * share * BEAM_MIRROR_ALPHA,
+      });
+    }
+
+    traceMirror();
     glow.stroke({ width: core, color, alpha: alpha * BEAM_MIRROR_ALPHA });
 
-    glow.moveTo(from.head.x, from.head.y).lineTo(to.head.x, to.head.y);
-    glow.stroke({ width: core * BEAM_HALO_SCALE, color, alpha: alpha * BEAM_HALO_ALPHA });
+    // Свечение самого луча: от широкого и бледного к узкому и яркому.
+    // Порядок здесь безразличен (сложение переставимо), а вот разница
+    // ширин — нет: без неё вместо спада выходит ступенька.
+    for (const [width, share] of BEAM_GLOW_RAMP) {
+      trace();
+      glow.stroke({ width: core * width, color, alpha: alpha * share });
+    }
   }
 
-  glow.moveTo(from.head.x, from.head.y).lineTo(to.head.x, to.head.y);
+  trace();
   glow.stroke({ width: core, color, alpha: Math.min(1, alpha * 1.3) });
+
+  // Нить достаётся и краткому виду: она в одну обводку, а без неё луч
+  // теряет то единственное, чем отличается от толстой цветной черты.
+  trace();
+  glow.stroke({
+    width: core * BEAM_FILAMENT_SCALE,
+    color: colors.core,
+    alpha: Math.min(1, alpha * 1.6),
+  });
 };
 
-/** Сколько изломов в разряде. Меньше — ломаная, больше — верёвка. */
-const ARC_STEPS = 7;
-
-/** Сколько ветвей уходит в сторону от основного разряда. */
-const ARC_BRANCHES = 2;
-
-/** Какую долю длины выстрела составляет поперечный размах. */
-const ARC_SPREAD_FRACTION = 0.12;
-
-/** Предел размаха в пикселях: на дальнем выстреле доля даёт слишком много. */
-const ARC_MAX_SPREAD_PX = 14;
-
+/** Ореол растекания: во сколько раз шире ядра и насколько бледен. */
 const ARC_HALO_SCALE = 3;
 const ARC_HALO_ALPHA = 0.2;
 
@@ -794,78 +916,6 @@ const tracePolyline = (graphics: Graphics, points: readonly Point[]): void => {
   }
 };
 
-/**
- * Разряд Теслы: ломаная с ветвями.
- *
- * Поперечное смещение гаснет к концам синусом: разряд обязан выйти
- * из ствола и прийти в цель. Излом — это облик, а не промах, и уводить
- * концы в сторону значило бы врать про то, куда пришёлся урон.
- */
-const drawArc = (
-  glow: Graphics,
-  from: Point,
-  to: Point,
-  color: number,
-  alpha: number,
-  lethal: boolean,
-  seed: number,
-  lean: boolean,
-): void => {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy);
-
-  // Выстрел в упор ломать не во что.
-  if (length === 0) return;
-
-  const acrossX = -dy / length;
-  const acrossY = dx / length;
-  const spread = Math.min(ARC_MAX_SPREAD_PX, length * ARC_SPREAD_FRACTION);
-  const noise = noiseFrom(seed);
-
-  const nodes: Point[] = [from];
-  for (let step = 1; step < ARC_STEPS; step += 1) {
-    const along = step / ARC_STEPS;
-    const swing = noise() * spread * Math.sin(Math.PI * along);
-
-    nodes.push({
-      x: from.x + dx * along + acrossX * swing,
-      y: from.y + dy * along + acrossY * swing,
-    });
-  }
-  nodes.push(to);
-
-  // Ветви уходят от середины: у ствола и у цели они читались бы промахом.
-  const branches: Point[][] = [];
-  for (let count = 0; count < ARC_BRANCHES; count += 1) {
-    const node = nodes[2 + Math.floor(Math.abs(noise()) * (ARC_STEPS - 3))];
-    if (node === undefined) continue;
-
-    branches.push([
-      node,
-      {
-        x: node.x + (acrossX * noise() + (dx / length) * 0.4) * spread * 1.6,
-        y: node.y + (acrossY * noise() + (dy / length) * 0.4) * spread * 1.6,
-      },
-    ]);
-  }
-
-  const core = lethal ? 2.4 : 1.6;
-
-  if (!lean) {
-    tracePolyline(glow, nodes);
-    glow.stroke({ width: core * ARC_HALO_SCALE, color, alpha: alpha * ARC_HALO_ALPHA });
-  }
-
-  // Ядро и ветви одной обводкой: ветвь — часть того же разряда, и обводить
-  // её отдельно значило бы платить лишним обращением к видеокарте.
-  tracePolyline(glow, nodes);
-  if (!lean) {
-    for (const branch of branches) tracePolyline(glow, branch);
-  }
-  glow.stroke({ width: core, color, alpha: Math.min(1, alpha * 1.3) });
-};
-
 /** Сколько ветвей растекается от точки попадания по земле. */
 const SPLASH_BRANCHES = 6;
 
@@ -878,16 +928,26 @@ const SPLASH_BEND_FRACTION = 0.22;
 /**
  * Растекание разряда по накрытой площади.
  *
- * Ветви расходятся от точки попадания по земле и доходят примерно
- * до внешнего радиуса накрытия. «Примерно» — это разброс длин, а не
- * вольность: облик обязан показывать ту площадь, по которой нанесён урон.
- * Разряд, растекающийся дальше или ближе накрытия, обманывает игрока
- * в решении, отводить войско или нет.
+ * Ветви расходятся от точки попадания по земле. Докуда они доходят —
+ * вопрос не вкуса, а честности: облик обязан показывать ту площадь,
+ * по которой нанесён урон, иначе он обманывает игрока в решении,
+ * отводить войско или нет.
  *
- * Радиус берётся из баланса и переводится в экран той же проекцией,
- * что и всё остальное, а не подобранным числом пикселей: поправят радиус
- * в правилах — растекание поедет за ним само, и второго источника правды
- * не заведётся.
+ * Площадей у накрытия ДВЕ, и раньше показывалась дальняя. Полный урон
+ * достаётся всем в пределах `SPLASH_FULL_RADIUS` (клетка), четверть —
+ * до `SPLASH_OUTER_RADIUS` (две). Ветви доходили до внешней, и разряд
+ * из-за этого расползался вдвое шире, чем убивает: звезда шириной
+ * в четыре клетки при разлёте самого разряда в одну.
+ *
+ * Теперь мерка — ближняя окружность. Это ровно то место, где разряд
+ * убивает, и утверждение остаётся проверяемым: где нарисовано —
+ * там полный урон. Дальняя четверть урона перестала быть отмеченной,
+ * и это осознанная плата: показать её значило бы вернуть прежнюю
+ * кляксу, а разница между «поцарапает» и «убьёт» игроку важнее.
+ *
+ * Радиус по-прежнему берётся из баланса и переводится в экран той же
+ * проекцией, что и всё остальное, а не подобранным числом пикселей:
+ * поправят радиус в правилах — растекание поедет за ним само.
  *
  * Формы между кадрами не копится: она выводится из зерна, а зерно —
  * из выстрела и номера тика, ровно как у самого разряда. Внутри тика
@@ -901,7 +961,7 @@ const drawSplash = (
   seed: number,
   lean: boolean,
 ): void => {
-  const reachCells = unitsToCells(SPLASH_OUTER_RADIUS);
+  const reachCells = unitsToCells(SPLASH_FULL_RADIUS);
   const noise = noiseFrom(seed);
 
   const away = (cellsX: number, cellsY: number): Point => {
@@ -914,7 +974,7 @@ const drawSplash = (
     // Ветви расставлены по кругу, а не разбросаны случайно: случайные
     // сходятся пучком, и накрытие читается кляксой, а не разрядом.
     const angle = ((index + 0.5) / SPLASH_BRANCHES) * Math.PI * 2 + noise() * 0.5;
-    const reach = reachCells * (0.6 + Math.abs(noise()) * 0.4);
+    const reach = reachCells * (0.7 + Math.abs(noise()) * 0.3);
     const bend = noise() * reachCells * SPLASH_BEND_FRACTION;
 
     const dirX = Math.cos(angle);
@@ -1280,11 +1340,7 @@ const drawMissileSmoke = (
     // строилась бы заново на каждый кадр.
     const heat = Math.round(fadeOver(age, 0.02, 0.16) * 4) / 4;
 
-    trails.circle(
-      point.x + drift * age * 26,
-      point.y - age * rise + drift * age * 8,
-      radius,
-    );
+    trails.circle(point.x + drift * age * 26, point.y - age * rise + drift * age * 8, radius);
     trails.fill({ fill: smokeFill(heat <= 0 ? exhaust : blend(exhaust, hot, heat)), alpha });
   }
 };

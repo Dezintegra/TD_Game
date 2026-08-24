@@ -3,7 +3,6 @@ import {
   DIRECTION_SOUTH,
   DIRECTION_STOP,
   NAV_MIN_INTERVAL_TICKS,
-  NUKE_RADIUS,
   PLAYERS_PER_MATCH,
   StructureKind,
   UNIT_CAP,
@@ -14,7 +13,14 @@ import {
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { applyCommand } from './apply.js';
-import { killGeneral, buildCombatIndices, buildSpatialIndex, resolveCombat } from './combat.js';
+import {
+  TargetKind,
+  buildCombatIndices,
+  buildSpatialIndex,
+  damageEntity,
+  resolveCombat,
+} from './combat.js';
+import { separateUnits } from './crowd.js';
 import { cellCentre } from './map.js';
 import { findFreeCellNear, moveGenerals, moveUnits } from './movement.js';
 import { buildNavField } from './navigation.js';
@@ -25,10 +31,8 @@ import {
   findStructure,
   fromWorking,
   invalidateNavigation,
-  position,
   recordBlast,
   refreshOccupancy,
-  structurePosition,
   toWorking,
 } from './working.js';
 import type { Working, WorkingPlayer } from './working.js';
@@ -48,7 +52,7 @@ import type { WorldState } from './world.js';
  *    исполняется и в браузере, и в Node.js.
  *
  * Порядок этапов внутри тика влияет на исход и потому зафиксирован.
- * Меняете его — обновляйте эталон в determinism.golden.test.ts тем же
+ * Меняете его — обновляйте эталон в determinism.golden.match.test.ts тем же
  * коммитом, как требует CLAUDE.md.
  */
 export const step = (state: WorldState, commands: readonly Command[]): WorldState => {
@@ -96,6 +100,18 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
 
   moveUnits(working, stats, beforeMove);
   moveGenerals(working, stats);
+
+  // Расталкивание идёт после движения и до боя, и оба соседства заданы
+  // намеренно.
+  //
+  // После движения — потому что расталкивать надо то, что получилось
+  // по итогам шага: поле потока сводит машины в одну точку, и разводить
+  // их до шага значит разводить вчерашнюю расстановку.
+  //
+  // До боя — потому что бой обязан видеть окончательные положения.
+  // Стреляй он раньше, выстрел уходил бы туда, где машины уже нет,
+  // а накрытие считалось бы по строю, которого на поле не осталось.
+  separateUnits(working, stats);
 
   resolveCombat(working, stats, buildCombatIndices(working));
   detonateNukes(working, stats);
@@ -165,11 +181,8 @@ const advanceConstruction = (working: Working, stats: readonly PlayerStats[]): v
     const baseline = statsOf(stats, structure.owner).structures[structure.kind];
     if (baseline.buildTicks <= 0) continue;
 
-    const maxHealth = structureMaxHealth(baseline, structure.growthPpm);
-    const startHealth = Math.max(
-      1,
-      Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100),
-    );
+    const maxHealth = structureMaxHealth(baseline, structure.kills);
+    const startHealth = Math.max(1, Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100));
     const total = maxHealth - startHealth;
 
     const elapsed = baseline.buildTicks - (structure.builtAtTick - working.tick);
@@ -211,7 +224,7 @@ const advanceDemolition = (working: Working, stats: readonly PlayerStats[]): voi
     const baseline = statsOf(stats, structure.owner).structures[structure.kind];
     if (baseline.buildTicks <= 0) continue;
 
-    const maxHealth = structureMaxHealth(baseline, structure.growthPpm);
+    const maxHealth = structureMaxHealth(baseline, structure.kills);
     const left = structure.demolishAtTick - working.tick;
 
     // То же расписание, что и у возведения, только прочитанное с конца.
@@ -325,6 +338,7 @@ const spawnUnit = (
     health: statsOf(stats, player.id).units[head].health,
     facing: outward === DIRECTION_STOP ? DIRECTION_SOUTH : outward,
     readyAtTick: working.tick,
+    kills: 0,
     alive: true,
     blockedBy: -1,
   });
@@ -391,12 +405,28 @@ const ensureTarget = (working: Working, player: WorkingPlayer) => {
 /**
  * Взрывы ядерных ударов.
  *
- * Взрыв не различает стороны: свои юниты и постройки гибнут наравне
+ * Взрыв вычитает прочность, а не стирает. Прежде он уничтожал всё
+ * в круге не глядя, и на главной величине игры — прочности — одно
+ * оружие из всей игры было написано «не важно»: стена в тысячу
+ * прочности и штурмовик в сотню исчезали одинаково, а тридцать
+ * купленных уровней прочности отменялись одним нажатием.
+ *
+ * Взрыв не различает стороны: свои юниты и постройки страдают наравне
  * с чужими. Иначе ядерный удар стал бы бесплатным решением любой
  * позиционной проблемы.
  *
- * Базы и скалы не страдают: базы защищены запретной зоной наведения,
- * скалы неразрушимы по игровому замыслу.
+ * Радиус и мощность берутся из записи об ударе, а не из констант:
+ * обе величины прокачиваются и заморожены в момент пуска.
+ *
+ * Базы и скалы не страдают. База — по проверке вида постройки, а НЕ
+ * по запретной зоне наведения: зона считается от центра базы,
+ * а основание у базы три на три, и при базовом радиусе её угол
+ * оказывается ближе допустимой точки прицеливания, чем центр.
+ * Скалы неразрушимы по игровому замыслу.
+ *
+ * Записи о взрывах достаются только погибшим, и пишет их `damageEntity` —
+ * та же функция, что и при обычной стрельбе. Ранга и энергии убийства
+ * взрывом не приносят: стрелка у него нет.
  */
 const detonateNukes = (working: Working, stats: readonly PlayerStats[]): void => {
   const detonated = working.nukes.filter((nuke) => working.tick >= nuke.detonateAtTick);
@@ -404,41 +434,34 @@ const detonateNukes = (working: Working, stats: readonly PlayerStats[]): void =>
 
   working.nukes = working.nukes.filter((nuke) => working.tick < nuke.detonateAtTick);
 
-  const reach = NUKE_RADIUS * NUKE_RADIUS;
-
   for (const nuke of detonated) {
     const epicentre = cellCentre(nuke.cell);
+    const reach = nuke.radius * nuke.radius;
 
-    recordBlast(working, BlastKind.Nuke, nuke.owner, epicentre);
+    recordBlast(working, BlastKind.Nuke, nuke.owner, epicentre, nuke.radius);
 
-    // Каждый погибший получает и свой собственный взрыв, хотя в первые
-    // полсекунды его не разглядеть за вспышкой. Разглядеть и не нужно:
-    // вспышка гаснет быстрее, чем оседают обломки, и к концу зрелища
-    // на земле должно остаться ровно то, что там погибло. Взрыв
-    // без обломков читался бы как «здесь ничего и не стояло».
-    for (const unit of working.units) {
-      if (!unit.alive) continue;
-      if (distanceSquared(epicentre, unit) > reach) continue;
+    // Порядок обхода — юниты, постройки, генералы — определяет порядок
+    // записей о взрывах, и потому зафиксирован.
+    working.units.forEach((unit, index) => {
+      if (!unit.alive) return;
+      if (distanceSquared(epicentre, unit) > reach) return;
 
-      unit.alive = false;
-      recordBlast(working, BlastKind.Unit, unit.owner, position(unit));
-    }
+      damageEntity(working, stats, { kind: TargetKind.Unit, index }, nuke.damage);
+    });
 
-    for (const structure of working.structures) {
-      if (!structure.alive || structure.kind === StructureKind.Base) continue;
-      if (distanceSquared(epicentre, cellCentre(structure.cell)) > reach) continue;
+    working.structures.forEach((structure, index) => {
+      if (!structure.alive || structure.kind === StructureKind.Base) return;
+      if (distanceSquared(epicentre, cellCentre(structure.cell)) > reach) return;
 
-      structure.alive = false;
-      working.structuresDirty = true;
-      recordBlast(working, BlastKind.Structure, structure.owner, structurePosition(structure));
-    }
+      damageEntity(working, stats, { kind: TargetKind.Structure, index }, nuke.damage);
+    });
 
-    for (const general of working.generals) {
-      if (!general.alive) continue;
-      if (distanceSquared(epicentre, general) > reach) continue;
+    working.generals.forEach((general, index) => {
+      if (!general.alive) return;
+      if (distanceSquared(epicentre, general) > reach) return;
 
-      killGeneral(working, stats, general);
-    }
+      damageEntity(working, stats, { kind: TargetKind.General, index }, nuke.damage);
+    });
   }
 };
 

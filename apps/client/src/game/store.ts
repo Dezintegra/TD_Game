@@ -139,7 +139,12 @@ export interface MatchSnapshot {
   readonly unitCosts: readonly number[];
   /** Цены построек по виду. */
   readonly structureCosts: readonly number[];
+  /**
+   * Цена пуска и радиус поражения — с учётом прокачки радиуса.
+   * Цена выводится из радиуса: платят за накрытую площадь.
+   */
   readonly nukeCost: number;
+  readonly nukeRadiusCells: number;
   /**
    * Строки характеристик по целям прокачки: индекс — значение
    * `UpgradeTarget`. Пустой список означает, что качать у этой цели нечего.
@@ -184,6 +189,7 @@ const EMPTY_MATCH: MatchSnapshot = {
   unitCosts: [],
   structureCosts: [],
   nukeCost: 0,
+  nukeRadiusCells: 0,
   stats: [],
   targetLabel: '—',
   matchSeconds: 0,
@@ -214,8 +220,18 @@ export interface SelectionView {
   readonly own: boolean;
   readonly health: number;
   readonly maxHealth: number;
-  /** Личный рост за убийства, в процентах сверх базовой силы. */
-  readonly growthPercent: number;
+  /**
+   * Постройка вообще способна набирать ранг. У базы и стены — нет,
+   * и строки ранга им показывать не надо: «Ранг 0» читалось бы как
+   * «ещё не набран», хотя набрать его здесь нельзя.
+   */
+  readonly ranked: boolean;
+  /** Ветеранский ранг: от нуля до пяти. */
+  readonly rank: number;
+  /** Сколько убийств набрано. Растёт и после того, как ранг упёрся. */
+  readonly kills: number;
+  /** Сколько убийств до следующего ранга. Ноль — ранг высший. */
+  readonly killsToNextRank: number;
   readonly attack: number;
   /** Дальность в клетках. Ноль означает, что постройка не стреляет. */
   readonly rangeCells: number;
@@ -499,8 +515,7 @@ export const hudActions = {
     useHudStore.getState().setNetwork(delayTicks, pending, catchUpProgress),
   setSync: (tick: number, checksum: number) => useHudStore.getState().setSync(tick, checksum),
   setOutcome: (outcome: MatchOutcomeView | null) => useHudStore.getState().setOutcome(outcome),
-  setSelection: (selection: SelectionView | null) =>
-    useHudStore.getState().setSelection(selection),
+  setSelection: (selection: SelectionView | null) => useHudStore.getState().setSelection(selection),
   setMenuOpen: (open: boolean) => useHudStore.getState().setMenuOpen(open),
   toggleStats: () => useHudStore.getState().toggleStats(),
   setSound: (sound: SoundSettings) => useHudStore.getState().setSound(sound),

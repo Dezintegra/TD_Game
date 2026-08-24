@@ -22,7 +22,14 @@ const EVERY_KIND: readonly Command[] = [
 
 const flatRecord = (command: Command) => {
   const [arg0, arg1] = flatten(command);
-  return { t: 'cmd' as const, tick: command.tick, player: command.player, kind: command.kind, arg0, arg1 };
+  return {
+    t: 'cmd' as const,
+    tick: command.tick,
+    player: command.player,
+    kind: command.kind,
+    arg0,
+    arg1,
+  };
 };
 
 describe('плоский вид команды', () => {
@@ -54,8 +61,18 @@ describe('плоский вид команды', () => {
 
 describe('сравнение команд по существу', () => {
   it('не различает стороны и тики', () => {
-    const left: Command = { kind: CommandKind.SetTarget, player: asPlayerId(0), tick: asTickNumber(1), cell: 7 };
-    const right: Command = { kind: CommandKind.SetTarget, player: asPlayerId(1), tick: asTickNumber(900), cell: 7 };
+    const left: Command = {
+      kind: CommandKind.SetTarget,
+      player: asPlayerId(0),
+      tick: asTickNumber(1),
+      cell: 7,
+    };
+    const right: Command = {
+      kind: CommandKind.SetTarget,
+      player: asPlayerId(1),
+      tick: asTickNumber(900),
+      cell: 7,
+    };
 
     expect(sameAction(left, right)).toBe(true);
   });

@@ -3,9 +3,12 @@ import type { Graphics } from 'pixi.js';
 import {
   BLAST_LIFETIME_TICKS,
   BlastKind,
+  CELL_SCALE_PX,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
+  NUKE_DAMAGE,
   NUKE_DELAY_TICKS,
+  NUKE_RADIUS,
   NUKE_RADIUS_CELLS,
   TICKS_PER_SECOND,
   asEntityId,
@@ -14,7 +17,7 @@ import {
   cellsToUnits,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
-import { cellIndex, createWorld } from '@td/sim';
+import { cellIndex, cellX as cellColumn, cellY as cellRow, createWorld } from '@td/sim';
 import type { BlastState, NukeState, WorldState } from '@td/sim';
 import {
   drawBlasts,
@@ -24,9 +27,10 @@ import {
   shakeOffset,
   travel,
 } from './blasts.js';
-import type { BlastColors, BlastLayers } from './blasts.js';
+import type { BlastColors, BlastLayers, FlightPoint } from './blasts.js';
+import { BASE_ANTENNA_HEIGHT, BASE_LAUNCH_POINT } from './base-structure.js';
 import type { ViewBounds } from './entities.js';
-import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
+import { ELEVATION_PX_PER_CELL, GROUND_SQUASH, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 
 /**
@@ -152,13 +156,23 @@ const VIEWPORT = { width: 1600, height: 900 };
 
 const CENTRE_CELL = cellIndex(MAP_WIDTH_CELLS / 2, MAP_HEIGHT_CELLS / 2);
 
-const blastAt = (kind: BlastKind, owner: number, cellX: number, cellY: number): BlastState => ({
+const blastAt = (
+  kind: BlastKind,
+  owner: number,
+  cellX: number,
+  cellY: number,
+  // Радиус есть только у ядерного взрыва. Остальным достаётся ноль —
+  // это не «неизвестно», а «размера нет»: гибель машины рисуется своим
+  // размером, а не радиусом.
+  radiusCells = kind === BlastKind.Nuke ? NUKE_RADIUS_CELLS : 0,
+): BlastState => ({
   at: { x: cellsToUnits(cellX), y: cellsToUnits(cellY) },
   kind,
   owner: asPlayerId(owner),
   // Срок истечения равен сроку жизни: значит, взрыв начался на нулевом
   // тике, и время отрисовки читается прямо как возраст.
   expiresAtTick: asTickNumber(BLAST_LIFETIME_TICKS[kind]),
+  radius: cellsToUnits(radiusCells),
 });
 
 const worldWith = (
@@ -352,6 +366,67 @@ describe('взрыв', () => {
 describe('ядерный взрыв', () => {
   const nukeBlast = (): WorldState => worldWith([blastAt(BlastKind.Nuke, 0, 24, 24)]);
 
+  /**
+   * Короткая полуось пятна поражения на экране, в пикселях.
+   *
+   * Круг радиуса `r` на ЗЕМЛЕ проецируется в эллипс, у которого подъём
+   * по экрану равен `r · масштаб · сплющивание`: множители обеих мировых
+   * осей несут `sin(наклон)`, и их сумма по кругу даёт ровно это.
+   */
+  const SHORT_AXIS_PX = NUKE_RADIUS_CELLS * GROUND_SQUASH * CELL_SCALE_PX;
+
+  it('огненный шар вписан в пятно поражения, а не накрывает уцелевшее', () => {
+    // Круг на экране и эллипс на земле совпадают только по ширине,
+    // поэтому шар меряется КОРОТКОЙ полуосью пятна. Иначе он накрывает
+    // сверху и снизу то, что в мире осталось живо, — а он самое яркое
+    // в первое мгновение, и размер удара игрок читает по нему.
+    //
+    // Замер после того, как ушло кольцо сжатого воздуха (оно живёт
+    // 0,16 секунды и уходит на 1,7 доли против 1,35 у ореола). Кольцо
+    // шире шара намеренно и вписываться не обязано: это обводка,
+    // расходящаяся и гаснущая за долю секунды, а размер удара игрок
+    // читает по залитому телу огня. Мерили бы вместе — пришлось бы
+    // ужимать шар ради того, что и так почти не видно.
+    const { glow } = draw(nukeBlast(), 0.2);
+    const widest = largest(glow.circles.map((circle) => circle.r));
+
+    expect(widest).toBeLessThanOrEqual(SHORT_AXIS_PX + 1);
+
+    // И не вдвое меньше: шар обязан остаться главным в первый миг.
+    expect(widest).toBeGreaterThan(SHORT_AXIS_PX * 0.5);
+  });
+
+  it('пятно поражения обведено ровно по своему радиусу', () => {
+    // Заливка пятна — радиальный градиент, края у неё нет по устройству,
+    // и докуда достало, по ней не сказать. Это сообщает кромка, и она
+    // обязана лечь ровно на радиус поражения, а не около него.
+    const edge = worldToScreen(24 + NUKE_RADIUS_CELLS, 24);
+    const { glow } = draw(nukeBlast(), 0.4);
+
+    const nearest = glow.points.reduce(
+      (near, point) => Math.min(near, Math.hypot(point.x - edge.x, point.y - edge.y)),
+      Number.POSITIVE_INFINITY,
+    );
+
+    expect(nearest).toBeLessThan(2);
+  });
+
+  it('прокачанный удар рисуется шире базового', () => {
+    // Радиус поражения прокачивается, и облик обязан идти за ним.
+    // Иначе картинка перестаёт говорить правду о том, что накрыло:
+    // игрок уводит войска по нарисованной границе, а гибнут они
+    // по настоящей.
+    const wide = worldWith([blastAt(BlastKind.Nuke, 0, 24, 24, NUKE_RADIUS_CELLS * 2)]);
+
+    const ballOf = (world: WorldState): number =>
+      largest(draw(world, 0.2).glow.circles.map((c) => c.r));
+    const reachOf = (world: WorldState): number =>
+      reachFrom(draw(world, 1.6).glow.points, worldToScreen(24, 24));
+
+    expect(ballOf(wide)).toBeGreaterThan(ballOf(nukeBlast()) * 1.9);
+    expect(reachOf(wide)).toBeGreaterThan(reachOf(nukeBlast()) * 1.9);
+  });
+
   it('ударная волна расходится дальше радиуса поражения', () => {
     const epicentre = worldToScreen(24, 24);
     const edge = Math.abs(worldToScreen(24 + NUKE_RADIUS_CELLS, 24).x - epicentre.x);
@@ -452,40 +527,173 @@ describe('ядерный взрыв', () => {
 });
 
 describe('ракета', () => {
-  const nuke = (owner: number): NukeState => ({
+  const MAP = createWorld(SEED).map;
+
+  const nuke = (owner: number, cell: number = CENTRE_CELL): NukeState => ({
     id: asEntityId(900),
     owner: asPlayerId(owner),
-    cell: CENTRE_CELL,
+    cell,
     detonateAtTick: asTickNumber(NUKE_DELAY_TICKS),
+    radius: NUKE_RADIUS,
+    damage: NUKE_DAMAGE,
   });
 
-  const flightAt = (progress: number): number => missileFlight(24, 24, 1, 0, progress).height;
+  /**
+   * Срез пусковой установки на базе игрока, в мировых координатах.
+   *
+   * Складывается с клеткой базы БЕЗ полклетки: точка привязки модели
+   * базы — узел сетки, то есть угол клетки, а не её середина.
+   */
+  const launchOf = (owner: number): FlightPoint => {
+    const cell = MAP.baseCells[owner] ?? 0;
 
-  it('снижается', () => {
-    expect(flightAt(0.7)).toBeLessThan(flightAt(0.3));
+    return {
+      x: cellColumn(cell) + BASE_LAUNCH_POINT.x,
+      y: cellRow(cell) + BASE_LAUNCH_POINT.y,
+      height: BASE_LAUNCH_POINT.z,
+    };
+  };
+
+  const targetOf = (cell: number): Point => ({ x: cellColumn(cell) + 0.5, y: cellRow(cell) + 0.5 });
+
+  const flight = (progress: number, cell: number = CENTRE_CELL): FlightPoint => {
+    const target = targetOf(cell);
+
+    return missileFlight(launchOf(0), target.x, target.y, progress);
+  };
+
+  const heightAt = (progress: number): number => flight(progress).height;
+
+  /** Мировая точка полёта → точка на экране, с учётом высоты. */
+  const screenOf = (point: FlightPoint): Point => {
+    const flat = worldToScreen(point.x, point.y);
+
+    return { x: flat.x, y: flat.y - point.height * ELEVATION_PX_PER_CELL };
+  };
+
+  /** Половина полёта, в секундах. */
+  const HALF_FLIGHT = NUKE_DELAY_TICKS / TICKS_PER_SECOND / 2;
+
+  it('стартует на пусковой установке своей базы', () => {
+    const start = flight(0);
+    const launch = launchOf(0);
+
+    expect(start.x).toBeCloseTo(launch.x);
+    expect(start.y).toBeCloseTo(launch.y);
+    expect(start.height).toBeCloseTo(launch.height);
+
+    // И это заведомо не цель: иначе «стартует на базе» выполнялось бы
+    // само собой на ударе, наведённом у собственной площадки.
+    const target = targetOf(CENTRE_CELL);
+    expect(Math.hypot(start.x - target.x, start.y - target.y)).toBeGreaterThan(NUKE_RADIUS_CELLS);
+  });
+
+  it('поднимается, а потом снижается', () => {
+    expect(heightAt(0.3)).toBeGreaterThan(heightAt(0));
+    expect(heightAt(0.3)).toBeGreaterThan(heightAt(0.9));
   });
 
   it('снижается ускоряясь, а не тормозя перед землёй', () => {
-    // Половина пути пройдена — а высоты потеряна четверть. Обратное
+    // Равные доли времени на снижении, ранняя и поздняя. Обратное
     // соотношение означало бы посадку, а не удар.
-    const early = flightAt(0) - flightAt(0.5);
-    const late = flightAt(0.5) - flightAt(1);
+    const early = heightAt(0.4) - heightAt(0.6);
+    const late = heightAt(0.8) - heightAt(1);
 
     expect(late).toBeGreaterThan(early);
   });
 
   it('приходит к земле к моменту взрыва', () => {
-    expect(flightAt(1)).toBe(0);
+    expect(heightAt(1)).toBe(0);
   });
 
-  it('входит в кадр выше верхней кромки экрана', () => {
-    // Ракета обязана прилететь, а не проявиться на месте. Сравнение
-    // с половиной высоты окна, а не со всей: цель на экране посередине,
-    // и до верхней кромки от неё ровно половина.
-    expect(flightAt(0) * ELEVATION_PX_PER_CELL).toBeGreaterThan(VIEWPORT.height / 2);
+  it('сходит с направляющей почти отвесно', () => {
+    const start = flight(0);
+    const soon = flight(0.1);
+    const target = targetOf(CENTRE_CELL);
+
+    const span = Math.hypot(target.x - start.x, target.y - start.y);
+    const gone = Math.hypot(soon.x - start.x, soon.y - start.y);
+
+    // Десятая доля времени — и меньше двадцатой доли пути: ракета в это
+    // время занята подъёмом, а не сближением.
+    expect(gone / span).toBeLessThan(0.05);
+    expect(soon.height).toBeGreaterThan(start.height * 2);
   });
 
-  it('заходит со стороны базы владельца', () => {
+  it('уходит за верхнюю кромку окна и возвращается из-за неё', () => {
+    // Вершина берётся перебором, а не формулой: тест не должен повторять
+    // выкладку, которую проверяет.
+    const apexOf = (cell: number): number => {
+      let top = 0;
+      for (let step = 0; step <= 100; step += 1) {
+        top = Math.max(top, flight(step / 100, cell).height);
+      }
+
+      return top;
+    };
+
+    // Выше ВСЕГО окна, а не половины: тогда ракета за кромкой при любом
+    // положении камеры, а не только когда цель ровно посередине.
+    expect(apexOf(CENTRE_CELL) * ELEVATION_PX_PER_CELL).toBeGreaterThan(VIEWPORT.height);
+
+    // «За кромкой окна» — свойство экрана, а не карты: ближний удар
+    // обязан уйти ровно так же высоко, как дальний.
+    expect(apexOf(cellTowardsCentre(MAP.baseCells[0] ?? 0, 8))).toBeCloseTo(apexOf(CENTRE_CELL));
+
+    // И к последней десятой доле пути ракета уже вернулась в кадр.
+    expect(heightAt(0.9)).toBeGreaterThan(BASE_ANTENNA_HEIGHT);
+    expect(heightAt(0.9) * ELEVATION_PX_PER_CELL).toBeLessThan(VIEWPORT.height / 2);
+  });
+
+  it('входит в кадр отвесно над целью', () => {
+    // Отвесность обычно и порицают — растущая на месте точка не сообщает
+    // направления. Но ракета не возникает над целью, а входит в кадр
+    // сверху со следом: направление сообщает появление, а не наклон.
+    const target = targetOf(CENTRE_CELL);
+    const start = flight(0);
+    const diving = flight(0.9);
+
+    const span = Math.hypot(target.x - start.x, target.y - start.y);
+    const aside = Math.hypot(diving.x - target.x, diving.y - target.y);
+
+    expect(aside).toBeLessThan(span * 0.05);
+  });
+
+  it('след тянется от базы владельца', () => {
+    const { debris } = draw(worldWith([], [nuke(0)]), HALF_FLIGHT);
+    const start = screenOf(flight(0));
+
+    const nearest = debris.points.reduce(
+      (near, point) => Math.min(near, Math.hypot(point.x - start.x, point.y - start.y)),
+      Number.POSITIVE_INFINITY,
+    );
+
+    // Дальний конец следа — это и есть точка схода: след протянут
+    // от площадки до ракеты целиком, а не коротким хвостом за ней.
+    expect(nearest).toBeLessThan(1);
+  });
+
+  it('факел держится у сопла, а не растягивается вместе со следом', () => {
+    // Горящий участок задан долей полёта. Будь он задан номером звена,
+    // к концу полёта он растянулся бы вместе со следом на четверть карты.
+    const { debris, glow } = draw(
+      worldWith([], [nuke(0)]),
+      (NUKE_DELAY_TICKS * 0.95) / TICKS_PER_SECOND,
+    );
+    const nose = screenOf(flight(0.95));
+
+    expect(reachFrom(glow.points, nose)).toBeLessThan(reachFrom(debris.points, nose) / 4);
+  });
+
+  it('на старте корпус не схлопывается в точку', () => {
+    // Направление полёта берётся центральной разностью: односторонняя
+    // на нулевой доле дала бы нулевую длину и выродила бы ромб корпуса.
+    const { debris } = draw(worldWith([], [nuke(0)]), 0);
+
+    expect(reachFrom(debris.points, screenOf(flight(0)))).toBeGreaterThan(5);
+  });
+
+  it('ракеты двух игроков уходят с разных мест', () => {
     const world = (owner: number): WorldState => worldWith([], [nuke(owner)]);
 
     const mine = draw(world(0), 0).debris.points;
@@ -501,3 +709,17 @@ describe('ракета', () => {
     expect(draw(worldWith([]), 0).debris.counts).toEqual({});
   });
 });
+
+/** Клетка в стольких-то клетках от заданной в сторону середины карты. */
+const cellTowardsCentre = (from: number, cells: number): number => {
+  const fromX = cellColumn(from);
+  const fromY = cellRow(from);
+  const toX = MAP_WIDTH_CELLS / 2;
+  const toY = MAP_HEIGHT_CELLS / 2;
+  const share = cells / Math.hypot(toX - fromX, toY - fromY);
+
+  return cellIndex(
+    Math.round(fromX + (toX - fromX) * share),
+    Math.round(fromY + (toY - fromY) * share),
+  );
+};

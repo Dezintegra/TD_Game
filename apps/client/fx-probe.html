@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Проба: выстрелы, взрывы, зеркало поля</title>
+    <style>
+      body {
+        margin: 0;
+        background: #191919;
+        color: #ececec;
+        font-family: system-ui, sans-serif;
+      }
+      #probe {
+        display: block;
+      }
+      /* Пока проба собирается, экран пуст. У пробы поля это несколько
+         секунд: она печёт три с половиной сотни скальных клеток. Без
+         этой строки пустой экран неотличим от поломки. */
+      #state {
+        padding: 14px 16px;
+        font-size: 13px;
+        color: #9a9a9a;
+      }
+      #state[data-broken] {
+        color: #ff5c5c;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="state">собираю пробу…</div>
+    <script>
+      // Сторож на случай, когда модуль не запустился вовсе: ошибка импорта,
+      // сбой сборки или недоступный дев-сервер убивают его ДО первой строки,
+      // и никакой try/catch внутри модуля такое не поймает — ловить нечего.
+      // Тогда строка состояния так и висит «собираю пробу…», а это
+      // неотличимо от долгой выпечки.
+      (function () {
+        var show = function (text) {
+          var state = document.querySelector('#state');
+          if (state === null) return;
+          state.setAttribute('data-broken', '');
+          state.textContent = text;
+        };
+
+        // Первым делом — самая частая ошибка: страницу открыли двойным
+        // щелчком по файлу. Тогда браузер получает голую разметку,
+        // а `/src/…/main.ts` для него означает путь от корня диска.
+        // Да и будь файл на месте, выполнить TypeScript браузер не умеет:
+        // его переводит на лету дев-сервер, которого в этой схеме нет.
+        // Проверка стоит первой и обрывает всё остальное: ждать десять
+        // секунд, чтобы сообщить заведомо известное, незачем.
+        if (location.protocol === 'file:') {
+          show(
+            'страница открыта как файл с диска — так она работать не может. ' +
+              'Откройте её через дев-сервер: http://localhost:5173/fx-probe.html ' +
+              '(поднимается командой pnpm exec vite --port 5173 из apps/client).',
+          );
+          return;
+        }
+
+        // ТРЕТИЙ довод — true — обязателен. Сбой загрузки самого файла
+        // (404, 500, сервер лёг) даёт событие на элементе <script>,
+        // и оно НЕ всплывает: без перехвата на погружении window его
+        // не увидит, и ошибка пропадёт молча.
+        window.addEventListener(
+          'error',
+          function (event) {
+            if (event.target && event.target !== window && event.target.src) {
+              show('не загрузился файл: ' + event.target.src);
+              return;
+            }
+            show('ошибка: ' + (event.message || String(event.error)));
+          },
+          true,
+        );
+
+        setTimeout(function () {
+          var state = document.querySelector('#state');
+          if (state === null || state.hasAttribute('data-broken')) return;
+          if (state.dataset.stage !== undefined) return;
+
+          // Не отсылаем к вкладке «Сеть», а спрашиваем сами: браузер
+          // у вас, а разбираться по пересказу — терять по ходу на каждый
+          // вопрос. Печатаем адрес, код ответа и начало тела: у Vite
+          // в теле лежит текст ошибки сборки.
+          var url = '/src/fx-probe/main.ts';
+          show('модуль не запустился, спрашиваю сервер…  адрес страницы: ' + location.href);
+          fetch(url, { cache: 'no-store' })
+            .then(function (response) {
+              return response.text().then(function (body) {
+                if (response.status !== 200) {
+                  show(
+                    'модуль не отдаётся. ' +
+                      location.origin +
+                      url +
+                      ' → код ' +
+                      response.status +
+                      '. Ответ: ' +
+                      body.slice(0, 300).replace(/\s+/g, ' '),
+                  );
+                  return;
+                }
+                // Модуль на месте — значит, спотыкается что-то, что он
+                // тянет за собой. Первый подозреваемый всегда один: кеш
+                // зависимостей Vite. После перезапуска сервера папка
+                // .vite/deps пересобирается с новым отпечатком в адресе,
+                // а браузер, у которого модуль лежит в кеше, продолжает
+                // просить старый — и получает 404 на файл, которого
+                // больше нет.
+                var dep = /from\s*["']([^"']*pixi[^"']*)["']/.exec(body);
+                if (dep === null) {
+                  show(
+                    'модуль отдаётся (код 200), но не запускается. Смотрите «Консоль»: ' +
+                      location.origin +
+                      url,
+                  );
+                  return;
+                }
+                fetch(dep[1], { cache: 'no-store' }).then(function (depResponse) {
+                  if (depResponse.status === 200) {
+                    show(
+                      'модуль и его зависимости отдаются (код 200), но код не пошёл. ' +
+                        'Смотрите «Консоль» — там должна быть настоящая причина. Адрес: ' +
+                        location.href,
+                    );
+                    return;
+                  }
+                  show(
+                    'протух кеш зависимостей: ' +
+                      dep[1] +
+                      ' → код ' +
+                      depResponse.status +
+                      '. Помогает жёсткая перезагрузка (Ctrl+Shift+R).',
+                  );
+                });
+              });
+            })
+            .catch(function (error) {
+              show(
+                'модуль не запустился, и сервер не отвечает: ' +
+                  location.origin +
+                  url +
+                  ' → ' +
+                  String(error) +
+                  '. Похоже, дев-сервер не поднят на этом адресе.',
+              );
+            });
+        }, 10000);
+      })();
+    </script>
+    <div id="probe"></div>
+    <script type="module" src="/src/fx-probe/main.ts"></script>
+  </body>
+</html>

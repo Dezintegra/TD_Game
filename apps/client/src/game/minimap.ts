@@ -100,11 +100,7 @@ const scaleOf = (layout: MinimapLayout): number =>
  * второе, независимо написанное, разошлось бы с первым при первой же правке
  * углов — и перенос камеры уехал бы ровно на угол поворота, молча.
  */
-export const projectToMinimap = (
-  cellsX: number,
-  cellsY: number,
-  layout: MinimapLayout,
-): Point => {
+export const projectToMinimap = (cellsX: number, cellsY: number, layout: MinimapLayout): Point => {
   const scale = scaleOf(layout);
   const point = worldToScreen(cellsX, cellsY);
 
@@ -208,7 +204,11 @@ export const drawMinimapEntities = (
   for (const structure of world.structures) {
     const size = structure.kind === StructureKind.Base ? 7 : 3;
     // Центр клетки, а не её угол: отметка ставится по середине постройки.
-    const centre = projectToMinimap(cellX(structure.cell) + 0.5, cellY(structure.cell) + 0.5, layout);
+    const centre = projectToMinimap(
+      cellX(structure.cell) + 0.5,
+      cellY(structure.cell) + 0.5,
+      layout,
+    );
 
     paint(structure.owner, () =>
       graphics.rect(centre.x - size / 2, centre.y - size / 2, size, size),

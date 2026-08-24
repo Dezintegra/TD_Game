@@ -1,0 +1,113 @@
+name: Арена
+
+# Прогон безголовых матчей компьютер-против-компьютера — по кнопке.
+#
+# Это самое тяжёлое, что есть в проекте: чемпионат на несколько сотен
+# матчей занимает рабочую машину целиком и надолго, а нужен он редко
+# и не всякому изменению. Поэтому он не в CI, а здесь: запускается
+# вручную со вкладки Actions, считает на чужом железе и оставляет
+# сводку прямо на странице прогона.
+#
+# Матчи детерминированы, так что цифры с runner'а равноценны локальным:
+# при одном и том же зерне выйдет тот же исход. Это же и причина, по
+# которой сырые логи по умолчанию не прикладываются — их всегда можно
+# получить заново, а весят они сотни мегабайт.
+
+on:
+  workflow_dispatch:
+    inputs:
+      matches:
+        description: Сколько матчей прогнать
+        default: '60'
+      profiles:
+        description: Профили через запятую (пусто — по умолчанию)
+        default: ''
+      seed:
+        description: Зерно
+        default: '1'
+      seconds:
+        description: Ограничение матча по секундам (пусто — без ограничения)
+        default: ''
+      upload_logs:
+        description: Приложить сырые логи матчей (сотни мегабайт)
+        type: boolean
+        default: false
+
+jobs:
+  arena:
+    name: прогон матчей
+    runs-on: ubuntu-latest
+    # Шести часов по умолчанию хватает, но брошенный прогон занимал бы
+    # их все. Пять часов — потолок, за которым что-то явно пошло не так.
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      # Арена запускается из сборки, а не из исходников. Её собственный
+      # скрипт `arena` зовёт node с раздеванием типов прямо по `src`,
+      # и это работает не на всякой версии node: на 24-й импорт `./log.js`
+      # из `main.ts` не разрешается вовсе. Собранный `dist` таких вопросов
+      # не задаёт, а собрать всё равно нужно — пакеты экспортируются
+      # только из `dist`.
+      - name: Прогнать матчи
+        env:
+          # Значения передаются через среду, а не подстановкой в текст
+          # команды: подставленное прямо в скрипт содержимое поля ввода —
+          # это исполняемый код, кем бы поле ни заполнялось.
+          MATCHES: ${{ inputs.matches }}
+          PROFILES: ${{ inputs.profiles }}
+          SEED: ${{ inputs.seed }}
+          SECONDS_LIMIT: ${{ inputs.seconds }}
+        run: |
+          args=(run --matches "$MATCHES" --seed "$SEED")
+          if [ -n "$PROFILES" ]; then
+            args+=(--profiles "$PROFILES")
+          fi
+          if [ -n "$SECONDS_LIMIT" ]; then
+            args+=(--seconds "$SECONDS_LIMIT")
+          fi
+          node apps/arena/dist/main.js "${args[@]}"
+
+      - name: Собрать базу из логов
+        run: node apps/arena/dist/main.js ingest
+
+      # Сводка попадает и в файл, и на страницу прогона. Второе важнее:
+      # артефакт надо скачать и открыть, а итог хочется видеть сразу.
+      - name: Свести итоги
+        run: |
+          node apps/arena/dist/main.js report | tee arena-report.txt
+          {
+            echo "## Итоги прогона"
+            echo
+            echo "Матчей: \`${{ inputs.matches }}\`, зерно: \`${{ inputs.seed }}\`"
+            echo
+            echo '```'
+            cat arena-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Приложить сводку и базу
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-${{ github.run_id }}
+          path: |
+            arena-report.txt
+            .matchlog/arena.sqlite
+          retention-days: 30
+
+      - name: Приложить сырые логи
+        if: ${{ inputs.upload_logs }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: arena-logs-${{ github.run_id }}
+          path: .matchlog/
+          retention-days: 7

@@ -89,8 +89,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: calc(var(--td-space-6) + var(--td-safe-top)) calc(var(--td-space-6) + var(--td-safe-right))
-    calc(var(--td-space-6) + var(--td-safe-bottom)) calc(var(--td-space-6) + var(--td-safe-left));
+  padding: calc(var(--td-space-6) + var(--td-safe-top))
+    calc(var(--td-space-6) + var(--td-safe-right)) calc(var(--td-space-6) + var(--td-safe-bottom))
+    calc(var(--td-space-6) + var(--td-safe-left));
   overflow-y: auto;
   background: var(--td-bg-page);
 }
@@ -259,8 +260,9 @@ body {
   /* Фон полосы идёт во всю ширину экрана, а содержимое отодвинуто
      от выреза. Иначе либо имя игрока уедет под вырез, либо по краю
      появится чёрная полоса — то самое, от чего лечит cover. */
-  padding: calc(var(--td-hud-pad-y) + var(--td-safe-top)) calc(var(--td-hud-pad-x) + var(--td-safe-right))
-    var(--td-hud-pad-y) calc(var(--td-hud-pad-x) + var(--td-safe-left));
+  padding: calc(var(--td-hud-pad-y) + var(--td-safe-top))
+    calc(var(--td-hud-pad-x) + var(--td-safe-right)) var(--td-hud-pad-y)
+    calc(var(--td-hud-pad-x) + var(--td-safe-left));
   border-bottom: 1px solid var(--td-border-subtle);
 }
 
@@ -346,10 +348,12 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: var(--td-space-2);
   /* Нижний отступ учитывает полосу «домой»: на iOS она лежит ПОВЕРХ
      содержимого, и без отступа под ней оказались бы плитки заказа. */
   padding: var(--td-hud-pad-y) calc(var(--td-hud-pad-x) + var(--td-safe-right))
-    calc(var(--td-hud-pad-y) + var(--td-safe-bottom)) calc(var(--td-hud-pad-x) + var(--td-safe-left));
+    calc(var(--td-hud-pad-y) + var(--td-safe-bottom))
+    calc(var(--td-hud-pad-x) + var(--td-safe-left));
   border-top: 1px solid var(--td-border-subtle);
 
   /* Не влезло по ширине — едет вбок, а не вниз.
@@ -383,14 +387,224 @@ body {
    не добраться никакой прокруткой. */
 @media (pointer: coarse) {
   #hud-bottom {
-    /* При переполнении центрирование прячет первые плитки за левым краем,
-       и до них не добраться никакой прокруткой. */
-    justify-content: flex-start;
-
     /* Полю выше запрещены все жесты; тулбару возвращается ровно один —
        протяжка вбок. */
     touch-action: pan-x;
   }
+
+  /* При переполнении центрирование прячет первые плитки за левым краем,
+     и до них не добраться никакой прокруткой. Касается это планшета
+     и ноутбука с сенсором: на телефоне тулбар вообще не прокручивается,
+     там раскладка сеточная и содержимое умещается целиком. */
+  .td-toolbar {
+    justify-content: flex-start;
+  }
+}
+
+/* ── Тулбар и плитки ────────────────────────────────────────────────────
+   Размеры заданы КЛАССАМИ, а не встроенным стилем компонента, и это
+   условие работоспособности раскладки: встроенный стиль медиазапросом
+   не переопределить, и любая величина, записанная числом в компоненте,
+   была бы одинакова на мониторе и на телефоне. */
+
+.td-toolbar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: var(--td-space-3);
+  align-items: flex-start;
+  justify-content: center;
+}
+
+/* Запрет сжатия расставлен по ВСЕЙ цепочке, и это не перестраховка.
+
+   Плитка сжиматься не умеет. Если при этом сжимается группа, в которой
+   плитки лежат, получается вот что: группа ужимается под ширину экрана,
+   плитки из неё вылезают за её границу, а СЛЕДУЮЩАЯ группа встаёт
+   по ужатой границе предыдущей — то есть поверх её плиток. Видно это
+   было как «блок прокачки стены перекрыл Теслу», а нажималось как
+   «кнопки не работают»: стрелки покупки лежали физически под соседней
+   плиткой. Достаточно одного сжимаемого звена, чтобы беда вернулась. */
+.td-toolbar,
+.td-tile-group,
+.td-toolbar-divider,
+.td-tile {
+  flex-shrink: 0;
+}
+
+/* Промежутки внутри группы мельче обычных: плиток десять, и каждая
+   лишняя четвёрка точек умножается на восемь. На ноутбуке шириной 1366
+   запаса нет. */
+.td-tile-group {
+  display: flex;
+  gap: var(--td-space-1);
+  align-items: flex-start;
+}
+
+/* Граница между заказываемым и своими объектами. Без неё нажатие
+   по базе, ничего не заказывающее, читалось бы поломкой. */
+.td-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 0 var(--td-space-1);
+  background: var(--td-border-divider);
+}
+
+.td-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: var(--td-space-1);
+  border: 1px solid var(--td-border-control);
+  border-radius: var(--td-radius-control);
+  background: var(--td-bg-input);
+  color: var(--td-text-secondary);
+  font-family: var(--td-font-ui);
+  font-size: var(--td-text-sm);
+}
+
+/* Ширина по роли, а не по виду плитки: роль отвечает на вопрос «чего
+   стоит промах». На обычном экране обе величины равны общей ширине,
+   и делить размеры начинает только телефон. */
+.td-tile[data-role='order'] {
+  min-width: var(--td-tile-order-min);
+}
+
+.td-tile[data-role='service'] {
+  min-width: var(--td-tile-service-min);
+}
+
+.td-tile[data-active='true'] {
+  border-color: var(--td-accent);
+  box-shadow: var(--td-glow-accent);
+}
+
+.td-tile-head {
+  display: flex;
+  align-items: center;
+  /* Промежуток мельче обычного: плиток десять, и каждая лишняя четвёрка
+     точек между значком и подписью умножается на десять. */
+  gap: var(--td-space-1);
+  width: 100%;
+  /* Своя высота, а не общая цель нажатия: плитка широкая, мимо неё
+     в соседнюю попасть трудно, а каждая её точка отнимается у поля
+     десятикратно — плиток десять, а высота у них общая. */
+  min-height: var(--td-tile-head-height);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.td-tile-icon {
+  display: block;
+  width: 22px;
+  height: 20px;
+  flex-shrink: 0;
+  color: var(--td-player-self);
+}
+
+.td-tile[data-active='true'] .td-tile-icon,
+.td-tile[data-active='true'] .td-tile-name {
+  color: var(--td-accent);
+}
+
+.td-tile-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.td-tile-emoji {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.td-tile-hotkey {
+  margin-left: auto;
+  color: var(--td-text-muted-4);
+  font-size: var(--td-text-xs);
+}
+
+.td-tile-cost {
+  font-family: var(--td-font-mono);
+  color: var(--td-text-muted-2);
+  font-size: var(--td-text-xs);
+  line-height: 1.2;
+}
+
+.td-stat-line {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--td-stat-line-gap);
+  font-size: var(--td-text-xs);
+  line-height: 1.5;
+}
+
+.td-stat-name {
+  color: var(--td-text-muted-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.td-stat-value {
+  font-family: var(--td-font-mono);
+  color: var(--td-text-primary);
+  white-space: nowrap;
+}
+
+/* Кнопка покупки уровня.
+
+   Самая мелкая цель во всём интерфейсе, и промах по ней не молчалив:
+   соседняя строка — другая ветка, и деньги уходят не туда, куда игрок
+   целился. На мыши размер мал намеренно, на пальце вырастает.
+
+   Высота отдельным токеном, и это вынужденно: строки стоят стопкой,
+   высота строки равна высоте кнопки, и пять строк по сорок четыре
+   в телефон не помещаются. Промах при этом лечится не размером,
+   а ПРОМЕЖУТКОМ между строками: мимо ужатой кнопки палец попадает
+   в пустоту, а не в соседнюю ветку. */
+.td-stat-buy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 3px;
+  min-width: var(--td-stat-buy-min);
+  min-height: var(--td-hit-target-y);
+  border: 1px solid var(--td-border-control);
+  border-radius: 2px;
+  background: transparent;
+  /* Недоступная кнопка приглушается, но не прячется: игрок должен
+     видеть, что копить есть на что. */
+  color: var(--td-text-muted-4);
+  font-family: var(--td-font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.td-stat-buy[data-affordable='true'] {
+  border-color: var(--td-accent);
+  color: var(--td-accent);
+}
+
+.td-stat-column {
+  display: flex;
+  flex-direction: column;
+  /* Промежуток между строками — полоса безопасности, а не отступ.
+     На маленьком экране стрелка ужимается по высоте, и промах
+     становится вероятнее; попасть он должен в пустоту, а не в соседнюю
+     ветку, иначе деньги уйдут не туда. */
+  gap: var(--td-stat-row-gap);
+  margin-top: 2px;
 }
 
 /* Первая строка верхней полосы: кнопка меню слева, состояние связи справа.
@@ -462,83 +676,310 @@ body {
   }
 }
 
-/* Кнопка «свернуть — развернуть характеристики».
+/* Кнопка «открыть — закрыть прокачку».
 
-   На мониторе её нет вовсе: там то же самое делает клавиша R, а места
-   в тулбаре на ноутбуке 1366 нет ни на что лишнее. Прячется целиком,
-   а не приглушается: невидимая кнопка не занимает ширины.
+   Есть на ЛЮБОМ размере экрана, и это правка не удобства, а видимости.
+   Прежде на мониторе её не было вовсе: прокачку разворачивала клавиша R,
+   и о самой возможности на экране не сообщало ничто. Возможность,
+   о которой не сообщают, для игрока не существует — он либо не знает,
+   что прокачку можно убрать, либо не знает, что она есть.
 
-   На телефоне нажать R нечем, и без этой кнопки режим не переключить
-   вообще — игрок остаётся в том состоянии, какое сохранилось с прошлого
-   раза. */
+   Стоит в левом нижнем углу и прилипает к левому краю полосы: тулбар
+   в узком окне едет вбок, и уехавшая с плитками кнопка стала бы
+   недостижимой ровно тогда, когда нужна. Собственный фон обязателен —
+   плитки проезжают ПОД ней. */
 .td-stats-toggle {
-  display: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--td-space-1);
+  flex-shrink: 0;
+  align-self: center;
+
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--td-bg-header);
+
+  min-width: var(--td-hit-target);
+  min-height: var(--td-hud-button-height);
+  padding: 0 var(--td-space-2);
+  border: 1px solid var(--td-border-control);
+  border-radius: var(--td-radius-control);
+  color: var(--td-text-muted-2);
+  font-family: var(--td-font-ui);
+  font-size: var(--td-text-xs);
+  line-height: 1;
+  cursor: pointer;
 }
 
-@media (max-width: 620px), (max-height: 520px) {
-  .td-stats-toggle {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
-    flex-shrink: 0;
-
-    /* Прилипает к левому краю: тулбар едет вбок, и уехавшая с плитками
-       кнопка стала бы недостижимой ровно тогда, когда нужна. Собственный
-       фон обязателен — плитки проезжают ПОД ней. */
-    position: sticky;
-    left: 0;
-    z-index: 1;
-    background: var(--td-bg-header);
-
-    align-self: stretch;
-    min-width: var(--td-hit-target);
-    padding: 0 var(--td-space-1);
-    border: 1px solid var(--td-border-control);
-    border-radius: var(--td-radius-control);
-    color: var(--td-text-muted-2);
-    font-family: var(--td-font-ui);
-    font-size: var(--td-text-xs);
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .td-stats-toggle[data-open='true'] {
-    color: var(--td-accent);
-    border-color: var(--td-accent);
-  }
+.td-stats-toggle[data-open='true'] {
+  color: var(--td-accent);
+  border-color: var(--td-accent);
 }
 
-/* Маленький экран: содержимое перестаёт срезаться сверху.
+/* ── Маленький экран: полоса становится сеткой ──────────────────────────
+   Раскладок на телефоне две, и переключает их не размер, а состояние
+   прокачки.
 
-   Беда была молчаливой и оттого злой. Полоса центрировала содержимое
-   по вертикали и запрещала переполнение. Пока столбцы ниже полосы,
-   это безобидно; как только выше — центрирование уводит их за ОБА края
-   разом, и до верхней строки нельзя добраться ничем: полосы прокрутки
-   нет, потому что переполнение запрещено, а свернуть столбцы значит
-   убрать как раз то, до чего игрок тянулся. На экране это выглядит
-   обрубленным словом — то есть опечаткой, а не пропажей.
+   ЗАКРЫТО — низкая полоса: слева служебные нажатия, справа, под большим
+   пальцем, заказ. Прокрутки вбок нет вовсе: содержимое обязано уместиться
+   в ширину. Прежде она была — и стоила ДОРОГО: замерено, что в портрете
+   на экране помещалось три плитки заказа из шести и ни одной служебной,
+   а до остальных надо было доехать полосой, то есть вторым жестом
+   и второй рукой.
 
-   Выше содержимое становится именно на пальце: цель нажатия сорок
-   четыре точки, четыре строки прокачки — сто семьдесят шесть, плюс
-   шапка и цена.
+   ОТКРЫТО — та же полоса, поднятая поверх поля панелью в три ряда.
 
-   Лечение из двух частей: прижать к верху, чтобы переполнение уходило
-   в одну сторону, и разрешить прокрутку по вертикали, чтобы до него
-   можно было дотянуться.
-
-   Высота полосы при этом НЕ меняется — прокрутка не рост. Контракт
-   с контейнером сцены сохраняется: сцена отступает на заданную величину,
-   и от содержимого тулбара эта величина не зависит. */
+   Разметка при этом одна и та же. Тулбар получает `display: contents`,
+   его группы становятся элементами сетки самой полосы, и вся раскладка
+   выражается областями сетки. Второй разметки не заводится: она означала
+   бы вторую плитку `train-0` в документе, второй набор подписок
+   и переименование половины сквозных проверок. */
 @media (max-width: 620px), (max-height: 520px) {
   #hud-bottom {
-    align-items: flex-start;
-    justify-content: flex-start;
-    overflow-y: auto;
+    display: grid;
+    align-items: start;
+    justify-items: start;
+    gap: var(--td-space-1);
+  }
 
-    /* Браузеру возвращаются ровно два жеста, нужные для прокрутки,
-       и ничего сверх. Полю выше по-прежнему запрещено всё. */
+  /* Группы становятся элементами сетки полосы, а не строкой внутри
+     тулбара: областями сетки выражается и низкая полоса, и панель. */
+  .td-toolbar {
+    display: contents;
+  }
+
+  .td-stats-toggle {
+    grid-area: toggle;
+    /* На телефоне только значок: 26 точек не вмещают слова, а место
+       стоит поля. */
+    min-width: var(--td-tile-service-min);
+    min-height: var(--td-tile-service-min);
+    padding: 0;
+  }
+
+  [data-testid='production-panel'] {
+    grid-area: prod;
+  }
+
+  [data-testid='build-panel'] {
+    grid-area: build;
+  }
+
+  [data-testid='aim-panel'] {
+    grid-area: aim;
+  }
+
+  [data-testid='own-panel'] {
+    grid-area: own;
+  }
+
+  /* Разделитель разделял заказ и свои объекты в одной строке. В сетке
+     они и так в разных областях, а на панели — в разных рядах. */
+  .td-toolbar-divider {
+    display: none;
+  }
+
+  /* ── Закрытая полоса ─────────────────────────────────────────────── */
+
+  /* Подпись не влезает в сорок четыре точки, и выбор здесь не между
+     «с подписью» и «без», а между «без подписи» и «за краем экрана».
+     В панели подписи возвращаются — там ширины вдоволь. */
+  :root.td-stats-closed .td-tile-name,
+  :root.td-stats-closed .td-tile-cost-label,
+  :root.td-stats-closed .td-stats-toggle > span:last-child {
+    display: none;
+  }
+
+  :root.td-stats-closed .td-tile {
+    padding: 2px;
+  }
+
+  /* Служебная плитка ужимается по обеим сторонам: промах по ней не стоит
+     ничего — режим снимается повторным нажатием, камера возвращается. */
+  :root.td-stats-closed .td-tile[data-role='service'] .td-tile-head {
+    min-height: var(--td-tile-service-min);
+  }
+
+  :root.td-stats-closed .td-tile[data-role='service'] .td-tile-icon {
+    width: 18px;
+    height: 16px;
+  }
+
+  /* Плитки базы в полосе нет: к базе переносит нажатие по её прочности
+     в верхней полосе — число уже там и уже про базу. В панели плитка
+     возвращается, там она нужна ради добычи энергии. */
+  :root.td-stats-closed [data-testid='focus-base'] {
+    display: none;
+  }
+
+  /* ── Открытая прокачка: панель поверх поля ───────────────────────── */
+
+  /* Полоса поднимается над полем, а не растит себя вниз, и это главное
+     свойство панели. Высота полосы входит в отступы контейнера сцены:
+     растущая полоса меняла бы размер холста при каждом переключении —
+     камера пересчитывала бы границы, миникарта переезжала бы в угол.
+     Замерено до правки: холст 596 → 468 в портрете, 217 → 89
+     в ландшафте. Вынутая из потока панель не трогает сцену вовсе. */
+  :root:not(.td-stats-closed) #hud-bottom {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3;
+
+    /* Верхнюю полосу панель не закрывает: игрок в этот момент торгуется,
+       и энергия — то самое число, ради которого он решает, покупать или
+       копить. Закрой её — и покупка станет угадыванием. */
+    max-height: calc(100vh - var(--td-hud-top-total));
+    max-height: calc(100dvh - var(--td-hud-top-total));
+
+    overflow-x: hidden;
+    overflow-y: auto;
+    align-content: start;
+  }
+
+  /* В панели плитка снова с подписью, но ширину делит поровну с соседями
+     по ряду, а не берёт по содержимому.
+
+     Замерено: плитка со столбцом характеристик требует 133 точки —
+     название строки, значение и кнопка покупки, — а в портрете на три
+     плитки есть 359. Поэтому в панели ужимается всё, что можно ужать
+     без потери смысла: промежутки внутри строки, поля плитки и единица
+     измерения (размерность уже сказана названием строки: «дальн.»
+     и «скор.» ни с чем не спутать). Кнопка покупки при этом остаётся
+     во всю ширину пальца. */
+  :root:not(.td-stats-closed) .td-tile[data-role='order'],
+  :root:not(.td-stats-closed) .td-tile[data-role='service'] {
+    min-width: 0;
+    flex: 1 1 0;
+  }
+
+  :root:not(.td-stats-closed) .td-tile-group {
+    width: 100%;
+  }
+
+  :root:not(.td-stats-closed) .td-tile {
+    padding: 2px;
+    --td-stat-line-gap: 2px;
+  }
+
+  :root:not(.td-stats-closed) .td-stat-unit {
+    display: none;
+  }
+
+  /* Нажатие мимо панели закрывает её. Слой рисуется всегда, а
+     показывается правилом CSS при совпадении двух условий — маленький
+     экран и открытая прокачка, — чтобы React по-прежнему не знал
+     ни размера экрана, ни того, панель перед ним или столбцы. */
+  :root:not(.td-stats-closed) .td-upgrade-backdrop {
+    display: block;
+  }
+}
+
+/* Портрет: служебные кнопки блоком два на два, заказ у правого края.
+
+   Пустая колонка `1fr` между ними и есть то самое смещение под палец:
+   телефон держат правой рукой, большой палец описывает дугу из правого
+   нижнего угла, и до левого края он не дотягивается вовсе.
+
+   Юниты правее построек потому, что заказ юнита — одно нажатие,
+   а постановка постройки — два: сначала вид, потом клетка. Лучшее место
+   достаётся тому, что повторяют чаще. */
+@media (max-width: 620px) {
+  :root.td-stats-closed #hud-bottom {
+    grid-template-columns: auto auto 1fr auto auto;
+    grid-template-areas:
+      'toggle own . build prod'
+      'aim aim . build prod';
+  }
+
+  /* Панель в портрете — три ряда: юниты, постройки, генерал с базой.
+     Группировка повторяет вопрос, с которым игрок сюда приходит, —
+     «кого качать», — а не устройство интерфейса. */
+  :root:not(.td-stats-closed) #hud-bottom {
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      'prod prod'
+      'build build'
+      'own own'
+      'toggle aim';
+  }
+}
+
+/* Ландшафт: высоты нет вовсе, зато ширины вдоволь.
+
+   Служебные кнопки встают в строку, а группы панели — рядом, а не рядами:
+   три ряда требуют 557 точек, а между полосами их 281. Прокрутка панели
+   не годится по той же причине, по какой не годилась в полосе: она
+   не сообщает о себе ничем, и пятая ветка для игрока просто исчезает. */
+@media (max-height: 520px) {
+  :root.td-stats-closed #hud-bottom {
+    grid-template-columns: auto auto auto 1fr auto auto;
+    grid-template-areas: 'toggle own aim . build prod';
+  }
+
+  :root:not(.td-stats-closed) #hud-bottom {
+    /* Доли, а не содержимое: восемь плиток делят ширину экрана по числу
+       плиток в группе — три, три и две. Взяв по содержимому, они
+       потребовали бы 1104 точки при 812. */
+    grid-template-columns: 3fr 3fr 2fr;
+    grid-template-areas:
+      'prod build own'
+      'toggle aim aim';
+  }
+
+  /* В ландшафте одна плитка получает около 99 точек, и кнопка покупки
+     в сорок четыре в них не помещается вместе с названием строки
+     и значением. Из трёх величин ужимается именно она: без названия
+     строка перестаёт читаться, без значения теряет смысл, а кнопка
+     остаётся нажимаемой и в тридцати — вокруг неё по-прежнему пусто
+     сверху и снизу. */
+  :root:not(.td-stats-closed) {
+    --td-stat-buy-min: 30px;
+  }
+}
+
+/* Прочность своей базы — ещё и переход к ней камерой.
+
+   Кнопка сбрасывается до вида обычной строки: она стоит в ряду
+   с остальными величинами сводки и выделяться среди них не должна.
+   Наведение подсвечивает — этого довольно, чтобы найти нажатие,
+   и недостаточно, чтобы оно кричало. */
+.td-base-jump {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.td-base-jump:hover {
+  color: var(--td-accent);
+}
+
+/* Слой, ловящий нажатие мимо панели. Лежит НИЖЕ панели и выше поля. */
+.td-upgrade-backdrop {
+  display: none;
+  position: fixed;
+  inset: var(--td-hud-top-total) 0 0 0;
+  z-index: 2;
+  background: transparent;
+}
+
+/* Жесты на маленьком экране.
+
+   Браузеру возвращаются ровно два, нужные для прокрутки панели, и ничего
+   сверх: полю выше по-прежнему запрещено всё. Закрытая полоса при этом
+   не прокручивается ни в какую сторону — содержимое обязано умещаться
+   в её ширину целиком, и это проверяется сквозной проверкой, а не
+   разрешается прокруткой. */
+@media (max-width: 620px), (max-height: 520px) {
+  #hud-bottom {
     touch-action: pan-x pan-y;
   }
 }

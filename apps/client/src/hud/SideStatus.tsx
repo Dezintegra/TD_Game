@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { BUILDABLE_KINDS, UNIT_TYPES } from '@td/shared';
 import type { StructureKind, UnitType } from '@td/shared';
+import { matchCommands } from '../game/store.js';
 import type { SideView } from '../game/store.js';
 import { STRUCTURE_GLYPH, UNIT_GLYPH } from './icons.js';
 import { STRUCTURE_SHORT, UNIT_SHORT } from './labels.js';
@@ -114,11 +115,43 @@ const numberStyle: CSSProperties = {
 const grouped = (value: number): string =>
   String(value).replace(/\B(?=(\d{3})+(?!\d))/gu, '\u2009');
 
+/**
+ * Прочность СВОЕЙ базы — ещё и переход к ней камерой.
+ *
+ * Число уже стоит на экране и уже про базу, а отдельная плитка ради того
+ * же перехода занимает ширину, которой на телефоне нет: там плитки базы
+ * в полосе больше не будет. И ищут базу ровно тогда, когда смотрят
+ * на её прочность: она падает, и первое желание — увидеть, кто по ней
+ * бьёт.
+ *
+ * У ЧУЖОЙ стороны это остаётся обычным текстом. Перенос камеры
+ * к сопернику — другое действие с другими последствиями, и вешать его
+ * на соседнее, похожее с виду число значит раздавать разные действия
+ * одинаковым элементам.
+ *
+ * Размер цели нажатия здесь не растёт: строка около ста точек в ширину
+ * и восемнадцати в высоту, промах по ней не стоит ничего, а рядом нет
+ * ничего, во что можно попасть по ошибке. Растить её значило бы отнимать
+ * высоту у поля.
+ */
 const BaseHealth = ({ side, own }: { readonly side: SideView; readonly own: boolean }) => {
   const share = side.baseMaxHealth === 0 ? 0 : side.baseHealth / side.baseMaxHealth;
 
+  const Tag = own ? 'button' : 'div';
+
   return (
-    <div style={rowStyle} data-testid={own ? 'base-health-own' : 'base-health-enemy'}>
+    <Tag
+      {...(own
+        ? {
+            type: 'button' as const,
+            className: 'td-base-jump',
+            title: 'Показать свою базу',
+            onClick: () => matchCommands().focusOwn('base'),
+          }
+        : {})}
+      style={rowStyle}
+      data-testid={own ? 'base-health-own' : 'base-health-enemy'}
+    >
       <span style={mutedStyle}>База</span>
       <div style={barTrackStyle}>
         <div
@@ -135,7 +168,7 @@ const BaseHealth = ({ side, own }: { readonly side: SideView; readonly own: bool
         />
       </div>
       <span style={numberStyle}>{grouped(side.baseHealth)}</span>
-    </div>
+    </Tag>
   );
 };
 

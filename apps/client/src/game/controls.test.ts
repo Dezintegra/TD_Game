@@ -30,6 +30,9 @@ const handlersOf = (): ControlHandlers => ({
   select: vi.fn(),
   menuChanged: vi.fn(),
   toggleStats: vi.fn(),
+  // По умолчанию панели нет — то есть прокачка показана столбцами,
+  // и Esc должен вести себя ровно как прежде: отменить режим, потом меню.
+  closeUpgradePanel: vi.fn(() => false),
   toggleSound: vi.fn(),
   cellAtScreen: vi.fn(() => -1),
   minimapCellAtScreen: vi.fn(() => -1),
@@ -213,6 +216,22 @@ describe('Esc: сначала отмена, потом меню', () => {
     press('Escape');
 
     expect(handlers.menuChanged).toHaveBeenCalledWith(true);
+  });
+
+  it('открытую панель прокачки закрывает раньше всего остального', () => {
+    // Панель лежит поверх поля и закрывает его: пока она открыта, Esc
+    // не может значить ничего другого. Иначе игрок получил бы меню
+    // ПОВЕРХ панели — два слоя разом на экране, где и одного много.
+    const { controls, handlers } = setup();
+    vi.mocked(handlers.closeUpgradePanel).mockReturnValueOnce(true);
+
+    press('KeyQ');
+    press('Escape');
+
+    expect(handlers.closeUpgradePanel).toHaveBeenCalledTimes(1);
+    // Ни режим не отменён, ни меню не открыто: сработал верхний слой.
+    expect(controls.state.building).toBe(true);
+    expect(handlers.menuChanged).not.toHaveBeenCalled();
   });
 
   it('при открытом меню закрывает его', () => {

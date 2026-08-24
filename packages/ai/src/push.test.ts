@@ -37,9 +37,7 @@ const almostWon = (energy: number, baseHealth: number): WorldState => {
 
   return {
     ...world,
-    players: world.players.map((player, index) =>
-      index === ME ? { ...player, energy } : player,
-    ),
+    players: world.players.map((player, index) => (index === ME ? { ...player, energy } : player)),
     structures: world.structures.map((structure) =>
       structure.kind === StructureKind.Base && structure.owner !== ME
         ? { ...structure, health: baseHealth }

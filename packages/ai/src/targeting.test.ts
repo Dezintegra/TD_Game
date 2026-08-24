@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   CommandKind,
-  PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
   asEntityId,
@@ -51,7 +50,7 @@ const enemyStructure = (cell: number, kind: StructureKind, id: number): Structur
   kind,
   cell,
   health: STRUCTURE_STATS[kind].health,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
 });
@@ -95,9 +94,7 @@ describe('цель войска выбирается по вероятному �
     const far = cells[Math.floor(cells.length * 0.8)];
     if (far === undefined) throw new Error('на пути нет клеток');
 
-    const withTower = withStructures(world, [
-      enemyStructure(far, StructureKind.TowerBasic, 9001),
-    ]);
+    const withTower = withStructures(world, [enemyStructure(far, StructureKind.TowerBasic, 9001)]);
 
     expect(targetCell(withTower)).toBe(far);
     expect(targetCell(withTower)).not.toBe(enemyBaseCell(world));
