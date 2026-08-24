@@ -126,6 +126,15 @@ export const buildServer = async (options: BuildOptions = {}) => {
     'Промежуток между приходами кадров команд к игроку',
     { source: 'client' },
   );
+  // Промежуток между продвижениями показываемого тика — прибор картинки,
+  // а не канала. Ряд выше отвечает на вопрос «как приходят кадры»,
+  // этот — на вопрос «как двигается мир на экране», и совпадают они
+  // только до тех пор, пока показ висит на приходе кадров.
+  const clientDisplayGap = metrics.histogram(
+    'td_client_display_gap_ms',
+    'Промежуток между продвижениями показываемого тика у игрока',
+    { source: 'client' },
+  );
   const reportsAccepted = metrics.counter(
     'td_client_reports_total',
     'Сколько отчётов о плавности принято от игроков',
@@ -135,18 +144,28 @@ export const buildServer = async (options: BuildOptions = {}) => {
     'Сколько отчётов отвергнуто как неразбираемые',
   );
 
-  app.post<{ Body: { frame?: unknown; netGap?: unknown } }>('/api/telemetry', (request, reply) => {
-    const ok =
-      mergeReport(clientFrame, request.body?.frame) &&
-      mergeReport(clientNetGap, request.body?.netGap);
+  app.post<{ Body: { frame?: unknown; netGap?: unknown; displayGap?: unknown } }>(
+    '/api/telemetry',
+    (request, reply) => {
+      // Набор про показ — необязательный, и это не послабление
+      // к порядку. Страница живёт у игрока в открытой вкладке дольше,
+      // чем выкладка: отчёт от прежнего бандла обязан приниматься,
+      // иначе счётчик отвергнутых покраснеет от нашей же выкладки.
+      // Пришедший, но порченый — отвергается наравне с остальными.
+      const displayGap = request.body?.displayGap;
+      const ok =
+        mergeReport(clientFrame, request.body?.frame) &&
+        mergeReport(clientNetGap, request.body?.netGap) &&
+        (displayGap === undefined || mergeReport(clientDisplayGap, displayGap));
 
-    if (ok) reportsAccepted.add();
-    else reportsRejected.add();
+      if (ok) reportsAccepted.add();
+      else reportsRejected.add();
 
-    // Отказ не объясняется подробно и не мешает игроку: отчёт
-    // о плавности — не то, ради чего он сюда пришёл.
-    void reply.code(ok ? 204 : 400).send();
-  });
+      // Отказ не объясняется подробно и не мешает игроку: отчёт
+      // о плавности — не то, ради чего он сюда пришёл.
+      void reply.code(ok ? 204 : 400).send();
+    },
+  );
 
   // Транспорт нужен обработчикам, а обработчики — транспорту.
   // Классическая circular dependency. Разрываем её через ссылку-держатель:
