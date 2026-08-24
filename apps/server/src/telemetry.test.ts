@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MS_PER_TICK, createHistogram } from '@td/shared';
+import { COUNT_BOUNDS, COUNT_BUDGET, MS_PER_TICK, createHistogram } from '@td/shared';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from './main.js';
 
@@ -29,6 +29,14 @@ afterAll(async () => {
 /** Правдоподобный набор корзин — тот же, что копит клиент. */
 const snapshotOf = (values: readonly number[]): unknown => {
   const histogram = createHistogram();
+  for (const value of values) histogram.add(value);
+
+  return histogram.snapshot();
+};
+
+/** То же для счётных величин: границы в штуках, а не в миллисекундах. */
+const countsOf = (values: readonly number[]): unknown => {
+  const histogram = createHistogram({ bounds: COUNT_BOUNDS, budget: COUNT_BUDGET });
   for (const value of values) histogram.add(value);
 
   return histogram.snapshot();
@@ -102,5 +110,49 @@ describe('отчёт о плавности', () => {
     expect(await rowValue('td_client_display_gap_ms_over_budget{source="client"}')).toBe(
       before + 2,
     );
+  });
+  it('принимает набор сдвигов и считает каждый ненулевой превышением', async () => {
+    // Ноль здесь — норма, а не отсутствие данных: команда исполнена там,
+    // где её ждали. Превышением считается любой сдвиг, потому что один
+    // сдвинутый такт — это уже показанное игроку «не то».
+    const before = await rowValue('td_client_command_shift_ticks_count{source="client"}');
+    const overBefore = await rowValue('td_client_command_shift_ticks_over_budget{source="client"}');
+
+    const response = await report({
+      frame: snapshotOf([16]),
+      netGap: snapshotOf([33]),
+      shift: countsOf([0, 0, 1, 3]),
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(await rowValue('td_client_command_shift_ticks_count{source="client"}')).toBe(before + 4);
+    expect(await rowValue('td_client_command_shift_ticks_over_budget{source="client"}')).toBe(
+      overBefore + 2,
+    );
+  });
+
+  it('отчёт без набора сдвигов принимается', async () => {
+    // Открытая вкладка живёт дольше выкладки: отчёт от прежнего бандла
+    // обязан приниматься, иначе счётчик отвергнутых покраснеет от нашей
+    // же выкладки.
+    const accepted = await rowValue('td_client_reports_total');
+
+    const response = await report({ frame: snapshotOf([16]), netGap: snapshotOf([33]) });
+
+    expect(response.statusCode).toBe(204);
+    expect(await rowValue('td_client_reports_total')).toBe(accepted + 1);
+  });
+
+  it('порченый набор сдвигов отвергает отчёт целиком', async () => {
+    const rejected = await rowValue('td_client_reports_rejected_total');
+
+    const response = await report({
+      frame: snapshotOf([16]),
+      netGap: snapshotOf([33]),
+      shift: { buckets: [{ bound: 0, count: 1 }], count: 'много' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await rowValue('td_client_reports_rejected_total')).toBe(rejected + 1);
   });
 });

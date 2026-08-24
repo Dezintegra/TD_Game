@@ -10,6 +10,8 @@
   TICKS_PER_SECOND,
   Terrain,
   UNIT_CAP,
+  COUNT_BOUNDS,
+  COUNT_BUDGET,
   asPlayerId,
   createHistogram,
   distanceSquared,
@@ -245,6 +247,14 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   const frameGap = createHistogram();
   const netGap = createHistogram();
   const displayGap = createDisplayGauge();
+  /**
+   * На сколько тактов сервер сдвинул мои команды.
+   *
+   * Прямая причина скачка картинки: действие показано на назначенном
+   * такте, а исполнено позже. Границы в тактах, превышение — любой
+   * ненулевой сдвиг.
+   */
+  const commandShift = createHistogram({ bounds: COUNT_BOUNDS, budget: COUNT_BUDGET });
   let lastFrameArrivalMs = Number.NaN;
 
   /**
@@ -267,6 +277,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
           frame: frameGap.snapshot(),
           netGap: netGap.snapshot(),
           displayGap: displayGap.snapshot(),
+          shift: commandShift.snapshot(),
         }),
         keepalive: true,
       });
@@ -298,6 +309,10 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   // создан — до подключения отправлять нечего.
   const guest = createMatchGuest({
     send: (message) => net.send(message),
+
+    // Сдвиг своей команды: назначал на один такт, исполнили на другом.
+    // Считается участником — только он знает обе величины сразу.
+    onCommandShift: (ticks) => commandShift.add(ticks),
 
     // Часы показа. Мир на экране двигается ими, а не приходом кадров:
     // канал дрожит у всех, и показывать это дрожание игроку незачем.
