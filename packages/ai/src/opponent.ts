@@ -1639,11 +1639,11 @@ const tryUpgrade = (
     if (branch.stat === UpgradeStat.BuildRadius) return;
     if (branch.stat === UpgradeStat.RespawnTime) return;
     // Ядерные ветки — только по названному решению манеры, см.
-    // `profile.nuke.upgrade`. Иначе они достаются всякому, кто качает
+    // `profile.nuke.invest`. Иначе они достаются всякому, кто качает
     // экономику: ветка выбирается по дешевизне, а обе ядерные сидят
     // на цели «база» рядом с добычей энергии и обгоняют её по цене
     // уже на шестом уровне.
-    if (NUCLEAR_STATS.includes(branch.stat) && profile.nuke.upgrade !== true) return;
+    if (NUCLEAR_STATS.includes(branch.stat) && profile.nuke.invest !== true) return;
     // Названные фазой характеристики. Список отсутствует — разрешены все.
     if (phase.upgradeStats !== undefined && !phase.upgradeStats.includes(branch.stat)) return;
 

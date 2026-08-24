@@ -191,32 +191,40 @@ describe('неприкосновенный запас держится, толь
   /** Доход, при котором запас ровно набирается за горизонт накопления. */
   const enough = NUKE_COST / (TICKS_PER_SECOND * BASELINE_PROFILE.spending.savingHorizonSeconds);
 
-  it('при доходе замера запас держится у обоих профилей', () => {
-    // Здесь записано ПОСЛЕДСТВИЕ удешевления удара, и записано намеренно.
+  it('базовый профиль не держит запас ни при каком доходе', () => {
+    // Прежде это следовало из цены: удар стоил полусотни стоимостей
+    // юнита и при доходе замера — четырнадцать за тик — объявлялся
+    // недостижимым. Удар подешевел до шестнадцати, и то же самое теперь
+    // следует из МАНЕРЫ: запас держит лишь тот, кто в ракету
+    // вкладывается.
     //
-    // Прежде удар стоил пятидесяти базовых стоимостей юнита, и при доходе
-    // замера — четырнадцать за тик — базовый профиль объявлял его
-    // недостижимым: копить пришлось бы больше минуты. Отсюда и брался
-    // единственный признак манеры «Стратега» — он бил ядеркой, базовый
-    // профиль не бил никогда.
-    //
-    // Удар базового радиуса стоит восьми базовых стоимостей, то есть
-    // четырнадцати секунд дохода, и достижим теперь для всех. Признак
-    // манеры этим потерян: различие было ЭКОНОМИЧЕСКИМ, а не заложенным
-    // в профиль, и удешевление его стёрло. Понадобится вернуть —
-    // возвращать придётся чем-то другим, а не горизонтом накопления.
-    expect(reserveOf(withReserve, 14, BASELINE_PROFILE)).toBe(NUKE_COST);
+    // Проверяется обеими границами: и доходом замера, и заведомо
+    // избыточным. Одной мало — первая проверяла бы достижимость,
+    // а не манеру.
+    expect(reserveOf(withReserve, 14, BASELINE_PROFILE)).toBe(0);
+    expect(reserveOf(withReserve, Math.ceil(enough) * 10, BASELINE_PROFILE)).toBe(0);
   });
 
-  it('запас всё же исчезает, когда доход слишком мал', () => {
-    // Правило не отменилось — отодвинулась граница. Ниже неё запас
-    // по-прежнему нулевой: копить на то, чего не накопить, значит
+  it('у стратега запас держится, потому что он в ракету и вкладывается', () => {
+    const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
+    if (late === undefined) throw new Error('в профиле стратега нет фаз');
+
+    expect(reserveOf(late, 14, STRATEGIST_PROFILE)).toBe(NUKE_COST);
+  });
+
+  it('запас исчезает и у стратега, когда доход слишком мал', () => {
+    // Правило достижимости никуда не делось, оно лишь стало вторым
+    // условием после манеры: копить на то, чего не накопить, значит
     // запрещать себе все покупки разом.
-    expect(reserveOf(withReserve, Math.floor(enough) - 1, BASELINE_PROFILE)).toBe(0);
-  });
+    const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
+    if (late === undefined) throw new Error('в профиле стратега нет фаз');
 
-  it('при достаточном доходе запас равен цене удара', () => {
-    expect(reserveOf(withReserve, Math.ceil(enough), BASELINE_PROFILE)).toBe(NUKE_COST);
+    const meagre =
+      Math.floor(
+        NUKE_COST / (TICKS_PER_SECOND * STRATEGIST_PROFILE.spending.savingHorizonSeconds),
+      ) - 1;
+
+    expect(reserveOf(late, meagre, STRATEGIST_PROFILE)).toBe(0);
   });
 
   it('граница проходит ровно там, где кончается горизонт накопления', () => {
@@ -237,29 +245,10 @@ describe('неприкосновенный запас держится, толь
     // Без запрета всякий, кто качает экономику, молча начинает качать
     // ракету — на осадном профиле это стоило ему Теслы за десять минут
     // матча.
-    const buysNuke = (profile: AiProfile): boolean => profile.nuke.upgrade === true;
+    const buysNuke = (profile: AiProfile): boolean => profile.nuke.invest === true;
 
     expect(buysNuke(STRATEGIST_PROFILE)).toBe(true);
     expect(Object.values(PROFILES).filter(buysNuke)).toEqual([STRATEGIST_PROFILE]);
-  });
-
-  it('терпение стратега по-прежнему шире, просто граница уехала вниз', () => {
-    // Раньше здесь жила вся манера «Стратега»: при доходе замера базовый
-    // профиль объявлял удар недостижимым, а стратег — нет, и оттого бил
-    // ядеркой один. Удар подешевел, граница достижимости уехала вниз,
-    // и при доходе замера копят оба (см. тест выше).
-    //
-    // Само правило не изменилось, и разница профилей осталась ровно там,
-    // где была, — в горизонте. Она и проверяется: доход, которого хватает
-    // стратегу и не хватает базовому, существует по-прежнему, просто
-    // лежит он теперь ниже стартового дохода матча.
-    const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
-    if (late === undefined) throw new Error('в профиле стратега нет фаз');
-
-    const meagre = Math.floor(enough) - 1;
-
-    expect(reserveOf(late, meagre, STRATEGIST_PROFILE)).toBe(NUKE_COST);
-    expect(reserveOf(withReserve, meagre, BASELINE_PROFILE)).toBe(0);
   });
 
   it('стратег отличается от базового ровно двумя настройками', () => {
@@ -276,8 +265,8 @@ describe('неприкосновенный запас держится, толь
     expect(STRATEGIST_PROFILE.spending.savingHorizonSeconds).toBeGreaterThan(
       BASELINE_PROFILE.spending.savingHorizonSeconds,
     );
-    expect(STRATEGIST_PROFILE.nuke.upgrade).toBe(true);
-    expect(BASELINE_PROFILE.nuke.upgrade).toBeUndefined();
+    expect(STRATEGIST_PROFILE.nuke.invest).toBe(true);
+    expect(BASELINE_PROFILE.nuke.invest).toBeUndefined();
 
     expect({
       ...STRATEGIST_PROFILE,
