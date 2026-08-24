@@ -185,6 +185,14 @@ const WHEEL_LINE_PX = 16;
 /** Страница колеса в пикселях, когда браузер меряет страницами. */
 const WHEEL_PAGE_PX = 400;
 
+/**
+ * Расстояние между пальцами, ниже которого щипок не считается.
+ *
+ * Сведённые вплотную пальцы дают расстояние около нуля, и деление
+ * на него превращает любую дрожь в скачок масштаба во много раз.
+ */
+const PINCH_MIN_SPAN_PX = 16;
+
 const ARROW_KEYS: Readonly<Record<string, readonly [number, number]>> = {
   ArrowLeft: [-1, 0],
   ArrowRight: [1, 0],
@@ -343,6 +351,25 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   /** Замирающий свайп. Живёт только пока палец на экране. */
   let stick: TouchStick | null = null;
 
+  /**
+   * Пальцы, лежащие на поле прямо сейчас.
+   *
+   * Одного `stick` для щипка мало: он знает про один палец и про точку
+   * отсчёта, а щипку нужны оба положения разом. Список ведётся только
+   * для касаний — у мыши указатель всегда один, и заводить ей запись
+   * значило бы держать состояние, которое некому менять.
+   */
+  const touches = new Map<number, { x: number; y: number }>();
+
+  /**
+   * Расстояние между пальцами на прошлом событии, либо null.
+   *
+   * Не «включён ли щипок», а именно расстояние: щипок ведёт масштаб
+   * отношением нового расстояния к прошлому, и хранить надо то, с чем
+   * сравнивают.
+   */
+  let pinchSpan: number | null = null;
+
   let direction = DIRECTION_STOP;
   let dragging = false;
   let lastX = 0;
@@ -461,6 +488,12 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     if (open) {
       pressed.clear();
       syncDirection();
+
+      // Пальцы забываются вместе с клавишами, и по той же причине:
+      // пока игрок читает меню, событий отрыва до поля не дойдёт,
+      // и оставленные записи склеили бы прерванный жест со следующим.
+      touches.clear();
+      pinchSpan = null;
     }
 
     handlers.menuChanged(open);
@@ -591,6 +624,10 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   const onBlur = (): void => {
     pressed.clear();
     syncDirection();
+
+    // То же и с пальцами: окно потеряло фокус, отрыва мы не увидим.
+    touches.clear();
+    pinchSpan = null;
   };
 
   /**
@@ -671,6 +708,39 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     handlers.setDirection(next);
   };
 
+  /**
+   * Расстояние и середина между двумя первыми пальцами.
+   *
+   * Двумя ПЕРВЫМИ, а не любыми: третий палец на экране — это ладонь,
+   * задевшая стекло, и пересчитывать из-за неё жест значило бы дёргать
+   * масштаб от того, как игрок держит телефон.
+   */
+  const pinchOf = (): { span: number; x: number; y: number } | null => {
+    const [first, second] = [...touches.values()];
+    if (first === undefined || second === undefined) return null;
+
+    const span = Math.hypot(second.x - first.x, second.y - first.y);
+    if (span < PINCH_MIN_SPAN_PX) return null;
+
+    return { span, x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+  };
+
+  /**
+   * Отменить джойстик, не выполняя действия.
+   *
+   * Зовётся, когда на экран лёг второй палец. Сброс направления
+   * обязателен: генерал, шедший на первом пальце, иначе продолжит идти
+   * всё время, пока игрок двумя пальцами разглядывает карту, — а
+   * разглядывает он обычно другой её конец. Об уходе генерала под огонь
+   * он узнает тогда, когда возвращать будет уже некого.
+   */
+  const abandonStick = (): void => {
+    if (stick === null) return;
+
+    stick = null;
+    syncStick();
+  };
+
   const onPointerDown = (event: PointerEvent): void => {
     // Меню накрывает поле собой, поэтому нажатие сюда и так не дойдёт.
     // Проверка стоит на случай, если меню когда-нибудь станет уже поля:
@@ -683,8 +753,17 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     // точку отсчёта. Что это было — тап или свайп, — станет известно
     // только по тому, уедет ли палец за порог.
     if (event.pointerType === 'touch') {
-      stick = { originX: point.x, originY: point.y, x: point.x, y: point.y, engaged: false };
+      touches.set(event.pointerId, { x: point.x, y: point.y });
       capture(event.pointerId);
+
+      // Второй палец отбирает жест у джойстика: дальше это щипок.
+      if (touches.size >= 2) {
+        abandonStick();
+        pinchSpan = pinchOf()?.span ?? null;
+        return;
+      }
+
+      stick = { originX: point.x, originY: point.y, x: point.x, y: point.y, engaged: false };
       return;
     }
 
@@ -714,6 +793,31 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   const onPointerMove = (event: PointerEvent): void => {
     const point = localPoint(event);
     hoverCell = handlers.cellAtScreen(point.x, point.y);
+
+    // Щипок ведёт масштаб отношением нового расстояния между пальцами
+    // к прошлому. Отношением, а не разностью: развести пальцы с двух
+    // сантиметров до четырёх и с десяти до двенадцати — разные жесты,
+    // хотя прибавка одна.
+    if (touches.has(event.pointerId)) {
+      touches.set(event.pointerId, { x: point.x, y: point.y });
+
+      if (touches.size >= 2) {
+        const pinch = pinchOf();
+
+        if (pinch !== null) {
+          // Расстояние не изменилось — сцену не тревожим. Так себя ведёт
+          // третий палец, задевший стекло: жест ведут двое первых,
+          // и от ладони на краю экрана масштаб дёргаться не должен.
+          if (pinchSpan !== null && pinch.span !== pinchSpan) {
+            handlers.zoom(pinch.span / pinchSpan, pinch.x, pinch.y);
+          }
+
+          pinchSpan = pinch.span;
+        }
+
+        return;
+      }
+    }
 
     // Замирающий свайп. Палец ведёт джойстик, пока он на экране, —
     // и держит направление, даже когда сам остановился. Держать
@@ -745,7 +849,27 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     lastY = event.clientY;
   };
 
+  /**
+   * Палец ушёл с экрана — отрывом или перехватом.
+   *
+   * Джойстик после щипка НЕ возобновляется, и это правило, а не
+   * упущение. Оставшийся на экране палец лежит там по инерции жеста,
+   * а не для того, чтобы вести генерала: возобновись джойстик — генерал
+   * тронулся бы сам собой в сторону, которую игрок не выбирал. Следующее
+   * касание начинает джойстик заново.
+   */
+  const forgetTouch = (pointerId: number): void => {
+    if (!touches.delete(pointerId)) return;
+
+    // Щипок кончается вместе со вторым пальцем, но расстояние забывается
+    // и при возвращении третьего: пересчитать его заново дешевле, чем
+    // сравнивать новое расстояние со старым, снятым с других пальцев.
+    if (touches.size < 2) pinchSpan = null;
+  };
+
   const onPointerUp = (event: PointerEvent): void => {
+    forgetTouch(event.pointerId);
+
     // Отрыв пальца: генерал останавливается, а действие выполняется —
     // но только если палец так и не уехал за порог, то есть это был тап,
     // а не свайп.
@@ -775,6 +899,8 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
    * Действие при этом НЕ выполняется: жест не завершён, а прерван.
    */
   const onPointerCancel = (event: PointerEvent): void => {
+    forgetTouch(event.pointerId);
+
     stick = null;
     syncStick();
 

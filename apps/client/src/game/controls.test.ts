@@ -428,6 +428,162 @@ describe('замирающий свайп', () => {
   });
 });
 
+describe('щипок двумя пальцами', () => {
+  const withHost = (): { controls: Controls; handlers: ControlHandlers; host: HTMLElement } => {
+    const handlers = handlersOf();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+
+    const controls = attachControls(host, handlers);
+    attached = controls;
+
+    return { controls, handlers, host };
+  };
+
+  /** Опустить два пальца на расстоянии `span` по горизонтали. */
+  const putTwoFingers = (host: HTMLElement, span = 100): void => {
+    touch(host, 'pointerdown', 200, 200, 1);
+    touch(host, 'pointerdown', 200 + span, 200, 2);
+  };
+
+  it('второй палец останавливает генерала', () => {
+    // Главное свойство. Генерал, шедший на первом пальце, иначе
+    // продолжил бы идти всё время, пока игрок двумя пальцами
+    // разглядывает другой конец карты.
+    const { controls, handlers, host } = withHost();
+
+    touch(host, 'pointerdown', 200, 200, 1);
+    touch(host, 'pointermove', 260, 200, 1);
+    expect(controls.state.touch?.engaged).toBe(true);
+
+    touch(host, 'pointerdown', 400, 200, 2);
+
+    expect(controls.state.touch).toBeNull();
+    expect(handlers.setDirection).toHaveBeenLastCalledWith(DIRECTION_STOP);
+  });
+
+  it('разведённые пальцы приближают, сведённые отдаляют', () => {
+    const { handlers, host } = withHost();
+
+    putTwoFingers(host, 100);
+
+    touch(host, 'pointermove', 400, 200, 2);
+    expect(vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0]).toBeGreaterThan(1);
+
+    touch(host, 'pointermove', 250, 200, 2);
+    expect(vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0]).toBeLessThan(1);
+  });
+
+  it('масштаб ведётся отношением расстояний, а не разностью', () => {
+    // Развести пальцы с двух сантиметров до четырёх и с десяти
+    // до двенадцати — разные жесты, хотя прибавка одна.
+    const { handlers, host } = withHost();
+
+    putTwoFingers(host, 100);
+    touch(host, 'pointermove', 400, 200, 2);
+
+    expect(vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0]).toBeCloseTo(2, 6);
+  });
+
+  it('точкой отсчёта служит середина между пальцами', () => {
+    const { handlers, host } = withHost();
+
+    putTwoFingers(host, 100);
+    touch(host, 'pointermove', 400, 200, 2);
+
+    expect(vi.mocked(handlers.zoom).mock.calls.at(-1)?.slice(1)).toEqual([300, 200]);
+  });
+
+  it('сведённые вплотную пальцы масштаб не трогают', () => {
+    // Расстояние около нуля превращает любую дрожь в скачок во много раз:
+    // масштаб ведётся делением на него.
+    const { handlers, host } = withHost();
+
+    putTwoFingers(host, 4);
+    touch(host, 'pointermove', 206, 200, 2);
+
+    expect(handlers.zoom).not.toHaveBeenCalled();
+  });
+
+  it('отрыв одного пальца не возвращает джойстик', () => {
+    // Оставшийся палец лежит по инерции жеста, а не для того, чтобы
+    // вести генерала. Возобновись джойстик — генерал тронулся бы сам
+    // собой в сторону, которую игрок не выбирал.
+    const { controls, handlers, host } = withHost();
+
+    putTwoFingers(host);
+    touch(host, 'pointerup', 300, 200, 2);
+    touch(host, 'pointermove', 400, 200, 1);
+
+    expect(controls.state.touch).toBeNull();
+    expect(vi.mocked(handlers.setDirection).mock.calls.at(-1)?.[0] ?? DIRECTION_STOP).toBe(
+      DIRECTION_STOP,
+    );
+  });
+
+  it('следующее касание снова водит генерала', () => {
+    const { controls, host } = withHost();
+
+    putTwoFingers(host);
+    touch(host, 'pointerup', 300, 200, 2);
+    touch(host, 'pointerup', 200, 200, 1);
+
+    touch(host, 'pointerdown', 100, 100, 3);
+    touch(host, 'pointermove', 160, 100, 3);
+
+    expect(controls.state.touch?.engaged).toBe(true);
+  });
+
+  it('щипок не заказывает и не строит по отрыву', () => {
+    // Отрыв после щипка — это конец жеста масштабирования, а не тап.
+    // Сработай здесь действие — игрок ставил бы постройку каждый раз,
+    // когда разглядывал карту.
+    const handlers = handlersOf();
+    handlers.cellAtScreen = vi.fn(() => 42);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    attached = attachControls(host, handlers);
+
+    putTwoFingers(host);
+    touch(host, 'pointerup', 300, 200, 2);
+    touch(host, 'pointerup', 200, 200, 1);
+
+    expect(handlers.select).not.toHaveBeenCalled();
+    expect(handlers.build).not.toHaveBeenCalled();
+  });
+
+  it('третий палец жест не пересчитывает', () => {
+    // Третий палец на экране — это ладонь, задевшая стекло. Пересчитай
+    // жест из-за неё, и масштаб дёргался бы от того, как игрок держит
+    // телефон.
+    const { handlers, host } = withHost();
+
+    putTwoFingers(host, 100);
+    touch(host, 'pointerdown', 700, 600, 3);
+
+    const afterThird = vi.mocked(handlers.zoom).mock.calls.length;
+    touch(host, 'pointermove', 701, 601, 3);
+
+    expect(vi.mocked(handlers.zoom).mock.calls.length).toBe(afterThird);
+  });
+
+  it('открытое меню забывает пальцы', () => {
+    // Пока игрок читает меню, событий отрыва до поля не дойдёт.
+    // Оставленные записи склеили бы прерванный жест со следующим.
+    const { controls, handlers, host } = withHost();
+
+    putTwoFingers(host);
+    controls.setMenuOpen(true);
+    controls.setMenuOpen(false);
+
+    touch(host, 'pointerdown', 100, 100, 5);
+    touch(host, 'pointermove', 160, 100, 5);
+
+    expect(controls.state.touch?.engaged).toBe(true);
+    expect(vi.mocked(handlers.setDirection).mock.calls.at(-1)?.[0]).not.toBe(DIRECTION_STOP);
+  });
+});
+
 describe('колесо мыши приближает', () => {
   const withHost = (): { handlers: ControlHandlers; host: HTMLElement } => {
     const handlers = handlersOf();
