@@ -3,7 +3,7 @@ import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import { cellIndex, cellX, cellY } from '@td/sim';
 import type { GameMap, WorldState } from '@td/sim';
-import { clampCamera, createCamera, moveCamera } from './camera.js';
+import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } from './camera.js';
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
 import { clearRockLayer, mountRockDiagonal } from './relief-render.js';
@@ -112,6 +112,23 @@ export interface Scene {
   follow(point: CellPoint | undefined): void;
   setFollowing(enabled: boolean): void;
   readonly following: boolean;
+  /**
+   * Меняет приближение, оставляя точку под пальцем на месте.
+   *
+   * `factor` — во сколько раз приблизить относительно нынешнего;
+   * больше единицы приближает, меньше — отдаляет. Точка отсчёта
+   * задаётся в координатах контейнера сцены: для колеса это курсор,
+   * для щипка — середина между пальцами.
+   *
+   * Границы диапазона держит сама сцена: отдалить дальше дефолтного
+   * масштаба нельзя, приблизить — не больше чем вчетверо. Управлению
+   * знать эти числа незачем, оно сообщает жест, а не результат.
+   */
+  zoomBy(factor: number, anchorX: number, anchorY: number): void;
+  /** Во сколько раз игрок приблизил картинку относительно дефолта. */
+  readonly zoom: number;
+  /** Действующий масштаб мира. Нужен проверкам и замерам. */
+  readonly scale: number;
   /** Клетка карты под точкой экрана, либо -1. */
   cellAtScreen(screenX: number, screenY: number): number;
   /** Клетка карты под точкой миникарты, либо -1. */
@@ -566,6 +583,20 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   };
 
   let camera: Camera = createCamera();
+
+  /**
+   * Приближение игрока — КРАТНОСТЬ дефолтного масштаба, а не сам масштаб.
+   *
+   * Дефолт зависит от высоты, оставшейся полю, и меняется при каждом
+   * повороте телефона. Храни мы абсолютный масштаб — после поворота он
+   * оказался бы либо ниже нового дефолта, либо выше четырёхкратного,
+   * то есть за границей диапазона, и его пришлось бы молча подрезать.
+   * Кратность переживает поворот сама: игрок остаётся в бою, а не
+   * выбрасывается на общий план.
+   */
+  let zoom = 1;
+  let scale = scaleOf(app.screen.height, zoom);
+
   let currentMap: GameMap | undefined;
   /**
    * Незаконченное запекание скал; `undefined` — работы нет.
@@ -592,13 +623,40 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
   /**
    * Сдвиг контейнера так, чтобы точка camera оказалась в центре экрана.
-   * Это единственное, что происходит при движении камеры: два числа,
+   * Это единственное, что происходит при движении камеры: три числа,
    * никакого перестроения геометрии.
+   *
+   * Масштаб ставится на МИРОВОЙ контейнер, а не на сцену целиком.
+   * Разница существенная: миникарта, засветка и джойстик лежат на сцене
+   * отдельно именно затем, чтобы жить в экранных координатах. Миникарта —
+   * прибор, а не часть мира; джойстик привязан к пальцу. Отмасштабируй
+   * мы сцену — уехали бы и они.
+   *
+   * Тряска остаётся СНАРУЖИ масштаба, во внешнем контейнере: её размах
+   * задан в экранных точках, и на четырёхкратном приближении экран
+   * трясло бы вчетверо сильнее.
+   *
+   * Округление положения — прежнее, а вот масштаб не округляется:
+   * дефолт в ландшафте равен 0,611, и округли его — вернулись бы либо
+   * к прежним шести клеткам, либо к нечитаемой мелочи.
    */
   const applyCamera = (): void => {
-    camera = clampCamera(camera, app.screen.width, app.screen.height);
-    worldContainer.x = Math.round(app.screen.width / 2 - camera.x);
-    worldContainer.y = Math.round(app.screen.height / 2 - camera.y);
+    camera = clampCamera(camera, app.screen.width, app.screen.height, scale);
+    worldContainer.scale.set(scale);
+    worldContainer.x = Math.round(app.screen.width / 2 - camera.x * scale);
+    worldContainer.y = Math.round(app.screen.height / 2 - camera.y * scale);
+  };
+
+  /**
+   * Пересчитать масштаб от нынешней высоты поля, сохранив приближение.
+   *
+   * Зовётся и при смене размера контейнера, и при жесте: и то и другое
+   * меняет действующий масштаб, а высота поля — единственный его
+   * источник.
+   */
+  const applyScale = (): void => {
+    scale = scaleOf(app.screen.height, zoom);
+    applyCamera();
   };
 
   /**
@@ -628,11 +686,19 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     }
   };
 
+  /**
+   * Видимая область в координатах мира.
+   *
+   * Половина окна делится на масштаб: при уменьшенной картинке то же
+   * окно охватывает больше мира. Забудь это деление — отсечение
+   * выбросило бы из кадра ровно то, ради чего игрок отдалялся, и он
+   * увидел бы пустоту там, где стоят юниты.
+   */
   const viewBounds = (): ViewBounds => ({
-    minX: camera.x - app.screen.width / 2,
-    maxX: camera.x + app.screen.width / 2,
-    minY: camera.y - app.screen.height / 2,
-    maxY: camera.y + app.screen.height / 2,
+    minX: camera.x - app.screen.width / 2 / scale,
+    maxX: camera.x + app.screen.width / 2 / scale,
+    minY: camera.y - app.screen.height / 2 / scale,
+    maxY: camera.y + app.screen.height / 2 / scale,
   });
 
   /** Четыре угла экрана в координатах клеток. Нужны рамке на миникарте. */
@@ -795,8 +861,44 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
     panBy(dx, dy) {
       following = false;
-      camera = moveCamera(camera, dx, dy);
+      // Сдвиг приходит в точках ЭКРАНА — столько прошёл курсор. Камера
+      // живёт в координатах мира, поэтому делится на масштаб: иначе при
+      // уменьшенной картинке карта тащилась бы за курсором медленнее,
+      // чем сам курсор, и «прилипание» карты к руке пропало бы.
+      camera = moveCamera(camera, dx / scale, dy / scale);
       applyCamera();
+    },
+
+    zoomBy(factor, anchorX, anchorY) {
+      const next = clampZoom(zoom * factor);
+      if (next === zoom) return;
+
+      const before = scale;
+      zoom = next;
+      scale = scaleOf(app.screen.height, zoom);
+
+      // Камера переезжает ДО применения: иначе точка под пальцем успела бы
+      // уехать на кадр, и жест выглядел бы дёрганым.
+      camera = zoomAt(camera, before, scale, {
+        x: anchorX,
+        y: anchorY,
+        width: app.screen.width,
+        height: app.screen.height,
+      });
+
+      // Приближение — это выбор игрока смотреть сюда, а не за генералом.
+      // Оставь мы слежение — камера уехала бы обратно к генералу первым
+      // же кадром, и жест выглядел бы сорвавшимся.
+      following = false;
+      applyCamera();
+    },
+
+    get zoom() {
+      return zoom;
+    },
+
+    get scale() {
+      return scale;
     },
 
     centreOnCell(cell) {
@@ -828,7 +930,14 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     cellAtScreen(screenX, screenY) {
       // Читается положение мирового контейнера, а не внешнего: тряска
       // живёт во внешнем и на наведение влиять не должна.
-      const point = screenToWorld(screenX - worldContainer.x, screenY - worldContainer.y);
+      //
+      // Деление на масштаб обязательно: экранная точка переводится
+      // в мир через масштаб, и без деления промах рос бы вместе
+      // с приближением — игрок ставил бы постройку не туда, куда целился.
+      const point = screenToWorld(
+        (screenX - worldContainer.x) / scale,
+        (screenY - worldContainer.y) / scale,
+      );
       const x = Math.floor(point.x);
       const y = Math.floor(point.y);
 
@@ -852,7 +961,10 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       // с миникартой улеглись бы по размерам, которых уже нет.
       app.resize();
 
-      applyCamera();
+      // Масштаб пересчитывается от НОВОЙ высоты поля, а приближение
+      // остаётся прежней кратностью. Поворот телефона тогда не сбрасывает
+      // игрока на общий план: он видит то же, только шире или уже.
+      applyScale();
       relayoutMinimap();
     },
 
