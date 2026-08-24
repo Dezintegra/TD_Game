@@ -128,9 +128,9 @@ describe('отдача показаний', () => {
     const huge = createHistogram();
     huge.add(1);
 
-    expect(mergeReport(here, { ...JSON.parse(JSON.stringify(huge.snapshot())), count: 5_000_000 })).toBe(
-      false,
-    );
+    expect(
+      mergeReport(here, { ...JSON.parse(JSON.stringify(huge.snapshot())), count: 5_000_000 }),
+    ).toBe(false);
     expect(here.snapshot().count).toBe(0);
   });
 

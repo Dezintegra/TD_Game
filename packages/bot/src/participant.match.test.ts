@@ -4,12 +4,7 @@ import { MessageType, decode, encode } from '@td/protocol';
 import type { ClientMessage } from '@td/protocol';
 import { describe, expect, it } from 'vitest';
 import { aiSeedOf, joinMatch } from './participant.js';
-import type {
-  BotSocket,
-  OpenSocket,
-  ParticipantMeasure,
-  SocketHandlers,
-} from './participant.js';
+import type { BotSocket, OpenSocket, ParticipantMeasure, SocketHandlers } from './participant.js';
 
 /**
  * Компьютер играет по протоколу — вот что здесь проверяется.

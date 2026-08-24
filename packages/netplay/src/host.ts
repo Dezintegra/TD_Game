@@ -274,7 +274,8 @@ export const createMatchHost = (options: MatchHostOptions): MatchHost => {
     pending.delete(tick);
 
     const measure = options.measure;
-    world = measure === undefined ? step(world, commands) : measure.step(() => step(world, commands));
+    world =
+      measure === undefined ? step(world, commands) : measure.step(() => step(world, commands));
 
     if (commands.length > 0) history.push(...commands);
 

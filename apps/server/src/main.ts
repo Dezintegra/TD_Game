@@ -66,10 +66,8 @@ export const buildServer = async (options: BuildOptions = {}) => {
 
   const asMs = (ns: number): number => Math.round(ns / 1000) / 1000;
 
-  metrics.gauge(
-    'td_event_loop_delay_ms_p50',
-    'Медиана задержки цикла событий процесса',
-    () => asMs(loopDelay.percentile(50)),
+  metrics.gauge('td_event_loop_delay_ms_p50', 'Медиана задержки цикла событий процесса', () =>
+    asMs(loopDelay.percentile(50)),
   );
   metrics.gauge(
     'td_event_loop_delay_ms_p99',
@@ -137,21 +135,18 @@ export const buildServer = async (options: BuildOptions = {}) => {
     'Сколько отчётов отвергнуто как неразбираемые',
   );
 
-  app.post<{ Body: { frame?: unknown; netGap?: unknown } }>(
-    '/api/telemetry',
-    (request, reply) => {
-      const ok =
-        mergeReport(clientFrame, request.body?.frame) &&
-        mergeReport(clientNetGap, request.body?.netGap);
+  app.post<{ Body: { frame?: unknown; netGap?: unknown } }>('/api/telemetry', (request, reply) => {
+    const ok =
+      mergeReport(clientFrame, request.body?.frame) &&
+      mergeReport(clientNetGap, request.body?.netGap);
 
-      if (ok) reportsAccepted.add();
-      else reportsRejected.add();
+    if (ok) reportsAccepted.add();
+    else reportsRejected.add();
 
-      // Отказ не объясняется подробно и не мешает игроку: отчёт
-      // о плавности — не то, ради чего он сюда пришёл.
-      void reply.code(ok ? 204 : 400).send();
-    },
-  );
+    // Отказ не объясняется подробно и не мешает игроку: отчёт
+    // о плавности — не то, ради чего он сюда пришёл.
+    void reply.code(ok ? 204 : 400).send();
+  });
 
   // Транспорт нужен обработчикам, а обработчики — транспорту.
   // Классическая circular dependency. Разрываем её через ссылку-держатель:

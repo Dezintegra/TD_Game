@@ -57,7 +57,9 @@ export const tempoOf = (records: readonly ThinRecord[]): Tempo => {
 };
 
 const percentile = (sorted: readonly number[], fraction: number): number =>
-  sorted.length === 0 ? 0 : (sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] ?? 0);
+  sorted.length === 0
+    ? 0
+    : (sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))] ?? 0);
 
 export const printTempo = (path: string): void => {
   const records = readFileSync(path, 'utf8')

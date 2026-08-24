@@ -35,9 +35,6 @@ export interface Metrics {
    * Повторный вызов с теми же именем и разметкой отдаёт ту же
    * гистограмму: иначе показания одного и того же прибора разъехались
    * бы по нескольким копиям, и наружу поехала бы последняя.
-   */
-  /**
-   * Гистограмма с этим именем и этой разметкой.
    *
    * `shape` задаёт границы корзин и то, что считается превышением.
    * По умолчанию — миллисекунды и бюджет тика, но не всё меряется
@@ -108,9 +105,7 @@ const renderHistogram = (series: Series, snapshot: HistogramSnapshot): string =>
   // оценка шириной в корзину, а хвост и есть то, ради чего всё
   // затевалось: у него должно быть точное число.
   lines.push(`${series.name}_max${labelsOf(series.labels)} ${snapshot.max.toFixed(3)}`);
-  lines.push(
-    `${series.name}_over_budget${labelsOf(series.labels)} ${String(snapshot.overBudget)}`,
-  );
+  lines.push(`${series.name}_over_budget${labelsOf(series.labels)} ${String(snapshot.overBudget)}`);
 
   return lines.join('\n');
 };

@@ -504,8 +504,7 @@ export const hudActions = {
   setTick: (tick: number) => useHudStore.getState().setTick(tick),
   registerPong: (latencyMs: number) => useHudStore.getState().registerPong(latencyMs),
   setFps: (fps: number) => useHudStore.getState().setFps(fps),
-  setSmoothness: (smoothness: SmoothnessView) =>
-    useHudStore.getState().setSmoothness(smoothness),
+  setSmoothness: (smoothness: SmoothnessView) => useHudStore.getState().setSmoothness(smoothness),
   setMapInfo: (seed: number, visiblePercent: number, rockPercent: number) =>
     useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent),
   setMatch: (match: MatchSnapshot) => useHudStore.getState().setMatch(match),

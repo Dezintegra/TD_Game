@@ -3,12 +3,7 @@ import { WebSocket } from 'ws';
 import { createComputerService } from './service.js';
 import type { ComputerService } from './service.js';
 import type { FetchLike } from './lobby-api.js';
-import type {
-  BotSocket,
-  OpenSocket,
-  ParticipantMeasure,
-  SocketHandlers,
-} from './participant.js';
+import type { BotSocket, OpenSocket, ParticipantMeasure, SocketHandlers } from './participant.js';
 
 /**
  * Запуск службы компьютера в Node.js.
