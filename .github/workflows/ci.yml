@@ -65,7 +65,7 @@ jobs:
       - run: pnpm typecheck
 
   test:
-    name: модульные тесты
+    name: быстрые тесты
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,12 +77,35 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # А здесь сборка обязательна, и это не перестраховка. Пакеты
-      # экспортируются только из `dist` (см. "exports" в их package.json),
-      # `dist` лежит в .gitignore, а корневой `pnpm test` зовёт vitest
-      # напрямую, минуя turbo, — то есть сам ничего не соберёт.
-      - run: pnpm build
+      # Отдельная сборка здесь больше не нужна: корневой `pnpm test`
+      # с разделения наборов зовёт turbo, а у задачи `test` объявлено
+      # `dependsOn: ["^build"]`, так что зависимости соберутся сами.
+      # Прежде команда звала vitest напрямую и не собирала ничего,
+      # а пакеты экспортируются только из `dist` — отсюда и была
+      # обязательная строка `pnpm build` перед прогоном.
       - run: pnpm test
+
+  # Матчевый набор отдельной задачей, а не следом за быстрым. Он идёт
+  # минут пятнадцать, и приклеить его к быстрому — значит отложить
+  # ответ «сломано ли что-то очевидное» на эти же пятнадцать минут.
+  # Здесь же он просто занимает свой runner параллельно.
+  #
+  # На рабочей машине этот набор запускают по решению человека, а в CI
+  # ждать некому: пропущенная регрессия в поведении противника стоит
+  # дороже, чем занятый runner.
+  match:
+    name: матчевые тесты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:match
 
   build:
     name: сборка

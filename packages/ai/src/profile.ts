@@ -596,7 +596,7 @@ const BASELINE_PHASES: readonly PhaseProfile[] = [
  * поведения и насколько она стара, а по имени `default` — ничего.
  *
  * Числа здесь — ровно те, по которым противник играл до выделения
- * профиля. Свойство закреплено эталонным тестом `profile.golden.test.ts`;
+ * профиля. Свойство закреплено эталонным тестом `profile.golden.match.test.ts`;
  * меняете их намеренно — обновляйте эталон тем же коммитом.
  */
 export const BASELINE_PROFILE: AiProfile = deepFreeze({
