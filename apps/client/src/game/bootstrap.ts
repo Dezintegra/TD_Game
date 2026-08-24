@@ -58,6 +58,7 @@ import { statRowsOf } from './stat-rows.js';
 import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
 import { createRejectionFeed } from './rejections.js';
+import { createDisplayGauge } from './display-gauge.js';
 import { createAudio } from '../audio/index.js';
 
 /**
@@ -243,6 +244,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
    */
   const frameGap = createHistogram();
   const netGap = createHistogram();
+  const displayGap = createDisplayGauge();
   let lastFrameArrivalMs = Number.NaN;
 
   /**
@@ -261,7 +263,11 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       await fetch(`${API_URL}/api/telemetry`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ frame: frameGap.snapshot(), netGap: netGap.snapshot() }),
+        body: JSON.stringify({
+          frame: frameGap.snapshot(),
+          netGap: netGap.snapshot(),
+          displayGap: displayGap.snapshot(),
+        }),
         keepalive: true,
       });
     } catch {
@@ -272,6 +278,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   const publishSmoothness = (): void => {
     const frame = frameGap.snapshot();
     const net = netGap.snapshot();
+    const display = displayGap.snapshot();
 
     hudActions.setSmoothness({
       frameP50: Math.round(frame.p50 * 10) / 10,
@@ -280,6 +287,8 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       frameLong: frame.overBudget,
       netGapP95: Math.round(net.p95 * 10) / 10,
       netGapMax: Math.round(net.max * 10) / 10,
+      displayGapP95: Math.round(display.p95 * 10) / 10,
+      displayGapLong: display.overBudget,
     });
   };
 
@@ -289,6 +298,12 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   // создан — до подключения отправлять нечего.
   const guest = createMatchGuest({
     send: (message) => net.send(message),
+
+    // Часы показа. Мир на экране двигается ими, а не приходом кадров:
+    // канал дрожит у всех, и показывать это дрожание игроку незачем.
+    // `performance.now` читается здесь, а не в `@td/netplay`: тому
+    // платформенные вызовы запрещены.
+    now: () => performance.now(),
 
     onStatus: (status) => {
       // «Играем» сразу после приветствия — это ещё не игра: пока
@@ -340,6 +355,11 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         publishMapInfo(world);
         mapPublished = true;
       }
+
+      // Прибор картинки: как двигается мир на экране. Часы читаются
+      // здесь, а не внутри прибора, — тот остаётся чистой функцией
+      // от своих входов.
+      displayGap.observe(world.tick, performance.now());
 
       const serverTick = guest.serverTick;
       hudActions.setNetwork(
@@ -408,6 +428,11 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         lastPingMs = now;
         net.ping(guest.confirmed?.tick ?? 0);
       }
+
+      // Часы показа спрашиваются ДО чтения мира, а не после, и порядок
+      // этот единственно верный: после — значит кадр рисует то, что
+      // насчитали в прошлый раз, и вся затея опаздывает ровно на кадр.
+      guest.advance();
 
       const world = guest.predicted;
       if (world === null) return;

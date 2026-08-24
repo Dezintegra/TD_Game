@@ -101,6 +101,28 @@ export interface HostMeasure {
    * спотыкался, не по чему.
    */
   readonly debt: (ticks: number) => void;
+  /**
+   * Промежуток между отправками кадра команд, в миллисекундах.
+   *
+   * Единственный прибор, который ведущий считает сам, а не отдаёт
+   * обёртке, — и на то две причины. Первая: величина порядка тика,
+   * миллисекундных часов ведущего для неё хватает с запасом, тогда как
+   * шаг мира им показался бы нулём. Вторая: «когда отправили в прошлый
+   * раз» — состояние матча, а в реестре, общем на все матчи, оно
+   * потребовало бы ключа.
+   *
+   * Отвечает ряд на один вопрос: рвано выпускает кадры сервер или рвано
+   * доставляет их канал. Поодиночке на него не отвечает ни один прибор.
+   */
+  readonly sent: (gapMs: number) => void;
+  /**
+   * Время кругового обхода, измеренное ответом участника на замер канала.
+   *
+   * Величина уже считается — по ней назначается задержка ввода, — но
+   * живёт внутри места и наружу не выходит. Без неё разбор «сервер или
+   * канал» приходится вести чужими инструментами с чужой машины.
+   */
+  readonly rtt: (ms: number) => void;
 }
 
 export interface MatchHost {
@@ -203,6 +225,8 @@ export const createMatchHost = (options: MatchHostOptions): MatchHost => {
   const createdAtMs = options.now();
   let startedAtMs = 0;
   let nextNonce = 1;
+  /** Когда ушёл прошлый кадр команд. NaN — не уходило ни одного. */
+  let frameSentAtMs = Number.NaN;
 
   const seatOf = (player: PlayerId): Seat | undefined => seats[player];
 
@@ -280,6 +304,16 @@ export const createMatchHost = (options: MatchHostOptions): MatchHost => {
     if (commands.length > 0) history.push(...commands);
 
     broadcast({ type: MessageType.TickFrame, tick, commands });
+
+    // Промежуток снимается сразу после рассылки, а не до неё: мерится
+    // то, с какой частотой кадры уходят наружу. Первая отправка
+    // промежутка не даёт — сравнивать не с чем.
+    if (measure !== undefined) {
+      const sentAtMs = options.now();
+      if (!Number.isNaN(frameSentAtMs)) measure.sent(sentAtMs - frameSentAtMs);
+      frameSentAtMs = sentAtMs;
+    }
+
     options.observe?.frame(tick, commands);
 
     if (world.tick % CHECKSUM_INTERVAL_TICKS === 0) {
@@ -412,6 +446,7 @@ export const createMatchHost = (options: MatchHostOptions): MatchHost => {
       if (seat === undefined || seat.pingNonce !== nonce) return;
 
       seat.rttMs = Math.max(0, options.now() - seat.pingSentAtMs);
+      options.measure?.rtt(seat.rttMs);
       reconsiderDelay();
     },
 
