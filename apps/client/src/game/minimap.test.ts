@@ -8,7 +8,6 @@ import {
   asPlayerId,
   asTickNumber,
   cellsToUnits,
-  PPM_ONE,
 } from '@td/shared';
 import { createWorld } from '@td/sim';
 import type { StructureState, UnitState, WorldState } from '@td/sim';
@@ -221,6 +220,7 @@ describe('отрисовка миникарты', () => {
       health: 100,
       facing: 1,
       readyAtTick: asTickNumber(0),
+      kills: 0,
     });
 
     const { graphics, shapes } = tracing();
@@ -247,7 +247,7 @@ describe('отрисовка миникарты', () => {
       kind,
       cell,
       health: 100,
-      growthPpm: PPM_ONE,
+      kills: 0,
       readyAtTick: asTickNumber(0),
       builtAtTick: asTickNumber(0),
       demolishAtTick: asTickNumber(0),

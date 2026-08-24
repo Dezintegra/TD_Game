@@ -10,7 +10,6 @@
   NUKE_BASE_EXCLUSION,
   NUKE_COST,
   NUKE_DELAY_TICKS,
-  PPM_ONE,
   PRODUCTION_QUEUE_CAP,
   PURCHASE_INFLATION_PERCENT,
   RejectReason,
@@ -35,7 +34,13 @@ import type { Command, PlayerId, UnitType } from '@td/shared';
 import { killGeneral } from './combat.js';
 import { cellAt, cellCentre } from './map.js';
 import { NO_STRUCTURE, footprintCells } from './occupancy.js';
-import { allPlayerStats, playerStats, structureMaxHealth, upgradeCostOf } from './stats.js';
+import {
+  allPlayerStats,
+  playerStats,
+  structureMaxHealth,
+  unitMaxHealth,
+  upgradeCostOf,
+} from './stats.js';
 import type { PlayerStats } from './stats.js';
 import {
   invalidateNavigation,
@@ -251,7 +256,7 @@ const build = (
     // Постройка появляется недостроенной и потому уязвимой: она уже
     // перекрывает проход, но развалить её пока легко.
     health: Math.max(1, Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100)),
-    growthPpm: PPM_ONE,
+    kills: 0,
     readyAtTick: asTickNumber(working.tick + baseline.buildTicks),
     builtAtTick: asTickNumber(working.tick + baseline.buildTicks),
     demolishAtTick: asTickNumber(0),
@@ -485,8 +490,8 @@ const healToNewMaximum = (
       if (structure.owner !== player.id || structure.kind !== kind || !structure.alive) continue;
 
       structure.health +=
-        structureMaxHealth(after.structures[kind], structure.growthPpm) -
-        structureMaxHealth(before.structures[kind], structure.growthPpm);
+        structureMaxHealth(after.structures[kind], structure.kills) -
+        structureMaxHealth(before.structures[kind], structure.kills);
     }
   }
 
@@ -494,7 +499,14 @@ const healToNewMaximum = (
     if (unit.owner !== player.id || !unit.alive) continue;
     if (UNIT_UPGRADE_TARGET[unit.unitType] !== target) continue;
 
-    unit.health += after.units[unit.unitType].health - before.units[unit.unitType].health;
+    // Через ранг, а не по базовым числам: максимум ветерана выше
+    // базового, и прибавка ему полагается тоже большая. Считай мы
+    // по базовым, полная полоса здоровья ветерана после покупки
+    // становилась бы неполной — награда за прокачку выглядела
+    // повреждением.
+    unit.health +=
+      unitMaxHealth(after.units[unit.unitType], unit.kills) -
+      unitMaxHealth(before.units[unit.unitType], unit.kills);
   }
 };
 

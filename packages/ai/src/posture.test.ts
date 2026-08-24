@@ -7,14 +7,15 @@ import {
   PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
-  TOWER_GROWTH_CAP_PPM,
   UNIT_STATS,
   UnitType,
+  VETERAN_MAX_RANK,
   asEntityId,
   asPlayerId,
   asTickNumber,
   cellsToUnits,
   distanceSquared,
+  veteranStructurePpm,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
 import { cellCentre, cellIndex, createWorld, playerStats } from '@td/sim';
@@ -104,6 +105,7 @@ const unit = (owner: PlayerId, position: Vec2): UnitState => ({
   health: UNIT_STATS[UnitType.Assault].health,
   facing: 1,
   readyAtTick: asTickNumber(0),
+  kills: 0,
 });
 
 const tower = (owner: PlayerId, cell: number): StructureState => ({
@@ -112,7 +114,7 @@ const tower = (owner: PlayerId, cell: number): StructureState => ({
   kind: StructureKind.TowerBasic,
   cell,
   health: STRUCTURE_STATS[StructureKind.TowerBasic].health,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
 });
@@ -372,15 +374,25 @@ describe('покупка башни оценивается своей мерко
   });
 });
 
-describe('рост башни за убийства', () => {
-  it('при нынешнем балансе даёт средний множитель около 1,22', () => {
+describe('ветеранские ранги башни в оценке', () => {
+  it('при нынешнем балансе даёт средний множитель около 1,26', () => {
     // Девять убийств за горизонт: урон 0,5 в тик, горизонт 1800 тиков,
-    // здоровье опорного юнита 100. Средний множитель — среднее
-    // геометрической прогрессии, а не её последний член: башня
-    // усиливается постепенно.
+    // здоровье опорного юнита 100. Множитель СРЕДНИЙ за горизонт, а не
+    // конечный: башня набирает ранги постепенно и большую часть времени
+    // слабее, чем к концу.
+    //
+    // Считается точно: множитель кусочно-постоянен, поэтому среднее —
+    // это сумма «значение × длина куска», делённая на число убийств.
+    // На девяти убийствах куски такие:
+    //
+    //     [0,1)  ×1,00 → 1,00
+    //     [1,3)  ×1,10 → 2,20
+    //     [3,6)  ×1,25 → 3,75
+    //     [6,9)  ×1,45 → 4,35
+    //     итого 11,30 / 9 = 1,2556
     const damagePerTick = STRUCTURE_STATS[StructureKind.TowerBasic].attack / BASE_COOLDOWN_TICKS;
 
-    expect(towerGrowthFactor(damagePerTick, horizonTicks(BASELINE_PROFILE))).toBeCloseTo(1.225, 2);
+    expect(towerGrowthFactor(damagePerTick, horizonTicks(BASELINE_PROFILE))).toBeCloseTo(1.2556, 3);
   });
 
   it('без убийств множитель равен единице', () => {
@@ -388,11 +400,13 @@ describe('рост башни за убийства', () => {
     expect(towerGrowthFactor(1, 0)).toBe(1);
   });
 
-  it('множитель не превышает потолка из баланса', () => {
-    // Потолок тысячекратный. Без него степень у сильно прокачанной башни
-    // ушла бы в бесконечность, а правила такого роста не позволяют.
-    expect(towerGrowthFactor(1000, horizonTicks(BASELINE_PROFILE))).toBe(
-      TOWER_GROWTH_CAP_PPM / PPM_ONE,
-    );
+  it('множитель не переваливает за удвоение', () => {
+    // Потолок соблюдается сам собой: выше пятого ранга таблица не идёт,
+    // а пятый ранг — ровно вдвое. Сколько бы башня ни убила, оценка
+    // не может обещать больше, чем позволяют правила.
+    const huge = towerGrowthFactor(1000, horizonTicks(BASELINE_PROFILE));
+
+    expect(huge).toBeLessThanOrEqual(veteranStructurePpm(VETERAN_MAX_RANK) / PPM_ONE);
+    expect(huge).toBeCloseTo(2, 2);
   });
 });

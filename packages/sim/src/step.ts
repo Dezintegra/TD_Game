@@ -165,7 +165,7 @@ const advanceConstruction = (working: Working, stats: readonly PlayerStats[]): v
     const baseline = statsOf(stats, structure.owner).structures[structure.kind];
     if (baseline.buildTicks <= 0) continue;
 
-    const maxHealth = structureMaxHealth(baseline, structure.growthPpm);
+    const maxHealth = structureMaxHealth(baseline, structure.kills);
     const startHealth = Math.max(1, Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100));
     const total = maxHealth - startHealth;
 
@@ -208,7 +208,7 @@ const advanceDemolition = (working: Working, stats: readonly PlayerStats[]): voi
     const baseline = statsOf(stats, structure.owner).structures[structure.kind];
     if (baseline.buildTicks <= 0) continue;
 
-    const maxHealth = structureMaxHealth(baseline, structure.growthPpm);
+    const maxHealth = structureMaxHealth(baseline, structure.kills);
     const left = structure.demolishAtTick - working.tick;
 
     // То же расписание, что и у возведения, только прочитанное с конца.
@@ -322,6 +322,7 @@ const spawnUnit = (
     health: statsOf(stats, player.id).units[head].health,
     facing: outward === DIRECTION_STOP ? DIRECTION_SOUTH : outward,
     readyAtTick: working.tick,
+    kills: 0,
     alive: true,
     blockedBy: -1,
   });

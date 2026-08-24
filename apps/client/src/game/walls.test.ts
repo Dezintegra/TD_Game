@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   DIRECTION_SOUTH,
   MAP_WIDTH_CELLS,
-  PPM_ONE,
   StructureKind,
   asEntityId,
   asPlayerId,
@@ -43,7 +42,7 @@ const wall = (x: number, y: number, options: WallOptions = {}): StructureState =
     kind: StructureKind.Wall,
     cell: cellIndex(x, y),
     health: 100,
-    growthPpm: PPM_ONE,
+    kills: 0,
     readyAtTick: asTickNumber(0),
     builtAtTick: asTickNumber(options.builtAt ?? 0),
     demolishAtTick: asTickNumber(0),

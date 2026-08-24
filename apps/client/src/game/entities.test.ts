@@ -83,6 +83,8 @@ const recorder = (): Recorder => {
     'stroke',
     'circle',
     'rect',
+    'roundRect',
+    'poly',
     'clear',
   ]) {
     stub[name] = (...args: unknown[]) => {
@@ -128,6 +130,7 @@ const COLORS: EntityColors = {
   health: 0x00ff29,
   healthLow: 0xff5c5c,
   beacon: 0xff3b30,
+  rank: { field: 0x14171a, stripe: 0xcfd6da, gold: 0xffc83d },
 };
 
 /**
@@ -152,7 +155,7 @@ const wallAt = (cell: number, id = 500, owner = 0) => ({
   kind: StructureKind.Wall,
   cell,
   health: 100,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
@@ -170,6 +173,7 @@ const unitAt = (cell: number) => ({
   health: 100,
   facing: DIRECTION_SOUTH,
   readyAtTick: asTickNumber(0),
+  kills: 0,
 });
 
 /**
@@ -258,6 +262,8 @@ interface DrawResult {
   readonly rects: Rect[];
   /** Что запросили у кеша построек. */
   readonly requests: StructureRequest[];
+  /** Сколько погонов нарисовано: по одному на объект с рангом. */
+  readonly rankFields: number;
 }
 
 const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult => {
@@ -300,6 +306,9 @@ const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult =
     sprites,
     rects: depth.rects,
     requests: [...structureRequests],
+    // Подложка погона — единственный `roundRect` во всей отрисовке
+    // сущностей, поэтому она же и служит счётчиком погонов.
+    rankFields: depth.counts['roundRect'] ?? 0,
   };
 };
 
@@ -523,5 +532,84 @@ describe('полоса прочности базы', () => {
     // ушло под кромку дальше, чем запас на отсечение в 160 пикселей.
     expect(ground.y - view.maxY).toBeGreaterThan(200);
     expect(drawInto(world, view).overheadRects).toBeGreaterThan(0);
+  });
+});
+
+describe('погоны', () => {
+  const rankedWall = (cell: number, kills: number) => ({ ...wallAt(cell), kills });
+  const rankedUnit = (cell: number, kills: number) => ({ ...unitAt(cell), kills });
+
+  it('над объектом нулевого ранга погона нет', () => {
+    const cell = cellIndex(10, 10);
+
+    expect(drawInto({ ...bare(), structures: [rankedWall(cell, 0)] }).rankFields).toBe(0);
+    expect(drawInto({ ...bare(), units: [rankedUnit(cell, 0)] }).rankFields).toBe(0);
+  });
+
+  it('над отличившимися погон ровно один', () => {
+    const cell = cellIndex(10, 10);
+
+    expect(drawInto({ ...bare(), structures: [rankedWall(cell, 1)] }).rankFields).toBe(1);
+    expect(drawInto({ ...bare(), structures: [rankedWall(cell, 15)] }).rankFields).toBe(1);
+  });
+
+  it('в отражении машины погона нет', () => {
+    // Машина рисуется дважды — тело и отражение, — а погон один.
+    // Отражение показывает днище, погона снизу не видно, и вторая
+    // золотая звезда под машиной читалась бы вторым предметом.
+    const drawn = drawInto({ ...bare(), units: [rankedUnit(cellIndex(10, 10), 15)] });
+
+    expect(drawn.machines).toHaveLength(2);
+    expect(drawn.machines.some((placement) => placement.mirror)).toBe(true);
+    expect(drawn.rankFields).toBe(1);
+  });
+
+  it('погон висит выше полосы здоровья и левее центра', () => {
+    // Требование звучит «чуть выше и левее центра», и обе его половины
+    // проверяются здесь. Вторая важнее, чем кажется: у повреждённого
+    // ветерана знак и полоса здоровья не должны слипаться в кучу,
+    // а разводит их именно просвет по вертикали.
+    const cell = cellIndex(10, 10);
+    const anchor = worldToScreen(cellX(cell) + 0.5, cellY(cell) + 0.5);
+
+    // Погон рисуется `roundRect` (пять доводов), полоса здоровья —
+    // `rect` (четыре). По длине списка их и различаем.
+    const fields: number[][] = [];
+    const bars: number[][] = [];
+    const stub: Graphics = new Proxy(
+      {},
+      {
+        get:
+          (_target, name) =>
+          (...args: unknown[]) => {
+            if (name === 'roundRect') fields.push(args as number[]);
+            if (name === 'rect') bars.push(args as number[]);
+            return stub;
+          },
+      },
+    ) as unknown as Graphics;
+
+    drawEntities(
+      { band: () => stub, sprite: () => undefined, overhead: stub },
+      // Стена намеренно повреждена: нужна и полоса здоровья тоже.
+      { ...bare(), structures: [rankedWall(cell, 3)] },
+      WHOLE_MAP,
+      COLORS,
+      asPlayerId(0),
+      FAKE_MACHINES,
+      FAKE_STRUCTURES,
+    );
+
+    const [field] = fields;
+    const [bar] = bars;
+    if (field === undefined || bar === undefined) throw new Error('нарисовано не всё');
+
+    const fieldCentreX = (field[0] ?? 0) + (field[2] ?? 0) / 2;
+    const fieldBottom = (field[1] ?? 0) + (field[3] ?? 0);
+
+    // Левее центра объекта.
+    expect(fieldCentreX).toBeLessThan(anchor.x);
+    // И выше верхней кромки полосы здоровья, а не поверх неё.
+    expect(fieldBottom).toBeLessThan(bar[1] ?? 0);
   });
 });

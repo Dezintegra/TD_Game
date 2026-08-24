@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   CommandKind,
-  PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
   asEntityId,
@@ -51,7 +50,7 @@ const enemyStructure = (cell: number, kind: StructureKind, id: number): Structur
   kind,
   cell,
   health: STRUCTURE_STATS[kind].health,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
 });
