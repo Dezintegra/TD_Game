@@ -121,9 +121,20 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm e2e
 
+      # Забирается `test-results/`, а не `playwright-report/`, и это правка
+      # по следам разбирательства, а не наведение порядка. Репортёр стоит
+      # `list` — он пишет в консоль и каталога `playwright-report/`
+      # не создаёт вовсе, поэтому выгрузка молча уносила пустоту:
+      # у красного прогона 32705927970 артефактов оказалось ноль.
+      #
+      # Разница дорогая. В `test-results/` лежат `error-context.md` — снимок
+      # разметки на мгновение падения — и картинка экрана. По ним видно,
+      # проверка не успела или встала на месте; по одной строке
+      # «Test timeout of 30000ms exceeded» эти два случая неразличимы,
+      # и разбирательство идёт вслепую.
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-report
-          path: playwright-report/
+          name: playwright-failures
+          path: test-results/
           retention-days: 7
