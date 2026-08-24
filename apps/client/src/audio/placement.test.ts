@@ -4,7 +4,7 @@ import type { Listener } from './placement.js';
 import { REVERB_SECONDS, renderReverb } from './reverb.js';
 import { peakOf, rms } from './dsp.js';
 
-const LISTENER: Listener = { cellX: 24, cellY: 24, halfWidth: 700 };
+const LISTENER: Listener = { cellX: 24, cellY: 24 };
 
 describe('размещение источника', () => {
   it('в центре обзора панорамы нет', () => {
@@ -42,7 +42,7 @@ describe('размещение источника', () => {
     expect(previous).toBe(0);
   });
 
-  it('панорама не выходит за три четверти и держит сторону', () => {
+  it('панорама не доходит до края и держит сторону', () => {
     // В этой проекции экранная x растёт по мировому x и убывает
     // по мировому y, поэтому «слева» — это меньший x при том же y.
     const right = place(LISTENER.cellX + 20, LISTENER.cellY, LISTENER).pan;
@@ -50,12 +50,22 @@ describe('размещение источника', () => {
 
     expect(right).toBeGreaterThan(0);
     expect(left).toBeLessThan(0);
-    expect(Math.abs(right)).toBeLessThanOrEqual(0.75);
-    expect(Math.abs(left)).toBeLessThanOrEqual(0.75);
+    expect(Math.abs(right)).toBeLessThan(1);
+    expect(Math.abs(left)).toBeLessThan(1);
 
     for (let cell = -200; cell <= 200; cell += 5) {
-      expect(Math.abs(place(cell, LISTENER.cellY, LISTENER).pan)).toBeLessThanOrEqual(0.75);
+      expect(Math.abs(place(cell, LISTENER.cellY, LISTENER).pan)).toBeLessThan(1);
     }
+  });
+
+  it('ближний бой слышен по сторонам', () => {
+    // То, ради чего размах отвязан от окна: событие в нескольких клетках
+    // сбоку обязано читаться стороной, а не серединой. Прежде оно давало
+    // около пятой части предела — то есть почти ничего.
+    const beside = place(LISTENER.cellX + 5, LISTENER.cellY, LISTENER).pan;
+    const limit = place(LISTENER.cellX + 40, LISTENER.cellY, LISTENER).pan;
+
+    expect(beside).toBeGreaterThan(limit / 2);
   });
 
   it('панорама следует за прокруткой карты', () => {
@@ -79,15 +89,19 @@ describe('размещение источника', () => {
     expect(far.wet).toBeLessThan(1);
   });
 
-  it('узкое окно панорамирует резче широкого', () => {
-    const wide = place(30, 24, LISTENER).pan;
-    const narrow = place(30, 24, { ...LISTENER, halfWidth: 300 }).pan;
-    expect(Math.abs(narrow)).toBeGreaterThan(Math.abs(wide));
-  });
+  it('размах панорамы задан картой, а не окном', () => {
+    // Ширина окна слушателю больше не сообщается вовсе, поэтому проверять
+    // остаётся то, чем её заменили: предел набирается на известном
+    // расстоянии в клетках — шести по мировой `x`.
+    //
+    // Прежде тот же выстрел на мониторе вдвое шире звучал вдвое ближе
+    // к середине, то есть игрок с большим экраном слышал бой хуже.
+    const half = place(LISTENER.cellX + 3, LISTENER.cellY, LISTENER).pan;
+    const full = place(LISTENER.cellX + 6, LISTENER.cellY, LISTENER).pan;
+    const beyond = place(LISTENER.cellX + 12, LISTENER.cellY, LISTENER).pan;
 
-  it('нулевая ширина окна не делит на ноль', () => {
-    const placement = place(30, 24, { ...LISTENER, halfWidth: 0 });
-    expect(Number.isFinite(placement.pan)).toBe(true);
+    expect(half).toBeCloseTo(full / 2, 6);
+    expect(beyond).toBeCloseTo(full, 6);
   });
 });
 
