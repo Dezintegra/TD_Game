@@ -14,6 +14,8 @@ import { drawEntities } from './entities.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { drawShots } from './shots.js';
 import type { ShotColors, ShotLayers } from './shots.js';
+import { createArcSprites } from './arc-render.js';
+import type { ArcSprites } from './arc-render.js';
 import { drawBlasts, shakeOffset } from './blasts.js';
 import type { BlastColors, BlastLayers } from './blasts.js';
 import { createFrameClock } from './clock.js';
@@ -181,6 +183,7 @@ const readShotColors = (): ShotColors => ({
   hullDark: token('--td-hull-dark', 0x23271f),
   shot: token('--td-projectile', 0xeaffef),
   shotLethal: token('--td-health-low', 0xff5c5c),
+  arc: token('--td-arc', 0x5aa6ff),
   core: token('--td-blast-core', 0xfff6e0),
   fire: token('--td-blast-fire', 0xff8a2b),
   smoke: token('--td-blast-smoke', 0x2b2622),
@@ -280,6 +283,10 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   //
   // Свет взрыва выше света выстрела намеренно: взрыв — событие более
   // крупное, и перекрывать его вспышками очередей незачем.
+  // Цвета выстрела читаются раньше остальных: слою разрядов нужен цвет
+  // молнии прямо при создании — плитки печются один раз и красятся тинтом.
+  const shotColors = readShotColors();
+
   const blastDebrisGraphics = new Graphics();
   const shotTrailGraphics = new Graphics();
   const shotGlowGraphics = new Graphics();
@@ -290,6 +297,19 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   // поэтому светящееся и несветящееся здесь разложены по разным слоям.
   shotGlowGraphics.blendMode = 'add';
   blastGlowGraphics.blendMode = 'add';
+
+  /**
+   * Разряды Теслы: единственный выстрел, который рисуется спрайтами,
+   * а не линиями. Ломаная в `Graphics` режется на треугольники заново
+   * каждый кадр, и пятнадцать одновременных разрядов стоили половину
+   * бюджета кадра; те же пятнадцать спрайтами — сотую его часть.
+   *
+   * Свой слой ему нужен по той же причине, по какой свет вообще отделён
+   * от тел: режим смешивания в PixiJS задаётся слою целиком. Лежит он
+   * между светом выстрелов и светом взрывов — разряд ярче очереди
+   * штурмовика, но тише гибели.
+   */
+  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc });
 
   const flashGraphics = new Graphics();
   flashGraphics.blendMode = 'add';
@@ -302,6 +322,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     blastDebrisGraphics,
     shotTrailGraphics,
     shotGlowGraphics,
+    arcs.layer,
     blastGlowGraphics,
     overheadGraphics,
     overlayGraphics,
@@ -330,6 +351,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   };
 
   const shotLayers: ShotLayers = {
+    arcs,
     trails: shotTrailGraphics,
     glow: shotGlowGraphics,
   };
@@ -348,6 +370,9 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     usedBands.length = 0;
     shotTrailGraphics.clear();
     shotGlowGraphics.clear();
+    // Спрайты не чистятся, а переиспользуются: пул один на матч,
+    // и кадр просто берёт из него столько, сколько нужно.
+    arcs.begin();
     overheadGraphics.clear();
     blastDebrisGraphics.clear();
     blastGlowGraphics.clear();
@@ -377,7 +402,6 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const baseSelfColors = readBaseColors(token('--td-accent', 0x00ff29));
   const baseEnemyColors = readBaseColors(token('--td-player-enemy', 0xd264ff));
   const entityColors = readEntityColors();
-  const shotColors = readShotColors();
   const blastColors = readBlastColors();
   const overlayColors = readOverlayColors();
   const minimapColors = readMinimapColors();
@@ -514,6 +538,9 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       // Выстрелы поверх всех тел: выстрел — это событие, и прятать его
       // за телами не нужно, иначе бой в толпе перестаёт читаться.
       drawShots(shotLayers, world, time, bounds, shotColors, localPlayer);
+      // Спрайты, не занятые в этом кадре, прячутся: пул один на матч,
+      // и в нём остаются разряды прошлых, более людных кадров.
+      arcs.end();
 
       // Размах тряски приходит оттуда же, откуда взрывы: слоями владеет
       // сцена, а решает, насколько тряхнуть, тот, кто знает про взрывы.
@@ -612,6 +639,9 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     },
 
     destroy() {
+      // Текстуры разрядов живут в видеопамяти, и сборщик мусора о ней
+      // не знает. Уничтожаем до самого приложения.
+      arcs.destroy();
       app.destroy(true, { children: true });
     },
 
