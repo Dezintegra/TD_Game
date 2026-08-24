@@ -52,7 +52,7 @@ import type { WorldState } from './world.js';
  *    исполняется и в браузере, и в Node.js.
  *
  * Порядок этапов внутри тика влияет на исход и потому зафиксирован.
- * Меняете его — обновляйте эталон в determinism.golden.test.ts тем же
+ * Меняете его — обновляйте эталон в determinism.golden.match.test.ts тем же
  * коммитом, как требует CLAUDE.md.
  */
 export const step = (state: WorldState, commands: readonly Command[]): WorldState => {

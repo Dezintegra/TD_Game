@@ -1,14 +1,25 @@
-import { defineConfig } from 'vitest/config';
+import { defaultExclude, defineConfig } from 'vitest/config';
 
 /**
+ * Быстрый набор пакета.
+ *
  * Одно окружение — node. В отличие от ядра симуляции, изоморфность
  * противника проверять двумя прогонами незачем: платформенных
  * зависимостей у него нет и быть не может, а поймает их линт.
+ *
+ * Матчевые файлы исключены: они проигрывают партию целиком и стоят
+ * минут (осадный — четверть часа), а этот набор обязан оставаться
+ * быстрым. Их прогоняет `vitest.match.config.ts`.
+ *
+ * `defaultExclude` дописан руками не для красоты: свой `exclude`
+ * ЗАМЕНЯЕТ список по умолчанию, а не дополняет его. Без него в прогон
+ * попали бы `node_modules` и `dist`.
  */
 export default defineConfig({
   test: {
     name: 'ai',
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    exclude: [...defaultExclude, 'src/**/*.match.test.ts'],
   },
 });

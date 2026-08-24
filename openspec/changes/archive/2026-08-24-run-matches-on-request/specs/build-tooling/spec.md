@@ -1,9 +1,5 @@
-# build-tooling Specification
+## MODIFIED Requirements
 
-## Purpose
-
-TBD - created by archiving change bootstrap-monorepo. Update Purpose after archive.
-## Requirements
 ### Requirement: Единый набор корневых команд
 
 Корневой `package.json` SHALL предоставлять команды `dev`, `build`, `typecheck`, `lint`, `format`, `test`, `test:match`, `test:all`, `verify`, `verify:all` и `e2e`.
@@ -57,36 +53,3 @@ Turborepo SHALL кешировать результаты задач `build`, `t
 
 - **WHEN** изменяется файл только в `apps/client` и запускается `pnpm test`
 - **THEN** задача `@td/client#test` выполняется, а `@td/sim#test` и `@td/ai#test` берутся из кеша
-
-### Requirement: Воспроизводимость окружения
-
-Репозиторий SHALL фиксировать версию Node.js и версию pnpm в корневом `package.json` через поля `engines` и `packageManager`. Файл `pnpm-lock.yaml` SHALL быть закоммичен.
-
-#### Scenario: Несовместимая версия Node останавливает установку
-
-- **WHEN** `pnpm install` запускается на версии Node.js, не удовлетворяющей `engines`
-- **THEN** установка завершается ошибкой с указанием требуемого диапазона версий
-
-#### Scenario: Установка в CI не меняет lockfile
-
-- **WHEN** в CI выполняется `pnpm install --frozen-lockfile`
-- **THEN** установка проходит успешно и `pnpm-lock.yaml` остаётся неизменным
-
-### Requirement: Горячая перезагрузка клиента
-
-Дев-сервер клиента SHALL поддерживать горячую замену модулей. Правка в React-компоненте HUD SHALL применяться без полной перезагрузки страницы и без потери состояния игрового цикла PixiJS.
-
-#### Scenario: Правка HUD не сбрасывает сцену
-
-- **WHEN** во время работающего `pnpm dev` изменяется разметка React-компонента HUD
-- **THEN** обновлённый HUD появляется в браузере, а сцена PixiJS продолжает рендериться без переинициализации
-
-### Requirement: Библиотеки публикуют типы
-
-Каждый пакет из `packages/*` SHALL экспортировать декларации типов и указывать точки входа через поле `exports` с раздельными путями для типов и исполняемого кода.
-
-#### Scenario: Автодополнение работает через границу пакета
-
-- **WHEN** в `apps/client` импортируется символ из `@td/sim`
-- **THEN** редактор показывает его тип и сигнатуру, а `pnpm typecheck` проходит без ошибок разрешения типов
-
