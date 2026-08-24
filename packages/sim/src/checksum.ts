@@ -71,7 +71,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, structure.kind);
     hash = mix(hash, structure.cell);
     hash = mix(hash, structure.health);
-    hash = mix(hash, structure.growthPpm);
+    hash = mix(hash, structure.kills);
     hash = mix(hash, structure.readyAtTick);
     hash = mix(hash, structure.builtAtTick);
     hash = mix(hash, structure.demolishAtTick);
@@ -87,6 +87,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, unit.health);
     hash = mix(hash, unit.facing);
     hash = mix(hash, unit.readyAtTick);
+    hash = mix(hash, unit.kills);
   }
 
   for (const general of state.generals) {

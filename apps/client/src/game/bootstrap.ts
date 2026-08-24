@@ -9,12 +9,13 @@
   StructureKind,
   TICKS_PER_SECOND,
   Terrain,
-  PPM_ONE,
   UNIT_CAP,
   asPlayerId,
   distanceSquared,
   energyToVisible,
+  killsToNextRank,
   unitsToCells,
+  veteranRank,
 } from '@td/shared';
 import type {
   CommandIntent,
@@ -641,9 +642,15 @@ const selectionOf = (world: WorldState, playerId: PlayerId, cell: number): Selec
     maxHealth:
       baseline === undefined
         ? STRUCTURE_STATS[structure.kind].health
-        : structureMaxHealth(baseline, structure.growthPpm),
-    growthPercent: Math.round((structure.growthPpm / PPM_ONE - 1) * 100),
-    attack: baseline === undefined ? 0 : structureAttack(baseline, structure.growthPpm),
+        : structureMaxHealth(baseline, structure.kills),
+    // Стена и база рангов не набирают, и строку ранга им показывать
+    // не надо вовсе: «Ранг 0» читалось бы как «ещё не набран», хотя
+    // набрать его здесь нельзя.
+    ranked: !isBase && structure.kind !== StructureKind.Wall,
+    rank: veteranRank(structure.kills),
+    kills: structure.kills,
+    killsToNextRank: killsToNextRank(structure.kills),
+    attack: baseline === undefined ? 0 : structureAttack(baseline, structure.kills),
     rangeCells: baseline === undefined ? 0 : Math.round(unitsToCells(baseline.range)),
     buildingSeconds: Math.max(0, (structure.builtAtTick - world.tick) / TICKS_PER_SECOND),
     demolishSeconds:

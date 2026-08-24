@@ -1,0 +1,146 @@
+name: Баланс
+
+# Ночной разбор очереди проверок баланса.
+#
+# Проверка баланса — десятки матчей, то есть занятая машина на минуты
+# и часы. Посреди задачи столько не ждут, поэтому агент кладёт запись
+# в `balance/queue.json` (правило 8 в CLAUDE.md), а разбирает очередь
+# эта джоба: ночью, на чужом железе, разом за все накопившиеся вопросы.
+#
+# Матчи детерминированы, поэтому цифры с runner'а равноценны локальным,
+# а запись, уже меренная на этом же коде, повторно не гоняется вовсе.
+
+on:
+  schedule:
+    # 03:00 UTC — 06:00 по Москве. Ночь выбрана не ради тишины на
+    # runner'е (он не общий), а ради человека: итог должен ждать его
+    # к утру, а не приходить посреди рабочего дня.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: Одна запись очереди по её id (пусто — вся очередь)
+        default: ''
+      all:
+        description: Гнать и то, что уже мерено на этом коде
+        type: boolean
+        default: false
+      max_matches:
+        description: Предел матчей за прогон
+        default: '400'
+      dry_run:
+        description: Только план, без единого матча
+        type: boolean
+        default: false
+
+# Права нужны обоих видов: журнал уезжает коммитом в main, а сдвиг
+# превращается в Issue.
+permissions:
+  contents: write
+  issues: write
+
+# Два прогона разом не нужны: они писали бы в один журнал и наверняка
+# передрались бы за него при отправке. Очередь никуда не убежит.
+concurrency:
+  group: balance
+  cancel-in-progress: false
+
+jobs:
+  balance:
+    name: очередь проверок
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      # Вся история, а не последний коммит: скрипт спрашивает у git,
+      # менялись ли правила игры с прошлого прогона записи, и без
+      # истории тот коммит просто недостижим.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Арена запускается из сборки, а не из исходников, и константы игры
+      # скрипт берёт оттуда же — по той же причине, по какой их берёт
+      # оттуда `bench-tick.mjs`: по имени пакета из корня они
+      # не разрешаются.
+      - run: pnpm build
+
+      - name: Разобрать очередь
+        env:
+          ONLY: ${{ inputs.only }}
+          MAX_MATCHES: ${{ inputs.max_matches || '400' }}
+          RUN_ALL: ${{ inputs.all }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(--summary balance-summary.md --issue balance-issue.md --max-matches "$MAX_MATCHES")
+          # Значения полей ввода передаются средой, а не подстановкой
+          # в текст команды: подставленное прямо в скрипт содержимое
+          # поля — это исполняемый код, кем бы поле ни заполнялось.
+          if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
+          if [ "$RUN_ALL" = "true" ]; then args+=(--all); fi
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          # --no-warnings глушит предупреждение об экспериментальном
+          # node:sqlite: база арены читается именно им, и в журнале
+          # прогона это предупреждение повторялось бы на каждой записи.
+          node --no-warnings scripts/balance-run.mjs "${args[@]}"
+
+      # Сводка попадает на страницу прогона всегда — и когда цифры
+      # разошлись, и когда всё на месте. Молчание джобы читалось бы
+      # как «баланс в порядке», а означать могло бы «прогон не дошёл».
+      - name: Показать сводку
+        if: always()
+        run: cat balance-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      # Журнал уезжает в репозиторий ДО заведения Issue, а не после.
+      # Порядок важен: сравнение идёт с прошлым прогоном, и не уехавший
+      # журнал означал бы, что тот же самый сдвиг заводит новый Issue
+      # каждую ночь.
+      - name: Сохранить журнал
+        if: always() && github.ref == 'refs/heads/main' && inputs.dry_run != true
+        run: |
+          if git diff --quiet -- balance/journal.jsonl; then
+            echo "журнал не менялся — коммитить нечего"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- balance/journal.jsonl
+          git commit -m "chore(balance): итоги ночного прогона очереди"
+          # Ночью в main может уехать чужое слияние. Перебазировать здесь
+          # безопасно: коммит один, и трогает он единственный файл,
+          # которого не пишет никто, кроме этой джобы.
+          #
+          # Именно fetch и rebase, а не `git pull --rebase`: checkout
+          # оставляет дерево на отсоединённой голове, и pull в таком
+          # состоянии ведёт себя по-разному в зависимости от настроек.
+          git fetch origin main
+          git rebase FETCH_HEAD
+          git push origin HEAD:main
+
+      - name: Завести Issue о сдвиге
+        if: hashFiles('balance-issue.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Баланс сдвинулся: прогон $(date -u +%d.%m.%Y)" \
+            --body-file balance-issue.md
+
+      - name: Приложить сводку
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: balance-${{ github.run_id }}
+          path: |
+            balance-summary.md
+            balance-issue.md
+          if-no-files-found: ignore
+          retention-days: 30

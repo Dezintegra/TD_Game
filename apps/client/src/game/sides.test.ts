@@ -8,7 +8,6 @@ import {
   asPlayerId,
   asTickNumber,
   cellsToUnits,
-  PPM_ONE,
 } from '@td/shared';
 import { createWorld } from '@td/sim';
 import type { StructureState, UnitState, WorldState } from '@td/sim';
@@ -31,6 +30,7 @@ const unit = (owner: number, unitType: UnitType, id: number): UnitState => ({
   health: 100,
   facing: 1,
   readyAtTick: asTickNumber(0),
+  kills: 0,
 });
 
 const structure = (owner: number, kind: StructureKind, id: number): StructureState => ({
@@ -39,7 +39,7 @@ const structure = (owner: number, kind: StructureKind, id: number): StructureSta
   kind,
   cell: id,
   health: STRUCTURE_STATS[kind].health,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),

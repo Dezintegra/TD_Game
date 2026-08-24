@@ -12,10 +12,14 @@ import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
 import { drawEntities } from './entities.js';
 import { createMachineSprites } from './machine-sprites.js';
+import { createStructureSprites } from './structure-sprites.js';
+import type { StructureSpriteColors, StructureSprites } from './structure-sprites.js';
 import type { MachineSpriteColors, MachineSprites } from './machine-sprites.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { drawShots } from './shots.js';
 import type { ShotColors, ShotLayers } from './shots.js';
+import { createArcSprites } from './arc-render.js';
+import type { ArcSprites } from './arc-render.js';
 import { drawBlasts, shakeOffset } from './blasts.js';
 import type { BlastColors, BlastLayers } from './blasts.js';
 import { createFrameClock } from './clock.js';
@@ -177,16 +181,44 @@ const readMachineColors = (): MachineSpriteColors => ({
   ground: token('--td-bg-page', 0x191919),
 });
 
+/**
+ * Цвета постройки.
+ *
+ * Броня и остекление те же, что у машин: башня и танк рядом обязаны быть
+ * из одного вещества, иначе поле распадается на два мира. Бетон тот же,
+ * что у командного центра, и по той же причине — бетон на карте один.
+ *
+ * Отдельного тёмного оттенка под тень здесь нет: у постройки нет ни
+ * колёс, ни решёток, ни выхлопа, а место второго тёмного материала
+ * занял бетон.
+ */
+const readStructureColors = (): StructureSpriteColors => ({
+  plate: token('--td-hull-plate', 0x3d4245),
+  steel: token('--td-hull-metal', 0x585e62),
+  concrete: token('--td-concrete', 0x6b6f72),
+  glass: token('--td-hull-glass', 0x232e36),
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  sky: token('--td-rock-sky', 0x5c7ea8),
+  ground: token('--td-bg-page', 0x191919),
+});
+
 const readEntityColors = (): EntityColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
-  hullDark: token('--td-hull-dark', 0x23271f),
   // Цвет поверхности — тот же, которым залит фон сцены. Земля рисуется
   // линиями и заливок не имеет, поэтому под отражением всегда именно он.
   ground: token('--td-bg-page', 0x191919),
   health: token('--td-health-full', 0x00ff29),
   healthLow: token('--td-health-low', 0xff5c5c),
   beacon: token('--td-beacon', 0xff3b30),
+  // Погон. Цвета одни на обе стороны: на нём цвет занят переходом
+  // «сталь → золото», а не принадлежностью.
+  rank: {
+    field: token('--td-rank-field', 0x14171a),
+    stripe: token('--td-rank-stripe', 0xcfd6da),
+    gold: token('--td-rank-gold', 0xffc83d),
+  },
 });
 
 /**
@@ -203,6 +235,7 @@ const readShotColors = (): ShotColors => ({
   hullDark: token('--td-hull-dark', 0x23271f),
   shot: token('--td-projectile', 0xeaffef),
   shotLethal: token('--td-health-low', 0xff5c5c),
+  arc: token('--td-arc', 0x5aa6ff),
   core: token('--td-blast-core', 0xfff6e0),
   fire: token('--td-blast-fire', 0xff8a2b),
   smoke: token('--td-blast-smoke', 0x2b2622),
@@ -311,6 +344,10 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   //
   // Свет взрыва выше света выстрела намеренно: взрыв — событие более
   // крупное, и перекрывать его вспышками очередей незачем.
+  // Цвета выстрела читаются раньше остальных: слою разрядов нужен цвет
+  // молнии прямо при создании — плитки печются один раз и красятся тинтом.
+  const shotColors = readShotColors();
+
   const blastDebrisGraphics = new Graphics();
   const shotTrailGraphics = new Graphics();
   const shotGlowGraphics = new Graphics();
@@ -321,6 +358,19 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   // поэтому светящееся и несветящееся здесь разложены по разным слоям.
   shotGlowGraphics.blendMode = 'add';
   blastGlowGraphics.blendMode = 'add';
+
+  /**
+   * Разряды Теслы: единственный выстрел, который рисуется спрайтами,
+   * а не линиями. Ломаная в `Graphics` режется на треугольники заново
+   * каждый кадр, и пятнадцать одновременных разрядов стоили половину
+   * бюджета кадра; те же пятнадцать спрайтами — сотую его часть.
+   *
+   * Свой слой ему нужен по той же причине, по какой свет вообще отделён
+   * от тел: режим смешивания в PixiJS задаётся слою целиком. Лежит он
+   * между светом выстрелов и светом взрывов — разряд ярче очереди
+   * штурмовика, но тише гибели.
+   */
+  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc });
 
   const flashGraphics = new Graphics();
   flashGraphics.blendMode = 'add';
@@ -333,6 +383,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     blastDebrisGraphics,
     shotTrailGraphics,
     shotGlowGraphics,
+    arcs.layer,
     blastGlowGraphics,
     overheadGraphics,
     overlayGraphics,
@@ -348,12 +399,15 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const bandUsed = new Uint8Array(entityBands.length);
 
   /**
-   * Пул спрайтов машин.
+   * Пул спрайтов.
+   *
+   * В нём живут и машины, и постройки: спрайт — это положение и ссылка
+   * на текстуру, и разницы между ними на этом уровне нет никакой.
    *
    * Машин на экране до двух сотен, и каждая берёт по два спрайта — тело
-   * и отражение. Создавать их заново каждый кадр значило бы двадцать
-   * тысяч объектов в секунду на ровном месте; спрайт же — это положение
-   * и ссылка на текстуру, и переиспользуется он полностью.
+   * и отражение; постройка берёт один, потому что она стоит, а не висит.
+   * Создавать их заново каждый кадр значило бы двадцать тысяч объектов
+   * в секунду на ровном месте.
    */
   const spritePool: Sprite[] = [];
   let spritesUsed = 0;
@@ -372,7 +426,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       // на стороне отрисовки сущностей.
       return entityBands[index] as Graphics;
     },
-    machine(index, machine, anchorX, anchorY) {
+    sprite(index, baked, anchorX, anchorY) {
       markBand(index);
 
       let sprite = spritePool[spritesUsed];
@@ -382,14 +436,15 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       }
       spritesUsed += 1;
 
-      sprite.texture = machine.texture;
-      sprite.position.set(anchorX + machine.offsetX, anchorY + machine.offsetY);
+      sprite.texture = baked.texture;
+      sprite.position.set(anchorX + baked.offsetX, anchorY + baked.offsetY);
       (machineBands[index] as Container).addChild(sprite);
     },
     overhead: overheadGraphics,
   };
 
   const shotLayers: ShotLayers = {
+    arcs,
     trails: shotTrailGraphics,
     glow: shotGlowGraphics,
   };
@@ -412,6 +467,9 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     spritesUsed = 0;
     shotTrailGraphics.clear();
     shotGlowGraphics.clear();
+    // Спрайты не чистятся, а переиспользуются: пул один на матч,
+    // и кадр просто берёт из него столько, сколько нужно.
+    arcs.begin();
     overheadGraphics.clear();
     blastDebrisGraphics.clear();
     blastGlowGraphics.clear();
@@ -441,8 +499,6 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const baseSelfColors = readBaseColors(token('--td-accent', 0x00ff29));
   const baseEnemyColors = readBaseColors(token('--td-player-enemy', 0xd264ff));
   const entityColors = readEntityColors();
-  const shotColors = readShotColors();
-
   /**
    * Кеш запечённых машин.
    *
@@ -455,6 +511,20 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     readMachineColors(),
     app.renderer.resolution,
   );
+
+  /**
+   * Кеш запечённых построек.
+   *
+   * Отдельный от машинного, хотя приём тот же: у постройки другой ключ
+   * (облик вместо ступеней прокачки), другая палитра и другая фактура,
+   * а общего осталось бы одно только слово «спрайт».
+   */
+  const structures: StructureSprites = createStructureSprites(
+    app.renderer,
+    readStructureColors(),
+    app.renderer.resolution,
+  );
+
   const blastColors = readBlastColors();
   const overlayColors = readOverlayColors();
   const minimapColors = readMinimapColors();
@@ -586,11 +656,14 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       const time = clock.sample(world.tick, performance.now());
       const bounds = viewBounds();
 
-      drawEntities(layers, world, bounds, entityColors, localPlayer, machines);
+      drawEntities(layers, world, bounds, entityColors, localPlayer, machines, structures);
 
       // Выстрелы поверх всех тел: выстрел — это событие, и прятать его
       // за телами не нужно, иначе бой в толпе перестаёт читаться.
       drawShots(shotLayers, world, time, bounds, shotColors, localPlayer);
+      // Спрайты, не занятые в этом кадре, прячутся: пул один на матч,
+      // и в нём остаются разряды прошлых, более людных кадров.
+      arcs.end();
 
       // Размах тряски приходит оттуда же, откуда взрывы: слоями владеет
       // сцена, а решает, насколько тряхнуть, тот, кто знает про взрывы.
@@ -689,9 +762,12 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     },
 
     destroy() {
-      // Текстуры машин живут в видеопамяти, и сборщик мусора о ней
-      // не знает: без этого утечка копилась бы матч за матчем.
+      // Текстуры живут в видеопамяти, и сборщик мусора о ней не знает:
+      // без уборки утечка копилась бы матч за матчем. И разряды,
+      // и машины — до самого приложения.
+      arcs.destroy();
       machines.dispose();
+      structures.dispose();
       app.destroy(true, { children: true });
     },
 
