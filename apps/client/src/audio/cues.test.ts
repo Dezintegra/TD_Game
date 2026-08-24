@@ -3,6 +3,8 @@ import {
   BLAST_LIFETIME_TICKS,
   BlastKind,
   CommandKind,
+  MAP_HEIGHT_CELLS,
+  MAP_WIDTH_CELLS,
   StructureKind,
   UnitType,
   asPlayerId,
@@ -230,7 +232,15 @@ describe('вывод событий из мира', () => {
     let first = true;
     playMatch(600, (world) => {
       for (const cue of feed.accept(world, first)) {
-        if (cue.cellX < 0 || cue.cellY < 0 || cue.cellX > 48 || cue.cellY > 48) outside.push(cue);
+        // Границы берутся из размера карты, а не вписаны числом. Вписанное
+        // 48 пережило уменьшение карты до 38 молча: событие за краем поля
+        // проверку по-прежнему проходило, и ловить ей стало нечего.
+        const beyond =
+          cue.cellX < 0 ||
+          cue.cellY < 0 ||
+          cue.cellX >= MAP_WIDTH_CELLS ||
+          cue.cellY >= MAP_HEIGHT_CELLS;
+        if (beyond) outside.push(cue);
       }
       first = false;
     });
