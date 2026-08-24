@@ -16,14 +16,16 @@
       «одна клетка по вертикали» в глазах игрока. Проверка:
       `iso.test.ts` сверяет величину с прямым замером ромба и с расчётом
       из углов проекции — вышло 50,91.
-- [ ] 1.2 В `camera.ts` завести `defaultScale(fieldHeight)`:
-      `clamp(fieldHeight / (MIN_VISIBLE_ROWS · CELL_SCREEN_HEIGHT),
+- [x] 1.2 В `camera.ts` завести `defaultScale(fieldHeight)`:
+      `clamp(fieldHeight / (MIN_VISIBLE_ROWS · CELL_SCREEN_HEIGHT_PX),
       MIN_SCALE, 1)` при `MIN_VISIBLE_ROWS = 10` и `MIN_SCALE = 0,4`.
       Проверка: новый `camera.test.ts` — на 794 даёт единицу, на 311
-      даёт 0,611, на 200 упирается в предел 0,4.
-- [ ] 1.3 Там же `clampZoom(zoom)` в диапазон `1 … 4` и
+      даёт 0,611, на 200 упирается в предел 0,4. Все три сошлись.
+- [x] 1.3 Там же `clampZoom(zoom)` в диапазон `1 … 4` и
       `scaleOf(fieldHeight, zoom) = defaultScale · zoom`. Проверка:
-      кратность 5 обрезается до 4, кратность 0,5 — до 1.
+      кратность 5 обрезается до 4, кратность 0,5 — до 1. Плюс проверка
+      на то, ради чего кратность и заведена: при одном и том же `zoom`
+      масштаб в портрете и в ландшафте разный.
 - [ ] 1.4 Там же `zoomAt(camera, scaleBefore, scaleAfter, anchor,
       viewport)` — сдвиг камеры, оставляющий точку под пальцем на месте:
       `camera + (точка − центр) · (1/s − 1/s′)`. Проверка: мировая точка
