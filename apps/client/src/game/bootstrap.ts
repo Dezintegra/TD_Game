@@ -277,7 +277,20 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
    * диагностика не имеет права ломать игру. Отсюда и молчаливый
    * перехват, и `void` у вызова.
    */
+  /**
+   * Отчёт уходит один раз за матч.
+   *
+   * Поводов уйти теперь несколько — исход, выход в меню, закрытая
+   * вкладка, — а показания одни. Два отчёта с одной партии не сломали
+   * бы ничего, кроме самой выборки: одни и те же наблюдения попали бы
+   * в неё дважды и перевесили бы чужие.
+   */
+  let reported = false;
+
   const reportSmoothness = async (): Promise<void> => {
+    if (reported) return;
+    reported = true;
+
     try {
       await fetch(`${API_URL}/api/telemetry`, {
         method: 'POST',
@@ -701,6 +714,19 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   observer.observe(host);
   window.addEventListener('resize', relayout);
 
+  /**
+   * Закрытая вкладка — тоже конец матча, и показания за ней пропадать
+   * не должны.
+   *
+   * `pagehide`, а не `beforeunload`: второй не срабатывает вовсе, если
+   * страницу выгружает мобильный браузер, уводя её в фон. Запрос уходит
+   * с `keepalive`, поэтому переживает выгрузку — на то он там и стоит.
+   */
+  const leaveHandler = (): void => {
+    void reportSmoothness();
+  };
+  window.addEventListener('pagehide', leaveHandler);
+
   // Накопленное отдаётся участнику ЗДЕСЬ, а не сразу после его создания,
   // и это не вкусовщина. Приветствие тянет за собой `onPredicted`, а тот —
   // `publishMapInfo` и показания HUD, объявленные ниже участника. Отдай мы
@@ -721,6 +747,18 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
   return {
     stop() {
+      // Показания уезжают и отсюда, а не только по исходу матча.
+      //
+      // Прежде отчёт был привязан к исходу, и на боевом стенде это
+      // означало, что он не уходит почти никогда: выход игрока в меню
+      // исходом не считается — сервер держит место ещё полминуты,
+      // и до технического поражения клиент успевает уйти со страницы.
+      // Матч при этом остаётся идти, а показания пропадают вместе
+      // со вкладкой. Проверено 24.08.2026: две минуты игры,
+      // ноль принятых отчётов.
+      void reportSmoothness();
+
+      window.removeEventListener('pagehide', leaveHandler);
       observer.disconnect();
       window.removeEventListener('resize', relayout);
       setMatchCommands(null);
