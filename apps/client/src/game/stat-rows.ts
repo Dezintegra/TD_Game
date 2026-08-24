@@ -129,8 +129,21 @@ const readingOf = (branch: UpgradeBranch, stats: PlayerStats): Reading | undefin
     }
   }
 
-  if (branch.target === UpgradeTarget.Base && branch.stat === UpgradeStat.Income) {
-    return whole(energyToVisible(stats.incomePerTick * TICKS_PER_SECOND));
+  if (branch.target === UpgradeTarget.Base) {
+    switch (branch.stat) {
+      case UpgradeStat.Income:
+        return whole(energyToVisible(stats.incomePerTick * TICKS_PER_SECOND));
+      // Ядерный удар прокачивается по цели «база»: пусковая установка
+      // стоит на её площадке. Забыть эти две строки нельзя тихо —
+      // именно тихо и получилось бы: `undefined` означает «характеристика
+      // без ветки», и строка просто не нарисовалась бы.
+      case UpgradeStat.NukeDamage:
+        return whole(stats.nuke.damage);
+      case UpgradeStat.NukeRadius:
+        return cells(stats.nuke.radius);
+      default:
+        return undefined;
+    }
   }
 
   return undefined;

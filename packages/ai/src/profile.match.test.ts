@@ -14,6 +14,7 @@ import { createWorld, playerStats, step } from '@td/sim';
 import { createOpponent } from './opponent.js';
 import {
   BASELINE_PROFILE,
+  PROFILES,
   STRATEGIST_PROFILE,
   escortRadius,
   patienceDecisions,
@@ -190,15 +191,40 @@ describe('неприкосновенный запас держится, толь
   /** Доход, при котором запас ровно набирается за горизонт накопления. */
   const enough = NUKE_COST / (TICKS_PER_SECOND * BASELINE_PROFILE.spending.savingHorizonSeconds);
 
-  it('при доходе замера запас нулевой', () => {
-    // Четырнадцать за тик — доход, выше которого противник в замере
-    // на двадцати матчах не поднимался. При нём на удар копить больше
-    // минуты, и запас запрещал бы вообще все покупки.
+  it('базовый профиль не держит запас ни при каком доходе', () => {
+    // Прежде это следовало из цены: удар стоил полусотни стоимостей
+    // юнита и при доходе замера — четырнадцать за тик — объявлялся
+    // недостижимым. Удар подешевел до шестнадцати, и то же самое теперь
+    // следует из МАНЕРЫ: запас держит лишь тот, кто в ракету
+    // вкладывается.
+    //
+    // Проверяется обеими границами: и доходом замера, и заведомо
+    // избыточным. Одной мало — первая проверяла бы достижимость,
+    // а не манеру.
     expect(reserveOf(withReserve, 14, BASELINE_PROFILE)).toBe(0);
+    expect(reserveOf(withReserve, Math.ceil(enough) * 10, BASELINE_PROFILE)).toBe(0);
   });
 
-  it('при достаточном доходе запас равен цене удара', () => {
-    expect(reserveOf(withReserve, Math.ceil(enough), BASELINE_PROFILE)).toBe(NUKE_COST);
+  it('у стратега запас держится, потому что он в ракету и вкладывается', () => {
+    const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
+    if (late === undefined) throw new Error('в профиле стратега нет фаз');
+
+    expect(reserveOf(late, 14, STRATEGIST_PROFILE)).toBe(NUKE_COST);
+  });
+
+  it('запас исчезает и у стратега, когда доход слишком мал', () => {
+    // Правило достижимости никуда не делось, оно лишь стало вторым
+    // условием после манеры: копить на то, чего не накопить, значит
+    // запрещать себе все покупки разом.
+    const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
+    if (late === undefined) throw new Error('в профиле стратега нет фаз');
+
+    const meagre =
+      Math.floor(
+        NUKE_COST / (TICKS_PER_SECOND * STRATEGIST_PROFILE.spending.savingHorizonSeconds),
+      ) - 1;
+
+    expect(reserveOf(late, meagre, STRATEGIST_PROFILE)).toBe(0);
   });
 
   it('граница проходит ровно там, где кончается горизонт накопления', () => {
@@ -208,38 +234,46 @@ describe('неприкосновенный запас держится, толь
     expect(savingLimit(Math.floor(enough) - 1, BASELINE_PROFILE)).toBeLessThan(NUKE_COST);
   });
 
-  it('у стратега при том же доходе запас держится', () => {
-    // Здесь и живёт вся манера «Стратега». Правило одно на оба профиля,
-    // доход один и тот же — четырнадцать за тик, — а исход разный,
-    // потому что горизонт накопления у стратега полтораста секунд
-    // против сорока пяти.
+  it('ядерные ветки прокачки покупает только стратег', () => {
+    // Сюда переехало отличие манеры «Стратега», когда удешевление удара
+    // стёрло прежнее — экономическое.
     //
-    // Отсюда и единственное наблюдаемое отличие манеры: базовый профиль
-    // не наносит ядерных ударов НИКОГДА (запас нулевой, копить не на что),
-    // а стратег наносит — 18 на 24 матчах арены против нуля.
-    //
-    // Проверяется правило, а не матч, и это осознанно: удар — событие
-    // поздней фазы, в отдельном матче его законно может не случиться,
-    // и тест на одном прогоне был бы неустойчив.
-    const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
-    if (late === undefined) throw new Error('в профиле стратега нет фаз');
+    // Правило нужно не только ради манеры, и это важнее. Внутри выпавшей
+    // цели берётся самая дешёвая ветка, а обе ядерные сидят на цели
+    // «база» рядом с добычей энергии: добыча дорожает на двадцать пять
+    // процентов за уровень и уже на шестом стоит дороже мощности заряда.
+    // Без запрета всякий, кто качает экономику, молча начинает качать
+    // ракету — на осадном профиле это стоило ему Теслы за десять минут
+    // матча.
+    const buysNuke = (profile: AiProfile): boolean => profile.nuke.invest === true;
 
-    expect(reserveOf(late, 14, STRATEGIST_PROFILE)).toBe(NUKE_COST);
-    expect(reserveOf(withReserve, 14, BASELINE_PROFILE)).toBe(0);
+    expect(buysNuke(STRATEGIST_PROFILE)).toBe(true);
+    expect(Object.values(PROFILES).filter(buysNuke)).toEqual([STRATEGIST_PROFILE]);
   });
 
-  it('стратег отличается от базового ровно горизонтом', () => {
+  it('стратег отличается от базового ровно двумя настройками', () => {
     // Свидетель того, что манера сделана настройкой, а не веткой в коде:
-    // всё, кроме одного числа, у профилей совпадает. Сломается этот тест
-    // — значит, «Стратег» перестал быть базовым профилем с другим
-    // терпением, и разбор в его замысле надо переписывать.
+    // всё, кроме названного здесь, у профилей совпадает. Сломается этот
+    // тест — значит, «Стратег» перестал быть базовым профилем с другими
+    // настройками, и разбор в его замысле надо переписывать.
+    //
+    // Настроек стало две, и вторая появилась не от хорошей жизни.
+    // Прежде хватало горизонта: удар стоил полусотни стоимостей юнита
+    // и был недостижим для нетерпеливых. Удар подешевел до шестнадцати,
+    // достижим стал для всех, и отличие переехало на право покупать
+    // ядерные ветки прокачки.
     expect(STRATEGIST_PROFILE.spending.savingHorizonSeconds).toBeGreaterThan(
       BASELINE_PROFILE.spending.savingHorizonSeconds,
     );
-    expect({ ...STRATEGIST_PROFILE, id: '', spending: BASELINE_PROFILE.spending }).toEqual({
-      ...BASELINE_PROFILE,
+    expect(STRATEGIST_PROFILE.nuke.invest).toBe(true);
+    expect(BASELINE_PROFILE.nuke.invest).toBeUndefined();
+
+    expect({
+      ...STRATEGIST_PROFILE,
       id: '',
-    });
+      spending: BASELINE_PROFILE.spending,
+      nuke: BASELINE_PROFILE.nuke,
+    }).toEqual({ ...BASELINE_PROFILE, id: '' });
   });
 
   it('фаза без запаса не держит его ни при каком доходе', () => {

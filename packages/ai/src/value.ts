@@ -1,6 +1,5 @@
 ﻿import {
   BUILDABLE_KINDS,
-  NUKE_RADIUS,
   STRUCTURE_UPGRADE_TARGET,
   StructureKind,
   UNIT_TYPES,
@@ -203,10 +202,18 @@ export interface NukeOutcome {
  * головы и потому регулярно приводила к ударам по собственному генералу:
  * из ста пятидесяти восьми ударов сорок пять убили его.
  *
- * Живое считается по ОСТАВШЕЙСЯ стоимости — цена, умноженная на долю
- * здоровья. Добитый юнит противник и так вот-вот потеряет, и платить
- * за него ценой удара незачем. Постройка считается по полной цене:
- * стоящая башня стоит того, что за неё заплачено, независимо от царапин.
+ * Считается СНЯТАЯ ПРОЧНОСТЬ, а не гибель. Взрыв перестал стирать всё
+ * в круге и стал вычитать урон, поэтому «в радиусе — значит погиб»
+ * означало бы систематическую переоценку: башня, Тесла и генерал удар
+ * переживают, а стена его почти не замечает. Порог выгоды равен цене
+ * удара, и завышенная оценка перешагивала бы его там, где размена нет —
+ * то есть бить впустую за полторы тысячи энергии.
+ *
+ * Доля цели в зачёте — `min(здоровье, урон) / максимум`. Там, где урона
+ * хватает на гибель, правило сводится к прежнему: цель идёт целиком
+ * по остаточной стоимости.
+ *
+ * Радиус и мощность берутся у того, кто бьёт: обе величины прокачиваются.
  *
  * Генерал считается той же ценой гибели, какой её меряет `posture.ts`.
  * Двух цен гибели быть не должно — они немедленно разойдутся.
@@ -229,7 +236,18 @@ export const nukeOutcome = (
   /** Горизонт планирования в тиках. Нужен только при `countDefence`. */
   horizon = 0,
 ): NukeOutcome => {
-  const reach = NUKE_RADIUS * NUKE_RADIUS;
+  const reach = myStats.nuke.radius * myStats.nuke.radius;
+  const damage = myStats.nuke.damage;
+
+  /**
+   * Какая доля цели достанется взрыву.
+   *
+   * Не «жива или мертва», а сколько прочности снято: цель, пережившая
+   * удар с четвертью здоровья, принесла три четверти своей цены —
+   * добить её теперь дёшево.
+   */
+  const share = (health: number, maxHealth: number): number =>
+    Math.min(health, damage) / Math.max(1, maxHealth);
 
   let gain = 0;
   let loss = 0;
@@ -240,7 +258,7 @@ export const nukeOutcome = (
     const mine = unit.owner === me;
     const stats = mine ? myStats : enemyStats;
     const baseline = stats.units[unit.unitType];
-    const worth = (baseline.cost * unit.health) / Math.max(1, baseline.health);
+    const worth = baseline.cost * share(unit.health, baseline.health);
 
     if (mine) loss += worth;
     else gain += worth;
@@ -269,7 +287,11 @@ export const nukeOutcome = (
       countDefence && baseline.attack > 0 && baseline.range > 0
         ? (baseline.attack / Math.max(1, baseline.cooldownTicks)) * horizon * ENERGY_PER_LIVE_DAMAGE
         : 0;
-    const worth = Math.max(baseline.cost, dealt);
+    // Доля та же, что и у живых: стена в тысячу прочности от одного
+    // заряда теряет седьмую часть себя, и оценка обязана это видеть.
+    // Без доли линия стен читалась бы как готовый размен, хотя взрыв
+    // её едва царапает.
+    const worth = Math.max(baseline.cost, dealt) * share(structure.health, baseline.health);
 
     if (mine) loss += worth;
     else gain += worth;
@@ -280,10 +302,10 @@ export const nukeOutcome = (
     if (distanceSquared(general.position, centre) > reach) continue;
 
     const mine = general.owner === me;
-    const worth = generalDeathCost(
-      mine ? myStats : enemyStats,
-      homeCells(cellAt(general.position)),
-    );
+    const stats = mine ? myStats : enemyStats;
+    const worth =
+      generalDeathCost(stats, homeCells(cellAt(general.position))) *
+      share(general.health, stats.general.health);
 
     if (mine) loss += worth;
     else gain += worth;
