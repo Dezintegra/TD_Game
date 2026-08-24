@@ -578,8 +578,13 @@ test.describe('телефон в портрете', () => {
 
     // Панель показывает все восемь целей прокачки со всеми ветками,
     // и ничего не приходится доставать прокруткой.
+    //
+    // Веток тридцать одна: к прежним двадцати девяти добавились мощность
+    // ядерного заряда и радиус поражения, обе у базы. Число здесь стоит
+    // числом намеренно — оно ловит ровно то, ради чего проверка и живёт:
+    // ветка, не поместившаяся на телефон, пропадает молча.
     await expect(page.getByTestId('focus-base')).toBeVisible();
-    expect(await branchCount(page)).toBe(29);
+    expect(await branchCount(page)).toBe(31);
     const overflow = await bottomOverflow(page);
     expect(overflow.x).toBeLessThanOrEqual(0);
     expect(overflow.y).toBeLessThanOrEqual(0);
@@ -639,7 +644,7 @@ test.describe('телефон в ландшафте', () => {
     // высоты не помещаются, поэтому группы встают рядом. Прокрутка
     // не годится по той же причине, по какой не годилась в полосе —
     // она не сообщает о себе, и пятая ветка для игрока исчезает.
-    expect(await branchCount(page)).toBe(29);
+    expect(await branchCount(page)).toBe(31);
     const overflow = await bottomOverflow(page);
     expect(overflow.x).toBeLessThanOrEqual(0);
     expect(overflow.y).toBeLessThanOrEqual(0);
