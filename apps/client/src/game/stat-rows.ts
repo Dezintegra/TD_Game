@@ -36,12 +36,12 @@ const UNIT_BY_TARGET: ReadonlyMap<UpgradeTarget, UnitType> = new Map(
 
 /** Цель прокачки → вид постройки. Обратная сторона `STRUCTURE_UPGRADE_TARGET`. */
 const STRUCTURE_BY_TARGET: ReadonlyMap<UpgradeTarget, StructureKind> = new Map(
-  (
-    [StructureKind.Wall, StructureKind.TowerBasic, StructureKind.TowerSniper] as const
-  ).flatMap((kind) => {
-    const target = STRUCTURE_UPGRADE_TARGET[kind];
-    return target === undefined ? [] : [[target, kind] as const];
-  }),
+  ([StructureKind.Wall, StructureKind.TowerBasic, StructureKind.TowerSniper] as const).flatMap(
+    (kind) => {
+      const target = STRUCTURE_UPGRADE_TARGET[kind];
+      return target === undefined ? [] : [[target, kind] as const];
+    },
+  ),
 );
 
 /** Значение характеристики и сколько знаков после запятой ему нужно. */

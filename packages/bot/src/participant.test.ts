@@ -142,7 +142,9 @@ describe('компьютер как участник', () => {
     second.runMs(5000);
 
     const asText = (bench: Bench): string =>
-      bench.host.history.map((command) => `${String(command.tick)}:${String(command.kind)}`).join('|');
+      bench.host.history
+        .map((command) => `${String(command.tick)}:${String(command.kind)}`)
+        .join('|');
 
     expect(asText(first)).toBe(asText(second));
   });

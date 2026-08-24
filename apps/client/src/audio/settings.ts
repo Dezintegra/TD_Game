@@ -71,7 +71,8 @@ export const parseSoundSettings = (raw: string | null | undefined): SoundSetting
   const record = parsed as Record<string, unknown>;
 
   return {
-    enabled: typeof record['enabled'] === 'boolean' ? record['enabled'] : DEFAULT_SOUND_SETTINGS.enabled,
+    enabled:
+      typeof record['enabled'] === 'boolean' ? record['enabled'] : DEFAULT_SOUND_SETTINGS.enabled,
     master: level(record['master'], DEFAULT_SOUND_SETTINGS.master),
     battle: level(record['battle'], DEFAULT_SOUND_SETTINGS.battle),
     music: level(record['music'], DEFAULT_SOUND_SETTINGS.music),

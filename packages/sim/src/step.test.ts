@@ -432,9 +432,7 @@ describe('строительство', () => {
     const before = playerStats(playerOf(world, 0));
     const after = playerStats(playerOf(run(world, 3, [buy(0, branch)]), 0));
 
-    expect(after.units[UnitType.Sniper].range).toBeGreaterThan(
-      before.units[UnitType.Sniper].range,
-    );
+    expect(after.units[UnitType.Sniper].range).toBeGreaterThan(before.units[UnitType.Sniper].range);
     // У штурмовика ветки нет, и множитель для него остаётся единичным.
     expect(after.units[UnitType.Assault].range).toBe(before.units[UnitType.Assault].range);
     // Ветки разных типов независимы: покупка у снайпера Теслу
@@ -467,7 +465,9 @@ describe('строительство', () => {
 
     const started = step(built, [demolish(0, cell)]);
     const target = started.structures.find((s) => s.cell === cell);
-    expect(target?.demolishAtTick).toBe(started.tick + STRUCTURE_STATS[StructureKind.Wall].buildTicks);
+    expect(target?.demolishAtTick).toBe(
+      started.tick + STRUCTURE_STATS[StructureKind.Wall].buildTicks,
+    );
 
     // На середине сноса клетка ещё непроходима: разбираемая стена
     // продолжает перекрывать проход.

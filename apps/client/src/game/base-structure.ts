@@ -20,7 +20,7 @@ import type { BaseColors } from './base-render.js';
  * может меняться как угодно.
  */
 
-export { BASE_ANTENNA_HEIGHT, BASE_FOOTPRINT_CELLS } from './base-model.js';
+export { BASE_ANTENNA_HEIGHT, BASE_FOOTPRINT_CELLS, BASE_LAUNCH_POINT } from './base-model.js';
 export type { BaseColors } from './base-render.js';
 
 /** Просвет между верхом сооружения и полосой прочности, в пикселях. */

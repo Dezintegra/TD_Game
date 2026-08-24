@@ -102,11 +102,7 @@ export interface DecisionLogRecord extends Omit<DecisionRecord, 'attempts' | 'fr
 }
 
 export type LogRecord =
-  | MatchHeader
-  | MatchFooter
-  | SampleRecord
-  | CommandRecord
-  | DecisionLogRecord;
+  MatchHeader | MatchFooter | SampleRecord | CommandRecord | DecisionLogRecord;
 
 // Тонкая запись матча живёт не здесь, а в `@td/shared`: пишет её игровой
 // сервер, читает арена, и приложения друг друга не импортируют. См.

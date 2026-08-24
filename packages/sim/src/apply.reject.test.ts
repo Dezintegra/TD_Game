@@ -76,7 +76,9 @@ const rejectionOf = (world: WorldState, command: Command): Rejection | undefined
 const reasonOf = (world: WorldState, command: Command): RejectReason | undefined =>
   rejectionOf(world, command)?.reason;
 
-const at = (player: number = HUMAN): { player: PlayerId; tick: ReturnType<typeof asTickNumber> } => ({
+const at = (
+  player: number = HUMAN,
+): { player: PlayerId; tick: ReturnType<typeof asTickNumber> } => ({
   player: asPlayerId(player),
   tick: asTickNumber(0),
 });
@@ -466,7 +468,11 @@ describe('особые случаи', () => {
   it('команде несуществующего игрока никто не отвечает', () => {
     // Адресата у сообщения нет. Приписать отказ кому-то другому значило бы
     // соврать в его логе, а завести отказ «ничей» — засорить список.
-    const command: Command = { kind: CommandKind.MoveGeneral, ...at(7), direction: DIRECTION_SOUTH };
+    const command: Command = {
+      kind: CommandKind.MoveGeneral,
+      ...at(7),
+      direction: DIRECTION_SOUTH,
+    };
 
     expect(step(rich(), [command]).rejections).toHaveLength(0);
   });

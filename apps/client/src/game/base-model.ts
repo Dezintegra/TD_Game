@@ -759,6 +759,20 @@ const ladderStruts = (): BaseStrut[] => {
 const LAUNCH_FOOT: BasePoint = { x: 1.42, y: 0.02, z: PODIUM_TOP + 0.18 };
 const LAUNCH_TIP: BasePoint = { x: 1.62, y: -0.42, z: PODIUM_TOP + 1.34 };
 
+/**
+ * Нос изделия, торчащий из среза контейнера. Отсюда уходит ядерная ракета.
+ *
+ * Точка одна на два дела: она же кончик носовой части в геометрии
+ * установки, она же начало полёта. Второе число ради того же места
+ * завести было бы легко — и оно разошлось бы с первым при первой же
+ * правке наклона направляющей.
+ */
+export const BASE_LAUNCH_POINT: BasePoint = {
+  x: LAUNCH_TIP.x + 0.03,
+  y: LAUNCH_TIP.y - 0.06,
+  z: LAUNCH_TIP.z + 0.1,
+};
+
 /** Точка на направляющей: доля пути от пяты до среза. */
 const alongRail = (share: number, lift = 0): BasePoint => ({
   x: LAUNCH_FOOT.x + (LAUNCH_TIP.x - LAUNCH_FOOT.x) * share,
@@ -790,7 +804,7 @@ const launcherStruts = (): BaseStrut[] => [
     // Носовая часть изделия, выступающая из контейнера. Целиком
     // рисовать ракету незачем: в контейнере её и не видно.
     from: alongRail(0.94, 0.01),
-    to: { x: LAUNCH_TIP.x + 0.03, y: LAUNCH_TIP.y - 0.06, z: LAUNCH_TIP.z + 0.1 },
+    to: BASE_LAUNCH_POINT,
     width: 4,
     material: BaseMaterial.Neon,
     light: 1,

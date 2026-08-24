@@ -176,7 +176,11 @@ describe('сторона участника', () => {
 
     const seen = checksum(table.guest.confirmed!);
     const foe: Command = withPlayer(
-      { kind: CommandKind.MoveGeneral, tick: asTickNumber(table.guest.confirmed?.tick ?? 0), direction: 3 },
+      {
+        kind: CommandKind.MoveGeneral,
+        tick: asTickNumber(table.guest.confirmed?.tick ?? 0),
+        direction: 3,
+      },
       FOE,
     );
 
@@ -272,7 +276,12 @@ describe('сторона участника', () => {
     for (let tick = 0; tick < CHECKSUM_INTERVAL_TICKS; tick += 1) guest.receive(frame(tick));
 
     guest.receive({ type: MessageType.Checksum, tick: CHECKSUM_INTERVAL_TICKS, value: 1 });
-    guest.receive({ type: MessageType.History, fromTick: 0, throughTick: CHECKSUM_INTERVAL_TICKS - 1, commands: [] });
+    guest.receive({
+      type: MessageType.History,
+      fromTick: 0,
+      throughTick: CHECKSUM_INTERVAL_TICKS - 1,
+      commands: [],
+    });
     guest.receive({ type: MessageType.Checksum, tick: CHECKSUM_INTERVAL_TICKS, value: 2 });
 
     expect(recovering).toEqual([true, false]);
@@ -282,7 +291,11 @@ describe('сторона участника', () => {
   it('сумма, пришедшая раньше своего тика, сверяется позже', () => {
     const table = bench();
 
-    table.guest.receive({ type: MessageType.Checksum, tick: CHECKSUM_INTERVAL_TICKS, value: 0xbadbad });
+    table.guest.receive({
+      type: MessageType.Checksum,
+      tick: CHECKSUM_INTERVAL_TICKS,
+      value: 0xbadbad,
+    });
     expect(table.guest.status).toBe('playing');
 
     table.feed(CHECKSUM_INTERVAL_TICKS);

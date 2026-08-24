@@ -88,11 +88,7 @@ export const createDecay = (sampleRate: number, tau: number): (() => number) => 
  * Чистая экспонента до нуля не доходит никогда, и звук, оборванный
  * на её хвосте, щёлкает.
  */
-export const createDecayTo = (
-  sampleRate: number,
-  total: number,
-  tau: number,
-): (() => number) => {
+export const createDecayTo = (sampleRate: number, total: number, tau: number): (() => number) => {
   const step = createDecay(sampleRate, tau);
   const tail = decayAt(total, tau);
   const scale = 1 / (1 - tail);
@@ -401,7 +397,10 @@ export const fadeEnds = (
   sampleRate: number,
   seconds = 0.002,
 ): Float32Array => {
-  const ramp = Math.max(1, Math.min(Math.floor(samples.length / 2), Math.round(seconds * sampleRate)));
+  const ramp = Math.max(
+    1,
+    Math.min(Math.floor(samples.length / 2), Math.round(seconds * sampleRate)),
+  );
 
   for (let index = 0; index < ramp; index += 1) {
     const gain = index / ramp;

@@ -129,7 +129,10 @@ describe('фильтр состояния переменных', () => {
     const loud = sine(200, 0.2);
     const quiet = sine(6000, 0.2);
 
-    const throughLow = (input: Float32Array, filter: (value: number, hz: number, q: number) => number) => {
+    const throughLow = (
+      input: Float32Array,
+      filter: (value: number, hz: number, q: number) => number,
+    ) => {
       const output = new Float32Array(input.length);
       for (let index = 0; index < input.length; index += 1) {
         output[index] = filter(input[index] ?? 0, 800, 0.7);

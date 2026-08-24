@@ -103,11 +103,7 @@ const roadDamagePerTick = (
 };
 
 /** Урон в тик, которым оборона у чужой базы встречает дошедших. */
-const defenceAtBase = (
-  world: WorldState,
-  me: PlayerId,
-  enemyStats: PlayerStats,
-): number => {
+const defenceAtBase = (world: WorldState, me: PlayerId, enemyStats: PlayerStats): number => {
   const cell = world.map.baseCells[otherPlayer(me)];
   if (cell === undefined) return 0;
 
@@ -279,13 +275,7 @@ export const waveOutcome = (
   const health = baseline.health * count;
 
   const travelTicks = (approach.shortest * FIXED_POINT_SCALE) / Math.max(1, baseline.speed);
-  const onRoad = roadDamagePerTick(
-    world,
-    me,
-    enemyStats,
-    approach,
-    profile.posture.pathProbes,
-  );
+  const onRoad = roadDamagePerTick(world, me, enemyStats, approach, profile.posture.pathProbes);
 
   const left = health - onRoad * travelTicks;
   if (left <= 0) return { damage: 0, survivors: 0 };
@@ -351,4 +341,3 @@ export const waveType = (myStats: PlayerStats, guarded: boolean): UnitType => {
 
   return cheapest;
 };
-

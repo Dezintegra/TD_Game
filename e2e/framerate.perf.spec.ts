@@ -1,0 +1,61 @@
+import { expect, test } from '@playwright/test';
+import { bootGame, diagnosticNumber, number } from './helpers.js';
+import { record } from './perf-record.js';
+
+/**
+ * Замеры частоты кадров.
+ *
+ * Вынесены из `smoke.spec.ts` в отдельный набор, потому что это НЕ проверка
+ * правильности, а измерение — и живёт оно по другим законам.
+ *
+ * Во-первых, измерению нужна тихая машина. Замер 22.08.2026: при пяти
+ * рабочих потоках и чужих серверах на той же машине выходило 45–51 кадра
+ * при пороге 55, а те же тесты в одиночку проходили. Красный результат
+ * означал бы «машина занята», а не «код стал медленнее», — а такой
+ * результат хуже отсутствия результата, потому что ему верят.
+ *
+ * Во-вторых, на runner'ах GitHub видеокарты нет вовсе: Chromium рисует
+ * программно, через SwiftShader, и выдаёт около шестнадцати кадров
+ * на любой сцене. Порог 55 там недостижим в принципе, поэтому в CI
+ * этот набор не гоняется — `playwright.config.ts` исключает
+ * `*.perf.spec.ts` из обычного прогона.
+ *
+ * Запускать через `pnpm e2e:perf`: обёртка сначала убеждается, что машина
+ * свободна и что замер не ведёт кто-то ещё. Прогон обязателен перед
+ * деплоем и предлагается по ходу обычной задачи, когда правка могла
+ * задеть отрисовку.
+ */
+
+test('частота кадров держится при непрерывном движении камеры', async ({ page }) => {
+  await bootGame(page);
+
+  // Прокручиваем карту стрелкой и смотрим, что показывает счётчик кадров.
+  // Счётчик считает сам игровой цикл, то есть меряем ровно то, что видит
+  // игрок, а не синтетический бенчмарк.
+  await page.keyboard.down('ArrowRight');
+  await page.waitForTimeout(3000);
+
+  const fps = await diagnosticNumber(page, 'fps');
+
+  await page.keyboard.up('ArrowRight');
+
+  record('камера в движении', fps);
+  expect(fps).toBeGreaterThanOrEqual(55);
+});
+
+test('частота кадров держится, когда на поле появились войска', async ({ page }) => {
+  await bootGame(page);
+
+  // Выводим войско на поле и даём противнику развернуться.
+  for (let order = 0; order < 8; order += 1) {
+    await page.keyboard.press('Shift+Digit1');
+  }
+  await page.waitForTimeout(8000);
+
+  expect(await number(page, 'unit-count')).toBeGreaterThan(0);
+
+  const fps = await diagnosticNumber(page, 'fps');
+
+  record('войска на поле', fps);
+  expect(fps).toBeGreaterThanOrEqual(55);
+});

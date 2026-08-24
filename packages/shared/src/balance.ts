@@ -115,11 +115,7 @@ export const UnitType = {
 
 export type UnitType = (typeof UnitType)[keyof typeof UnitType];
 
-export const UNIT_TYPES: readonly UnitType[] = [
-  UnitType.Assault,
-  UnitType.Sniper,
-  UnitType.Tesla,
-];
+export const UNIT_TYPES: readonly UnitType[] = [UnitType.Assault, UnitType.Sniper, UnitType.Tesla];
 
 /**
  * Как войско ведёт себя при встрече с противником по дороге.

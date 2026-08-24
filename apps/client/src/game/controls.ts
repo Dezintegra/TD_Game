@@ -1,4 +1,10 @@
-﻿import { AttackStance, DIRECTION_STOP, StructureKind, UnitType, directionTowards } from '@td/shared';
+﻿import {
+  AttackStance,
+  DIRECTION_STOP,
+  StructureKind,
+  UnitType,
+  directionTowards,
+} from '@td/shared';
 import { screenToWorld } from './iso.js';
 
 /**
@@ -672,8 +678,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       // Включившись, джойстик уже не выключается сдвигом обратно
       // к центру: вернувшийся в центр палец означает «стоп», а не
       // «это был тап». Тапом он быть перестал в тот миг, когда уехал.
-      const engaged =
-        stick.engaged || Math.hypot(dx, dy) >= TOUCH_STICK_THRESHOLD_PX;
+      const engaged = stick.engaged || Math.hypot(dx, dy) >= TOUCH_STICK_THRESHOLD_PX;
 
       stick = { ...stick, x: point.x, y: point.y, engaged };
       syncStick();
@@ -766,7 +771,15 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
 
   return {
     get state(): ControlState {
-      return { building, buildKind, aimingNuke, aimingTarget, touch: stick, hoverCell, selectedCell };
+      return {
+        building,
+        buildKind,
+        aimingNuke,
+        aimingTarget,
+        touch: stick,
+        hoverCell,
+        selectedCell,
+      };
     },
 
     setBuildKind(kind) {

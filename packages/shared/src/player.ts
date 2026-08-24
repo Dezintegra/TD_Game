@@ -36,8 +36,7 @@ export const NameError = {
 export type NameError = (typeof NameError)[keyof typeof NameError];
 
 export type NameCheck =
-  | { readonly ok: true; readonly name: string }
-  | { readonly ok: false; readonly error: NameError };
+  { readonly ok: true; readonly name: string } | { readonly ok: false; readonly error: NameError };
 
 /**
  * Проверка имени игрока или названия комнаты.
