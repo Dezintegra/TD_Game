@@ -8,6 +8,7 @@ import blastStructureOneUrl from './assets/blast-structure-1.mp3';
 import blastStructureTwoUrl from './assets/blast-structure-2.mp3';
 import blastUnitUrl from './assets/blast-unit.mp3';
 import boltUnitUrl from './assets/bolt-unit.mp3';
+import missileLaunchUrl from './assets/missile-launch.mp3';
 import nukeBlastUrl from './assets/nuke-blast.mp3';
 import rotorUrl from './assets/rotor.mp3';
 import { Sound } from './sounds.js';
@@ -70,6 +71,16 @@ export interface SoundFile {
    * два разброса поверх друг друга дают больше разнообразия, чем один.
    */
   readonly rates: readonly number[];
+
+  /**
+   * Сколько секунд взять от начала записи.
+   *
+   * Нужно там, где событие случается чаще, чем длится его запись:
+   * наложенная сама на себя, она даёт не залп, а сплошное шипение.
+   * Затуханием это не лечится — оно растягивает скат на весь остаток
+   * и почти не убавляет громкости к середине.
+   */
+  readonly take?: number;
 
   /**
    * С какой секунды звук уводится в тишину.
@@ -191,6 +202,20 @@ export const SOUND_FILES: Partial<Record<Sound, readonly SoundFile[]>> = {
     { url: arcUrl, rates: [1.06], fadeFrom: 1.8, layer: { url: sparksTwoUrl, gain: 0.8 } },
     { url: arcUrl, rates: [0.95], fadeFrom: 1.8, layer: { url: sparksThreeUrl, gain: 0.8 } },
   ],
+
+  // Пуск ракеты генерала. Запись описывает именно ПУСК — то, чего
+  // у выкладки не было: она рисовала полёт, разрешающийся приходом
+  // в цель.
+  //
+  // Три варианта скоростью, потому что событие частое: генерал стреляет
+  // каждые восемь тиков, то есть 3,75 раза в секунду, и одна запись без
+  // вариантов слышалась бы строчкой швейной машины.
+  //
+  // Взято 0,62 с из 1,23 с. В записи полка на полной громкости держится
+  // до 0,55 с, и целиком она накладывалась бы сама на себя впятеро.
+  // Затухание с 0,34 с уводит остаток так, что наложение сокращается
+  // до двух: это залп, а не шипение.
+  [Sound.Missile]: [{ url: missileLaunchUrl, rates: [1, 1.06, 0.94], take: 0.62, fadeFrom: 0.34 }],
 
   // Семь секунд, из них последние три — затухание. Дальше гул держал бы
   // внимание дольше, чем длится само событие: картинка ядерного удара

@@ -398,6 +398,7 @@ export const createEngine = (): Engine => {
                     // приведения соотношение громкостей в игре зависело бы
                     // от того, кто и как сводил исходник.
                     peak: SOUND_PEAK[sound],
+                    takeSeconds: file.take,
                     fadeFromSeconds: file.fadeFrom,
                     highPassHz: file.highPass,
                     reversed: file.reverse,
