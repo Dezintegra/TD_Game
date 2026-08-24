@@ -111,7 +111,12 @@ jobs:
           # Ночью в main может уехать чужое слияние. Перебазировать здесь
           # безопасно: коммит один, и трогает он единственный файл,
           # которого не пишет никто, кроме этой джобы.
-          git pull --rebase origin main
+          #
+          # Именно fetch и rebase, а не `git pull --rebase`: checkout
+          # оставляет дерево на отсоединённой голове, и pull в таком
+          # состоянии ведёт себя по-разному в зависимости от настроек.
+          git fetch origin main
+          git rebase FETCH_HEAD
           git push origin HEAD:main
 
       - name: Завести Issue о сдвиге
