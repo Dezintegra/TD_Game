@@ -176,10 +176,24 @@ export const createMatchRecorder = (options: RecorderOptions): MatchRecorder => 
         startedAt: now().toISOString(),
       });
 
+      /**
+       * Начало отсчёта времени — первый посчитанный тик, а не создание
+       * записи.
+       *
+       * Разница существенная: запись заводится, когда матч заведён,
+       * а тикать он начинает, только когда подключились оба участника.
+       * Между этими мгновениями лежит ожидание — секунды, а иногда
+       * и десятки секунд, — и, считай мы от создания, первая же отметка
+       * объявила бы матч отставшим на всё время ожидания.
+       */
+      let firstTickAtMs: number | undefined;
+
       return {
         path: opened.path,
 
         frame(tick, commands: readonly Command[]) {
+          firstTickAtMs ??= now().getTime();
+
           // Пустые кадры не пишутся: тик, на котором ничего не произошло,
           // выводится из соседних, а в матче их подавляющее большинство.
           for (const command of commands) {
@@ -189,7 +203,16 @@ export const createMatchRecorder = (options: RecorderOptions): MatchRecorder => 
         },
 
         checksum(tick, value) {
-          write({ t: 'sum', tick, value });
+          // Отметка идёт рядом с суммой, а не отдельной записью: суммы
+          // снимаются раз в игровую секунду, и это ровно та частота,
+          // на которой видна неровность темпа. Отдельная запись стоила бы
+          // второй строки в секунду и ничего бы не добавила.
+          const anchor = firstTickAtMs;
+          write(
+            anchor === undefined
+              ? { t: 'sum', tick, value }
+              : { t: 'sum', tick, value, atMs: now().getTime() - anchor },
+          );
         },
 
         close(outcome) {

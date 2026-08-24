@@ -23,6 +23,20 @@ export interface RenderLoopOptions {
   /** Вызывается на каждом кадре отрисовки. */
   readonly onFrame: () => void;
   readonly onFps?: (fps: number) => void;
+  /**
+   * Длительность промежутка между кадрами, миллисекунды.
+   *
+   * Вызывается на каждом кадре, кроме самого первого: у него нет
+   * предыдущего, и промежуток мерить не от чего.
+   *
+   * Существует потому, что **число кадров в секунду мерой плавности
+   * не является**. Оно усредняет ровно так же, как минутные графики
+   * виртуальной машины: один кадр длиной в двести миллисекунд опускает
+   * шестьдесят кадров до пятидесяти пяти, и рывок, ради которого всё
+   * затевалось, в это число не попадает. Рывок живёт в хвосте
+   * распределения, и увидеть его можно только распределением.
+   */
+  readonly onFrameGap?: (ms: number) => void;
 }
 
 export const createRenderLoop = (options: RenderLoopOptions): RenderLoop => {
@@ -30,9 +44,15 @@ export const createRenderLoop = (options: RenderLoopOptions): RenderLoop => {
   let running = false;
   let framesInSecond = 0;
   let windowStart = 0;
+  let previousFrameMs = Number.NaN;
 
   const frame = (now: number): void => {
     if (!running) return;
+
+    // Промежуток берётся из `now`, который браузер и так передаёт
+    // аргументом: нового обращения к часам не появляется вовсе.
+    if (!Number.isNaN(previousFrameMs)) options.onFrameGap?.(now - previousFrameMs);
+    previousFrameMs = now;
 
     options.onFrame();
 
@@ -51,6 +71,9 @@ export const createRenderLoop = (options: RenderLoopOptions): RenderLoop => {
       if (running) return;
       running = true;
       windowStart = performance.now();
+      // Промежуток после паузы измерялся бы от кадра до остановки —
+      // то есть показал бы длительность паузы, а не рывок отрисовки.
+      previousFrameMs = Number.NaN;
       handle = requestAnimationFrame(frame);
     },
     stop() {

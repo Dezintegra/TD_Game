@@ -3,7 +3,7 @@ import { WebSocket } from 'ws';
 import { createComputerService } from './service.js';
 import type { ComputerService } from './service.js';
 import type { FetchLike } from './lobby-api.js';
-import type { BotSocket, OpenSocket, SocketHandlers } from './participant.js';
+import type { BotSocket, OpenSocket, ParticipantMeasure, SocketHandlers } from './participant.js';
 
 /**
  * Запуск службы компьютера в Node.js.
@@ -56,6 +56,8 @@ export interface NodeComputerOptions {
   /** Как называется его комната. */
   readonly title?: string;
   readonly log?: (message: string) => void;
+  /** Приборы раздумий. Отсутствуют — не меряется ничего. */
+  readonly measure?: ParticipantMeasure | undefined;
 }
 
 export const startComputerService = (options: NodeComputerOptions): ComputerService => {
@@ -75,5 +77,6 @@ export const startComputerService = (options: NodeComputerOptions): ComputerServ
     ...(options.name === undefined ? {} : { name: options.name }),
     ...(options.title === undefined ? {} : { title: options.title }),
     ...(options.log === undefined ? {} : { log: options.log }),
+    ...(options.measure === undefined ? {} : { measure: options.measure }),
   });
 };

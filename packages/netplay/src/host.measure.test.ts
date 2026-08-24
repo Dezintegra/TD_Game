@@ -1,0 +1,92 @@
+import { CommandKind, MS_PER_TICK, asPlayerId, asTickNumber } from '@td/shared';
+import { checksum } from '@td/sim';
+import type { UnownedCommand } from '@td/shared';
+import { describe, expect, it } from 'vitest';
+import { createMatchHost } from './host.js';
+import type { HostMeasure } from './host.js';
+import { createClock } from './harness.test-utils.js';
+
+/**
+ * Приборы наблюдают и не участвуют.
+ *
+ * Требование записано в `match-telemetry` и распространяется на всё,
+ * что меряется: матч со сбором сведений и без него обязан давать
+ * одинаковые контрольные суммы. Иначе измерялся бы уже другой матч,
+ * и любой вывод из показаний относился бы не к той игре, в которую
+ * играет человек.
+ *
+ * Проверяется это здесь не рассуждением о том, что обёртка «просто
+ * зовёт функцию», а сличением двух матчей — с приборами и без.
+ */
+
+const P0 = asPlayerId(0);
+const P1 = asPlayerId(1);
+const SEED = 4242;
+
+const move = (tick: number, direction: number): UnownedCommand => ({
+  kind: CommandKind.MoveGeneral,
+  tick: asTickNumber(tick),
+  direction,
+});
+
+const play = (measure?: HostMeasure): { sum: number; tick: number } => {
+  const clock = createClock();
+  const host = createMatchHost({
+    seed: SEED,
+    now: () => clock.now(),
+    send: () => undefined,
+    ...(measure === undefined ? {} : { measure }),
+  });
+
+  host.join(P0);
+  host.join(P1);
+
+  // Одинаковая жизнь у обоих матчей: те же команды на тех же тиках.
+  for (let round = 0; round < 40; round += 1) {
+    host.submit(P0, move(round * 3, round % 8));
+    host.submit(P1, move(round * 3 + 1, (round + 4) % 8));
+
+    let left = 100;
+    while (left > 0) {
+      const slice = Math.min(MS_PER_TICK / 2, left);
+      clock.advance(slice);
+      left -= slice;
+      host.advance();
+    }
+  }
+
+  return { sum: checksum(host.world), tick: host.world.tick };
+};
+
+describe('приборы ведущего', () => {
+  it('матч с приборами и без даёт одну и ту же контрольную сумму', () => {
+    const counted: number[] = [];
+    const withMeasure = play({
+      step: (run) => run(),
+      advanced: (ticks) => counted.push(ticks),
+      debt: () => undefined,
+    });
+    const without = play();
+
+    expect(withMeasure.tick).toBe(without.tick);
+    expect(withMeasure.sum).toBe(without.sum);
+    // И приборы при этом правда работали, а не молчали: иначе
+    // совпадение сумм не доказывало бы ничего.
+    expect(counted.length).toBeGreaterThan(0);
+    expect(counted.reduce((a, b) => a + b, 0)).toBe(without.tick);
+  });
+
+  it('обёртка шага обязана вернуть результат нетронутым', () => {
+    // Прибор, потерявший или подменивший возвращённый мир, сломал бы
+    // матч молча: тик прошёл бы, а состояние осталось прежним.
+    // Проверка на то, что обёртка — именно обёртка.
+    const passthrough = play({
+      step: (run) => run(),
+      advanced: () => undefined,
+      debt: () => undefined,
+    });
+
+    expect(passthrough.tick).toBeGreaterThan(0);
+    expect(passthrough.sum).toBe(play().sum);
+  });
+});

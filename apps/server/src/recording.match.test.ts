@@ -122,6 +122,35 @@ describe('запись матча', () => {
     ]);
   });
 
+  it('время отсчитывается от первого тика, а не от создания записи', async () => {
+    // Запись заводится, когда матч заведён, а тикать он начинает,
+    // только когда подключились оба участника. Между этими мгновениями
+    // лежит ожидание — иногда десятки секунд, — и, считай мы от
+    // создания, первая же отметка объявила бы матч отставшим на всё
+    // это время, а темп в записи стал бы неотличим от вранья.
+    let ms = AT.getTime();
+    const recorder = createMatchRecorder({ dir, now: () => new Date(ms) });
+    const recording = recorder.open({ matchId: 'm9', seed: 1, sides: [HUMAN, COMPUTER] });
+
+    // Двадцать секунд ждали соперника — они в темп войти не должны.
+    ms += 20_000;
+    recording.frame(0, []);
+
+    // Дальше матч идёт секунда в секунду.
+    ms += 1000;
+    recording.checksum(30, 1);
+    ms += 1000;
+    recording.checksum(60, 2);
+
+    await recording.close(null);
+
+    expect(
+      readRecords(recording.path)
+        .filter((record) => record.t === 'sum')
+        .map((record) => (record.t === 'sum' ? record.atMs : undefined)),
+    ).toStrictEqual([1000, 2000]);
+  });
+
   it('пишет состав сторон, команды обеих сторон, суммы и исход', async () => {
     const recorder = createMatchRecorder({ dir, now: () => AT });
     const recording = recorder.open({ matchId: 'm7', seed: 4242, sides: [HUMAN, COMPUTER] });
@@ -150,8 +179,10 @@ describe('запись матча', () => {
       { t: 'cmd', tick: 5, player: 0, kind: CommandKind.MoveGeneral, arg0: 1, arg1: 0 },
       { t: 'cmd', tick: 5, player: 1, kind: CommandKind.MoveGeneral, arg0: 3, arg1: 0 },
     ]);
+    // Отметка времени идёт рядом с суммой. Часы здесь стоят на месте,
+    // поэтому от первого тика до суммы прошло ноль.
     expect(records.filter((record) => record.t === 'sum')).toEqual([
-      { t: 'sum', tick: 30, value: 12345 },
+      { t: 'sum', tick: 30, value: 12345, atMs: 0 },
     ]);
     expect(records.at(-1)).toEqual({
       t: 'over',
