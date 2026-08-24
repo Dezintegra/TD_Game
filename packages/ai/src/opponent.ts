@@ -8,8 +8,6 @@ import {
   FIXED_POINT_SCALE,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
-  NUKE_BASE_EXCLUSION,
-  NUKE_COST,
   PRODUCTION_QUEUE_CAP,
   StructureKind,
   UPGRADE_BRANCHES,
@@ -22,6 +20,7 @@ import {
   cellsToUnits,
   directionTowards,
   distanceSquared,
+  nukeBaseExclusion,
 } from '@td/shared';
 import type { Command, PlayerId, Vec2 } from '@td/shared';
 import {
@@ -63,7 +62,14 @@ import {
   savingLimit,
 } from './profile.js';
 import { islandAim } from './islands.js';
-import { defenceOnPath, defenceWorth, pathGuarded, screenDue, waveOutcome, waveType } from './push.js';
+import {
+  defenceOnPath,
+  defenceWorth,
+  pathGuarded,
+  screenDue,
+  waveOutcome,
+  waveType,
+} from './push.js';
 import type { AiProfile, PhaseProfile, Spending } from './profile.js';
 import {
   discountedEfficiency,
@@ -580,7 +586,8 @@ const record = (
   // значило бы подсунуть разбору два миллиарда клеток вместо «неизвестно».
   // Один такой матч ломает всю сводку по пачке: в ней появляется генерал,
   // зашедший на пятьдесят миллионов долей пути.
-  const fromHome = generalCell < 0 ? UNREACHABLE : (seen.approach.fromHome[generalCell] ?? UNREACHABLE);
+  const fromHome =
+    generalCell < 0 ? UNREACHABLE : (seen.approach.fromHome[generalCell] ?? UNREACHABLE);
 
   return {
     tick: world.tick,
@@ -983,10 +990,7 @@ const tryPush = (
   // или нет, скажет расчёт, а вот отказ копить не отвечает ни на какой
   // вопрос.
   const affordable = Math.floor(savingLimit(stats.incomePerTick, profile, guarded) / price);
-  const wanted = Math.max(
-    1,
-    Math.min(profile.push.waveSize, PRODUCTION_QUEUE_CAP, affordable),
-  );
+  const wanted = Math.max(1, Math.min(profile.push.waveSize, PRODUCTION_QUEUE_CAP, affordable));
   const wavePrice = price * wanted;
 
   // Волна ограничена и казной, и свободным местом в очереди производства:
@@ -1061,10 +1065,7 @@ const SCREEN_MIX: Readonly<Record<UnitType, Readonly<Record<UnitType, number>>>>
 };
 
 /** Виды башен в постоянном порядке: жребий обязан быть воспроизводимым. */
-const TOWER_KINDS: readonly StructureKind[] = [
-  StructureKind.TowerBasic,
-  StructureKind.TowerSniper,
-];
+const TOWER_KINDS: readonly StructureKind[] = [StructureKind.TowerBasic, StructureKind.TowerSniper];
 
 /**
  * Какую башню возводить.
@@ -1222,7 +1223,8 @@ const tryBuild = (
     // с десяти стен подряд и поставил первую башню уже за щитом.
     const number = nextBuildNumber();
     const opening = number <= (profile.building.wallsFirst ?? 0);
-    const shielding = opening || (number % profile.building.wallEvery === 0 && towerCells.length > 0);
+    const shielding =
+      opening || (number % profile.building.wallEvery === 0 && towerCells.length > 0);
     const kind = shielding ? StructureKind.Wall : towerKind(phase, profile, roll);
     if (!BUILDABLE_KINDS.includes(kind)) {
       stopped = passing(AttemptNote.NotBuildable);
@@ -1231,7 +1233,13 @@ const tryBuild = (
 
     const price = stats.structures[kind].cost + reserve;
     if (purse < price) {
-      stopped = waitOrPass(price, stats.incomePerTick, profile, AttemptNote.StructureUnaffordable, guarded);
+      stopped = waitOrPass(
+        price,
+        stats.incomePerTick,
+        profile,
+        AttemptNote.StructureUnaffordable,
+        guarded,
+      );
       break;
     }
 
@@ -1630,6 +1638,12 @@ const tryUpgrade = (
     // пропустить, чем усложнять правило.
     if (branch.stat === UpgradeStat.BuildRadius) return;
     if (branch.stat === UpgradeStat.RespawnTime) return;
+    // Ядерные ветки — только по названному решению манеры, см.
+    // `profile.nuke.invest`. Иначе они достаются всякому, кто качает
+    // экономику: ветка выбирается по дешевизне, а обе ядерные сидят
+    // на цели «база» рядом с добычей энергии и обгоняют её по цене
+    // уже на шестом уровне.
+    if (NUCLEAR_STATS.includes(branch.stat) && profile.nuke.invest !== true) return;
     // Названные фазой характеристики. Список отсутствует — разрешены все.
     if (phase.upgradeStats !== undefined && !phase.upgradeStats.includes(branch.stat)) return;
 
@@ -1664,6 +1678,9 @@ const tryUpgrade = (
 // Ядерный удар
 // ─────────────────────────────────────────────────────────────────────────
 
+/** Характеристики, которые описывают ракету, а не строение базы. */
+const NUCLEAR_STATS: readonly UpgradeStat[] = [UpgradeStat.NukeDamage, UpgradeStat.NukeRadius];
+
 /**
  * Ядерный удар.
  *
@@ -1692,7 +1709,10 @@ const tryNuke = (
   approach: Approach,
   myStats: PlayerStats,
 ): boolean => {
-  if (player.energy < NUKE_COST) return false;
+  // Цена пуска выводится из радиуса — платят за накрытую площадь, —
+  // и потому спрашивается у своих характеристик, а не у константы.
+  const cost = myStats.nuke.cost;
+  if (player.energy < cost) return false;
 
   const enemy = world.players[otherPlayer(me)];
   const enemyStats = enemy === undefined ? myStats : playerStats(enemy);
@@ -1707,8 +1727,12 @@ const tryNuke = (
   // карты на каждое решение.
   const homeCells = (cell: number): number => approach.fromHome[cell] ?? 0;
 
+  // Запретная зона растёт вместе с радиусом: базы обязаны остаться вне
+  // круга поражения при любом уровне прокачки.
+  const exclusion = nukeBaseExclusion(myStats.nuke.radius);
+
   let bestCell = -1;
-  let bestNet = NUKE_COST;
+  let bestNet = cost;
 
   for (let y = 0; y < MAP_HEIGHT_CELLS; y += profile.nuke.scanStep) {
     for (let x = 0; x < MAP_WIDTH_CELLS; x += profile.nuke.scanStep) {
@@ -1716,7 +1740,7 @@ const tryNuke = (
 
       // Запретную зону проверяет и ядро, но команда, которую заведомо
       // отклонят, — это впустую потраченное решение.
-      if (bases.some((base) => distanceSquared(centre, base) < NUKE_BASE_EXCLUSION ** 2)) {
+      if (bases.some((base) => distanceSquared(centre, base) < exclusion ** 2)) {
         continue;
       }
 

@@ -1,7 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
   DIRECTION_SOUTH,
-  PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
   UNIT_STATS,
@@ -42,7 +41,7 @@ const enemyTowerAt = (cell: number, builtAtTick: number) => ({
   kind: StructureKind.TowerBasic,
   cell,
   health: STRUCTURE_STATS[StructureKind.TowerBasic].health,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(builtAtTick),
 });
@@ -137,6 +136,7 @@ describe('опасность считается на момент прихода
           health: UNIT_STATS[UnitType.Assault].health,
           facing: DIRECTION_SOUTH,
           readyAtTick: asTickNumber(0),
+          kills: 0,
         },
       ],
     };
@@ -176,6 +176,7 @@ describe('опасность считается на момент прихода
           health: UNIT_STATS[UnitType.Assault].health,
           facing: DIRECTION_SOUTH,
           readyAtTick: asTickNumber(0),
+          kills: 0,
         },
       ],
     };

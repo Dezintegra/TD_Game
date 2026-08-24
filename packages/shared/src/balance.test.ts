@@ -5,7 +5,6 @@ import {
   BASE_ATTACK,
   BASE_COOLDOWN_TICKS,
   BASE_HEALTH,
-  BASE_TOWER_RANGE_CELLS,
   BASE_UNIT_COST,
   BASE_INCOME_PER_TICK,
   BLAST_LIFETIME_TICKS,
@@ -16,8 +15,12 @@ import {
   GENERAL_STATS,
   GENERAL_WEAPON,
   NUKE_COST,
+  NUKE_DAMAGE,
   NUKE_DELAY_TICKS,
   NUKE_RADIUS,
+  SEPARATION_DAMPING_PERCENT,
+  SEPARATION_PUSH_SPEED_PERCENT,
+  SEPARATION_WALL_CLEARANCE,
   SHOT_LIFETIME_TICKS,
   SNIPER_TOWER_OVERREACH_CELLS,
   STRUCTURE_STATS,
@@ -25,15 +28,28 @@ import {
   ShotSide,
   ShotWeapon,
   StructureKind,
+  UNIT_SEPARATION_RADIUS,
   UNIT_STATS,
+  UNIT_TYPES,
   UNIT_WEAPON,
   UPGRADE_BRANCHES,
   UnitType,
   UpgradeStat,
   UpgradeTarget,
+  VETERAN_MAX_RANK,
+  VETERAN_RANK_KILLS,
+  VETERAN_STRUCTURE_PPM,
+  VETERAN_UNIT_PPM,
   energy,
   isArmedStructure,
+  killsToNextRank,
+  nukeCost,
   upgradeBranchIndex,
+  veteranStructurePpm,
+  veteranStructurePpmOf,
+  veteranUnitPpm,
+  veteranUnitPpmOf,
+  veteranRank,
 } from './balance.js';
 import { PPM_ONE, applyPpm, compoundPpm, growPpm } from './percent.js';
 import { DIRECTION_SCALE, DIRECTION_VECTORS, directionTowards } from './direction.js';
@@ -131,12 +147,32 @@ describe('баланс: соотношения из игрового замыс�
     expect(STRUCTURE_STATS[StructureKind.TowerSniper].range).toBeGreaterThan(tesla.range);
   });
 
-  it('ядерный удар стоит пятьдесят базовых юнитов', () => {
-    expect(NUKE_COST).toBe(BASE_UNIT_COST * 50);
+  it('ядерный удар при базовом радиусе стоит шестнадцать базовых юнитов', () => {
+    expect(NUKE_COST).toBe(BASE_UNIT_COST * 16);
   });
 
-  it('радиус ядерного удара — две базовые дальности башни', () => {
-    expect(NUKE_RADIUS).toBe(cellsToUnits(BASE_TOWER_RANGE_CELLS * 2));
+  it('удар в десять клеток стоит вдвое против прежних пятидесяти юнитов', () => {
+    // Платят за площадь, поэтому удвоение основания удваивает цену
+    // на всём диапазоне разом: круг в десять клеток стоил пятидесяти
+    // базовых стоимостей до введения прокачки и стоит ста после
+    // удорожания.
+    expect(nukeCost(cellsToUnits(10))).toBe(BASE_UNIT_COST * 100);
+  });
+
+  it('цена растёт квадратом радиуса', () => {
+    expect(nukeCost(NUKE_RADIUS * 2)).toBe(NUKE_COST * 4);
+  });
+
+  it('базовый радиус ядерного удара — четыре клетки', () => {
+    expect(NUKE_RADIUS).toBe(cellsToUnits(4));
+  });
+
+  it('мощность заряда — полторы прочности штурмовика', () => {
+    // Число, делящее цели на два разряда: штурмовик и снайперская башня
+    // гибнут сразу, башня и генерал выходят с четвертью прочности.
+    expect(NUKE_DAMAGE).toBe(Math.round(BASE_HEALTH * 1.5));
+    expect(NUKE_DAMAGE).toBeGreaterThan(assault.health);
+    expect(NUKE_DAMAGE).toBeLessThan(STRUCTURE_STATS[StructureKind.TowerBasic].health);
   });
 
   it('базовая атака и базовое здоровье достались штурмовику без изменений', () => {
@@ -156,8 +192,8 @@ describe('баланс: дальность генерала', () => {
   });
 
   /** За сколько тиков генерал снимает одну непрокачанную башню. */
-  const ticksToTakeTower = Math.ceil(tower.health / GENERAL_STATS.attack) *
-    GENERAL_STATS.cooldownTicks;
+  const ticksToTakeTower =
+    Math.ceil(tower.health / GENERAL_STATS.attack) * GENERAL_STATS.cooldownTicks;
 
   /** Сколько тиков генерал живёт под огнём `count` таких башен. */
   const ticksAlive = (count: number): number =>
@@ -413,17 +449,27 @@ describe('баланс: дальность юнитов прокачиваетс
     expect(UPGRADE_BRANCHES[rangeBranch(UpgradeTarget.UnitTesla)]?.costGrowthPercent).toBe(25);
   });
 
-  it('новые ветки стоят в конце таблицы и ничего не сдвинули', () => {
+  it('ветки дальности стоят перед ядерными и ничего не сдвинули', () => {
     // Защита сохранённых записей матчей: индекс ветки едет в команде
     // покупки, и вставка в середину превратила бы старые записи
     // в бессмыслицу.
-    const added = 2;
-    const tail = UPGRADE_BRANCHES.slice(UPGRADE_BRANCHES.length - added);
+    // Дописано двумя заходами: сначала дальность снайпера и Теслы,
+    // затем мощность и радиус ядерного удара. Порядок дописывания
+    // и есть порядок хвоста.
+    const nuclear = 2;
+    const ranged = 2;
+    const end = UPGRADE_BRANCHES.length;
 
-    for (const branch of tail) expect(branch.stat).toBe(UpgradeStat.Range);
+    for (const branch of UPGRADE_BRANCHES.slice(end - nuclear)) {
+      expect(branch.target).toBe(UpgradeTarget.Base);
+    }
+    for (const branch of UPGRADE_BRANCHES.slice(end - nuclear - ranged, end - nuclear)) {
+      expect(branch.stat).toBe(UpgradeStat.Range);
+    }
+
     expect(upgradeBranchIndex(UpgradeTarget.UnitAssault, UpgradeStat.Attack)).toBe(0);
     expect(upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.Income)).toBe(
-      UPGRADE_BRANCHES.length - added - 1,
+      end - nuclear - ranged - 1,
     );
   });
 
@@ -436,6 +482,53 @@ describe('баланс: дальность юнитов прокачиваетс
     expect(applyPpm(STRUCTURE_STATS[StructureKind.TowerSniper].range, factor)).toBeGreaterThan(
       applyPpm(UNIT_STATS[UnitType.Tesla].range, factor),
     );
+  });
+});
+
+describe('баланс: расталкивание', () => {
+  it('личный радиус меньше половины клетки у каждой машины', () => {
+    // Радиус больше половины клетки означал бы, что машина претендует
+    // на клетку целиком, — а это уже жёсткие столкновения, которых
+    // изменение не вводит.
+    for (const type of UNIT_TYPES) {
+      const radius = UNIT_SEPARATION_RADIUS[type];
+
+      expect(radius).toBeGreaterThan(0);
+      expect(radius).toBeLessThan(cellsToUnits(0.5));
+    }
+  });
+
+  it('порядок радиусов повторяет порядок габаритов корпуса', () => {
+    // Тесла — самая широкая машина в игре, снайпер — самая узкая.
+    // Порядок здесь и есть та связь с обликом, которую из общего пакета
+    // не проверить иначе: модели живут в клиенте, а он сюда не ходит.
+    expect(UNIT_SEPARATION_RADIUS[UnitType.Tesla]).toBeGreaterThan(
+      UNIT_SEPARATION_RADIUS[UnitType.Assault],
+    );
+    expect(UNIT_SEPARATION_RADIUS[UnitType.Assault]).toBeGreaterThan(
+      UNIT_SEPARATION_RADIUS[UnitType.Sniper],
+    );
+  });
+
+  it('клиренс от стен больше любого личного радиуса', () => {
+    // Иначе правило теряет смысл: центр окажется снаружи, а корпус
+    // будет свешиваться за край скалы.
+    const widest = Math.max(...UNIT_TYPES.map((type) => UNIT_SEPARATION_RADIUS[type]));
+
+    expect(SEPARATION_WALL_CLEARANCE).toBeGreaterThan(widest);
+  });
+
+  it('толчок гасится и ограничен долей собственной скорости', () => {
+    expect(SEPARATION_DAMPING_PERCENT).toBeGreaterThan(0);
+    expect(SEPARATION_DAMPING_PERCENT).toBeLessThan(100);
+
+    // Потолок в половину скорости: даже самую медленную машину толпа
+    // не должна носить быстрее, чем она ездит сама.
+    const slowest = UNIT_STATS[UnitType.Tesla].speed;
+    const cap = Math.floor((slowest * SEPARATION_PUSH_SPEED_PERCENT) / 100);
+
+    expect(cap).toBeGreaterThan(0);
+    expect(cap).toBeLessThan(slowest);
   });
 });
 
@@ -460,12 +553,17 @@ describe('баланс: ветки прокачки', () => {
   it('ветки с пороговым эффектом дорожают на 25 процентов, прочие на 10', () => {
     // Ускоренный рост цены — не привилегия экономики, а признак ветки,
     // у которой уровень меняет не количество, а качество. У экономики это
-    // самоусиление, у дальности юнита — выход за круг ответного огня.
+    // самоусиление, у дальности юнита — выход за круг ответного огня,
+    // у радиуса удара — расширение накрытого круга, единственным
+    // ограничителем которого цена и осталась.
+    //
+    // Мощность заряда сюда не входит намеренно: она меняет именно
+    // количество — сколько прочности снято, — и дорожает как всё
+    // количественное.
     const steep = (entry: (typeof UPGRADE_BRANCHES)[number]): boolean =>
-      entry.target === UpgradeTarget.Base ||
+      (entry.target === UpgradeTarget.Base && entry.stat !== UpgradeStat.NukeDamage) ||
       (entry.stat === UpgradeStat.Range &&
-        (entry.target === UpgradeTarget.UnitSniper ||
-          entry.target === UpgradeTarget.UnitTesla));
+        (entry.target === UpgradeTarget.UnitSniper || entry.target === UpgradeTarget.UnitTesla));
 
     for (const entry of UPGRADE_BRANCHES) {
       expect(entry.costGrowthPercent).toBe(steep(entry) ? 25 : 10);
@@ -477,6 +575,21 @@ describe('баланс: ветки прокачки', () => {
       expect(entry.baseCost).toBeGreaterThan(0);
       expect(entry.effectPercent).not.toBe(0);
     }
+  });
+
+  it('шаг вдвое против общего есть только у двух ядерных веток', () => {
+    // Правило «прибавка единая для всех веток» сохраняется, и его
+    // единственное исключение обязано оставаться единственным. Ветка
+    // юнита действует на десятки объектов весь матч, ядерная — на одно
+    // событие за игру, и за радиус вдобавок платят дважды: ценой уровня
+    // и ценой каждого пуска.
+    const doubled = UPGRADE_BRANCHES.filter((entry) => entry.effectPercent === 20);
+
+    expect(doubled.map((entry) => entry.stat)).toEqual([
+      UpgradeStat.NukeDamage,
+      UpgradeStat.NukeRadius,
+    ]);
+    expect(doubled.every((entry) => entry.target === UpgradeTarget.Base)).toBe(true);
   });
 });
 
@@ -507,10 +620,93 @@ describe('сложные проценты', () => {
     expect(applyPpm(123, PPM_ONE)).toBe(123);
   });
 
-  it('два убийства подряд усиливают башню сложным процентом', () => {
+  it('два шага по пять процентов дают сложный, а не простой процент', () => {
     // 1,05^2 = 1,1025 — это и отличает сложный процент от простого,
     // который дал бы 1,10.
     expect(compoundPpm(5, 2)).toBe(1_102_500);
+  });
+});
+
+describe('ветеранские ранги', () => {
+  it('ранг растёт по порогам, а не за каждое убийство', () => {
+    expect(veteranRank(0)).toBe(0);
+    expect(veteranRank(1)).toBe(1);
+    expect(veteranRank(2)).toBe(1);
+    expect(veteranRank(3)).toBe(2);
+    expect(veteranRank(5)).toBe(2);
+    expect(veteranRank(6)).toBe(3);
+    expect(veteranRank(9)).toBe(3);
+    expect(veteranRank(10)).toBe(4);
+    expect(veteranRank(14)).toBe(4);
+    expect(veteranRank(15)).toBe(5);
+  });
+
+  it('выше пятого ранга не поднимаются, сколько бы ни набрали', () => {
+    expect(veteranRank(40)).toBe(VETERAN_MAX_RANK);
+    expect(veteranRank(1000)).toBe(VETERAN_MAX_RANK);
+    expect(veteranStructurePpmOf(1000)).toBe(2 * PPM_ONE);
+    expect(veteranUnitPpmOf(1000)).toBe(1_500_000);
+  });
+
+  it('пороги — треугольные числа: каждый ранг дороже на одно убийство', () => {
+    // Правило, которое игрок должен уметь пересказать одной фразой.
+    // Разойдись пороги с ним — фраза перестанет быть правдой.
+    let previous = 0;
+    VETERAN_RANK_KILLS.forEach((threshold, index) => {
+      expect(threshold - previous).toBe(index + 1);
+      previous = threshold;
+    });
+  });
+
+  it('множители башни растут и кончаются ровно на удвоении', () => {
+    expect(veteranStructurePpm(0)).toBe(PPM_ONE);
+    expect(veteranStructurePpm(1)).toBe(1_100_000);
+    expect(veteranStructurePpm(2)).toBe(1_250_000);
+    expect(veteranStructurePpm(3)).toBe(1_450_000);
+    expect(veteranStructurePpm(4)).toBe(1_700_000);
+    // Ровно вдвое: круглое число проговаривается вслух и потому
+    // запоминается.
+    expect(veteranStructurePpm(VETERAN_MAX_RANK)).toBe(2 * PPM_ONE);
+  });
+
+  it('машина крепчает заметно мягче башни на каждом ранге', () => {
+    // Это не украшение таблицы, а замер: при общей таблице матч уходил
+    // вниз из проектной вилки 10–15 минут, потому что исход решают
+    // живые юниты. Разойдись таблицы обратно — вернётся и перекос.
+    for (let rank = 1; rank <= VETERAN_MAX_RANK; rank += 1) {
+      expect(veteranUnitPpm(rank)).toBeLessThan(veteranStructurePpm(rank));
+      expect(veteranUnitPpm(rank)).toBeGreaterThan(PPM_ONE);
+    }
+
+    expect(veteranUnitPpm(VETERAN_MAX_RANK)).toBe(1_500_000);
+  });
+
+  it('пороги у башни и машины общие', () => {
+    // Знак различия один на обоих, и означать он обязан одно и то же
+    // число убийств. Разъедься пороги — три ёлочки над башней и три
+    // над машиной перестали бы значить одинаковое.
+    expect(VETERAN_STRUCTURE_PPM).toHaveLength(VETERAN_MAX_RANK);
+    expect(VETERAN_UNIT_PPM).toHaveLength(VETERAN_MAX_RANK);
+  });
+
+  it('шаг награды башни растёт вместе с ценой ранга', () => {
+    // Цена ранга растёт на одно убийство, награда — на пять процентных
+    // пунктов. Обе прогрессии арифметические, поэтому последние ранги
+    // имеет смысл брать осознанно.
+    const steps = VETERAN_STRUCTURE_PPM.map(
+      (ppm, index) => ppm - (VETERAN_STRUCTURE_PPM[index - 1] ?? PPM_ONE),
+    );
+
+    expect(steps).toEqual([100_000, 150_000, 200_000, 250_000, 300_000]);
+  });
+
+  it('ход к следующему рангу считается по порогам', () => {
+    expect(killsToNextRank(0)).toBe(1);
+    expect(killsToNextRank(1)).toBe(2);
+    expect(killsToNextRank(4)).toBe(2);
+    // У высшего ранга следующего нет — обещать нечего.
+    expect(killsToNextRank(15)).toBe(0);
+    expect(killsToNextRank(99)).toBe(0);
   });
 });
 

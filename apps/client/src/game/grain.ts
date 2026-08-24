@@ -59,8 +59,7 @@ export const encodeSlope = (slope: number): number =>
   Math.round(((slope / GRAIN_SLOPE_SCALE + 1) / 2) * 255);
 
 /** Обратно. Нужна тестам и разбору, в кадре не участвует. */
-export const decodeSlope = (byte: number): number =>
-  ((byte / 255) * 2 - 1) * GRAIN_SLOPE_SCALE;
+export const decodeSlope = (byte: number): number => ((byte / 255) * 2 - 1) * GRAIN_SLOPE_SCALE;
 
 /**
  * Построить плитку.

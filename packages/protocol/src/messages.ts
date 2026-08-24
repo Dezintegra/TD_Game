@@ -182,7 +182,8 @@ export interface MatchOverMessage {
   readonly reason: OutcomeReason;
 }
 
-export type ClientMessage = PingMessage | PongMessage | JoinMessage | CommandMessage | HistoryFromMessage;
+export type ClientMessage =
+  PingMessage | PongMessage | JoinMessage | CommandMessage | HistoryFromMessage;
 
 export type ServerMessage =
   | PingMessage

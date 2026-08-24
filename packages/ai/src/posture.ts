@@ -10,10 +10,10 @@ import {
   STRUCTURE_STATS,
   StructureKind,
   TICKS_PER_SECOND,
-  TOWER_GROWTH_CAP_PPM,
-  TOWER_KILL_GROWTH_PERCENT,
+  VETERAN_RANK_KILLS,
   cellsToUnits,
   distanceSquared,
+  veteranStructurePpmOf,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
 import {
@@ -235,7 +235,7 @@ export const incomingAt = (
     );
     if (distance > baseline.range * baseline.range) continue;
 
-    fromStructures += structureAttack(baseline, structure.growthPpm) / baseline.cooldownTicks;
+    fromStructures += structureAttack(baseline, structure.kills) / baseline.cooldownTicks;
   }
 
   // Куда идут вражеские войска, известно: у игрока одна общая цель
@@ -246,7 +246,8 @@ export const incomingAt = (
     if (unit.owner === me) continue;
 
     const baseline = enemyStats.units[unit.unitType];
-    const reach = baseline.range + approachDistance(unit, point, enemyTarget, baseline.speed, withinTicks);
+    const reach =
+      baseline.range + approachDistance(unit, point, enemyTarget, baseline.speed, withinTicks);
     if (distanceSquared(unit.position, point) > reach * reach) continue;
 
     fromUnits += baseline.attack / baseline.cooldownTicks;
@@ -310,11 +311,7 @@ const forEachInDisc = (cell: number, rangeCells: number, visit: (cell: number) =
  * больше трёх башен рядом с генералом» врал: три башни в скальном горле
  * и три в чистом поле накрывают совершенно разное.
  */
-export const coveredCells = (
-  world: WorldState,
-  me: PlayerId,
-  myStats: PlayerStats,
-): Uint8Array => {
+export const coveredCells = (world: WorldState, me: PlayerId, myStats: PlayerStats): Uint8Array => {
   const covered = new Uint8Array(MAP_CELL_COUNT);
 
   for (const structure of world.structures) {
@@ -369,19 +366,23 @@ export const freshCoverage = (
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Средний множитель роста башни за горизонт планирования.
+ * Средний множитель ветеранского ранга башни за горизонт планирования.
  *
- * Башня получает пять процентов к атаке и прочности за каждое убийство,
- * сложным процентом; юнит не получает ничего. Пока рост не учитывался,
- * башня мерилась чужой меркой — и проигрывала сравнение, которое на деле
- * выигрывает.
+ * Башня набирает ранги за убийства и к пятнадцатому убийству становится
+ * вдвое сильнее. Пока рост не учитывался, башня мерилась чужой меркой —
+ * и проигрывала сравнение, которое на деле выигрывает.
  *
  * Число убийств выводится, а не задаётся: столько, сколько башня успеет
  * при своём уроне за горизонт, считая по здоровью опорного юнита.
  * Множитель берётся СРЕДНИЙ за горизонт, а не конечный, потому что
- * усиливается башня постепенно: к концу горизонта она сильнее в полтора
- * раза, но большую часть времени была слабее. Для равномерных убийств
- * среднее геометрической прогрессии считается точно.
+ * усиливается башня постепенно: к концу горизонта она может быть вдвое
+ * сильнее, но большую часть времени была слабее.
+ *
+ * Считается точно, а не приближением. Множитель кусочно-постоянен —
+ * он меняется на порогах рангов, — поэтому среднее это сумма
+ * «значение × длина куска», делённая на число убийств. Прежде здесь
+ * стояло среднее геометрической прогрессии: рост был непрерывным,
+ * и формула для него годилась. Ступенчатому росту она уже не подходит.
  *
  * Оценка занижена дважды, и оба раза намеренно. Убийства считаются
  * по паспортному урону, хотя растущая башня убивает быстрее; опорным
@@ -389,17 +390,28 @@ export const freshCoverage = (
  * здесь следует в сторону осторожности: башня и без того выходит самой
  * выгодной покупкой.
  *
- * Потолок — тот же, что в правилах. Без него у сильно прокачанной башни
- * степень ушла бы в бесконечность, а правила такого роста не позволяют.
+ * Потолок соблюдается сам собой: выше пятого ранга таблица не идёт.
  */
 export const towerGrowthFactor = (damagePerTick: number, horizon: number): number => {
   const kills = (damagePerTick * horizon) / BASE_HEALTH;
   if (kills <= 0) return 1;
 
-  const step = 1 + TOWER_KILL_GROWTH_PERCENT / 100;
-  const average = (step ** kills - 1) / (kills * (step - 1));
+  let weighted = 0;
+  let from = 0;
 
-  return Math.min(TOWER_GROWTH_CAP_PPM / PPM_ONE, average);
+  // Пороги плюс само число убийств как последняя граница: последний
+  // кусок обрывается там, где горизонт кончился.
+  for (const threshold of [...VETERAN_RANK_KILLS, kills]) {
+    const to = Math.min(threshold, kills);
+    if (to <= from) continue;
+
+    weighted += (veteranStructurePpmOf(from) / PPM_ONE) * (to - from);
+    from = to;
+
+    if (from >= kills) break;
+  }
+
+  return weighted / kills;
 };
 
 /**
@@ -625,7 +637,7 @@ const pressureOnHome = (situation: Situation): number => {
     const baseline = situation.myStats.structures[structure.kind];
     if (baseline.attack <= 0 || baseline.range <= 0) continue;
 
-    ownDamage += structureAttack(baseline, structure.growthPpm) / baseline.cooldownTicks;
+    ownDamage += structureAttack(baseline, structure.kills) / baseline.cooldownTicks;
   }
 
   return Math.max(0, enemyDamage - ownDamage);
@@ -643,11 +655,7 @@ const pressureOnHome = (situation: Situation): number => {
  * порядок в конце разворачивается: вызывающему нужна дорога в ту сторону,
  * в которую он пойдёт, — от неё зависит, когда он окажется в каждой точке.
  */
-export const probeRoute = (
-  reach: Int32Array,
-  from: number,
-  probes: number,
-): readonly number[] => {
+export const probeRoute = (reach: Int32Array, from: number, probes: number): readonly number[] => {
   if (probes <= 0) return [];
 
   const route: number[] = [];
@@ -719,11 +727,7 @@ export const probeRoute = (
  * дойдёт: за это время достроятся башни и подойдут войска.
  */
 const roadDamage = (situation: Situation, frontier: Frontier, travelTicks: number): number => {
-  const probes = probeRoute(
-    situation.reach,
-    frontier.cell,
-    situation.profile.posture.pathProbes,
-  );
+  const probes = probeRoute(situation.reach, frontier.cell, situation.profile.posture.pathProbes);
   if (probes.length === 0 || travelTicks <= 0) return 0;
 
   const perSegment = travelTicks / probes.length;

@@ -71,7 +71,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, structure.kind);
     hash = mix(hash, structure.cell);
     hash = mix(hash, structure.health);
-    hash = mix(hash, structure.growthPpm);
+    hash = mix(hash, structure.kills);
     hash = mix(hash, structure.readyAtTick);
     hash = mix(hash, structure.builtAtTick);
     hash = mix(hash, structure.demolishAtTick);
@@ -87,6 +87,7 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, unit.health);
     hash = mix(hash, unit.facing);
     hash = mix(hash, unit.readyAtTick);
+    hash = mix(hash, unit.kills);
   }
 
   for (const general of state.generals) {
@@ -119,6 +120,12 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, nuke.owner);
     hash = mix(hash, nuke.cell);
     hash = mix(hash, nuke.detonateAtTick);
+    // Радиус и мощность — состояние мира, а не производная от него
+    // величина: они заморожены в момент пуска и после этого не выводятся
+    // ниоткуда. Расхождение по мощности заряда обязано ловиться сверкой,
+    // а не обнаруживаться взрывом.
+    hash = mix(hash, nuke.radius);
+    hash = mix(hash, nuke.damage);
   }
 
   // Поля потока в сумму не входят намеренно, хотя и лежат в состоянии мира.

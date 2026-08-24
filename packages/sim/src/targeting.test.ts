@@ -6,7 +6,6 @@ import {
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
-  PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
   TICKS_PER_SECOND,
@@ -76,6 +75,7 @@ const unit = (id: number, owner: number, dx: number, dy: number): UnitState => (
   health: UNIT_STATS[UnitType.Assault].health,
   facing: 1,
   readyAtTick: asTickNumber(0),
+  kills: 0,
 });
 
 const structure = (
@@ -90,7 +90,7 @@ const structure = (
   kind,
   cell: cellOffset(dx, dy),
   health: STRUCTURE_STATS[kind].health,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
@@ -472,8 +472,8 @@ describe('стреляющая постройка как цель', () => {
     });
     const wallIndex = structureIndex(world, WALL_ID);
 
-    expect(targetOf(world, { range: UNIT_RANGE, elevated: false, globalTarget: wallIndex })).toEqual(
-      { kind: TargetKind.Structure, index: wallIndex },
-    );
+    expect(
+      targetOf(world, { range: UNIT_RANGE, elevated: false, globalTarget: wallIndex }),
+    ).toEqual({ kind: TargetKind.Structure, index: wallIndex });
   });
 });

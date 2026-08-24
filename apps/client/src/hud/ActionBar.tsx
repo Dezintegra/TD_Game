@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEvent, ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import {
   BUILDABLE_KINDS,
   STRUCTURE_UPGRADE_TARGET,
@@ -18,19 +18,27 @@ import { STRUCTURE_SHORT, UNIT_SHORT, UPGRADE_STAT_SHORT, UPGRADE_UNIT } from '.
 /**
  * Нижний тулбар: всё, чем игрок распоряжается, и вся прокачка.
  *
- * Прокачка живёт здесь, а не отдельной панелью, и это главное решение
- * изменения. Прежняя панель перечисляла двадцать девять веток строкой
+ * Прокачка живёт при плитках, а не отдельным списком, и это главное
+ * решение. Прежняя панель перечисляла двадцать девять веток строкой
  * «Атака — ур. 7 — 96» в другом углу экрана. Ни на один вопрос игрока она
  * не отвечала: что такое седьмой уровень атаки, он не знает, а решение
  * «докупить Тесле дальность» принимается там, где видно саму Теслу.
  *
- * Поэтому под каждой плиткой стоит столбец с ДЕЙСТВУЮЩИМИ значениями,
+ * Поэтому у каждой плитки есть столбец с ДЕЙСТВУЮЩИМИ значениями,
  * и стрелка покупки — прямо у той характеристики, которую она поднимает.
  *
- * Плиток две группы. Слева заказываемое: юниты, постройки, ядерный удар.
- * Справа свои объекты: генерал и база. Разделять их обязательно —
- * нажатие по базе ничего не заказывает, и без границы это читалось бы
- * поломкой.
+ * Показывается этот столбец по-разному, и решает это CSS, а не React.
+ * На мониторе — под плиткой в полосе, как прежде. На маленьком экране
+ * полоса поднимается панелью поверх поля и раскладывается в три ряда:
+ * юниты, постройки, генерал с базой. Разметка при этом ОДНА, и это
+ * не экономия строк: две разметки означали бы две плитки `train-0`
+ * в документе, два набора подписок на store и переименование половины
+ * сквозных проверок.
+ *
+ * Отсюда же требование к стилям: размеры задаются классами, а не
+ * встроенным стилем. Встроенный стиль медиазапросом не переопределить,
+ * и любая величина, записанная здесь числом, была бы одинакова
+ * на мониторе и на телефоне — то есть раскладки бы не было.
  *
  * Никакой игровой логики здесь нет: компонент читает готовый снимок
  * из store и вызывает команду. Решение, можно ли построить башню
@@ -38,114 +46,15 @@ import { STRUCTURE_SHORT, UNIT_SHORT, UPGRADE_STAT_SHORT, UPGRADE_UNIT } from '.
  */
 
 /**
- * Запрет сжатия здесь ОБЯЗАТЕЛЕН, и не для красоты.
+ * Роль плитки — единственное, что React о размерах знает.
  *
- * Плитка сжиматься не умеет (см. `tileStyle`). Если при этом сжимается
- * группа, в которой плитки лежат, получается вот что: группа ужимается
- * под ширину экрана, плитки из неё вылезают за её границу, а СЛЕДУЮЩАЯ
- * группа встаёт по ужатой границе предыдущей — то есть поверх её плиток.
- *
- * Видно это было как «блок прокачки стены перекрыл Теслу», а нажималось
- * как «кнопки не работают»: стрелки покупки оказывались физически
- * под соседней плиткой, и нажатие доставалось ей.
- *
- * Не сжимается вся цепочка до плитки: сам тулбар, каждая группа
- * и разделитель. Достаточно одного сжимаемого звена, чтобы беда
- * вернулась.
+ * Роль отвечает не на вопрос «какой экран», а на вопрос «чего стоит
+ * промах», и это свойство самого действия. Заказ тратит энергию не на то
+ * и вернуть её нельзя; служебное нажатие снимается повторным нажатием
+ * и не стоит ничего. Размеры по ролям раздаёт CSS (`--td-tile-order-min`
+ * и `--td-tile-service-min`), здесь же только называется роль.
  */
-const barStyle: CSSProperties = {
-  display: 'flex',
-  gap: 'var(--td-space-3)',
-  alignItems: 'flex-start',
-  flexShrink: 0,
-};
-
-/**
- * Промежутки здесь мельче обычных, и это вынужденно: плиток девять,
- * и каждая лишняя четвёрка точек между ними умножается на восемь.
- * На ноутбуке шириной 1366 запаса нет.
- */
-const groupStyle: CSSProperties = {
-  display: 'flex',
-  gap: 'var(--td-space-1)',
-  alignItems: 'flex-start',
-  flexShrink: 0,
-};
-
-/** Граница между заказываемым и своими объектами. */
-const dividerStyle: CSSProperties = {
-  width: 1,
-  alignSelf: 'stretch',
-  background: 'var(--td-border-divider)',
-  margin: '0 var(--td-space-1)',
-  flexShrink: 0,
-};
-
-const tileStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'stretch',
-  gap: 2,
-  minWidth: 'var(--td-tile-min)',
-
-  // Плитка НЕ сжимается, и это не украшение.
-  //
-  // Флекс, ужимая плитки под узкое окно, переносит подписи внутри строк
-  // характеристик — и полоса молча вырастает по высоте, наезжая на поле.
-  // Проверено: при окне 1280 тулбар ужимался с 1279 до 1248 точек
-  // и вырастал со 156 до 187 при отведённых 177.
-  //
-  // Отказ от сжатия делает беду видимой: не влезло — значит поехало вбок,
-  // и это видно сразу, а не в бою.
-  flexShrink: 0,
-
-  padding: 'var(--td-space-1)',
-  border: '1px solid var(--td-border-control)',
-  borderRadius: 'var(--td-radius-control)',
-  background: 'var(--td-bg-input)',
-  color: 'var(--td-text-secondary)',
-  fontFamily: 'var(--td-font-ui)',
-  fontSize: 'var(--td-text-sm)',
-};
-
-const headStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  // Промежуток мельче обычного: плиток десять, и каждая лишняя четвёрка
-  // точек между значком и подписью умножается на десять. При окне 1280
-  // тулбару без этого не хватало семи точек.
-  gap: 'var(--td-space-1)',
-  width: '100%',
-  // Своя высота, а не общая цель нажатия: плитка широкая, мимо неё
-  // в соседнюю попасть трудно, а каждая её точка отнимается у поля
-  // десятикратно — плиток десять, а высота у них общая.
-  minHeight: 'var(--td-tile-head-height)',
-  padding: 0,
-  border: 'none',
-  background: 'transparent',
-  color: 'inherit',
-  font: 'inherit',
-  textAlign: 'left',
-  cursor: 'pointer',
-};
-
-const nameStyle: CSSProperties = {
-  fontWeight: 600,
-  whiteSpace: 'nowrap',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-};
-
-const monoStyle: CSSProperties = {
-  fontFamily: 'var(--td-font-mono)',
-  color: 'var(--td-text-muted-2)',
-};
-
-const hotkeyStyle: CSSProperties = {
-  color: 'var(--td-text-muted-4)',
-  fontSize: 'var(--td-text-xs)',
-  marginLeft: 'auto',
-};
+type TileRole = 'order' | 'service';
 
 interface TileProps {
   readonly icon: ReactNode;
@@ -155,6 +64,7 @@ interface TileProps {
   readonly cost: number;
   readonly affordable: boolean;
   readonly active?: boolean;
+  readonly role: TileRole;
   /** Цель прокачки, чьи характеристики показывать. Нет — столбца нет. */
   readonly target?: UpgradeTarget | undefined;
   readonly testId: string;
@@ -168,6 +78,7 @@ const Tile = ({
   cost,
   affordable,
   active,
+  role,
   target,
   testId,
   onSelect,
@@ -176,49 +87,36 @@ const Tile = ({
 
   return (
     <div
+      className="td-tile"
       data-testid={testId}
-      style={{
-        ...tileStyle,
-        borderColor: active === true ? 'var(--td-accent)' : 'var(--td-border-control)',
-        boxShadow: active === true ? 'var(--td-glow-accent)' : 'none',
-      }}
+      data-role={role}
+      data-active={String(active === true)}
     >
       <button
         type="button"
+        className="td-tile-head"
         data-testid={`${testId}-select`}
         onClick={onSelect}
-        style={{
-          ...headStyle,
-          // Недоступное по цене приглушается, но кликается: ядро само
-          // отклонит команду, а серая плитка сообщает «дорого», не мешая
-          // нажать заранее.
-          opacity: affordable ? 1 : 0.45,
-        }}
+        // Недоступное по цене приглушается, но кликается: ядро само
+        // отклонит команду, а серая плитка сообщает «дорого», не мешая
+        // нажать заранее. Это состояние, а не раскладка, — поэтому
+        // встроенным стилем.
+        style={{ opacity: affordable ? 1 : 0.45 }}
       >
-        <span
-          style={{
-            width: 22,
-            height: 20,
-            flexShrink: 0,
-            color: active === true ? 'var(--td-accent)' : 'var(--td-player-self)',
-          }}
-        >
+        <span className="td-tile-icon" aria-hidden>
           {icon}
         </span>
-        <span style={{ ...nameStyle, color: active === true ? 'var(--td-accent)' : undefined }}>
-          {label}
-        </span>
-        <span style={hotkeyStyle} className="td-key-hint">
-          {hotkey}
-        </span>
+        <span className="td-tile-name">{label}</span>
+        <span className="td-key-hint td-tile-hotkey">{hotkey}</span>
       </button>
 
       {cost > 0 && (
-        <span
-          style={{ ...monoStyle, fontSize: 'var(--td-text-xs)', lineHeight: 1.2 }}
-          data-testid={`${testId}-cost`}
-        >
-          цена {cost}
+        <span className="td-tile-cost" data-testid={`${testId}-cost`}>
+          {/* Слово «цена» на телефоне прячется правилом CSS, число
+              остаётся. Плитке заказа отведено сорок четыре точки, и это
+              выбор между «40» и «цена 40 за краем экрана». */}
+          <span className="td-tile-cost-label">цена </span>
+          {cost}
         </span>
       )}
 
@@ -241,61 +139,13 @@ const StatColumn = ({ target }: { readonly target: UpgradeTarget }) => {
   if (count === 0) return null;
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        // Промежуток между строками — полоса безопасности, а не отступ.
-        // На маленьком экране стрелка ужимается по высоте, и промах
-        // становится вероятнее; попасть он должен в пустоту, а не
-        // в соседнюю ветку, иначе деньги уйдут не туда.
-        gap: 'var(--td-stat-row-gap)',
-        marginTop: 2,
-      }}
-    >
+    <div className="td-stat-column">
       {Array.from({ length: count }, (_, index) => (
         <StatLine key={index} target={target} index={index} />
       ))}
     </div>
   );
 };
-
-const lineStyle: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: '1fr auto auto',
-  alignItems: 'center',
-  gap: 'var(--td-space-1)',
-  fontSize: 'var(--td-text-xs)',
-  lineHeight: 1.5,
-};
-
-const arrowStyle = (affordable: boolean): CSSProperties => ({
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 2,
-  padding: '0 3px',
-  // Самая мелкая цель во всём интерфейсе, и промах по ней не молчалив:
-  // соседняя строка — другая ветка, и деньги уходят не туда, куда игрок
-  // целился. На мыши токен мал, на пальце вырастает до сорока четырёх.
-  //
-  // Высота отдельным токеном, и это вынужденно: строки стоят стопкой,
-  // высота строки равна высоте стрелки, и пять строк по сорок четыре
-  // не помещаются в полосу телефона. Ширина при этом не ужимается —
-  // она ничего не стоит, строка и так во всю плитку.
-  minWidth: 'var(--td-hit-target)',
-  minHeight: 'var(--td-hit-target-y)',
-  border: `1px solid ${affordable ? 'var(--td-accent)' : 'var(--td-border-control)'}`,
-  borderRadius: 2,
-  background: 'transparent',
-  // Недоступная стрелка приглушается, но не прячется: игрок должен видеть,
-  // что копить есть на что.
-  color: affordable ? 'var(--td-accent)' : 'var(--td-text-muted-4)',
-  fontFamily: 'var(--td-font-mono)',
-  fontSize: 10,
-  lineHeight: 1.4,
-  cursor: 'pointer',
-});
 
 /**
  * Одна характеристика: название, действующее значение и стрелка покупки.
@@ -329,26 +179,25 @@ const StatLine = ({
   const row = { branch, value, fraction, cost, affordable };
 
   return (
-    <div style={lineStyle} data-testid={`stat-${String(branch)}`}>
-      <span
-        title={description.label}
-        style={{ color: 'var(--td-text-muted-3)', whiteSpace: 'nowrap' }}
-      >
+    <div className="td-stat-line" data-testid={`stat-${String(branch)}`}>
+      <span className="td-stat-name" title={description.label}>
         {UPGRADE_STAT_SHORT[description.stat]}
       </span>
-      <span
-        data-testid={`stat-value-${String(branch)}`}
-        style={{ fontFamily: 'var(--td-font-mono)', color: 'var(--td-text-primary)' }}
-      >
+      <span className="td-stat-value" data-testid={`stat-value-${String(branch)}`}>
         {row.value.toFixed(row.fraction)}
-        {UPGRADE_UNIT[description.stat]}
+        {/* Единица измерения отдельным элементом: в панели телефона
+            она прячется правилом CSS. Восемь плиток в ширину ландшафта
+            помещаются только так, а размерность в этот момент уже сказана
+            названием строки — «дальн.» и «скор.» ни с чем не спутать. */}
+        <span className="td-stat-unit">{UPGRADE_UNIT[description.stat]}</span>
       </span>
       <button
         type="button"
+        className="td-stat-buy"
         data-testid={`upgrade-${String(branch)}`}
+        data-affordable={String(row.affordable)}
         title={`Улучшить за ${String(row.cost)}`}
         onClick={() => matchCommands().buyUpgrade(branch)}
-        style={arrowStyle(row.affordable)}
       >
         <span aria-hidden>▲</span>
         {row.cost}
@@ -372,24 +221,22 @@ const STRUCTURE_HOTKEY: Readonly<Record<StructureKind, string>> = {
 };
 
 /**
- * Кнопка «свернуть — развернуть характеристики».
+ * Кнопка «открыть — закрыть прокачку».
  *
- * На мониторе её нет: там то же самое делает клавиша R, и лишний элемент
- * в тулбаре, где на ноутбуке 1366 запаса нет, стоил бы места ни за что.
+ * Стоит в левом нижнем углу экрана и есть на ЛЮБОМ размере окна. Прежде
+ * её не было на мониторе вовсе: там прокачку разворачивала клавиша `R`,
+ * и о самой возможности на экране не сообщало ничто. Возможность,
+ * о которой не сообщают, для игрока не существует — он либо не знает,
+ * что прокачку можно убрать, либо не знает, что она есть. Обнаружить её
+ * случайным нажатием `R` — это не обнаружение, а везение.
  *
- * На телефоне нажать R нечем. Без этой кнопки режим переключить нельзя
- * вовсе, и игрок остаётся в том состоянии, какое сохранилось с прошлого
- * раза, — то есть, как правило, с развёрнутыми характеристиками поверх
- * половины экрана.
+ * Клавиша при этом осталась и делает то же самое.
  *
- * Прилипает к левому краю (`position: sticky`), потому что тулбар едет
- * вбок: уехав вместе с плитками, кнопка стала бы недостижимой ровно
- * тогда, когда нужна, — когда столбцы открыты и до края далеко.
- *
- * Показывается и прячется правилом CSS по размеру экрана, а не ветвлением
- * здесь: React о размере экрана знать не должен.
+ * Имя состояния (`statsOpen`), ключ хранилища и `data-testid` менять
+ * не стали намеренно: переименование ключа молча вернуло бы всем
+ * играющим чужое умолчание, а ради одного слова это дорого.
  */
-const StatsToggle = () => {
+const UpgradesToggle = () => {
   const statsOpen = useHudStore((state) => state.statsOpen);
 
   return (
@@ -398,11 +245,11 @@ const StatsToggle = () => {
       className="td-stats-toggle"
       data-testid="stats-toggle"
       data-open={String(statsOpen)}
-      title={statsOpen ? 'Свернуть характеристики' : 'Показать характеристики'}
+      title={statsOpen ? 'Закрыть прокачку (R)' : 'Открыть прокачку (R)'}
       onClick={() => matchCommands().toggleStats()}
     >
       <span aria-hidden>{statsOpen ? '▾' : '▴'}</span>
-      <span>стат</span>
+      <span>прокачка</span>
     </button>
   );
 };
@@ -411,114 +258,136 @@ export const ActionBar = () => {
   const match = useHudStore((state) => state.match);
 
   return (
-    <div style={barStyle} data-testid="toolbar">
-      <StatsToggle />
+    <>
+      <UpgradesToggle />
 
-      <div style={groupStyle} data-testid="production-panel">
-        {UNIT_TYPES.map((type) => {
-          const Icon = UNIT_GLYPH[type];
-          const cost = match.unitCosts[type] ?? 0;
+      <div className="td-toolbar" data-testid="toolbar">
+        <div className="td-tile-group" data-testid="production-panel">
+          {UNIT_TYPES.map((type) => {
+            const Icon = UNIT_GLYPH[type];
+            const cost = match.unitCosts[type] ?? 0;
 
-          return (
-            <Tile
-              key={`unit-${String(type)}`}
-              testId={`train-${String(type)}`}
-              icon={<Icon />}
-              label={UNIT_SHORT[type]}
-              hotkey={UNIT_HOTKEY[type]}
-              cost={cost}
-              affordable={match.energy >= cost}
-              target={UNIT_UPGRADE_TARGET[type]}
-              // Ctrl или Shift — заказ пачки. Ядро проверит каждый заказ
-              // отдельно, поэтому «десять, когда хватает на четыре»
-              // превращается в четыре.
-              onSelect={(event) =>
-                matchCommands().train(type, event.ctrlKey || event.shiftKey ? BATCH_ORDER_COUNT : 1)
-              }
-            />
-          );
-        })}
+            return (
+              <Tile
+                key={`unit-${String(type)}`}
+                testId={`train-${String(type)}`}
+                role="order"
+                icon={<Icon />}
+                label={UNIT_SHORT[type]}
+                hotkey={UNIT_HOTKEY[type]}
+                cost={cost}
+                affordable={match.energy >= cost}
+                target={UNIT_UPGRADE_TARGET[type]}
+                // Ctrl или Shift — заказ пачки. Ядро проверит каждый заказ
+                // отдельно, поэтому «десять, когда хватает на четыре»
+                // превращается в четыре.
+                onSelect={(event) =>
+                  matchCommands().train(
+                    type,
+                    event.ctrlKey || event.shiftKey ? BATCH_ORDER_COUNT : 1,
+                  )
+                }
+              />
+            );
+          })}
+        </div>
+
+        <div className="td-tile-group" data-testid="build-panel">
+          {BUILDABLE_KINDS.map((kind) => {
+            const Icon = STRUCTURE_GLYPH[kind];
+            const cost = match.structureCosts[kind] ?? 0;
+
+            return (
+              <Tile
+                key={`structure-${String(kind)}`}
+                testId={`build-${String(kind)}`}
+                role="order"
+                icon={<Icon />}
+                label={STRUCTURE_SHORT[kind]}
+                hotkey={STRUCTURE_HOTKEY[kind]}
+                cost={cost}
+                affordable={match.energy >= cost}
+                active={match.buildKind === kind}
+                target={STRUCTURE_UPGRADE_TARGET[kind]}
+                onSelect={() =>
+                  matchCommands().setBuildKind(match.buildKind === kind ? null : kind)
+                }
+              />
+            );
+          })}
+        </div>
+
+        {/* Наведение стоит отдельной группой от построек, хотя раньше
+            лежало с ними вместе. Причина не в порядке, а в том, что этой
+            группе нечего показывать в панели прокачки: ни у удара,
+            ни у цели веток нет. Панель раскладывает группы рядами —
+            юниты, постройки, свои объекты, — и группа без единой ветки
+            в ряду выглядела бы пустой строкой.
+
+            Заодно это единственные две плитки, промах по которым
+            не стоит ничего: обе только включают режим. */}
+        <div className="td-tile-group" data-testid="aim-panel">
+          <Tile
+            testId="aim-nuke"
+            role="service"
+            icon={<span className="td-tile-emoji">☢</span>}
+            label="Ядерка"
+            hotkey="F"
+            cost={match.nukeCost}
+            affordable={match.energy >= match.nukeCost}
+            active={match.aimingNuke}
+            onSelect={() => matchCommands().toggleNukeAim()}
+          />
+
+          {/* Цель атаки существует ради касания: цель ставит правая
+              кнопка мыши, а у пальца кнопок нет вовсе. Правая кнопка
+              при этом работает как прежде — два пути к одному действию
+              отличаются ценой: кнопка заметнее, правая кнопка быстрее. */}
+          <Tile
+            testId="aim-target"
+            role="service"
+            icon={<TargetGlyph />}
+            label="Цель"
+            hotkey="ПКМ"
+            cost={0}
+            affordable
+            active={match.aimingTarget}
+            onSelect={() => matchCommands().toggleTargetAim()}
+          />
+        </div>
+
+        <span className="td-toolbar-divider" data-testid="toolbar-divider" />
+
+        <div className="td-tile-group" data-testid="own-panel">
+          <Tile
+            testId="focus-general"
+            role="service"
+            icon={<GeneralGlyph />}
+            label="Генерал"
+            hotkey="Пробел"
+            cost={0}
+            affordable
+            target={UpgradeTarget.General}
+            onSelect={() => matchCommands().focusOwn('general')}
+          />
+
+          {/* Плитка базы на маленьком экране прячется правилом CSS,
+              а её место занимает прочность базы в верхней полосе: число
+              уже там и уже про базу. В панели прокачки плитка снова
+              появляется — там она нужна ради добычи энергии. */}
+          <Tile
+            testId="focus-base"
+            role="service"
+            icon={<BaseGlyph />}
+            label="База"
+            hotkey=""
+            cost={0}
+            affordable
+            target={UpgradeTarget.Base}
+            onSelect={() => matchCommands().focusOwn('base')}
+          />
+        </div>
       </div>
-
-      <div style={groupStyle} data-testid="build-panel">
-        {BUILDABLE_KINDS.map((kind) => {
-          const Icon = STRUCTURE_GLYPH[kind];
-          const cost = match.structureCosts[kind] ?? 0;
-
-          return (
-            <Tile
-              key={`structure-${String(kind)}`}
-              testId={`build-${String(kind)}`}
-              icon={<Icon />}
-              label={STRUCTURE_SHORT[kind]}
-              hotkey={STRUCTURE_HOTKEY[kind]}
-              cost={cost}
-              affordable={match.energy >= cost}
-              active={match.buildKind === kind}
-              target={STRUCTURE_UPGRADE_TARGET[kind]}
-              onSelect={() => matchCommands().setBuildKind(match.buildKind === kind ? null : kind)}
-            />
-          );
-        })}
-
-        {/* У ядерного удара веток прокачки нет, поэтому и столбца нет. */}
-        <Tile
-          testId="aim-nuke"
-          icon={<span style={{ fontSize: 16, lineHeight: 1 }}>☢</span>}
-          label="Ядерка"
-          hotkey="F"
-          cost={match.nukeCost}
-          affordable={match.energy >= match.nukeCost}
-          active={match.aimingNuke}
-          onSelect={() => matchCommands().toggleNukeAim()}
-        />
-
-        {/* Цель атаки стоит рядом с ударом, а не с постройками: у них
-            одна грамматика — «нажал кнопку, ткнул клетку», и режим
-            снимается указанием клетки. Постройку ставят подряд, цель
-            назначают одну.
-
-            Существует эта плитка ради касания: цель ставит правая кнопка
-            мыши, а у пальца кнопок нет вовсе. Правая кнопка при этом
-            работает как прежде — два пути к одному действию отличаются
-            ценой: кнопка заметнее, правая кнопка быстрее. */}
-        <Tile
-          testId="aim-target"
-          icon={<TargetGlyph />}
-          label="Цель"
-          hotkey="ПКМ"
-          cost={0}
-          affordable
-          active={match.aimingTarget}
-          onSelect={() => matchCommands().toggleTargetAim()}
-        />
-      </div>
-
-      <span style={dividerStyle} data-testid="toolbar-divider" />
-
-      <div style={groupStyle} data-testid="own-panel">
-        <Tile
-          testId="focus-general"
-          icon={<GeneralGlyph />}
-          label="Генерал"
-          hotkey="Пробел"
-          cost={0}
-          affordable
-          target={UpgradeTarget.General}
-          onSelect={() => matchCommands().focusOwn('general')}
-        />
-
-        <Tile
-          testId="focus-base"
-          icon={<BaseGlyph />}
-          label="База"
-          hotkey=""
-          cost={0}
-          affordable
-          target={UpgradeTarget.Base}
-          onSelect={() => matchCommands().focusOwn('base')}
-        />
-      </div>
-    </div>
+    </>
   );
 };

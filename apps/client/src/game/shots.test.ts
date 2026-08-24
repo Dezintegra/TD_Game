@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Graphics } from 'pixi.js';
 import {
   DIRECTION_SOUTH,
-  PPM_ONE,
   SHOT_LIFETIME_TICKS,
   ShotSide,
   ShotWeapon,
@@ -15,10 +14,11 @@ import { cellCentre, cellIndex, cellX, cellY, createWorld } from '@td/sim';
 import type { ShotState, StructureState, WorldState } from '@td/sim';
 import { drawShots, missileFlight } from './shots.js';
 import type { ShotColors, ShotLayers } from './shots.js';
+import type { ArcLine, ArcSink, ArcStyle } from './arc-shape.js';
 import type { ViewBounds } from './entities.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
-import { structureModelHeight } from './towers.js';
+import { structureModelHeight } from './structures.js';
 
 /**
  * Облик выстрела проверяется не картинкой, а тем, что уходит в слои.
@@ -80,6 +80,7 @@ const COLORS: ShotColors = {
   hullDark: 0x23271f,
   shot: 0xeaffef,
   shotLethal: 0xff5c5c,
+  arc: 0x5aa6ff,
   core: 0xfff6e0,
   fire: 0xff8a2b,
   smoke: 0x2b2622,
@@ -118,16 +119,41 @@ const towerAt = (cell: number, kind: StructureKind): StructureState => ({
   kind,
   cell,
   health: 100,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
   facing: DIRECTION_SOUTH,
 });
 
+/**
+ * Разряд Теслы в слои линиями не попадает: он рисуется запечёнными
+ * спрайтами, а `Graphics` о них ничего не знает. Поэтому здесь стоит
+ * приёмник-писарь — он ловит то, что раньше проверялось по точкам:
+ * откуда разряд вышел и куда пришёл.
+ */
+interface PlacedArc {
+  readonly bolt: ArcLine;
+  readonly ground: ArcLine;
+  readonly style: ArcStyle;
+}
+
+const arcRecorder = (): { sink: ArcSink; placed: PlacedArc[] } => {
+  const placed: PlacedArc[] = [];
+  return {
+    placed,
+    sink: {
+      place: (bolt, ground, style) => {
+        placed.push({ bolt, ground, style });
+      },
+    },
+  };
+};
+
 interface DrawResult {
   readonly trails: Recorder;
   readonly glow: Recorder;
+  readonly arcs: readonly PlacedArc[];
 }
 
 const draw = (
@@ -137,11 +163,12 @@ const draw = (
 ): DrawResult => {
   const trails = recorder();
   const glow = recorder();
-  const layers: ShotLayers = { trails: trails.graphics, glow: glow.graphics };
+  const arcs = arcRecorder();
+  const layers: ShotLayers = { trails: trails.graphics, glow: glow.graphics, arcs: arcs.sink };
 
   drawShots(layers, { ...bare(structures), shots }, time, WHOLE_MAP, COLORS, asPlayerId(0));
 
-  return { trails, glow };
+  return { trails, glow, arcs: arcs.placed };
 };
 
 /** Есть ли в наборе точка ближе указанного расстояния к цели. */
@@ -184,26 +211,45 @@ describe('след выстрела', () => {
 
   it('разряд выходит из ствола и приходит в цель', () => {
     // Излом — это облик, а не промах: концы обязаны стоять там же,
-    // где стояли бы концы трассера.
-    const arc = draw([shotOf(ShotWeapon.Arc)]).glow.points;
-    const bolt = draw([shotOf(ShotWeapon.Bolt)]).glow.points;
+    // где стояли бы концы трассера. Проверяется по тому, что уходит
+    // в раскладку спрайтов: в слой линий разряд больше не попадает.
+    const arc = draw([shotOf(ShotWeapon.Arc)]).arcs[0];
+    if (arc === undefined) throw new Error('разряд не разложен');
 
-    expect(arc[0]).toEqual(bolt[0]);
-    expect(arc.some((point) => Math.abs(point.x - FINISH.x) < 0.001)).toBe(true);
+    // По вертикали сравнивать нельзя: экранная `y` несёт и высоту,
+    // и положение на плоскости. Стрелок и цель стоят на одной строке
+    // мира, поэтому проверяем `x` — она от высоты не зависит вовсе.
+    expect(arc.bolt.from.x).toBeCloseTo(START.x, 6);
+    expect(arc.bolt.to.x).toBeCloseTo(FINISH.x, 6);
   });
 
-  it('разряд изломан, а не прям', () => {
-    const points = draw([shotOf(ShotWeapon.Arc)]).glow.points;
-    const first = points[0];
-    if (first === undefined) throw new Error('разряд не нарисован');
+  it('свет разряда ложится на землю, а не висит на его высоте', () => {
+    // Отсвет на высоте молнии читался бы вторым, размытым разрядом.
+    const arc = draw([shotOf(ShotWeapon.Arc)]).arcs[0];
+    if (arc === undefined) throw new Error('разряд не разложен');
 
-    const alongX = FINISH.x - START.x;
-    const alongY = FINISH.y - START.y;
-    const offLine = points.some(
-      (point) => Math.abs((point.x - first.x) * alongY - (point.y - first.y) * alongX) > 1,
-    );
+    expect(arc.ground.from).toEqual(START);
+    expect(arc.ground.to).toEqual(FINISH);
+    expect(arc.bolt.from.y).toBeLessThan(arc.ground.from.y);
+  });
 
-    expect(offLine).toBe(true);
+  it('разряд раскладывается спрайтами, а прочие выстрелы — нет', () => {
+    expect(draw([shotOf(ShotWeapon.Arc)]).arcs).toHaveLength(1);
+    expect(draw([shotOf(ShotWeapon.Bolt)]).arcs).toHaveLength(0);
+    expect(draw([shotOf(ShotWeapon.Beam)]).arcs).toHaveLength(0);
+  });
+
+  it('волна успевает пробежать канал за жизнь разряда', () => {
+    // Урон наносится на тике выстрела, и здоровье у цели убывает сразу.
+    // Фронт, доходящий до цели к концу показа, пришёл бы уже после того,
+    // как всё в цели закончилось.
+    const front = (tick: number): number | undefined =>
+      draw([shotOf(ShotWeapon.Arc)], tick).arcs[0]?.style.front;
+
+    expect(front(0)).toBeCloseTo(0, 6);
+    const life = SHOT_LIFETIME_TICKS[ShotWeapon.Arc];
+    expect(front(life * 0.2)).toBeGreaterThan(0);
+    expect(front(life * 0.9)).toBeUndefined();
   });
 
   it('разряд растекается за цель по накрытой площади', () => {
@@ -231,10 +277,15 @@ describe('след выстрела', () => {
   it('разряд держит форму весь тик и вспыхивает заново на следующем', () => {
     // Кадров в тике несколько, и разряд со случайной формой перестраивался
     // бы шестьдесят раз в секунду — это читается шумом, а не молнией.
-    const now = draw([shotOf(ShotWeapon.Arc)], 0.4).glow.points;
+    // Форму держат два числа: зерно и фаза, от которой пляшут плитки.
+    const shape = (tick: number): string => {
+      const arc = draw([shotOf(ShotWeapon.Arc)], tick).arcs[0];
+      if (arc === undefined) throw new Error('разряд не разложен');
+      return `${arc.style.seed}/${arc.style.phase}`;
+    };
 
-    expect(draw([shotOf(ShotWeapon.Arc)], 0.4).glow.points).toEqual(now);
-    expect(draw([shotOf(ShotWeapon.Arc)], 1.4).glow.points).not.toEqual(now);
+    expect(shape(0.4)).toEqual(shape(0.9));
+    expect(shape(1.4)).not.toEqual(shape(0.4));
   });
 });
 
@@ -313,15 +364,14 @@ describe('высота дульного среза', () => {
 
     // Половина высоты модели — заведомо выше «плеча» машины и заведомо
     // ниже верхушки: попасть в этот промежуток можно только из ствола.
-    const half = structureModelHeight(COLORS, StructureKind.TowerSniper) / 2;
+    const half = structureModelHeight(StructureKind.TowerSniper) / 2;
 
     expect(START.y - start.y).toBeGreaterThan(half * ELEVATION_PX_PER_CELL);
   });
 
   it('выстрел юнита выходит с прежней высоты плеча', () => {
-    const withTower = draw([shotOf(ShotWeapon.Bolt)], 0, [
-      towerAt(FROM, StructureKind.TowerBasic),
-    ]).glow.points[0];
+    const withTower = draw([shotOf(ShotWeapon.Bolt)], 0, [towerAt(FROM, StructureKind.TowerBasic)])
+      .glow.points[0];
     const plain = draw([shotOf(ShotWeapon.Bolt)]).glow.points[0];
 
     if (withTower === undefined || plain === undefined) throw new Error('трассер не нарисован');
@@ -517,8 +567,8 @@ describe('ракета генерала', () => {
 
   it('клубы дыма расходятся по дороге, а не висят в одной точке', () => {
     const smoke = draw([MISSILE], SPAN * 0.35).trails.circles;
-    const spread = Math.max(...smoke.map((point) => point.x)) -
-      Math.min(...smoke.map((point) => point.x));
+    const spread =
+      Math.max(...smoke.map((point) => point.x)) - Math.min(...smoke.map((point) => point.x));
 
     expect(smoke.length).toBeGreaterThan(1);
     expect(spread).toBeGreaterThan(10);

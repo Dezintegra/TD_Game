@@ -1,5 +1,5 @@
 ﻿import type { Graphics } from 'pixi.js';
-import { NUKE_DELAY_TICKS, NUKE_RADIUS_CELLS, StructureKind, unitsToCells } from '@td/shared';
+import { NUKE_DELAY_TICKS, StructureKind, unitsToCells } from '@td/shared';
 import type { PlayerId, StructureKind as StructureKindType } from '@td/shared';
 import { cellX, cellY, playerStats } from '@td/sim';
 import type { WorldState } from '@td/sim';
@@ -39,6 +39,12 @@ export interface OverlayIntent {
   readonly hoverCell: number;
   /** Можно ли выполнить задуманное в клетке под курсором. */
   readonly hoverAllowed: boolean;
+  /**
+   * Радиус ядерного удара СВОЕГО игрока, в клетках. Нужен кругу
+   * предпросмотра под курсором: радиус прокачивается, и показывать
+   * базовый значило бы обещать не тот круг, который получится.
+   */
+  readonly nukeRadiusCells: number;
   /** Клетка с выделенным объектом, либо -1. */
   readonly selectedCell: number;
 }
@@ -184,10 +190,16 @@ const drawNukes = (graphics: Graphics, world: WorldState, colors: OverlayColors)
     const remaining = Math.max(0, nuke.detonateAtTick - world.tick);
     const progress = 1 - remaining / NUKE_DELAY_TICKS;
 
-    traceWorldCircle(graphics, x, y, NUKE_RADIUS_CELLS);
+    // Радиус берётся у самого удара, а не из баланса: он прокачивается,
+    // и метка обязана показывать круг ИМЕННО ЭТОЙ ракеты. Иначе игрок
+    // уводил бы войска по нарисованной границе, а погибали бы они
+    // по настоящей.
+    const cells = unitsToCells(nuke.radius);
+
+    traceWorldCircle(graphics, x, y, cells);
     graphics.stroke({ width: 2, color: colors.danger, alpha: 0.85 });
 
-    traceWorldCircle(graphics, x, y, NUKE_RADIUS_CELLS * (1 - progress));
+    traceWorldCircle(graphics, x, y, cells * (1 - progress));
     graphics.stroke({ width: 3, color: colors.danger, alpha: 0.6 });
   }
 };
@@ -207,7 +219,7 @@ const drawHover = (graphics: Graphics, intent: OverlayIntent, colors: OverlayCol
   graphics.stroke({ width: 1.5, color: colour, alpha: 0.9 });
 
   if (intent.aimingNuke) {
-    traceWorldCircle(graphics, x + 0.5, y + 0.5, NUKE_RADIUS_CELLS);
+    traceWorldCircle(graphics, x + 0.5, y + 0.5, intent.nukeRadiusCells);
     graphics.stroke({ width: 2, color: colour, alpha: 0.7 });
   }
 };

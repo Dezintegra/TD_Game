@@ -7,10 +7,7 @@
   DIRECTION_STOP,
   INFLATES_PURCHASE,
   MAP_CELL_COUNT,
-  NUKE_BASE_EXCLUSION,
-  NUKE_COST,
   NUKE_DELAY_TICKS,
-  PPM_ONE,
   PRODUCTION_QUEUE_CAP,
   PURCHASE_INFLATION_PERCENT,
   RejectReason,
@@ -30,12 +27,20 @@
   growPpm,
   isValidDirection,
   isValidStance,
+  nukeBaseExclusion,
+  nukeCost,
 } from '@td/shared';
 import type { Command, PlayerId, UnitType } from '@td/shared';
 import { killGeneral } from './combat.js';
 import { cellAt, cellCentre } from './map.js';
 import { NO_STRUCTURE, footprintCells } from './occupancy.js';
-import { allPlayerStats, playerStats, structureMaxHealth, upgradeCostOf } from './stats.js';
+import {
+  allPlayerStats,
+  playerStats,
+  structureMaxHealth,
+  unitMaxHealth,
+  upgradeCostOf,
+} from './stats.js';
 import type { PlayerStats } from './stats.js';
 import {
   invalidateNavigation,
@@ -156,7 +161,8 @@ const insideBaseExclusion = (working: Working, cell: number): boolean => {
   const centre = cellCentre(cell);
 
   return working.map.baseCells.some(
-    (base) => distanceSquared(centre, cellCentre(base)) <= BASE_BUILD_EXCLUSION * BASE_BUILD_EXCLUSION,
+    (base) =>
+      distanceSquared(centre, cellCentre(base)) <= BASE_BUILD_EXCLUSION * BASE_BUILD_EXCLUSION,
   );
 };
 
@@ -250,7 +256,7 @@ const build = (
     // Постройка появляется недостроенной и потому уязвимой: она уже
     // перекрывает проход, но развалить её пока легко.
     health: Math.max(1, Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100)),
-    growthPpm: PPM_ONE,
+    kills: 0,
     readyAtTick: asTickNumber(working.tick + baseline.buildTicks),
     builtAtTick: asTickNumber(working.tick + baseline.buildTicks),
     demolishAtTick: asTickNumber(0),
@@ -484,8 +490,8 @@ const healToNewMaximum = (
       if (structure.owner !== player.id || structure.kind !== kind || !structure.alive) continue;
 
       structure.health +=
-        structureMaxHealth(after.structures[kind], structure.growthPpm) -
-        structureMaxHealth(before.structures[kind], structure.growthPpm);
+        structureMaxHealth(after.structures[kind], structure.kills) -
+        structureMaxHealth(before.structures[kind], structure.kills);
     }
   }
 
@@ -493,15 +499,31 @@ const healToNewMaximum = (
     if (unit.owner !== player.id || !unit.alive) continue;
     if (UNIT_UPGRADE_TARGET[unit.unitType] !== target) continue;
 
-    unit.health += after.units[unit.unitType].health - before.units[unit.unitType].health;
+    // Через ранг, а не по базовым числам: максимум ветерана выше
+    // базового, и прибавка ему полагается тоже большая. Считай мы
+    // по базовым, полная полоса здоровья ветерана после покупки
+    // становилась бы неполной — награда за прокачку выглядела
+    // повреждением.
+    unit.health +=
+      unitMaxHealth(after.units[unit.unitType], unit.kills) -
+      unitMaxHealth(before.units[unit.unitType], unit.kills);
   }
 };
 
 const launchNuke = (working: Working, player: WorkingPlayer, cell: number): Outcome => {
   if (!isValidCell(cell)) return RejectReason.InvalidCell;
-  if (player.energy < NUKE_COST) return RejectReason.NotEnoughEnergy;
+
+  // Радиус и мощность берутся один раз, здесь, и дальше живут в записи
+  // об ударе. От радиуса же считаются и цена, и запретная зона: платят
+  // за накрытую площадь, а зона обязана расти вместе с кругом, иначе
+  // прокачавший радиус накрыл бы базу.
+  const nuke = playerStats(player).nuke;
+  const cost = nukeCost(nuke.radius);
+
+  if (player.energy < cost) return RejectReason.NotEnoughEnergy;
 
   const centre = cellCentre(cell);
+  const exclusion = nukeBaseExclusion(nuke.radius);
 
   // Базы всегда остаются вне радиуса поражения — прямое требование
   // игрового замысла. Проверка живёт в ядре, а не только в интерфейсе:
@@ -511,18 +533,20 @@ const launchNuke = (working: Working, player: WorkingPlayer, cell: number): Outc
     if (!structure.alive || structure.kind !== StructureKind.Base) continue;
 
     const baseCentre = cellCentre(structure.cell);
-    if (distanceSquared(centre, baseCentre) < NUKE_BASE_EXCLUSION * NUKE_BASE_EXCLUSION) {
+    if (distanceSquared(centre, baseCentre) < exclusion * exclusion) {
       return RejectReason.NukeNearBase;
     }
   }
 
-  player.energy -= NUKE_COST;
+  player.energy -= cost;
 
   working.nukes.push({
     id: asEntityId(working.nextEntityId),
     owner: player.id,
     cell,
     detonateAtTick: asTickNumber(working.tick + NUKE_DELAY_TICKS),
+    radius: nuke.radius,
+    damage: nuke.damage,
   });
 
   working.nextEntityId += 1;

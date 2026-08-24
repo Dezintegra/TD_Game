@@ -12,7 +12,13 @@
   withPlayer,
 } from '@td/shared';
 import type { Command, StructureKind, UnitType, UnownedCommand } from '@td/shared';
-import { DecodeError, MessageType, OutcomeReason, PROTOCOL_VERSION, TICKET_BYTES } from './messages.js';
+import {
+  DecodeError,
+  MessageType,
+  OutcomeReason,
+  PROTOCOL_VERSION,
+  TICKET_BYTES,
+} from './messages.js';
 import type { DecodeResult, Message } from './messages.js';
 
 /**
@@ -124,12 +130,19 @@ const isCell = (value: number): boolean => value >= 0 && value < MAP_CELL_COUNT;
  * решает ядро, одинаково для всех, и дублировать его решения в кодеке
  * было бы вторым набором правил.
  */
-const unpackCommand = (kind: number, a: number, b: number, tick: number): UnownedCommand | undefined => {
+const unpackCommand = (
+  kind: number,
+  a: number,
+  b: number,
+  tick: number,
+): UnownedCommand | undefined => {
   const at = asTickNumber(tick);
 
   switch (kind) {
     case CommandKind.MoveGeneral:
-      return isValidDirection(a) ? { kind: CommandKind.MoveGeneral, tick: at, direction: a } : undefined;
+      return isValidDirection(a)
+        ? { kind: CommandKind.MoveGeneral, tick: at, direction: a }
+        : undefined;
 
     case CommandKind.Build: {
       if (!isCell(a)) return undefined;
@@ -328,7 +341,10 @@ export const decode = (buffer: ArrayBuffer): DecodeResult => {
 
     case MessageType.HistoryFrom: {
       if (size < HEADER_SIZE + 4) return tooShort();
-      return { ok: true, message: { type: MessageType.HistoryFrom, tick: view.getUint32(2, true) } };
+      return {
+        ok: true,
+        message: { type: MessageType.HistoryFrom, tick: view.getUint32(2, true) },
+      };
     }
 
     case MessageType.Welcome: {

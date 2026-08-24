@@ -3,20 +3,27 @@
   BASE_BUILD_EXCLUSION,
   CHECKSUM_INTERVAL_TICKS,
   CommandKind,
-  NUKE_BASE_EXCLUSION,
   NUKE_COST,
+  NUKE_RADIUS_CELLS,
   STRUCTURE_STATS,
   StructureKind,
   TICKS_PER_SECOND,
   Terrain,
-  PPM_ONE,
   UNIT_CAP,
   asPlayerId,
   distanceSquared,
   energyToVisible,
+  killsToNextRank,
+  nukeBaseExclusion,
   unitsToCells,
+  veteranRank,
 } from '@td/shared';
-import type { CommandIntent, PlayerId, StructureKind as StructureKindType, UnitType } from '@td/shared';
+import type {
+  CommandIntent,
+  PlayerId,
+  StructureKind as StructureKindType,
+  UnitType,
+} from '@td/shared';
 import {
   buildOccupancy,
   cellAt,
@@ -29,6 +36,7 @@ import {
   upgradeCosts,
 } from '@td/sim';
 import type { Occupancy, WorldState } from '@td/sim';
+import type { ServerMessage } from '@td/protocol';
 import { createMatchGuest } from '@td/netplay';
 import type { GuestStatus } from '@td/netplay';
 import { createRenderLoop } from './loop.js';
@@ -36,7 +44,13 @@ import { createNetClient } from './net.js';
 import type { NetClient } from './net.js';
 import { createScene } from './scene.js';
 import { visibleMapPercent } from './iso.js';
-import { EMPTY_SIDE, hudActions, setMatchCommands, setSoundCommands } from './store.js';
+import {
+  EMPTY_SIDE,
+  hudActions,
+  setMatchCommands,
+  setSoundCommands,
+  useHudStore,
+} from './store.js';
 import type { MatchPhaseView, MatchSnapshot, SelectionView } from './store.js';
 import { sidesOf } from './sides.js';
 import { statRowsOf } from './stat-rows.js';
@@ -97,6 +111,18 @@ const HUD_EVERY_TICKS = 6;
 /** Как часто меряется задержка канала. */
 const PING_EVERY_MS = 1000;
 
+/**
+ * Сколько времени за кадр отдаётся запеканию скал.
+ *
+ * Восемь миллисекунд — это «одна диагональ, и хватит»: диагональ обходится
+ * примерно в двадцать, и меньший бюджет её всё равно не разрежет
+ * (см. `bakeTerrain`). Смысл числа в другом — в том, что между
+ * диагоналями главный поток освобождается, и браузер успевает разобрать
+ * пришедшие кадры матча. Печь всю карту разом значило бы задержать первый
+ * подтверждённый тик на всё время запекания.
+ */
+const TERRAIN_BAKE_BUDGET_MS = 8;
+
 const PHASES: Readonly<Record<GuestStatus, MatchPhaseView>> = {
   idle: 'connecting',
   'catching-up': 'catching-up',
@@ -107,7 +133,49 @@ const PHASES: Readonly<Record<GuestStatus, MatchPhaseView>> = {
 };
 
 export const startGame = async (host: HTMLElement, options: GameOptions): Promise<Game> => {
-  const scene = await createScene(host);
+  // Состояние матча сбрасывается ДО подключения: иначе показания прошлой
+  // партии дожили бы до первых кадров этой.
+  hudActions.setPhase('connecting');
+  hudActions.setOutcome(null);
+
+  /**
+   * Сокет открывается ДО сцены, а не после неё.
+   *
+   * Прежде порядок был обратный, и это стоило времени на ровном месте:
+   * соединение, приветствие и сведение с соперником идут по сети, а сцена
+   * строится процессором. Держать одно за другим незачем — они друг другу
+   * не нужны. Замерено: сцена поднимается за 210–520 мс, и ровно столько
+   * сокет простаивал закрытым.
+   *
+   * Сообщения, пришедшие раньше участника, копятся в `early`. Терять их
+   * нельзя: приветствие приходит первым же ответом на билет, а без него
+   * не будет ни стороны, ни мира.
+   */
+  const early: ServerMessage[] = [];
+  let deliver = (message: ServerMessage): void => {
+    early.push(message);
+  };
+
+  const net: NetClient = createNetClient({
+    url: WS_URL,
+    ticket: options.ticket,
+    onMessage: (message) => {
+      deliver(message);
+    },
+    ...(options.onRejected === undefined ? {} : { onRejected: options.onRejected }),
+  });
+  net.connect();
+
+  let scene;
+  try {
+    scene = await createScene(host);
+  } catch (error) {
+    // Сцена не поднялась — сокет закрываем сами. Иначе он остался бы
+    // открытым и переподключался бы вечно: погасить его через `stop`
+    // будет уже некому, эта функция наверх ничего не вернёт.
+    net.disconnect();
+    throw error;
+  }
 
   const localPlayer: PlayerId = asPlayerId(options.localPlayer);
   const seed = options.seed;
@@ -229,13 +297,6 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     },
   });
 
-  const net: NetClient = createNetClient({
-    url: WS_URL,
-    ticket: options.ticket,
-    onMessage: (message) => guest.receive(message),
-    ...(options.onRejected === undefined ? {} : { onRejected: options.onRejected }),
-  });
-
   /**
    * Сетка занятости пересобирается не каждый кадр, а при смене набора
    * построек. Она нужна только подсказке «сюда можно строить», и обходить
@@ -269,8 +330,10 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       if (world === null) return;
 
       // setMap перестраивает геометрию только при смене карты, поэтому
-      // безопасно вызывать его каждый кадр.
+      // безопасно вызывать его каждый кадр. Скалы он при этом не печёт —
+      // их допекает `bakeTerrain` понемногу, кадр за кадром.
       scene.setMap(world.map, localPlayer);
+      scene.bakeTerrain(TERRAIN_BAKE_BUDGET_MS);
 
       const general = world.generals[localPlayer];
       if (general !== undefined && general.alive) {
@@ -291,6 +354,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         touch: state.touch,
         hoverCell: state.hoverCell,
         hoverAllowed: isHoverAllowed(world, localPlayer, state, occupancyOf(world)),
+        nukeRadiusCells: nukeRadiusCellsOf(world, localPlayer),
         selectedCell: state.selectedCell,
       });
 
@@ -337,6 +401,36 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     }
   };
 
+  /**
+   * Закрыть прокачку, если она сейчас ПАНЕЛЬ поверх поля.
+   *
+   * Отвечает на вопрос «панель или столбцы» не своим порогом ширины,
+   * а тем, что об этом думает CSS: медиазапросы выставляют переменную
+   * `--td-upgrades-as-panel`. Порог экрана записан один раз, в токенах,
+   * и второй его экземпляр в разборе нажатий разошёлся бы с первым при
+   * первой же правке — молча.
+   *
+   * Стоит одно разрешение стилей на нажатие, то есть ничего: вызывается
+   * это по `Esc` и по нажатию плиток, а не в кадре.
+   *
+   * Возвращает `true`, если панель действительно закрыли. По этому
+   * признаку `Esc` понимает, что дальше — отмену режима и меню —
+   * трогать не надо: панель лежала поверх поля и была верхним слоем.
+   */
+  const closeUpgradePanel = (): boolean => {
+    if (!useHudStore.getState().statsOpen) return false;
+
+    const asPanel =
+      getComputedStyle(document.documentElement)
+        .getPropertyValue('--td-upgrades-as-panel')
+        .trim() === '1';
+
+    if (!asPanel) return false;
+
+    hudActions.toggleStats();
+    return true;
+  };
+
   const controls = attachControls(host, {
     setDirection: (direction) => send({ kind: CommandKind.MoveGeneral, direction }),
     build: (cell, structure) => send({ kind: CommandKind.Build, cell, structure }),
@@ -364,15 +458,31 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     // что рисовать.
     menuChanged: (open) => hudActions.setMenuOpen(open),
     toggleStats: () => hudActions.toggleStats(),
+    closeUpgradePanel,
     cellAtScreen: (x, y) => scene.cellAtScreen(x, y),
     minimapCellAtScreen: (x, y) => scene.minimapCellAtScreen(x, y),
   });
 
   setMatchCommands({
+    // Заказ панель прокачки НЕ закрывает: заказывают пачками, и закрытие
+    // после каждого юнита превратило бы покупку в открывание панели.
     train: (unitType, count) => train(unitType as UnitType, count),
-    setBuildKind: (kind) => controls.setBuildKind(kind as StructureKindType | null),
-    toggleNukeAim: () => controls.setAimingNuke(!controls.state.aimingNuke),
-    toggleTargetAim: () => controls.setAimingTarget(!controls.state.aimingTarget),
+
+    // А вот всё, что уводит внимание на поле, — закрывает. Целиться
+    // в поле, которого не видно, нельзя: игрок нажал бы «ядерка»
+    // и указал бы клетку вслепую, по панели.
+    setBuildKind: (kind) => {
+      closeUpgradePanel();
+      controls.setBuildKind(kind as StructureKindType | null);
+    },
+    toggleNukeAim: () => {
+      closeUpgradePanel();
+      controls.setAimingNuke(!controls.state.aimingNuke);
+    },
+    toggleTargetAim: () => {
+      closeUpgradePanel();
+      controls.setAimingTarget(!controls.state.aimingTarget);
+    },
     setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, branch }),
     demolish: (cell) => send({ kind: CommandKind.Demolish, cell }),
@@ -383,6 +493,9 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     // в тулбаре. Плитка, нажатие по которой не делает ничего, была бы
     // ловушкой: игрок нажмёт и решит, что интерфейс сломался.
     focusOwn: (what) => {
+      // Перенос камеры — тоже «смотреть на поле», а поле под панелью.
+      closeUpgradePanel();
+
       if (what === 'general') {
         scene.setFollowing(true);
         return;
@@ -390,8 +503,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
       const world = guest.predicted;
       const base = world?.structures.find(
-        (structure) =>
-          structure.owner === localPlayer && structure.kind === StructureKind.Base,
+        (structure) => structure.owner === localPlayer && structure.kind === StructureKind.Base,
       );
 
       if (base !== undefined) scene.centreOnCell(base.cell);
@@ -444,9 +556,22 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   observer.observe(host);
   window.addEventListener('resize', relayout);
 
-  hudActions.setPhase('connecting');
-  hudActions.setOutcome(null);
-  net.connect();
+  // Накопленное отдаётся участнику ЗДЕСЬ, а не сразу после его создания,
+  // и это не вкусовщина. Приветствие тянет за собой `onPredicted`, а тот —
+  // `publishMapInfo` и показания HUD, объявленные ниже участника. Отдай мы
+  // сообщения раньше, обращение к ещё не созданной константе уронило бы
+  // обработчик сокета — молча, потому что бросает он внутрь браузера.
+  // Проверено: матч при этом идёт, тики капают, а карта не публикуется
+  // и цикл отрисовки не запускается вовсе.
+  //
+  // Порядок передачи важен так же: приветствие заводит мир, и кадр,
+  // применённый раньше него, применять некуда.
+  deliver = (message) => {
+    guest.receive(message);
+  };
+  for (const message of early) guest.receive(message);
+  early.length = 0;
+
   loop.start();
 
   return {
@@ -475,6 +600,20 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
  * Считается по предсказанному миру: игрок целится в то, что видит,
  * а видит он предсказание.
  */
+/**
+ * Радиус ядерного удара своего игрока, в клетках.
+ *
+ * Живёт отдельной функцией, потому что спрашивают его дважды за кадр —
+ * кругом предпросмотра и снимком HUD, — и оба обязаны получить одно
+ * и то же число.
+ */
+const nukeRadiusCellsOf = (world: WorldState, playerId: PlayerId): number => {
+  const player = world.players[playerId];
+  if (player === undefined) return NUKE_RADIUS_CELLS;
+
+  return unitsToCells(playerStats(player).nuke.radius);
+};
+
 const isHoverAllowed = (
   world: WorldState,
   playerId: PlayerId,
@@ -487,13 +626,18 @@ const isHoverAllowed = (
   if (player === undefined) return false;
 
   if (state.aimingNuke) {
-    if (player.energy < NUKE_COST) return false;
+    // И цена, и запретная зона выводятся из радиуса удара, а радиус
+    // прокачивается. Считаются они той же функцией, что и в ядре:
+    // расхождение подсветки с правилами хуже, чем отсутствие подсветки.
+    const nuke = playerStats(player).nuke;
+    if (player.energy < nuke.cost) return false;
 
+    const exclusion = nukeBaseExclusion(nuke.radius);
     const centre = cellCentre(state.hoverCell);
     return !world.structures.some(
       (structure) =>
         structure.kind === StructureKind.Base &&
-        distanceSquared(centre, cellCentre(structure.cell)) < NUKE_BASE_EXCLUSION ** 2,
+        distanceSquared(centre, cellCentre(structure.cell)) < exclusion ** 2,
     );
   }
 
@@ -542,11 +686,7 @@ const isHoverAllowed = (
  * с причиной. Спрятанная кнопка оставляет игрока гадать, а причин ровно
  * три, и каждая ему что-то говорит.
  */
-const selectionOf = (
-  world: WorldState,
-  playerId: PlayerId,
-  cell: number,
-): SelectionView | null => {
+const selectionOf = (world: WorldState, playerId: PlayerId, cell: number): SelectionView | null => {
   if (cell < 0) return null;
 
   const structure = world.structures.find((entry) => entry.cell === cell);
@@ -586,9 +726,15 @@ const selectionOf = (
     maxHealth:
       baseline === undefined
         ? STRUCTURE_STATS[structure.kind].health
-        : structureMaxHealth(baseline, structure.growthPpm),
-    growthPercent: Math.round((structure.growthPpm / PPM_ONE - 1) * 100),
-    attack: baseline === undefined ? 0 : structureAttack(baseline, structure.growthPpm),
+        : structureMaxHealth(baseline, structure.kills),
+    // Стена и база рангов не набирают, и строку ранга им показывать
+    // не надо вовсе: «Ранг 0» читалось бы как «ещё не набран», хотя
+    // набрать его здесь нельзя.
+    ranked: !isBase && structure.kind !== StructureKind.Wall,
+    rank: veteranRank(structure.kills),
+    kills: structure.kills,
+    killsToNextRank: killsToNextRank(structure.kills),
+    attack: baseline === undefined ? 0 : structureAttack(baseline, structure.kills),
     rangeCells: baseline === undefined ? 0 : Math.round(unitsToCells(baseline.range)),
     buildingSeconds: Math.max(0, (structure.builtAtTick - world.tick) / TICKS_PER_SECOND),
     demolishSeconds:
@@ -614,6 +760,7 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
       unitCosts: [],
       structureCosts: [],
       nukeCost: energyToVisible(NUKE_COST),
+      nukeRadiusCells: NUKE_RADIUS_CELLS,
       stats: [],
       targetLabel: '—',
       matchSeconds: 0,
@@ -648,7 +795,9 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
     sides: sidesOf(world),
     unitCosts: [0, 1, 2].map((type) => energyToVisible(stats.units[type as UnitType].cost)),
     structureCosts,
-    nukeCost: energyToVisible(NUKE_COST),
+    // Цена и радиус — этого игрока: оба выводятся из прокачки радиуса.
+    nukeCost: energyToVisible(stats.nuke.cost),
+    nukeRadiusCells: unitsToCells(stats.nuke.radius),
     stats: statRowsOf(stats, costs, player.energy),
     targetLabel: target === undefined ? '—' : STRUCTURE_STATS[target.kind].label,
     matchSeconds: world.tick / TICKS_PER_SECOND,

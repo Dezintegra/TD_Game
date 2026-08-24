@@ -11,8 +11,9 @@ import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   NUKE_COST,
+  NUKE_DAMAGE,
   NUKE_DELAY_TICKS,
-  PPM_ONE,
+  NUKE_RADIUS,
   PRODUCTION_QUEUE_CAP,
   STRUCTURE_STATS,
   StructureKind,
@@ -27,6 +28,7 @@ import {
   asTickNumber,
   cellsToUnits,
   distanceSquared,
+  nukeBaseExclusion,
   upgradeBranchIndex,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
@@ -388,7 +390,7 @@ describe('строительство', () => {
         kind: StructureKind.Wall,
         cell,
         health: STRUCTURE_STATS[StructureKind.Wall].health,
-        growthPpm: PPM_ONE,
+        kills: 0,
         readyAtTick: asTickNumber(0),
         builtAtTick: asTickNumber(0),
         demolishAtTick: asTickNumber(0),
@@ -432,9 +434,7 @@ describe('строительство', () => {
     const before = playerStats(playerOf(world, 0));
     const after = playerStats(playerOf(run(world, 3, [buy(0, branch)]), 0));
 
-    expect(after.units[UnitType.Sniper].range).toBeGreaterThan(
-      before.units[UnitType.Sniper].range,
-    );
+    expect(after.units[UnitType.Sniper].range).toBeGreaterThan(before.units[UnitType.Sniper].range);
     // У штурмовика ветки нет, и множитель для него остаётся единичным.
     expect(after.units[UnitType.Assault].range).toBe(before.units[UnitType.Assault].range);
     // Ветки разных типов независимы: покупка у снайпера Теслу
@@ -467,7 +467,9 @@ describe('строительство', () => {
 
     const started = step(built, [demolish(0, cell)]);
     const target = started.structures.find((s) => s.cell === cell);
-    expect(target?.demolishAtTick).toBe(started.tick + STRUCTURE_STATS[StructureKind.Wall].buildTicks);
+    expect(target?.demolishAtTick).toBe(
+      started.tick + STRUCTURE_STATS[StructureKind.Wall].buildTicks,
+    );
 
     // На середине сноса клетка ещё непроходима: разбираемая стена
     // продолжает перекрывать проход.
@@ -545,6 +547,7 @@ describe('строительство', () => {
           health: 100,
           facing: DIRECTION_SOUTH,
           readyAtTick: asTickNumber(0),
+          kills: 0,
         },
       ],
     };
@@ -705,6 +708,54 @@ describe('ядерный удар', () => {
   // карта уже однажды меняла размер.
   const CENTRE = cellIndex(MAP_WIDTH_CELLS / 2, MAP_HEIGHT_CELLS / 2);
 
+  /**
+   * Мир с записью об ударе, готовой сработать на следующем тике.
+   *
+   * Запись кладётся прямо в состояние, а не добывается командой пуска,
+   * и это не обход правил, а единственный способ проверить сам взрыв.
+   * Через команду пришлось бы ждать три секунды, а за три секунды машины
+   * уходят с места: при радиусе в четыре клетки тест мерил бы скорость
+   * хода, а не урон. Прежде это сходило с рук — радиус был в десять
+   * клеток, и уйти из круга за три секунды машина не успевала.
+   */
+  const armed = (
+    world: WorldState,
+    cell: number,
+    damage = NUKE_DAMAGE,
+    radius = NUKE_RADIUS,
+  ): WorldState => ({
+    ...world,
+    nukes: [
+      {
+        id: asEntityId(900),
+        owner: asPlayerId(0),
+        cell,
+        detonateAtTick: asTickNumber(world.tick + 1),
+        radius,
+        damage,
+      },
+    ],
+  });
+
+  /** Машины заданного вида в самом эпицентре, по одной на каждого владельца. */
+  const crowd = (world: WorldState, cell: number, type: UnitType, owners: number[]): WorldState => {
+    const epicentre = cellCentre(cell);
+
+    return {
+      ...world,
+      units: owners.map((owner, index) => ({
+        id: asEntityId(100 + index),
+        owner: asPlayerId(owner),
+        unitType: type,
+        position: { x: epicentre.x, y: epicentre.y },
+        health: UNIT_STATS[type].health,
+        facing: 1,
+        readyAtTick: asTickNumber(0),
+        kills: 0,
+      })),
+    };
+  };
+
   it('создаёт запись об ударе и списывает энергию', () => {
     const world = richWorld();
     const before = world.players[0]?.energy ?? 0;
@@ -715,31 +766,92 @@ describe('ядерный удар', () => {
     expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK - NUKE_COST);
   });
 
+  it('запись об ударе несёт мощность и радиус момента пуска', () => {
+    const after = step(richWorld(), [nuke(0, CENTRE)]);
+
+    expect(after.nukes[0]?.damage).toBe(NUKE_DAMAGE);
+    expect(after.nukes[0]?.radius).toBe(NUKE_RADIUS);
+  });
+
   it('взрывается по истечении задержки', () => {
     const after = run(richWorld(), NUKE_DELAY_TICKS + 2, [nuke(0, CENTRE)]);
 
     expect(after.nukes).toHaveLength(0);
   });
 
-  it('уничтожает юнитов обеих сторон в радиусе', () => {
+  it('слабые машины обеих сторон гибнут', () => {
+    const world = crowd(richWorld(), CENTRE, UnitType.Assault, [0, 1]);
+
+    expect(step(armed(world, CENTRE), []).units).toHaveLength(0);
+  });
+
+  it('крепкая машина выживает, потеряв ровно мощность заряда', () => {
+    // Тесла прочнее заряда — в этом и весь смысл перехода от стирания
+    // к урону: пережившего добивают обычным оружием.
+    const world = crowd(richWorld(), CENTRE, UnitType.Tesla, [1]);
+
+    const after = step(armed(world, CENTRE), []);
+
+    expect(after.units).toHaveLength(1);
+    expect(after.units[0]?.health).toBe(UNIT_STATS[UnitType.Tesla].health - NUKE_DAMAGE);
+  });
+
+  it('мощность берётся из записи, а не из баланса', () => {
+    const world = crowd(richWorld(), CENTRE, UnitType.Tesla, [1]);
+    const strong = UNIT_STATS[UnitType.Tesla].health + 1;
+
+    expect(step(armed(world, CENTRE, strong), []).units).toHaveLength(0);
+  });
+
+  it('вне радиуса урона нет', () => {
     const world = richWorld();
     const epicentre = cellCentre(CENTRE);
-
-    const withUnits: WorldState = {
+    const away: WorldState = {
       ...world,
-      units: [0, 1].map((owner) => ({
-        id: asEntityId(100 + owner),
-        owner: asPlayerId(owner),
-        unitType: UnitType.Assault,
-        position: { x: epicentre.x + owner * 1000, y: epicentre.y },
-        health: 100,
-        readyAtTick: asTickNumber(0),
-      })),
+      units: [
+        {
+          id: asEntityId(100),
+          owner: asPlayerId(1),
+          unitType: UnitType.Assault,
+          position: { x: epicentre.x + cellsToUnits(6), y: epicentre.y },
+          health: UNIT_STATS[UnitType.Assault].health,
+          facing: 1,
+          readyAtTick: asTickNumber(0),
+          kills: 0,
+        },
+      ],
     };
 
-    const after = run(withUnits, NUKE_DELAY_TICKS + 2, [nuke(0, CENTRE)]);
+    const after = step(armed(away, CENTRE), []);
+
+    expect(after.units).toHaveLength(1);
+    expect(after.units[0]?.health).toBe(UNIT_STATS[UnitType.Assault].health);
+  });
+
+  it('база урона не получает даже под самым взрывом', () => {
+    // Наведение в базу отклоняется, и потому эта проверка — второй замок,
+    // а не первый. Замок нужен: запретная зона считается от ЦЕНТРА базы,
+    // а основание у неё три на три, и держаться правило «база неуязвима»
+    // обязано само по себе, а не совпадением расстояний.
+    const world = richWorld();
+    const base = baseCellOf(world, 1);
+    const before = world.structures.find((entry) => entry.cell === base)?.health ?? 0;
+
+    const after = step(armed(world, base), []);
+
+    expect(after.structures.find((entry) => entry.cell === base)?.health).toBe(before);
+  });
+
+  it('убитые ударом рангов никому не приносят', () => {
+    // У взрыва нет стрелка: он идёт мимо `dealDamage`, а значит,
+    // и мимо награды. Правило записано тестом, потому что соблазн
+    // «раздать ранги за ядерку тому, кто её запустил» возникнет снова.
+    const world = crowd(richWorld(), CENTRE, UnitType.Assault, [0, 1, 0, 1]);
+
+    const after = step(armed(world, CENTRE), []);
 
     expect(after.units).toHaveLength(0);
+    expect(after.structures.every((entry) => entry.kills === 0)).toBe(true);
   });
 
   it('отклоняется при наведении рядом с базой', () => {
@@ -757,6 +869,71 @@ describe('ядерный удар', () => {
     const poor = patchPlayer(createWorld(SEED), 0, { energy: 0 });
 
     expect(step(poor, [nuke(0, CENTRE)]).nukes).toHaveLength(0);
+  });
+});
+
+describe('прокачка ядерного удара', () => {
+  const damageBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeDamage);
+  const radiusBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeRadius);
+
+  /** Мир, в котором игрок 0 купил заданное число уровней одной ветки. */
+  const levelled = (branch: number, levels: number): WorldState => {
+    let world = richWorld();
+    for (let level = 0; level < levels; level += 1) {
+      world = step(world, [buy(0, branch)]);
+    }
+    return world;
+  };
+
+  it('ветки существуют и принадлежат базе', () => {
+    expect(damageBranch).toBeGreaterThanOrEqual(0);
+    expect(radiusBranch).toBeGreaterThanOrEqual(0);
+  });
+
+  it('уровень мощности усиливает заряд, не трогая радиус', () => {
+    const world = levelled(damageBranch, 1);
+    const nuclear = playerStats(world.players[0] as PlayerState).nuke;
+
+    expect(nuclear.damage).toBeGreaterThan(NUKE_DAMAGE);
+    expect(nuclear.radius).toBe(NUKE_RADIUS);
+  });
+
+  it('уровень радиуса расширяет круг и удорожает пуск', () => {
+    const world = levelled(radiusBranch, 1);
+    const nuclear = playerStats(world.players[0] as PlayerState).nuke;
+
+    expect(nuclear.radius).toBeGreaterThan(NUKE_RADIUS);
+    expect(nuclear.cost).toBeGreaterThan(NUKE_COST);
+    expect(nuclear.damage).toBe(NUKE_DAMAGE);
+  });
+
+  it('прокачка не достаётся противнику', () => {
+    const world = levelled(damageBranch, 3);
+
+    expect(playerStats(world.players[1] as PlayerState).nuke.damage).toBe(NUKE_DAMAGE);
+  });
+
+  it('прокачанный радиус расширяет запретную зону', () => {
+    // Размен, оплаченный вместе с радиусом: круг шире, а бить у баз
+    // больше нельзя. Клетка выбирается ровно на прежней границе.
+    const world = richWorld();
+    const base = cellCentre(baseCellOf(world, 1));
+
+    const allowed = world.map.cells.findIndex((_, cell) => {
+      const distance = distanceSquared(cellCentre(cell), base);
+      return (
+        distance > nukeBaseExclusion(NUKE_RADIUS) ** 2 &&
+        distance < nukeBaseExclusion(NUKE_RADIUS * 2) ** 2
+      );
+    });
+
+    expect(step(world, [nuke(0, allowed)]).nukes).toHaveLength(1);
+
+    const wide = levelled(radiusBranch, 8);
+    expect(playerStats(wide.players[0] as PlayerState).nuke.radius).toBeGreaterThan(
+      NUKE_RADIUS * 2,
+    );
+    expect(step(wide, [nuke(0, allowed)]).nukes).toHaveLength(0);
   });
 });
 
@@ -851,6 +1028,7 @@ const withUnitAt = (
       position: cellCentre(cell),
       health,
       readyAtTick: asTickNumber(0),
+      kills: 0,
     },
   ],
 });
@@ -941,7 +1119,7 @@ const wallAt = (cell: number, owner: number, id: number) => ({
   kind: StructureKind.Wall,
   cell,
   health: 10_000,
-  growthPpm: 1_000_000,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
@@ -1122,5 +1300,131 @@ describe('остановка юнита на стреляющей построй
     const far = towerAt(cellIndex(20, 26), 1, 902, StructureKind.TowerSniper);
 
     expect(positionAfter(facing(far), 4)).not.toEqual(cellCentre(MINE));
+  });
+});
+
+describe('расталкивание в связке с движением и боем', () => {
+  /** Скальная гряда через всю карту с единственным проходом в клетку. */
+  const GAP_X = 24;
+  const WALL_Y = 24;
+
+  const walledWorld = (): WorldState => {
+    const world = openWorld();
+    const cells = new Uint8Array(MAP_CELL_COUNT);
+
+    for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
+      if (x === GAP_X) continue;
+      cells[cellIndex(x, WALL_Y)] = Terrain.Rock;
+    }
+
+    return { ...world, map: { cells, baseCells: world.map.baseCells } };
+  };
+
+  const stacked = (count: number, at: { x: number; y: number }): WorldState => ({
+    ...walledWorld(),
+    units: Array.from({ length: count }, (_unused, index) => ({
+      id: asEntityId(700 + index),
+      owner: asPlayerId(0),
+      unitType: UnitType.Assault,
+      position: { ...at },
+      health: 1_000_000,
+      facing: DIRECTION_SOUTH,
+      readyAtTick: asTickNumber(0),
+    })),
+  });
+
+  const CROWD = 40;
+  const START = cellCentre(cellIndex(GAP_X, WALL_Y - 4));
+
+  it('слипшаяся толпа протискивается сквозь проход шириной в клетку', () => {
+    // Главная проверка мягкости правила. Жёсткий запрет на сближение
+    // запер бы войско перед узким местом навсегда, и увидеть это можно
+    // только на полном шаге: расталкивание, движение и занятость клеток
+    // должны ужиться втроём.
+    const after = run(stacked(CROWD, START), 900);
+    const passed = after.units.filter((unit) => unit.position.y > (WALL_Y + 1) * 1000);
+
+    expect(passed).toHaveLength(CROWD);
+  });
+
+  it('ни одна машина при этом не оказывается внутри скалы', () => {
+    const after = run(stacked(CROWD, START), 900);
+    const occupancy = buildOccupancy(after.map, after.structures);
+    const inside = after.units.filter((unit) => occupancy.blocked[cellAt(unit.position)] === 1);
+
+    expect(inside).toHaveLength(0);
+  });
+
+  it('установившаяся толпа не переминается на месте', () => {
+    // Требование про затухание толчка. Без него хвост войска каждый тик
+    // заново вдавливает передних друг в друга, и обложившая цель толпа
+    // шевелится до конца матча — на поле это читается как муравейник,
+    // а не как войско на позиции.
+    const spot = cellCentre(cellIndex(41, 37));
+    const crowd = 40;
+
+    let world: WorldState = {
+      ...openWorld(),
+      units: Array.from({ length: crowd }, (_unused, index) => ({
+        id: asEntityId(700 + index),
+        owner: asPlayerId(0),
+        unitType: UnitType.Assault,
+        position: { ...spot },
+        health: 1_000_000,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(0),
+      })),
+    };
+
+    // Даём войску дойти и разойтись.
+    world = run(world, 300);
+
+    const before = world.units.map((unit) => unit.position);
+    let path = 0;
+
+    for (let tick = 0; tick < 100; tick += 1) {
+      const previous = world.units.map((unit) => unit.position);
+      world = step(world, []);
+      world.units.forEach((unit, index) => {
+        const was = previous[index];
+        if (was === undefined) return;
+        path += Math.abs(unit.position.x - was.x) + Math.abs(unit.position.y - was.y);
+      });
+    }
+
+    const perMachine = path / world.units.length;
+
+    // Клетка за сто тиков — это чуть больше трёх секунд еле заметного
+    // шевеления. Полный толчок без затухания давал вчетверо больше.
+    expect(perMachine).toBeLessThan(1000);
+    // И толпа при этом действительно стоит на месте, а не уползает.
+    expect(before.length).toBe(world.units.length);
+  });
+
+  it('остановившаяся у цели машина стреляет в тот же тик, когда её сдвинуло', () => {
+    // Толчок — это не движение. Машина, дошедшая до цели, остаётся
+    // дошедшей: правило остановки продолжает действовать, стрельба тоже.
+    const spot = cellCentre(cellIndex(41, 38));
+    const world: WorldState = {
+      ...openWorld(),
+      units: [700, 701].map((id) => ({
+        id: asEntityId(id),
+        owner: asPlayerId(0),
+        unitType: UnitType.Assault,
+        position: { ...spot },
+        health: 1_000_000,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(0),
+      })),
+    };
+
+    const before = world.structures.find((entry) => entry.owner === asPlayerId(1));
+    const after = step(world, []);
+    const afterBase = after.structures.find((entry) => entry.owner === asPlayerId(1));
+
+    // Сдвинуло — значит расталкивание сработало...
+    expect(after.units[0]?.position).not.toEqual(spot);
+    // ...и при этом выстрел по назначенной цели состоялся в том же тике.
+    expect(afterBase?.health ?? 0).toBeLessThan(before?.health ?? 0);
   });
 });

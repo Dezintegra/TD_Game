@@ -124,14 +124,20 @@ describe('состав столбцов', () => {
     }
   });
 
-  it('у стены одна строка, у базы одна, у генерала пять', () => {
+  it('у стены одна строка, у базы три, у генерала пять', () => {
+    // У базы к добыче энергии добавились мощность заряда и радиус
+    // поражения: пусковая установка стоит на её площадке, и обе ветки
+    // ядерного удара принадлежат ей.
     expect(rows[UpgradeTarget.Wall]).toHaveLength(1);
-    expect(rows[UpgradeTarget.Base]).toHaveLength(1);
+    expect(rows[UpgradeTarget.Base]).toHaveLength(3);
     expect(rows[UpgradeTarget.General]).toHaveLength(5);
   });
 
   it('ни одна ветка не осталась без места', () => {
-    const placed = rows.flat().map((row) => row.branch).sort((a, b) => a - b);
+    const placed = rows
+      .flat()
+      .map((row) => row.branch)
+      .sort((a, b) => a - b);
     expect(placed).toEqual(UPGRADE_BRANCHES.map((_, index) => index));
   });
 });

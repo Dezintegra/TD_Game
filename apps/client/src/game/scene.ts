@@ -1,4 +1,4 @@
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics, Sprite } from 'pixi.js';
 import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import { cellIndex, cellX, cellY } from '@td/sim';
@@ -6,14 +6,20 @@ import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, createCamera, moveCamera } from './camera.js';
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
-import { mountRockDiagonal } from './relief-render.js';
+import { clearRockLayer, mountRockDiagonal } from './relief-render.js';
 import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
 import { drawEntities } from './entities.js';
+import { createMachineSprites } from './machine-sprites.js';
+import { createStructureSprites } from './structure-sprites.js';
+import type { StructureSpriteColors, StructureSprites } from './structure-sprites.js';
+import type { MachineSpriteColors, MachineSprites } from './machine-sprites.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { drawShots } from './shots.js';
 import type { ShotColors, ShotLayers } from './shots.js';
+import { createArcSprites } from './arc-render.js';
+import type { ArcSprites } from './arc-render.js';
 import { drawBlasts, shakeOffset } from './blasts.js';
 import type { BlastColors, BlastLayers } from './blasts.js';
 import { createFrameClock } from './clock.js';
@@ -87,6 +93,15 @@ export interface Scene {
    * без номера местного игрока не выводится.
    */
   setMap(map: GameMap, localPlayer: PlayerId): void;
+  /**
+   * Продолжить запекание скал, потратив не больше отпущенного.
+   *
+   * Возвращает `true`, пока осталась работа. Вызывать положено каждый
+   * кадр: скалы карты стоят около полутора секунд счёта, и одним куском
+   * их печь нельзя — столько же простоял бы главный поток, а вместе с ним
+   * и разбор кадров матча, которые всё это время копятся в сокете.
+   */
+  bakeTerrain(budgetMs: number): boolean;
   /** Рисует текущее состояние мира и подсказки. */
   render(world: WorldState, localPlayer: PlayerId, intent: OverlayIntent): void;
   /** Сдвигает камеру на заданное число экранных пикселей и снимает слежение. */
@@ -116,6 +131,29 @@ export interface Scene {
   readonly terrainRebuildCount: number;
   readonly viewportSize: { readonly width: number; readonly height: number };
 }
+
+/**
+ * В каком порядке печь диагонали территории.
+ *
+ * От базы местного игрока наружу, а не от нулевой диагонали к последней.
+ * Порядок ПЕРЕКРЫТИЯ от этого не зависит вовсе: слои созданы заранее
+ * и лежат в контейнере мира в своём порядке, так что кто кого заслоняет,
+ * решено до всякого запекания. Зависит другое — что игрок увидит первым.
+ *
+ * А это существенно, потому что печётся теперь не всё разом. Камера
+ * в начале матча стоит на базе игрока, и при обходе с нулевой диагонали
+ * его собственный командный центр появлялся бы через полсотни кадров
+ * после начала матча — на пустом поле, посреди уже идущей игры.
+ * Проверено снимком: выглядит поломкой.
+ */
+const bakeOrderOf = (map: GameMap, localPlayer: PlayerId, count: number): number[] => {
+  const home = map.baseCells[localPlayer];
+  const centre = home === undefined ? 0 : cellX(home) + cellY(home);
+
+  return Array.from({ length: count }, (_unused, diagonal) => diagonal).sort(
+    (left, right) => Math.abs(left - centre) - Math.abs(right - centre),
+  );
+};
 
 const readToken = (name: string, fallback: string): string => {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -155,16 +193,64 @@ const readBaseColors = (accent: number): BaseColors => ({
   sky: token('--td-rock-sky', 0x5c7ea8),
 });
 
+/**
+ * Цвета брони.
+ *
+ * Машина покрашена в графит, а цвет стороны несут маркеры и подсветка
+ * по краю тела. Поэтому здесь четыре нейтральных оттенка и два цвета
+ * сторон, а не «тёмная основа плюс примесь», как было у заливок.
+ */
+const readMachineColors = (): MachineSpriteColors => ({
+  plate: token('--td-hull-plate', 0x3d4245),
+  metal: token('--td-hull-metal', 0x585e62),
+  shadow: token('--td-hull-shadow', 0x131618),
+  glass: token('--td-hull-glass', 0x232e36),
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  // Небо то же, что подсвечивает скалы: разный подсвет у соседних
+  // предметов читается ошибкой.
+  sky: token('--td-rock-sky', 0x5c7ea8),
+  ground: token('--td-bg-page', 0x191919),
+});
+
+/**
+ * Цвета постройки.
+ *
+ * Броня и остекление те же, что у машин: башня и танк рядом обязаны быть
+ * из одного вещества, иначе поле распадается на два мира. Бетон тот же,
+ * что у командного центра, и по той же причине — бетон на карте один.
+ *
+ * Отдельного тёмного оттенка под тень здесь нет: у постройки нет ни
+ * колёс, ни решёток, ни выхлопа, а место второго тёмного материала
+ * занял бетон.
+ */
+const readStructureColors = (): StructureSpriteColors => ({
+  plate: token('--td-hull-plate', 0x3d4245),
+  steel: token('--td-hull-metal', 0x585e62),
+  concrete: token('--td-concrete', 0x6b6f72),
+  glass: token('--td-hull-glass', 0x232e36),
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  sky: token('--td-rock-sky', 0x5c7ea8),
+  ground: token('--td-bg-page', 0x191919),
+});
+
 const readEntityColors = (): EntityColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
-  hullDark: token('--td-hull-dark', 0x23271f),
   // Цвет поверхности — тот же, которым залит фон сцены. Земля рисуется
   // линиями и заливок не имеет, поэтому под отражением всегда именно он.
   ground: token('--td-bg-page', 0x191919),
   health: token('--td-health-full', 0x00ff29),
   healthLow: token('--td-health-low', 0xff5c5c),
   beacon: token('--td-beacon', 0xff3b30),
+  // Погон. Цвета одни на обе стороны: на нём цвет занят переходом
+  // «сталь → золото», а не принадлежностью.
+  rank: {
+    field: token('--td-rank-field', 0x14171a),
+    stripe: token('--td-rank-stripe', 0xcfd6da),
+    gold: token('--td-rank-gold', 0xffc83d),
+  },
 });
 
 /**
@@ -181,6 +267,7 @@ const readShotColors = (): ShotColors => ({
   hullDark: token('--td-hull-dark', 0x23271f),
   shot: token('--td-projectile', 0xeaffef),
   shotLethal: token('--td-health-low', 0xff5c5c),
+  arc: token('--td-arc', 0x5aa6ff),
   core: token('--td-blast-core', 0xfff6e0),
   fire: token('--td-blast-fire', 0xff8a2b),
   smoke: token('--td-blast-smoke', 0x2b2622),
@@ -250,11 +337,20 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   // объектам.
   const terrainBands: Container[] = [];
   const entityBands: Graphics[] = [];
+  const machineBands: Container[] = [];
 
   for (let band = 0; band <= TERRAIN_DIAGONAL_COUNT; band += 1) {
     const entities = new Graphics();
     entityBands.push(entities);
     worldContainer.addChild(entities);
+
+    // Машины идут сразу за постройками своей полосы. Спрайт в Graphics
+    // не положишь, поэтому у них свой контейнер; порядок при этом верен
+    // сам собой: глубина постройки — центр её клетки, то есть целое
+    // число, а глубина юнита той же полосы лежит в [k, k+1).
+    const machines = new Container();
+    machineBands.push(machines);
+    worldContainer.addChild(machines);
 
     if (band < TERRAIN_DIAGONAL_COUNT) {
       // Территория — контейнер, а не Graphics: и скалы, и командный центр
@@ -280,6 +376,10 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   //
   // Свет взрыва выше света выстрела намеренно: взрыв — событие более
   // крупное, и перекрывать его вспышками очередей незачем.
+  // Цвета выстрела читаются раньше остальных: слою разрядов нужен цвет
+  // молнии прямо при создании — плитки печются один раз и красятся тинтом.
+  const shotColors = readShotColors();
+
   const blastDebrisGraphics = new Graphics();
   const shotTrailGraphics = new Graphics();
   const shotGlowGraphics = new Graphics();
@@ -290,6 +390,19 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   // поэтому светящееся и несветящееся здесь разложены по разным слоям.
   shotGlowGraphics.blendMode = 'add';
   blastGlowGraphics.blendMode = 'add';
+
+  /**
+   * Разряды Теслы: единственный выстрел, который рисуется спрайтами,
+   * а не линиями. Ломаная в `Graphics` режется на треугольники заново
+   * каждый кадр, и пятнадцать одновременных разрядов стоили половину
+   * бюджета кадра; те же пятнадцать спрайтами — сотую его часть.
+   *
+   * Свой слой ему нужен по той же причине, по какой свет вообще отделён
+   * от тел: режим смешивания в PixiJS задаётся слою целиком. Лежит он
+   * между светом выстрелов и светом взрывов — разряд ярче очереди
+   * штурмовика, но тише гибели.
+   */
+  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc });
 
   const flashGraphics = new Graphics();
   flashGraphics.blendMode = 'add';
@@ -302,6 +415,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     blastDebrisGraphics,
     shotTrailGraphics,
     shotGlowGraphics,
+    arcs.layer,
     blastGlowGraphics,
     overheadGraphics,
     overlayGraphics,
@@ -316,20 +430,53 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const usedBands: number[] = [];
   const bandUsed = new Uint8Array(entityBands.length);
 
+  /**
+   * Пул спрайтов.
+   *
+   * В нём живут и машины, и постройки: спрайт — это положение и ссылка
+   * на текстуру, и разницы между ними на этом уровне нет никакой.
+   *
+   * Машин на экране до двух сотен, и каждая берёт по два спрайта — тело
+   * и отражение; постройка берёт один, потому что она стоит, а не висит.
+   * Создавать их заново каждый кадр значило бы двадцать тысяч объектов
+   * в секунду на ровном месте.
+   */
+  const spritePool: Sprite[] = [];
+  let spritesUsed = 0;
+
+  const markBand = (index: number): void => {
+    if (bandUsed[index] === 0) {
+      bandUsed[index] = 1;
+      usedBands.push(index);
+    }
+  };
+
   const layers: EntityLayers = {
     band(index) {
-      if (bandUsed[index] === 0) {
-        bandUsed[index] = 1;
-        usedBands.push(index);
-      }
+      markBand(index);
       // Полоса гарантированно существует: её номер уже прижат к диапазону
       // на стороне отрисовки сущностей.
       return entityBands[index] as Graphics;
+    },
+    sprite(index, baked, anchorX, anchorY) {
+      markBand(index);
+
+      let sprite = spritePool[spritesUsed];
+      if (sprite === undefined) {
+        sprite = new Sprite();
+        spritePool.push(sprite);
+      }
+      spritesUsed += 1;
+
+      sprite.texture = baked.texture;
+      sprite.position.set(anchorX + baked.offsetX, anchorY + baked.offsetY);
+      (machineBands[index] as Container).addChild(sprite);
     },
     overhead: overheadGraphics,
   };
 
   const shotLayers: ShotLayers = {
+    arcs,
     trails: shotTrailGraphics,
     glow: shotGlowGraphics,
   };
@@ -343,11 +490,18 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const clearEntityLayers = (): void => {
     for (const band of usedBands) {
       entityBands[band]?.clear();
+      // Спрайты снимаются, но не уничтожаются: они вернутся из пула
+      // на следующем кадре.
+      machineBands[band]?.removeChildren();
       bandUsed[band] = 0;
     }
     usedBands.length = 0;
+    spritesUsed = 0;
     shotTrailGraphics.clear();
     shotGlowGraphics.clear();
+    // Спрайты не чистятся, а переиспользуются: пул один на матч,
+    // и кадр просто берёт из него столько, сколько нужно.
+    arcs.begin();
     overheadGraphics.clear();
     blastDebrisGraphics.clear();
     blastGlowGraphics.clear();
@@ -377,7 +531,32 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const baseSelfColors = readBaseColors(token('--td-accent', 0x00ff29));
   const baseEnemyColors = readBaseColors(token('--td-player-enemy', 0xd264ff));
   const entityColors = readEntityColors();
-  const shotColors = readShotColors();
+  /**
+   * Кеш запечённых машин.
+   *
+   * Разрешение берётся то же, с которым работает приложение: спрайт
+   * рисуется один к одному, и на экране с плотными пикселями машина
+   * обязана быть подробнее, а не крупнее.
+   */
+  const machines: MachineSprites = createMachineSprites(
+    app.renderer,
+    readMachineColors(),
+    app.renderer.resolution,
+  );
+
+  /**
+   * Кеш запечённых построек.
+   *
+   * Отдельный от машинного, хотя приём тот же: у постройки другой ключ
+   * (облик вместо ступеней прокачки), другая палитра и другая фактура,
+   * а общего осталось бы одно только слово «спрайт».
+   */
+  const structures: StructureSprites = createStructureSprites(
+    app.renderer,
+    readStructureColors(),
+    app.renderer.resolution,
+  );
+
   const blastColors = readBlastColors();
   const overlayColors = readOverlayColors();
   const minimapColors = readMinimapColors();
@@ -388,6 +567,22 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
   let camera: Camera = createCamera();
   let currentMap: GameMap | undefined;
+  /**
+   * Незаконченное запекание скал; `undefined` — работы нет.
+   *
+   * Карта и местный игрок лежат вместе с курсором намеренно: они нужны
+   * каждому шагу, а порознь их легко рассогласовать — карту сменить,
+   * а курсор забыть.
+   */
+  let baking:
+    | {
+        readonly map: GameMap;
+        readonly localPlayer: PlayerId;
+        /** Диагонали в порядке запекания, а не по возрастанию номера. */
+        readonly order: readonly number[];
+        at: number;
+      }
+    | undefined;
   let terrainRebuildCount = 0;
   let following = true;
   let layout: MinimapLayout = minimapLayout(app.screen.width, app.screen.height);
@@ -463,41 +658,88 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
       currentMap = map;
       terrainRebuildCount += 1;
+
+      // Дешёвое делается сразу: земля — одна заливка, миникарта — обход
+      // клеток без запекания. Игрок видит поле и свою карту немедленно.
       drawGround(groundGraphics, terrainColors);
-      terrainBands.forEach((layer, diagonal) => {
-        mountRockDiagonal(layer, app.renderer, map, diagonal, {
-          rock: terrainColors.rock,
-          sky: terrainColors.rockSky,
-        });
-      });
-
-      // Базы ставятся ПОСЛЕ скал: `mountRockDiagonal` чистит слой своей
-      // диагонали целиком, и база, положенная раньше, была бы уничтожена
-      // вместе со скалами. Заодно это и порядок внутри диагонали —
-      // безразличный, потому что вокруг базы расчищена площадка и скал
-      // на её диагонали рядом нет.
-      //
-      // Цвет берётся по ВЛАДЕЛЬЦУ, а не по номеру базы в списке. База
-      // с индексом `i` принадлежит игроку `i` (см. `createWorld`), и
-      // прежний код красил нулевую в свой цвет всегда — то есть у второго
-      // игрока свою базу показывал чужим цветом, а чужую своим. На поле,
-      // где цвет означает принадлежность, это худшая из возможных ошибок.
-      map.baseCells.forEach((cell, index) => {
-        const x = cellX(cell);
-        const y = cellY(cell);
-        const layer = terrainBands[x + y];
-        if (layer === undefined) return;
-
-        placeBase(
-          layer,
-          app.renderer,
-          x,
-          y,
-          index === localPlayer ? baseSelfColors : baseEnemyColors,
-        );
-      });
-
       drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
+
+      // Скалы — нет. Их запекание стоит около полутора секунд, и одним
+      // куском оно перекрыло бы начало матча целиком: пока главный поток
+      // занят, браузер не разбирает кадры, пришедшие по сокету, и первый
+      // подтверждённый тик доезжает до игрока не раньше конца запекания.
+      //
+      // Замерено на боевой сборке: 2,8 с от «играть» до первого
+      // подтверждённого тика, из них около 1,3 с — вот эта самая работа.
+      // На сборке для разработки и на занятой машине выходило до шести
+      // секунд, и всё это время игрок смотрел на неподвижный мир.
+      //
+      // Слои чистятся здесь, все разом: иначе на смене карты под новыми
+      // скалами остались бы старые.
+      for (const layer of terrainBands) clearRockLayer(layer);
+
+      baking = {
+        map,
+        localPlayer,
+        order: bakeOrderOf(map, localPlayer, terrainBands.length),
+        at: 0,
+      };
+    },
+
+    bakeTerrain(budgetMs) {
+      const job = baking;
+      if (job === undefined) return false;
+
+      const started = performance.now();
+
+      // Бюджет проверяется МЕЖДУ диагоналями, а не внутри. Диагональ —
+      // это слой перекрытия целиком, и брошенная на середине оставила бы
+      // соседние клетки одной гряды в разных кадрах, то есть видимый шов.
+      // Одна диагональ печётся всегда, даже при нулевом бюджете: иначе
+      // на медленной машине работа не сдвинулась бы вовсе.
+      do {
+        const diagonal = job.order[job.at] ?? 0;
+        const layer = terrainBands[diagonal];
+        if (layer !== undefined) {
+          mountRockDiagonal(layer, app.renderer, job.map, diagonal, {
+            rock: terrainColors.rock,
+            sky: terrainColors.rockSky,
+          });
+
+          // База ставится ПОСЛЕ скал своей диагонали: `mountRockDiagonal`
+          // чистит слой целиком, и база, положенная раньше, была бы
+          // уничтожена вместе со скалами. Порядок внутри диагонали
+          // безразличен — вокруг базы расчищена площадка, и скал на её
+          // диагонали рядом нет.
+          //
+          // Цвет берётся по ВЛАДЕЛЬЦУ, а не по номеру базы в списке. База
+          // с индексом `i` принадлежит игроку `i` (см. `createWorld`), и
+          // прежний код красил нулевую в свой цвет всегда — то есть
+          // у второго игрока свою базу показывал чужим цветом, а чужую
+          // своим. На поле, где цвет означает принадлежность, это худшая
+          // из возможных ошибок.
+          job.map.baseCells.forEach((cell, index) => {
+            const x = cellX(cell);
+            const y = cellY(cell);
+            if (x + y !== diagonal) return;
+
+            placeBase(
+              layer,
+              app.renderer,
+              x,
+              y,
+              index === job.localPlayer ? baseSelfColors : baseEnemyColors,
+            );
+          });
+        }
+
+        job.at += 1;
+      } while (job.at < job.order.length && performance.now() - started < budgetMs);
+
+      if (job.at < job.order.length) return true;
+
+      baking = undefined;
+      return false;
     },
 
     render(world, localPlayer, intent) {
@@ -509,11 +751,14 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       const time = clock.sample(world.tick, performance.now());
       const bounds = viewBounds();
 
-      drawEntities(layers, world, bounds, entityColors, localPlayer);
+      drawEntities(layers, world, bounds, entityColors, localPlayer, machines, structures);
 
       // Выстрелы поверх всех тел: выстрел — это событие, и прятать его
       // за телами не нужно, иначе бой в толпе перестаёт читаться.
       drawShots(shotLayers, world, time, bounds, shotColors, localPlayer);
+      // Спрайты, не занятые в этом кадре, прячутся: пул один на матч,
+      // и в нём остаются разряды прошлых, более людных кадров.
+      arcs.end();
 
       // Размах тряски приходит оттуда же, откуда взрывы: слоями владеет
       // сцена, а решает, насколько тряхнуть, тот, кто знает про взрывы.
@@ -612,6 +857,12 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     },
 
     destroy() {
+      // Текстуры живут в видеопамяти, и сборщик мусора о ней не знает:
+      // без уборки утечка копилась бы матч за матчем. И разряды,
+      // и машины — до самого приложения.
+      arcs.destroy();
+      machines.dispose();
+      structures.dispose();
       app.destroy(true, { children: true });
     },
 

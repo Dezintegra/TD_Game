@@ -6,7 +6,6 @@ import {
   MAP_HEIGHT_CELLS,
   GENERAL_STATS,
   MAP_WIDTH_CELLS,
-  PPM_ONE,
   SPLASH_OUTER_DIVISOR,
   STRUCTURE_STATS,
   ShotSide,
@@ -18,13 +17,16 @@ import {
   asEntityId,
   asPlayerId,
   asTickNumber,
-  compoundPpm,
+  VETERAN_MAX_RANK,
+  VETERAN_RANK_KILLS,
+  veteranRank,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import { createWorld } from './world.js';
 import type { GeneralState, StructureState, UnitState, WorldState } from './world.js';
 import { step } from './step.js';
 import { checksum } from './checksum.js';
+import { playerStats, structureAttack, unitMaxHealth } from './stats.js';
 import { cellCentre, cellIndex } from './map.js';
 
 /**
@@ -63,6 +65,7 @@ const unit = (
   health,
   facing: DIRECTION_SOUTH,
   readyAtTick: asTickNumber(0),
+  kills: 0,
 });
 
 const structure = (
@@ -78,7 +81,7 @@ const structure = (
   kind,
   cell: cellOffset(dx, dy),
   health,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),
@@ -221,15 +224,13 @@ describe('след выстрела', () => {
 
   it('снайпер и снайперская башня помечают выстрел лучом', () => {
     expect(weaponOf(duel([], [unit(60, 0, UnitType.Sniper, 0, 0, 100)]), 0)).toBe(ShotWeapon.Beam);
-    expect(
-      weaponOf(duel([structure(50, 0, StructureKind.TowerSniper, 0, 0, 200)], []), 0),
-    ).toBe(ShotWeapon.Beam);
+    expect(weaponOf(duel([structure(50, 0, StructureKind.TowerSniper, 0, 0, 200)], []), 0)).toBe(
+      ShotWeapon.Beam,
+    );
   });
 
   it('Тесла помечает выстрел разрядом', () => {
-    expect(weaponOf(duel([], [unit(60, 0, UnitType.Tesla, 0, 0, 100)]), 0)).toBe(
-      ShotWeapon.Arc,
-    );
+    expect(weaponOf(duel([], [unit(60, 0, UnitType.Tesla, 0, 0, 100)]), 0)).toBe(ShotWeapon.Arc);
   });
 
   it('штурмовик и базовая башня помечают выстрел трассером', () => {
@@ -260,9 +261,10 @@ describe('след выстрела', () => {
 
   it('прочие стрелки бьют по оси, без борта', () => {
     // Борт есть только у ракеты: у неё под него нарисованы пилоны.
-    const world = duel([structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)], [
-      unit(60, 0, UnitType.Sniper, 0, 0, 10_000),
-    ]);
+    const world = duel(
+      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)],
+      [unit(60, 0, UnitType.Sniper, 0, 0, 10_000)],
+    );
 
     const sides = world.shots
       .filter((shot) => shot.weapon !== ShotWeapon.Missile)
@@ -446,49 +448,210 @@ describe('линия огня', () => {
   });
 });
 
-describe('усиление башни за убийства', () => {
-  it('добив юнита, башня получает пять процентов к силе', () => {
-    const world = arrange(
-      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)],
-      [unit(60, 1, UnitType.Assault, 1, 0, 1)],
+describe('ветеранские ранги за убийства', () => {
+  const TOWER_HEALTH = STRUCTURE_STATS[StructureKind.TowerBasic].health;
+  const TOWER_ATTACK = STRUCTURE_STATS[StructureKind.TowerBasic].attack;
+
+  /**
+   * Башня в середине поля и заданное число обречённых рядом с ней.
+   *
+   * Прочность башни задаётся отдельно, и это не украшение стенда.
+   * На длинных прогонах толпа успевает снести башню раньше, чем та
+   * наберёт ранги, — и тест ловил бы исход перестрелки, а не правило.
+   */
+  const gallery = (victims: number, towerHealth = TOWER_HEALTH): WorldState =>
+    arrange(
+      [structure(50, 0, StructureKind.TowerBasic, 0, 0, towerHealth)],
+      Array.from({ length: victims }, (_, index) =>
+        // Раскладываем в линию, чтобы каждый был отдельной целью,
+        // а не толпой в одной точке.
+        unit(60 + index, 1, UnitType.Assault, 1 + index * 0.2, 0, 1),
+      ),
     );
 
-    const after = step(world, []);
+  /**
+   * Прогон до тех пор, пока башня не наберёт нужное число убийств.
+   *
+   * Убитая мишень заменяется новой, и это не удобство, а необходимость.
+   * Войско по умолчанию идёт на прорыв: оно не задерживается у башни,
+   * а проходит мимо и за несколько секунд выходит из её радиуса. Расставь
+   * мы двадцать мишеней разом — башня успела бы снять пятерых, а тест
+   * поймал бы скорость пехоты, а не потолок ранга.
+   *
+   * Перезарядка башни — секунда, то есть тридцать тиков на убийство.
+   * Запас двойной: тест не должен зависеть от того, попала ли башня
+   * в первый же тик.
+   */
+  const untilKills = (world: WorldState, wanted: number): WorldState => {
+    let current = world;
+    let nextVictimId = 200;
+
+    for (let tick = 0; tick < wanted * 90 + 90; tick += 1) {
+      if ((structureById(current, 50)?.kills ?? 0) >= wanted) break;
+
+      if (current.units.length === 0) {
+        nextVictimId += 1;
+        current = { ...current, units: [unit(nextVictimId, 1, UnitType.Assault, 1, 0, 1)] };
+      }
+
+      current = step(current, []);
+    }
+
+    return current;
+  };
+
+  const towerAttackIn = (world: WorldState): number => {
+    const tower = structureById(world, 50);
+    const owner = world.players[0];
+    if (tower === undefined || owner === undefined) throw new Error('башня пропала');
+
+    return structureAttack(playerStats(owner).structures[StructureKind.TowerBasic], tower.kills);
+  };
+
+  it('первое убийство даёт первый ранг', () => {
+    const after = step(gallery(1), []);
 
     expect(unitById(after, 60)).toBeUndefined();
-    expect(structureById(after, 50)?.growthPpm).toBe(compoundPpm(5, 1));
+    expect(structureById(after, 50)?.kills).toBe(1);
+    expect(veteranRank(structureById(after, 50)?.kills ?? 0)).toBe(1);
   });
 
-  it('усиление копится сложным процентом и не переходит на соседей', () => {
+  it('ранг растёт по порогам, а не за каждое убийство', () => {
+    const twoKills = untilKills(gallery(3), 2);
+    expect(veteranRank(structureById(twoKills, 50)?.kills ?? 0)).toBe(1);
+
+    const threeKills = untilKills(twoKills, 3);
+    expect(veteranRank(structureById(threeKills, 50)?.kills ?? 0)).toBe(2);
+  });
+
+  it('ранг умножает атаку и максимум здоровья по таблице', () => {
+    const first = step(gallery(1), []);
+
+    // Первый ранг — сто десять процентов. Здоровье видно прямо: башня
+    // стояла целой, и максимум ей подняли вместе с текущим.
+    expect(towerAttackIn(first)).toBe(Math.floor((TOWER_ATTACK * 110) / 100));
+    expect(structureById(first, 50)?.health).toBe(Math.floor((TOWER_HEALTH * 110) / 100));
+
+    // Третье убийство — второй ранг, сто двадцать пять процентов.
+    const third = untilKills(gallery(3), 3);
+    expect(towerAttackIn(third)).toBe(Math.floor((TOWER_ATTACK * 125) / 100));
+  });
+
+  it('выше пятого ранга не поднимаются', () => {
+    const topKills = VETERAN_RANK_KILLS[VETERAN_MAX_RANK - 1] ?? 15;
+    // Башня неубиваемая намеренно: проверяется потолок множителя,
+    // а не то, переживёт ли она два десятка штурмовиков.
+    const after = untilKills(gallery(topKills + 5, 1_000_000), topKills + 3);
+    const tower = structureById(after, 50);
+    if (tower === undefined) throw new Error('башня пропала');
+
+    // Счётчик убийств продолжает расти, а множитель — нет.
+    expect(tower.kills).toBeGreaterThan(topKills);
+    expect(veteranRank(tower.kills)).toBe(VETERAN_MAX_RANK);
+    expect(towerAttackIn(after)).toBe(TOWER_ATTACK * 2);
+  });
+
+  it('ранг не трогает дальность и перезарядку', () => {
+    const after = untilKills(gallery(3), 3);
+    const owner = after.players[0];
+    if (owner === undefined) throw new Error('игрок пропал');
+
+    const baseline = playerStats(owner).structures[StructureKind.TowerBasic];
+
+    expect(baseline.range).toBe(STRUCTURE_STATS[StructureKind.TowerBasic].range);
+    expect(baseline.cooldownTicks).toBe(STRUCTURE_STATS[StructureKind.TowerBasic].cooldownTicks);
+  });
+
+  it('ранг не переходит на соседнюю башню того же вида', () => {
     const world = arrange(
       [
-        structure(50, 0, StructureKind.TowerBasic, 0, 0, 200),
+        structure(50, 0, StructureKind.TowerBasic, 0, 0, TOWER_HEALTH),
         // Вторая башня намеренно далеко: она не должна ни в кого попасть,
-        // иначе тест не докажет, что усиление не переходит на соседей.
-        structure(51, 0, StructureKind.TowerBasic, 0, 20, 200),
+        // иначе тест не докажет, что ранг принадлежит объекту.
+        structure(51, 0, StructureKind.TowerBasic, 0, 20, TOWER_HEALTH),
       ],
-      [unit(60, 1, UnitType.Assault, 1, 0, 1), unit(61, 1, UnitType.Assault, 1, 1, 1)],
-    );
-
-    // Перезарядка в секунду не даёт убить обоих сразу, поэтому ждём,
-    // пока башня отстреляется дважды.
-    let current = world;
-    for (let tick = 0; tick < 70; tick += 1) current = step(current, []);
-
-    expect(structureById(current, 50)?.growthPpm).toBe(compoundPpm(5, 2));
-    // Соседняя башня стоит вне радиуса от юнитов и потому не усилилась.
-    expect(structureById(current, 51)?.growthPpm).toBe(PPM_ONE);
-  });
-
-  it('усиление добавляет здоровье, а не отнимает долю', () => {
-    const world = arrange(
-      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)],
       [unit(60, 1, UnitType.Assault, 1, 0, 1)],
     );
 
     const after = step(world, []);
 
-    expect(structureById(after, 50)?.health).toBeGreaterThan(200);
+    expect(structureById(after, 50)?.kills).toBe(1);
+    expect(structureById(after, 51)?.kills).toBe(0);
+  });
+
+  it('юнит набирает ранг наравне с башней', () => {
+    const health = UNIT_STATS[UnitType.Assault].health;
+    const world = arrange(
+      [],
+      [unit(60, 0, UnitType.Assault, 0, 0, health), unit(70, 1, UnitType.Assault, 1, 0, 1)],
+    );
+
+    const after = step(world, []);
+
+    expect(unitById(after, 70)).toBeUndefined();
+    expect(unitById(after, 60)?.kills).toBe(1);
+    // Максимум вырос вместе с текущим: доля здоровья не просела.
+    //
+    // Сто пять процентов, а не сто десять: у машины таблица своя, мягче
+    // башенной. Разница выведена замером длины матча — см. `balance.ts`.
+    expect(unitById(after, 60)?.health).toBe(Math.floor((health * 105) / 100));
+  });
+
+  it('ранг юнита доходит до его выстрела, а не только до прочности', () => {
+    // Проверка заведена по следу настоящей ошибки: ранг сперва попал юниту
+    // в максимум здоровья, а стрелял он по-прежнему паспортным уроном.
+    // Полоса над машиной росла, а бой не менялся — и увидеть это глазами
+    // было нельзя.
+    //
+    // Сравниваются два одинаковых прогона, отличающихся ОДНИМ полем.
+    // Так проверка не зависит ни от порядка выстрелов внутри тика,
+    // ни от того, куда за это время уехала машина: уедет она одинаково,
+    // движение от ранга не зависит.
+    const wallHealth = 100_000;
+
+    const damageWith = (kills: number): number => {
+      const world = arrange(
+        [structure(50, 1, StructureKind.Wall, 1, 0, wallHealth)],
+        [{ ...unit(60, 0, UnitType.Assault, 0, 0, 500), kills }],
+      );
+
+      let current = world;
+      for (let tick = 0; tick < 120; tick += 1) current = step(current, []);
+
+      return wallHealth - (structureById(current, 50)?.health ?? 0);
+    };
+
+    const plain = damageWith(0);
+    // Пятнадцать убийств — высший ранг машины, полторы силы.
+    const veteran = damageWith(VETERAN_RANK_KILLS[VETERAN_MAX_RANK - 1] ?? 15);
+
+    expect(plain).toBeGreaterThan(0);
+    expect(veteran).toBe(plain * 1.5);
+  });
+
+  it('стена и база рангов не набирают', () => {
+    const after = step(gallery(1), []);
+
+    const passive = after.structures.filter(
+      (entry) => entry.kind === StructureKind.Wall || entry.kind === StructureKind.Base,
+    );
+
+    expect(passive.length).toBeGreaterThan(0);
+    expect(passive.every((entry) => entry.kills === 0)).toBe(true);
+  });
+
+  it('генерал ранга не набирает: его награда — энергия', () => {
+    const world = arrange([], [unit(70, 1, UnitType.Assault, 1, 0, 1)], at(0, 0));
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, []);
+
+    expect(unitById(after, 70)).toBeUndefined();
+    expect((after.players[0]?.energy ?? 0) - before).toBeGreaterThanOrEqual(
+      UNIT_STATS[UnitType.Assault].cost,
+    );
+    // Поля ранга у генерала нет вовсе: он не крепчает и погона не носит.
+    expect('kills' in (after.generals[0] ?? {})).toBe(false);
   });
 });
 
@@ -664,6 +827,58 @@ describe('накрытие Теслы', () => {
     expect((after.players[0]?.energy ?? 0) - before).toBeLessThan(
       UNIT_STATS[UnitType.Assault].cost,
     );
+  });
+
+  it('накрытие приносит столько убийств, скольких положило', () => {
+    // В этом и смысл урона по площади: оружие против толпы кладёт многих
+    // сразу, и засчитывать ему одного значило бы отнимать заслугу за то,
+    // ради чего его покупают. Темп набора ранга ограничен не счётом,
+    // а таблицей: у машины потолок полтора, а не два.
+    const world = arrange(
+      [],
+      [
+        unit(60, 0, UnitType.Tesla, 0, 0, 200),
+        unit(70, 1, UnitType.Assault, 3, 0, 1),
+        unit(71, 1, UnitType.Assault, 3.5, 0, 1),
+        unit(72, 1, UnitType.Assault, 3.7, 0, 1),
+      ],
+    );
+
+    const after = step(world, []);
+
+    expect(unitById(after, 70)).toBeUndefined();
+    expect(unitById(after, 71)).toBeUndefined();
+    expect(unitById(after, 72)).toBeUndefined();
+    // Трое убитых — три убийства: прямая цель плюс двое из накрытия.
+    expect(unitById(after, 60)?.kills).toBe(3);
+  });
+
+  it('ранг после залпа пересчитывается один раз, а не по разу на убитого', () => {
+    // Ловушка внутри: здоровье добавляется РАЗНИЦЕЙ максимумов. Считай мы
+    // по разу на убитого, объект получил бы прибавку трижды подряд —
+    // и оказался бы крепче собственного максимума.
+    const health = UNIT_STATS[UnitType.Tesla].health;
+    const world = arrange(
+      [],
+      [
+        unit(60, 0, UnitType.Tesla, 0, 0, health),
+        unit(70, 1, UnitType.Assault, 3, 0, 1),
+        unit(71, 1, UnitType.Assault, 3.5, 0, 1),
+        unit(72, 1, UnitType.Assault, 3.7, 0, 1),
+      ],
+    );
+
+    const after = step(world, []);
+    const tesla = unitById(after, 60);
+    if (tesla === undefined) throw new Error('Тесла пропала');
+
+    const owner = after.players[0];
+    if (owner === undefined) throw new Error('игрок пропал');
+
+    // Три убийства — второй ранг. Здоровье ровно на максимуме второго
+    // ранга, ни единицей больше.
+    expect(tesla.kills).toBe(3);
+    expect(tesla.health).toBe(unitMaxHealth(playerStats(owner).units[UnitType.Tesla], tesla.kills));
   });
 
   it('прочее оружие площадь не поражает', () => {

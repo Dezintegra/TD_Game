@@ -27,18 +27,13 @@ import type { IslandsDoctrine } from './profile.js';
  */
 
 /** Клетки-середины островов по порядку: от своей базы к чужой. */
-export const islandSites = (
-  approach: Approach,
-  doctrine: IslandsDoctrine,
-): readonly number[] => {
+export const islandSites = (approach: Approach, doctrine: IslandsDoctrine): readonly number[] => {
   if (approach.shortest <= 0) return [];
 
   // Для каждой доли ищется клетка пути, отстоящая от своей базы примерно
   // на эту долю кратчайшего маршрута. Обход один на все доли: карта
   // большая, а долей несколько.
-  const wanted = doctrine.fractions.map((fraction) =>
-    Math.round(approach.shortest * fraction),
-  );
+  const wanted = doctrine.fractions.map((fraction) => Math.round(approach.shortest * fraction));
   const best = wanted.map(() => -1);
   const error = wanted.map(() => Number.POSITIVE_INFINITY);
 

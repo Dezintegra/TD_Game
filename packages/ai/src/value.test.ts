@@ -4,7 +4,7 @@ import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   NUKE_COST,
-  PPM_ONE,
+  NUKE_DAMAGE,
   STRUCTURE_STATS,
   StructureKind,
   UNIT_STATS,
@@ -64,6 +64,7 @@ const withAssaults = (count: number): WorldState => {
     health: 100,
     facing: DIRECTION_SOUTH,
     readyAtTick: asTickNumber(0),
+    kills: 0,
   }));
 
   return { ...world, units };
@@ -160,7 +161,12 @@ describe('ядерный удар считается в энергии, со с�
   const ENEMY: PlayerId = asPlayerId(1);
 
   /** Мир, где вокруг точки стоит заданное число юнитов игрока. */
-  const crowdAt = (world: WorldState, owner: PlayerId, cell: number, count: number): WorldState => ({
+  const crowdAt = (
+    world: WorldState,
+    owner: PlayerId,
+    cell: number,
+    count: number,
+  ): WorldState => ({
     ...world,
     units: [
       ...world.units,
@@ -172,6 +178,7 @@ describe('ядерный удар считается в энергии, со с�
         health: UNIT_STATS[UnitType.Assault].health,
         facing: DIRECTION_SOUTH,
         readyAtTick: asTickNumber(0),
+        kills: 0,
       })),
     ],
   });
@@ -215,7 +222,7 @@ describe('ядерный удар считается в энергии, со с�
     expect(outcomeAt(hurt, cell).gain).toBeLessThan(outcomeAt(full, cell).gain);
   });
 
-  it('своя постройка входит в потери ровно по своей цене', () => {
+  it('своя постройка входит в потери долей снятой прочности', () => {
     const world = createWorld(SEED);
     const cell = middle();
 
@@ -229,15 +236,20 @@ describe('ядерный удар считается в энергии, со с�
           kind: StructureKind.TowerBasic,
           cell,
           health: STRUCTURE_STATS[StructureKind.TowerBasic].health,
-          growthPpm: PPM_ONE,
+          kills: 0,
           readyAtTick: asTickNumber(0),
           builtAtTick: asTickNumber(0),
         },
       ],
     };
 
+    // Башня прочнее заряда и удар переживает, поэтому в потери входит
+    // не вся её цена, а доля снятой прочности. Считать её целиком значило
+    // бы переоценивать удар ровно там, где он и не решает — по обороне.
+    const tower = STRUCTURE_STATS[StructureKind.TowerBasic];
+
     expect(outcomeAt(withTower, cell).loss - outcomeAt(world, cell).loss).toBe(
-      STRUCTURE_STATS[StructureKind.TowerBasic].cost,
+      (tower.cost * NUKE_DAMAGE) / tower.health,
     );
   });
 
@@ -249,21 +261,26 @@ describe('ядерный удар считается в энергии, со с�
     const { stats } = statsOf(world);
     const atGeneral = outcomeAt(world, cellAt(general.position));
 
-    expect(atGeneral.loss).toBe(generalDeathCost(stats, 0));
+    // С той же поправкой на долю: генерал прочнее заряда и удар переживает.
+    // Цена гибели остаётся общей с `posture.ts` — доля лишь говорит,
+    // какая её часть удару достанется.
+    expect(atGeneral.loss).toBe((generalDeathCost(stats, 0) * NUKE_DAMAGE) / stats.general.health);
   });
 
-  it('шесть целых юнитов удара не оправдывают, шесть десятков — оправдывают', () => {
-    // Прежний порог «шесть юнитов» означал оружие ценой в пятьдесят машин,
-    // применяемое ради шести: переплата в восемь раз.
+  it('пятнадцать целых юнитов удара не оправдывают, семнадцать — оправдывают', () => {
+    // Порог опустился с полусотни машин до шестнадцати, и это не смягчение
+    // оценки, а падение цены: удар базового радиуса стоит шестнадцати
+    // базовых стоимостей юнита вместо прежних пятидесяти. Правило то же
+    // самое — бить стоит тогда, когда снятое дороже потраченного.
     //
-    // Ровно полсотни дают точную безубыточность — и удара тоже не будет:
-    // размен ценою в самого себя не приносит ничего.
+    // Ровно шестнадцать дают точную безубыточность — и удара тоже
+    // не будет: размен ценою в самого себя не приносит ничего.
     const world = createWorld(SEED);
     const cell = middle();
 
-    expect(outcomeAt(crowdAt(world, ENEMY, cell, 6), cell).gain).toBeLessThan(NUKE_COST);
-    expect(outcomeAt(crowdAt(world, ENEMY, cell, 50), cell).gain).toBe(NUKE_COST);
-    expect(outcomeAt(crowdAt(world, ENEMY, cell, 60), cell).gain).toBeGreaterThan(NUKE_COST);
+    expect(outcomeAt(crowdAt(world, ENEMY, cell, 15), cell).gain).toBeLessThan(NUKE_COST);
+    expect(outcomeAt(crowdAt(world, ENEMY, cell, 16), cell).gain).toBe(NUKE_COST);
+    expect(outcomeAt(crowdAt(world, ENEMY, cell, 17), cell).gain).toBeGreaterThan(NUKE_COST);
   });
 });
 
