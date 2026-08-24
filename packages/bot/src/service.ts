@@ -4,7 +4,7 @@ import type { PlayerView } from '@td/protocol';
 import { createLobbyApi } from './lobby-api.js';
 import type { FetchLike, LobbyApi } from './lobby-api.js';
 import { joinMatch } from './participant.js';
-import type { OpenSocket, Participant } from './participant.js';
+import type { OpenSocket, Participant, ParticipantMeasure } from './participant.js';
 
 /**
  * Служба компьютерных соперников.
@@ -63,6 +63,14 @@ export interface ComputerServiceOptions {
    */
   readonly makeId: (index: number) => string;
   readonly log?: (message: string) => void;
+  /**
+   * Приборы раздумий. Отсутствуют — не меряется ничего.
+   *
+   * Одна служба — одна манера, поэтому размечать показания именем
+   * профиля можно здесь, на службе, а не тянуть имя через каждого
+   * дежурного.
+   */
+  readonly measure?: ParticipantMeasure | undefined;
 }
 
 export interface ComputerService {
@@ -173,6 +181,7 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
         ...(options.profile === undefined ? {} : { profile: options.profile }),
         openSocket: options.openSocket,
         ...(options.log === undefined ? {} : { log: options.log }),
+        ...(options.measure === undefined ? {} : { measure: options.measure }),
         onOutcome: (outcome) => {
           options.log?.(
             `Компьютер ${agent.name}: матч ${key} окончен, победитель ${String(outcome.winner)}`,

@@ -4,8 +4,10 @@ import { encode } from '@td/protocol';
 import type { MatchHost } from '@td/netplay';
 import type { MatchSide } from '@td/shared';
 import type { ClientMessage } from '@td/protocol';
+import type { HostMeasure } from '@td/netplay';
 import type { ConnectionId, GameTransport } from './transport.js';
 import type { MatchRecorder, MatchRecording } from './recording.js';
+import type { Metrics } from './metrics.js';
 
 /**
  * Реестр матчей: кто сейчас играет и по какому соединению.
@@ -93,6 +95,8 @@ export interface MatchRegistryOptions {
   readonly log?: (message: string) => void;
   /** Куда писать матчи. Отсутствует — не пишется ничего. */
   readonly recorder?: MatchRecorder | undefined;
+  /** Приборы. Отсутствуют — не меряется ничего. */
+  readonly metrics?: Metrics | undefined;
 }
 
 export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistry => {
@@ -102,6 +106,51 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
   const seats = new Map<string, Seat>();
   /** Номер соединения → место. */
   const admitted = new Map<number, Seat>();
+
+  /**
+   * Приборы такта. Заводятся один раз на реестр, а не на матч:
+   * вопрос «уложился ли сервер в бюджет» — про процесс целиком,
+   * и раздельные показания на каждый матч на него не отвечают.
+   *
+   * Секундомер здесь `performance.now`, а не `now` реестра: тот
+   * миллисекундный, а шаг мира стоит десятые доли миллисекунды
+   * и показался бы ему нулём.
+   */
+  const metrics = options.metrics;
+  const sweepMs = metrics?.histogram(
+    'td_sweep_duration_ms',
+    'Длительность одного прохода по реестру матчей',
+  );
+  const stepMs = metrics?.histogram('td_world_step_duration_ms', 'Длительность одного шага мира');
+  // Границы в штуках, а не в миллисекундах, и превышением считается
+  // всё сверх одного тика: посчитать за проход больше одного — уже
+  // догон, а бюджет тика для счётной величины ничего не значит.
+  const advancedTicks = metrics?.histogram(
+    'td_ticks_per_advance',
+    'Сколько тиков посчитано за один проход. Больше единицы — уже догон',
+    {},
+    { bounds: [0, 1, 2, 4, 8, 16, 32, 64], budget: 1 },
+  );
+  const debts = metrics?.counter(
+    'td_tick_debt_total',
+    'Сколько раз матч признал отставание и сдвинул точку отсчёта',
+  );
+
+  const measure: HostMeasure | undefined =
+    metrics === undefined
+      ? undefined
+      : {
+          step: (run) => {
+            const started = performance.now();
+            try {
+              return run();
+            } finally {
+              stepMs?.add(performance.now() - started);
+            }
+          },
+          advanced: (ticks) => advancedTicks?.add(ticks),
+          debt: (ticks) => debts?.add(ticks),
+        };
 
   const dispatch = (entry: Entry): void => {
     // Один проход уборки на весь реестр, а не таймер на матч. Таймеров
@@ -127,6 +176,7 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
   };
 
   const sweep = (): void => {
+    const startedAt = sweepMs === undefined ? 0 : performance.now();
     const nowMs = now();
 
     for (const entry of matches.values()) {
@@ -142,6 +192,8 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
         }
       }
     }
+
+    sweepMs?.add(performance.now() - startedAt);
   };
 
   const timer = setInterval(sweep, POLL_INTERVAL_MS);
@@ -169,6 +221,7 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
           seed: request.seed,
           now,
           observe: recording,
+          measure,
           send(player, message) {
             const connection = seatsOfMatch[player];
             if (connection === undefined || connection === null) return;
