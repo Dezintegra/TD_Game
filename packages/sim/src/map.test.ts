@@ -98,6 +98,41 @@ describe('генерация карты: базы', () => {
     }
   });
 
+  it('скала не подходит к основанию базы ближе трёх клеток', () => {
+    // Мерим не от центра базы, а от края её основания: база занимает три
+    // клетки на три, и расстояние до центра завысило бы зазор на клетку —
+    // ровно на ту, из-за которой у базы и было тесно.
+    const FOOTPRINT_RADIUS = 1;
+    const REQUIRED_GAP = 3;
+
+    for (const seed of seeds(100)) {
+      const map = generateMap(seed);
+
+      for (const base of map.baseCells) {
+        const bx = cellX(base ?? 0);
+        const by = cellY(base ?? 0);
+
+        for (let y = 0; y < MAP_HEIGHT_CELLS; y += 1) {
+          for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
+            if (isPassable(map.cells[cellIndex(x, y)] as Terrain)) continue;
+
+            // Расстояние по Чебышёву: диагональ считается за один шаг,
+            // иначе скала, приткнувшаяся к углу площадки, прошла бы проверку.
+            const gapX = Math.max(Math.abs(x - bx) - FOOTPRINT_RADIUS, 0);
+            const gapY = Math.max(Math.abs(y - by) - FOOTPRINT_RADIUS, 0);
+            const gap = Math.max(gapX, gapY);
+
+            if (gap < REQUIRED_GAP) {
+              throw new Error(
+                `seed ${seed}: скала (${x},${y}) в ${gap} клетках от основания базы (${bx},${by})`,
+              );
+            }
+          }
+        }
+      }
+    }
+  });
+
   it('базы находятся в противоположных углах', () => {
     const map = generateMap(777);
     const [first, second] = map.baseCells;
