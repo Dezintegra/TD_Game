@@ -7,8 +7,6 @@
   DIRECTION_STOP,
   INFLATES_PURCHASE,
   MAP_CELL_COUNT,
-  NUKE_BASE_EXCLUSION,
-  NUKE_COST,
   NUKE_DELAY_TICKS,
   PRODUCTION_QUEUE_CAP,
   PURCHASE_INFLATION_PERCENT,
@@ -29,6 +27,8 @@
   growPpm,
   isValidDirection,
   isValidStance,
+  nukeBaseExclusion,
+  nukeCost,
 } from '@td/shared';
 import type { Command, PlayerId, UnitType } from '@td/shared';
 import { killGeneral } from './combat.js';
@@ -512,9 +512,18 @@ const healToNewMaximum = (
 
 const launchNuke = (working: Working, player: WorkingPlayer, cell: number): Outcome => {
   if (!isValidCell(cell)) return RejectReason.InvalidCell;
-  if (player.energy < NUKE_COST) return RejectReason.NotEnoughEnergy;
+
+  // Радиус и мощность берутся один раз, здесь, и дальше живут в записи
+  // об ударе. От радиуса же считаются и цена, и запретная зона: платят
+  // за накрытую площадь, а зона обязана расти вместе с кругом, иначе
+  // прокачавший радиус накрыл бы базу.
+  const nuke = playerStats(player).nuke;
+  const cost = nukeCost(nuke.radius);
+
+  if (player.energy < cost) return RejectReason.NotEnoughEnergy;
 
   const centre = cellCentre(cell);
+  const exclusion = nukeBaseExclusion(nuke.radius);
 
   // Базы всегда остаются вне радиуса поражения — прямое требование
   // игрового замысла. Проверка живёт в ядре, а не только в интерфейсе:
@@ -524,18 +533,20 @@ const launchNuke = (working: Working, player: WorkingPlayer, cell: number): Outc
     if (!structure.alive || structure.kind !== StructureKind.Base) continue;
 
     const baseCentre = cellCentre(structure.cell);
-    if (distanceSquared(centre, baseCentre) < NUKE_BASE_EXCLUSION * NUKE_BASE_EXCLUSION) {
+    if (distanceSquared(centre, baseCentre) < exclusion * exclusion) {
       return RejectReason.NukeNearBase;
     }
   }
 
-  player.energy -= NUKE_COST;
+  player.energy -= cost;
 
   working.nukes.push({
     id: asEntityId(working.nextEntityId),
     owner: player.id,
     cell,
     detonateAtTick: asTickNumber(working.tick + NUKE_DELAY_TICKS),
+    radius: nuke.radius,
+    damage: nuke.damage,
   });
 
   working.nextEntityId += 1;

@@ -17,7 +17,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run && vitest run --environment jsdom",
+    "test:match": "vitest run --config vitest.match.config.ts && vitest run --config vitest.match.config.ts --environment jsdom"
   },
   "dependencies": {
     "@td/shared": "workspace:*"

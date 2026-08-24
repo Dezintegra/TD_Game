@@ -115,6 +115,9 @@ export interface WorkingNuke {
   owner: PlayerId;
   cell: number;
   detonateAtTick: TickNumber;
+  /** Радиус поражения и мощность заряда, замороженные в момент пуска. */
+  radius: number;
+  damage: number;
 }
 
 export interface Working {
@@ -307,13 +310,25 @@ export const recordShot = (
  * Срок жизни не передаётся, а выводится из вида взрыва — как и у следа
  * выстрела, и по той же причине: два источника одной величины разъезжаются
  * при первой правке таблицы.
+ *
+ * А радиус, наоборот, передаётся: он есть только у ядерного взрыва,
+ * и вывести его не из чего — у каждого удара он свой. Всем прочим
+ * взрывам достаётся ноль, и это не «неизвестно», а «размера нет»:
+ * гибель машины рисуется своим размером, а не радиусом.
  */
-export const recordBlast = (working: Working, kind: BlastKind, owner: PlayerId, at: Vec2): void => {
+export const recordBlast = (
+  working: Working,
+  kind: BlastKind,
+  owner: PlayerId,
+  at: Vec2,
+  radius = 0,
+): void => {
   working.blasts.push({
     at,
     kind,
     owner,
     expiresAtTick: asTickNumber(working.tick + BLAST_LIFETIME_TICKS[kind]),
+    radius,
   });
 };
 
