@@ -106,6 +106,14 @@ export interface ControlHandlers {
   setStance(stance: number): void;
   nuke(cell: number): void;
   pan(dx: number, dy: number): void;
+  /**
+   * Приблизить или отдалить относительно точки на экране.
+   *
+   * `factor` больше единицы приближает, меньше — отдаляет. Границы
+   * диапазона держит сцена: управление сообщает жест, а не результат,
+   * и о том, докуда можно приблизиться, знать не должно.
+   */
+  zoom(factor: number, anchorX: number, anchorY: number): void;
   /** Перенести камеру в клетку — по клику на миникарте. */
   jumpTo(cell: number): void;
   /** Вернуть камеру к генералу и включить слежение. */
@@ -155,6 +163,27 @@ export interface Controls {
 
 /** Скорость прокрутки стрелками, экранных пикселей за кадр. */
 const ARROW_PAN_SPEED = 18;
+
+/**
+ * Насколько одна «щёлка» колеса меняет масштаб.
+ *
+ * Колесо приходит в разных единицах: пиксели, строки, страницы. Единицы
+ * приводятся к пикселям, а пиксели — к множителю через показательную
+ * функцию, и это не украшение. Приближение по своей природе умножается:
+ * шаг «плюс 0,1 к масштабу» на дефолте 0,611 даёт прибавку в шестнадцать
+ * процентов, а на четырёхкратном — в четыре. Показательная функция даёт
+ * одинаковый шаг ощущений на любом масштабе.
+ *
+ * 0,0015 подобрано так, чтобы обычная щёлка мыши (около 100 точек)
+ * меняла масштаб примерно на шестую часть: заметно, но не прыжком.
+ */
+const WHEEL_ZOOM_RATE = 0.0015;
+
+/** Строка колеса в пикселях, когда браузер меряет строками. */
+const WHEEL_LINE_PX = 16;
+
+/** Страница колеса в пикселях, когда браузер меряет страницами. */
+const WHEEL_PAGE_PX = 400;
 
 const ARROW_KEYS: Readonly<Record<string, readonly [number, number]>> = {
   ArrowLeft: [-1, 0],
@@ -349,7 +378,12 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     }
   };
 
-  const localPoint = (event: PointerEvent): { x: number; y: number } => {
+  // Принимает любое событие указателя: колесу нужна та же арифметика,
+  // что и пальцу, а общего предка у них только координаты окна.
+  const localPoint = (event: {
+    readonly clientX: number;
+    readonly clientY: number;
+  }): { x: number; y: number } => {
     const box = host.getBoundingClientRect();
     return { x: event.clientX - box.left, y: event.clientY - box.top };
   };
@@ -748,6 +782,32 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     releaseCapture(event.pointerId);
   };
 
+  /**
+   * Колесо мыши приближает и отдаляет.
+   *
+   * `preventDefault` обязателен, а слушатель — неленивый
+   * (`passive: false`). Без этого браузер прокручивает страницу поверх
+   * жеста, и на ноутбуке с тачпадом карта уезжает вместе со всей
+   * страницей.
+   */
+  const onWheel = (event: WheelEvent): void => {
+    event.preventDefault();
+
+    if (menuOpen) return;
+
+    const pixels =
+      event.deltaMode === 1
+        ? event.deltaY * WHEEL_LINE_PX
+        : event.deltaMode === 2
+          ? event.deltaY * WHEEL_PAGE_PX
+          : event.deltaY;
+
+    // Колесо от себя (отрицательная дельта) приближает — так же, как
+    // в любой карте, к которой игрок привык.
+    const point = localPoint(event);
+    handlers.zoom(Math.exp(-pixels * WHEEL_ZOOM_RATE), point.x, point.y);
+  };
+
   const onContextMenu = (event: MouseEvent): void => {
     // Правая кнопка занята выбором цели, и системное меню поверх поля
     // в игре реального времени — чистая помеха.
@@ -777,6 +837,9 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   host.addEventListener('pointermove', onPointerMove);
   host.addEventListener('pointerup', onPointerUp);
   host.addEventListener('pointercancel', onPointerCancel);
+  // Неленивый слушатель: ленивому браузер не даст отменить прокрутку,
+  // и страница уедет вместе с картой.
+  host.addEventListener('wheel', onWheel, { passive: false });
   host.addEventListener('contextmenu', onContextMenu);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
@@ -830,6 +893,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       host.removeEventListener('pointermove', onPointerMove);
       host.removeEventListener('pointerup', onPointerUp);
       host.removeEventListener('pointercancel', onPointerCancel);
+      host.removeEventListener('wheel', onWheel);
       host.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);

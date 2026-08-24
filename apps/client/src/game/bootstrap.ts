@@ -584,6 +584,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     nuke: (cell) => send({ kind: CommandKind.LaunchNuke, cell }),
     pan: (dx, dy) => scene.panBy(dx, dy),
+    zoom: (factor, x, y) => scene.zoomBy(factor, x, y),
     jumpTo: (cell) => scene.centreOnCell(cell),
     recentre: () => scene.setFollowing(true),
     toggleSound: () => {

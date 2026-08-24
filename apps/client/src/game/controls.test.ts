@@ -25,6 +25,7 @@ const handlersOf = (): ControlHandlers => ({
   setStance: vi.fn(),
   nuke: vi.fn(),
   pan: vi.fn(),
+  zoom: vi.fn(),
   jumpTo: vi.fn(),
   recentre: vi.fn(),
   select: vi.fn(),
@@ -59,16 +60,31 @@ const release = (code: string): void => {
   window.dispatchEvent(new KeyboardEvent('keyup', { code }));
 };
 
-/** Касание: pointer-событие с типом `touch`. */
+/**
+ * Касание: pointer-событие с типом `touch`.
+ *
+ * Номер указателя вынесен в необязательный последний довод: щипку нужны
+ * два разных пальца, а всем прежним проверкам — один и тот же.
+ */
 const touch = (
   host: HTMLElement,
   type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
   x: number,
   y: number,
+  pointerId = 1,
 ): void => {
   const event = new Event(type, { bubbles: true }) as PointerEvent & Record<string, unknown>;
-  Object.assign(event, { pointerType: 'touch', pointerId: 1, clientX: x, clientY: y, button: 0 });
+  Object.assign(event, { pointerType: 'touch', pointerId, clientX: x, clientY: y, button: 0 });
   host.dispatchEvent(event);
+};
+
+/** Колесо мыши. `deltaMode` по умолчанию пиксельный, как у обычной мыши. */
+const wheel = (host: HTMLElement, deltaY: number, x = 100, y = 100, deltaMode = 0): Event => {
+  const event = new Event('wheel', { bubbles: true, cancelable: true }) as WheelEvent &
+    Record<string, unknown>;
+  Object.assign(event, { deltaY, deltaMode, clientX: x, clientY: y });
+  host.dispatchEvent(event);
+  return event;
 };
 
 /** Нажатие мышью — для сравнения с касанием. */
@@ -409,6 +425,88 @@ describe('замирающий свайп', () => {
     touch(host, 'pointermove', 200, 120);
 
     expect(vi.mocked(handlers.setDirection).mock.calls.at(-1)?.[0]).toBe(keyDirection);
+  });
+});
+
+describe('колесо мыши приближает', () => {
+  const withHost = (): { handlers: ControlHandlers; host: HTMLElement } => {
+    const handlers = handlersOf();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+
+    attached = attachControls(host, handlers);
+
+    return { handlers, host };
+  };
+
+  it('колесо от себя приближает, к себе — отдаляет', () => {
+    // Направление взято от любой карты, к которой игрок привык:
+    // отрицательная дельта означает «от себя», то есть ближе.
+    const { handlers, host } = withHost();
+
+    wheel(host, -100);
+    const closer = vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0] ?? 0;
+
+    wheel(host, 100);
+    const farther = vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0] ?? 0;
+
+    expect(closer).toBeGreaterThan(1);
+    expect(farther).toBeLessThan(1);
+  });
+
+  it('точкой отсчёта служит курсор, а не центр экрана', () => {
+    const { handlers, host } = withHost();
+
+    wheel(host, -100, 640, 90);
+
+    expect(vi.mocked(handlers.zoom).mock.calls.at(-1)?.slice(1)).toEqual([640, 90]);
+  });
+
+  it('прокрутку страницы браузеру не отдаёт', () => {
+    // Иначе на ноутбуке с тачпадом карта уезжает вместе со всей
+    // страницей: браузер прокручивает поверх жеста.
+    const { host } = withHost();
+
+    expect(wheel(host, -100).defaultPrevented).toBe(true);
+  });
+
+  it('строки и страницы приводятся к пикселям', () => {
+    // Колесо приходит в разных единицах, и одна «щёлка» в строках
+    // означает куда больший шаг, чем одна в пикселях. Не приведи их —
+    // и на одной мыши масштаб полз бы, а на другой прыгал.
+    const { handlers, host } = withHost();
+
+    wheel(host, -1, 100, 100, 0);
+    const byPixel = vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0] ?? 0;
+
+    wheel(host, -1, 100, 100, 1);
+    const byLine = vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0] ?? 0;
+
+    expect(byLine).toBeGreaterThan(byPixel);
+  });
+
+  it('шаг умножается, а не прибавляется', () => {
+    // Приближение по своей природе умножается: прибавка «плюс 0,1»
+    // на дефолте 0,611 даёт шестнадцать процентов, а на четырёхкратном —
+    // четыре. Одинаковая дельта обязана давать одинаковый множитель.
+    const { handlers, host } = withHost();
+
+    wheel(host, -100);
+    const first = vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0] ?? 0;
+
+    wheel(host, -200);
+    const double = vi.mocked(handlers.zoom).mock.calls.at(-1)?.[0] ?? 0;
+
+    expect(double).toBeCloseTo(first * first, 6);
+  });
+
+  it('при открытом меню молчит', () => {
+    const { handlers, host } = withHost();
+
+    attached?.setMenuOpen(true);
+    wheel(host, -100);
+
+    expect(handlers.zoom).not.toHaveBeenCalled();
   });
 });
 
