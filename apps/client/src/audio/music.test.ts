@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { peakOf, rms } from './dsp.js';
 import {
   MUSIC_BPM,
+  MUSIC_LOOP_BARS,
+  MUSIC_LOOP_BPM,
+  MUSIC_LOOP_PEAK,
+  MUSIC_LOOP_SEAM_SECONDS,
+  MUSIC_LOOP_SECONDS,
   MUSIC_STEPS,
   MUSIC_VOICES,
   MusicVoice,
@@ -9,6 +14,7 @@ import {
   STEP_SECONDS,
   musicSeconds,
   notesAt,
+  prepareMusicLoop,
   renderMusicVoice,
 } from './music.js';
 
@@ -64,6 +70,79 @@ describe('инструменты', () => {
       if (voice === MusicVoice.Hat) continue;
       expect(musicSeconds(MusicVoice.Hat)).toBeLessThan(musicSeconds(voice));
     }
+  });
+});
+
+describe('записанная петля', () => {
+  /**
+   * Подделка декодированного файла: тишина, потом «музыка».
+   *
+   * Музыка здесь — пила, потому что у неё есть и разрыв на стыке,
+   * и различимые отсчёты: на синусе стык случайно мог бы сойтись сам.
+   */
+  const decoded = (silenceSeconds: number, musicSeconds: number, hz = 110): Float32Array[] => {
+    const silence = Math.round(silenceSeconds * SAMPLE_RATE);
+    const music = Math.round(musicSeconds * SAMPLE_RATE);
+    const samples = new Float32Array(silence + music);
+
+    for (let index = 0; index < music; index += 1) {
+      const phase = ((index * hz) / SAMPLE_RATE) % 1;
+      samples[silence + index] = 0.8 * (2 * phase - 1);
+    }
+
+    return [samples, samples.slice()];
+  };
+
+  it('длина берётся числом отсчётов, а не длиной файла', () => {
+    // Ровно то, ради чего длина считается из темпа: у декодированного
+    // буфера она зависит и от паддинга кодировщика, и от того,
+    // ресемплировал ли браузер частоту.
+    const loop = prepareMusicLoop(decoded(0.25, MUSIC_LOOP_SECONDS + 0.4), SAMPLE_RATE);
+
+    expect(loop?.[0]?.length).toBe(Math.round(MUSIC_LOOP_SECONDS * SAMPLE_RATE));
+    expect(loop?.[1]?.length).toBe(loop?.[0]?.length);
+  });
+
+  it('длина кратна такту исходного трека', () => {
+    // Фраза в треке четырёхтактовая: длина, не кратная четырём тактам,
+    // при каждом втором круге начинала бы её с середины.
+    const bar = (4 * 60) / MUSIC_LOOP_BPM;
+    expect(MUSIC_LOOP_SECONDS).toBeCloseTo(MUSIC_LOOP_BARS * bar, 9);
+    expect(MUSIC_LOOP_BARS % 4).toBe(0);
+    expect(MUSIC_LOOP_SECONDS).toBeGreaterThan(20);
+  });
+
+  it('тишина перед петлёй съедается, а музыка остаётся', () => {
+    // В файле она лежит намеренно: в ней тонет задержка кодировщика,
+    // которую иначе пришлось бы угадывать.
+    const loop = prepareMusicLoop(decoded(0.25, MUSIC_LOOP_SECONDS + 0.4), SAMPLE_RATE);
+    expect(rms(loop?.[0] as Float32Array, 0, 1000)).toBeGreaterThan(0.05);
+  });
+
+  it('стык замкнут: конец сходится с началом', () => {
+    const loop = prepareMusicLoop(decoded(0.25, MUSIC_LOOP_SECONDS + 0.4), SAMPLE_RATE);
+    const samples = loop?.[0] as Float32Array;
+    const head = samples[0] ?? 0;
+    const tail = samples[samples.length - 1] ?? 0;
+
+    // Пила, обрезанная в произвольном месте, даёт разрыв под две
+    // единицы; замыкание обязано свести его к неслышимому.
+    expect(Math.abs(head - tail)).toBeLessThan(0.05);
+  });
+
+  it('уровень приведён к музыкальному, а не к боевому', () => {
+    const loop = prepareMusicLoop(decoded(0.25, MUSIC_LOOP_SECONDS + 0.4), SAMPLE_RATE);
+    expect(peakOf(loop?.[0] as Float32Array)).toBeCloseTo(MUSIC_LOOP_PEAK, 6);
+  });
+
+  it('короткой записи петли не получается вовсе', () => {
+    // Огрызок вместо расписания хуже, чем расписание.
+    const short = decoded(0.25, MUSIC_LOOP_SECONDS - 0.1);
+    expect(prepareMusicLoop(short, SAMPLE_RATE)).toBeUndefined();
+
+    // Ровно длины петли тоже мало: на замыкание стыка нужен запас.
+    const exact = decoded(0, MUSIC_LOOP_SECONDS + MUSIC_LOOP_SEAM_SECONDS / 2);
+    expect(prepareMusicLoop(exact, SAMPLE_RATE)).toBeUndefined();
   });
 });
 

@@ -9,6 +9,7 @@ import blastStructureTwoUrl from './assets/blast-structure-2.mp3';
 import blastUnitUrl from './assets/blast-unit.mp3';
 import boltUnitUrl from './assets/bolt-unit.mp3';
 import missileLaunchUrl from './assets/missile-launch.mp3';
+import musicLoopUrl from './assets/music-loop.mp3';
 import nukeBlastUrl from './assets/nuke-blast.mp3';
 import rotorUrl from './assets/rotor.mp3';
 import { Sound } from './sounds.js';
@@ -134,6 +135,16 @@ export interface SoundFile {
    */
   readonly layerComputed?: { readonly sound: Sound; readonly gain: number };
 }
+
+/**
+ * Фоновая петля.
+ *
+ * Стои́т отдельно от таблицы событий, потому что и живёт иначе: у неё нет
+ * ни вариантов, ни разброса скорости, ни места на карте, а готовит её
+ * не общий загрузчик, а `prepareMusicLoop`. Числа, которыми она вырезана
+ * из присланного трека, записаны там же.
+ */
+export const MUSIC_LOOP_URL = musicLoopUrl;
 
 const one: readonly number[] = [1];
 

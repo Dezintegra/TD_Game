@@ -1,13 +1,13 @@
 import { POOL_LIMIT, POOL_OF, chooseCues } from './budget.js';
 import type { Pool } from './budget.js';
 import type { Candidate } from './budget.js';
-import { SOUND_FILES } from './assets.js';
+import { MUSIC_LOOP_URL, SOUND_FILES } from './assets.js';
 import { prepareFile } from './prepare.js';
 import { renderSound } from './sounds.js';
 import { LOOPING, SOUNDS, SOUND_PEAK, SOUND_PRIORITY, STEALS_FROM, Sound } from './sounds.js';
 import { place } from './placement.js';
 import type { Listener } from './placement.js';
-import { MUSIC_VOICES, STEP_SECONDS, musicBaseHz, notesAt } from './music.js';
+import { MUSIC_VOICES, STEP_SECONDS, musicBaseHz, notesAt, prepareMusicLoop } from './music.js';
 import type { MusicVoice } from './music.js';
 import { DEFAULT_SOUND_SETTINGS } from './settings.js';
 import type { SoundSettings } from './settings.js';
@@ -78,6 +78,15 @@ const FOLLOW_TIME = 0.03;
 /** Как часто просыпается планировщик музыки и на сколько смотрит вперёд. */
 const MUSIC_TICK_MS = 25;
 const MUSIC_LOOKAHEAD = 0.12;
+
+/**
+ * За сколько вступает записанная петля.
+ *
+ * Не мгновенно: она приходит посреди игры, и включённая рывком слышалась
+ * бы сбоем. Четверть секунды — заметно меньше такта, поэтому пульс
+ * не проваливается.
+ */
+const MUSIC_LOOP_FADE_IN = 0.25;
 
 interface Voice {
   readonly source: AudioBufferSourceNode;
@@ -174,6 +183,10 @@ export const createEngine = (): Engine => {
   let nextStepAt = 0;
   let nextStep = 0;
 
+  /** Записанная петля, если она загрузилась. Пока её нет, играет расписание. */
+  let loopSource: AudioBufferSourceNode | undefined;
+  let loopGain: GainNode | undefined;
+
   let worker: Worker | undefined;
   let pendingReverb: readonly [Float32Array, Float32Array] | undefined;
 
@@ -217,6 +230,8 @@ export const createEngine = (): Engine => {
 
   const startMusic = (context: AudioContext): void => {
     if (musicTimer !== undefined) return;
+    // Запись пришла раньше выпечки — расписанию играть уже незачем.
+    if (loopSource !== undefined) return;
     // Ждём весь набор: петля с недостающим инструментом слышна не как
     // «пока без баса», а как поломка.
     if (musicBuffers.size < MUSIC_VOICES.length) return;
@@ -225,6 +240,68 @@ export const createEngine = (): Engine => {
     nextStepAt = context.currentTime + 0.1;
     musicTimer = setInterval(() => scheduleMusic(context), MUSIC_TICK_MS);
     scheduleMusic(context);
+  };
+
+  /**
+   * Загрузить записанную петлю и передать ей пульс.
+   *
+   * Расписание при этом не глушится, а просто перестаёт назначать новые
+   * ноты: уже назначенные дозвучат в ближайшие сто двадцать миллисекунд
+   * и кончатся сами. Отдельное затухание было бы и лишней работой,
+   * и лишним узлом — ноты идут в шину музыки напрямую.
+   *
+   * Ошибки глотаются намеренно, как и у звуков событий: не загрузился
+   * файл, не дал браузер декодировать, оборвалась сеть — матч звучит
+   * расписанием, и это не поломка.
+   */
+  const loadMusicLoop = (context: AudioContext): void => {
+    void (async () => {
+      try {
+        const response = await fetch(MUSIC_LOOP_URL);
+        if (!response.ok) return;
+
+        const decoded = await context.decodeAudioData(await response.arrayBuffer());
+        const channels: Float32Array[] = [];
+        for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+          channels.push(decoded.getChannelData(channel).slice());
+        }
+
+        const loop = prepareMusicLoop(channels, context.sampleRate);
+        if (loop === undefined || music === undefined) return;
+
+        const length = loop[0]?.length ?? 0;
+        if (length === 0) return;
+
+        const buffer = context.createBuffer(loop.length, length, context.sampleRate);
+        for (let channel = 0; channel < loop.length; channel += 1) {
+          const data = loop[channel];
+          if (data !== undefined) buffer.copyToChannel(owned(data), channel);
+        }
+
+        const source = context.createBufferSource();
+        source.buffer = buffer;
+        // Круг замыкает сам звуковой узел по часам контекста. Ни таймера,
+        // ни расписания здесь нет — а значит, нет и того дрожания,
+        // из-за которого музыку когда-то запретили играть записью.
+        source.loop = true;
+
+        const gain = context.createGain();
+        gain.gain.value = 0;
+        source.connect(gain);
+        gain.connect(music);
+
+        source.start();
+        gain.gain.setTargetAtTime(1, context.currentTime, MUSIC_LOOP_FADE_IN / 3);
+
+        loopSource = source;
+        loopGain = gain;
+
+        if (musicTimer !== undefined) clearInterval(musicTimer);
+        musicTimer = undefined;
+      } catch {
+        // Молча: расписание уже играет.
+      }
+    })();
   };
 
   // ── шины ────────────────────────────────────────────────────────────
@@ -702,6 +779,7 @@ export const createEngine = (): Engine => {
         buildGraph(ctx);
         startBaking(ctx);
         loadFiles(ctx);
+        loadMusicLoop(ctx);
 
         if (pendingReverb !== undefined && convolver !== undefined) {
           const [left, right] = pendingReverb;
@@ -785,6 +863,15 @@ export const createEngine = (): Engine => {
 
       if (musicTimer !== undefined) clearInterval(musicTimer);
       musicTimer = undefined;
+
+      try {
+        loopSource?.stop();
+      } catch {
+        // Уже остановлена.
+      }
+      loopGain?.disconnect();
+      loopSource = undefined;
+      loopGain = undefined;
 
       for (const owner of [...rotorVoices.keys()]) dropRotor(owner);
       for (const voice of voices) {
