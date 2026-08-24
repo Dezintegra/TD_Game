@@ -1,9 +1,12 @@
 import {
+  CommandKind,
   DISPLAY_LEAD_TICKS,
   MS_PER_TICK,
   PREDICTION_REPLAY_LIMIT_TICKS,
   asPlayerId,
 } from '@td/shared';
+import type { CommandIntent } from '@td/shared';
+import { checksum } from '@td/sim';
 import { MessageType } from '@td/protocol';
 import type { Command, ServerMessage } from '@td/protocol';
 import { describe, expect, it } from 'vitest';
@@ -200,5 +203,58 @@ describe('часы показа', () => {
     table.render(MS_PER_TICK * 5);
 
     expect(table.shown()).toBe(before);
+  });
+  it('продление шагом даёт тот же мир, что пересборка', () => {
+    // Дешёвый путь и дорогой обязаны сходиться до контрольной суммы.
+    // Разойдись они — показываемый мир зависел бы от того, каким путём
+    // его посчитали, то есть отказ от детерминизма в самом заметном
+    // для игрока месте.
+    //
+    // Пересборка вызывается сообщением о задержке ввода с прежним
+    // значением: единственный способ заставить участника пересчитать
+    // показ от основы, ничего в этой основе не поменяв.
+    const table = bench();
+    table.deliver();
+
+    // Своя команда — чтобы путь не был тривиальным: продление обязано
+    // подмешивать собственные команды на тех же тиках, что и пересборка.
+    const goEast: CommandIntent = { kind: CommandKind.MoveGeneral, direction: 1 };
+    table.guest.issue(goEast);
+
+    table.render(MS_PER_TICK * 4);
+    const extended = table.guest.predicted;
+    if (extended === null) throw new Error('показывать нечего');
+
+    const shownTick = extended.tick;
+    const afterExtend = checksum(extended);
+
+    table.guest.receive({ type: MessageType.InputDelay, delayTicks: DELAY, fromTick: 0 });
+    const rebuilt = table.guest.predicted;
+    if (rebuilt === null) throw new Error('показывать нечего');
+
+    expect(rebuilt.tick).toBe(shownTick);
+    expect(checksum(rebuilt)).toBe(afterExtend);
+  });
+  it('собственная команда всегда ниже показываемого тика', () => {
+    // Инвариант, на котором стоит дешёвое продление: своё назначается
+    // на `подтверждённый + задержка`, то есть ровно на тик ниже пола,
+    // а показ пола не ниже никогда. Значит к моменту, когда часы
+    // попросят следующий тик, всё своё уже применено пересборкой,
+    // и продлевать можно шагом без команд.
+    //
+    // Сломайся правило пола — упадёт этот тест, а не жалоба игрока
+    // на пропавшее нажатие.
+    const table = bench();
+    const goEast: CommandIntent = { kind: CommandKind.MoveGeneral, direction: 1 };
+
+    for (let round = 0; round < 8; round += 1) {
+      table.deliver();
+      table.render(MS_PER_TICK);
+
+      const command = table.guest.issue(goEast);
+      if (command === null) throw new Error('команду не приняли');
+
+      expect(command.tick).toBeLessThan(table.shown());
+    }
   });
 });
