@@ -134,7 +134,10 @@ describe('состав столбцов', () => {
   });
 
   it('ни одна ветка не осталась без места', () => {
-    const placed = rows.flat().map((row) => row.branch).sort((a, b) => a - b);
+    const placed = rows
+      .flat()
+      .map((row) => row.branch)
+      .sort((a, b) => a - b);
     expect(placed).toEqual(UPGRADE_BRANCHES.map((_, index) => index));
   });
 });

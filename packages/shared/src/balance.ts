@@ -116,11 +116,7 @@ export const UnitType = {
 
 export type UnitType = (typeof UnitType)[keyof typeof UnitType];
 
-export const UNIT_TYPES: readonly UnitType[] = [
-  UnitType.Assault,
-  UnitType.Sniper,
-  UnitType.Tesla,
-];
+export const UNIT_TYPES: readonly UnitType[] = [UnitType.Assault, UnitType.Sniper, UnitType.Tesla];
 
 /**
  * Как войско ведёт себя при встрече с противником по дороге.
@@ -1026,13 +1022,7 @@ export const UPGRADE_BRANCHES: readonly UpgradeBranch[] = [
   // ракету, к которой не имеет отношения: правило «улучшение типа
   // удорожает покупку этого типа» работает по цели, а не по ветке.
   // ─────────────────────────────────────────────────────────────────────
-  branch(
-    UpgradeTarget.Base,
-    UpgradeStat.NukeDamage,
-    'Мощность заряда',
-    energy(250),
-    NUCLEAR_GAIN,
-  ),
+  branch(UpgradeTarget.Base, UpgradeStat.NukeDamage, 'Мощность заряда', energy(250), NUCLEAR_GAIN),
   {
     target: UpgradeTarget.Base,
     stat: UpgradeStat.NukeRadius,

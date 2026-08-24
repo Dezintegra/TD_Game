@@ -468,11 +468,8 @@ export const escortRadius = (stats: PlayerStats): number =>
  * что ждать покупки в тридцать тысяч разумно, а держать под неё запас
  * нет, или наоборот.
  */
-export const savingLimit = (
-  incomePerTick: number,
-  profile: AiProfile,
-  guarded = false,
-): number => incomePerTick * TICKS_PER_SECOND * horizonSecondsOf(profile, guarded);
+export const savingLimit = (incomePerTick: number, profile: AiProfile, guarded = false): number =>
+  incomePerTick * TICKS_PER_SECOND * horizonSecondsOf(profile, guarded);
 
 /**
  * Неприкосновенный запас фазы в единицах энергии ядра.
@@ -511,8 +508,7 @@ export const reserveOf = (
   // приходят только фаза и доход: тянуть ради этого характеристики игрока
   // через всю цепочку значило бы связать правило накопления с прокачкой
   // ради поправки, которую съедает первая же секунда дохода.
-  const wanted =
-    phase.reserve === 'nuke' ? NUKE_COST : phase.reserve === 'wave' ? wavePrice : 0;
+  const wanted = phase.reserve === 'nuke' ? NUKE_COST : phase.reserve === 'wave' ? wavePrice : 0;
   if (wanted <= 0) return 0;
 
   return wanted <= savingLimit(incomePerTick, profile, guarded) ? wanted : 0;

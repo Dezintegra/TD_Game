@@ -160,8 +160,8 @@ describe('баланс: дальность генерала', () => {
   });
 
   /** За сколько тиков генерал снимает одну непрокачанную башню. */
-  const ticksToTakeTower = Math.ceil(tower.health / GENERAL_STATS.attack) *
-    GENERAL_STATS.cooldownTicks;
+  const ticksToTakeTower =
+    Math.ceil(tower.health / GENERAL_STATS.attack) * GENERAL_STATS.cooldownTicks;
 
   /** Сколько тиков генерал живёт под огнём `count` таких башен. */
   const ticksAlive = (count: number): number =>
@@ -484,8 +484,7 @@ describe('баланс: ветки прокачки', () => {
     const steep = (entry: (typeof UPGRADE_BRANCHES)[number]): boolean =>
       (entry.target === UpgradeTarget.Base && entry.stat !== UpgradeStat.NukeDamage) ||
       (entry.stat === UpgradeStat.Range &&
-        (entry.target === UpgradeTarget.UnitSniper ||
-          entry.target === UpgradeTarget.UnitTesla));
+        (entry.target === UpgradeTarget.UnitSniper || entry.target === UpgradeTarget.UnitTesla));
 
     for (const entry of UPGRADE_BRANCHES) {
       expect(entry.costGrowthPercent).toBe(steep(entry) ? 25 : 10);

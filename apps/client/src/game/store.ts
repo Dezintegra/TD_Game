@@ -449,8 +449,7 @@ export const hudActions = {
     useHudStore.getState().setNetwork(delayTicks, pending, catchUpProgress),
   setSync: (tick: number, checksum: number) => useHudStore.getState().setSync(tick, checksum),
   setOutcome: (outcome: MatchOutcomeView | null) => useHudStore.getState().setOutcome(outcome),
-  setSelection: (selection: SelectionView | null) =>
-    useHudStore.getState().setSelection(selection),
+  setSelection: (selection: SelectionView | null) => useHudStore.getState().setSelection(selection),
   setMenuOpen: (open: boolean) => useHudStore.getState().setMenuOpen(open),
   toggleStats: () => useHudStore.getState().toggleStats(),
   setSound: (sound: SoundSettings) => useHudStore.getState().setSound(sound),

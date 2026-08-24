@@ -1348,7 +1348,12 @@ const arcHeight = (launchHeight: number, apex: number, progress: number): number
  * на разобранной карте. Тогда ракета приходит по диагонали с северо-запада:
  * это не облик, а страховка от полёта нулевой длины.
  */
-const launchPoint = (world: WorldState, nuke: NukeState, targetX: number, targetY: number): FlightPoint => {
+const launchPoint = (
+  world: WorldState,
+  nuke: NukeState,
+  targetX: number,
+  targetY: number,
+): FlightPoint => {
   const baseCell = world.map.baseCells[nuke.owner];
 
   if (baseCell === undefined) {

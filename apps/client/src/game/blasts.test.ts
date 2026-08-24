@@ -418,7 +418,8 @@ describe('ядерный взрыв', () => {
     // по настоящей.
     const wide = worldWith([blastAt(BlastKind.Nuke, 0, 24, 24, NUKE_RADIUS_CELLS * 2)]);
 
-    const ballOf = (world: WorldState): number => largest(draw(world, 0.2).glow.circles.map((c) => c.r));
+    const ballOf = (world: WorldState): number =>
+      largest(draw(world, 0.2).glow.circles.map((c) => c.r));
     const reachOf = (world: WorldState): number =>
       reachFrom(draw(world, 1.6).glow.points, worldToScreen(24, 24));
 

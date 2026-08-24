@@ -161,7 +161,12 @@ describe('ядерный удар считается в энергии, со с�
   const ENEMY: PlayerId = asPlayerId(1);
 
   /** Мир, где вокруг точки стоит заданное число юнитов игрока. */
-  const crowdAt = (world: WorldState, owner: PlayerId, cell: number, count: number): WorldState => ({
+  const crowdAt = (
+    world: WorldState,
+    owner: PlayerId,
+    cell: number,
+    count: number,
+  ): WorldState => ({
     ...world,
     units: [
       ...world.units,
@@ -259,9 +264,7 @@ describe('ядерный удар считается в энергии, со с�
     // С той же поправкой на долю: генерал прочнее заряда и удар переживает.
     // Цена гибели остаётся общей с `posture.ts` — доля лишь говорит,
     // какая её часть удару достанется.
-    expect(atGeneral.loss).toBe(
-      (generalDeathCost(stats, 0) * NUKE_DAMAGE) / stats.general.health,
-    );
+    expect(atGeneral.loss).toBe((generalDeathCost(stats, 0) * NUKE_DAMAGE) / stats.general.health);
   });
 
   it('пятнадцать целых юнитов удара не оправдывают, семнадцать — оправдывают', () => {
