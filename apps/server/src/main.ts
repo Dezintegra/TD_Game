@@ -5,13 +5,20 @@ import { startComputerService } from '@td/bot';
 import { ADAPTIVE_SWARM_PROFILE, BULWARK_PROFILE, STRATEGIST_PROFILE } from '@td/ai';
 import type { ComputerService } from '@td/bot';
 import type { Command } from '@td/shared';
-import { MATCHLOG_DIR, MATCHLOG_ENABLED, SERVER_HOST, SERVER_PORT } from './config.js';
+import {
+  COMPUTER_SECRET,
+  MATCHLOG_DIR,
+  MATCHLOG_ENABLED,
+  SERVER_HOST,
+  SERVER_PORT,
+} from './config.js';
 import { createGameHandlers } from './game-server.js';
 import { createMatchRegistry } from './matches.js';
 import { createMatchRecorder } from './recording.js';
 import { registerLobbyRoutes } from './lobby-routes.js';
 import { createWsTransport } from './ws-transport.js';
 import { createMetrics, mergeReport } from './metrics.js';
+import { createComputerRegistry } from './computer-registry.js';
 import type { GameTransport } from './transport.js';
 
 /**
@@ -178,6 +185,67 @@ export const buildServer = async (options: BuildOptions = {}) => {
     log(`Запись матчей включена, каталог ${MATCHLOG_DIR}`);
   }
 
+  /**
+   * Кто из игроков — компьютер.
+   *
+   * Личности объявляет служба дежурных, предъявляя общий секрет; сервер
+   * запоминает и дальше отвечает сам. Пустой секрет означает закрытую
+   * регистрацию, то есть недоступную игру с компьютером.
+   */
+  const computers = createComputerRegistry({ secret: COMPUTER_SECRET });
+
+  if (COMPUTER_SECRET === '') {
+    log(
+      'COMPUTER_SECRET не задан: регистрация компьютера закрыта, ' + 'игра с ним будет недоступна.',
+    );
+  }
+
+  app.post<{ Body: { secret?: unknown; identities?: unknown } }>(
+    '/api/computer/declare',
+    (request, reply) => {
+      const { secret, identities } = request.body;
+      const ok =
+        typeof secret === 'string' &&
+        Array.isArray(identities) &&
+        computers.declare(
+          secret,
+          identities.filter(
+            (entry): entry is { id: string; profile: string } =>
+              typeof entry === 'object' &&
+              entry !== null &&
+              typeof (entry as { id?: unknown }).id === 'string' &&
+              typeof (entry as { profile?: unknown }).profile === 'string',
+          ),
+        );
+
+      // Причина отказа не объясняется: тому, кто подбирает секрет,
+      // знать, закрыта регистрация или он ошибся, незачем.
+      void reply.code(ok ? 204 : 403).send();
+    },
+  );
+
+  app.post<{ Body: { secret?: unknown; ids?: unknown } }>(
+    '/api/computer/withdraw',
+    (request, reply) => {
+      const { secret, ids } = request.body;
+      const ok =
+        typeof secret === 'string' &&
+        Array.isArray(ids) &&
+        computers.withdraw(
+          secret,
+          ids.filter((id): id is string => typeof id === 'string'),
+        );
+
+      void reply.code(ok ? 204 : 403).send();
+    },
+  );
+
+  metrics.gauge(
+    'td_computer_identities',
+    'Сколько компьютерных личностей объявлено и не протухло',
+    () => computers.size,
+  );
+
   const matches = createMatchRegistry({ transport, log, recorder, metrics });
 
   // Число идущих матчей — сведение о службе, а не о людях, и отдавать
@@ -185,32 +253,25 @@ export const buildServer = async (options: BuildOptions = {}) => {
   // мгновенная, и история у неё есть у того, кто опрашивает.
   metrics.gauge('td_matches_running', 'Сколько матчей идёт сейчас', () => matches.size);
 
-  // Компьютер — обычный участник, но сервер обязан знать, кто из игроков
-  // им является: иначе комнату компьютера нечем пометить, а врать
-  // про живого соперника нельзя. Идентификаторы дежурных случайны
-  // и выдаются службе при запуске, поэтому назваться компьютером
-  // со стороны невозможно.
-  //
   // Служба поднимается не здесь, а после `listen`: она ходит к серверу
   // по сети, как и все прочие клиенты, и до открытия порта ходить ей
-  // некуда. Отсюда же и ссылка-держатель — маршруты нужно объявить
-  // раньше, чем служба появится.
+  // некуда. Отсюда и ссылка-держатель — её надо закрыть при остановке
+  // сервера, а к моменту объявления маршрутов её ещё нет.
+  //
+  // Отвечать на вопрос «кто из игроков компьютер» этот держатель больше
+  // не помогает: за ответ отвечает реестр объявленных личностей.
+  // Разница в том, что реестру всё равно, в каком процессе живёт
+  // служба, — и это единственное, что держало её внутри сервера.
   const computerRef: { current: ComputerService[] } = { current: [] };
 
   const lobbies = registerLobbyRoutes(app, {
     onMatchStart: (start) => matches.start(start),
     onMatchAbandon: (ticket) => matches.forfeit(ticket),
-    // Службы спрашиваются по очереди, и берётся первый непустой ответ.
-    // Наборы идентификаторов у них не пересекаются: секрет выдаётся
-    // службе при запуске.
-    computerProfileOf: (playerId) => {
-      for (const service of computerRef.current) {
-        const profile = service.profileOf(playerId);
-        if (profile !== undefined) return profile;
-      }
-
-      return undefined;
-    },
+    // Ответ берётся из реестра объявленных личностей, а не вызовом
+    // в память службы. Разница в том, что реестру всё равно, в каком
+    // процессе живёт служба, — и это единственное, что держало её
+    // внутри сервера.
+    computerProfileOf: (playerId) => computers.profileOf(playerId),
   });
 
   const handlers = createGameHandlers(transport, matches, log);
@@ -330,6 +391,7 @@ export const buildServer = async (options: BuildOptions = {}) => {
         title: 'Матч с компьютером',
         log: botLog,
         measure: measureFor(ADAPTIVE_SWARM_PROFILE.id),
+        secret: COMPUTER_SECRET,
       }),
       startComputerService({
         apiUrl,
@@ -342,6 +404,7 @@ export const buildServer = async (options: BuildOptions = {}) => {
         title: 'Матч с оплотом',
         log: botLog,
         measure: measureFor(BULWARK_PROFILE.id),
+        secret: COMPUTER_SECRET,
       }),
       startComputerService({
         apiUrl,
@@ -354,6 +417,7 @@ export const buildServer = async (options: BuildOptions = {}) => {
         title: 'Матч со стратегом',
         log: botLog,
         measure: measureFor(STRATEGIST_PROFILE.id),
+        secret: COMPUTER_SECRET,
       }),
     ];
 
