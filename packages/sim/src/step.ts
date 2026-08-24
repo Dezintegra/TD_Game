@@ -15,6 +15,7 @@ import {
 import type { Command, PlayerId } from '@td/shared';
 import { applyCommand } from './apply.js';
 import { killGeneral, buildCombatIndices, buildSpatialIndex, resolveCombat } from './combat.js';
+import { separateUnits } from './crowd.js';
 import { cellCentre } from './map.js';
 import { findFreeCellNear, moveGenerals, moveUnits } from './movement.js';
 import { buildNavField } from './navigation.js';
@@ -96,6 +97,18 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
 
   moveUnits(working, stats, beforeMove);
   moveGenerals(working, stats);
+
+  // Расталкивание идёт после движения и до боя, и оба соседства заданы
+  // намеренно.
+  //
+  // После движения — потому что расталкивать надо то, что получилось
+  // по итогам шага: поле потока сводит машины в одну точку, и разводить
+  // их до шага значит разводить вчерашнюю расстановку.
+  //
+  // До боя — потому что бой обязан видеть окончательные положения.
+  // Стреляй он раньше, выстрел уходил бы туда, где машины уже нет,
+  // а накрытие считалось бы по строю, которого на поле не осталось.
+  separateUnits(working, stats);
 
   resolveCombat(working, stats, buildCombatIndices(working));
   detonateNukes(working, stats);

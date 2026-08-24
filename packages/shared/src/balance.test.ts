@@ -18,13 +18,18 @@ import {
   NUKE_COST,
   NUKE_DELAY_TICKS,
   NUKE_RADIUS,
+  SEPARATION_DAMPING_PERCENT,
+  SEPARATION_PUSH_SPEED_PERCENT,
+  SEPARATION_WALL_CLEARANCE,
   SHOT_LIFETIME_TICKS,
   STRUCTURE_STATS,
   STRUCTURE_WEAPON,
   ShotSide,
   ShotWeapon,
   StructureKind,
+  UNIT_SEPARATION_RADIUS,
   UNIT_STATS,
+  UNIT_TYPES,
   UNIT_WEAPON,
   UPGRADE_BRANCHES,
   UnitType,
@@ -419,6 +424,53 @@ describe('баланс: дальность юнитов прокачиваетс
     expect(applyPpm(STRUCTURE_STATS[StructureKind.TowerSniper].range, factor)).toBeGreaterThan(
       applyPpm(UNIT_STATS[UnitType.Tesla].range, factor),
     );
+  });
+});
+
+describe('баланс: расталкивание', () => {
+  it('личный радиус меньше половины клетки у каждой машины', () => {
+    // Радиус больше половины клетки означал бы, что машина претендует
+    // на клетку целиком, — а это уже жёсткие столкновения, которых
+    // изменение не вводит.
+    for (const type of UNIT_TYPES) {
+      const radius = UNIT_SEPARATION_RADIUS[type];
+
+      expect(radius).toBeGreaterThan(0);
+      expect(radius).toBeLessThan(cellsToUnits(0.5));
+    }
+  });
+
+  it('порядок радиусов повторяет порядок габаритов корпуса', () => {
+    // Тесла — самая широкая машина в игре, снайпер — самая узкая.
+    // Порядок здесь и есть та связь с обликом, которую из общего пакета
+    // не проверить иначе: модели живут в клиенте, а он сюда не ходит.
+    expect(UNIT_SEPARATION_RADIUS[UnitType.Tesla]).toBeGreaterThan(
+      UNIT_SEPARATION_RADIUS[UnitType.Assault],
+    );
+    expect(UNIT_SEPARATION_RADIUS[UnitType.Assault]).toBeGreaterThan(
+      UNIT_SEPARATION_RADIUS[UnitType.Sniper],
+    );
+  });
+
+  it('клиренс от стен больше любого личного радиуса', () => {
+    // Иначе правило теряет смысл: центр окажется снаружи, а корпус
+    // будет свешиваться за край скалы.
+    const widest = Math.max(...UNIT_TYPES.map((type) => UNIT_SEPARATION_RADIUS[type]));
+
+    expect(SEPARATION_WALL_CLEARANCE).toBeGreaterThan(widest);
+  });
+
+  it('толчок гасится и ограничен долей собственной скорости', () => {
+    expect(SEPARATION_DAMPING_PERCENT).toBeGreaterThan(0);
+    expect(SEPARATION_DAMPING_PERCENT).toBeLessThan(100);
+
+    // Потолок в половину скорости: даже самую медленную машину толпа
+    // не должна носить быстрее, чем она ездит сама.
+    const slowest = UNIT_STATS[UnitType.Tesla].speed;
+    const cap = Math.floor((slowest * SEPARATION_PUSH_SPEED_PERCENT) / 100);
+
+    expect(cap).toBeGreaterThan(0);
+    expect(cap).toBeLessThan(slowest);
   });
 });
 
