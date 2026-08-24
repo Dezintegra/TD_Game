@@ -1,4 +1,4 @@
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics, Sprite } from 'pixi.js';
 import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import { cellIndex, cellX, cellY } from '@td/sim';
@@ -11,6 +11,8 @@ import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
 import { drawEntities } from './entities.js';
+import { createMachineSprites } from './machine-sprites.js';
+import type { MachineSpriteColors, MachineSprites } from './machine-sprites.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { drawShots } from './shots.js';
 import type { ShotColors, ShotLayers } from './shots.js';
@@ -155,6 +157,26 @@ const readBaseColors = (accent: number): BaseColors => ({
   sky: token('--td-rock-sky', 0x5c7ea8),
 });
 
+/**
+ * Цвета брони.
+ *
+ * Машина покрашена в графит, а цвет стороны несут маркеры и подсветка
+ * по краю тела. Поэтому здесь четыре нейтральных оттенка и два цвета
+ * сторон, а не «тёмная основа плюс примесь», как было у заливок.
+ */
+const readMachineColors = (): MachineSpriteColors => ({
+  plate: token('--td-hull-plate', 0x3d4245),
+  metal: token('--td-hull-metal', 0x585e62),
+  shadow: token('--td-hull-shadow', 0x131618),
+  glass: token('--td-hull-glass', 0x232e36),
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  // Небо то же, что подсвечивает скалы: разный подсвет у соседних
+  // предметов читается ошибкой.
+  sky: token('--td-rock-sky', 0x5c7ea8),
+  ground: token('--td-bg-page', 0x191919),
+});
+
 const readEntityColors = (): EntityColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
@@ -250,11 +272,20 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   // объектам.
   const terrainBands: Container[] = [];
   const entityBands: Graphics[] = [];
+  const machineBands: Container[] = [];
 
   for (let band = 0; band <= TERRAIN_DIAGONAL_COUNT; band += 1) {
     const entities = new Graphics();
     entityBands.push(entities);
     worldContainer.addChild(entities);
+
+    // Машины идут сразу за постройками своей полосы. Спрайт в Graphics
+    // не положишь, поэтому у них свой контейнер; порядок при этом верен
+    // сам собой: глубина постройки — центр её клетки, то есть целое
+    // число, а глубина юнита той же полосы лежит в [k, k+1).
+    const machines = new Container();
+    machineBands.push(machines);
+    worldContainer.addChild(machines);
 
     if (band < TERRAIN_DIAGONAL_COUNT) {
       // Территория — контейнер, а не Graphics: и скалы, и командный центр
@@ -316,15 +347,44 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const usedBands: number[] = [];
   const bandUsed = new Uint8Array(entityBands.length);
 
+  /**
+   * Пул спрайтов машин.
+   *
+   * Машин на экране до двух сотен, и каждая берёт по два спрайта — тело
+   * и отражение. Создавать их заново каждый кадр значило бы двадцать
+   * тысяч объектов в секунду на ровном месте; спрайт же — это положение
+   * и ссылка на текстуру, и переиспользуется он полностью.
+   */
+  const spritePool: Sprite[] = [];
+  let spritesUsed = 0;
+
+  const markBand = (index: number): void => {
+    if (bandUsed[index] === 0) {
+      bandUsed[index] = 1;
+      usedBands.push(index);
+    }
+  };
+
   const layers: EntityLayers = {
     band(index) {
-      if (bandUsed[index] === 0) {
-        bandUsed[index] = 1;
-        usedBands.push(index);
-      }
+      markBand(index);
       // Полоса гарантированно существует: её номер уже прижат к диапазону
       // на стороне отрисовки сущностей.
       return entityBands[index] as Graphics;
+    },
+    machine(index, machine, anchorX, anchorY) {
+      markBand(index);
+
+      let sprite = spritePool[spritesUsed];
+      if (sprite === undefined) {
+        sprite = new Sprite();
+        spritePool.push(sprite);
+      }
+      spritesUsed += 1;
+
+      sprite.texture = machine.texture;
+      sprite.position.set(anchorX + machine.offsetX, anchorY + machine.offsetY);
+      (machineBands[index] as Container).addChild(sprite);
     },
     overhead: overheadGraphics,
   };
@@ -343,9 +403,13 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const clearEntityLayers = (): void => {
     for (const band of usedBands) {
       entityBands[band]?.clear();
+      // Спрайты снимаются, но не уничтожаются: они вернутся из пула
+      // на следующем кадре.
+      machineBands[band]?.removeChildren();
       bandUsed[band] = 0;
     }
     usedBands.length = 0;
+    spritesUsed = 0;
     shotTrailGraphics.clear();
     shotGlowGraphics.clear();
     overheadGraphics.clear();
@@ -378,6 +442,19 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const baseEnemyColors = readBaseColors(token('--td-player-enemy', 0xd264ff));
   const entityColors = readEntityColors();
   const shotColors = readShotColors();
+
+  /**
+   * Кеш запечённых машин.
+   *
+   * Разрешение берётся то же, с которым работает приложение: спрайт
+   * рисуется один к одному, и на экране с плотными пикселями машина
+   * обязана быть подробнее, а не крупнее.
+   */
+  const machines: MachineSprites = createMachineSprites(
+    app.renderer,
+    readMachineColors(),
+    app.renderer.resolution,
+  );
   const blastColors = readBlastColors();
   const overlayColors = readOverlayColors();
   const minimapColors = readMinimapColors();
@@ -509,7 +586,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       const time = clock.sample(world.tick, performance.now());
       const bounds = viewBounds();
 
-      drawEntities(layers, world, bounds, entityColors, localPlayer);
+      drawEntities(layers, world, bounds, entityColors, localPlayer, machines);
 
       // Выстрелы поверх всех тел: выстрел — это событие, и прятать его
       // за телами не нужно, иначе бой в толпе перестаёт читаться.
@@ -612,6 +689,9 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     },
 
     destroy() {
+      // Текстуры машин живут в видеопамяти, и сборщик мусора о ней
+      // не знает: без этого утечка копилась бы матч за матчем.
+      machines.dispose();
       app.destroy(true, { children: true });
     },
 
