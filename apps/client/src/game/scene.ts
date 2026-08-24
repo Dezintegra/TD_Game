@@ -186,6 +186,19 @@ const toPixiColor = (cssColor: string, fallback: number): number => {
 const token = (name: string, fallback: number): number =>
   toPixiColor(readToken(name, ''), fallback);
 
+/**
+ * Размер из токена, в точках.
+ *
+ * Читается так же, как цвета, и по той же причине: величина живёт в CSS,
+ * потому что от размера экрана зависит она, а не игровая логика. Второе
+ * её объявление здесь числом разошлось бы с первым при первой же правке
+ * раскладки — и разошлось бы молча.
+ */
+const sizeToken = (name: string, fallback: number): number => {
+  const found = /^(-?[\d.]+)px$/.exec(readToken(name, ''));
+  return found?.[1] === undefined ? fallback : Number(found[1]);
+};
+
 const readTerrainColors = (): TerrainColors => ({
   grid: token('--td-border-subtle', 0x3a3a3a),
   gridMajor: token('--td-border-control', 0x4d4d4d),
@@ -616,7 +629,11 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     | undefined;
   let terrainRebuildCount = 0;
   let following = true;
-  let layout: MinimapLayout = minimapLayout(app.screen.width, app.screen.height);
+  let layout: MinimapLayout = minimapLayout(
+    app.screen.width,
+    app.screen.height,
+    sizeToken('--td-field-inset-right', 0),
+  );
   let frame = 0;
 
   const clock = createFrameClock();
@@ -680,7 +697,15 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   };
 
   const relayoutMinimap = (): void => {
-    layout = minimapLayout(app.screen.width, app.screen.height);
+    // Отступ справа читается из токена при каждой перекладке, а не один
+    // раз при создании сцены: на телефоне он ненулевой, на мониторе ноль,
+    // и меняется он поворотом экрана — то есть ровно тогда, когда
+    // миникарта и перекладывается.
+    layout = minimapLayout(
+      app.screen.width,
+      app.screen.height,
+      sizeToken('--td-field-inset-right', 0),
+    );
     if (currentMap !== undefined) {
       drawMinimapTerrain(minimapTerrain, currentMap, layout, minimapColors);
     }
