@@ -82,6 +82,38 @@ const Row = ({ label, value }: { label: string; value: string }) => (
 
 const seconds = (value: number): string => `${value.toFixed(1)} с`;
 
+/** Склонение «убийство» — иначе строка читается машинной. */
+const kills = (count: number): string => {
+  const tail = count % 100;
+  const last = count % 10;
+
+  if (tail >= 11 && tail <= 14) return `${String(count)} убийств`;
+  if (last === 1) return `${String(count)} убийство`;
+  if (last >= 2 && last <= 4) return `${String(count)} убийства`;
+
+  return `${String(count)} убийств`;
+};
+
+/**
+ * Строка ранга: номер, набранные убийства и ход к следующему рангу.
+ *
+ * У высшего ранга следующего не обещаем — обещание, которое не сбудется,
+ * хуже его отсутствия.
+ */
+const rankText = (selection: {
+  readonly rank: number;
+  readonly kills: number;
+  readonly killsToNextRank: number;
+}): string => {
+  const earned = `${String(selection.rank)} · ${kills(selection.kills)}`;
+
+  if (selection.killsToNextRank <= 0) {
+    return selection.rank === 0 ? earned : `${earned} · высший`;
+  }
+
+  return `${earned} · до следующего ${String(selection.killsToNextRank)}`;
+};
+
 export const StructureInfo = () => {
   const selection = useHudStore((state) => state.selection);
 
@@ -120,12 +152,15 @@ export const StructureInfo = () => {
         </>
       ) : null}
 
-      {/* Личный рост — заметная механика: башня растёт убийствами и вместе
-          с ними гибнет. Без этого числа игрок не знает, какую из своих
-          башен стоит защищать. */}
-      {selection.growthPercent > 0 ? (
-        <Row label="Рост за убийства" value={`+${String(selection.growthPercent)}%`} />
-      ) : null}
+      {/* Ветеранский ранг — заметная механика: башня растёт убийствами
+          и вместе с ними гибнет. Без этого игрок не знает, какую из своих
+          башен стоит защищать.
+
+          Показываем не только номер ранга. Пороги неравномерны (1, 3, 6,
+          10, 15), и одного номера мало: «второй ранг» не отвечает
+          на вопрос, стоит ли держаться за башню, которой до звезды
+          осталось одно убийство. */}
+      {selection.ranked ? <Row label="Ранг" value={rankText(selection)} /> : null}
 
       {selection.buildingSeconds > 0 ? (
         <Row label="Возводится" value={seconds(selection.buildingSeconds)} />

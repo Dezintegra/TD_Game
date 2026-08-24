@@ -30,8 +30,18 @@ import {
   UnitType,
   UpgradeStat,
   UpgradeTarget,
+  VETERAN_MAX_RANK,
+  VETERAN_RANK_KILLS,
+  VETERAN_STRUCTURE_PPM,
+  VETERAN_UNIT_PPM,
   energy,
+  killsToNextRank,
   upgradeBranchIndex,
+  veteranStructurePpm,
+  veteranStructurePpmOf,
+  veteranUnitPpm,
+  veteranUnitPpmOf,
+  veteranRank,
 } from './balance.js';
 import { PPM_ONE, applyPpm, compoundPpm, growPpm } from './percent.js';
 import { DIRECTION_SCALE, DIRECTION_VECTORS, directionTowards } from './direction.js';
@@ -479,10 +489,93 @@ describe('сложные проценты', () => {
     expect(applyPpm(123, PPM_ONE)).toBe(123);
   });
 
-  it('два убийства подряд усиливают башню сложным процентом', () => {
+  it('два шага по пять процентов дают сложный, а не простой процент', () => {
     // 1,05^2 = 1,1025 — это и отличает сложный процент от простого,
     // который дал бы 1,10.
     expect(compoundPpm(5, 2)).toBe(1_102_500);
+  });
+});
+
+describe('ветеранские ранги', () => {
+  it('ранг растёт по порогам, а не за каждое убийство', () => {
+    expect(veteranRank(0)).toBe(0);
+    expect(veteranRank(1)).toBe(1);
+    expect(veteranRank(2)).toBe(1);
+    expect(veteranRank(3)).toBe(2);
+    expect(veteranRank(5)).toBe(2);
+    expect(veteranRank(6)).toBe(3);
+    expect(veteranRank(9)).toBe(3);
+    expect(veteranRank(10)).toBe(4);
+    expect(veteranRank(14)).toBe(4);
+    expect(veteranRank(15)).toBe(5);
+  });
+
+  it('выше пятого ранга не поднимаются, сколько бы ни набрали', () => {
+    expect(veteranRank(40)).toBe(VETERAN_MAX_RANK);
+    expect(veteranRank(1000)).toBe(VETERAN_MAX_RANK);
+    expect(veteranStructurePpmOf(1000)).toBe(2 * PPM_ONE);
+    expect(veteranUnitPpmOf(1000)).toBe(1_500_000);
+  });
+
+  it('пороги — треугольные числа: каждый ранг дороже на одно убийство', () => {
+    // Правило, которое игрок должен уметь пересказать одной фразой.
+    // Разойдись пороги с ним — фраза перестанет быть правдой.
+    let previous = 0;
+    VETERAN_RANK_KILLS.forEach((threshold, index) => {
+      expect(threshold - previous).toBe(index + 1);
+      previous = threshold;
+    });
+  });
+
+  it('множители башни растут и кончаются ровно на удвоении', () => {
+    expect(veteranStructurePpm(0)).toBe(PPM_ONE);
+    expect(veteranStructurePpm(1)).toBe(1_100_000);
+    expect(veteranStructurePpm(2)).toBe(1_250_000);
+    expect(veteranStructurePpm(3)).toBe(1_450_000);
+    expect(veteranStructurePpm(4)).toBe(1_700_000);
+    // Ровно вдвое: круглое число проговаривается вслух и потому
+    // запоминается.
+    expect(veteranStructurePpm(VETERAN_MAX_RANK)).toBe(2 * PPM_ONE);
+  });
+
+  it('машина крепчает заметно мягче башни на каждом ранге', () => {
+    // Это не украшение таблицы, а замер: при общей таблице матч уходил
+    // вниз из проектной вилки 10–15 минут, потому что исход решают
+    // живые юниты. Разойдись таблицы обратно — вернётся и перекос.
+    for (let rank = 1; rank <= VETERAN_MAX_RANK; rank += 1) {
+      expect(veteranUnitPpm(rank)).toBeLessThan(veteranStructurePpm(rank));
+      expect(veteranUnitPpm(rank)).toBeGreaterThan(PPM_ONE);
+    }
+
+    expect(veteranUnitPpm(VETERAN_MAX_RANK)).toBe(1_500_000);
+  });
+
+  it('пороги у башни и машины общие', () => {
+    // Знак различия один на обоих, и означать он обязан одно и то же
+    // число убийств. Разъедься пороги — три ёлочки над башней и три
+    // над машиной перестали бы значить одинаковое.
+    expect(VETERAN_STRUCTURE_PPM).toHaveLength(VETERAN_MAX_RANK);
+    expect(VETERAN_UNIT_PPM).toHaveLength(VETERAN_MAX_RANK);
+  });
+
+  it('шаг награды башни растёт вместе с ценой ранга', () => {
+    // Цена ранга растёт на одно убийство, награда — на пять процентных
+    // пунктов. Обе прогрессии арифметические, поэтому последние ранги
+    // имеет смысл брать осознанно.
+    const steps = VETERAN_STRUCTURE_PPM.map(
+      (ppm, index) => ppm - (VETERAN_STRUCTURE_PPM[index - 1] ?? PPM_ONE),
+    );
+
+    expect(steps).toEqual([100_000, 150_000, 200_000, 250_000, 300_000]);
+  });
+
+  it('ход к следующему рангу считается по порогам', () => {
+    expect(killsToNextRank(0)).toBe(1);
+    expect(killsToNextRank(1)).toBe(2);
+    expect(killsToNextRank(4)).toBe(2);
+    // У высшего ранга следующего нет — обещать нечего.
+    expect(killsToNextRank(15)).toBe(0);
+    expect(killsToNextRank(99)).toBe(0);
   });
 });
 

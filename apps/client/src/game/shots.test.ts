@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Graphics } from 'pixi.js';
 import {
   DIRECTION_SOUTH,
-  PPM_ONE,
   SHOT_LIFETIME_TICKS,
   ShotSide,
   ShotWeapon,
@@ -120,7 +119,7 @@ const towerAt = (cell: number, kind: StructureKind): StructureState => ({
   kind,
   cell,
   health: 100,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),

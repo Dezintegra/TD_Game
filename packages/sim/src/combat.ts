@@ -14,20 +14,23 @@ import {
   ShotSide,
   ShotWeapon,
   StructureKind,
-  TOWER_GROWTH_CAP_PPM,
-  TOWER_KILL_GROWTH_PERCENT,
   UNIT_INDIRECT_FIRE,
   UNIT_STATS,
   UNIT_WEAPON,
   asTickNumber,
-  clampPpm,
   directionTowards,
-  growPpm,
+  veteranRank,
 } from '@td/shared';
 import type { PlayerId, UnitType, Vec2 } from '@td/shared';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
-import { statsOf, structureAttack, structureMaxHealth } from './stats.js';
+import {
+  statsOf,
+  structureAttack,
+  structureMaxHealth,
+  unitAttack,
+  unitMaxHealth,
+} from './stats.js';
 import type { PlayerStats } from './stats.js';
 import { position, recordBlast, recordShot, structurePosition } from './working.js';
 import type { Working, WorkingGeneral, WorkingStructure, WorkingUnit } from './working.js';
@@ -488,24 +491,93 @@ const bounty = (working: Working, target: Target): number => {
 };
 
 /**
- * Усиление башни за убийство: +5 процентов к атаке и прочности
- * сложным процентом.
+ * Ветеранский ранг за убийства.
  *
- * Прочность растёт и в максимуме, и в текущем значении на ту же величину —
- * иначе награда оборачивалась бы для башни понижением доли здоровья.
+ * Ранг выводится из числа убийств таблицей порогов, поэтому награда —
+ * это прибавленные убийства. Множитель к атаке и максимальному
+ * здоровью посчитается сам, когда о характеристиках спросят.
+ *
+ * Прочность растёт и в максимуме, и в текущем значении на ту же
+ * величину — иначе награда оборачивалась бы понижением доли здоровья:
+ * объект становится крепче, а полоса над ним короче, и выглядит это
+ * как повреждение в награду за победу.
+ *
+ * Пересчёт делается только при СМЕНЕ ранга. Убийство внутри ранга
+ * характеристик не меняет, и лишний обход таблицы здесь ни к чему.
+ * Поэтому же награда принимает СЧЁТ, а не вызывается по разу
+ * на убитого: залп по толпе меняет ранг один раз, а не пять.
  */
-const rewardTower = (structure: WorkingStructure, stats: PlayerStats): void => {
+const rewardStructure = (structure: WorkingStructure, stats: PlayerStats, count: number): void => {
+  // Стена не стреляет вовсе, а растущая база означала бы матч, который
+  // нельзя закончить: она и без того самый прочный объект на карте.
   if (structure.kind === StructureKind.Base || structure.kind === StructureKind.Wall) return;
 
   const baseline = stats.structures[structure.kind];
-  const before = structureMaxHealth(baseline, structure.growthPpm);
+  const before = structure.kills;
+  structure.kills += count;
 
-  structure.growthPpm = clampPpm(
-    growPpm(structure.growthPpm, TOWER_KILL_GROWTH_PERCENT),
-    TOWER_GROWTH_CAP_PPM,
-  );
+  if (veteranRank(structure.kills) === veteranRank(before)) return;
 
-  structure.health += structureMaxHealth(baseline, structure.growthPpm) - before;
+  structure.health +=
+    structureMaxHealth(baseline, structure.kills) - structureMaxHealth(baseline, before);
+};
+
+/** То же для машины. Ветеранство перестало быть привилегией обороны. */
+const rewardUnit = (unit: WorkingUnit, stats: PlayerStats, count: number): void => {
+  const baseline = stats.units[unit.unitType];
+  const before = unit.kills;
+  unit.kills += count;
+
+  if (veteranRank(unit.kills) === veteranRank(before)) return;
+
+  unit.health += unitMaxHealth(baseline, unit.kills) - unitMaxHealth(baseline, before);
+};
+
+/**
+ * Награда стрелку за состоявшийся выстрел.
+ *
+ * Считаются ВСЕ убитые этим выстрелом, включая накрытие. Разряд Теслы,
+ * положивший пятерых, приносит ей пять убийств.
+ *
+ * Прежде здесь стояло обратное правило — «не больше одного за выстрел», —
+ * и отменено оно сознательно. Довод был такой: оружие против толпы
+ * не должно получать за толпу ещё и ранг. Но это ровно то, чем Тесла
+ * и является: смысл урона по площади в том, чтобы класть многих сразу,
+ * и не засчитывать ей это значило отнимать заслугу за то, ради чего
+ * её покупают. Счётчик обязан быть честным.
+ *
+ * Быстрый набор ранга ограничен не счётом, а таблицей: у машины потолок
+ * полтора, а не два — см. `VETERAN_UNIT_PPM` в балансе. Именно там
+ * и решается вопрос «сколько», а здесь — вопрос «за что».
+ *
+ * Вызывается всё равно один раз на выстрел, но со счётом убитых:
+ * ранг при этом пересчитывается однократно.
+ *
+ * Генерала здесь нет намеренно: его награда за личное участие
+ * выплачивается энергией, и она уже есть. Дав ему ещё и ранг, мы удвоили
+ * бы плату за один и тот же риск, а накопленное им не сгорало бы
+ * никогда — генерал возрождается.
+ */
+const rewardShooter = (
+  working: Working,
+  statsTable: readonly PlayerStats[],
+  shooter: Shooter,
+  count: number,
+): void => {
+  if (count <= 0) return;
+
+  const stats = statsOf(statsTable, shooter.owner);
+
+  if (shooter.kind === ShooterKind.Structure) {
+    const structure = working.structures[shooter.index];
+    if (structure !== undefined) rewardStructure(structure, stats, count);
+    return;
+  }
+
+  if (shooter.kind === ShooterKind.Unit) {
+    const unit = working.units[shooter.index];
+    if (unit !== undefined) rewardUnit(unit, stats, count);
+  }
 };
 
 export interface Shooter {
@@ -515,11 +587,22 @@ export interface Shooter {
 }
 
 /**
- * Нанесение урона и всё, что за ним следует: гибель цели, награда генералу,
- * усиление башни.
+ * Нанесение урона и всё, что за ним следует: гибель цели и награда
+ * генералу энергией.
  *
  * Возвращает признак того, что цель погибла — вызывающему коду это нужно
- * для следа выстрела: добивающий выстрел рисуется ярче.
+ * дважды: для следа выстрела (добивающий рисуется ярче) и для награды
+ * рангом.
+ *
+ * Ранга здесь НЕ выдаётся, и это не забывчивость. Накрытие идёт через
+ * эту же функцию, и убитых за один выстрел бывает десяток; ранг же
+ * пересчитывается по таблице порогов, и делать это по разу на убитого
+ * значило бы пять раз пересчитать то, что меняется однажды. Поэтому
+ * `fire` собирает счёт и награждает один раз — но на ПОЛНОЕ число
+ * убитых, а не на одного.
+ *
+ * С энергией генералу так же: она платится за каждого убитого. Десять
+ * машин, снятых одним залпом, стоят ровно десяти машин.
  */
 export const dealDamage = (
   working: Working,
@@ -530,31 +613,33 @@ export const dealDamage = (
 ): boolean => {
   if (amount <= 0) return false;
 
-  const killed = subtractHealth(working, statsTable, target, amount);
+  const killed = damageEntity(working, statsTable, target, amount);
   if (!killed) return false;
 
-  // Осторожно с накрытием: оно идёт через эту же функцию, и убитых за один
-  // выстрел может быть много. Сейчас это безопасно — накрытие есть только
-  // у Теслы, то есть у юнита, а юнит не получает ни добычи, ни усиления.
-  // Отдайте накрытие башне, и она получит свои пять процентов к атаке
-  // и прочности сложным процентом за КАЖДОГО убитого в залпе: один
-  // выстрел по толпе из десяти машин сделает её вдвое сильнее навсегда.
   if (shooter.kind === ShooterKind.General) {
-    // Награда за убийство даётся только генералу — это плата за то,
+    // Награда энергией даётся только генералу — это плата за то,
     // что игрок рискнул им лично.
     const player = working.players.find((entry) => entry.id === shooter.owner);
     if (player !== undefined) player.energy += bounty(working, target);
   }
 
-  if (shooter.kind === ShooterKind.Structure) {
-    const structure = working.structures[shooter.index];
-    if (structure !== undefined) rewardTower(structure, statsOf(statsTable, shooter.owner));
-  }
-
   return true;
 };
 
-const subtractHealth = (
+/**
+ * Вычет прочности со всеми последствиями: гибель, запись взрыва, уход
+ * генерала на возрождение. Возвращает признак «цель погибла».
+ *
+ * Экспортируется ради ядерного удара. Через `dealDamage` тому идти
+ * нельзя: она требует стрелка, а у взрыва стрелка нет — подделать его
+ * нечем, индекс пришлось бы выдумать, и генерал получил бы за убийства
+ * взрывом энергию, которой по замыслу не получает.
+ *
+ * Копировать её в `step.ts` тоже нельзя, и это не вкусовщина: две копии
+ * правил гибели разъедутся на первой же правке, и генерал начнёт
+ * исчезать молча ровно от одной из причин.
+ */
+export const damageEntity = (
   working: Working,
   statsTable: readonly PlayerStats[],
   target: Target,
@@ -666,6 +751,11 @@ const damageAgainst = (
  * а этот — каждые три с небольшим секунды у каждой Теслы. Индекс
  * построен один раз за тик, до стрельбы, поэтому в нём остаются убитые
  * в этом же тике — `alive` проверяется у каждого.
+ *
+ * Возвращает ЧИСЛО убитых накрытием. Нужно награде рангом: залп по толпе
+ * приносит столько убийств, скольких положил, — в этом и смысл урона
+ * по площади. Считает `fire`, а не каждое попадание, чтобы ранг
+ * пересчитался один раз, а не по разу на убитого.
  */
 const splash = (
   working: Working,
@@ -675,7 +765,8 @@ const splash = (
   aim: Vec2,
   direct: Target,
   attack: number,
-): void => {
+): number => {
+  let killed = 0;
   const share = Math.floor(attack / SPLASH_OUTER_DIVISOR);
   const full = SPLASH_FULL_RADIUS * SPLASH_FULL_RADIUS;
   const outer = SPLASH_OUTER_RADIUS * SPLASH_OUTER_RADIUS;
@@ -691,7 +782,11 @@ const splash = (
     const distance = squaredDistance(aim, { x: unit.x, y: unit.y });
     if (distance > outer) return;
 
-    dealDamage(working, statsTable, shooter, { kind: TargetKind.Unit, index }, amountAt(distance));
+    if (
+      dealDamage(working, statsTable, shooter, { kind: TargetKind.Unit, index }, amountAt(distance))
+    ) {
+      killed += 1;
+    }
   });
 
   working.generals.forEach((general, index) => {
@@ -701,14 +796,20 @@ const splash = (
     const distance = squaredDistance(aim, { x: general.x, y: general.y });
     if (distance > outer) return;
 
-    dealDamage(
-      working,
-      statsTable,
-      shooter,
-      { kind: TargetKind.General, index },
-      amountAt(distance),
-    );
+    if (
+      dealDamage(
+        working,
+        statsTable,
+        shooter,
+        { kind: TargetKind.General, index },
+        amountAt(distance),
+      )
+    ) {
+      killed += 1;
+    }
   });
+
+  return killed;
 };
 
 const fire = (
@@ -737,10 +838,18 @@ const fire = (
   // Накрытие опознаётся по оружию, а не по типу юнита: разряд и площадь —
   // одно и то же оружие, и раздавать их порознь было бы двумя правилами
   // там, где хватает одного.
-  if (weapon === ShotWeapon.Arc) {
-    splash(working, statsTable, indices, shooter, aim, target, attack);
-  }
+  const splashed =
+    weapon === ShotWeapon.Arc
+      ? splash(working, statsTable, indices, shooter, aim, target, attack)
+      : 0;
 
+  // Ранг выдаётся здесь: это то место, где известны границы выстрела
+  // и полный счёт унесённых им жизней. Считаются ВСЕ — в этом и смысл
+  // урона по площади.
+  rewardShooter(working, statsTable, shooter, (lethal ? 1 : 0) + splashed);
+
+  // След выстрела ярче только когда погибла ПРЯМАЯ цель: игрок целился
+  // в неё, и подтверждение нужно по ней.
   recordShot(working, shooter.owner, origin, aim, lethal, weapon, side);
 };
 
@@ -797,7 +906,7 @@ const fireStructure = (
   if (working.tick < structure.readyAtTick) return;
 
   const baseline = statsOf(statsTable, structure.owner).structures[structure.kind];
-  const attack = structureAttack(baseline, structure.growthPpm);
+  const attack = structureAttack(baseline, structure.kills);
   if (attack <= 0 || baseline.range <= 0) return;
 
   const origin = cellCentre(structure.cell);
@@ -894,7 +1003,9 @@ const fireUnit = (
     { kind: ShooterKind.Unit, index, owner: unit.owner },
     origin,
     target,
-    baseline.attack,
+    // Атака с учётом ветеранского ранга — как у башни. Перезарядка
+    // и дальность берутся паспортные: ранг их не трогает.
+    unitAttack(baseline, unit.kills),
     baseline.structureDamagePercent,
     UNIT_WEAPON[unit.unitType],
     ShotSide.Centre,

@@ -8,7 +8,6 @@ import {
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
-  PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
   Terrain,
@@ -57,6 +56,7 @@ const unit = (id: number, owner: number, dx: number, dy: number, facing: number)
   health: 100,
   facing,
   readyAtTick: asTickNumber(0),
+  kills: 0,
 });
 
 /**
@@ -214,7 +214,7 @@ describe('разворот постройки', () => {
     // своей клетки, а цель выбирает по расстоянию оттуда же.
     cell: cellIndex(FIELD_X + dx, FIELD_Y + dy),
     health: STRUCTURE_STATS[StructureKind.TowerBasic].health,
-    growthPpm: PPM_ONE,
+    kills: 0,
     readyAtTick: asTickNumber(readyAtTick),
     builtAtTick: asTickNumber(0),
     demolishAtTick: asTickNumber(0),
