@@ -43,7 +43,13 @@ import { createNetClient } from './net.js';
 import type { NetClient } from './net.js';
 import { createScene } from './scene.js';
 import { visibleMapPercent } from './iso.js';
-import { EMPTY_SIDE, hudActions, setMatchCommands, setSoundCommands } from './store.js';
+import {
+  EMPTY_SIDE,
+  hudActions,
+  setMatchCommands,
+  setSoundCommands,
+  useHudStore,
+} from './store.js';
 import type { MatchPhaseView, MatchSnapshot, SelectionView } from './store.js';
 import { sidesOf } from './sides.js';
 import { statRowsOf } from './stat-rows.js';
@@ -345,6 +351,36 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     }
   };
 
+  /**
+   * Закрыть прокачку, если она сейчас ПАНЕЛЬ поверх поля.
+   *
+   * Отвечает на вопрос «панель или столбцы» не своим порогом ширины,
+   * а тем, что об этом думает CSS: медиазапросы выставляют переменную
+   * `--td-upgrades-as-panel`. Порог экрана записан один раз, в токенах,
+   * и второй его экземпляр в разборе нажатий разошёлся бы с первым при
+   * первой же правке — молча.
+   *
+   * Стоит одно разрешение стилей на нажатие, то есть ничего: вызывается
+   * это по `Esc` и по нажатию плиток, а не в кадре.
+   *
+   * Возвращает `true`, если панель действительно закрыли. По этому
+   * признаку `Esc` понимает, что дальше — отмену режима и меню —
+   * трогать не надо: панель лежала поверх поля и была верхним слоем.
+   */
+  const closeUpgradePanel = (): boolean => {
+    if (!useHudStore.getState().statsOpen) return false;
+
+    const asPanel =
+      getComputedStyle(document.documentElement)
+        .getPropertyValue('--td-upgrades-as-panel')
+        .trim() === '1';
+
+    if (!asPanel) return false;
+
+    hudActions.toggleStats();
+    return true;
+  };
+
   const controls = attachControls(host, {
     setDirection: (direction) => send({ kind: CommandKind.MoveGeneral, direction }),
     build: (cell, structure) => send({ kind: CommandKind.Build, cell, structure }),
@@ -372,15 +408,31 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     // что рисовать.
     menuChanged: (open) => hudActions.setMenuOpen(open),
     toggleStats: () => hudActions.toggleStats(),
+    closeUpgradePanel,
     cellAtScreen: (x, y) => scene.cellAtScreen(x, y),
     minimapCellAtScreen: (x, y) => scene.minimapCellAtScreen(x, y),
   });
 
   setMatchCommands({
+    // Заказ панель прокачки НЕ закрывает: заказывают пачками, и закрытие
+    // после каждого юнита превратило бы покупку в открывание панели.
     train: (unitType, count) => train(unitType as UnitType, count),
-    setBuildKind: (kind) => controls.setBuildKind(kind as StructureKindType | null),
-    toggleNukeAim: () => controls.setAimingNuke(!controls.state.aimingNuke),
-    toggleTargetAim: () => controls.setAimingTarget(!controls.state.aimingTarget),
+
+    // А вот всё, что уводит внимание на поле, — закрывает. Целиться
+    // в поле, которого не видно, нельзя: игрок нажал бы «ядерка»
+    // и указал бы клетку вслепую, по панели.
+    setBuildKind: (kind) => {
+      closeUpgradePanel();
+      controls.setBuildKind(kind as StructureKindType | null);
+    },
+    toggleNukeAim: () => {
+      closeUpgradePanel();
+      controls.setAimingNuke(!controls.state.aimingNuke);
+    },
+    toggleTargetAim: () => {
+      closeUpgradePanel();
+      controls.setAimingTarget(!controls.state.aimingTarget);
+    },
     setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     buyUpgrade: (branch) => send({ kind: CommandKind.BuyUpgrade, branch }),
     demolish: (cell) => send({ kind: CommandKind.Demolish, cell }),
@@ -391,6 +443,9 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     // в тулбаре. Плитка, нажатие по которой не делает ничего, была бы
     // ловушкой: игрок нажмёт и решит, что интерфейс сломался.
     focusOwn: (what) => {
+      // Перенос камеры — тоже «смотреть на поле», а поле под панелью.
+      closeUpgradePanel();
+
       if (what === 'general') {
         scene.setFollowing(true);
         return;
