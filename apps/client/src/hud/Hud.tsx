@@ -436,6 +436,8 @@ const Diagnostics = () => {
   const frameLong = useHudStore((state) => state.frameLong);
   const netGapP95 = useHudStore((state) => state.netGapP95);
   const netGapMax = useHudStore((state) => state.netGapMax);
+  const displayGapP95 = useHudStore((state) => state.displayGapP95);
+  const displayGapLong = useHudStore((state) => state.displayGapLong);
 
   return (
     <div
@@ -454,6 +456,8 @@ const Diagnostics = () => {
       data-frame-long={String(frameLong)}
       data-net-gap-p95={String(netGapP95)}
       data-net-gap-max={String(netGapMax)}
+      data-display-gap-p95={String(displayGapP95)}
+      data-display-gap-long={String(displayGapLong)}
       style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }}
     />
   );
