@@ -1,5 +1,7 @@
 import {
   CHECKSUM_INTERVAL_TICKS,
+  DISPLAY_LEAD_TICKS,
+  MS_PER_TICK,
   PREDICTION_REPLAY_LIMIT_TICKS,
   asPlayerId,
   asTickNumber,
@@ -90,10 +92,32 @@ export interface MatchGuestOptions {
    * на подтверждённую не влияет ни при каких условиях.
    */
   readonly predict?: boolean;
+  /**
+   * Часы показа в миллисекундах.
+   *
+   * Отсутствуют — показываемая копия двигается только приходом кадров,
+   * ровно как раньше. Это режим всякого, кто мира не рисует: компьютера
+   * и проверок.
+   *
+   * Внедряются, а не читаются изнутри: `packages/netplay` обязан
+   * оставаться без платформенных вызовов, и ведущий решает ту же задачу
+   * тем же способом.
+   */
+  readonly now?: () => number;
 }
 
 export interface MatchGuest {
   receive(message: ServerMessage): void;
+  /**
+   * Продвинуть показываемый мир по местным часам.
+   *
+   * Зовётся из цикла отрисовки, один раз на кадр, и только там: кадр
+   * отрисовки — естественный момент спросить, который час, потому что
+   * именно к нему готовится картинка.
+   *
+   * Без часов в настройках не делает ничего.
+   */
+  advance(): void;
   /**
    * Отдать своё действие: оно немедленно попадает в предсказание
    * и уходит на сервер. Возвращает отправленную команду или `null`,
@@ -135,6 +159,16 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
   let delayTicks = 0;
   let serverTick = 0;
 
+  /**
+   * Якорь часов показа: тик и время, когда часы на него встали.
+   *
+   * Время `NaN` означает, что часы не заведены, — так бывает до первого
+   * кадра и после всякой смены состояния. Заводятся они сами, при первом
+   * же вопросе о целевом тике.
+   */
+  let anchorTick = 0;
+  let anchorAtMs = Number.NaN;
+
   /** Собственные команды, ещё не пришедшие обратно кадром. */
   const own = new Map<number, UnownedCommand[]>();
   /** Кадры, пришедшие раньше своей очереди. */
@@ -150,6 +184,11 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
   const setStatus = (next: GuestStatus): void => {
     if (status === next) return;
     status = next;
+    // Часы сбрасываются при всякой смене состояния, и это не осторожность
+    // впрок. Пока шёл догон по истории, часы стояли, а якорь остался
+    // в прошлом; не сбрось его — на выходе из догона накопившееся время
+    // разом швырнуло бы показ в потолок.
+    anchorAtMs = Number.NaN;
     options.onStatus?.(next);
   };
 
@@ -176,11 +215,46 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
   /**
    * Тик, который должен быть на экране.
    *
-   * Сегодня это ровно пол. Отдельная функция существует затем, чтобы
-   * место, где показ обгоняет подтверждённое состояние, было одно
-   * и называлось вслух.
+   * Без часов — ровно пол: показ двигается приходом кадров, как было
+   * всегда. С часами картинка идёт своим ходом, и правил у неё три.
+   *
+   * **Пол.** Ниже нельзя никогда: там остались бы собственные команды.
+   * Провалившись под пол, часы встают на него заново — с запасом,
+   * чтобы не проваливаться обратно на следующем же кадре.
+   *
+   * **Потолок** — подтверждённый плюс предохранитель. Дальше врать
+   * нельзя: на длинной заминке картинка обязана честно остановиться,
+   * а не уехать в выдуманное будущее. Остановка эта не молчаливая —
+   * её ловит прибор промежутков показа на клиенте.
+   *
+   * **Ход.** Между полом и потолком тик прибавляется каждые
+   * `MS_PER_TICK` местного времени, и ни приход кадра, ни его опоздание
+   * на это не влияют. В этом весь смысл затеи.
+   *
+   * Функция не только считает, но и ведёт якорь часов, то есть имеет
+   * последствия. Звать её можно сколько угодно раз за кадр: часы
+   * монотонны, и цель от повторного вопроса только растёт.
    */
-  const displayTarget = (): number => displayFloor();
+  const displayTarget = (): number => {
+    const floor = displayFloor();
+    const clock = options.now;
+    if (clock === undefined || confirmed === null || status !== 'playing') return floor;
+
+    const nowMs = clock();
+    if (Number.isNaN(anchorAtMs)) {
+      anchorTick = floor + DISPLAY_LEAD_TICKS;
+      anchorAtMs = nowMs;
+    }
+
+    let target = anchorTick + Math.floor((nowMs - anchorAtMs) / MS_PER_TICK);
+    if (target < floor) {
+      anchorTick = floor + DISPLAY_LEAD_TICKS;
+      anchorAtMs = nowMs;
+      target = anchorTick;
+    }
+
+    return Math.min(target, confirmed.tick + PREDICTION_REPLAY_LIMIT_TICKS);
+  };
 
   /**
    * Пересобрать предсказание от подтверждённого состояния.
@@ -315,6 +389,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
           expected.clear();
           pendingDelay = null;
           recoveredOnce = false;
+          anchorAtMs = Number.NaN;
 
           if (message.tick > 0) {
             // Матч уже идёт: мы либо вернулись после разрыва, либо
@@ -415,6 +490,19 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
         case MessageType.Pong:
           break;
       }
+    },
+
+    advance() {
+      // Без часов, без предсказания и вне обычной игры делать нечего:
+      // показ в этих случаях двигается приходом кадров либо не двигается
+      // вовсе, потому что подтверждённая копия перестраивается.
+      if (options.now === undefined || !predicting) return;
+      if (confirmed === null || side === null || status !== 'playing') return;
+
+      const target = displayTarget();
+      if (predicted !== null && predicted.tick >= target) return;
+
+      rebuild();
     },
 
     issue(intent) {
