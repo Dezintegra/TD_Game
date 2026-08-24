@@ -171,6 +171,107 @@ describe('генерация карты: связность', () => {
   });
 });
 
+describe('генерация карты: форма скал', () => {
+  /** Связные скальные массивы карты. Соседство по восьми направлениям. */
+  const massifs = (cells: Uint8Array): number[][] => {
+    const seen = new Uint8Array(MAP_CELL_COUNT);
+    const found: number[][] = [];
+
+    for (let index = 0; index < MAP_CELL_COUNT; index += 1) {
+      if (isPassable(cells[index] as Terrain) || seen[index] === 1) continue;
+
+      const queue = [index];
+      seen[index] = 1;
+
+      for (let head = 0; head < queue.length; head += 1) {
+        const current = queue[head] ?? 0;
+        const x = cellX(current);
+        const y = cellY(current);
+
+        for (let dy = -1; dy <= 1; dy += 1) {
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (!isInsideMap(nx, ny)) continue;
+
+            const next = cellIndex(nx, ny);
+            if (seen[next] === 1 || isPassable(cells[next] as Terrain)) continue;
+
+            seen[next] = 1;
+            queue.push(next);
+          }
+        }
+      }
+
+      found.push(queue);
+    }
+
+    return found;
+  };
+
+  it('массивы не срастаются в цепи во всю карту', () => {
+    // Гряда — самый крупный из видов: до двадцати шагов толщиной в две
+    // клетки, то есть около сорока клеток. Порог вдвое выше: он ловит
+    // не «массив великоват», а «массивы слиплись». Прежняя генерация
+    // на этой проверке давала 244 клетки.
+    const LIMIT = 80;
+
+    for (const seed of seeds(500)) {
+      const map = generateMap(seed);
+
+      for (const massif of massifs(map.cells)) {
+        if (massif.length > LIMIT) {
+          throw new Error(
+            `seed ${seed}: скальный массив в ${massif.length} клеток при пороге ${LIMIT}`,
+          );
+        }
+      }
+    }
+  });
+
+  it('массивы в основном островки, а не гряды', () => {
+    // Вид массива по карте не прочесть — он не хранится нигде, — зато
+    // видно его форму. Островок вписывается в почти квадратный прямоугольник,
+    // гряда — в вытянутый. Считаем долю вытянутых: гряд по настройке
+    // пятнадцать процентов, и если бы виды перепутались местами, доля
+    // ушла бы к восьмидесяти.
+    const ELONGATED = 2.5;
+    const LIMIT_PERCENT = 35;
+
+    let total = 0;
+    let elongated = 0;
+
+    for (const seed of seeds(100)) {
+      const map = generateMap(seed);
+
+      for (const massif of massifs(map.cells)) {
+        let minX = MAP_WIDTH_CELLS;
+        let maxX = -1;
+        let minY = MAP_HEIGHT_CELLS;
+        let maxY = -1;
+
+        for (const cell of massif) {
+          minX = Math.min(minX, cellX(cell));
+          maxX = Math.max(maxX, cellX(cell));
+          minY = Math.min(minY, cellY(cell));
+          maxY = Math.max(maxY, cellY(cell));
+        }
+
+        const width = maxX - minX + 1;
+        const height = maxY - minY + 1;
+
+        total += 1;
+        if (Math.max(width, height) / Math.min(width, height) >= ELONGATED) elongated += 1;
+      }
+    }
+
+    const percent = (elongated * 100) / total;
+    if (percent > LIMIT_PERCENT) {
+      throw new Error(`вытянутых массивов ${percent.toFixed(1)}% при пороге ${LIMIT_PERCENT}%`);
+    }
+  });
+});
+
 describe('генерация карты: плотность', () => {
   it('доля скал держится в диапазоне от 8 до 25 процентов', () => {
     for (const seed of seeds(100)) {

@@ -4,10 +4,16 @@ import {
   FIXED_POINT_SCALE,
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
+  MAP_ROCK_GAP_CELLS,
   MAP_TARGET_ROCK_PERCENT,
   MAP_WIDTH_CELLS,
-  ROCK_BLOB_LIMIT,
-  ROCK_BLOB_STEPS,
+  ROCK_ATTEMPT_LIMIT,
+  ROCK_ISLAND_MIN_CELLS,
+  ROCK_ISLAND_SPAN_CELLS,
+  ROCK_MASSIF_MIN_CELLS,
+  ROCK_RIDGE_MIN_STEPS,
+  ROCK_RIDGE_PERCENT,
+  ROCK_RIDGE_SPAN_STEPS,
   Terrain,
   isPassable,
 } from '@td/shared';
@@ -110,29 +116,28 @@ export const rotatedCell = (index: number): number =>
  * Генерация карты из seed.
  *
  * Три этапа:
- *   1. разрастание скальных массивов до целевой плотности;
- *   2. очистка одиночных клеток, оставшихся от блужданий;
- *   3. расстановка баз и починка связности, если она нарушилась.
+ *   1. посадка скальных массивов с обязательным зазором между ними;
+ *   2. расстановка баз с расчисткой площадок;
+ *   3. проверка связности и аварийный коридор, если она нарушилась.
  *
- * Почему разрастание пятен, а не клеточный автомат или шум Перлина.
+ * Почему посадка массивов, а не клеточный автомат и не шум Перлина.
  *
  * Шум Перлина оперирует дробными значениями, а у нас в состоянии мира их
  * быть не должно.
  *
  * Клеточный автомат — классика генерации пещер, но он рассчитан на мир,
  * где камня около половины: там правило «пять и более соседей» устойчиво.
- * Нам нужны редкие островки на открытом поле, порядка 15 процентов, и при
- * такой плотности автомат схлопывается — одиночные скалы вымирают быстрее,
- * чем массивы успевают обрасти, и карта вычищается почти дочиста.
+ * Нам нужны редкие островки на открытом поле, и при такой плотности автомат
+ * схлопывается — одиночные скалы вымирают быстрее, чем массивы успевают
+ * обрасти, и карта вычищается почти дочиста.
  *
- * Разрастание пятен даёт ровно то, что нужно: органичные скальные выходы,
- * плотность задаётся напрямую и не требует подбора коэффициентов, а вся
- * арифметика целочисленная.
+ * Третий довод появился вместе с требованием зазора и весит больше первых
+ * двух: ни автомат, ни шум не умеют держать расстояние между массивами,
+ * потому что не знают, где кончается один массив и начинается другой.
+ * Посадка массивов целиком знает это по построению.
  */
 export const generateMap = (seed: number): GameMap => {
-  const cells = growRockBlobs(createRng(seed));
-
-  despeckle(cells);
+  const cells = growRockMassifs(createRng(seed));
 
   const baseCells = placeBases(cells);
   ensureConnected(cells, baseCells);
@@ -141,118 +146,291 @@ export const generateMap = (seed: number): GameMap => {
 };
 
 /**
- * Разрастание скальных массивов до достижения целевой плотности.
+ * Ширина ореола вокруг клетки массива, в клетках.
  *
- * Каждый массив — след случайного блуждания: выбирается стартовая клетка
- * в верхней половине карты, дальше делается фиксированное число шагов
- * в случайных направлениях, и все пройденные клетки становятся скалой.
- * Блуждание петляет и возвращается, поэтому след получается не червяком,
- * а компактной кляксой — как раз то, что нужно.
- *
- * Симметрия обеспечивается на месте: помечая клетку, помечаем и парную ей
- * относительно поворота на 180°. Поэтому неважно, забредёт ли блуждание
- * в нижнюю половину карты — результат останется симметричным.
- *
- * Цикл останавливается по достижении целевой плотности, а не после
- * заранее посчитанного числа массивов. Так плотность не зависит от того,
- * насколько сильно перекрылись отдельные кляксы.
+ * Ореол — это запретная для соседних массивов зона. Зазор между массивами
+ * в `MAP_ROCK_GAP_CELLS` клеток означает, что клетки ближе этого расстояния
+ * заняты, то есть ореол на единицу уже самого зазора.
  */
-const growRockBlobs = (initialRng: RngState): Uint8Array => {
+const ROCK_HALO_CELLS = MAP_ROCK_GAP_CELLS - 1;
+
+/**
+ * Посадка скальных массивов до достижения целевой плотности.
+ *
+ * Массив собирается целиком в списке и только потом переносится на карту:
+ * пока он растёт, его ещё можно отбросить, если получился огрызок.
+ *
+ * Занятость держится второй маской — `blocked`. В неё вписывается не сама
+ * клетка массива, а квадрат вокруг неё: так расстояние до соседей
+ * проверяется одним чтением вместо обхода окрестности.
+ *
+ * Симметрия обеспечивается на месте: ставя клетку, ставим и парную ей
+ * относительно поворота на 180°. Поэтому неважно, дорастёт ли массив
+ * до нижней половины карты — результат останется симметричным.
+ *
+ * Цикл считает попытки, а не поставленные массивы: попытка может кончиться
+ * ничем, если семя выпало в чужую зону.
+ */
+const growRockMassifs = (initialRng: RngState): Uint8Array => {
   const cells = new Uint8Array(MAP_CELL_COUNT);
+  const blocked = new Uint8Array(MAP_CELL_COUNT);
+  // Принадлежность растущему массиву. Массив, а не Set: маска читается
+  // за одно обращение, а очищается по списку поставленных клеток.
+  const taken = new Uint8Array(MAP_CELL_COUNT);
+  const massif: number[] = [];
+
   let rng = initialRng;
 
   const targetRockCells = Math.round((MAP_CELL_COUNT * MAP_TARGET_ROCK_PERCENT) / 100);
   let rockCells = 0;
 
-  for (let blob = 0; blob < ROCK_BLOB_LIMIT && rockCells < targetRockCells; blob += 1) {
+  for (let attempt = 0; attempt < ROCK_ATTEMPT_LIMIT && rockCells < targetRockCells; attempt += 1) {
+    // Все случайные величины берутся до роста и в неизменном порядке.
+    // Иначе последовательность генератора зависела бы от того, куда завела
+    // массив форма соседей, и одна и та же карта перестала бы собираться
+    // одинаково при малейшей правке проверок.
     const [rngAfterX, startX] = nextRngInt(rng, MAP_WIDTH_CELLS);
-    const [rngAfterY, startY] = nextRngInt(rngAfterX, MAP_HEIGHT_CELLS / 2);
-    rng = rngAfterY;
+    const [rngAfterY, startY] = nextRngInt(rngAfterX, Math.floor(MAP_HEIGHT_CELLS / 2));
+    const [rngAfterKind, kindRoll] = nextRngInt(rngAfterY, 100);
+    const isRidge = kindRoll < ROCK_RIDGE_PERCENT;
+    const [rngAfterSize, extra] = nextRngInt(
+      rngAfterKind,
+      isRidge ? ROCK_RIDGE_SPAN_STEPS : ROCK_ISLAND_SPAN_CELLS,
+    );
+    const [rngAfterDirection, direction] = nextRngInt(rngAfterSize, 4);
+    rng = rngAfterDirection;
 
-    let x = startX;
-    let y = startY;
+    const start = cellIndex(startX, startY);
+    // Семя проверяется и по себе, и по своей паре: массив, начатый вплотную
+    // к отражению чужого, слипся бы с ним после поворота.
+    if (blocked[start] === 1 || blocked[rotatedCell(start)] === 1) continue;
 
-    for (let step = 0; step < ROCK_BLOB_STEPS; step += 1) {
-      const index = cellIndex(x, y);
-      const pair = rotatedCell(index);
+    massif.length = 0;
+    take(taken, massif, start);
 
-      // Считаем только реально добавленные клетки: блуждание постоянно
-      // возвращается на уже пройденные, и без этой проверки счётчик
-      // разошёлся бы с фактической плотностью.
-      if (cells[index] === Terrain.Ground) {
-        cells[index] = Terrain.Rock;
-        rockCells += 1;
+    if (isRidge) {
+      rng = growRidge(blocked, taken, massif, {
+        rng,
+        startX,
+        startY,
+        steps: ROCK_RIDGE_MIN_STEPS + extra,
+        direction,
+      });
+    } else {
+      rng = growIsland(blocked, taken, massif, {
+        rng,
+        start,
+        size: ROCK_ISLAND_MIN_CELLS + extra,
+      });
+    }
+
+    if (massif.length >= ROCK_MASSIF_MIN_CELLS) {
+      for (const cell of massif) {
+        const pair = rotatedCell(cell);
+
+        // Счётчик двигают только реально занятые клетки: массив и его пара
+        // могут перекрыться у центра карты, и без проверки счётчик разошёлся
+        // бы с фактической плотностью.
+        if (cells[cell] === Terrain.Ground) {
+          cells[cell] = Terrain.Rock;
+          rockCells += 1;
+        }
+        if (cells[pair] === Terrain.Ground) {
+          cells[pair] = Terrain.Rock;
+          rockCells += 1;
+        }
       }
-      if (cells[pair] === Terrain.Ground) {
-        cells[pair] = Terrain.Rock;
-        rockCells += 1;
-      }
 
-      const [rngAfterStep, direction] = nextRngInt(rng, 4);
-      rng = rngAfterStep;
-
-      const offset = ORTHOGONAL_NEIGHBOURS[direction] ?? ORTHOGONAL_NEIGHBOURS[0];
-      const nextX = x + (offset?.[0] ?? 0);
-      const nextY = y + (offset?.[1] ?? 0);
-
-      // За край карты не выходим: там блуждание залипло бы у границы
-      // и вдоль неё образовалась бы скальная кайма.
-      if (isInsideMap(nextX, nextY)) {
-        x = nextX;
-        y = nextY;
+      for (const cell of massif) {
+        blockAround(blocked, cell);
+        blockAround(blocked, rotatedCell(cell));
       }
     }
+
+    for (const cell of massif) taken[cell] = 0;
   }
 
   return cells;
 };
 
-/**
- * Очистка одиночных скал.
- *
- * Блуждание иногда оставляет за собой отдельные клетки, оторванные от
- * основной кляксы. На каркасном рендере они выглядят как мусор, а на
- * геймплей не влияют никак. Убираем всё, у чего меньше двух соседей-скал.
- *
- * Правило симметрично: оно локально, не зависит от направления и потому
- * переводит симметричную карту в симметричную.
- */
-const despeckle = (cells: Uint8Array): void => {
-  // Читаем из копии, пишем в оригинал: если читать и писать в один массив,
-  // уже обработанные клетки повлияют на ещё не обработанные, и результат
-  // станет зависеть от порядка обхода.
-  const source = cells.slice();
+const take = (taken: Uint8Array, massif: number[], cell: number): void => {
+  taken[cell] = 1;
+  massif.push(cell);
+};
 
-  for (let y = 0; y < MAP_HEIGHT_CELLS; y += 1) {
-    for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
-      const index = cellIndex(x, y);
-      if (source[index] === Terrain.Ground) continue;
+/** Вписывает в маску занятости ореол вокруг клетки. */
+const blockAround = (blocked: Uint8Array, cell: number): void => {
+  const cx = cellX(cell);
+  const cy = cellY(cell);
 
-      if (countRockNeighbours(source, x, y) < 2) {
-        cells[index] = Terrain.Ground;
-      }
+  for (let dy = -ROCK_HALO_CELLS; dy <= ROCK_HALO_CELLS; dy += 1) {
+    for (let dx = -ROCK_HALO_CELLS; dx <= ROCK_HALO_CELLS; dx += 1) {
+      const x = cx + dx;
+      const y = cy + dy;
+      if (!isInsideMap(x, y)) continue;
+
+      blocked[cellIndex(x, y)] = 1;
     }
   }
 };
 
-const countRockNeighbours = (cells: Uint8Array, x: number, y: number): number => {
-  let count = 0;
+/**
+ * Годится ли клетка растущему массиву.
+ *
+ * Три условия: не занята чужим ореолом, не взята уже своим массивом и
+ * не подходит вплотную к отражению своего же массива.
+ *
+ * Последнее приходится проверять обходом окрестности, а не чтением маски:
+ * ореол своих клеток в `blocked` не вписан — он появится там только когда
+ * массив состоится, — а до тех пор массив, дошедший до центра карты, должен
+ * как-то узнать, что упёрся в собственное отражение.
+ */
+const fitsMassif = (blocked: Uint8Array, taken: Uint8Array, cell: number): boolean => {
+  if (blocked[cell] === 1 || taken[cell] === 1) return false;
 
-  for (let dy = -1; dy <= 1; dy += 1) {
-    for (let dx = -1; dx <= 1; dx += 1) {
-      if (dx === 0 && dy === 0) continue;
+  const pair = rotatedCell(cell);
+  const px = cellX(pair);
+  const py = cellY(pair);
 
-      const nx = x + dx;
-      const ny = y + dy;
-      if (!isInsideMap(nx, ny)) continue;
+  for (let dy = -ROCK_HALO_CELLS; dy <= ROCK_HALO_CELLS; dy += 1) {
+    for (let dx = -ROCK_HALO_CELLS; dx <= ROCK_HALO_CELLS; dx += 1) {
+      const x = px + dx;
+      const y = py + dy;
+      if (!isInsideMap(x, y)) continue;
 
-      if (cells[cellIndex(nx, ny)] !== Terrain.Ground) {
-        count += 1;
-      }
+      if (taken[cellIndex(x, y)] === 1) return false;
     }
   }
 
-  return count;
+  return true;
+};
+
+interface IslandGrowth {
+  readonly rng: RngState;
+  readonly start: number;
+  readonly size: number;
+}
+
+/**
+ * Островок: рост присоединением случайной клетки с края.
+ *
+ * Список кандидатов — соседи уже занятых клеток. Каждый шаг из него
+ * вынимается случайная клетка, и если она всё ещё годится, то становится
+ * частью массива. Форма выходит округлой с рваным краем — то, что и нужно.
+ *
+ * Выбранный кандидат вынимается перестановкой с последним и усечением,
+ * а не сдвигом: порядок при этом меняется, но меняется детерминированно,
+ * одинаково на клиенте и на сервере, а стоит перестановка одного действия
+ * вместо сдвига всего хвоста.
+ */
+const growIsland = (
+  blocked: Uint8Array,
+  taken: Uint8Array,
+  massif: number[],
+  growth: IslandGrowth,
+): RngState => {
+  let rng = growth.rng;
+  const frontier: number[] = [];
+
+  pushNeighbours(frontier, growth.start);
+
+  while (massif.length < growth.size && frontier.length > 0) {
+    const [nextRngState, pick] = nextRngInt(rng, frontier.length);
+    rng = nextRngState;
+
+    const cell = frontier[pick] ?? 0;
+    frontier[pick] = frontier[frontier.length - 1] ?? 0;
+    frontier.pop();
+
+    // Годность проверяется в момент выбора, а не в момент добавления
+    // в список: пока кандидат ждал очереди, массив мог дорасти до него сам
+    // или упереться рядом в собственное отражение.
+    if (!fitsMassif(blocked, taken, cell)) continue;
+
+    take(taken, massif, cell);
+    pushNeighbours(frontier, cell);
+  }
+
+  return rng;
+};
+
+const pushNeighbours = (frontier: number[], cell: number): void => {
+  const x = cellX(cell);
+  const y = cellY(cell);
+
+  for (const [dx, dy] of ORTHOGONAL_NEIGHBOURS) {
+    const nx = x + dx;
+    const ny = y + dy;
+    if (!isInsideMap(nx, ny)) continue;
+
+    frontier.push(cellIndex(nx, ny));
+  }
+};
+
+interface RidgeGrowth {
+  readonly rng: RngState;
+  readonly startX: number;
+  readonly startY: number;
+  readonly steps: number;
+  readonly direction: number;
+}
+
+/**
+ * Гряда: направленное блуждание толщиной в две клетки.
+ *
+ * Направление выбирается один раз, и семь шагов из десяти идут в него,
+ * три — поперёк. Без виляния получилась бы линейка, с равновероятными
+ * направлениями — тот же островок.
+ *
+ * Упёршись в чужую зону, гряда останавливается: оборванная гряда честнее
+ * петляющей вокруг препятствия — та превратилась бы в кляксу, и разница
+ * между двумя видами массивов исчезла бы.
+ */
+const growRidge = (
+  blocked: Uint8Array,
+  taken: Uint8Array,
+  massif: number[],
+  growth: RidgeGrowth,
+): RngState => {
+  let rng = growth.rng;
+
+  const offset = ORTHOGONAL_NEIGHBOURS[growth.direction] ?? ORTHOGONAL_NEIGHBOURS[0];
+  const stepX = offset?.[0] ?? 0;
+  const stepY = offset?.[1] ?? 0;
+
+  let x = growth.startX;
+  let y = growth.startY;
+
+  for (let step = 1; step < growth.steps; step += 1) {
+    const [nextRngState, wobble] = nextRngInt(rng, 10);
+    rng = nextRngState;
+
+    // Поперечный ход — это тот же вектор, повёрнутый на 90°: меняем оси
+    // местами. Отдельного списка направлений для этого не нужно.
+    const asideX = wobble < 3;
+    const nextX = x + (asideX ? stepY : stepX);
+    const nextY = y + (asideX ? stepX : stepY);
+    if (!isInsideMap(nextX, nextY)) break;
+
+    const cell = cellIndex(nextX, nextY);
+    if (!fitsMassif(blocked, taken, cell)) break;
+
+    take(taken, massif, cell);
+
+    // Толщина: сосед поперёк хода. Он необязателен — упёршись в чужую зону
+    // боком, гряда продолжает идти, просто становясь на клетку тоньше.
+    const sideX = nextX + stepY;
+    const sideY = nextY + stepX;
+    if (isInsideMap(sideX, sideY)) {
+      const side = cellIndex(sideX, sideY);
+      if (fitsMassif(blocked, taken, side)) take(taken, massif, side);
+    }
+
+    x = nextX;
+    y = nextY;
+  }
+
+  return rng;
 };
 
 /**
