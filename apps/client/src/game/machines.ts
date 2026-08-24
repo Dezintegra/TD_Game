@@ -1,6 +1,7 @@
 import { UnitType } from '@td/shared';
-import type { Solid, Vec3 } from './armour.js';
+import type { Solid } from './armour.js';
 import { GENERAL_ALTITUDE, GENERAL_PYLON_SIDE, clampTier } from './models.js';
+import { box, column, roller, taper, tube, upright } from './solids.js';
 
 /**
  * Машины: из чего они собраны.
@@ -35,6 +36,14 @@ import { GENERAL_ALTITUDE, GENERAL_PYLON_SIDE, clampTier } from './models.js';
  * от земли. Всё в клетках. Мировых координат здесь нет вовсе: поворот
  * по румбу делает `armour.ts`, иначе каждую деталь пришлось бы задавать
  * восемь раз.
+ *
+ * ## Откуда берутся тела
+ *
+ * Конструкторы — `upright`, `column`, `roller`, `tube` — живут
+ * в `solids.ts`. Раньше они лежали здесь, и это было верно ровно до тех
+ * пор, пока на тех же телах не понадобилось собрать постройки: копия
+ * выдавливания и поворота в двух файлах разошлась бы при первой же
+ * правке освещения.
  */
 
 /**
@@ -82,212 +91,6 @@ export const machinePalette = (colors: MachineColors): readonly number[] => [
   colors.accent,
   colors.glass,
 ];
-
-/** Точка плана детали: вид сверху. */
-interface Plan {
-  readonly forward: number;
-  readonly side: number;
-}
-
-/** Чем верх детали отличается от низа. Без него деталь — призма. */
-interface Slope {
-  /** На сколько клеток верх стянут к центру. Положительное сужает кверху. */
-  readonly inset?: number;
-  /** Сдвиг верха вдоль хода. Им заваливается лобовой лист. */
-  readonly forward?: number;
-  /** Сдвиг верха поперёк хода. */
-  readonly side?: number;
-}
-
-/**
- * Верхний план детали.
- *
- * Углы разъезжаются по лучам от центра, поэтому число точек и порядок
- * обхода сохраняются сами. Стягивание ограничено нулём: угол может дойти
- * до центра, но не пройти его насквозь — иначе тело вывернулось бы
- * наизнанку.
- */
-const slopePlan = (plan: readonly Plan[], slope: Slope | undefined): readonly Plan[] => {
-  if (slope === undefined) return plan;
-
-  const inset = slope.inset ?? 0;
-  const forward = slope.forward ?? 0;
-  const side = slope.side ?? 0;
-  if (inset === 0 && forward === 0 && side === 0) return plan;
-
-  let centreForward = 0;
-  let centreSide = 0;
-  for (const point of plan) {
-    centreForward += point.forward;
-    centreSide += point.side;
-  }
-  centreForward /= plan.length;
-  centreSide /= plan.length;
-
-  return plan.map((point) => {
-    const alongForward = point.forward - centreForward;
-    const alongSide = point.side - centreSide;
-    const distance = Math.sqrt(alongForward * alongForward + alongSide * alongSide);
-    const keep = distance === 0 ? 0 : Math.max(0, 1 - inset / distance);
-
-    return {
-      forward: centreForward + alongForward * keep + forward,
-      side: centreSide + alongSide * keep + side,
-    };
-  });
-};
-
-/** Прямоугольный план: центр, длина вдоль хода, ширина поперёк. */
-const box = (forward: number, side: number, length: number, width: number): Plan[] => {
-  const halfLength = length / 2;
-  const halfWidth = width / 2;
-
-  return [
-    { forward: forward + halfLength, side: side + halfWidth },
-    { forward: forward + halfLength, side: side - halfWidth },
-    { forward: forward - halfLength, side: side - halfWidth },
-    { forward: forward - halfLength, side: side + halfWidth },
-  ];
-};
-
-/**
- * Трапеция: ширина спереди и сзади разная.
- *
- * Прямоугольником не выразить ни скошенный нос, ни развал бортов,
- * а именно они отличают технику от коробки.
- */
-const taper = (
-  forward: number,
-  side: number,
-  length: number,
-  frontWidth: number,
-  backWidth: number,
-): Plan[] => {
-  const halfLength = length / 2;
-
-  return [
-    { forward: forward + halfLength, side: side + frontWidth / 2 },
-    { forward: forward + halfLength, side: side - frontWidth / 2 },
-    { forward: forward - halfLength, side: side - backWidth / 2 },
-    { forward: forward - halfLength, side: side + backWidth / 2 },
-  ];
-};
-
-/**
- * Тело, выдавленное вверх: план внизу, он же со скосом наверху.
- *
- * Это по-прежнему самая частая форма — ею заданы корпус, башня, палуба,
- * щиток. Круглыми телами ниже задаются только те детали, у которых ось
- * лежит не вертикально.
- */
-const upright = (
-  label: string,
-  plan: readonly Plan[],
-  base: number,
-  height: number,
-  material: Material,
-  slope?: Slope,
-): Solid => ({
-  label,
-  bottom: plan.map((point) => ({ forward: point.forward, side: point.side, up: base })),
-  top: slopePlan(plan, slope).map((point) => ({
-    forward: point.forward,
-    side: point.side,
-    up: base + height,
-  })),
-  material,
-});
-
-/**
- * Углы правильного многоугольника.
- *
- * Первый угол сдвинут на половину шага намеренно. Без сдвига вершина
- * приходится точно на ось, и многоугольник читается звездой с торчащим
- * углом; со сдвигом на ось попадает середина грани.
- */
-const angles = (corners: number): number[] => {
-  const step = (Math.PI * 2) / corners;
-  const result: number[] = [];
-  for (let index = 0; index < corners; index += 1) result.push((index + 0.5) * step);
-
-  return result;
-};
-
-/** Вертикальный цилиндр: командирская башенка, катушка, хувер. */
-const column = (
-  label: string,
-  forward: number,
-  side: number,
-  base: number,
-  radius: number,
-  height: number,
-  material: Material,
-  corners = 14,
-): Solid => {
-  const ring = (up: number): Vec3[] =>
-    angles(corners).map((angle) => ({
-      forward: forward + Math.cos(angle) * radius,
-      side: side + Math.sin(angle) * radius,
-      up,
-    }));
-
-  return { label, bottom: ring(base), top: ring(base + height), material, round: true };
-};
-
-/**
- * Каток: цилиндр с осью поперёк хода.
- *
- * Прежде колесо было коробкой, выдавленной вверх, потому что другого
- * выдавливания в языке тел не существовало. Разница видна сразу: у катка
- * свет обходит обод кругом, и на шести пикселях он читается колесом,
- * а не кубиком.
- */
-const roller = (
-  label: string,
-  forward: number,
-  side: number,
-  up: number,
-  radius: number,
-  width: number,
-  material: Material,
-  corners = 14,
-): Solid => {
-  const ring = (at: number): Vec3[] =>
-    angles(corners).map((angle) => ({
-      forward: forward + Math.cos(angle) * radius,
-      side: at,
-      up: up + Math.sin(angle) * radius,
-    }));
-
-  return {
-    label,
-    bottom: ring(side - width / 2),
-    top: ring(side + width / 2),
-    material,
-    round: true,
-  };
-};
-
-/** Труба: цилиндр с осью вдоль хода. Ею заданы стволы и хвостовая балка. */
-const tube = (
-  label: string,
-  fromForward: number,
-  toForward: number,
-  side: number,
-  up: number,
-  radius: number,
-  material: Material,
-  corners = 12,
-): Solid => {
-  const ring = (at: number): Vec3[] =>
-    angles(corners).map((angle) => ({
-      forward: at,
-      side: side + Math.cos(angle) * radius,
-      up: up + Math.sin(angle) * radius,
-    }));
-
-  return { label, bottom: ring(fromForward), top: ring(toForward), material, round: true };
-};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Оружие
