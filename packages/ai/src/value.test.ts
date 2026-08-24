@@ -4,7 +4,6 @@ import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   NUKE_COST,
-  PPM_ONE,
   STRUCTURE_STATS,
   StructureKind,
   UNIT_STATS,
@@ -64,6 +63,7 @@ const withAssaults = (count: number): WorldState => {
     health: 100,
     facing: DIRECTION_SOUTH,
     readyAtTick: asTickNumber(0),
+    kills: 0,
   }));
 
   return { ...world, units };
@@ -177,6 +177,7 @@ describe('ядерный удар считается в энергии, со с�
         health: UNIT_STATS[UnitType.Assault].health,
         facing: DIRECTION_SOUTH,
         readyAtTick: asTickNumber(0),
+        kills: 0,
       })),
     ],
   });
@@ -234,7 +235,7 @@ describe('ядерный удар считается в энергии, со с�
           kind: StructureKind.TowerBasic,
           cell,
           health: STRUCTURE_STATS[StructureKind.TowerBasic].health,
-          growthPpm: PPM_ONE,
+          kills: 0,
           readyAtTick: asTickNumber(0),
           builtAtTick: asTickNumber(0),
         },

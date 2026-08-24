@@ -15,6 +15,8 @@ import {
   UpgradeStat,
   UpgradeTarget,
   applyPpm,
+  veteranStructurePpmOf,
+  veteranUnitPpmOf,
 } from '@td/shared';
 import type { UpgradeBranch } from '@td/shared';
 import type { PlayerState, UpgradeState } from './world.js';
@@ -257,14 +259,30 @@ export const statsOf = (table: readonly PlayerStats[], player: number): PlayerSt
 };
 
 /**
- * Максимальное здоровье башни с учётом её личного роста за убийства.
+ * Характеристики с учётом ветеранского ранга объекта.
  *
- * Рост и прокачка перемножаются, а не складываются: и то и другое —
- * множители, и башня, накопившая двукратный рост у игрока с двукратной
- * прокачкой, должна быть вчетверо крепче базовой.
+ * На вход идёт число убийств, а не готовый множитель: в состоянии мира
+ * хранится именно оно, а множитель выводится таблицей рангов. Так
+ * не остаётся места, где можно передать множитель, не соответствующий
+ * рангу.
+ *
+ * Ранг и прокачка перемножаются, а не складываются: и то и другое —
+ * множители, и объект пятого ранга у игрока с двукратной прокачкой
+ * должен быть вчетверо крепче базового.
+ *
+ * Ранг трогает только атаку и максимальное здоровье. Дальности, скорости
+ * и перезарядки здесь нет намеренно: вся расстановка стрелков держится
+ * на дальности, и ветеранская дальность выдавала бы клетку бесплатно,
+ * в обход цены, за которую эту клетку берут прокачкой.
  */
-export const structureMaxHealth = (baseline: StructureBaseline, growthPpm: number): number =>
-  applyPpm(baseline.health, growthPpm);
+export const structureMaxHealth = (baseline: StructureBaseline, kills: number): number =>
+  applyPpm(baseline.health, veteranStructurePpmOf(kills));
 
-export const structureAttack = (baseline: StructureBaseline, growthPpm: number): number =>
-  applyPpm(baseline.attack, growthPpm);
+export const structureAttack = (baseline: StructureBaseline, kills: number): number =>
+  applyPpm(baseline.attack, veteranStructurePpmOf(kills));
+
+export const unitMaxHealth = (baseline: UnitBaseline, kills: number): number =>
+  applyPpm(baseline.health, veteranUnitPpmOf(kills));
+
+export const unitAttack = (baseline: UnitBaseline, kills: number): number =>
+  applyPpm(baseline.attack, veteranUnitPpmOf(kills));

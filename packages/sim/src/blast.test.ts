@@ -6,7 +6,6 @@ import {
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
-  PPM_ONE,
   StructureKind,
   UnitType,
   asEntityId,
@@ -52,6 +51,7 @@ const unit = (id: number, owner: number, dx: number, dy: number, health: number)
   health,
   facing: DIRECTION_SOUTH,
   readyAtTick: asTickNumber(0),
+  kills: 0,
 });
 
 const structure = (
@@ -68,7 +68,7 @@ const structure = (
   kind,
   cell: cellOffset(dx, dy),
   health,
-  growthPpm: PPM_ONE,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(demolishAtTick),

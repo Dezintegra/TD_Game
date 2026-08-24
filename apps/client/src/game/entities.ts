@@ -9,10 +9,11 @@ import {
   UpgradeStat,
   unitsToCells,
   upgradeBranchIndex,
+  veteranRank,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import type { PlayerState, StructureState, WorldState } from '@td/sim';
-import { cellX, cellY, playerStats, structureMaxHealth } from '@td/sim';
+import { cellX, cellY, playerStats, structureMaxHealth, unitMaxHealth } from '@td/sim';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 import { tracePolygon } from './prism.js';
@@ -26,6 +27,8 @@ import {
   weaponTier,
 } from './models.js';
 import type { MachineSprites } from './machine-sprites.js';
+import { RANK_FIELD_HEIGHT_PX, drawRankInsignia } from './rank-insignia.js';
+import type { RankColors } from './rank-insignia.js';
 import { readinessStep } from './structures.js';
 import type { StructureSprites } from './structure-sprites.js';
 import { wallLinks } from './walls.js';
@@ -72,6 +75,8 @@ export interface EntityColors {
   readonly healthLow: number;
   /** Проблесковый огонь на мачте базы. */
   readonly beacon: number;
+  /** Погон: подложка, ёлочки, звёзды. Одни на обе стороны. */
+  readonly rank: RankColors;
 }
 
 export interface ViewBounds {
@@ -179,7 +184,7 @@ export const drawEntities = (
     const baseline = stats[structure.owner]?.structures[structure.kind];
     return baseline === undefined
       ? structure.health
-      : structureMaxHealth(baseline, structure.growthPpm);
+      : structureMaxHealth(baseline, structure.kills);
   };
 
   const queue: Drawable[] = [];
@@ -260,6 +265,7 @@ export const drawEntities = (
           maxHealth,
           colors,
         );
+        drawRank(graphics, x + 0.5, y + 0.5, baked.modelHeight, structure.kills, colors);
       },
     });
   }
@@ -273,7 +279,10 @@ export const drawEntities = (
     const y = cellsOf(unit.position.y);
     if (!visible(x, y)) continue;
 
-    const maxHealth = stats[unit.owner]?.units[unit.unitType].health ?? unit.health;
+    // Максимум машины считается с её рангом: ветеран крепче базового,
+    // и без ранга полоса здоровья показывала бы его вечно повреждённым.
+    const baseline = stats[unit.owner]?.units[unit.unitType];
+    const maxHealth = baseline === undefined ? unit.health : unitMaxHealth(baseline, unit.kills);
     const side = unit.owner === localPlayer ? SIDE_SELF : SIDE_ENEMY;
     const tier = tiers[unit.owner]?.[unit.unitType];
 
@@ -296,8 +305,13 @@ export const drawEntities = (
         layers.sprite(band, mirror, anchor.x, anchor.y + lift * MIRROR_SQUASH);
         layers.sprite(band, body, anchor.x, anchor.y - lift);
         // Полоса здоровья поднимается вместе с машиной, иначе повиснет
-        // отдельно от неё.
+        // отдельно от неё. Погон — по той же причине и по той же высоте.
+        //
+        // В отражение он не идёт намеренно: отражение показывает днище,
+        // а погона снизу не видно. Вторая золотая звезда под машиной
+        // читалась бы вторым предметом, а не бликом.
         drawHealthBar(graphics, x, y, body.modelHeight + altitude, unit.health, maxHealth, colors);
+        drawRank(graphics, x, y, body.modelHeight + altitude, unit.kills, colors);
       },
     });
   }
@@ -435,6 +449,54 @@ const drawHealthBar = (
   graphics
     .rect(left, top, HEALTH_BAR_WIDTH_PX * fraction, HEALTH_BAR_HEIGHT_PX)
     .fill({ color: fraction <= HEALTH_LOW_FRACTION ? colors.healthLow : colors.health });
+};
+
+/** Просвет между полосой здоровья и погоном. */
+const RANK_GAP_PX = 4;
+
+/**
+ * Насколько погон сдвинут влево от центра объекта.
+ *
+ * Полоса здоровья висит по центру и занимает по тринадцать пикселей
+ * в каждую сторону. Девять пикселей влево уводят погон с её оси: даже
+ * когда объект повреждён, знак и полоса читаются порознь, а не одной
+ * кучей над машиной.
+ */
+const RANK_OFFSET_X_PX = 12;
+
+/**
+ * Погон над объектом.
+ *
+ * Точка отсчёта та же, что у полосы здоровья, — иначе знак и полоса
+ * разъезжались бы у объектов разной высоты. Погон поднят над полосой
+ * и сдвинут влево от центра.
+ *
+ * Рисуется в тот же `Graphics` полосы глубины, что и всё тело: погон
+ * обязан прятаться за ближними машинами вместе со своим носителем.
+ * Всплыви он поверх них — и стало бы непонятно, чей он, а весь смысл
+ * знака в том, чтобы отвечать на вопрос «какая из этих башен опасна».
+ */
+const drawRank = (
+  graphics: Graphics,
+  x: number,
+  y: number,
+  height: number,
+  kills: number,
+  colors: EntityColors,
+): void => {
+  const rank = veteranRank(kills);
+  if (rank <= 0) return;
+
+  const anchor = worldToScreen(x, y);
+  const barTop = anchor.y - height * ELEVATION_PX_PER_CELL - 10;
+
+  drawRankInsignia(
+    graphics,
+    anchor.x - RANK_OFFSET_X_PX,
+    barTop - RANK_GAP_PX - RANK_FIELD_HEIGHT_PX / 2,
+    rank,
+    colors.rank,
+  );
 };
 
 const BASE_BAR_WIDTH_PX = 76;

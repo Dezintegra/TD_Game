@@ -12,7 +12,6 @@ import {
   MAP_WIDTH_CELLS,
   NUKE_COST,
   NUKE_DELAY_TICKS,
-  PPM_ONE,
   PRODUCTION_QUEUE_CAP,
   STRUCTURE_STATS,
   StructureKind,
@@ -388,7 +387,7 @@ describe('строительство', () => {
         kind: StructureKind.Wall,
         cell,
         health: STRUCTURE_STATS[StructureKind.Wall].health,
-        growthPpm: PPM_ONE,
+        kills: 0,
         readyAtTick: asTickNumber(0),
         builtAtTick: asTickNumber(0),
         demolishAtTick: asTickNumber(0),
@@ -545,6 +544,7 @@ describe('строительство', () => {
           health: 100,
           facing: DIRECTION_SOUTH,
           readyAtTick: asTickNumber(0),
+          kills: 0,
         },
       ],
     };
@@ -734,12 +734,40 @@ describe('ядерный удар', () => {
         position: { x: epicentre.x + owner * 1000, y: epicentre.y },
         health: 100,
         readyAtTick: asTickNumber(0),
+        kills: 0,
       })),
     };
 
     const after = run(withUnits, NUKE_DELAY_TICKS + 2, [nuke(0, CENTRE)]);
 
     expect(after.units).toHaveLength(0);
+  });
+
+  it('убитые ударом рангов никому не приносят', () => {
+    // У взрыва нет стрелка: он идёт мимо `dealDamage`, а значит,
+    // и мимо награды. Правило записано тестом, потому что соблазн
+    // «раздать ранги за ядерку тому, кто её запустил» возникнет снова.
+    const world = richWorld();
+    const epicentre = cellCentre(CENTRE);
+
+    const withUnits: WorldState = {
+      ...world,
+      units: [0, 1, 2, 3].map((index) => ({
+        id: asEntityId(200 + index),
+        owner: asPlayerId(index % 2),
+        unitType: UnitType.Assault,
+        position: { x: epicentre.x + index * 500, y: epicentre.y },
+        health: 100,
+        facing: 1,
+        readyAtTick: asTickNumber(0),
+        kills: 0,
+      })),
+    };
+
+    const after = run(withUnits, NUKE_DELAY_TICKS + 2, [nuke(0, CENTRE)]);
+
+    expect(after.units).toHaveLength(0);
+    expect(after.structures.every((entry) => entry.kills === 0)).toBe(true);
   });
 
   it('отклоняется при наведении рядом с базой', () => {
@@ -850,6 +878,7 @@ const withUnitAt = (
       position: cellCentre(cell),
       health,
       readyAtTick: asTickNumber(0),
+      kills: 0,
     },
   ],
 });
@@ -940,7 +969,7 @@ const wallAt = (cell: number, owner: number, id: number) => ({
   kind: StructureKind.Wall,
   cell,
   health: 10_000,
-  growthPpm: 1_000_000,
+  kills: 0,
   readyAtTick: asTickNumber(0),
   builtAtTick: asTickNumber(0),
   demolishAtTick: asTickNumber(0),

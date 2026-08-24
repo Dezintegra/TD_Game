@@ -212,6 +212,13 @@ const readEntityColors = (): EntityColors => ({
   health: token('--td-health-full', 0x00ff29),
   healthLow: token('--td-health-low', 0xff5c5c),
   beacon: token('--td-beacon', 0xff3b30),
+  // Погон. Цвета одни на обе стороны: на нём цвет занят переходом
+  // «сталь → золото», а не принадлежностью.
+  rank: {
+    field: token('--td-rank-field', 0x14171a),
+    stripe: token('--td-rank-stripe', 0xcfd6da),
+    gold: token('--td-rank-gold', 0xffc83d),
+  },
 });
 
 /**

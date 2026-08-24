@@ -64,7 +64,8 @@ export interface WorkingStructure {
   kind: StructureKind;
   cell: number;
   health: number;
-  growthPpm: number;
+  /** Набранные убийства. Ранг выводится из них — см. StructureState. */
+  kills: number;
   readyAtTick: TickNumber;
   builtAtTick: TickNumber;
   demolishAtTick: TickNumber;
@@ -83,6 +84,8 @@ export interface WorkingUnit {
   /** Румб, в который повёрнута машина. Ноля здесь не бывает — см. UnitState. */
   facing: number;
   readyAtTick: TickNumber;
+  /** Набранные убийства. Ранг выводится из них — см. UnitState. */
+  kills: number;
   alive: boolean;
   /**
    * Постройка, перегородившая юниту следующий шаг, либо -1.
@@ -171,7 +174,7 @@ export const toWorking = (state: WorldState): Working => ({
     kind: structure.kind,
     cell: structure.cell,
     health: structure.health,
-    growthPpm: structure.growthPpm,
+    kills: structure.kills,
     readyAtTick: structure.readyAtTick,
     builtAtTick: structure.builtAtTick,
     demolishAtTick: structure.demolishAtTick,
@@ -187,6 +190,7 @@ export const toWorking = (state: WorldState): Working => ({
     health: unit.health,
     facing: unit.facing,
     readyAtTick: unit.readyAtTick,
+    kills: unit.kills,
     alive: true,
     blockedBy: -1,
   })),
@@ -343,7 +347,7 @@ export const fromWorking = (working: Working): WorldState => ({
       kind: structure.kind,
       cell: structure.cell,
       health: structure.health,
-      growthPpm: structure.growthPpm,
+      kills: structure.kills,
       readyAtTick: structure.readyAtTick,
       builtAtTick: structure.builtAtTick,
       demolishAtTick: structure.demolishAtTick,
@@ -359,6 +363,7 @@ export const fromWorking = (working: Working): WorldState => ({
       health: unit.health,
       facing: unit.facing,
       readyAtTick: unit.readyAtTick,
+      kills: unit.kills,
     })),
   generals: working.generals.map((general) => ({
     owner: general.owner,

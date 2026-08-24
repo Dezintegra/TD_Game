@@ -214,8 +214,18 @@ export interface SelectionView {
   readonly own: boolean;
   readonly health: number;
   readonly maxHealth: number;
-  /** Личный рост за убийства, в процентах сверх базовой силы. */
-  readonly growthPercent: number;
+  /**
+   * Постройка вообще способна набирать ранг. У базы и стены — нет,
+   * и строки ранга им показывать не надо: «Ранг 0» читалось бы как
+   * «ещё не набран», хотя набрать его здесь нельзя.
+   */
+  readonly ranked: boolean;
+  /** Ветеранский ранг: от нуля до пяти. */
+  readonly rank: number;
+  /** Сколько убийств набрано. Растёт и после того, как ранг упёрся. */
+  readonly kills: number;
+  /** Сколько убийств до следующего ранга. Ноль — ранг высший. */
+  readonly killsToNextRank: number;
   readonly attack: number;
   /** Дальность в клетках. Ноль означает, что постройка не стреляет. */
   readonly rangeCells: number;
