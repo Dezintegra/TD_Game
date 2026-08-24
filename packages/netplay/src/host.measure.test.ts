@@ -65,6 +65,7 @@ describe('приборы ведущего', () => {
       step: (run) => run(),
       advanced: (ticks) => counted.push(ticks),
       debt: () => undefined,
+      sent: () => undefined,
     });
     const without = play();
 
@@ -84,9 +85,84 @@ describe('приборы ведущего', () => {
       step: (run) => run(),
       advanced: () => undefined,
       debt: () => undefined,
+      sent: () => undefined,
     });
 
     expect(passthrough.tick).toBeGreaterThan(0);
     expect(passthrough.sum).toBe(play().sum);
+  });
+  it('промежуток между отправками равен тому, что показали часы', () => {
+    // Прибор канала, а не счёта: ровный ряд здесь при рваном приходе
+    // у игрока означает, что рвано доставляет сеть. Поэтому проверяется
+    // не «величина правдоподобна», а «величина равна ходу часов»:
+    // прибор, живущий своей жизнью, доказывал бы что угодно.
+    //
+    // Часы двигаются миллисекундными шажками, а не сразу на тик:
+    // при шаге ровно в тик ведущий считает по нескольку тиков за проход
+    // и мерить становится нечего.
+    const clock = createClock();
+    const gaps: number[] = [];
+    const host = createMatchHost({
+      seed: SEED,
+      now: () => clock.now(),
+      send: () => undefined,
+      measure: {
+        step: (run) => run(),
+        advanced: () => undefined,
+        debt: () => undefined,
+        sent: (gapMs) => gaps.push(gapMs),
+      },
+    });
+
+    host.join(P0);
+    host.join(P1);
+
+    for (let ms = 0; ms < MS_PER_TICK * 5; ms += 1) {
+      clock.advance(1);
+      host.advance();
+    }
+
+    // Пять тиков — четыре промежутка: первая отправка промежутка
+    // не даёт, сравнивать не с чем.
+    expect(gaps.length).toBe(host.world.tick - 1);
+    // Каждый промежуток — длительность тика с точностью до шага часов.
+    for (const gap of gaps) {
+      expect(gap).toBeGreaterThanOrEqual(MS_PER_TICK - 1);
+      expect(gap).toBeLessThanOrEqual(MS_PER_TICK + 1);
+    }
+  });
+
+  it('догон виден нулевыми промежутками', () => {
+    // Если сервер простоял и потом посчитал несколько тиков за один
+    // проход, кадры уйдут один за другим в ту же миллисекунду. Ряд
+    // обязан это показать: пачка на выходе сервера и пачка, собравшаяся
+    // в канале, — разные беды с разным лечением, и различать их нужно
+    // именно здесь.
+    const clock = createClock();
+    const gaps: number[] = [];
+    const host = createMatchHost({
+      seed: SEED,
+      now: () => clock.now(),
+      send: () => undefined,
+      measure: {
+        step: (run) => run(),
+        advanced: () => undefined,
+        debt: () => undefined,
+        sent: (gapMs) => gaps.push(gapMs),
+      },
+    });
+
+    host.join(P0);
+    host.join(P1);
+
+    // Одна заминка на четыре тика с хвостиком — и все четыре
+    // считаются разом. Хвостик не украшение: длительность тика
+    // не выражается двоичной дробью, и ровно четыре тика по часам
+    // оказались бы на волосок меньше четырёх тиков по счёту.
+    clock.advance(MS_PER_TICK * 4 + 1);
+    host.advance();
+
+    expect(host.world.tick).toBe(4);
+    expect(gaps).toEqual([0, 0, 0]);
   });
 });
