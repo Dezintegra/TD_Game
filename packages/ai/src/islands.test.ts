@@ -90,9 +90,7 @@ describe('островной профиль', () => {
   });
 
   it('не заказывает ни одного юнита', () => {
-    const trained = played.commands.filter(
-      (command) => command.kind === CommandKind.TrainUnit,
-    );
+    const trained = played.commands.filter((command) => command.kind === CommandKind.TrainUnit);
 
     expect(trained).toHaveLength(0);
   });

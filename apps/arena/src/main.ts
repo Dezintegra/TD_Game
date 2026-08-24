@@ -101,7 +101,8 @@ const numberFlag = (flags: ReadonlyMap<string, string>, name: string, fallback: 
   if (raw === undefined) return fallback;
 
   const value = Number(raw);
-  if (!Number.isFinite(value)) throw new Error(`флаг --${name} должен быть числом, получено «${raw}»`);
+  if (!Number.isFinite(value))
+    throw new Error(`флаг --${name} должен быть числом, получено «${raw}»`);
 
   return value;
 };
@@ -113,11 +114,7 @@ const numberFlag = (flags: ReadonlyMap<string, string>, name: string, fallback: 
 const matchIdOf = (seed: number, profiles: readonly string[]): string =>
   `s${String(seed)}-${profiles.join('-vs-')}`;
 
-const runOne = (
-  seed: number,
-  profiles: readonly string[],
-  seconds: number | undefined,
-): void => {
+const runOne = (seed: number, profiles: readonly string[], seconds: number | undefined): void => {
   const matchId = matchIdOf(seed, profiles);
   const log = createLogWriter(join(LOG_DIR, `${matchId}.jsonl`));
 

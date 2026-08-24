@@ -221,15 +221,13 @@ describe('след выстрела', () => {
 
   it('снайпер и снайперская башня помечают выстрел лучом', () => {
     expect(weaponOf(duel([], [unit(60, 0, UnitType.Sniper, 0, 0, 100)]), 0)).toBe(ShotWeapon.Beam);
-    expect(
-      weaponOf(duel([structure(50, 0, StructureKind.TowerSniper, 0, 0, 200)], []), 0),
-    ).toBe(ShotWeapon.Beam);
+    expect(weaponOf(duel([structure(50, 0, StructureKind.TowerSniper, 0, 0, 200)], []), 0)).toBe(
+      ShotWeapon.Beam,
+    );
   });
 
   it('Тесла помечает выстрел разрядом', () => {
-    expect(weaponOf(duel([], [unit(60, 0, UnitType.Tesla, 0, 0, 100)]), 0)).toBe(
-      ShotWeapon.Arc,
-    );
+    expect(weaponOf(duel([], [unit(60, 0, UnitType.Tesla, 0, 0, 100)]), 0)).toBe(ShotWeapon.Arc);
   });
 
   it('штурмовик и базовая башня помечают выстрел трассером', () => {
@@ -260,9 +258,10 @@ describe('след выстрела', () => {
 
   it('прочие стрелки бьют по оси, без борта', () => {
     // Борт есть только у ракеты: у неё под него нарисованы пилоны.
-    const world = duel([structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)], [
-      unit(60, 0, UnitType.Sniper, 0, 0, 10_000),
-    ]);
+    const world = duel(
+      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)],
+      [unit(60, 0, UnitType.Sniper, 0, 0, 10_000)],
+    );
 
     const sides = world.shots
       .filter((shot) => shot.weapon !== ShotWeapon.Missile)

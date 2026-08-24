@@ -95,9 +95,7 @@ describe('цель войска выбирается по вероятному �
     const far = cells[Math.floor(cells.length * 0.8)];
     if (far === undefined) throw new Error('на пути нет клеток');
 
-    const withTower = withStructures(world, [
-      enemyStructure(far, StructureKind.TowerBasic, 9001),
-    ]);
+    const withTower = withStructures(world, [enemyStructure(far, StructureKind.TowerBasic, 9001)]);
 
     expect(targetCell(withTower)).toBe(far);
     expect(targetCell(withTower)).not.toBe(enemyBaseCell(world));

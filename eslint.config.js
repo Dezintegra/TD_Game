@@ -139,7 +139,10 @@ export default tseslint.config(
         'error',
         { name: 'WebSocket', message: 'Транспорт передаётся снаружи, а не берётся из окружения.' },
         { name: 'fetch', message: 'Транспорт передаётся снаружи, а не берётся из окружения.' },
-        { name: 'EventSource', message: 'Транспорт передаётся снаружи, а не берётся из окружения.' },
+        {
+          name: 'EventSource',
+          message: 'Транспорт передаётся снаружи, а не берётся из окружения.',
+        },
         { name: 'window', message: 'Пакет изоморфный: он работает и в Node.js.' },
         { name: 'document', message: 'Пакет изоморфный: он работает и в Node.js.' },
       ],
@@ -233,7 +236,14 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['@td/server', '**/apps/server/**', '@td/arena', '**/apps/arena/**', 'fastify', 'ws'],
+              group: [
+                '@td/server',
+                '**/apps/server/**',
+                '@td/arena',
+                '**/apps/arena/**',
+                'fastify',
+                'ws',
+              ],
               message: 'Клиент не может зависеть от сервера, арены и их стека.',
             },
           ],

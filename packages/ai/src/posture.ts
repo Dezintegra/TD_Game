@@ -246,7 +246,8 @@ export const incomingAt = (
     if (unit.owner === me) continue;
 
     const baseline = enemyStats.units[unit.unitType];
-    const reach = baseline.range + approachDistance(unit, point, enemyTarget, baseline.speed, withinTicks);
+    const reach =
+      baseline.range + approachDistance(unit, point, enemyTarget, baseline.speed, withinTicks);
     if (distanceSquared(unit.position, point) > reach * reach) continue;
 
     fromUnits += baseline.attack / baseline.cooldownTicks;
@@ -310,11 +311,7 @@ const forEachInDisc = (cell: number, rangeCells: number, visit: (cell: number) =
  * больше трёх башен рядом с генералом» врал: три башни в скальном горле
  * и три в чистом поле накрывают совершенно разное.
  */
-export const coveredCells = (
-  world: WorldState,
-  me: PlayerId,
-  myStats: PlayerStats,
-): Uint8Array => {
+export const coveredCells = (world: WorldState, me: PlayerId, myStats: PlayerStats): Uint8Array => {
   const covered = new Uint8Array(MAP_CELL_COUNT);
 
   for (const structure of world.structures) {
@@ -643,11 +640,7 @@ const pressureOnHome = (situation: Situation): number => {
  * порядок в конце разворачивается: вызывающему нужна дорога в ту сторону,
  * в которую он пойдёт, — от неё зависит, когда он окажется в каждой точке.
  */
-export const probeRoute = (
-  reach: Int32Array,
-  from: number,
-  probes: number,
-): readonly number[] => {
+export const probeRoute = (reach: Int32Array, from: number, probes: number): readonly number[] => {
   if (probes <= 0) return [];
 
   const route: number[] = [];
@@ -719,11 +712,7 @@ export const probeRoute = (
  * дойдёт: за это время достроятся башни и подойдут войска.
  */
 const roadDamage = (situation: Situation, frontier: Frontier, travelTicks: number): number => {
-  const probes = probeRoute(
-    situation.reach,
-    frontier.cell,
-    situation.profile.posture.pathProbes,
-  );
+  const probes = probeRoute(situation.reach, frontier.cell, situation.profile.posture.pathProbes);
   if (probes.length === 0 || travelTicks <= 0) return 0;
 
   const perSegment = travelTicks / probes.length;

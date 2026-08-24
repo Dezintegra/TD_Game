@@ -1,5 +1,18 @@
 name: CI
 
+# Проверки живут здесь, а не на машине разработчика.
+#
+# Причина не в удобстве, а в разделении труда: работа над задачей идёт
+# в отдельном рабочем дереве на слабом ноутбуке, и гонять там полный
+# `pnpm verify` — значит занимать машину на минуты ради ответа, который
+# runner даёт бесплатно и параллельно. Поэтому задача считается сделанной
+# тогда, когда зелено ЗДЕСЬ, а не тогда, когда «у меня локально прошло».
+#
+# Задачи намеренно разбиты и идут одновременно: репозиторий публичный,
+# минуты на обычных runner'ах не ограничены, а вот время ожидания
+# оплачивает человек. Общее время прогона равно самой долгой задаче,
+# а не их сумме.
+
 on:
   push:
     branches: [main]
@@ -11,13 +24,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  static:
+    name: формат и линт
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,13 +40,14 @@ jobs:
       # как сборка разойдётся с локальной машиной разработчика.
       - run: pnpm install --frozen-lockfile
 
+      # Обе проверки читают исходники и ничего не собирают, поэтому стоят
+      # в одной задаче: разносить их значило бы дважды ставить зависимости
+      # ради двух команд, каждая из которых занимает секунды.
       - run: pnpm format:check
       - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
 
-  e2e:
+  typecheck:
+    name: типы
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +58,66 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      # Сборка зависимостей отдельным шагом не нужна: задача `typecheck`
+      # в turbo.json объявлена через `dependsOn: ["^build"]`, и turbo
+      # соберёт всё, что требуется, сам.
+      - run: pnpm typecheck
+
+  test:
+    name: модульные тесты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # А здесь сборка обязательна, и это не перестраховка. Пакеты
+      # экспортируются только из `dist` (см. "exports" в их package.json),
+      # `dist` лежит в .gitignore, а корневой `pnpm test` зовёт vitest
+      # напрямую, минуя turbo, — то есть сам ничего не соберёт.
+      - run: pnpm build
+      - run: pnpm test
+
+  build:
+    name: сборка
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+  e2e:
+    name: сквозные проверки
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Без этой строки прогон падал. Playwright поднимает сервер командой
+      # `tsx watch src/main.ts`, тот импортирует `@td/protocol`, а импорт
+      # ведёт в `dist`, которого на чистой выкладке нет:
+      # `Cannot find module '.../@td/protocol/dist/index.js'`, следом
+      # `Timed out waiting 60000ms from config.webServer`.
+      - run: pnpm build
+
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm e2e
 

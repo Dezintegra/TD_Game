@@ -198,12 +198,7 @@ const octagon = (radius: number): LocalPoint[] => {
  * пикселей неотличима от шва, а наклон читается сразу и означает ровно
  * то, что означает на настоящей технике, — «не подходи».
  */
-const hazardStripes = (
-  radius: number,
-  bottom: number,
-  top: number,
-  count: number,
-): Decal[] => {
+const hazardStripes = (radius: number, bottom: number, top: number, count: number): Decal[] => {
   const apothem = radius * OCTAGON_APOTHEM;
   const reach = radius * OCTAGON_HALF_FACE * 0.92;
   const width = (reach * 2) / count;

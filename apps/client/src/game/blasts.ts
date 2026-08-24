@@ -14,6 +14,7 @@ import type { BlastState, NukeState, WorldState } from '@td/sim';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 import type { ViewBounds } from './entities.js';
+import { BASE_LAUNCH_POINT } from './base-structure.js';
 import { GENERAL_ALTITUDE, UNIT_ALTITUDE } from './models.js';
 import { blend } from './prism.js';
 import { hashOf, noiseFrom } from './noise.js';
@@ -1022,48 +1023,140 @@ const drawScreenFlash = (
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * С какой высоты приходит ракета, в клетках.
+ * Доля полёта, на которой ракета проходит вершину дуги.
  *
- * Двенадцать клеток — это около шестисот пикселей над эпицентром: чуть выше
- * верхней кромки окна, когда цель посреди экрана. Ровно то, что нужно.
- * Ракета обязана прилететь, а не проявиться на месте, — но и висеть
- * за кадром почти всю задержку она не должна: первая версия стартовала
- * с тридцати клеток, и две трети полёта игрок видел один только след.
+ * Не половина, хотя симметричная парабола честнее физически. Половина
+ * отдала бы снижению полторы секунды из трёх, а обороняющийся читает
+ * угрозу именно по снижающейся ракете: пока она идёт вверх, непонятно,
+ * куда именно. Треть оставляет на снижение семьдесят процентов полёта.
  */
-const MISSILE_ALTITUDE_CELLS = 12;
+const MISSILE_APEX_SHARE = 0.3;
 
-/** Насколько в стороне от цели ракета входит в кадр. */
-const MISSILE_LEAD_CELLS = 9;
+/**
+ * Высота вершины дуги, в клетках.
+ *
+ * Ракета обязана уйти ЗА ВЕРХНЮЮ КРОМКУ ОКНА и вернуться из-за неё
+ * над целью. Двадцать две клетки — это больше тысячи ста пикселей над
+ * точкой на земле: выше половины окна даже на высоком мониторе, когда
+ * та точка посреди экрана. Всё, что происходит выше, игрок не видит,
+ * и туда-то и убран перелёт через карту.
+ *
+ * Мерить приходится окном, а не картой: «за кромкой» — свойство экрана,
+ * и от дальности удара оно не зависит вовсе.
+ */
+const MISSILE_APEX_CELLS = 22;
 
-/** Сколько звеньев в дымном следе и какой шаг между ними. */
-const TRAIL_STEPS = 14;
-const TRAIL_STEP = 0.03;
+/** Сколько звеньев в дымном следе от точки схода до ракеты. */
+const TRAIL_STEPS = 16;
+
+/** Какую долю полёта занимает горящий участок у сопла и сколько в нём звеньев. */
+const BURN_SHARE = 0.05;
+const BURN_STEPS = 4;
+
+/** Насколько отступать вперёд и назад, определяя направление корпуса. */
+const HEADING_STEP = 0.01;
+
+export interface FlightPoint {
+  readonly x: number;
+  readonly y: number;
+  /** Высота над землёй, в клетках. */
+  readonly height: number;
+}
 
 /**
  * Положение ракеты в мире и её высота на заданной доле пути.
  *
+ * Полёт распадается на три части, и средняя игроку не видна:
+ * ракета уходит с площадки почти отвесно вверх, за кромкой окна
+ * переносится через карту и отвесно же входит обратно в кадр над целью.
+ *
+ * Перенос убран наверх намеренно. Полёт вдоль земли пришлось бы смотреть
+ * поперёк всей карты, а игрок в эти три секунды смотрит либо на свою
+ * базу, либо на место удара. Обе части, которые он и правда видит, —
+ * старт и падение, — так получают всё время, а не мелькают по краю кадра.
+ *
  * Наружу вынесено по той же причине, что и выкладка частиц: экранная `y`
- * несёт и высоту, и положение на плоскости, поэтому «ракета снизилась»
- * по нарисованной точке не проверить — заход сбоку двигает её ровно так же.
+ * несёт и высоту, и положение на плоскости, поэтому «ракета поднялась»
+ * по нарисованной точке не проверить — отлёт к северу двигает её
+ * ровно так же.
  */
 export const missileFlight = (
+  launch: FlightPoint,
   targetX: number,
   targetY: number,
-  fromX: number,
-  fromY: number,
   progress: number,
-): { readonly x: number; readonly y: number; readonly height: number } => {
+): FlightPoint => {
   const clamped = Math.max(0, Math.min(1, progress));
-  const lateral = MISSILE_LEAD_CELLS * (1 - clamped) ** 1.5;
+
+  // Сглаживающая ступенька: скорость по горизонтали обнуляется на обоих
+  // концах и наибольшая посередине. То есть у площадки и над целью
+  // ракета идёт отвесно, а через карту переносится там, где не видна.
+  //
+  // Отвесность обычно и порицают — растущая на месте точка не сообщает
+  // направления. Но здесь ракета не возникает над целью, а ВХОДИТ в кадр
+  // сверху, ведя за собой след: направление сообщает появление, а не наклон.
+  const share = clamped * clamped * (3 - 2 * clamped);
 
   return {
-    x: targetX + fromX * lateral,
-    y: targetY + fromY * lateral,
-    // Квадрат, а не корень: ракета разгоняется к земле. Обратный порядок
-    // дал бы торможение перед ударом, то есть посадку.
-    height: MISSILE_ALTITUDE_CELLS * (1 - clamped * clamped),
+    x: launch.x + (targetX - launch.x) * share,
+    y: launch.y + (targetY - launch.y) * share,
+    height: arcHeight(launch.height, MISSILE_APEX_CELLS, clamped),
   };
 };
+
+const arcHeight = (launchHeight: number, apex: number, progress: number): number => {
+  if (progress <= MISSILE_APEX_SHARE) {
+    // Замедляющийся подъём: ракета уходит с направляющей рывком и теряет
+    // скорость к вершине. Это тяготение, а не сглаживание ради вида.
+    const climb = 1 - (1 - progress / MISSILE_APEX_SHARE) ** 2;
+
+    return launchHeight + (apex - launchHeight) * climb;
+  }
+
+  // Квадрат, а не корень: ракета разгоняется к земле. Обратный порядок
+  // дал бы торможение перед ударом, то есть посадку.
+  const fall = (progress - MISSILE_APEX_SHARE) / (1 - MISSILE_APEX_SHARE);
+
+  return apex * (1 - fall * fall);
+};
+
+/**
+ * Откуда уходит ракета: срез пусковой установки на базе владельца.
+ *
+ * Точка привязки модели базы — УЗЕЛ СЕТКИ, то есть угол клетки базы,
+ * а не её середина, поэтому местные координаты установки складываются
+ * с клеткой напрямую, без привычных полклетки. Ровно так же считает
+ * `baseBeaconPoint` для проблескового огня на мачте.
+ *
+ * Базы может не найтись только в отрыве от матча — в стенде или
+ * на разобранной карте. Тогда ракета приходит по диагонали с северо-запада:
+ * это не облик, а страховка от полёта нулевой длины.
+ */
+const launchPoint = (
+  world: WorldState,
+  nuke: NukeState,
+  targetX: number,
+  targetY: number,
+): FlightPoint => {
+  const baseCell = world.map.baseCells[nuke.owner];
+
+  if (baseCell === undefined) {
+    return {
+      x: targetX - MISSILE_ORPHAN_SPAN,
+      y: targetY - MISSILE_ORPHAN_SPAN,
+      height: BASE_LAUNCH_POINT.z,
+    };
+  }
+
+  return {
+    x: cellX(baseCell) + BASE_LAUNCH_POINT.x,
+    y: cellY(baseCell) + BASE_LAUNCH_POINT.y,
+    height: BASE_LAUNCH_POINT.z,
+  };
+};
+
+/** Откуда приходит ракета, если базы владельца на карте нет. */
+const MISSILE_ORPHAN_SPAN = 10;
 
 const drawMissile = (
   layers: BlastLayers,
@@ -1076,64 +1169,69 @@ const drawMissile = (
   const targetX = cellX(nuke.cell) + 0.5;
   const targetY = cellY(nuke.cell) + 0.5;
 
-  // Заход со стороны базы владельца. Отвесное падение в этой проекции
-  // выглядит точкой, растущей на месте, и не сообщает ни направления,
-  // ни того, чья это ракета.
-  const baseCell = world.map.baseCells[nuke.owner] ?? nuke.cell;
-  const awayX = cellX(baseCell) + 0.5 - targetX;
-  const awayY = cellY(baseCell) + 0.5 - targetY;
-  const span = Math.hypot(awayX, awayY) || 1;
-  const fromX = awayX / span;
-  const fromY = awayY / span;
+  // Ракета уходит с пусковой установки своей базы, а не возникает в небе.
+  // Точка схода отвечает на вопрос «чья ракета» без всякого цвета:
+  // корпус в тринадцать пикселей цветом не читается.
+  const launch = launchPoint(world, nuke, targetX, targetY);
 
   const progress = Math.max(0, Math.min(1, 1 - (nuke.detonateAtTick - time) / NUKE_DELAY_TICKS));
   const accent = nuke.owner === localPlayer ? colors.self : colors.enemy;
 
-  const here = missileFlight(targetX, targetY, fromX, fromY, progress);
+  /** Экранная точка на заданной доле пути. Доля прижимается внутри полёта. */
+  const at = (share: number): Point => {
+    const point = missileFlight(launch, targetX, targetY, share);
+
+    return screenAt(point.x, point.y, point.height);
+  };
+
+  const here = missileFlight(launch, targetX, targetY, progress);
   const nose = screenAt(here.x, here.y, here.height);
 
-  // След: ломаная по прежним положениям. Она же и показывает, откуда
-  // ракета пришла, — в начале полёта сама ракета ещё за кромкой экрана.
+  // След тянется от точки схода до самой ракеты, а не коротким хвостом
+  // за ней. Это и есть главный носитель сообщения «выпущено отсюда»:
+  // ракета мелкая, а след протянут через полкарты и упирается в площадку.
   //
   // Каждое звено обводится отдельно: у следа сужающаяся ширина и убывающая
   // заметность, а одной обводкой их не задать. Звеньев полтора десятка,
   // и ракета в матче одна — это не тот случай, где экономят вызовы.
   for (let step = 1; step <= TRAIL_STEPS; step += 1) {
-    const past = missileFlight(targetX, targetY, fromX, fromY, progress - step * TRAIL_STEP);
-    const point = screenAt(past.x, past.y, past.height);
-    const before = missileFlight(
-      targetX,
-      targetY,
-      fromX,
-      fromY,
-      progress - (step - 1) * TRAIL_STEP,
-    );
-    const previous = screenAt(before.x, before.y, before.height);
+    const near = at(progress * (1 - (step - 1) / TRAIL_STEPS));
+    const far = at(progress * (1 - step / TRAIL_STEPS));
     const left = 1 - step / TRAIL_STEPS;
 
-    layers.debris.moveTo(previous.x, previous.y).lineTo(point.x, point.y);
+    layers.debris.moveTo(near.x, near.y).lineTo(far.x, far.y);
     layers.debris.stroke({ width: 3 + 9 * left, color: colors.smoke, alpha: 0.75 * left });
-
-    // Ближние к соплу звенья ещё горят. Дальше по следу остаётся один дым.
-    if (step > 4) continue;
-
-    layers.glow.moveTo(previous.x, previous.y).lineTo(point.x, point.y);
-    layers.glow.stroke({ width: 2 + 5 * left, color: colors.fire, alpha: 0.5 * (1 - step / 5) });
   }
 
-  // Тонкая нить от ракеты к точке удара: пока ракета высоко, только она
-  // и связывает её с местом на земле.
-  const impact = screenAt(targetX, targetY, 0);
+  // Горящий участок у сопла. Задан долей полёта, а не номером звена:
+  // след растягивается вместе с прогрессом, и факел, привязанный
+  // к звену, к концу полёта растянулся бы на четверть карты.
+  for (let step = 1; step <= BURN_STEPS; step += 1) {
+    const near = at(progress - ((step - 1) * BURN_SHARE) / BURN_STEPS);
+    const far = at(progress - (step * BURN_SHARE) / BURN_STEPS);
+    const left = 1 - step / BURN_STEPS;
+
+    layers.glow.moveTo(near.x, near.y).lineTo(far.x, far.y);
+    layers.glow.stroke({ width: 2 + 5 * left, color: colors.fire, alpha: 0.5 * left });
+  }
+
+  // Отвес к земле прямо под ракетой. Высоту в этой проекции видно только
+  // по нему: экранная `y` несёт и высоту, и положение на плоскости.
+  // Место удара размечает не он, а кольца опасности и отсчёта в `overlays`.
+  const below = screenAt(here.x, here.y, 0);
   layers.glow
     .moveTo(nose.x, nose.y)
-    .lineTo(impact.x, impact.y)
+    .lineTo(below.x, below.y)
     .stroke({ width: 1, color: accent, alpha: 0.3 });
 
-  // Корпус: вытянутый ромб, повёрнутый по направлению полёта.
-  const behind = missileFlight(targetX, targetY, fromX, fromY, progress - 0.02);
-  const tailPoint = screenAt(behind.x, behind.y, behind.height);
-  const dx = nose.x - tailPoint.x;
-  const dy = nose.y - tailPoint.y;
+  // Корпус: вытянутый ромб, повёрнутый по направлению полёта. Направление
+  // берётся центральной разностью: односторонняя на самом старте давала бы
+  // нулевую длину и схлопывала бы ромб в точку. Прежде это было незаметно —
+  // на нулевой доле ракета висела за кромкой экрана, — а теперь видно.
+  const ahead = at(progress + HEADING_STEP);
+  const behind = at(progress - HEADING_STEP);
+  const dx = ahead.x - behind.x;
+  const dy = ahead.y - behind.y;
   const length = Math.hypot(dx, dy) || 1;
   const alongX = dx / length;
   const alongY = dy / length;

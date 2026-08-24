@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  GRAIN_SLOPE_SCALE,
-  buildGrainTile,
-  decodeSlope,
-  encodeSlope,
-} from './grain.js';
+import { GRAIN_SLOPE_SCALE, buildGrainTile, decodeSlope, encodeSlope } from './grain.js';
 import { GRAIN_TILE_CELLS, grainOffset, grainSlope, valueNoise } from './relief.js';
 
 // `grainSlope` остаётся в проверках как образец: плитка обязана идти

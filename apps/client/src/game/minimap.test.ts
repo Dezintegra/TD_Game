@@ -259,10 +259,7 @@ describe('отрисовка миникарты', () => {
       graphics,
       {
         ...world,
-        structures: [
-          structure(1, StructureKind.Base, 100),
-          structure(2, StructureKind.Wall, 200),
-        ],
+        structures: [structure(1, StructureKind.Base, 100), structure(2, StructureKind.Wall, 200)],
         units: [],
         generals: [],
       } as WorldState,

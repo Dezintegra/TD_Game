@@ -309,7 +309,9 @@ export const ActionBar = () => {
                 affordable={match.energy >= cost}
                 active={match.buildKind === kind}
                 target={STRUCTURE_UPGRADE_TARGET[kind]}
-                onSelect={() => matchCommands().setBuildKind(match.buildKind === kind ? null : kind)}
+                onSelect={() =>
+                  matchCommands().setBuildKind(match.buildKind === kind ? null : kind)
+                }
               />
             );
           })}
