@@ -3,9 +3,12 @@ import type { Graphics } from 'pixi.js';
 import {
   BLAST_LIFETIME_TICKS,
   BlastKind,
+  CELL_SCALE_PX,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
+  NUKE_DAMAGE,
   NUKE_DELAY_TICKS,
+  NUKE_RADIUS,
   NUKE_RADIUS_CELLS,
   TICKS_PER_SECOND,
   asEntityId,
@@ -27,7 +30,7 @@ import {
 import type { BlastColors, BlastLayers, FlightPoint } from './blasts.js';
 import { BASE_ANTENNA_HEIGHT, BASE_LAUNCH_POINT } from './base-structure.js';
 import type { ViewBounds } from './entities.js';
-import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
+import { ELEVATION_PX_PER_CELL, GROUND_SQUASH, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 
 /**
@@ -153,13 +156,23 @@ const VIEWPORT = { width: 1600, height: 900 };
 
 const CENTRE_CELL = cellIndex(MAP_WIDTH_CELLS / 2, MAP_HEIGHT_CELLS / 2);
 
-const blastAt = (kind: BlastKind, owner: number, cellX: number, cellY: number): BlastState => ({
+const blastAt = (
+  kind: BlastKind,
+  owner: number,
+  cellX: number,
+  cellY: number,
+  // Радиус есть только у ядерного взрыва. Остальным достаётся ноль —
+  // это не «неизвестно», а «размера нет»: гибель машины рисуется своим
+  // размером, а не радиусом.
+  radiusCells = kind === BlastKind.Nuke ? NUKE_RADIUS_CELLS : 0,
+): BlastState => ({
   at: { x: cellsToUnits(cellX), y: cellsToUnits(cellY) },
   kind,
   owner: asPlayerId(owner),
   // Срок истечения равен сроку жизни: значит, взрыв начался на нулевом
   // тике, и время отрисовки читается прямо как возраст.
   expiresAtTick: asTickNumber(BLAST_LIFETIME_TICKS[kind]),
+  radius: cellsToUnits(radiusCells),
 });
 
 const worldWith = (
@@ -353,6 +366,66 @@ describe('взрыв', () => {
 describe('ядерный взрыв', () => {
   const nukeBlast = (): WorldState => worldWith([blastAt(BlastKind.Nuke, 0, 24, 24)]);
 
+  /**
+   * Короткая полуось пятна поражения на экране, в пикселях.
+   *
+   * Круг радиуса `r` на ЗЕМЛЕ проецируется в эллипс, у которого подъём
+   * по экрану равен `r · масштаб · сплющивание`: множители обеих мировых
+   * осей несут `sin(наклон)`, и их сумма по кругу даёт ровно это.
+   */
+  const SHORT_AXIS_PX = NUKE_RADIUS_CELLS * GROUND_SQUASH * CELL_SCALE_PX;
+
+  it('огненный шар вписан в пятно поражения, а не накрывает уцелевшее', () => {
+    // Круг на экране и эллипс на земле совпадают только по ширине,
+    // поэтому шар меряется КОРОТКОЙ полуосью пятна. Иначе он накрывает
+    // сверху и снизу то, что в мире осталось живо, — а он самое яркое
+    // в первое мгновение, и размер удара игрок читает по нему.
+    //
+    // Замер после того, как ушло кольцо сжатого воздуха (оно живёт
+    // 0,16 секунды и уходит на 1,7 доли против 1,35 у ореола). Кольцо
+    // шире шара намеренно и вписываться не обязано: это обводка,
+    // расходящаяся и гаснущая за долю секунды, а размер удара игрок
+    // читает по залитому телу огня. Мерили бы вместе — пришлось бы
+    // ужимать шар ради того, что и так почти не видно.
+    const { glow } = draw(nukeBlast(), 0.2);
+    const widest = largest(glow.circles.map((circle) => circle.r));
+
+    expect(widest).toBeLessThanOrEqual(SHORT_AXIS_PX + 1);
+
+    // И не вдвое меньше: шар обязан остаться главным в первый миг.
+    expect(widest).toBeGreaterThan(SHORT_AXIS_PX * 0.5);
+  });
+
+  it('пятно поражения обведено ровно по своему радиусу', () => {
+    // Заливка пятна — радиальный градиент, края у неё нет по устройству,
+    // и докуда достало, по ней не сказать. Это сообщает кромка, и она
+    // обязана лечь ровно на радиус поражения, а не около него.
+    const edge = worldToScreen(24 + NUKE_RADIUS_CELLS, 24);
+    const { glow } = draw(nukeBlast(), 0.4);
+
+    const nearest = glow.points.reduce(
+      (near, point) => Math.min(near, Math.hypot(point.x - edge.x, point.y - edge.y)),
+      Number.POSITIVE_INFINITY,
+    );
+
+    expect(nearest).toBeLessThan(2);
+  });
+
+  it('прокачанный удар рисуется шире базового', () => {
+    // Радиус поражения прокачивается, и облик обязан идти за ним.
+    // Иначе картинка перестаёт говорить правду о том, что накрыло:
+    // игрок уводит войска по нарисованной границе, а гибнут они
+    // по настоящей.
+    const wide = worldWith([blastAt(BlastKind.Nuke, 0, 24, 24, NUKE_RADIUS_CELLS * 2)]);
+
+    const ballOf = (world: WorldState): number => largest(draw(world, 0.2).glow.circles.map((c) => c.r));
+    const reachOf = (world: WorldState): number =>
+      reachFrom(draw(world, 1.6).glow.points, worldToScreen(24, 24));
+
+    expect(ballOf(wide)).toBeGreaterThan(ballOf(nukeBlast()) * 1.9);
+    expect(reachOf(wide)).toBeGreaterThan(reachOf(nukeBlast()) * 1.9);
+  });
+
   it('ударная волна расходится дальше радиуса поражения', () => {
     const epicentre = worldToScreen(24, 24);
     const edge = Math.abs(worldToScreen(24 + NUKE_RADIUS_CELLS, 24).x - epicentre.x);
@@ -460,6 +533,8 @@ describe('ракета', () => {
     owner: asPlayerId(owner),
     cell,
     detonateAtTick: asTickNumber(NUKE_DELAY_TICKS),
+    radius: NUKE_RADIUS,
+    damage: NUKE_DAMAGE,
   });
 
   /**

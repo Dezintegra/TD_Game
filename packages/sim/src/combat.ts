@@ -24,13 +24,7 @@ import {
 import type { PlayerId, UnitType, Vec2 } from '@td/shared';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
-import {
-  statsOf,
-  structureAttack,
-  structureMaxHealth,
-  unitAttack,
-  unitMaxHealth,
-} from './stats.js';
+import { statsOf, structureAttack, structureMaxHealth, unitAttack, unitMaxHealth } from './stats.js';
 import type { PlayerStats } from './stats.js';
 import { position, recordBlast, recordShot, structurePosition } from './working.js';
 import type { Working, WorkingGeneral, WorkingStructure, WorkingUnit } from './working.js';
@@ -507,7 +501,11 @@ const bounty = (working: Working, target: Target): number => {
  * Поэтому же награда принимает СЧЁТ, а не вызывается по разу
  * на убитого: залп по толпе меняет ранг один раз, а не пять.
  */
-const rewardStructure = (structure: WorkingStructure, stats: PlayerStats, count: number): void => {
+const rewardStructure = (
+  structure: WorkingStructure,
+  stats: PlayerStats,
+  count: number,
+): void => {
   // Стена не стреляет вовсе, а растущая база означала бы матч, который
   // нельзя закончить: она и без того самый прочный объект на карте.
   if (structure.kind === StructureKind.Base || structure.kind === StructureKind.Wall) return;
@@ -518,8 +516,7 @@ const rewardStructure = (structure: WorkingStructure, stats: PlayerStats, count:
 
   if (veteranRank(structure.kills) === veteranRank(before)) return;
 
-  structure.health +=
-    structureMaxHealth(baseline, structure.kills) - structureMaxHealth(baseline, before);
+  structure.health += structureMaxHealth(baseline, structure.kills) - structureMaxHealth(baseline, before);
 };
 
 /** То же для машины. Ветеранство перестало быть привилегией обороны. */

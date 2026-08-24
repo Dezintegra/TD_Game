@@ -3,6 +3,8 @@ import {
   GENERAL_STATS,
   MIN_COOLDOWN_TICKS,
   MIN_RESPAWN_TICKS,
+  NUKE_DAMAGE,
+  NUKE_RADIUS,
   PPM_ONE,
   STRUCTURE_STATS,
   STRUCTURE_UPGRADE_TARGET,
@@ -10,11 +12,13 @@ import {
   UNIT_STATS,
   UNIT_UPGRADE_TARGET,
   UPGRADE_BRANCHES,
+  UPGRADE_STAT_COUNT,
   UPGRADE_TARGET_COUNT,
   UnitType,
   UpgradeStat,
   UpgradeTarget,
   applyPpm,
+  nukeCost,
   veteranStructurePpmOf,
   veteranUnitPpmOf,
 } from '@td/shared';
@@ -35,27 +39,32 @@ import type { PlayerState, UpgradeState } from './world.js';
  * на которую вырос максимум. Этим занимается обработчик покупки.
  */
 
-const STAT_COUNT = 8;
-
 /**
  * Таблица «цель прокачки и характеристика → индекс ветки».
  *
  * Строится один раз при загрузке модуля. Альтернатива — искать ветку
  * перебором при каждом обращении — стоила бы двадцати семи сравнений
  * на каждую характеристику каждой сущности каждый тик.
+ *
+ * Ширина строки берётся из `UPGRADE_STAT_COUNT`, а не задаётся здесь
+ * своим числом. Раньше здесь стояла восьмёрка — ровно по числу
+ * существовавших характеристик, — и она была миной: девятая
+ * характеристика дала бы тот же ключ, что первая характеристика
+ * следующей цели, и ветка одной цели молча посчиталась бы по ветке
+ * другой.
  */
 const BRANCH_LOOKUP = ((): Int32Array => {
-  const lookup = new Int32Array(UPGRADE_TARGET_COUNT * STAT_COUNT).fill(-1);
+  const lookup = new Int32Array(UPGRADE_TARGET_COUNT * UPGRADE_STAT_COUNT).fill(-1);
 
   UPGRADE_BRANCHES.forEach((branch: UpgradeBranch, index: number) => {
-    lookup[branch.target * STAT_COUNT + branch.stat] = index;
+    lookup[branch.target * UPGRADE_STAT_COUNT + branch.stat] = index;
   });
 
   return lookup;
 })();
 
 export const branchIndexOf = (target: UpgradeTarget, stat: UpgradeStat): number =>
-  BRANCH_LOOKUP[target * STAT_COUNT + stat] ?? -1;
+  BRANCH_LOOKUP[target * UPGRADE_STAT_COUNT + stat] ?? -1;
 
 /** Множитель эффекта прокачки. Единица, если такой ветки не существует. */
 const effectPpm = (player: PlayerState, target: UpgradeTarget, stat: UpgradeStat): number => {
@@ -121,11 +130,30 @@ export interface GeneralBaseline {
  * одинаковых вычислений за тик. Таблица строится один раз в начале шага
  * и передаётся дальше.
  */
+export interface NukeBaseline {
+  /** Радиус поражения во внутренних единицах. */
+  readonly radius: number;
+  /** Мощность заряда в единицах прочности. */
+  readonly damage: number;
+  /**
+   * Цена пуска. Выводится из радиуса — платят за накрытую площадь, —
+   * но лежит здесь готовой: её спрашивают и интерфейс, и противник
+   * под управлением компьютера, и оба обязаны спрашивать одно и то же.
+   */
+  readonly cost: number;
+}
+
 export interface PlayerStats {
   readonly units: Readonly<Record<UnitType, UnitBaseline>>;
   readonly structures: Readonly<Record<StructureKind, StructureBaseline>>;
   readonly general: GeneralBaseline;
   readonly incomePerTick: number;
+  /**
+   * Ядерный удар этого игрока. Это характеристики НА СЕЙЧАС, а не
+   * характеристики летящей ракеты: та несёт свои числа в записи об ударе,
+   * замороженные в момент пуска.
+   */
+  readonly nuke: NukeBaseline;
 }
 
 const unitBaseline = (player: PlayerState, type: UnitType): UnitBaseline => {
@@ -227,6 +255,28 @@ const generalBaseline = (player: PlayerState): GeneralBaseline => {
   };
 };
 
+/**
+ * Ядерный удар прокачивается по цели `Base`, хотя строение базы
+ * от этого не крепчает: обе ветки описывают ракету, а пусковая
+ * установка стоит на площадке базы.
+ *
+ * Ранний выход `structureBaseline` для базы этим веткам не мешает —
+ * он отбрасывает множители прочности, атаки, темпа и дальности САМОГО
+ * строения, а мощность и радиус заряда среди них не значатся.
+ */
+const nukeBaseline = (player: PlayerState): NukeBaseline => {
+  const radius = applyPpm(
+    NUKE_RADIUS,
+    effectPpm(player, UpgradeTarget.Base, UpgradeStat.NukeRadius),
+  );
+
+  return {
+    radius,
+    damage: applyPpm(NUKE_DAMAGE, effectPpm(player, UpgradeTarget.Base, UpgradeStat.NukeDamage)),
+    cost: nukeCost(radius),
+  };
+};
+
 export const playerStats = (player: PlayerState): PlayerStats => ({
   units: {
     [UnitType.Assault]: unitBaseline(player, UnitType.Assault),
@@ -244,6 +294,7 @@ export const playerStats = (player: PlayerState): PlayerStats => ({
     BASE_INCOME_PER_TICK,
     effectPpm(player, UpgradeTarget.Base, UpgradeStat.Income),
   ),
+  nuke: nukeBaseline(player),
 });
 
 export const allPlayerStats = (players: readonly PlayerState[]): readonly PlayerStats[] =>

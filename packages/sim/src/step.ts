@@ -3,7 +3,6 @@ import {
   DIRECTION_SOUTH,
   DIRECTION_STOP,
   NAV_MIN_INTERVAL_TICKS,
-  NUKE_RADIUS,
   PLAYERS_PER_MATCH,
   StructureKind,
   UNIT_CAP,
@@ -14,7 +13,13 @@ import {
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { applyCommand } from './apply.js';
-import { killGeneral, buildCombatIndices, buildSpatialIndex, resolveCombat } from './combat.js';
+import {
+  TargetKind,
+  buildCombatIndices,
+  buildSpatialIndex,
+  damageEntity,
+  resolveCombat,
+} from './combat.js';
 import { cellCentre } from './map.js';
 import { findFreeCellNear, moveGenerals, moveUnits } from './movement.js';
 import { buildNavField } from './navigation.js';
@@ -25,10 +30,8 @@ import {
   findStructure,
   fromWorking,
   invalidateNavigation,
-  position,
   recordBlast,
   refreshOccupancy,
-  structurePosition,
   toWorking,
 } from './working.js';
 import type { Working, WorkingPlayer } from './working.js';
@@ -166,7 +169,10 @@ const advanceConstruction = (working: Working, stats: readonly PlayerStats[]): v
     if (baseline.buildTicks <= 0) continue;
 
     const maxHealth = structureMaxHealth(baseline, structure.kills);
-    const startHealth = Math.max(1, Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100));
+    const startHealth = Math.max(
+      1,
+      Math.floor((maxHealth * BUILD_START_HEALTH_PERCENT) / 100),
+    );
     const total = maxHealth - startHealth;
 
     const elapsed = baseline.buildTicks - (structure.builtAtTick - working.tick);
@@ -389,12 +395,28 @@ const ensureTarget = (working: Working, player: WorkingPlayer) => {
 /**
  * Взрывы ядерных ударов.
  *
- * Взрыв не различает стороны: свои юниты и постройки гибнут наравне
+ * Взрыв вычитает прочность, а не стирает. Прежде он уничтожал всё
+ * в круге не глядя, и на главной величине игры — прочности — одно
+ * оружие из всей игры было написано «не важно»: стена в тысячу
+ * прочности и штурмовик в сотню исчезали одинаково, а тридцать
+ * купленных уровней прочности отменялись одним нажатием.
+ *
+ * Взрыв не различает стороны: свои юниты и постройки страдают наравне
  * с чужими. Иначе ядерный удар стал бы бесплатным решением любой
  * позиционной проблемы.
  *
- * Базы и скалы не страдают: базы защищены запретной зоной наведения,
- * скалы неразрушимы по игровому замыслу.
+ * Радиус и мощность берутся из записи об ударе, а не из констант:
+ * обе величины прокачиваются и заморожены в момент пуска.
+ *
+ * Базы и скалы не страдают. База — по проверке вида постройки, а НЕ
+ * по запретной зоне наведения: зона считается от центра базы,
+ * а основание у базы три на три, и при базовом радиусе её угол
+ * оказывается ближе допустимой точки прицеливания, чем центр.
+ * Скалы неразрушимы по игровому замыслу.
+ *
+ * Записи о взрывах достаются только погибшим, и пишет их `damageEntity` —
+ * та же функция, что и при обычной стрельбе. Ранга и энергии убийства
+ * взрывом не приносят: стрелка у него нет.
  */
 const detonateNukes = (working: Working, stats: readonly PlayerStats[]): void => {
   const detonated = working.nukes.filter((nuke) => working.tick >= nuke.detonateAtTick);
@@ -402,41 +424,34 @@ const detonateNukes = (working: Working, stats: readonly PlayerStats[]): void =>
 
   working.nukes = working.nukes.filter((nuke) => working.tick < nuke.detonateAtTick);
 
-  const reach = NUKE_RADIUS * NUKE_RADIUS;
-
   for (const nuke of detonated) {
     const epicentre = cellCentre(nuke.cell);
+    const reach = nuke.radius * nuke.radius;
 
-    recordBlast(working, BlastKind.Nuke, nuke.owner, epicentre);
+    recordBlast(working, BlastKind.Nuke, nuke.owner, epicentre, nuke.radius);
 
-    // Каждый погибший получает и свой собственный взрыв, хотя в первые
-    // полсекунды его не разглядеть за вспышкой. Разглядеть и не нужно:
-    // вспышка гаснет быстрее, чем оседают обломки, и к концу зрелища
-    // на земле должно остаться ровно то, что там погибло. Взрыв
-    // без обломков читался бы как «здесь ничего и не стояло».
-    for (const unit of working.units) {
-      if (!unit.alive) continue;
-      if (distanceSquared(epicentre, unit) > reach) continue;
+    // Порядок обхода — юниты, постройки, генералы — определяет порядок
+    // записей о взрывах, и потому зафиксирован.
+    working.units.forEach((unit, index) => {
+      if (!unit.alive) return;
+      if (distanceSquared(epicentre, unit) > reach) return;
 
-      unit.alive = false;
-      recordBlast(working, BlastKind.Unit, unit.owner, position(unit));
-    }
+      damageEntity(working, stats, { kind: TargetKind.Unit, index }, nuke.damage);
+    });
 
-    for (const structure of working.structures) {
-      if (!structure.alive || structure.kind === StructureKind.Base) continue;
-      if (distanceSquared(epicentre, cellCentre(structure.cell)) > reach) continue;
+    working.structures.forEach((structure, index) => {
+      if (!structure.alive || structure.kind === StructureKind.Base) return;
+      if (distanceSquared(epicentre, cellCentre(structure.cell)) > reach) return;
 
-      structure.alive = false;
-      working.structuresDirty = true;
-      recordBlast(working, BlastKind.Structure, structure.owner, structurePosition(structure));
-    }
+      damageEntity(working, stats, { kind: TargetKind.Structure, index }, nuke.damage);
+    });
 
-    for (const general of working.generals) {
-      if (!general.alive) continue;
-      if (distanceSquared(epicentre, general) > reach) continue;
+    working.generals.forEach((general, index) => {
+      if (!general.alive) return;
+      if (distanceSquared(epicentre, general) > reach) return;
 
-      killGeneral(working, stats, general);
-    }
+      damageEntity(working, stats, { kind: TargetKind.General, index }, nuke.damage);
+    });
   }
 };
 

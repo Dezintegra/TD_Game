@@ -80,6 +80,8 @@ export const UPGRADE_STAT_SHORT: Readonly<Record<UpgradeStat, string>> = {
   [UpgradeStat.BuildRadius]: 'радиус',
   [UpgradeStat.RespawnTime]: 'возрожд.',
   [UpgradeStat.Income]: 'добыча',
+  [UpgradeStat.NukeDamage]: 'мощн.',
+  [UpgradeStat.NukeRadius]: 'радиус',
 };
 
 export const UPGRADE_UNIT: Readonly<Record<UpgradeStat, string>> = {
@@ -91,6 +93,8 @@ export const UPGRADE_UNIT: Readonly<Record<UpgradeStat, string>> = {
   [UpgradeStat.BuildRadius]: ' кл',
   [UpgradeStat.RespawnTime]: ' с',
   [UpgradeStat.Income]: '/с',
+  [UpgradeStat.NukeDamage]: '',
+  [UpgradeStat.NukeRadius]: ' кл',
 };
 
 /**

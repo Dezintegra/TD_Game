@@ -3,8 +3,8 @@
   BASE_BUILD_EXCLUSION,
   CHECKSUM_INTERVAL_TICKS,
   CommandKind,
-  NUKE_BASE_EXCLUSION,
   NUKE_COST,
+  NUKE_RADIUS_CELLS,
   STRUCTURE_STATS,
   StructureKind,
   TICKS_PER_SECOND,
@@ -14,15 +14,11 @@
   distanceSquared,
   energyToVisible,
   killsToNextRank,
+  nukeBaseExclusion,
   unitsToCells,
   veteranRank,
 } from '@td/shared';
-import type {
-  CommandIntent,
-  PlayerId,
-  StructureKind as StructureKindType,
-  UnitType,
-} from '@td/shared';
+import type { CommandIntent, PlayerId, StructureKind as StructureKindType, UnitType } from '@td/shared';
 import {
   buildOccupancy,
   cellAt,
@@ -297,6 +293,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         touch: state.touch,
         hoverCell: state.hoverCell,
         hoverAllowed: isHoverAllowed(world, localPlayer, state, occupancyOf(world)),
+        nukeRadiusCells: nukeRadiusCellsOf(world, localPlayer),
         selectedCell: state.selectedCell,
       });
 
@@ -396,7 +393,8 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
       const world = guest.predicted;
       const base = world?.structures.find(
-        (structure) => structure.owner === localPlayer && structure.kind === StructureKind.Base,
+        (structure) =>
+          structure.owner === localPlayer && structure.kind === StructureKind.Base,
       );
 
       if (base !== undefined) scene.centreOnCell(base.cell);
@@ -480,6 +478,20 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
  * Считается по предсказанному миру: игрок целится в то, что видит,
  * а видит он предсказание.
  */
+/**
+ * Радиус ядерного удара своего игрока, в клетках.
+ *
+ * Живёт отдельной функцией, потому что спрашивают его дважды за кадр —
+ * кругом предпросмотра и снимком HUD, — и оба обязаны получить одно
+ * и то же число.
+ */
+const nukeRadiusCellsOf = (world: WorldState, playerId: PlayerId): number => {
+  const player = world.players[playerId];
+  if (player === undefined) return NUKE_RADIUS_CELLS;
+
+  return unitsToCells(playerStats(player).nuke.radius);
+};
+
 const isHoverAllowed = (
   world: WorldState,
   playerId: PlayerId,
@@ -492,13 +504,18 @@ const isHoverAllowed = (
   if (player === undefined) return false;
 
   if (state.aimingNuke) {
-    if (player.energy < NUKE_COST) return false;
+    // И цена, и запретная зона выводятся из радиуса удара, а радиус
+    // прокачивается. Считаются они той же функцией, что и в ядре:
+    // расхождение подсветки с правилами хуже, чем отсутствие подсветки.
+    const nuke = playerStats(player).nuke;
+    if (player.energy < nuke.cost) return false;
 
+    const exclusion = nukeBaseExclusion(nuke.radius);
     const centre = cellCentre(state.hoverCell);
     return !world.structures.some(
       (structure) =>
         structure.kind === StructureKind.Base &&
-        distanceSquared(centre, cellCentre(structure.cell)) < NUKE_BASE_EXCLUSION ** 2,
+        distanceSquared(centre, cellCentre(structure.cell)) < exclusion ** 2,
     );
   }
 
@@ -547,7 +564,11 @@ const isHoverAllowed = (
  * с причиной. Спрятанная кнопка оставляет игрока гадать, а причин ровно
  * три, и каждая ему что-то говорит.
  */
-const selectionOf = (world: WorldState, playerId: PlayerId, cell: number): SelectionView | null => {
+const selectionOf = (
+  world: WorldState,
+  playerId: PlayerId,
+  cell: number,
+): SelectionView | null => {
   if (cell < 0) return null;
 
   const structure = world.structures.find((entry) => entry.cell === cell);
@@ -621,6 +642,7 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
       unitCosts: [],
       structureCosts: [],
       nukeCost: energyToVisible(NUKE_COST),
+      nukeRadiusCells: NUKE_RADIUS_CELLS,
       stats: [],
       targetLabel: '—',
       matchSeconds: 0,
@@ -655,7 +677,9 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
     sides: sidesOf(world),
     unitCosts: [0, 1, 2].map((type) => energyToVisible(stats.units[type as UnitType].cost)),
     structureCosts,
-    nukeCost: energyToVisible(NUKE_COST),
+    // Цена и радиус — этого игрока: оба выводятся из прокачки радиуса.
+    nukeCost: energyToVisible(stats.nuke.cost),
+    nukeRadiusCells: unitsToCells(stats.nuke.radius),
     stats: statRowsOf(stats, costs, player.energy),
     targetLabel: target === undefined ? '—' : STRUCTURE_STATS[target.kind].label,
     matchSeconds: world.tick / TICKS_PER_SECOND,

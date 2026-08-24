@@ -11,7 +11,7 @@ import {
 import type { PlayerId } from '@td/shared';
 import { cellX, cellY } from '@td/sim';
 import type { BlastState, NukeState, WorldState } from '@td/sim';
-import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
+import { ELEVATION_PX_PER_CELL, GROUND_SQUASH, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
 import type { ViewBounds } from './entities.js';
 import { BASE_LAUNCH_POINT } from './base-structure.js';
@@ -25,6 +25,7 @@ import {
   resetEffectPaints,
   riseOver,
   smokeFill,
+  speedForReach,
   travel,
 } from './effects.js';
 
@@ -104,6 +105,17 @@ export const resetBlastPaints = resetEffectPaints;
  */
 const PX_PER_CELL = CELL_SCALE_PX;
 
+/**
+ * Во сколько раз ореол вокруг огня шире самого огня.
+ *
+ * Объявлен здесь, а не рядом с отрисовкой огня, по двум причинам сразу.
+ * По нему считается размер ядерного шара в наборе обликов ниже — а тот
+ * собирается при загрузке модуля, и объявление ниже по файлу дало бы
+ * обращение к величине до её создания. И по существу: внешний край огня —
+ * это ореол, и вписывать в пятно поражения надо именно его.
+ */
+const FIREBALL_HALO = 1.35;
+
 const screenAt = (x: number, y: number, height: number): Point => {
   const point = worldToScreen(x, y);
   return { x: point.x, y: point.y - height * ELEVATION_PX_PER_CELL };
@@ -145,49 +157,96 @@ interface BlastProfile {
  * значима потеря. Машин гибнут десятки, и их взрыв обязан прочитаться
  * и не залить экран; башня — это вложенная энергия и потерянная позиция,
  * ей достаётся больше дыма и тяжёлых обломков.
+ *
+ * 23.08.2026 размеры удвоены. Прежний взрыв юнита был в полклетки —
+ * заметно меньше самой машины, — и гибель читалась не гибелью, а щелчком:
+ * вспышка величиной с колесо на теле шириной в клетку. Клетка с лишним
+ * ставит вспышку вровень с тем, что погибло, и разрушение наконец
+ * оказывается событием, а не отметкой о событии.
+ *
+ * Удвоен именно РАЗМЕР, а не срок. Сроки остались прежние (`FLASH_*`
+ * и `BLAST_LIFETIME_TICKS`) и трогать их нельзя: вспышка, растянутая
+ * во времени вместе с размером, перестаёт быть ударом и превращается
+ * в медленно раздувающийся шар, то есть в дым. Разведение размера
+ * и срока — то же правило, что уже записано у попадания выстрела.
+ *
+ * Порядок между видами сохранён: юнит < постройка < генерал. Иначе
+ * гибель машины начала бы весить столько же, сколько гибель башни.
  */
 const PROFILE: Readonly<Record<BlastKind, BlastProfile>> = {
   [BlastKind.Unit]: {
-    sparks: 14,
-    chunks: 6,
-    puffs: 2,
-    flashCells: 0.55,
-    smokeCells: 0.42,
-    sparkSpeed: 5.5,
-    chunkSpeed: 3,
-    altitude: UNIT_ALTITUDE,
-    margin: 220,
-  },
-  [BlastKind.General]: {
-    sparks: 20,
+    sparks: 18,
     chunks: 8,
-    puffs: 3,
-    flashCells: 0.85,
-    smokeCells: 0.6,
-    sparkSpeed: 7,
-    chunkSpeed: 4,
-    altitude: GENERAL_ALTITUDE,
+    // Клубов пять, а не два. Двумя дым не клубится: два пятна любой
+    // мягкости глаз собирает в одно, и получается облачко, а не выброс.
+    puffs: 5,
+    flashCells: 1.1,
+    smokeCells: 0.85,
+    sparkSpeed: 8,
+    chunkSpeed: 4.2,
+    altitude: UNIT_ALTITUDE,
     margin: 300,
   },
-  [BlastKind.Structure]: {
-    sparks: 16,
+  [BlastKind.General]: {
+    sparks: 24,
     chunks: 10,
-    puffs: 4,
-    flashCells: 0.7,
-    smokeCells: 0.7,
-    sparkSpeed: 4.5,
-    chunkSpeed: 2.8,
-    altitude: 0.35,
-    margin: 260,
+    puffs: 6,
+    flashCells: 1.5,
+    smokeCells: 1.1,
+    sparkSpeed: 9.5,
+    chunkSpeed: 5,
+    altitude: GENERAL_ALTITUDE,
+    margin: 380,
   },
+  [BlastKind.Structure]: {
+    sparks: 20,
+    chunks: 12,
+    puffs: 6,
+    flashCells: 1.15,
+    smokeCells: 1.15,
+    sparkSpeed: 6,
+    chunkSpeed: 3.6,
+    altitude: 0.35,
+    margin: 340,
+  },
+  /**
+   * У ядерного взрыва все длины — доли радиуса поражения, и ни одной
+   * подобранной величины. Облик обязан следовать за радиусом: иначе
+   * первая же правка баланса разведёт картинку и правило, причём молча —
+   * взрыв останется красивым, просто перестанет говорить правду о том,
+   * что погибло.
+   *
+   * Здесь записан облик БАЗОВОГО радиуса. Радиус прокачивается, поэтому
+   * перед отрисовкой строка растягивается под радиус конкретного удара —
+   * этим занимается `profileOf`.
+   */
   [BlastKind.Nuke]: {
     sparks: 40,
     chunks: 16,
     puffs: 6,
-    flashCells: NUKE_RADIUS_CELLS * 0.8,
-    smokeCells: 3.2,
-    sparkSpeed: 26,
-    chunkSpeed: 14,
+    /**
+     * Огненный шар рисуется КРУГОМ на экране, а поражение ложится
+     * ЭЛЛИПСОМ на землю. Совпадают они только по ширине; по высоте
+     * экранный круг вдвое длиннее, и всё, что он накрыл сверху и снизу,
+     * на самом деле уцелело.
+     *
+     * Поэтому шар считается от КОРОТКОЙ полуоси пятна — радиус
+     * на сплющивание проекции, — и ещё делится на ореол, который шире
+     * самого шара. Выходит 4,2 клетки против прежних восьми.
+     *
+     * Восемь были не украшением, а именно ошибкой: шар — самое яркое
+     * в первую секунду, и размер удара игрок читал по нему. Читал
+     * на треть больше, чем погибло.
+     */
+    flashCells: (NUKE_RADIUS_CELLS * GROUND_SQUASH) / FIREBALL_HALO,
+    smokeCells: NUKE_RADIUS_CELLS * 0.32,
+    /**
+     * Искры долетают ровно до края поражения, обломки — до половины:
+     * тяжёлое падает ближе. Разлёт задан расстоянием, а не скоростью,
+     * потому что проверяемое утверждение здесь именно «ровно до края».
+     */
+    sparkSpeed: speedForReach(NUKE_RADIUS_CELLS),
+    chunkSpeed: speedForReach(NUKE_RADIUS_CELLS * 0.5),
     altitude: 0.4,
     // Гриб поднимается на тринадцать клеток, то есть на шестьсот с лишним
     // пикселей вверх от эпицентра, а кольца уходят на два с половиной
@@ -223,13 +282,64 @@ const PROFILE: Readonly<Record<BlastKind, BlastProfile>> = {
  * с одной общей текстурой, которые пакуются в один вызов. Это переделка
  * всего модуля, и делать её стоит тогда, когда десяти подробных взрывов
  * окажется мало.
+ *
+ * Десять стало восемь 23.08.2026, когда взрыв вырос вдвое и получил пять
+ * клубов дыма вместо двух. Бюджет тут не в штуках, а в миллисекундах,
+ * и держать надо его. Замерено на этой машине в настоящем PixiJS:
+ * заливка градиентом радиусом 30 пикселей стоит 0,023 мс, радиусом 60 —
+ * 0,039 мс. Подробный взрыв юнита был около пяти заливок и стал около
+ * девяти, причём вдвое более крупных: примерно 0,12 мс против 0,33.
+ * Десять прежних — 1,2 мс на кадр, восемь нынешних — 2,6 мс.
+ *
+ * Дороже, и это признаётся честно. Выбор был между «восемь крупных»
+ * и «десять мелких», и он сделан в пользу крупных: в тот момент, когда
+ * взрывов на экране больше восьми, они всё равно сливаются в одно
+ * зарево, и разница между восемью и десятью источниками этого зарева
+ * не видна никому — а разница между заметным взрывом и незаметным
+ * видна всегда.
+ *
+ * Спрайты сняли бы этот выбор целиком: тот же замер даёт 0,003 мс
+ * на спрайт из общей текстуры, то есть вдесятеро дешевле заливки
+ * и без зависимости от радиуса. Это следующий шаг, и он стоит того,
+ * но требует слоя-контейнера от сцены, а не `Graphics`.
  */
-const DETAILED_BLASTS_PER_FRAME = 10;
+const DETAILED_BLASTS_PER_FRAME = 8;
+
+/**
+ * Облик взрыва с поправкой на его радиус.
+ *
+ * Для всех взрывов, кроме ядерного, это просто строка таблицы: у гибели
+ * машины размер один и тот же. У ядерного радиус свой у каждого удара —
+ * он прокачивается, — и все длины его облика растягиваются вместе с ним.
+ * Иначе прокачанный вдвое удар накрывал бы вдвое больший круг, а огненный
+ * шар над ним оставался бы прежним: картинка перестала бы говорить правду
+ * о том, что погибло.
+ *
+ * Запас на отсечение растягивается тоже: гриб и ударная волна уходят
+ * далеко за радиус, и при прежнем запасе прокачанный взрыв обрезался бы
+ * по краю экрана.
+ */
+const profileOf = (blast: BlastState): BlastProfile => {
+  const base = PROFILE[blast.kind];
+  if (blast.kind !== BlastKind.Nuke) return base;
+
+  const cells = unitsToCells(blast.radius);
+  const scale = cells / NUKE_RADIUS_CELLS;
+
+  return {
+    ...base,
+    flashCells: base.flashCells * scale,
+    smokeCells: base.smokeCells * scale,
+    sparkSpeed: speedForReach(cells),
+    chunkSpeed: speedForReach(cells * 0.5),
+    margin: base.margin * scale,
+  };
+};
 
 /** Виден ли взрыв: то же отсечение, что и у сущностей, с запасом по виду. */
 const blastOnScreen = (blast: BlastState, view: ViewBounds): boolean => {
   const anchor = worldToScreen(unitsToCells(blast.at.x), unitsToCells(blast.at.y));
-  const margin = PROFILE[blast.kind].margin;
+  const margin = profileOf(blast).margin;
 
   return (
     anchor.x >= view.minX - margin &&
@@ -271,7 +381,7 @@ export const drawBlasts = (
   let drawn = 0;
 
   for (const blast of world.blasts) {
-    const profile = PROFILE[blast.kind];
+    const profile = profileOf(blast);
     const x = unitsToCells(blast.at.x);
     const y = unitsToCells(blast.at.y);
     const anchor = worldToScreen(x, y);
@@ -293,7 +403,7 @@ export const drawBlasts = (
     const accent = blast.owner === localPlayer ? colors.self : colors.enemy;
 
     if (blast.kind === BlastKind.Nuke) {
-      drawNuke(layers, x, y, seconds, span, seed, colors);
+      drawNuke(layers, x, y, seconds, span, seed, profile, unitsToCells(blast.radius), colors);
       shake = Math.max(shake, nukeShake(seconds));
 
       const strength = nukeFlash(seconds) * proximity(anchor, view);
@@ -388,7 +498,7 @@ const drawFireball = (
   // В кратком виде остаётся одно тело огня из двух: ореол вокруг него
   // при полусотне взрывов в одной точке всё равно ни от чего не отличим.
   if (!lean) {
-    glow.circle(centre.x, centre.y, radius * 1.35);
+    glow.circle(centre.x, centre.y, radius * FIREBALL_HALO);
     glow.fill({ fill: glowFill(colors.fire), alpha: 0.55 * fireAlpha });
   }
 
@@ -558,13 +668,64 @@ const drawChunks = (
 };
 
 /**
- * Дым: несколько клубов, всплывающих и расходящихся.
+ * Дым: несколько клубов, всплывающих, расходящихся и рассеивающихся.
  *
  * Клубы намеренно перекрываются: одиночное облако любой мягкости выглядит
- * пятном, а три наложенных — клубящимся дымом. Тот же приём, что
+ * пятном, а пять наложенных — клубящимся дымом. Тот же приём, что
  * и у настоящих систем частиц, только клубов не сотни, а единицы.
+ *
+ * Клубится дым от трёх движений сразу, и убери любое — он снова станет
+ * пятном:
+ *
+ *   всплывает        — общее для всех, скорость одна;
+ *   расходится       — каждый клуб уезжает от эпицентра по своему лучу,
+ *                      быстро в начале и почти встав к концу;
+ *   раздувается      — и тем сильнее бледнеет.
+ *
+ * Последнее и есть «рассеивается». Раньше клуб рос и гас по своим часам,
+ * независимо друг от друга, и в середине жизни выходил и большим, и ещё
+ * плотным — то есть читался не дымом, а мазком краски. Теперь яркость
+ * поделена на размер: дыма в клубе ровно столько, сколько было, и, растекаясь
+ * на вчетверо большую площадь, он вчетверо просвечивает. Это же снимает
+ * старую беду — раздутый клуб перестал закрывать собой поле.
  */
-const SMOKE_RISE_CELLS_PER_SECOND = 0.75;
+const SMOKE_RISE_CELLS_PER_SECOND = 0.95;
+
+/** Насколько клуб раздувается за секунду, в долях своего размаха. */
+const SMOKE_SPREAD_PER_SECOND = 0.85;
+
+/**
+ * За сколько секунд клуб уезжает от эпицентра на всё своё расстояние.
+ *
+ * Быстро: выброс — это рывок, и клуб, отползающий в сторону полсекунды,
+ * читается не выбросом, а туманом, который натягивает ветром.
+ */
+const SMOKE_PUSH_SECONDS = 0.35;
+
+/** Плотность клуба в тот миг, когда он ещё не начал раздуваться. */
+const SMOKE_DENSITY = 0.52;
+
+/**
+ * Насколько дым светлее копоти.
+ *
+ * Токен `--td-blast-smoke` — это цвет сажи, `rgb(43,38,34)`. Поле залито
+ * `rgb(25,25,25)`. Разница в восемнадцать уровней, да ещё умноженная
+ * на прозрачность клуба, даёт на экране четыре уровня — то есть дым,
+ * которого не видно вовсе. Проверено картинкой 23.08.2026: клубы
+ * рисовались, считались, тратили кадр и не читались ничем.
+ *
+ * Осветляется дым НЕ произвольным серым, а подмешиванием цвета ядра
+ * вспышки — того же, которым горит всё на этом поле. Правило проекта
+ * про цвета из токенов от этого не страдает: новых цветов не заводится,
+ * заводится смесь двух имеющихся, ровно как у выхлопа ракеты рядом.
+ *
+ * Доля скромная. `blend` даёт `rgb(73,67,61)` — это дым, освещённый
+ * пожаром и небом, а не туман: он остаётся заметно темнее породы
+ * и не спорит с ней за внимание. Больше — и над полем повиснет молоко;
+ * ровно на этом обжёгся первый заход, где дым вышел светлее земли
+ * и читался туманом.
+ */
+const SMOKE_LIFT = 0.14;
 
 const drawSmoke = (
   debris: Graphics,
@@ -579,34 +740,50 @@ const drawSmoke = (
   const noise = noiseFrom(seed ^ 0x85ebca6b);
 
   for (let index = 0; index < profile.puffs; index += 1) {
-    const delay = Math.abs(noise()) * span * 0.25;
+    // Клубы вылетают не разом: разброс по времени и превращает выброс
+    // в клубящийся, а не в раскрывающийся цветок. Треть срока — предел,
+    // за которым последний клуб уже не успевает рассеяться внутри записи.
+    const delay = Math.abs(noise()) * span * 0.35;
     const age = seconds - delay;
 
-    // Клуб стоит не в эпицентре, а в стороне от него, и стороны у клубов
+    // Клуб уезжает не в эпицентр, а в свою сторону, и стороны у клубов
     // разные. Без этого несколько облаков ложатся друг на друга ровно
     // и дают одно большое пятно вместо клубящегося дыма.
     const offAngle = (noise() + 1) * Math.PI;
-    const offset = profile.smokeCells * (0.3 + Math.abs(noise()) * 1.3);
-    const drift = noise() * 0.4;
+    const offset = profile.smokeCells * (0.35 + Math.abs(noise()) * 1.5);
+    const drift = noise() * 0.5;
     // Размах у клубов очень разный: одинаковые по величине они снова
     // сливаются в одно ровное пятно, сколько их ни разводи в стороны.
     const spread = 0.4 + Math.abs(noise()) * 0.9;
 
     if (age <= 0) continue;
 
+    // Раздувание считается ДО прозрачности: от него зависит и размер,
+    // и то, насколько клуб просвечивает.
+    const swell = spread + age * SMOKE_SPREAD_PER_SECOND;
+
     // Дым живёт дольше всего остального: огонь погас, обломки легли,
     // а над местом ещё висит. Ровно это и делает разрушение разрушением,
     // а не вспышкой.
-    const alpha = 0.36 * fade(age, span * 0.3, span * 1.05) * rise(age, 0, 0.08);
+    //
+    // Делится на размах: клуб не становится плотнее оттого, что вырос, —
+    // наоборот, того же дыма на большую площадь приходится меньше.
+    const alpha =
+      (SMOKE_DENSITY * fade(age, span * 0.3, span * 1.15) * rise(age, 0, 0.08)) /
+      (0.55 + swell * 0.75);
     if (alpha <= 0.01) continue;
+
+    // Разлёт с торможением: почти всё расстояние проходится в первые
+    // доли секунды, дальше клуб только всплывает и раздувается.
+    const push = Math.min(1, age / SMOKE_PUSH_SECONDS) ** 0.6;
 
     const height = profile.altitude + 0.15 + age * SMOKE_RISE_CELLS_PER_SECOND;
     const centre = screenAt(
-      x + Math.cos(offAngle) * offset + drift * age,
-      y + Math.sin(offAngle) * offset + drift * age * 0.6,
+      x + Math.cos(offAngle) * offset * push + drift * age,
+      y + Math.sin(offAngle) * offset * push + drift * age * 0.6,
       height,
     );
-    const radius = profile.smokeCells * (spread + age * 0.45) * PX_PER_CELL;
+    const radius = profile.smokeCells * swell * PX_PER_CELL;
 
     // Пока не остыл, дым подсвечен изнутри: это и отличает первую секунду
     // после взрыва от последней — тот же клуб, но горячий.
@@ -619,11 +796,16 @@ const drawSmoke = (
     // Доля жара округляется до четвертей, и это не небрежность: заготовка
     // градиента кешируется по цвету, а непрерывно меняющийся цвет означал
     // бы новую текстуру на каждый кадр.
-    const heat = Math.round(fade(age, 0.1, 0.5) * 4) / 4;
+    //
+    // Окно жара растянуто до девяти десятых секунды: клуб теперь живёт
+    // и раздувается дольше, и жар, гаснущий за полсекунды, оставлял
+    // вторую половину жизни дыма ровной серой кляксой.
+    const heat = Math.round(fade(age, 0.15, 0.9) * 4) / 4;
+    const body = blend(colors.smoke, colors.core, SMOKE_LIFT);
 
     debris.circle(centre.x, centre.y, radius);
     debris.fill({
-      fill: smokeFill(heat <= 0 ? colors.smoke : blend(colors.smoke, colors.fire, heat * 0.5)),
+      fill: smokeFill(heat <= 0 ? body : blend(body, colors.fire, heat * 0.5)),
       alpha,
     });
   }
@@ -662,8 +844,14 @@ const traceWorldCircle = (
 const SHOCK_SECONDS = 2.4;
 const SHOCK_REACH = 2.6;
 
-/** Докуда поднимается гриб и когда он вырастает. */
-const MUSHROOM_TOP_CELLS = 13;
+/**
+ * Докуда поднимается гриб и когда он вырастает.
+ *
+ * Высота — доля радиуса поражения: гриб обязан быть соразмерен тому,
+ * что взрыв накрыл. Доля, а не готовые клетки, потому что радиус
+ * у каждого удара свой — он прокачивается.
+ */
+const MUSHROOM_TOP_SHARE = 1.3;
 const MUSHROOM_START = 0.75;
 const MUSHROOM_SECONDS = 2.6;
 
@@ -674,13 +862,19 @@ const drawNuke = (
   seconds: number,
   span: number,
   seed: number,
+  profile: BlastProfile,
+  cells: number,
   colors: BlastColors,
 ): void => {
-  const profile = PROFILE[BlastKind.Nuke];
-
-  drawShockRing(layers.debris, layers.glow, x, y, seconds, seed, colors);
-  drawGroundFlash(layers.glow, x, y, seconds, colors);
-  drawMushroom(layers.debris, layers.glow, x, y, seconds, colors);
+  drawShockRing(layers.debris, layers.glow, x, y, seconds, seed, cells, colors);
+  drawGroundFlash(layers.glow, x, y, seconds, cells, colors);
+  // Огненный шар — тот же, что и у всякого взрыва, только размером
+  // из ядерной строки набора. Прежде ядерный взрыв его не рисовал вовсе:
+  // `flashCells` у этой строки была величиной, которую никто не читал,
+  // а самое яркое в первую секунду у самого дорогого удара в игре
+  // отсутствовало.
+  drawFireball(layers.glow, x, y, seconds, profile, colors);
+  drawMushroom(layers.debris, layers.glow, x, y, seconds, cells, colors);
 
   drawSmoke(layers.debris, x, y, seconds, span, seed, profile, colors);
   drawChunks(layers.debris, x, y, seconds, span * 0.45, seed, profile, colors.smoke, colors);
@@ -702,11 +896,12 @@ const drawGroundFlash = (
   x: number,
   y: number,
   seconds: number,
+  cells: number,
   colors: BlastColors,
 ): void => {
   if (seconds > GROUND_FLASH_SECONDS) return;
 
-  const radius = NUKE_RADIUS_CELLS * (0.25 + 0.75 * Math.min(1, seconds / 0.3));
+  const radius = cells * (0.25 + 0.75 * Math.min(1, seconds / 0.3));
 
   traceWorldCircle(glow, x, y, radius);
   glow.fill({
@@ -715,11 +910,30 @@ const drawGroundFlash = (
   });
 
   const core = fade(seconds, 0, 0.55);
-  if (core <= 0) return;
+  if (core > 0) {
+    traceWorldCircle(glow, x, y, radius * 0.6);
+    glow.fill({ fill: glowFill(colors.core), alpha: core });
+  }
 
-  traceWorldCircle(glow, x, y, radius * 0.6);
-  glow.fill({ fill: glowFill(colors.core), alpha: core });
+  // Кромка пятна ровно по радиусу поражения.
+  //
+  // Заливка выше — радиальный градиент, у неё края нет по устройству,
+  // и докуда достало, по ней не сказать. Кромка это и сообщает: всё,
+  // что внутри, погибло, всё, что снаружи, — уцелело.
+  //
+  // Живёт она недолго и гаснет вместе с разгоном пятна. Постоянная
+  // окружность читалась бы нарисованной фигурой — тем же кольцом
+  // прицеливания, которое к этому моменту уже сняли, — а не следом удара.
+  const rim = fade(seconds, RIM_HOLD_SECONDS, RIM_SECONDS) * rise(seconds, 0, 0.12);
+  if (rim <= 0) return;
+
+  traceWorldCircle(glow, x, y, cells);
+  glow.stroke({ width: 2 + 5 * rim, color: colors.core, alpha: 0.55 * rim });
 };
+
+/** Сколько держится и сколько живёт кромка пятна поражения. */
+const RIM_HOLD_SECONDS = 0.25;
+const RIM_SECONDS = 1.1;
 
 /**
  * Ломает окружность вала: три синуса целых частот.
@@ -818,6 +1032,7 @@ const drawShockRing = (
   y: number,
   seconds: number,
   seed: number,
+  cells: number,
   colors: BlastColors,
 ): void => {
   if (seconds <= 0 || seconds > SHOCK_SECONDS) return;
@@ -825,14 +1040,14 @@ const drawShockRing = (
   // Расхождение замедляющееся: вал выхлёстывает и вязнет. Равномерное
   // читается расходящейся рябью, а не ударом.
   const progress = 1 - (1 - seconds / SHOCK_SECONDS) ** 2;
-  const radius = NUKE_RADIUS_CELLS * SHOCK_REACH * progress;
+  const radius = cells * SHOCK_REACH * progress;
   const alpha = fade(seconds, SHOCK_SECONDS * 0.35, SHOCK_SECONDS);
   if (alpha <= 0) return;
 
   const noise = noiseFrom(seed ^ 0x27d4eb2f);
   const phases = [noise() * Math.PI, noise() * Math.PI, noise() * Math.PI];
 
-  const wallCells = 0.8 + progress * 3.4;
+  const wallCells = cells * (0.08 + progress * 0.34);
   const bandPx = wallCells * PX_PER_CELL * 0.8;
   const height = wallCells * 0.45;
   // Рваность растёт вместе с валом: вблизи взрыва фронт ещё ровный,
@@ -875,13 +1090,14 @@ const drawMushroom = (
   x: number,
   y: number,
   seconds: number,
+  cells: number,
   colors: BlastColors,
 ): void => {
   if (seconds < MUSHROOM_START) return;
 
   const age = seconds - MUSHROOM_START;
   const climb = Math.min(1, age / MUSHROOM_SECONDS);
-  const top = MUSHROOM_TOP_CELLS * (1 - (1 - climb) ** 2);
+  const top = cells * MUSHROOM_TOP_SHARE * (1 - (1 - climb) ** 2);
   const alpha = fade(seconds, 2.2, 4.6);
   if (alpha <= 0) return;
 
@@ -897,7 +1113,7 @@ const drawMushroom = (
   for (let step = 0; step < STEM_PUFFS; step += 1) {
     const along = step / (STEM_PUFFS - 1);
     const knot = screenAt(x, y, top * along);
-    const width = NUKE_RADIUS_CELLS * (0.2 - 0.09 * along) * PX_PER_CELL;
+    const width = cells * (0.2 - 0.09 * along) * PX_PER_CELL;
 
     debris.circle(knot.x, knot.y, width);
     debris.fill({ fill: smokeFill(colors.smoke), alpha: 0.42 * alpha });
@@ -910,8 +1126,8 @@ const drawMushroom = (
    * столба читается воздушным шаром; шляпка гриба тем и узнаётся, что
    * шире, чем выше. Поэтому клубы разъезжаются вбок сильнее, чем растут.
    */
-  const capRadius = (0.9 + climb * 1.7) * PX_PER_CELL;
-  const capSpread = (0.7 + climb * 2.6) * PX_PER_CELL;
+  const capRadius = cells * (0.09 + climb * 0.17) * PX_PER_CELL;
+  const capSpread = cells * (0.07 + climb * 0.26) * PX_PER_CELL;
 
   const cap = screenAt(x, y, top);
   for (const offset of [-1, -0.55, 0, 0.55, 1]) {
@@ -1132,12 +1348,7 @@ const arcHeight = (launchHeight: number, apex: number, progress: number): number
  * на разобранной карте. Тогда ракета приходит по диагонали с северо-запада:
  * это не облик, а страховка от полёта нулевой длины.
  */
-const launchPoint = (
-  world: WorldState,
-  nuke: NukeState,
-  targetX: number,
-  targetY: number,
-): FlightPoint => {
+const launchPoint = (world: WorldState, nuke: NukeState, targetX: number, targetY: number): FlightPoint => {
   const baseCell = world.map.baseCells[nuke.owner];
 
   if (baseCell === undefined) {
