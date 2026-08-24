@@ -116,8 +116,16 @@ export interface ControlHandlers {
    * что рисовать.
    */
   menuChanged(open: boolean): void;
-  /** Игрок свернул или развернул характеристики в тулбаре. */
+  /** Игрок свернул или развернул прокачку. */
   toggleStats(): void;
+  /**
+   * Закрыть прокачку, если она сейчас панель поверх поля.
+   *
+   * Возвращает `true`, если панель действительно закрыли. Разбор нажатий
+   * сам о панели не знает и знать не должен: вопрос «панель или столбцы»
+   * решается размером экрана, а порог экрана записан один раз — в CSS.
+   */
+  closeUpgradePanel(): boolean;
   cellAtScreen(x: number, y: number): number;
   minimapCellAtScreen(x: number, y: number): number;
 }
@@ -504,7 +512,13 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     }
 
     if (event.code === CANCEL_KEY) {
-      // Сначала отмена, и только если отменять нечего — меню.
+      // Порядок идёт от верхнего слоя к нижнему.
+      //
+      // Панель прокачки лежит поверх поля и закрывает его: пока она
+      // открыта, Esc не может значить ничего другого. Дальше отмена
+      // режима — действие частое и совершается не глядя. И только если
+      // отменять нечего — меню.
+      if (handlers.closeUpgradePanel()) return;
       if (!cancelModes()) setMenu(true);
       return;
     }

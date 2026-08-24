@@ -50,10 +50,21 @@ test('панели не перекрывают игровое поле', async (
   // намеренно едет вбок, и это задуманное поведение, а не поломка.
   await page.setViewportSize({ width: 1920, height: 1080 });
 
-  // Переключателя характеристик на мониторе быть не должно: там то же
-  // самое делает клавиша R, а места в тулбаре на ноутбуке 1366 нет
-  // ни на что лишнее.
-  await expect(page.getByTestId('stats-toggle')).toBeHidden();
+  // Кнопка прокачки есть и на мониторе, и это не удобство, а видимость:
+  // раньше прокачку разворачивала только клавиша R, и о самой
+  // возможности на экране не сообщало ничто. Делает она ровно то же,
+  // что клавиша.
+  const upgrades = page.getByTestId('stats-toggle');
+  await expect(upgrades).toBeVisible();
+
+  const hud = page.getByTestId('hud');
+  await expect(hud).toHaveAttribute('data-stats', 'open');
+  await upgrades.click();
+  await expect(hud).toHaveAttribute('data-stats', 'closed');
+  await page.keyboard.press('KeyR');
+  await expect(hud).toHaveAttribute('data-stats', 'open');
+
+  // А кнопки меню на мониторе по-прежнему нет: там меню открывает Esc.
   await expect(page.getByTestId('menu-open')).toBeHidden();
   expect(await coveredButtons(page)).toBe(0);
 
@@ -394,26 +405,23 @@ test('частота кадров держится, когда на поле п�
   expect(await diagnosticNumber(page, 'fps')).toBeGreaterThanOrEqual(55);
 });
 
-
 /**
  * Телефон.
  *
- * Проверяется не «красиво ли», а два измеримых свойства, каждое из которых
- * уже ломалось молча: содержимое верхней полосы не шире самой полосы,
- * и полю остаётся большая часть экрана.
+ * Проверяется не «красиво ли», а то, до чего игрок дотягивается пальцем
+ * и что он при этом видит. Каждое свойство здесь уже ломалось молча.
  *
- * Молчаливость тут главное. Полоса прокрутки у верхней полосы запрещена,
- * поэтому переполнение не показывает себя ничем — просто у своей сводки
- * уезжает за левый край имя, а у чужой за правый прочность базы. Измерено
- * до правки: содержимому нужно было 811 точек при 375 в портрете
- * и 984 при 812 в ландшафте.
+ * Замерено до правки: содержимому нижней полосы нужно было 1022 точки
+ * при 375, и на экране помещалось три плитки заказа из шести и ни одной
+ * служебной. Полоса при этом молчала: прокрутка вбок ничем о себе
+ * не сообщает, и «Тесла есть в игре» игрок узнавал случайно.
  *
  * `isMobile` и `hasTouch` обязательны, а не для красоты: без них
  * не срабатывает медиазапрос грубого указателя, цель нажатия остаётся
- * мышиной, и столбцы характеристик выходят вчетверо ниже настоящих.
+ * мышиной, и размеры выходят не те, что на устройстве.
  */
 
-/** Ширина содержимого полосы и её собственная ширина. */
+/** Ширина содержимого верхней полосы сверх её собственной. */
 const barOverflow = async (page: Page): Promise<number> =>
   page.evaluate(() => {
     const el = document.querySelector('#hud-top');
@@ -421,12 +429,12 @@ const barOverflow = async (page: Page): Promise<number> =>
     return el.scrollWidth - el.clientWidth;
   });
 
-/** На сколько содержимое тулбара выше отведённой ему полосы. */
-const columnOverflow = async (page: Page): Promise<number> =>
+/** Переполнение нижней полосы: по ширине и по высоте. */
+const bottomOverflow = async (page: Page): Promise<{ x: number; y: number }> =>
   page.evaluate(() => {
     const el = document.querySelector('#hud-bottom');
-    if (el === null) return -1;
-    return el.scrollHeight - el.clientHeight;
+    if (el === null) return { x: -1, y: -1 };
+    return { x: el.scrollWidth - el.clientWidth, y: el.scrollHeight - el.clientHeight };
   });
 
 /**
@@ -437,9 +445,6 @@ const columnOverflow = async (page: Page): Promise<number> =>
  * а нажатие достаётся соседней плитке. Так и было — плитки не сжимались,
  * а группы плиток сжимались; плитки вылезали за границу своей группы,
  * и следующая группа вставала поверх них.
- *
- * Считаются только кнопки, чья середина ВНУТРИ окна: тулбар едет вбок,
- * и уехавшая за край кнопка не перекрыта, а просто не показана.
  */
 const coveredButtons = async (page: Page): Promise<number> =>
   page.evaluate(() => {
@@ -463,6 +468,12 @@ const fieldShare = async (page: Page): Promise<number> => {
   return (box.height / page.viewportSize()!.height) * 100;
 };
 
+/** Размер холста сцены — им проверяется, что сцену никто не пересчитал. */
+const canvasSize = async (page: Page): Promise<{ width: number; height: number }> => {
+  const box = await page.locator('#scene canvas').boundingBox();
+  return { width: Math.round(box?.width ?? 0), height: Math.round(box?.height ?? 0) };
+};
+
 /** Обе сводки видны целиком, ни одна не уехала за край экрана. */
 const sidesVisible = async (page: Page): Promise<void> => {
   const own = await page.getByTestId('side-own').boundingBox();
@@ -477,27 +488,138 @@ const sidesVisible = async (page: Page): Promise<void> => {
   expect(enemy.x + enemy.width).toBeLessThanOrEqual(width + 1);
 };
 
+const ORDER_TILES = ['train-0', 'train-1', 'train-2', 'build-1', 'build-2', 'build-3'] as const;
+
+/**
+ * Где стоит заказ: сколько плиток за краем экрана, далеко ли последняя
+ * от правого края и правда ли юниты правее построек.
+ */
+const orderPlacement = async (
+  page: Page,
+): Promise<{ offScreen: number; rightGap: number; unitsLeft: number; buildRight: number }> => {
+  const width = page.viewportSize()!.width;
+  let offScreen = 0;
+  let rightmost = 0;
+  let unitsLeft = Number.POSITIVE_INFINITY;
+  let buildRight = 0;
+
+  for (const id of ORDER_TILES) {
+    const box = await page.getByTestId(id).boundingBox();
+    if (box === null) {
+      offScreen += 1;
+      continue;
+    }
+    if (box.x < 0 || box.x + box.width > width + 1) offScreen += 1;
+    rightmost = Math.max(rightmost, box.x + box.width);
+    if (id.startsWith('train-')) unitsLeft = Math.min(unitsLeft, box.x);
+    else buildRight = Math.max(buildRight, box.x + box.width);
+  }
+
+  return { offScreen, rightGap: width - rightmost, unitsLeft, buildRight };
+};
+
+/** Все ветки прокачки, показанные на экране. */
+const branchCount = async (page: Page): Promise<number> =>
+  page.locator('[data-testid^="upgrade-"]').count();
+
+/**
+ * Открыть прокачку и убедиться, что она открылась. Кнопкой, а не `R`:
+ * клавиатуры на телефоне нет, и проверять надо тот путь, который есть.
+ */
+const openUpgrades = async (page: Page): Promise<void> => {
+  await page.getByTestId('stats-toggle').click();
+  await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'open');
+};
+
+const closeUpgrades = async (page: Page): Promise<void> => {
+  const hud = page.getByTestId('hud');
+  if ((await hud.getAttribute('data-stats')) === 'open') {
+    await page.getByTestId('stats-toggle').click();
+  }
+  await expect(hud).toHaveAttribute('data-stats', 'closed');
+};
+
 test.describe('телефон в портрете', () => {
   test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
 
   test('раскладка портрета', async ({ page }) => {
     await bootGame(page);
+    await closeUpgrades(page);
 
+    // Верхняя полоса умещается в ширину и не режет сводки.
     expect(await barOverflow(page)).toBeLessThanOrEqual(0);
     await sidesVisible(page);
 
-    // Столбец характеристик обязан помещаться целиком. Прокрутка вниз тут
-    // не годится в принципе: полоса не сообщает о себе ничем, и пятая
-    // строка — дальность — для игрока просто отсутствует.
-    expect(await columnOverflow(page)).toBeLessThanOrEqual(0);
-
-    // Ни одна кнопка не должна быть перекрыта соседней плиткой.
+    // Нижняя не прокручивается вбок ВООБЩЕ. Прокрутка здесь не спасение,
+    // а лишний жест перед каждым заказом — и делается он второй рукой,
+    // потому что первая держит телефон.
+    expect((await bottomOverflow(page)).x).toBeLessThanOrEqual(0);
     expect(await coveredButtons(page)).toBe(0);
 
-    // Свёрнутые характеристики — обычная игра, и экран принадлежит полю.
-    await page.keyboard.press('KeyR');
+    // Весь заказ на экране и прижат к правому краю, под большой палец.
+    const order = await orderPlacement(page);
+    expect(order.offScreen).toBe(0);
+    expect(order.rightGap).toBeLessThanOrEqual(12);
+    // Юниты правее построек: заказ юнита — одно нажатие, постановка
+    // постройки — два, и лучшее место достаётся частому действию.
+    expect(order.unitsLeft).toBeGreaterThan(order.buildRight);
+
+    // Цена видна и без подписи «цена»: число остаётся.
+    await expect(page.getByTestId('train-0-cost')).toBeVisible();
+
+    // Плитки базы в полосе нет — к базе переносит прочность сверху.
+    // Проверяется именно НАЖИМАЕМОСТЬ: иначе на телефоне к базе
+    // не добраться вовсе, а число рядом выглядело бы обычным текстом.
+    await expect(page.getByTestId('focus-base')).toBeHidden();
+
+    const ownHealth = page.getByTestId('base-health-own');
+    await expect(ownHealth).toBeVisible();
+    expect(await ownHealth.evaluate((el) => el.tagName)).toBe('BUTTON');
+    await ownHealth.click();
+    // Нажатие переносит камеру и ничего не заказывает: прокачка осталась
+    // свёрнутой, режимы не включились.
     await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
+
+    // А прочность соперника остаётся текстом: перенос камеры к чужой базе —
+    // другое действие, и вешать его на похожее с виду число нельзя.
+    expect(await page.getByTestId('base-health-enemy').evaluate((el) => el.tagName)).toBe('DIV');
+
     expect(await fieldShare(page)).toBeGreaterThanOrEqual(70);
+  });
+
+  test('панель прокачки в портрете', async ({ page }) => {
+    await bootGame(page);
+    await closeUpgrades(page);
+
+    // Сцена не должна пересчитываться от открытия панели: высота полосы
+    // входит в отступы её контейнера, и раньше каждое переключение
+    // будило наблюдателя за размером — камера пересчитывала границы,
+    // миникарта переезжала в угол. Посреди боя, ради таблицы цен.
+    const before = await canvasSize(page);
+    const share = await fieldShare(page);
+
+    await openUpgrades(page);
+
+    expect(await canvasSize(page)).toEqual(before);
+    expect(await fieldShare(page)).toBeCloseTo(share, 1);
+
+    // Панель показывает все восемь целей прокачки со всеми ветками,
+    // и ничего не приходится доставать прокруткой.
+    await expect(page.getByTestId('focus-base')).toBeVisible();
+    expect(await branchCount(page)).toBe(29);
+    const overflow = await bottomOverflow(page);
+    expect(overflow.x).toBeLessThanOrEqual(0);
+    expect(overflow.y).toBeLessThanOrEqual(0);
+    expect(await coveredButtons(page)).toBe(0);
+
+    // Верхнюю полосу панель не закрывает: игрок торгуется, и энергия —
+    // то самое число, ради которого он решает, покупать или копить.
+    await expect(page.getByTestId('energy')).toBeInViewport();
+
+    // Нажатие мимо панели закрывает её. Целимся в полоску поля НАД
+    // панелью: середина слоя лежит под самой панелью.
+    await page.getByTestId('panel-backdrop').click({ position: { x: 100, y: 20 } });
+    await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
   });
 });
 
@@ -506,29 +628,17 @@ test.describe('телефон в ландшафте', () => {
 
   test('раскладка ландшафта', async ({ page }) => {
     await bootGame(page);
+    await closeUpgrades(page);
 
     expect(await barOverflow(page)).toBeLessThanOrEqual(0);
     await sidesVisible(page);
-
-    // Полоса центрировала содержимое при запрете переполнения: столбец
-    // выше полосы срезался сразу с двух сторон, и до цены нельзя было
-    // добраться ничем. На экране это выглядело обрубленным словом,
-    // то есть опечаткой, а не пропажей.
-    await expect(page.getByTestId('train-0-cost')).toBeVisible();
-    expect(await columnOverflow(page)).toBeLessThanOrEqual(0);
+    expect((await bottomOverflow(page)).x).toBeLessThanOrEqual(0);
     expect(await coveredButtons(page)).toBe(0);
 
-    // Свернуть характеристики на телефоне можно только нажатием: клавиши R
-    // там нет. Без этой кнопки игрок остаётся в том состоянии, какое
-    // сохранилось с прошлого раза, и поля ему не видно вовсе.
-    const toggle = page.getByTestId('stats-toggle');
-    await expect(toggle).toBeVisible();
-    await toggle.click();
-    await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
-
-    // Плитки и ядерный удар при этом остаются: сворачиваются только столбцы.
-    await expect(page.getByTestId('train-0')).toBeVisible();
-    await expect(page.getByTestId('aim-nuke')).toBeVisible();
+    const order = await orderPlacement(page);
+    expect(order.offScreen).toBe(0);
+    expect(order.rightGap).toBeLessThanOrEqual(12);
+    expect(order.unitsLeft).toBeGreaterThan(order.buildRight);
 
     expect(await fieldShare(page)).toBeGreaterThanOrEqual(54);
 
@@ -539,10 +649,37 @@ test.describe('телефон в ландшафте', () => {
     await expect(menu).toBeVisible();
     await menu.click();
     await expect(page.getByTestId('match-menu')).toBeVisible();
-    await expect(page.getByTestId('match-leave')).toBeVisible();
-
-    // И закрыть его тем же нажатием, не ища клавиатуру.
     await menu.click();
     await expect(page.getByTestId('match-menu')).toBeHidden();
+  });
+
+  test('панель прокачки в ландшафте', async ({ page }) => {
+    await bootGame(page);
+    await closeUpgrades(page);
+
+    const before = await canvasSize(page);
+    await openUpgrades(page);
+
+    expect(await canvasSize(page)).toEqual(before);
+
+    // Все двадцать девять веток видны и здесь: три ряда в 375 точек
+    // высоты не помещаются, поэтому группы встают рядом. Прокрутка
+    // не годится по той же причине, по какой не годилась в полосе —
+    // она не сообщает о себе, и пятая ветка для игрока исчезает.
+    expect(await branchCount(page)).toBe(29);
+    const overflow = await bottomOverflow(page);
+    expect(overflow.x).toBeLessThanOrEqual(0);
+    expect(overflow.y).toBeLessThanOrEqual(0);
+    expect(await coveredButtons(page)).toBe(0);
+
+    await expect(page.getByTestId('energy')).toBeInViewport();
+
+    // Заказ панель не закрывает: заказывают пачками.
+    await page.getByTestId('train-0-select').click();
+    await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'open');
+
+    // А наведение — закрывает: целиться в поле, которого не видно, нельзя.
+    await page.getByTestId('aim-nuke-select').click();
+    await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
   });
 });
