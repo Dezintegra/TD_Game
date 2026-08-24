@@ -203,6 +203,31 @@ const recordsOf = (journal, entry) =>
 const today = new Date().toISOString().slice(0, 10);
 const sha = git('rev-parse', 'HEAD');
 
+/**
+ * Пути, от которых зависит исход матча на арене.
+ *
+ * Арена безголовая: ни клиента, ни браузера в ней нет вовсе. Правка
+ * отрисовки, HUD или лобби изменить исход не может физически, а вот
+ * заставить прогнать всю очередь заново — вполне, потому что коммит
+ * в main она всё-таки создаёт.
+ */
+const BALANCE_PATHS = ['packages/shared', 'packages/sim', 'packages/ai', 'apps/arena'];
+
+/**
+ * Менялись ли правила игры с того прогона.
+ *
+ * Не смогли ответить (истории нет, коммит недостижим) — отвечаем «да»:
+ * лишний прогон стоит часа машинного времени, пропущенный сдвиг — куда
+ * дороже.
+ */
+const rulesChangedSince = (oldSha) => {
+  try {
+    return git('diff', '--name-only', `${oldSha}..HEAD`, '--', ...BALANCE_PATHS) !== '';
+  } catch {
+    return true;
+  }
+};
+
 const planFor = (entry, journal, spent) => {
   const mine = recordsOf(journal, entry);
   const last = mine.at(-1);
@@ -211,12 +236,13 @@ const planFor = (entry, journal, spent) => {
   if (typeof entry.until === 'string' && entry.until < today)
     return { skip: `срок записи вышел ${entry.until}` };
 
-  // Пропуск по неизменившемуся коду — не экономия ради экономии.
-  // Матчи детерминированы: на том же коде и том же зерне выйдут те же
-  // цифры до последнего тика. Прогнать их заново значит занять час
-  // и узнать ровно то, что уже записано в журнале.
-  if (!runAll && last !== undefined && last.sha === sha)
-    return { skip: `код не менялся с прогона ${last.ranAt.slice(0, 10)}` };
+  // Пропуск по неизменившимся правилам — не экономия ради экономии.
+  // Матчи детерминированы: пока `packages/sim`, `packages/ai`
+  // и `packages/shared` те же, при том же зерне выйдут те же цифры
+  // до последнего тика. Прогнать их заново значит занять час и узнать
+  // ровно то, что уже записано в журнале.
+  if (!runAll && last !== undefined && !rulesChangedSince(last.sha))
+    return { skip: `правила игры не менялись с прогона ${last.ranAt.slice(0, 10)}` };
 
   if (spent + entry.matches > budget)
     return { skip: `не влезает в предел ${String(budget)} матчей за прогон` };
