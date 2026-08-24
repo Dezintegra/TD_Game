@@ -20,7 +20,7 @@ import { hashOf, noiseFrom } from './noise.js';
 import { fadeOver, glowFill, particleHeight, riseOver, smokeFill, travel } from './effects.js';
 import { arcWaveFront } from './arc-shape.js';
 import type { ArcSink } from './arc-shape.js';
-import { structureModelHeight, structureMuzzleHeight } from './towers.js';
+import { structureModelHeight, structureMuzzleHeight } from './structures.js';
 
 /**
  * Облик выстрела: вспышка у ствола, след, попадание, ракета.
@@ -264,11 +264,11 @@ const muzzleHeight = (shot: ShotState, world: WorldState): number => {
  * и вспышка у её подножия читалась бы промахом под неё, а не попаданием
  * в неё.
  */
-const impactHeight = (shot: ShotState, world: WorldState, colors: ShotColors): number => {
+const impactHeight = (shot: ShotState, world: WorldState): number => {
   const target = structureAt(world, unitsToCells(shot.to.x), unitsToCells(shot.to.y));
   if (target === undefined) return IMPACT_CELLS;
 
-  return Math.max(IMPACT_CELLS, structureModelHeight(colors, target.kind) * modelShare(shot));
+  return Math.max(IMPACT_CELLS, structureModelHeight(target.kind) * modelShare(shot));
 };
 
 /** Доля высоты модели, в которую приходит попадание: примерно середина. */
@@ -384,7 +384,7 @@ const drawShot = (
   const toX = unitsToCells(shot.to.x);
   const toY = unitsToCells(shot.to.y);
 
-  const landing = impactHeight(shot, world, colors);
+  const landing = impactHeight(shot, world);
   const impact = screenAt(toX, toY, landing);
 
   // Точка пуска — над стрелком, а у генерала ещё и на борту. Вспышка

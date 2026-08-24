@@ -1,4 +1,4 @@
-import type { Graphics } from 'pixi.js';
+import type { Graphics, Texture } from 'pixi.js';
 import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
@@ -25,8 +25,10 @@ import {
   hoverBob,
   weaponTier,
 } from './models.js';
-import type { MachineSprite, MachineSprites } from './machine-sprites.js';
-import { paintStructure, readinessStep, structureSilhouette } from './towers.js';
+import type { MachineSprites } from './machine-sprites.js';
+import { readinessStep } from './structures.js';
+import type { StructureSprites } from './structure-sprites.js';
+import { wallLinks } from './walls.js';
 
 /**
  * Отрисовка живого содержимого поля: построек, юнитов и генералов.
@@ -64,7 +66,6 @@ import { paintStructure, readinessStep, structureSilhouette } from './towers.js'
 export interface EntityColors {
   readonly self: number;
   readonly enemy: number;
-  readonly hullDark: number;
   /** Цвет поверхности поля. К нему подмешиваются отражения. */
   readonly ground: number;
   readonly health: number;
@@ -95,20 +96,43 @@ interface Drawable {
   draw(graphics: Graphics, band: number): void;
 }
 
+/**
+ * Что кладётся в слой спрайтом.
+ *
+ * Одна запись на машину и на постройку: на этом уровне разницы между
+ * ними нет — положение да ссылка на текстуру. Своё описание, а не
+ * заимствованное у машин, стоит здесь ровно того, чтобы слой не знал,
+ * кто именно в него лёг.
+ */
+export interface BakedSprite {
+  readonly texture: Texture;
+  /** Смещение левого верхнего угла относительно точки опоры. */
+  readonly offsetX: number;
+  readonly offsetY: number;
+  /** Высота модели в клетках — по ней ставится полоса прочности. */
+  readonly modelHeight: number;
+}
+
 /** Слои, в которые сцена принимает нарисованное. */
 export interface EntityLayers {
   /** Слой полосы глубины: полоса `k` собирает объекты с глубиной [k, k+1). */
   band(index: number): Graphics;
   /**
-   * Положить запечённую машину в полосу глубины.
+   * Положить запечённое тело в полосу глубины.
    *
-   * Спрайт в `Graphics` не положишь, поэтому у машин свой слой на полосу.
-   * Он идёт СРАЗУ ЗА слоем построек той же полосы, и это не произвол:
+   * Спрайт в `Graphics` не положишь, поэтому у тел свой слой на полосу.
+   * Он идёт СРАЗУ ЗА слоем `band` той же полосы, и это не произвол:
    * глубина постройки — центр её клетки, то есть целое число, а глубина
-   * юнита той же полосы лежит в [k, k+1). Юнит в полосе всегда ближе
-   * постройки той же полосы, значит, и рисоваться обязан после неё.
+   * юнита той же полосы лежит в [k, k+1). Очередь отсортирована
+   * по глубине, а при равенстве устойчивая сортировка сохраняет порядок
+   * добавления — постройки кладутся в очередь раньше машин. Перекрытие
+   * поэтому выходит верным без единой строки.
+   *
+   * Полосы прочности остаются в `band` и потому оказываются НАД телами.
+   * Так и надо: полоса висит выше модели, а спрайт выше своей модели
+   * не поднимается.
    */
-  machine(index: number, sprite: MachineSprite, anchorX: number, anchorY: number): void;
+  sprite(index: number, baked: BakedSprite, anchorX: number, anchorY: number): void;
   /**
    * Слой поверх тел — для того, что не имеет права прятаться за ними.
    *
@@ -131,8 +155,15 @@ export const drawEntities = (
   colors: EntityColors,
   localPlayer: PlayerId,
   machines: MachineSprites,
+  structures: StructureSprites,
 ): void => {
   const stats = world.players.map(playerStats);
+
+  // Связи стен считаются один раз на кадр, а не на каждую стену: обход
+  // списка построек всё равно один, а второй проход по соседям без общей
+  // раскладки по клеткам стоил бы перебора всех стен на каждую стену.
+  const links = wallLinks(world.structures, world.tick);
+
   const accentOf = (owner: PlayerId): number =>
     owner === localPlayer ? colors.self : colors.enemy;
 
@@ -191,13 +222,18 @@ export const drawEntities = (
 
     const maxHealth = maxHealthOf(structure);
     const side = structure.owner === localPlayer ? SIDE_SELF : SIDE_ENEMY;
-    const accent = accentOf(structure.owner);
 
-    const silhouette = structureSilhouette(
-      colors,
+    // Облик у башни и у стены выражается разным. У башни это румб
+    // турели — он живёт в состоянии мира и обновляется выстрелом.
+    // У стены это набор связей с соседями: он выводится при отрисовке
+    // и в состояние мира не попадает, потому что нужен одной картинке.
+    const look =
+      structure.kind === StructureKind.Wall ? (links.get(structure.cell) ?? 0) : structure.facing;
+
+    const baked = structures.sprite(
       side,
       structure.kind,
-      structure.facing,
+      look,
       readinessStep(readinessOf(structure, world.tick)),
     );
 
@@ -210,7 +246,7 @@ export const drawEntities = (
     // на клетку севернее оказывался бы с ней вровень и рисовался поверх.
     queue.push({
       depth: x + y + 1,
-      draw: (graphics) => paintStructure(graphics, silhouette, anchor.x, anchor.y, accent),
+      draw: (_graphics, band) => layers.sprite(band, baked, anchor.x, anchor.y),
     });
     queue.push({
       depth: x + y + 1.001,
@@ -219,7 +255,7 @@ export const drawEntities = (
           graphics,
           x + 0.5,
           y + 0.5,
-          silhouette.height,
+          baked.modelHeight,
           structure.health,
           maxHealth,
           colors,
@@ -257,8 +293,8 @@ export const drawEntities = (
       depth: x + y,
       draw: (graphics, band) => {
         // Отражение первым: оно лежит в поверхности, машина висит над ней.
-        layers.machine(band, mirror, anchor.x, anchor.y + lift * MIRROR_SQUASH);
-        layers.machine(band, body, anchor.x, anchor.y - lift);
+        layers.sprite(band, mirror, anchor.x, anchor.y + lift * MIRROR_SQUASH);
+        layers.sprite(band, body, anchor.x, anchor.y - lift);
         // Полоса здоровья поднимается вместе с машиной, иначе повиснет
         // отдельно от неё.
         drawHealthBar(graphics, x, y, body.modelHeight + altitude, unit.health, maxHealth, colors);
@@ -292,8 +328,8 @@ export const drawEntities = (
         // Отражение первым: оно лежит в поверхности, машина висит над ней.
         // Тени между ними нет — рядом с отражением она читалась не тенью,
         // а вторым отражением. Клетку показывает радиус строительства.
-        layers.machine(band, mirror, anchor.x, anchor.y + lift * MIRROR_SQUASH);
-        layers.machine(band, gunship, anchor.x, anchor.y - lift);
+        layers.sprite(band, mirror, anchor.x, anchor.y + lift * MIRROR_SQUASH);
+        layers.sprite(band, gunship, anchor.x, anchor.y - lift);
         drawHealthBar(graphics, x, y, gunship.modelHeight + bob, general.health, maxHealth, colors);
       },
     });

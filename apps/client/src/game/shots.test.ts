@@ -19,7 +19,7 @@ import type { ArcLine, ArcSink, ArcStyle } from './arc-shape.js';
 import type { ViewBounds } from './entities.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
-import { structureModelHeight } from './towers.js';
+import { structureModelHeight } from './structures.js';
 
 /**
  * Облик выстрела проверяется не картинкой, а тем, что уходит в слои.
@@ -365,7 +365,7 @@ describe('высота дульного среза', () => {
 
     // Половина высоты модели — заведомо выше «плеча» машины и заведомо
     // ниже верхушки: попасть в этот промежуток можно только из ствола.
-    const half = structureModelHeight(COLORS, StructureKind.TowerSniper) / 2;
+    const half = structureModelHeight(StructureKind.TowerSniper) / 2;
 
     expect(START.y - start.y).toBeGreaterThan(half * ELEVATION_PX_PER_CELL);
   });
