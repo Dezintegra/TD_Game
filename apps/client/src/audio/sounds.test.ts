@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { BLAST_LIFETIME_TICKS, BlastKind, NUKE_DELAY_TICKS, TICKS_PER_SECOND } from '@td/shared';
 import { createFilter, peakOf, rms, zeroCrossings } from './dsp.js';
-import { LOOPING, SOUNDS, SOUND_SECONDS, Sound, VARIANTS, renderSound } from './sounds.js';
+import {
+  LOOPING,
+  SOUNDS,
+  SOUND_PEAK,
+  SOUND_SECONDS,
+  Sound,
+  VARIANTS,
+  renderSound,
+} from './sounds.js';
 
 /**
  * Тембр тестом не проверяется — что «пиу» звучит как «пиу», слышно только
@@ -96,6 +104,17 @@ describe('форма звуков', () => {
       const samples = renderSound(Sound.Rotor, 0, rate);
       expect(samples.length).toBe(Math.round(SOUND_SECONDS[Sound.Rotor] * rate));
     }
+  });
+
+  it('ротор тише самого тихого события более чем вдвое', () => {
+    // Единственный непрерывный звук в игре, и мерить его надо не сам
+    // по себе, а против остальных: он висит над игроком весь матч.
+    // При уровне вровень с событиями он становится подложкой, поверх
+    // которой чужой стрельбы не слышно.
+    const events = SOUNDS.filter((sound) => sound !== Sound.Rotor);
+    const quietest = Math.min(...events.map((sound) => SOUND_PEAK[sound]));
+
+    expect(SOUND_PEAK[Sound.Rotor] * 2).toBeLessThan(quietest);
   });
 });
 

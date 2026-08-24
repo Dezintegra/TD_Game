@@ -445,15 +445,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       // центр обзора, а не генерал: игрок слушает оттуда, куда смотрит,
       // и прокрутка карты обязана уводить источники в другое ухо.
       const centre = scene.viewCentre;
-      audio.frame(
-        world,
-        {
-          cellX: centre.x,
-          cellY: centre.y,
-          halfWidth: scene.viewportSize.width / 2,
-        },
-        replaying,
-      );
+      audio.frame(world, { cellX: centre.x, cellY: centre.y }, replaying);
     },
 
     onFps: (fps) => hudActions.setFps(fps),

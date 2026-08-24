@@ -8,6 +8,7 @@ import {
   prepareFile,
   resample,
   reverse,
+  take,
   tile,
   smoothEdges,
   trimLeadingSilence,
@@ -93,6 +94,50 @@ describe('пересчёт скорости', () => {
     const source = withSilence(0, 0.5, 1000);
     expect(crossings(resample([source], 0.5)[0] as Float32Array)).toBeCloseTo(500, -1);
     expect(crossings(resample([source], 2)[0] as Float32Array)).toBeCloseTo(2000, -1);
+  });
+});
+
+describe('обрезка длины', () => {
+  it('оставляет начало и отбрасывает остаток', () => {
+    const source = withSilence(0, 1);
+    const [after] = take([source], SAMPLE_RATE, 0.25);
+
+    expect(after?.length).toBe(Math.round(0.25 * SAMPLE_RATE));
+    for (let index = 0; index < 100; index += 1) {
+      expect(after?.[index]).toBe(source[index]);
+    }
+  });
+
+  it('режет все каналы одинаково', () => {
+    const [left, right] = take(stereo(withSilence(0, 1)), SAMPLE_RATE, 0.3);
+    expect(left?.length).toBe(right?.length);
+  });
+
+  it('запись короче нужного не трогает', () => {
+    const source = withSilence(0, 0.2);
+    expect(take([source], SAMPLE_RATE, 0.5)[0]).toBe(source);
+  });
+
+  it('вместе с затуханием даёт короткий звук без обрыва', () => {
+    // Ровно то, ради чего обрезка заведена: одно затухание растягивает
+    // скат на весь остаток и почти не убавляет громкости к середине.
+    const long = fadeFrom(stereo(withSilence(0, 1.23)), SAMPLE_RATE, 0.34);
+    const short = fadeFrom(
+      take(stereo(withSilence(0, 1.23)), SAMPLE_RATE, 0.62),
+      SAMPLE_RATE,
+      0.34,
+    );
+
+    // Мерится среднеквадратичным по окну, а не отдельным отсчётом:
+    // отсчёт синуса в наугад взятой точке может оказаться нулём
+    // при какой угодно громкости.
+    const from = Math.round(0.58 * SAMPLE_RATE);
+    const to = Math.round(0.62 * SAMPLE_RATE);
+    const loud = rms(long[0] as Float32Array, from, to);
+    const quiet = rms(short[0] as Float32Array, from, to);
+
+    expect(loud).toBeGreaterThan(0.25);
+    expect(quiet).toBeLessThan(loud / 4);
   });
 });
 
