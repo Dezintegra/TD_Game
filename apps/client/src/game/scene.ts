@@ -12,6 +12,8 @@ import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
 import { drawEntities } from './entities.js';
 import { createMachineSprites } from './machine-sprites.js';
+import { createStructureSprites } from './structure-sprites.js';
+import type { StructureSpriteColors, StructureSprites } from './structure-sprites.js';
 import type { MachineSpriteColors, MachineSprites } from './machine-sprites.js';
 import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { drawShots } from './shots.js';
@@ -179,10 +181,31 @@ const readMachineColors = (): MachineSpriteColors => ({
   ground: token('--td-bg-page', 0x191919),
 });
 
+/**
+ * Цвета постройки.
+ *
+ * Броня и остекление те же, что у машин: башня и танк рядом обязаны быть
+ * из одного вещества, иначе поле распадается на два мира. Бетон тот же,
+ * что у командного центра, и по той же причине — бетон на карте один.
+ *
+ * Отдельного тёмного оттенка под тень здесь нет: у постройки нет ни
+ * колёс, ни решёток, ни выхлопа, а место второго тёмного материала
+ * занял бетон.
+ */
+const readStructureColors = (): StructureSpriteColors => ({
+  plate: token('--td-hull-plate', 0x3d4245),
+  steel: token('--td-hull-metal', 0x585e62),
+  concrete: token('--td-concrete', 0x6b6f72),
+  glass: token('--td-hull-glass', 0x232e36),
+  self: token('--td-accent', 0x00ff29),
+  enemy: token('--td-player-enemy', 0xd264ff),
+  sky: token('--td-rock-sky', 0x5c7ea8),
+  ground: token('--td-bg-page', 0x191919),
+});
+
 const readEntityColors = (): EntityColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
-  hullDark: token('--td-hull-dark', 0x23271f),
   // Цвет поверхности — тот же, которым залит фон сцены. Земля рисуется
   // линиями и заливок не имеет, поэтому под отражением всегда именно он.
   ground: token('--td-bg-page', 0x191919),
@@ -369,12 +392,15 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const bandUsed = new Uint8Array(entityBands.length);
 
   /**
-   * Пул спрайтов машин.
+   * Пул спрайтов.
+   *
+   * В нём живут и машины, и постройки: спрайт — это положение и ссылка
+   * на текстуру, и разницы между ними на этом уровне нет никакой.
    *
    * Машин на экране до двух сотен, и каждая берёт по два спрайта — тело
-   * и отражение. Создавать их заново каждый кадр значило бы двадцать
-   * тысяч объектов в секунду на ровном месте; спрайт же — это положение
-   * и ссылка на текстуру, и переиспользуется он полностью.
+   * и отражение; постройка берёт один, потому что она стоит, а не висит.
+   * Создавать их заново каждый кадр значило бы двадцать тысяч объектов
+   * в секунду на ровном месте.
    */
   const spritePool: Sprite[] = [];
   let spritesUsed = 0;
@@ -393,7 +419,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       // на стороне отрисовки сущностей.
       return entityBands[index] as Graphics;
     },
-    machine(index, machine, anchorX, anchorY) {
+    sprite(index, baked, anchorX, anchorY) {
       markBand(index);
 
       let sprite = spritePool[spritesUsed];
@@ -403,8 +429,8 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       }
       spritesUsed += 1;
 
-      sprite.texture = machine.texture;
-      sprite.position.set(anchorX + machine.offsetX, anchorY + machine.offsetY);
+      sprite.texture = baked.texture;
+      sprite.position.set(anchorX + baked.offsetX, anchorY + baked.offsetY);
       (machineBands[index] as Container).addChild(sprite);
     },
     overhead: overheadGraphics,
@@ -478,6 +504,20 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     readMachineColors(),
     app.renderer.resolution,
   );
+
+  /**
+   * Кеш запечённых построек.
+   *
+   * Отдельный от машинного, хотя приём тот же: у постройки другой ключ
+   * (облик вместо ступеней прокачки), другая палитра и другая фактура,
+   * а общего осталось бы одно только слово «спрайт».
+   */
+  const structures: StructureSprites = createStructureSprites(
+    app.renderer,
+    readStructureColors(),
+    app.renderer.resolution,
+  );
+
   const blastColors = readBlastColors();
   const overlayColors = readOverlayColors();
   const minimapColors = readMinimapColors();
@@ -609,7 +649,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       const time = clock.sample(world.tick, performance.now());
       const bounds = viewBounds();
 
-      drawEntities(layers, world, bounds, entityColors, localPlayer, machines);
+      drawEntities(layers, world, bounds, entityColors, localPlayer, machines, structures);
 
       // Выстрелы поверх всех тел: выстрел — это событие, и прятать его
       // за телами не нужно, иначе бой в толпе перестаёт читаться.
@@ -720,6 +760,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       // и машины — до самого приложения.
       arcs.destroy();
       machines.dispose();
+      structures.dispose();
       app.destroy(true, { children: true });
     },
 
