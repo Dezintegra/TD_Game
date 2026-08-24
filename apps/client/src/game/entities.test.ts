@@ -24,15 +24,8 @@ import type { EntityColors, EntityLayers, ViewBounds } from './entities.js';
 import { baseCrestPoint } from './base-structure.js';
 import { ELEVATION_PX_PER_CELL, worldToScreen } from './iso.js';
 import type { Point } from './iso.js';
-import {
-  MIRROR_SQUASH,
-  SIDE_SELF,
-  UNIT_ALTITUDE,
-  hoverBob,
-  unitReflection,
-  unitSilhouette,
-} from './models.js';
-import type { Silhouette } from './models.js';
+import { MIRROR_SQUASH, UNIT_ALTITUDE, hoverBob } from './models.js';
+import type { MachineSprite, MachineSprites } from './machine-sprites.js';
 
 /**
  * Порядок отрисовки проверяется не картинкой, а тем, в какую полосу
@@ -158,6 +151,40 @@ const unitAt = (cell: number) => ({
   readyAtTick: asTickNumber(0),
 });
 
+/**
+ * Заглушка кеша машин.
+ *
+ * Запекание требует видеокарты, а проверять здесь надо не картинку,
+ * а размещение: в какую полосу попала машина, где оказалась её точка
+ * опоры и что раньше — тело или отражение. Поэтому кеш подменяется
+ * записями с известными смещениями.
+ */
+const MODEL_HEIGHT = 0.3;
+const BODY_OFFSET = { x: -12, y: -18 };
+const MIRROR_OFFSET = { x: -12, y: 2 };
+
+const fakeSprite = (mirror: boolean): MachineSprite => ({
+  texture: undefined as unknown as MachineSprite['texture'],
+  offsetX: mirror ? MIRROR_OFFSET.x : BODY_OFFSET.x,
+  offsetY: mirror ? MIRROR_OFFSET.y : BODY_OFFSET.y,
+  modelHeight: MODEL_HEIGHT,
+});
+
+const FAKE_MACHINES: MachineSprites = {
+  unit: (_side, _unitType, _facing, _attack, _fire, mirror) => fakeSprite(mirror),
+  general: (_side, _facing, mirror) => fakeSprite(mirror),
+  unitHeight: () => MODEL_HEIGHT,
+  dispose: () => undefined,
+};
+
+/** Куда легла запечённая машина. */
+interface Placement {
+  readonly band: number;
+  readonly mirror: boolean;
+  readonly x: number;
+  readonly y: number;
+}
+
 interface DrawResult {
   /** Полосы глубины, которые запросила отрисовка, в порядке обращения. */
   readonly bands: number[];
@@ -167,28 +194,41 @@ interface DrawResult {
   readonly overheadRects: number;
   /** Точки тел — в порядке обхода. */
   readonly bodyPoints: Point[];
+  /** Размещённые машины — в порядке обращения. */
+  readonly machines: Placement[];
 }
 
 const drawInto = (world: WorldState, view: ViewBounds = WHOLE_MAP): DrawResult => {
   const depth = recorder();
   const overhead = recorder();
   const bands: number[] = [];
+  const machines: Placement[] = [];
 
   const layers: EntityLayers = {
     band(index) {
       bands.push(index);
       return depth.graphics;
     },
+    machine(index, sprite, anchorX, anchorY) {
+      bands.push(index);
+      machines.push({
+        band: index,
+        mirror: sprite.offsetY === MIRROR_OFFSET.y,
+        x: anchorX + sprite.offsetX,
+        y: anchorY + sprite.offsetY,
+      });
+    },
     overhead: overhead.graphics,
   };
 
-  drawEntities(layers, world, view, COLORS, asPlayerId(0));
+  drawEntities(layers, world, view, COLORS, asPlayerId(0), FAKE_MACHINES);
 
   return {
     bands,
     bandRects: depth.counts['rect'] ?? 0,
     overheadRects: overhead.counts['rect'] ?? 0,
     bodyPoints: depth.points,
+    machines,
   };
 };
 
@@ -247,67 +287,37 @@ describe('парение и отражение', () => {
   /** Подъём машины на нулевом тике. Номер юнита задаёт фазу покачивания. */
   const LIFT = (UNIT_ALTITUDE + hoverBob(UNIT_ID, 0)) * ELEVATION_PX_PER_CELL;
 
-  const model = (): Silhouette =>
-    unitSilhouette(COLORS, SIDE_SELF, UnitType.Assault, DIRECTION_SOUTH, 0, 0);
-  const mirror = (): Silhouette =>
-    unitReflection(COLORS, SIDE_SELF, UnitType.Assault, DIRECTION_SOUTH, 0, 0);
-
-  /** Самая верхняя и самая нижняя точки готовой геометрии. */
-  const span = (silhouette: Silhouette): { top: number; bottom: number } => {
-    let top = Infinity;
-    let bottom = -Infinity;
-
-    for (const run of silhouette.fills) {
-      for (const polygon of run.polygons) {
-        for (const point of polygon) {
-          top = Math.min(top, point.y);
-          bottom = Math.max(bottom, point.y);
-        }
-      }
-    }
-
-    return { top, bottom };
-  };
-
-  const drawUnit = (tick = 0): Point[] =>
-    drawInto({ ...bare(), tick: asTickNumber(tick), units: [unitAt(CELL)] }).bodyPoints;
+  const placements = (tick = 0): Placement[] =>
+    drawInto({ ...bare(), tick: asTickNumber(tick), units: [unitAt(CELL)] }).machines;
 
   it('машина поднята над землёй, а под ней лежит её отражение', () => {
-    // Целая машина полосы здоровья не получает, поэтому в слой попали
-    // только два тела: она сама и её отражение. Верх картины принадлежит
-    // ей, низ — отражению.
-    const points = drawUnit();
+    const [first, second] = placements();
+    if (first === undefined || second === undefined) throw new Error('машина не размещена');
 
-    expect(Math.min(...points.map((point) => point.y))).toBeCloseTo(
-      ANCHOR.y - LIFT + span(model()).top,
-      6,
-    );
-    expect(Math.max(...points.map((point) => point.y))).toBeCloseTo(
-      ANCHOR.y + LIFT * MIRROR_SQUASH + span(mirror()).bottom,
-      6,
-    );
+    expect(first.mirror).toBe(true);
+    expect(second.mirror).toBe(false);
+    expect(second.y).toBeCloseTo(ANCHOR.y - LIFT + BODY_OFFSET.y, 6);
+    expect(first.y).toBeCloseTo(ANCHOR.y + LIFT * MIRROR_SQUASH + MIRROR_OFFSET.y, 6);
   });
 
   it('отражение рисуется раньше тела', () => {
     // Отражение лежит в поверхности, машина висит над ней: нарисуй мы его
     // после, оно перекрыло бы собственные колёса.
-    const points = drawUnit();
-    const highest = Math.min(...points.map((point) => point.y));
-    const deepest = Math.max(...points.map((point) => point.y));
+    const placed = placements();
 
-    expect(points.findIndex((point) => point.y === deepest)).toBeLessThan(
-      points.findIndex((point) => point.y === highest),
+    expect(placed.findIndex((item) => item.mirror)).toBeLessThan(
+      placed.findIndex((item) => !item.mirror),
     );
   });
 
   it('тело и отражение попадают в одну полосу глубины', () => {
     // Отражение обязано прятаться за тем, что стоит ближе к зрителю,
     // ровно как сама машина, — а это и есть механизм полос.
-    expect(new Set(drawInto({ ...bare(), units: [unitAt(CELL)] }).bands)).toEqual(new Set([21]));
+    expect(new Set(placements().map((item) => item.band))).toEqual(new Set([21]));
   });
 
   it('в разные тики машина стоит на разной высоте', () => {
-    expect(drawUnit(18)).not.toEqual(drawUnit(0));
+    expect(placements(18)).not.toEqual(placements(0));
   });
 });
 
