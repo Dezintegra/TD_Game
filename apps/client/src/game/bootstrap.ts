@@ -299,6 +299,12 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   const guest = createMatchGuest({
     send: (message) => net.send(message),
 
+    // Часы показа. Мир на экране двигается ими, а не приходом кадров:
+    // канал дрожит у всех, и показывать это дрожание игроку незачем.
+    // `performance.now` читается здесь, а не в `@td/netplay`: тому
+    // платформенные вызовы запрещены.
+    now: () => performance.now(),
+
     onStatus: (status) => {
       // «Играем» сразу после приветствия — это ещё не игра: пока
       // не подключился соперник, сервер не считает ни одного тика.
@@ -422,6 +428,11 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         lastPingMs = now;
         net.ping(guest.confirmed?.tick ?? 0);
       }
+
+      // Часы показа спрашиваются ДО чтения мира, а не после, и порядок
+      // этот единственно верный: после — значит кадр рисует то, что
+      // насчитали в прошлый раз, и вся затея опаздывает ровно на кадр.
+      guest.advance();
 
       const world = guest.predicted;
       if (world === null) return;
