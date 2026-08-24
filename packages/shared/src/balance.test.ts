@@ -18,13 +18,18 @@ import {
   NUKE_COST,
   NUKE_DELAY_TICKS,
   NUKE_RADIUS,
+  SEPARATION_DAMPING_PERCENT,
+  SEPARATION_PUSH_SPEED_PERCENT,
+  SEPARATION_WALL_CLEARANCE,
   SHOT_LIFETIME_TICKS,
   STRUCTURE_STATS,
   STRUCTURE_WEAPON,
   ShotSide,
   ShotWeapon,
   StructureKind,
+  UNIT_SEPARATION_RADIUS,
   UNIT_STATS,
+  UNIT_TYPES,
   UNIT_WEAPON,
   UPGRADE_BRANCHES,
   UnitType,
@@ -129,8 +134,8 @@ describe('баланс: дальность генерала', () => {
   });
 
   /** За сколько тиков генерал снимает одну непрокачанную башню. */
-  const ticksToTakeTower = Math.ceil(tower.health / GENERAL_STATS.attack) *
-    GENERAL_STATS.cooldownTicks;
+  const ticksToTakeTower =
+    Math.ceil(tower.health / GENERAL_STATS.attack) * GENERAL_STATS.cooldownTicks;
 
   /** Сколько тиков генерал живёт под огнём `count` таких башен. */
   const ticksAlive = (count: number): number =>
@@ -412,6 +417,53 @@ describe('баланс: дальность юнитов прокачиваетс
   });
 });
 
+describe('баланс: расталкивание', () => {
+  it('личный радиус меньше половины клетки у каждой машины', () => {
+    // Радиус больше половины клетки означал бы, что машина претендует
+    // на клетку целиком, — а это уже жёсткие столкновения, которых
+    // изменение не вводит.
+    for (const type of UNIT_TYPES) {
+      const radius = UNIT_SEPARATION_RADIUS[type];
+
+      expect(radius).toBeGreaterThan(0);
+      expect(radius).toBeLessThan(cellsToUnits(0.5));
+    }
+  });
+
+  it('порядок радиусов повторяет порядок габаритов корпуса', () => {
+    // Тесла — самая широкая машина в игре, снайпер — самая узкая.
+    // Порядок здесь и есть та связь с обликом, которую из общего пакета
+    // не проверить иначе: модели живут в клиенте, а он сюда не ходит.
+    expect(UNIT_SEPARATION_RADIUS[UnitType.Tesla]).toBeGreaterThan(
+      UNIT_SEPARATION_RADIUS[UnitType.Assault],
+    );
+    expect(UNIT_SEPARATION_RADIUS[UnitType.Assault]).toBeGreaterThan(
+      UNIT_SEPARATION_RADIUS[UnitType.Sniper],
+    );
+  });
+
+  it('клиренс от стен больше любого личного радиуса', () => {
+    // Иначе правило теряет смысл: центр окажется снаружи, а корпус
+    // будет свешиваться за край скалы.
+    const widest = Math.max(...UNIT_TYPES.map((type) => UNIT_SEPARATION_RADIUS[type]));
+
+    expect(SEPARATION_WALL_CLEARANCE).toBeGreaterThan(widest);
+  });
+
+  it('толчок гасится и ограничен долей собственной скорости', () => {
+    expect(SEPARATION_DAMPING_PERCENT).toBeGreaterThan(0);
+    expect(SEPARATION_DAMPING_PERCENT).toBeLessThan(100);
+
+    // Потолок в половину скорости: даже самую медленную машину толпа
+    // не должна носить быстрее, чем она ездит сама.
+    const slowest = UNIT_STATS[UnitType.Tesla].speed;
+    const cap = Math.floor((slowest * SEPARATION_PUSH_SPEED_PERCENT) / 100);
+
+    expect(cap).toBeGreaterThan(0);
+    expect(cap).toBeLessThan(slowest);
+  });
+});
+
 describe('баланс: ветки прокачки', () => {
   it('покрывают все типы юнитов, башен, стену, генерала и экономику', () => {
     const targets = new Set(UPGRADE_BRANCHES.map((entry) => entry.target));
@@ -437,8 +489,7 @@ describe('баланс: ветки прокачки', () => {
     const steep = (entry: (typeof UPGRADE_BRANCHES)[number]): boolean =>
       entry.target === UpgradeTarget.Base ||
       (entry.stat === UpgradeStat.Range &&
-        (entry.target === UpgradeTarget.UnitSniper ||
-          entry.target === UpgradeTarget.UnitTesla));
+        (entry.target === UpgradeTarget.UnitSniper || entry.target === UpgradeTarget.UnitTesla));
 
     for (const entry of UPGRADE_BRANCHES) {
       expect(entry.costGrowthPercent).toBe(steep(entry) ? 25 : 10);
