@@ -449,10 +449,58 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
    * мышью — то есть поставил бы постройку, которую игрок уже передумал
    * ставить.
    */
+  /**
+   * Снять выделение объекта.
+   *
+   * Одна функция на все случаи, и это условие работоспособности правила.
+   * Разложи снятие по трём обработчикам порознь — четвёртый режим,
+   * когда он появится, про выделение забудет, и заметит это не автор,
+   * а игрок посреди боя.
+   */
+  const clearSelection = (): void => {
+    if (selectedCell < 0) return;
+
+    selectedCell = -1;
+    handlers.select(-1);
+  };
+
   const setBuilding = (on: boolean): void => {
     building = on;
     if (!on) buildKind = null;
-    else aimingNuke = false;
+    else {
+      aimingNuke = false;
+      // Игрок собрался строить, значит следующее нажатие по полю значит
+      // не «выбери», а «поставь». Окно сведений в этот момент закрывает
+      // ему клетки — на телефоне заметную их часть, — и закрывает ровно
+      // тогда, когда он прицеливается.
+      clearSelection();
+    }
+  };
+
+  /**
+   * Наведение ядерного удара.
+   *
+   * Единственный вход в режим: и клавиша, и плитка тулбара идут сюда.
+   * Пока их было двое, каждая помнила свой набор того, что надо погасить,
+   * и наборы разошлись.
+   */
+  const setNukeAiming = (on: boolean): void => {
+    aimingNuke = on;
+    if (!on) return;
+
+    aimingTarget = false;
+    setBuilding(false);
+    clearSelection();
+  };
+
+  /** Наведение цели атаки. Единственный вход в режим — как у удара. */
+  const setTargetAiming = (on: boolean): void => {
+    aimingTarget = on;
+    if (!on) return;
+
+    aimingNuke = false;
+    setBuilding(false);
+    clearSelection();
   };
 
   const cancelModes = (): boolean => {
@@ -463,10 +511,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     aimingTarget = false;
     // Esc снимает и выделение: игрок нажимает его, чтобы «ничего
     // не было выбрано», и оставлять подсветку на поле было бы обманом.
-    if (selectedCell >= 0) {
-      selectedCell = -1;
-      handlers.select(-1);
-    }
+    clearSelection();
 
     return had;
   };
@@ -579,8 +624,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     }
 
     if (event.code === NUKE_KEY) {
-      aimingNuke = !aimingNuke;
-      if (aimingNuke) setBuilding(false);
+      setNukeAiming(!aimingNuke);
       return;
     }
 
@@ -995,19 +1039,11 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     },
 
     setAimingNuke(aiming) {
-      aimingNuke = aiming;
-      if (aiming) {
-        aimingTarget = false;
-        setBuilding(false);
-      }
+      setNukeAiming(aiming);
     },
 
     setAimingTarget(aiming) {
-      aimingTarget = aiming;
-      if (aiming) {
-        aimingNuke = false;
-        setBuilding(false);
-      }
+      setTargetAiming(aiming);
     },
 
     setMenuOpen(open) {

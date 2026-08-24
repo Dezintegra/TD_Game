@@ -818,6 +818,102 @@ describe('выделение снимается тем же Esc', () => {
   });
 });
 
+describe('включение режима снимает выделение', () => {
+  /** Выделить объект в клетке 42 и вернуть управление с обработчиками. */
+  const withSelection = (): { controls: Controls; handlers: ControlHandlers } => {
+    const handlers = handlersOf();
+    handlers.cellAtScreen = vi.fn(() => 42);
+
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+
+    const controls = attachControls(host, handlers);
+    attached = controls;
+
+    host.dispatchEvent(new MouseEvent('pointerdown', { button: 0, bubbles: true }));
+    expect(controls.state.selectedCell).toBe(42);
+    vi.mocked(handlers.select).mockClear();
+
+    return { controls, handlers };
+  };
+
+  it('выбор вида постройки из тулбара', () => {
+    // Окно сведений иначе висит поверх поля ровно тогда, когда игрок
+    // собрался это поле застраивать, — то есть закрывает ему клетки
+    // в момент прицеливания.
+    const { controls, handlers } = withSelection();
+
+    controls.setBuildKind(StructureKind.Wall);
+
+    expect(controls.state.selectedCell).toBe(-1);
+    expect(handlers.select).toHaveBeenCalledWith(-1);
+  });
+
+  it('режим строительства клавишей', () => {
+    const { controls, handlers } = withSelection();
+
+    press('KeyQ');
+
+    expect(controls.state.selectedCell).toBe(-1);
+    expect(handlers.select).toHaveBeenCalledWith(-1);
+  });
+
+  it('наведение ядерки из тулбара', () => {
+    const { controls, handlers } = withSelection();
+
+    controls.setAimingNuke(true);
+
+    expect(controls.state.selectedCell).toBe(-1);
+    expect(handlers.select).toHaveBeenCalledWith(-1);
+  });
+
+  it('наведение ядерки клавишей', () => {
+    const { controls, handlers } = withSelection();
+
+    press('KeyF');
+
+    expect(controls.state.aimingNuke).toBe(true);
+    expect(controls.state.selectedCell).toBe(-1);
+    expect(handlers.select).toHaveBeenCalledWith(-1);
+  });
+
+  it('наведение цели атаки', () => {
+    const { controls, handlers } = withSelection();
+
+    controls.setAimingTarget(true);
+
+    expect(controls.state.selectedCell).toBe(-1);
+    expect(handlers.select).toHaveBeenCalledWith(-1);
+  });
+
+  it('выход из режима выделение не трогает', () => {
+    // Снимает выделение ВХОД в режим, а не выход из него: выйдя из
+    // строительства, игрок вернулся к разглядыванию поля, и гасить ему
+    // нечего.
+    const { controls, handlers } = withSelection();
+
+    controls.setBuildKind(null);
+    controls.setAimingNuke(false);
+    controls.setAimingTarget(false);
+
+    expect(handlers.select).not.toHaveBeenCalled();
+  });
+
+  it('без выделения обработчик не тревожится', () => {
+    // Пустое снятие не должно доходить до HUD: оно перерисовало бы окно
+    // сведений на каждое нажатие плитки.
+    const handlers = handlersOf();
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const controls = attachControls(host, handlers);
+    attached = controls;
+
+    controls.setBuildKind(StructureKind.Wall);
+
+    expect(handlers.select).not.toHaveBeenCalled();
+  });
+});
+
 describe('движение продолжает работать как прежде', () => {
   it('отпускание клавиши останавливает генерала', () => {
     const { handlers } = setup();
