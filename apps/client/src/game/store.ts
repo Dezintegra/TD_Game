@@ -139,7 +139,12 @@ export interface MatchSnapshot {
   readonly unitCosts: readonly number[];
   /** Цены построек по виду. */
   readonly structureCosts: readonly number[];
+  /**
+   * Цена пуска и радиус поражения — с учётом прокачки радиуса.
+   * Цена выводится из радиуса: платят за накрытую площадь.
+   */
   readonly nukeCost: number;
+  readonly nukeRadiusCells: number;
   /**
    * Строки характеристик по целям прокачки: индекс — значение
    * `UpgradeTarget`. Пустой список означает, что качать у этой цели нечего.
@@ -184,6 +189,7 @@ const EMPTY_MATCH: MatchSnapshot = {
   unitCosts: [],
   structureCosts: [],
   nukeCost: 0,
+  nukeRadiusCells: 0,
   stats: [],
   targetLabel: '—',
   matchSeconds: 0,
