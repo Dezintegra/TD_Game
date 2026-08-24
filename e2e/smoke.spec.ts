@@ -499,17 +499,27 @@ const sidesVisible = async (page: Page): Promise<void> => {
 const ORDER_TILES = ['train-0', 'train-1', 'train-2', 'build-1', 'build-2', 'build-3'] as const;
 
 /**
- * Где стоит заказ: сколько плиток за краем экрана, далеко ли последняя
- * от правого края и правда ли юниты правее построек.
+ * Где стоит заказ.
+ *
+ * Заказ теперь СТОЛБЕЦ у правого края поверх поля, а не строка в полосе,
+ * поэтому мерятся обе оси: `rightGap` сторожит прижатие к краю (дуга
+ * большого пальца), а `unitsTop` против `buildBottom` — порядок внутри
+ * столбца. Юниты обязаны стоять НИЖЕ построек: заказ юнита это одно
+ * нажатие, постановка постройки — два, и лучшее место в столбце
+ * достаётся частому действию.
+ *
+ * «За краем экрана» проверяется и по высоте: столбец из шести плиток
+ * в ландшафте укладывается в 311 точек впритык, и первая же лишняя
+ * точка высоты плитки выгонит верхнюю за верхний край поля.
  */
 const orderPlacement = async (
   page: Page,
-): Promise<{ offScreen: number; rightGap: number; unitsLeft: number; buildRight: number }> => {
-  const width = page.viewportSize()!.width;
+): Promise<{ offScreen: number; rightGap: number; unitsTop: number; buildBottom: number }> => {
+  const { width, height } = page.viewportSize()!;
   let offScreen = 0;
   let rightmost = 0;
-  let unitsLeft = Number.POSITIVE_INFINITY;
-  let buildRight = 0;
+  let unitsTop = Number.POSITIVE_INFINITY;
+  let buildBottom = 0;
 
   for (const id of ORDER_TILES) {
     const box = await page.getByTestId(id).boundingBox();
@@ -518,12 +528,40 @@ const orderPlacement = async (
       continue;
     }
     if (box.x < 0 || box.x + box.width > width + 1) offScreen += 1;
+    if (box.y < 0 || box.y + box.height > height + 1) offScreen += 1;
     rightmost = Math.max(rightmost, box.x + box.width);
-    if (id.startsWith('train-')) unitsLeft = Math.min(unitsLeft, box.x);
-    else buildRight = Math.max(buildRight, box.x + box.width);
+    if (id.startsWith('train-')) unitsTop = Math.min(unitsTop, box.y);
+    else buildBottom = Math.max(buildBottom, box.y + box.height);
   }
 
-  return { offScreen, rightGap: width - rightmost, unitsLeft, buildRight };
+  return { offScreen, rightGap: width - rightmost, unitsTop, buildBottom };
+};
+
+/**
+ * Сколько клеток видно по вертикали.
+ *
+ * Главная величина этого изменения: до него телефон в ландшафте
+ * показывал 4,3 клетки — меньше дальности выстрела, — и игрок физически
+ * не мог увидеть стрелка и его мишень одновременно.
+ *
+ * Считается высотой поля, делённой на высоту клетки при действующем
+ * масштабе. Высота клетки берётся не из кода клиента, а собирается здесь
+ * заново из углов проекции: проверка, зовущая проверяемую формулу,
+ * сверяла бы её с самой собой.
+ */
+const visibleRows = async (page: Page): Promise<number> => {
+  const box = await page.locator('#scene canvas').boundingBox();
+  if (box === null) return 0;
+
+  const attribute = await page.getByTestId('diagnostics').getAttribute('data-view-scale');
+  const scale = Number(attribute ?? 0);
+  if (!Number.isFinite(scale) || scale === 0) return 0;
+
+  // 63 × (sin 40° + cos 40°) × sin 35° — высота ромба клетки на экране.
+  const yaw = (40 * Math.PI) / 180;
+  const cellHeight = 63 * (Math.sin(yaw) + Math.cos(yaw)) * Math.sin((35 * Math.PI) / 180);
+
+  return box.height / (cellHeight * scale);
 };
 
 /** Все ветки прокачки, показанные на экране. */
@@ -564,13 +602,15 @@ test.describe('телефон в портрете', () => {
     expect((await bottomOverflow(page)).x).toBeLessThanOrEqual(0);
     expect(await coveredButtons(page)).toBe(0);
 
-    // Весь заказ на экране и прижат к правому краю, под большой палец.
+    // Весь заказ на экране столбцом у правого края, под большой палец.
     const order = await orderPlacement(page);
     expect(order.offScreen).toBe(0);
     expect(order.rightGap).toBeLessThanOrEqual(12);
-    // Юниты правее построек: заказ юнита — одно нажатие, постановка
-    // постройки — два, и лучшее место достаётся частому действию.
-    expect(order.unitsLeft).toBeGreaterThan(order.buildRight);
+    // Юниты НИЖЕ построек: заказ юнита — одно нажатие, постановка
+    // постройки — два, и лучшее место в столбце достаётся частому
+    // действию. Раньше это же требование читалось «правее»: заказ был
+    // строкой в полосе.
+    expect(order.unitsTop).toBeGreaterThanOrEqual(order.buildBottom);
 
     // Цена видна и без подписи «цена»: число остаётся.
     await expect(page.getByTestId('train-0-cost')).toBeVisible();
@@ -592,7 +632,15 @@ test.describe('телефон в портрете', () => {
     // другое действие, и вешать его на похожее с виду число нельзя.
     expect(await page.getByTestId('base-health-enemy').evaluate((el) => el.tagName)).toBe('DIV');
 
-    expect(await fieldShare(page)).toBeGreaterThanOrEqual(70);
+    // Полосы внизу больше нет вовсе, и полю достаётся почти весь экран:
+    // 812 минус 114 верхней сводки — это 86 %. Прежний порог был 70,
+    // и держался он на полосе в 84 точки.
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(85);
+
+    // Главное число этого изменения. Портрет и раньше давал одиннадцать
+    // клеток, но проверялось это ничем: пропади они — заметил бы игрок,
+    // а не проверка.
+    expect(await visibleRows(page)).toBeGreaterThanOrEqual(10);
   });
 
   test('панель прокачки в портрете', async ({ page }) => {
@@ -651,9 +699,17 @@ test.describe('телефон в ландшафте', () => {
     const order = await orderPlacement(page);
     expect(order.offScreen).toBe(0);
     expect(order.rightGap).toBeLessThanOrEqual(12);
-    expect(order.unitsLeft).toBeGreaterThan(order.buildRight);
+    expect(order.unitsTop).toBeGreaterThanOrEqual(order.buildBottom);
 
-    expect(await fieldShare(page)).toBeGreaterThanOrEqual(54);
+    // 375 минус 64 верхней сводки — это 83 %. Прежний порог был 54,
+    // и держался он на полосе в 64 точки, то есть на пятой части
+    // всего экрана.
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(82);
+
+    // Ради этой строки всё и затевалось: было 4,3 клетки — меньше
+    // дальности выстрела, — и игрок физически не мог увидеть стрелка
+    // и его мишень одновременно.
+    expect(await visibleRows(page)).toBeGreaterThanOrEqual(10);
 
     // Из матча надо уметь выйти. На телефоне Esc нажать нечем, и до этой
     // кнопки выйти было нельзя ВООБЩЕ: ни выйти, ни сдаться, ни начать
