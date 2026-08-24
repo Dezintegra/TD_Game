@@ -438,6 +438,9 @@ const Diagnostics = () => {
   const netGapMax = useHudStore((state) => state.netGapMax);
   const displayGapP95 = useHudStore((state) => state.displayGapP95);
   const displayGapLong = useHudStore((state) => state.displayGapLong);
+  const shiftedCommands = useHudStore((state) => state.shiftedCommands);
+  const jumpCount = useHudStore((state) => state.jumpCount);
+  const jumpMaxCells = useHudStore((state) => state.jumpMaxCells);
 
   return (
     <div
@@ -458,6 +461,9 @@ const Diagnostics = () => {
       data-net-gap-max={String(netGapMax)}
       data-display-gap-p95={String(displayGapP95)}
       data-display-gap-long={String(displayGapLong)}
+      data-shifted-commands={String(shiftedCommands)}
+      data-jump-count={String(jumpCount)}
+      data-jump-max-cells={String(jumpMaxCells)}
       style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden' }}
     />
   );

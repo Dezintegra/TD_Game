@@ -104,6 +104,18 @@ export interface MatchGuestOptions {
    * тем же способом.
    */
   readonly now?: () => number;
+  /**
+   * Своя команда вернулась кадром, и вот на сколько тактов её сдвинули.
+   *
+   * Ноль — исполнена там, где её ждали. Больше нуля — опоздала: такт
+   * назначения сервер уже сыграл и передвинул команду вперёд. Это
+   * прямая причина скачка картинки, потому что показать её действие
+   * клиент успел ещё на назначенном такте.
+   *
+   * Обработчика нет — очередь отданных команд не ведётся вовсе,
+   * и участник не платит за диагностику ни памятью, ни временем.
+   */
+  readonly onCommandShift?: (ticks: number) => void;
 }
 
 export interface MatchGuest {
@@ -168,6 +180,17 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
    */
   let anchorTick = 0;
   let anchorAtMs = Number.NaN;
+
+  /**
+   * Такты, на которые назначались свои команды, в порядке отправки.
+   *
+   * Сопоставление идёт по порядку, а не по содержимому, и это не лень.
+   * Сервер складывает команды игрока в порядке получения и двигает
+   * опоздавшую только вперёд — значит порядок на выходе тот же, что
+   * на входе. Две же одинаковые команды подряд по содержимому
+   * неразличимы, и сравнение выбрало бы не ту.
+   */
+  const issuedTicks: number[] = [];
 
   /** Собственные команды, ещё не пришедшие обратно кадром. */
   const own = new Map<number, UnownedCommand[]>();
@@ -365,6 +388,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     confirmed = createWorld(seed);
     predicted = confirmed;
     own.clear();
+    issuedTicks.length = 0;
     buffered.clear();
     mine.clear();
     expected.clear();
@@ -385,6 +409,27 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     }
   };
 
+  /**
+   * Отметить, на сколько сервер сдвинул вернувшиеся свои команды.
+   *
+   * Пустая очередь — не ошибка: так бывает после пересборки, когда
+   * история приносит команды, отданные ещё до неё. Сказать про них
+   * нечего, и выдумывать нечего.
+   */
+  const noteShifts = (tick: number, commands: readonly Command[]): void => {
+    const report = options.onCommandShift;
+    if (report === undefined || side === null) return;
+
+    for (const command of commands) {
+      if (command.player !== side) continue;
+
+      const issuedAt = issuedTicks.shift();
+      if (issuedAt === undefined) continue;
+
+      report(tick - issuedAt);
+    }
+  };
+
   /** Применить всё, что уже можно применить, не оставляя дыр. */
   const drain = (): void => {
     if (confirmed === null || status === 'stopped') return;
@@ -399,6 +444,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
 
       forget(tick);
       remember(confirmed);
+      noteShifts(tick, commands);
       options.onFrame?.(tick, commands);
 
       if (pendingDelay !== null && confirmed.tick >= pendingDelay.fromTick) {
@@ -433,6 +479,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
           confirmed = createWorld(seed);
           predicted = confirmed;
           own.clear();
+          issuedTicks.length = 0;
           buffered.clear();
           mine.clear();
           expected.clear();
@@ -568,6 +615,8 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
       } else {
         list.push(command);
       }
+
+      if (options.onCommandShift !== undefined) issuedTicks.push(tick);
 
       options.send({ type: MessageType.Command, command });
       rebuild();

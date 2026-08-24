@@ -261,6 +261,12 @@ export interface SmoothnessView {
   readonly displayGapP95: number;
   /** Сколько раз показываемый мир простоял дольше тика. Точное число. */
   readonly displayGapLong: number;
+  /** Сколько своих команд сервер сдвинул: прямая причина скачков. */
+  readonly shiftedCommands: number;
+  /** Сколько раз генерал уехал сверх того, что мог пройти. */
+  readonly jumpCount: number;
+  /** Самый большой такой скачок, в клетках. */
+  readonly jumpMaxCells: number;
 }
 
 interface HudState {
@@ -308,6 +314,17 @@ interface HudState {
    */
   readonly displayGapP95: number;
   readonly displayGapLong: number;
+  /**
+   * Скачки картинки и их прямая причина.
+   *
+   * `shiftedCommands` — сколько своих команд сервер сдвинул: клиент
+   * показал действие на назначенном такте, а исполнилось оно позже.
+   * `jumpCount` и `jumpMaxCells` — сколько раз и насколько далеко
+   * генерал уехал сверх того, что мог пройти.
+   */
+  readonly shiftedCommands: number;
+  readonly jumpCount: number;
+  readonly jumpMaxCells: number;
   /** Seed текущей карты. Карта восстанавливается из него целиком. */
   readonly seed: number;
   /** Какая доля карты помещается на экран, в процентах. */
@@ -444,6 +461,9 @@ export const useHudStore = create<HudState>((set) => ({
   netGapMax: 0,
   displayGapP95: 0,
   displayGapLong: 0,
+  shiftedCommands: 0,
+  jumpCount: 0,
+  jumpMaxCells: 0,
   seed: 0,
   visiblePercent: 0,
   rockPercent: 0,
@@ -478,7 +498,10 @@ export const useHudStore = create<HudState>((set) => ({
       state.netGapP95 === smoothness.netGapP95 &&
       state.netGapMax === smoothness.netGapMax &&
       state.displayGapP95 === smoothness.displayGapP95 &&
-      state.displayGapLong === smoothness.displayGapLong
+      state.displayGapLong === smoothness.displayGapLong &&
+      state.shiftedCommands === smoothness.shiftedCommands &&
+      state.jumpCount === smoothness.jumpCount &&
+      state.jumpMaxCells === smoothness.jumpMaxCells
         ? state
         : smoothness,
     ),
