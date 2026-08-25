@@ -1407,6 +1407,42 @@ describe('огонь на ходу', () => {
       outcome(bothEngage(facingEachOther())).damage,
     );
   });
+
+  it('встречные колонны расходятся, обменявшись огнём', () => {
+    // Ситуация, которую замысел прежде объявлял ошибкой, а теперь считает
+    // штатной: две колонны прошли друг мимо друга, каждая понесла потери,
+    // и ни одна не встала. Отсутствием события было бы, если бы они
+    // не стреляли.
+    //
+    // Дороги параллельны и разведены на полторы клетки: колонны всю
+    // дорогу остаются в радиусе друг у друга, но бортами не задевают,
+    // и расталкивание в исход не вмешивается.
+    const AHEAD = cellIndex(21, 20);
+    const ONCOMING = cellIndex(21, 22);
+
+    let world = withUnitAt(withUnitAt(openWorld(), 0, AHEAD, TOUGH, 900), 1, ONCOMING, TOUGH, 901);
+    const apartAtStart = distanceSquared(cellCentre(AHEAD), cellCentre(ONCOMING));
+
+    for (let tick = 0; tick < TWO_SHOTS; tick += 1) {
+      const before = world;
+      world = step(world, []);
+
+      // Остановка — это несдвинувшийся за тик юнит, и ловить её надо
+      // каждый тик. Проверка одного лишь итога пропустила бы юнита,
+      // простоявшего половину отрезка: дойти он всё равно успел бы.
+      expect(unitOf(world, 900)?.position).not.toEqual(unitOf(before, 900)?.position);
+      expect(unitOf(world, 901)?.position).not.toEqual(unitOf(before, 901)?.position);
+    }
+
+    // Обменялись именно огнём, а не поводом: по выстрелу с каждой стороны
+    // и оба полной силы.
+    expect(unitOf(world, 900)?.health).toBe(TOUGH - ASSAULT.attack);
+    expect(unitOf(world, 901)?.health).toBe(TOUGH - ASSAULT.attack);
+
+    const mine = unitOf(world, 900)?.position ?? cellCentre(AHEAD);
+    const theirs = unitOf(world, 901)?.position ?? cellCentre(ONCOMING);
+    expect(distanceSquared(mine, theirs)).toBeGreaterThan(apartAtStart);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
