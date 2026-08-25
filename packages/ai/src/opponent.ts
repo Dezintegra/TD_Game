@@ -41,12 +41,18 @@ import type { Occupancy, PlayerState, PlayerStats, WorldState } from '@td/sim';
 import { approachOf, otherPlayer, sealsApproach, walkField } from './approach.js';
 import type { Approach } from './approach.js';
 import {
+  addCover,
+  coverField,
   coveredCells,
+  flowDensity,
   freshCoverage,
   markCovered,
+  ownTowers,
   pickVerdict,
   rangeInCells,
   rankFrontiers,
+  siteCover,
+  siteValue,
   situationOf,
   towerGain,
 } from './posture.js';
@@ -681,7 +687,7 @@ const spendEfficiency = (
   const towerPrice = stats.structures[StructureKind.TowerBasic].cost;
   if (towerPrice > 0) {
     efficiency.build = worth(
-      towerGain(towerSiteCoverage(world, me, stats, approach, covered), stats, profile),
+      towerGain(towerSiteCoverage(world, me, stats, profile, approach, covered), stats, profile),
       towerPrice,
     );
   }
@@ -714,6 +720,20 @@ const outvalues = (candidate: number | undefined, saving: number): boolean =>
  * постройка. Функция детерминированная, поэтому два вызова за решение —
  * это не два источника истины, а один ответ, полученный дважды.
  *
+ * ## Прикрытие сюда НЕ входит, и это решение, а не упущение
+ *
+ * Место выбирается по `siteValue` — покрытие плюс прибавка к живучести, —
+ * а покупка оценивается одним покрытием, как и прежде. Разница
+ * намеренная: прибавка к живучести отвечает на вопрос «КУДА поставить»,
+ * а не «стоит ли ставить вообще». Пусти её в сравнение покупок — и башня
+ * подорожает в оценке вдвое-втрое против юнита и прокачки, то есть
+ * изменится расклад трат. А траты — предмет `fix-ai-spending`, и это
+ * изменение их не касается по своему же условию.
+ *
+ * Замер подтверждает, что цена вопроса не теоретическая: на эталонном
+ * сценарии подстановка `siteValue` в сравнение покупок сдвинула войско
+ * и накопления, тогда как сама расстановка от неё не менялась вовсе.
+ *
  * Прежде вместо этого бралась выгода РУБЕЖА генерала, и место, где башня
  * встанет, в расчёт не входило вовсе. Отсюда и брались нелепости:
  * простреливаемый вражескими башнями рубеж обесценивал покупку, хотя
@@ -723,6 +743,7 @@ const towerSiteCoverage = (
   world: WorldState,
   me: PlayerId,
   stats: PlayerStats,
+  profile: AiProfile,
   approach: Approach,
   covered: Uint8Array,
 ): number => {
@@ -732,12 +753,14 @@ const towerSiteCoverage = (
   const rangeCells = rangeInCells(stats.structures[StructureKind.TowerBasic].range);
   const cell = towerBuildCell(
     world,
-    me,
     general.position,
     stats.general.buildRadius,
     approach,
     covered,
-    rangeCells,
+    stats,
+    profile,
+    StructureKind.TowerBasic,
+    coverField(ownTowers(world, me, stats)),
   );
   if (cell < 0) return 0;
 
@@ -1223,6 +1246,13 @@ const tryBuild = (
     )
     .map((structure) => structure.cell);
 
+  // Поле дружественного огня по ВСЕЙ карте — для взаимного прикрытия.
+  // Радиус генерала здесь ни при чём: башня прикрывает соседа своей
+  // дальностью, а не тем, в чьей окрестности стоит. Поле пополняется
+  // заказанными этим же решением: в мире их ещё нет, а прикрывают они
+  // уже по-настоящему.
+  const cover = coverField(ownTowers(world, me, stats));
+
   let purse = player.energy;
   let placed = 0;
   // Чем кончилась попытка, оборвавшая группу. Когда не поставлено ничего,
@@ -1278,7 +1308,17 @@ const tryBuild = (
     const cell =
       shielding && !opening
         ? shieldBuildCell(world, me, general.position, radius, local, towerCells, profile)
-        : towerBuildCell(world, me, general.position, radius, local, fresh, towerRange);
+        : towerBuildCell(
+            world,
+            general.position,
+            radius,
+            local,
+            fresh,
+            stats,
+            profile,
+            kind,
+            cover,
+          );
 
     // Места нет — и это не то же самое, что «нет денег». Башне нужен
     // ненакрытый путь в радиусе, стене — своя башня, которую она прикроет;
@@ -1316,6 +1356,12 @@ const tryBuild = (
     blocked[cell] = 1;
     if (!shielding) {
       towerCells.push(cell);
+      addCover(
+        cover,
+        cell,
+        stats.structures[kind].attack / Math.max(1, stats.structures[kind].cooldownTicks),
+        towerRange,
+      );
       // Стена не стреляет, и накрывать ей нечего: помечается только башня.
       markCovered(fresh, cell, towerRange);
     }
@@ -1379,8 +1425,11 @@ const forEachBuildCandidate = (
 };
 
 /**
- * Место под башню: клетка, накрывающая как можно больше ЕЩЁ НЕ НАКРЫТОГО
- * вероятного пути.
+ * Место под башню: там, где ценность выше всего.
+ *
+ * Ценность — `siteValue`: покрытие ЕЩЁ НЕ накрытого вероятного пути плюс
+ * прибавка к живучести от взаимного прикрытия со своими башнями. Обе
+ * величины в энергии, поэтому сравниваются напрямую.
  *
  * Слово «ещё не накрытого» здесь главное. Прежняя мерка считала все клетки
  * пути подряд и не знала, что они уже простреливаются тремя своими
@@ -1389,46 +1438,65 @@ const forEachBuildCandidate = (
  * Счётчик врал: три башни в скальном горле и три в чистом поле накрывают
  * совершенно разное.
  *
- * При равном покрытии выбирается ближайшая к чужой базе — так башни
- * сами собой выстраиваются в сторону противника, а не кольцом вокруг
- * генерала.
+ * Но у той же мерки есть и обратная беда: накрытые своими клетки
+ * вычитаются, значит лучшее место — всегда подальше от своих. Разброс
+ * башен оказался не случайностью, а замыслом алгоритма, и платой за него
+ * были две трети башен, потерянных за матч. Прикрытие тянет обратно,
+ * и спор двух сил решается сравнением, а не правилом.
+ *
+ * При равной ценности выбирается место с большей ПЛОТНОСТЬЮ вражеского
+ * потока — той же, что в оценке рубежей: доля пути, пройденная войсками
+ * противника от их базы. Прежде здесь стояла прямая дистанция до чужой
+ * базы; плотность отвечает на тот же вопрос, но по дороге, а не сквозь
+ * скалы, и меряется тем же, чем меряется рубеж.
+ *
+ * Плотность именно РАЗРЕШАЕТ НИЧЬЮ, а не входит множителем, и это
+ * не мелочь. Множитель удалённости, применённый к покупке, обращает
+ * в ноль ценность башни у собственной базы — той самой, что расстреливает
+ * прорвавшихся в двух шагах от командного центра; беда эта названа
+ * в `value.ts` и повторять её незачем.
  *
  * Если накрывать нечего вовсе, место не выбирается. Это не пропуск хода,
  * а отказ от бесполезной покупки: та же нулевая выгода одновременно
  * уводит генерала на следующий рубеж, потому что рубежи оцениваются
  * той же меркой.
  */
-const towerBuildCell = (
+export const towerBuildCell = (
   world: WorldState,
-  me: PlayerId,
   from: Vec2,
   radius: number,
   approach: Approach,
   covered: Uint8Array,
-  rangeCells: number,
+  stats: PlayerStats,
+  profile: AiProfile,
+  kind: StructureKind,
+  cover: Float64Array,
 ): number => {
-  const enemyCell = world.map.baseCells[otherPlayer(me)];
-  if (enemyCell === undefined) return -1;
-
-  const enemy = cellCentre(enemyCell);
+  const baseline = stats.structures[kind];
+  const rangeCells = rangeInCells(baseline.range);
+  const damagePerTick = baseline.attack / Math.max(1, baseline.cooldownTicks);
 
   let best = -1;
-  let bestCoverage = 0;
-  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestValue = 0;
+  let bestDensity = -1;
 
-  forEachBuildCandidate(world, approach.occupancy, from, radius, (cell, point) => {
+  forEachBuildCandidate(world, approach.occupancy, from, radius, (cell) => {
     const coverage = freshCoverage(approach, covered, cell, rangeCells);
-    if (coverage < bestCoverage) return;
+    if (coverage <= 0) return;
 
-    const distance = distanceSquared(point, enemy);
-    if (coverage === bestCoverage && distance >= bestDistance) return;
+    const mutual = siteCover(approach, cover, cell, damagePerTick, rangeCells);
+    const value = siteValue(coverage, mutual, stats, profile);
+    if (value <= 0 || value < bestValue) return;
 
-    bestCoverage = coverage;
-    bestDistance = distance;
+    const density = flowDensity(approach, cell);
+    if (value === bestValue && density <= bestDensity) return;
+
+    bestValue = value;
+    bestDensity = density;
     best = cell;
   });
 
-  return bestCoverage > 0 ? best : -1;
+  return best;
 };
 
 /**

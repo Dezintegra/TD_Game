@@ -18,18 +18,23 @@ import {
   veteranStructurePpm,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
-import { cellCentre, cellIndex, createWorld, playerStats } from '@td/sim';
+import { cellCentre, cellIndex, cellX, cellY, createWorld, playerStats } from '@td/sim';
 import type { StructureState, UnitState, WorldState } from '@td/sim';
 import { approachOf } from './approach.js';
 import { BASELINE_PROFILE, horizonTicks } from './profile.js';
 import {
   ENERGY_PER_LIVE_DAMAGE,
   chooseFrontier,
+  coverField,
   coveredCells,
   discCellCount,
+  flowDensity,
   freshCoverage,
   incomingAt,
+  ownTowers,
   rangeInCells,
+  siteCover,
+  siteValue,
   situationOf,
   towerGain,
   towerGrowthFactor,
@@ -250,6 +255,127 @@ describe('покрытие пути', () => {
     // Своя же башня накрыла всё, что накрыла бы новая: строить второй раз
     // в ту же клетку незачем, и оценка это показывает.
     expect(after).toBe(0);
+  });
+});
+
+describe('взаимное прикрытие своих башен', () => {
+  const middle = cellAtFraction(0.5);
+  const player = PLAIN.players[AI];
+  if (player === undefined) throw new Error('нет игрока');
+  const stats = playerStats(player);
+  const dps =
+    stats.structures[StructureKind.TowerBasic].attack /
+    stats.structures[StructureKind.TowerBasic].cooldownTicks;
+  const range = rangeInCells(stats.structures[StructureKind.TowerBasic].range);
+
+  /** Клетка на расстоянии `dx` клеток от середины маршрута. */
+  const beside = (dx: number): number => cellIndex(cellX(middle) + dx, cellY(middle));
+
+  const fieldOf = (world: WorldState): Float64Array => coverField(ownTowers(world, AI, stats));
+
+  it('кольцо двух своих башен прикрывает вдвое сильнее одной', () => {
+    const one = clearMap({ structures: [tower(AI, beside(-2))] });
+    const two = clearMap({ structures: [tower(AI, beside(-2)), tower(AI, beside(2))] });
+
+    expect(fieldOf(one)[middle] ?? 0).toBeCloseTo(dps, 6);
+    expect(fieldOf(two)[middle] ?? 0).toBeCloseTo(dps * 2, 6);
+  });
+
+  it('чужие башни в прикрытие не идут', () => {
+    const foes = clearMap({ structures: [tower(FOE, beside(-2)), tower(FOE, beside(2))] });
+
+    expect(fieldOf(foes)[middle] ?? 0).toBe(0);
+  });
+
+  it('дальше своей дальности башня не прикрывает', () => {
+    const far = clearMap({ structures: [tower(AI, beside(range + 2))] });
+
+    expect(fieldOf(far)[middle] ?? 0).toBe(0);
+  });
+
+  it('в счёт идёт и то, что новая башня отдаёт соседям', () => {
+    // Прикрытие считается в обе стороны. Место, где своих нет вовсе,
+    // не получает ничего и не отдаёт ничего; место в чужом поле огня —
+    // и получает, и отдаёт.
+    const alone = clearMap();
+    const beside2 = clearMap({ structures: [tower(AI, beside(-2))] });
+
+    const empty = siteCover(APPROACH, fieldOf(alone), middle, dps, range);
+    const near = siteCover(APPROACH, fieldOf(beside2), middle, dps, range);
+
+    expect(empty).toBe(0);
+    // Полученное — средний дружественный урон по своему полю огня,
+    // отданное — свой урон на долю поля, уже простреливаемую своими.
+    // Вместе они заведомо больше одного лишь полученного.
+    expect(near).toBeGreaterThan(dps * 0.5);
+  });
+
+  it('прикрытие убывает плавно, а не ступенькой', () => {
+    // Это главное свойство мерки, и оно стоило переделки. Спроси мы
+    // «достаёт ли сосед до клетки башни» — вышла бы ступенька, а вместе
+    // с ней порог «не дальше дальности башни»: то самое правило,
+    // которое спецификация запрещает. Прикрытие поля огня перекрывается
+    // постепенно и потому остаётся величиной для сравнения.
+    const measured = [2, 3, 4, 5, 6].map((gap) => {
+      const world = clearMap({ structures: [tower(AI, beside(-gap))] });
+      return siteCover(APPROACH, fieldOf(world), middle, dps, range);
+    });
+
+    for (let index = 1; index < measured.length; index += 1) {
+      const before = measured[index - 1] ?? 0;
+      const after = measured[index] ?? 0;
+
+      expect(after).toBeLessThan(before);
+      expect(after).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('ценность места под башню', () => {
+  const player = PLAIN.players[AI];
+  if (player === undefined) throw new Error('нет игрока');
+  const stats = playerStats(player);
+  const dps =
+    stats.structures[StructureKind.TowerBasic].attack /
+    stats.structures[StructureKind.TowerBasic].cooldownTicks;
+
+  it('при равном покрытии место под прикрытием ценнее места в пустоте', () => {
+    const alone = siteValue(20, 0, stats, BASELINE_PROFILE);
+    const covered = siteValue(20, dps, stats, BASELINE_PROFILE);
+
+    expect(alone).toBeGreaterThan(0);
+    // Прикрытие вдвое большим огнём — вдвое дольше жизни, вдвое дороже
+    // вложение. Множитель выведен, а не подобран: атакующие гибнут
+    // за A / (D + C) тиков.
+    expect(covered).toBeCloseTo(alone * 2, 6);
+  });
+
+  it('без покрытия пути ценности нет, каким бы плотным ни было прикрытие', () => {
+    // Иначе башни сбивались бы в кучу там, где стрелять не по кому.
+    expect(siteValue(0, dps * 10, stats, BASELINE_PROFILE)).toBe(0);
+  });
+
+  it('покрытие и прикрытие сравниваются, а не спорят', () => {
+    // Меньшее покрытие под прикрытием может перевесить большее в пустоте —
+    // и наоборот. Ровно это и значит «величина, а не правило».
+    const lonelyWide = siteValue(30, 0, stats, BASELINE_PROFILE);
+    const coveredNarrow = siteValue(20, dps, stats, BASELINE_PROFILE);
+
+    expect(coveredNarrow).toBeGreaterThan(lonelyWide);
+    expect(siteValue(30, 0, stats, BASELINE_PROFILE)).toBeGreaterThan(
+      siteValue(10, dps, stats, BASELINE_PROFILE),
+    );
+  });
+});
+
+describe('плотность вражеского потока', () => {
+  it('растёт от своей базы к чужой', () => {
+    const near = flowDensity(APPROACH, cellAtFraction(0.2));
+    const far = flowDensity(APPROACH, cellAtFraction(0.8));
+
+    expect(near).toBeLessThan(far);
+    expect(near).toBeGreaterThanOrEqual(0);
+    expect(far).toBeLessThanOrEqual(1);
   });
 });
 
