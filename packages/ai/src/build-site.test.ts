@@ -14,7 +14,7 @@ import {
 import type { PlayerId } from '@td/shared';
 import { cellCentre, cellIndex, cellX, cellY, createWorld, playerStats } from '@td/sim';
 import type { PlayerStats, StructureState, WorldState } from '@td/sim';
-import { approachOf } from './approach.js';
+import { approachOf, corridorWidthAt, corridorWidths } from './approach.js';
 import type { Approach } from './approach.js';
 import {
   coverField,
@@ -27,7 +27,8 @@ import {
   siteValue,
 } from './posture.js';
 import { BASELINE_PROFILE } from './profile.js';
-import { towerBuildCell } from './opponent.js';
+import { cellsToUnits } from '@td/shared';
+import { shieldBuildCell, towerBuildCell } from './opponent.js';
 
 /**
  * Куда встаёт башня.
@@ -365,5 +366,139 @@ describe('плотность потока разрешает ничью', () => 
 
     // Тест без единой ничьей не проверил бы ничего.
     expect(ties).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Мир с настоящим горлом: чистое поле, перегороженное скальной грядой
+ * посередине, и в ней проход в три клетки.
+ *
+ * Нужен затем, что «узкое место» и «широкое» должны оказаться в ОДНОМ
+ * круге строительства: сравнивать две карты бессмысленно, сравнивать надо
+ * две клетки.
+ */
+const throatWorld = (
+  structures: readonly StructureState[] = [],
+): { world: WorldState; gate: number } => {
+  const world = openWorld(structures);
+  const cells = Uint8Array.from(world.map.cells);
+
+  const home = world.map.baseCells[AI] ?? 0;
+  const enemy = world.map.baseCells[1 - AI] ?? 0;
+
+  const row = Math.round((cellY(home) + cellY(enemy)) / 2);
+  const gap = Math.round((cellX(home) + cellX(enemy)) / 2);
+
+  for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
+    if (Math.abs(x - gap) <= 1) continue;
+    cells[cellIndex(x, row)] = Terrain.Rock;
+  }
+
+  return { world: { ...world, map: { ...world.map, cells } }, gate: cellIndex(gap, row) };
+};
+
+const chooseWall = (
+  world: WorldState,
+  approach: Approach,
+  towers: readonly number[] = [],
+): number => {
+  const stats = statsOf(world);
+  const general = world.generals[AI];
+  if (general === undefined) throw new Error('нет генерала');
+
+  return shieldBuildCell(
+    world,
+    AI,
+    general.position,
+    stats.general.buildRadius,
+    approach,
+    corridorWidths(approach),
+    towers,
+    BASELINE_PROFILE,
+    new Set(),
+  );
+};
+
+describe('стена идёт в узкое место подхода', () => {
+  it('горло перекрывается раньше широкого места', () => {
+    const { world: bare, gate } = throatWorld();
+    const world = withGeneralAt(bare, gate);
+    const approach = approachOrThrow(world);
+    const widths = corridorWidths(approach);
+
+    const site = chooseWall(world, approach);
+    expect(site).toBeGreaterThanOrEqual(0);
+
+    const chosenWidth = corridorWidthAt(approach, widths, site);
+
+    const onPath = candidates(world, approach).filter((cell) => approach.onPath[cell] === 1);
+    const widths_ = onPath.map((cell) => corridorWidthAt(approach, widths, cell));
+
+    // Выбрана самая узкая из доступных клеток коридора, и выбор был:
+    // в том же круге строительства есть клетки заметно шире.
+    expect(chosenWidth).toBe(Math.min(...widths_));
+    expect(Math.max(...widths_)).toBeGreaterThan(chosenWidth);
+
+    // Число здесь БОЛЬШЕ трёх, хотя проход в гряде именно трёхклеточный,
+    // и это не сбой, а известная граница мерки: она считает клетки
+    // по глубине от базы, а не по связности. На одной глубине с проходом
+    // лежат и клетки по другую сторону гряды, и все они складываются
+    // в одну ширину. Ошибка безопасная — горло выглядит шире, чем оно
+    // есть, то есть противник осторожничает.
+    expect(chosenWidth).toBeGreaterThan(3);
+  });
+
+  it('стена перед башней по-прежнему ставится', () => {
+    // Локальное прикрытие никуда не делось. В широком коридоре доля
+    // перекрытого подхода мала — одна клетка из семнадцати, — и щит
+    // своей башне перевешивает.
+    const bare = openWorld();
+    const layout = approachOrThrow(bare);
+    const stand = cellAtFraction(layout, 0.5);
+    const mate = cellAtFraction(layout, 0.46);
+
+    const world = withGeneralAt(openWorld([tower(AI, mate)]), stand);
+    const approach = approachOrThrow(world);
+
+    const site = chooseWall(world, approach, [mate]);
+    expect(site).toBeGreaterThanOrEqual(0);
+
+    const enemy = cellCentre(world.map.baseCells[1 - AI] ?? 0);
+    const reach = cellsToUnits(BASELINE_PROFILE.building.shieldRadiusCells) ** 2;
+
+    // Стена встала рядом с башней и со стороны подхода: башня стреляет
+    // поверх неё, а пехота сквозь неё стрелять не может.
+    expect(distanceSquared(cellCentre(site), cellCentre(mate))).toBeLessThanOrEqual(reach);
+    expect(distanceSquared(cellCentre(site), enemy)).toBeLessThan(
+      distanceSquared(cellCentre(mate), enemy),
+    );
+  });
+
+  it('отвергнутое место в перебор больше не попадает', () => {
+    // На этом держится отказ по достижимости: место, запирающее свою
+    // армию, откладывается, и берётся следующее по ценности.
+    const { world: bare, gate } = throatWorld();
+    const world = withGeneralAt(bare, gate);
+    const approach = approachOrThrow(world);
+
+    const stats = statsOf(world);
+    const general = world.generals[AI];
+    if (general === undefined) throw new Error('нет генерала');
+
+    const first = chooseWall(world, approach);
+    const second = shieldBuildCell(
+      world,
+      AI,
+      general.position,
+      stats.general.buildRadius,
+      approach,
+      corridorWidths(approach),
+      [],
+      BASELINE_PROFILE,
+      new Set([first]),
+    );
+
+    expect(second).toBeGreaterThanOrEqual(0);
+    expect(second).not.toBe(first);
   });
 });

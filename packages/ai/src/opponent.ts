@@ -38,7 +38,14 @@ import {
   upgradeCosts,
 } from '@td/sim';
 import type { Occupancy, PlayerState, PlayerStats, WorldState } from '@td/sim';
-import { approachOf, otherPlayer, sealsApproach, walkField } from './approach.js';
+import {
+  approachOf,
+  corridorWidthAt,
+  corridorWidths,
+  otherPlayer,
+  sealsApproach,
+  walkField,
+} from './approach.js';
 import type { Approach } from './approach.js';
 import {
   addCover,
@@ -1253,6 +1260,13 @@ const tryBuild = (
   // уже по-настоящему.
   const cover = coverField(ownTowers(world, me, stats));
 
+  // Ширина коридора по глубине — одним проходом по уже посчитанному
+  // вероятному пути, один раз на решение. Пересчитывать её после каждой
+  // постройки группы незачем: сам путь тоже не пересчитывается, и обе
+  // неточности имеют один и тот же безопасный предел — коридор шире
+  // группы из нескольких клеток.
+  const widths = corridorWidths(local);
+
   let purse = player.energy;
   let placed = 0;
   // Чем кончилась попытка, оборвавшая группу. Когда не поставлено ничего,
@@ -1305,9 +1319,19 @@ const tryBuild = (
     const towerRange = rangeInCells(stats.structures[kind].range);
     // Место для стены открытия ищется как для башни: прикрывать ещё
     // нечего, а перекрыть путь у своей базы — ровно то, что нужно.
-    const cell =
+    const pick = (skip: ReadonlySet<number>): number =>
       shielding && !opening
-        ? shieldBuildCell(world, me, general.position, radius, local, towerCells, profile)
+        ? shieldBuildCell(
+            world,
+            me,
+            general.position,
+            radius,
+            local,
+            widths,
+            towerCells,
+            profile,
+            skip,
+          )
         : towerBuildCell(
             world,
             general.position,
@@ -1318,25 +1342,51 @@ const tryBuild = (
             profile,
             kind,
             cover,
+            skip,
           );
-
-    // Места нет — и это не то же самое, что «нет денег». Башне нужен
-    // ненакрытый путь в радиусе, стене — своя башня, которую она прикроет;
-    // и то и другое кончается задолго до энергии.
-    if (cell < 0) {
-      stopped = passing(shielding ? AttemptNote.NoShieldSite : AttemptNote.NoTowerSite);
-      break;
-    }
 
     // Запечатать проход себе — законный ход по правилам игры и почти
     // наверняка ошибка по замыслу: своё войско выходит из своей базы,
     // и последняя закрытая щель останавливает его так же надёжно, как чужое.
-    // Обход карты здесь один и только для уже выбранного места — но
-    // по занятости, УЖЕ учитывающей заказанное этим решением: группа
+    //
+    // Отказ не молчаливый и не окончательный: отвергнутое место
+    // откладывается, и берётся следующее по ценности. Перебор ограничен
+    // `sealRetries`, потому что каждая проверка стоит обхода карты.
+    // Проверять КАЖДОГО кандидата было бы нельзя — это сотни обходов
+    // за решение.
+    //
+    // Занятость при этом УЖЕ учитывает заказанное этим решением: группа
     // способна запереть проход тем, чего не делает ни одна её постройка
     // по отдельности.
-    if (sealsApproach(world, me, local, cell)) {
+    const rejected = new Set<number>();
+    let cell = -1;
+    let sealed = false;
+
+    for (let tries = 0; tries <= profile.building.sealRetries; tries += 1) {
+      cell = pick(rejected);
+      if (cell < 0) break;
+
+      if (!sealsApproach(world, me, local, cell)) {
+        sealed = false;
+        break;
+      }
+
+      rejected.add(cell);
+      cell = -1;
+      sealed = true;
+    }
+
+    if (sealed) {
       stopped = passing(AttemptNote.WouldSealPath);
+      break;
+    }
+
+    // Места нет — и это не то же самое, что «нет денег». Башне нужен
+    // ненакрытый путь в радиусе, стене — перекрываемый подход или своя
+    // башня, которую она прикроет; и то и другое кончается задолго
+    // до энергии.
+    if (cell < 0) {
+      stopped = passing(shielding ? AttemptNote.NoShieldSite : AttemptNote.NoTowerSite);
       break;
     }
 
@@ -1471,6 +1521,7 @@ export const towerBuildCell = (
   profile: AiProfile,
   kind: StructureKind,
   cover: Float64Array,
+  skip: ReadonlySet<number> = new Set(),
 ): number => {
   const baseline = stats.structures[kind];
   const rangeCells = rangeInCells(baseline.range);
@@ -1481,6 +1532,8 @@ export const towerBuildCell = (
   let bestDensity = -1;
 
   forEachBuildCandidate(world, approach.occupancy, from, radius, (cell) => {
+    if (skip.has(cell)) return;
+
     const coverage = freshCoverage(approach, covered, cell, rangeCells);
     if (coverage <= 0) return;
 
@@ -1500,37 +1553,74 @@ export const towerBuildCell = (
 };
 
 /**
- * Место под стену: между своей башней и стороной, откуда подходят войска.
+ * Место под стену: узкое место подхода, а при равном — щит своей башне.
  *
- * «Откуда подходят» определяется по расстоянию до чужой базы: стена
- * должна оказаться к ней ближе, чем прикрываемая башня. Клетка на самом
- * пути ценнее клетки рядом с ним — именно по ней и пойдут.
+ * ## Две задачи, и они не спорят
+ *
+ * Стена умеет две разные вещи, и обе нужны.
+ *
+ * Первая — **перекрыть подход**. Замысел прямо разрешает такую игру:
+ * «полное запечатывание прохода стенами — осмысленный ход, а не эксплойт;
+ * стена не отменяет атаку, а лишь покупает время» (5.4). Больше того,
+ * ядро уже умеет главное: не найдя пути, юнит ломает САМУЮ ВЫГОДНУЮ
+ * преграду. Значит перекрытие не отменяет атаку, а НАЗНАЧАЕТ ЕЙ МЕСТО:
+ * противник придёт туда, куда его вынудили, и там его ждут башни.
+ *
+ * Вторая — **прикрыть свою башню**. Башня стреляет поверх стены, а пехота
+ * сквозь неё стрелять не может (5.5), поэтому стена со стороны подхода
+ * превращает башню в укрепление.
+ *
+ * Обе выражены в долях перекрытого подхода и потому складываются:
+ *
+ * - перекрытие: клетка в коридоре шириной N перекрывает 1/N подхода.
+ *   Одну клетку из трёх — треть, одну из тридцати — ничего;
+ * - прикрытие: столько долей, сколько объявлено `shieldWorthCells`.
+ *   По умолчанию треть — ровно столько же, сколько даёт горло в три
+ *   клетки, самое узкое, какое карта допускает (§ 2.1).
+ *
+ * Ничья разрешается близостью к чужой базе — как и прежде.
+ *
+ * ## Что изменилось против прежнего правила
+ *
+ * Прежде стена ставилась ТОЛЬКО там, где прикрывала свою башню, а о карте
+ * не знала ничего: за матч противник ставил девять сотен стен, и ни одна
+ * не была выбрана из соображений о геометрии подхода — в горло попали три
+ * из девятисот шестидесяти четырёх. Теперь горло — первое, на что стена
+ * смотрит, а прикрытие башни осталось слагаемым и никуда не делось.
+ *
+ * «Откуда подходят» по-прежнему определяется по расстоянию до чужой базы:
+ * стена должна оказаться к ней ближе, чем прикрываемая башня.
  *
  * Башни передаются КЛЕТКАМИ, а не постройками, и не ради краткости:
  * башня, заказанная этим же решением, объекта в мире ещё не имеет —
  * он появится только после `step`, — а прикрывать её стеной уже
  * осмысленно. Ничего, кроме клетки, отсюда у башни и не спрашивалось.
  */
-const shieldBuildCell = (
+export const shieldBuildCell = (
   world: WorldState,
   me: PlayerId,
   from: Vec2,
   radius: number,
   approach: Approach,
+  widths: Int32Array,
   towers: readonly number[],
   profile: AiProfile,
+  skip: ReadonlySet<number>,
 ): number => {
   const enemyCell = world.map.baseCells[otherPlayer(me)];
   if (enemyCell === undefined) return -1;
 
   const enemy = cellCentre(enemyCell);
   const shieldReach = cellsToUnits(profile.building.shieldRadiusCells) ** 2;
+  const shieldWorth = 1 / Math.max(1, profile.building.shieldWorthCells);
 
   let best = -1;
-  let bestOnPath = -1;
+  let bestValue = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
 
   forEachBuildCandidate(world, approach.occupancy, from, radius, (cell, point) => {
+    if (skip.has(cell)) return;
+
     const distance = distanceSquared(point, enemy);
 
     const shields = towers.some((tower) => {
@@ -1540,13 +1630,16 @@ const shieldBuildCell = (
         distance < distanceSquared(towerPoint, enemy)
       );
     });
-    if (!shields) return;
 
-    const onPath = approach.onPath[cell] === 1 ? 1 : 0;
-    if (onPath < bestOnPath) return;
-    if (onPath === bestOnPath && distance >= bestDistance) return;
+    // Клетка вне коридора вероятного пути не перекрывает ничего: войска
+    // по ней не пойдут, и ширина на её глубине к делу не относится.
+    const width = approach.onPath[cell] === 1 ? corridorWidthAt(approach, widths, cell) : 0;
+    const value = (width > 0 ? 1 / width : 0) + (shields ? shieldWorth : 0);
 
-    bestOnPath = onPath;
+    if (value <= 0 || value < bestValue) return;
+    if (value === bestValue && distance >= bestDistance) return;
+
+    bestValue = value;
     bestDistance = distance;
     best = cell;
   });
