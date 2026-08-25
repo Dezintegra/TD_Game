@@ -628,7 +628,12 @@ const record = (
       risk: entry.risk,
       score: entry.score,
       deathChance: entry.deathChance,
-      chosen: entry.frontier.cell === seen.verdict?.frontier.cell,
+      // Сравнение по самому вердикту, а не по его клетке. Рубежи задаются
+      // долями пройденного пути, и на короткой дороге две соседние доли
+      // ложатся в одну клетку: по клетке выбранными оказывались сразу два
+      // рубежа. `pickVerdict` возвращает элемент того же списка, поэтому
+      // тождество здесь и точнее, и дешевле.
+      chosen: entry === seen.verdict,
     })),
     generalCell,
     generalFromHome: fromHome === UNREACHABLE ? -1 : fromHome,
