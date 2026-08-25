@@ -327,6 +327,76 @@ export const describeContext = (scene) => {
   return parts.join('; ');
 };
 
+// Во сколько раз ход мира вправе разойтись с проектным, прежде чем
+// запись перестаёт описывать отрисовку. Полтора — с большим запасом:
+// подмена, ради которой всё затевалось, шла втрое быстрее хода матча,
+// а обычное окно укладывается в 30 ± 1 тик в секунду.
+const TICK_RATE_TOLERANCE = 1.5;
+
+/** Три состояния записи. «Годен» и «негоден» — выводы, третье — их отсутствие. */
+export const COMPARABLE = 'годен';
+export const INCOMPARABLE = 'негоден';
+export const NO_CONTEXT = 'старого образца';
+
+/**
+ * Годна ли запись для сравнения — и если нет, то почему.
+ *
+ * Это утверждение о САМОМ ЗАМЕРЕ, а не о коде. «Упал» решает порог
+ * 55 к/с и только он; «негоден» говорит, что мерилось не то. Смешав
+ * их, проект получил бы красный прогон там, где померить попросту
+ * не вышло, и через неделю привык бы к красному.
+ *
+ * Третье состояние — «старого образца». Запись без обстановки годной
+ * не считается, но и негодной не объявляется: «негоден» — это вывод
+ * из данных, а данных в ней нет вовсе. Проставить их задним числом
+ * неоткуда, и любое проставленное значение было бы выдумкой,
+ * неотличимой от измерения.
+ */
+export const comparability = (entry) => {
+  const scenes = Object.entries(entry?.context ?? {});
+  if (scenes.length === 0) {
+    return { state: NO_CONTEXT, reason: 'обстановка прогона не снималась' };
+  }
+
+  const reasons = [];
+
+  // Занятость ЗА прогон, а не до него: до прогона — это «начинать можно»,
+  // и порогом допуска остаётся именно она, а здесь вопрос другой.
+  const load = entry.busyMedian;
+  if (typeof load === 'number' && load > BUSY_LIMIT) {
+    reasons.push(`занятость за прогон ${percent(load)} выше порога ${percent(BUSY_LIMIT)}`);
+  }
+
+  for (const [name, scene] of scenes) {
+    const rate = tickRate(scene);
+    if (rate === null) {
+      reasons.push(`«${name}»: ход мира не измерен`);
+    } else if (rate > WORLD_TICKS_PER_SECOND * TICK_RATE_TOLERANCE) {
+      reasons.push(
+        `«${name}»: мир шёл ${rate} тик/с вместо ${WORLD_TICKS_PER_SECOND}` +
+          ' — мерился догон истории, а не отрисовка',
+      );
+    } else if (rate < WORLD_TICKS_PER_SECOND / TICK_RATE_TOLERANCE) {
+      reasons.push(
+        `«${name}»: мир шёл ${rate} тик/с вместо ${WORLD_TICKS_PER_SECOND}` +
+          ' — мир почти стоял, мерить было нечего',
+      );
+    }
+
+    if (
+      typeof scene?.syncFrom === 'number' &&
+      typeof scene?.syncTo === 'number' &&
+      scene.syncTo <= scene.syncFrom
+    ) {
+      reasons.push(`«${name}»: сверка стояла на тике ${scene.syncTo}`);
+    }
+  }
+
+  return reasons.length === 0
+    ? { state: COMPARABLE, reason: null }
+    : { state: INCOMPARABLE, reason: reasons.join('; ') };
+};
+
 /**
  * Дописать замер в журнал и показать, что изменилось с прошлого раза.
  *
@@ -343,44 +413,52 @@ export const recordEntry = ({
   passed,
   unit = '',
 }) => {
-  const previous = lastOfKind(kind);
+  const entry = {
+    at: new Date().toISOString(),
+    kind,
+    // В контейнере git недоступен, поэтому ревизию туда передают снаружи
+    // переменной `PERF_COMMIT`. Без неё замер всё равно состоится —
+    // но сравнить его будет не с чем, о чём и говорит пометка.
+    commit: gitOrNull('rev-parse', '--short', 'HEAD') ?? process.env['PERF_COMMIT'] ?? 'без git',
+    branch: gitOrNull('rev-parse', '--abbrev-ref', 'HEAD') ?? '—',
+    worktree: repoRoot,
+    // Занятость ДО прогона. Поле не переименовывается и смысла
+    // не меняет: сорок с лишним прежних записей означают этим именем
+    // именно её, и переназначить его задним числом значило бы
+    // переписать свидетельство.
+    busy: Math.round(busy * 100) / 100,
+    passed,
+    measurements,
+    // Пустой обстановки в записи не бывает: либо она есть, либо поля
+    // нет вовсе. Пустой объект читался бы как «мерили и ничего
+    // не намеряли», а на деле означал бы «замер про обстановку
+    // не знает» — как у стоимости тика, где матча не бывает.
+    ...(context !== undefined && Object.keys(context).length > 0 ? { context } : {}),
+    // Занятость ЗА прогон — та, по которой замеры сравнивают
+    // между собой.
+    ...(load === undefined || load === null
+      ? {}
+      : { busyMedian: load.median, busyMax: load.max, busySamples: load.samples }),
+    // Ключ `--force` говорит о намерении меряющего, а не о том,
+    // что вышло: форсировать можно и на тихой машине, просто чтобы
+    // не ждать проверки. Решения по нему не принимаются — он стоит
+    // здесь затем, чтобы, читая журнал, не гадать, почему замер
+    // состоялся при занятости 86 %.
+    ...(forced ? { forced: true } : {}),
+  };
 
-  appendFileSync(
-    logPath,
-    `${JSON.stringify({
-      at: new Date().toISOString(),
-      kind,
-      // В контейнере git недоступен, поэтому ревизию туда передают снаружи
-      // переменной `PERF_COMMIT`. Без неё замер всё равно состоится —
-      // но сравнить его будет не с чем, о чём и говорит пометка.
-      commit: gitOrNull('rev-parse', '--short', 'HEAD') ?? process.env['PERF_COMMIT'] ?? 'без git',
-      branch: gitOrNull('rev-parse', '--abbrev-ref', 'HEAD') ?? '—',
-      worktree: repoRoot,
-      // Занятость ДО прогона. Поле не переименовывается и смысла
-      // не меняет: сорок с лишним прежних записей означают этим именем
-      // именно её, и переназначить его задним числом значило бы
-      // переписать свидетельство.
-      busy: Math.round(busy * 100) / 100,
-      passed,
-      measurements,
-      // Пустой обстановки в записи не бывает: либо она есть, либо поля
-      // нет вовсе. Пустой объект читался бы как «мерили и ничего
-      // не намеряли», а на деле означал бы «замер про обстановку
-      // не знает» — как у стоимости тика, где матча не бывает.
-      ...(context !== undefined && Object.keys(context).length > 0 ? { context } : {}),
-      // Занятость ЗА прогон — та, по которой замеры сравнивают
-      // между собой.
-      ...(load === undefined || load === null
-        ? {}
-        : { busyMedian: load.median, busyMax: load.max, busySamples: load.samples }),
-      // Ключ `--force` говорит о намерении меряющего, а не о том,
-      // что вышло: форсировать можно и на тихой машине, просто чтобы
-      // не ждать проверки. Решения по нему не принимаются — он стоит
-      // здесь затем, чтобы, читая журнал, не гадать, почему замер
-      // состоялся при занятости 86 %.
-      ...(forced ? { forced: true } : {}),
-    })}\n`,
-  );
+  // Годность считается по обстановке и кладётся в запись вместе
+  // с причиной. Считать её заново при каждом чтении журнала можно —
+  // и читатели так и делают, — но человеку, открывшему файл глазами,
+  // причина нужна тут же, рядом с числом.
+  const verdict = comparability(entry);
+  if (verdict.state !== NO_CONTEXT) {
+    entry.comparable = verdict.state === COMPARABLE;
+    if (verdict.reason !== null) entry.incomparable = verdict.reason;
+  }
+
+  const previous = lastOfKind(kind);
+  appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
 
   step('Записано в журнал');
   for (const [name, value] of Object.entries(measurements)) {
@@ -399,6 +477,12 @@ export const recordEntry = ({
       `нагрузка за прогон: медиана ${percent(load.median)}, максимум ${percent(load.max)}` +
         ` (${load.samples} проб; до прогона было ${percent(busy)})`,
     );
+  }
+  // Исхода прогона это не меняет: упал он или прошёл, решает всё тот же
+  // порог. Пометка говорит лишь, годится ли запись как «было».
+  if (verdict.state === INCOMPARABLE) {
+    warn(`замер негоден для сравнения: ${verdict.reason}`);
+    note('исход прогона это не меняет — но основанием для следующего замера запись не станет');
   }
   note(`журнал: ${logPath}, вся история — ключ --history`);
 };

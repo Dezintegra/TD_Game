@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { TICKS_PER_SECOND } from '../packages/shared/src/constants.ts';
-import { WORLD_TICKS_PER_SECOND, busySamples, summariseBusy } from './perf-common.mjs';
+import {
+  COMPARABLE,
+  INCOMPARABLE,
+  NO_CONTEXT,
+  WORLD_TICKS_PER_SECOND,
+  busySamples,
+  comparability,
+  summariseBusy,
+} from './perf-common.mjs';
 
 /**
  * Проверки счётной части замеров.
@@ -9,6 +17,38 @@ import { WORLD_TICKS_PER_SECOND, busySamples, summariseBusy } from './perf-commo
  * здесь не проверяется намеренно: такая проверка занимала бы машину
  * ровно тем, от чего замер и страхует.
  */
+
+/**
+ * Обстановка обычной сцены: шестисекундное окно, мир идёт своим ходом,
+ * сверка двигается следом.
+ */
+const calmScene = (over = {}) => ({
+  tickFrom: 100,
+  tickTo: 280,
+  windowMs: 6000,
+  syncFrom: 95,
+  syncTo: 275,
+  syncBehind: 5,
+  latencyMs: 14,
+  inputDelayTicks: 3,
+  frameLong: 0,
+  frameP95: 17,
+  frameMax: 33,
+  pongs: 6,
+  ...over,
+});
+
+/** Запись журнала нового образца. */
+const entry = (over = {}) => ({
+  kind: 'кадры',
+  busy: 0.12,
+  busyMedian: 0.14,
+  busyMax: 0.3,
+  passed: true,
+  measurements: { 'камера в движении': 60, 'войска на поле': 60 },
+  context: { 'камера в движении': calmScene(), 'войска на поле': calmScene() },
+  ...over,
+});
 
 describe('ход мира', () => {
   it('совпадает с проектным темпом симуляции', () => {
@@ -80,5 +120,87 @@ describe('нагрузка за прогон', () => {
     samples.take();
     samples.take();
     expect(samples.summary()).toBeNull();
+  });
+});
+
+describe('годность записи', () => {
+  it('обычный прогон годен', () => {
+    expect(comparability(entry()).state).toBe(COMPARABLE);
+    expect(comparability(entry()).reason).toBeNull();
+  });
+
+  it('замер на догоне помечен негодным и назван причиной', () => {
+    // Ровно тот случай, ради которого всё затевалось: клиент догонял
+    // историю, мир проиграл за окно втрое больше положенного, а число
+    // кадров описало не отрисовку, а вставший главный поток.
+    const verdict = comparability(
+      entry({
+        context: {
+          'камера в движении': calmScene(),
+          'войска на поле': calmScene({ tickTo: 640, syncTo: 635 }),
+        },
+      }),
+    );
+
+    expect(verdict.state).toBe(INCOMPARABLE);
+    expect(verdict.reason).toContain('войска на поле');
+    expect(verdict.reason).toContain('догон');
+  });
+
+  it('застывшая сверка делает запись негодной', () => {
+    const verdict = comparability(
+      entry({ context: { 'камера в движении': calmScene({ syncFrom: 275, syncTo: 275 }) } }),
+    );
+
+    expect(verdict.state).toBe(INCOMPARABLE);
+    expect(verdict.reason).toContain('сверка стояла');
+  });
+
+  it('нагрузка ЗА прогон делает запись негодной, а тихое начало её не спасает', () => {
+    // Та самая запись из журнала: занятость до прогона 24% — ниже порога,
+    // то есть начинать было можно, — а под конец машину заняли, и числа
+    // вышли вдвое ниже. Сегодня такую запись отличить не от чего.
+    const verdict = comparability(entry({ busy: 0.24, busyMedian: 0.71, busyMax: 0.98 }));
+
+    expect(verdict.state).toBe(INCOMPARABLE);
+    expect(verdict.reason).toContain('занятость за прогон');
+  });
+
+  it('признак годности не совпадает с исходом прогона', () => {
+    // Две ветки, ради которых пометка и отделена от порога.
+    // «Упал» — утверждение о коде, «негоден» — о самом замере,
+    // и смешивать их нельзя.
+    const failedButHonest = entry({
+      passed: false,
+      measurements: { 'камера в движении': 41, 'войска на поле': 39 },
+    });
+    expect(comparability(failedButHonest).state).toBe(COMPARABLE);
+
+    const passedButMeaningless = entry({
+      passed: true,
+      context: { 'камера в движении': calmScene({ tickTo: 700, syncTo: 695 }) },
+    });
+    expect(comparability(passedButMeaningless).state).toBe(INCOMPARABLE);
+  });
+
+  it('запись старого образца негодной не считается', () => {
+    // Обстановки в ней нет вовсе, значит нет и данных для вывода
+    // «негоден». Проставить их задним числом неоткуда, и проставленное
+    // было бы выдумкой, неотличимой от измерения.
+    const old = entry();
+    delete old.context;
+    delete old.busyMedian;
+    delete old.busyMax;
+
+    const verdict = comparability(old);
+    expect(verdict.state).toBe(NO_CONTEXT);
+    expect(verdict.state).not.toBe(INCOMPARABLE);
+  });
+
+  it('замер стоимости тика негодным не становится', () => {
+    // Матча у него не бывает вовсе: ни браузера, ни сервера. Отсутствие
+    // обстановки здесь — свойство замера, а не беда прогона.
+    const tick = { kind: 'тик', busy: 0.23, passed: true, measurements: { 'тик, мкс': 202.5 } };
+    expect(comparability(tick).state).toBe(NO_CONTEXT);
   });
 });
