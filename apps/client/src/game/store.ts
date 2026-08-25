@@ -258,6 +258,15 @@ export interface SmoothnessView {
   readonly frameLong: number;
   readonly netGapP95: number;
   readonly netGapMax: number;
+  readonly displayGapP95: number;
+  /** Сколько раз показываемый мир простоял дольше тика. Точное число. */
+  readonly displayGapLong: number;
+  /** Сколько своих команд сервер сдвинул: прямая причина скачков. */
+  readonly shiftedCommands: number;
+  /** Сколько раз генерал уехал сверх того, что мог пройти. */
+  readonly jumpCount: number;
+  /** Самый большой такой скачок, в клетках. */
+  readonly jumpMaxCells: number;
 }
 
 interface HudState {
@@ -294,6 +303,28 @@ interface HudState {
    */
   readonly netGapP95: number;
   readonly netGapMax: number;
+  /**
+   * Разброс промежутков между продвижениями показываемого тика.
+   *
+   * Прибор картинки, а не канала. Ряд выше отвечает на вопрос «как
+   * приходят кадры», этот — на вопрос «как двигается мир на экране»,
+   * и совпадают они только до тех пор, пока показ висит на приходе
+   * кадров. `displayGapLong` — сколько раз мир простоял дольше тика;
+   * это и есть рывок, увиденный числом.
+   */
+  readonly displayGapP95: number;
+  readonly displayGapLong: number;
+  /**
+   * Скачки картинки и их прямая причина.
+   *
+   * `shiftedCommands` — сколько своих команд сервер сдвинул: клиент
+   * показал действие на назначенном такте, а исполнилось оно позже.
+   * `jumpCount` и `jumpMaxCells` — сколько раз и насколько далеко
+   * генерал уехал сверх того, что мог пройти.
+   */
+  readonly shiftedCommands: number;
+  readonly jumpCount: number;
+  readonly jumpMaxCells: number;
   /** Seed текущей карты. Карта восстанавливается из него целиком. */
   readonly seed: number;
   /** Какая доля карты помещается на экран, в процентах. */
@@ -428,6 +459,11 @@ export const useHudStore = create<HudState>((set) => ({
   frameLong: 0,
   netGapP95: 0,
   netGapMax: 0,
+  displayGapP95: 0,
+  displayGapLong: 0,
+  shiftedCommands: 0,
+  jumpCount: 0,
+  jumpMaxCells: 0,
   seed: 0,
   visiblePercent: 0,
   rockPercent: 0,
@@ -460,7 +496,12 @@ export const useHudStore = create<HudState>((set) => ({
       state.frameMax === smoothness.frameMax &&
       state.frameLong === smoothness.frameLong &&
       state.netGapP95 === smoothness.netGapP95 &&
-      state.netGapMax === smoothness.netGapMax
+      state.netGapMax === smoothness.netGapMax &&
+      state.displayGapP95 === smoothness.displayGapP95 &&
+      state.displayGapLong === smoothness.displayGapLong &&
+      state.shiftedCommands === smoothness.shiftedCommands &&
+      state.jumpCount === smoothness.jumpCount &&
+      state.jumpMaxCells === smoothness.jumpMaxCells
         ? state
         : smoothness,
     ),

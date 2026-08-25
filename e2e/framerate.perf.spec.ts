@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootGame, diagnosticNumber, number } from './helpers.js';
+import { bootGame, medianFps, number } from './helpers.js';
 import { record } from './perf-record.js';
 
 /**
@@ -33,9 +33,13 @@ test('частота кадров держится при непрерывном
   // Счётчик считает сам игровой цикл, то есть меряем ровно то, что видит
   // игрок, а не синтетический бенчмарк.
   await page.keyboard.down('ArrowRight');
+
+  // Три секунды на разогрев: первые секунды матча заняты запеканием
+  // рельефа, и посекундное наблюдение показывает там 14, 28, 28, а дальше
+  // ровные шестьдесят. Мерить разогрев незачем — его надо переждать.
   await page.waitForTimeout(3000);
 
-  const fps = await diagnosticNumber(page, 'fps');
+  const fps = await medianFps(page);
 
   await page.keyboard.up('ArrowRight');
 
@@ -54,7 +58,7 @@ test('частота кадров держится, когда на поле п�
 
   expect(await number(page, 'unit-count')).toBeGreaterThan(0);
 
-  const fps = await diagnosticNumber(page, 'fps');
+  const fps = await medianFps(page);
 
   record('войска на поле', fps);
   expect(fps).toBeGreaterThanOrEqual(55);

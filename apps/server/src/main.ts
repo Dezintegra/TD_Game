@@ -4,6 +4,7 @@ import { PROTOCOL_VERSION } from '@td/protocol';
 import { startComputerService } from '@td/bot';
 import { ADAPTIVE_SWARM_PROFILE, BULWARK_PROFILE, STRATEGIST_PROFILE } from '@td/ai';
 import type { ComputerService } from '@td/bot';
+import { COUNT_BOUNDS, COUNT_BUDGET, JUMP_BOUNDS_CELLS } from '@td/shared';
 import type { Command } from '@td/shared';
 import {
   COMPUTER_SECRET,
@@ -133,6 +134,41 @@ export const buildServer = async (options: BuildOptions = {}) => {
     'Промежуток между приходами кадров команд к игроку',
     { source: 'client' },
   );
+  // Промежуток между продвижениями показываемого тика — прибор картинки,
+  // а не канала. Ряд выше отвечает на вопрос «как приходят кадры»,
+  // этот — на вопрос «как двигается мир на экране», и совпадают они
+  // только до тех пор, пока показ висит на приходе кадров.
+  const clientDisplayGap = metrics.histogram(
+    'td_client_display_gap_ms',
+    'Промежуток между продвижениями показываемого тика у игрока',
+    { source: 'client' },
+  );
+  // Сдвиг команды в ТАКТАХ, поэтому и границы в тактах: миллисекундные
+  // здесь означали бы бессмыслицу. Превышение — любой ненулевой сдвиг:
+  // один сдвинутый такт это уже показанное игроку «не то».
+  const clientShift = metrics.histogram(
+    'td_client_command_shift_ticks',
+    'На сколько тактов сервер сдвинул команду игрока',
+    { source: 'client' },
+    { bounds: COUNT_BOUNDS, budget: COUNT_BUDGET },
+  );
+  // Скачок — величина в клетках, поэтому и границы в клетках. Начинаются
+  // с четверти: скачок мельче глазу не виден.
+  const clientJump = metrics.histogram(
+    'td_client_general_jump_cells',
+    'Насколько генерал уехал сверх того, что мог пройти',
+    { source: 'client' },
+    { bounds: JUMP_BOUNDS_CELLS, budget: COUNT_BUDGET },
+  );
+  // Очередь снимается В МОМЕНТ скачка, а не по расписанию: вопрос был
+  // «совпадает ли рост очереди со скачками», и равномерная выборка
+  // на него не отвечает.
+  const clientPendingOnJump = metrics.histogram(
+    'td_client_pending_on_jump',
+    'Сколько своих команд было в пути в момент скачка',
+    { source: 'client' },
+    { bounds: COUNT_BOUNDS, budget: COUNT_BUDGET },
+  );
   const reportsAccepted = metrics.counter(
     'td_client_reports_total',
     'Сколько отчётов о плавности принято от игроков',
@@ -142,10 +178,32 @@ export const buildServer = async (options: BuildOptions = {}) => {
     'Сколько отчётов отвергнуто как неразбираемые',
   );
 
-  app.post<{ Body: { frame?: unknown; netGap?: unknown } }>('/api/telemetry', (request, reply) => {
+  app.post<{
+    Body: {
+      frame?: unknown;
+      netGap?: unknown;
+      displayGap?: unknown;
+      shift?: unknown;
+      jump?: unknown;
+      pendingOnJump?: unknown;
+    };
+  }>('/api/telemetry', (request, reply) => {
+    // Набор про показ — необязательный, и это не послабление
+    // к порядку. Страница живёт у игрока в открытой вкладке дольше,
+    // чем выкладка: отчёт от прежнего бандла обязан приниматься,
+    // иначе счётчик отвергнутых покраснеет от нашей же выкладки.
+    // Пришедший, но порченый — отвергается наравне с остальными.
+    const displayGap = request.body?.displayGap;
+    const shift = request.body?.shift;
+    const jump = request.body?.jump;
+    const pendingOnJump = request.body?.pendingOnJump;
     const ok =
       mergeReport(clientFrame, request.body?.frame) &&
-      mergeReport(clientNetGap, request.body?.netGap);
+      mergeReport(clientNetGap, request.body?.netGap) &&
+      (displayGap === undefined || mergeReport(clientDisplayGap, displayGap)) &&
+      (shift === undefined || mergeReport(clientShift, shift)) &&
+      (jump === undefined || mergeReport(clientJump, jump)) &&
+      (pendingOnJump === undefined || mergeReport(clientPendingOnJump, pendingOnJump));
 
     if (ok) reportsAccepted.add();
     else reportsRejected.add();

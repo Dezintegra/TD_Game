@@ -39,6 +39,28 @@ test('клиент поднимается, рисует поле и общает
   await expect(page.getByTestId('diagnostics')).not.toHaveAttribute('data-pong-count', '0', {
     timeout: 5000,
   });
+
+  // Прибор картинки жив: мир на экране двигается, и промежутки между
+  // его продвижениями считаются.
+  //
+  // Величина здесь не проверяется, и это осознанно. На runner'е нет
+  // видеокарты, Chromium рисует программно и выдаёт около шестнадцати
+  // кадров, поэтому показ обновляется вдвое реже тика — по делу, а не
+  // по поломке. Порог здесь означал бы проверку железа, а не кода;
+  // настоящая величина снимается на боевом стенде.
+  await expect(page.getByTestId('diagnostics')).not.toHaveAttribute('data-display-gap-p95', '0', {
+    timeout: 10_000,
+  });
+
+  // Приборы скачков подключены. Проверяется наличие, а не величина,
+  // и это осознанно: порог здесь стал бы плавающим отказом. На петлевом
+  // соединении команды не опаздывают, скачков быть не должно — но
+  // на загруженном runner'е доставка проседает, и «ноль» превратился бы
+  // в проверку расторопности железа. Величину снимают на боевом стенде.
+  const diagnostics = page.getByTestId('diagnostics');
+  await expect(diagnostics).toHaveAttribute('data-shifted-commands', /\d+/);
+  await expect(diagnostics).toHaveAttribute('data-jump-count', /\d+/);
+  await expect(diagnostics).toHaveAttribute('data-jump-max-cells', /[\d.]+/);
 });
 
 test('панели не перекрывают игровое поле', async ({ page }) => {
@@ -200,7 +222,23 @@ test('карта показывается и матч начинается за�
   // в своём браузере: клиент выходит из комнаты и входит в следующую
   // дежурную. Поэтому и ждать приходится дольше.
   await openMatchMenu(page);
+
+  // Уходя, клиент отдаёт показания плавности. Проверка стоит здесь,
+  // а не отдельным тестом, потому что своей партии ей не нужно —
+  // а лишняя партия стоит двадцати секунд прогона.
+  //
+  // Прежде отчёт был привязан к исходу матча, и на боевом стенде это
+  // означало «не уходит почти никогда»: выход исходом не считается,
+  // сервер держит место ещё полминуты, и клиент успевает уйти
+  // со страницы. Две минуты игры дали ноль принятых отчётов.
+  const report = page.waitForRequest(
+    (request) => request.url().includes('/api/telemetry') && request.method() === 'POST',
+    { timeout: 15_000 },
+  );
+
   await page.getByTestId('restart').click();
+  await report;
+
   await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 20_000 });
 
   await expect.poll(async () => diagnostic(page, 'seed'), { timeout: 20_000 }).not.toBe(seedBefore);

@@ -1,5 +1,7 @@
 import {
   CHECKSUM_INTERVAL_TICKS,
+  DISPLAY_LEAD_TICKS,
+  MS_PER_TICK,
   PREDICTION_REPLAY_LIMIT_TICKS,
   asPlayerId,
   asTickNumber,
@@ -90,10 +92,44 @@ export interface MatchGuestOptions {
    * на подтверждённую не влияет ни при каких условиях.
    */
   readonly predict?: boolean;
+  /**
+   * Часы показа в миллисекундах.
+   *
+   * Отсутствуют — показываемая копия двигается только приходом кадров,
+   * ровно как раньше. Это режим всякого, кто мира не рисует: компьютера
+   * и проверок.
+   *
+   * Внедряются, а не читаются изнутри: `packages/netplay` обязан
+   * оставаться без платформенных вызовов, и ведущий решает ту же задачу
+   * тем же способом.
+   */
+  readonly now?: () => number;
+  /**
+   * Своя команда вернулась кадром, и вот на сколько тактов её сдвинули.
+   *
+   * Ноль — исполнена там, где её ждали. Больше нуля — опоздала: такт
+   * назначения сервер уже сыграл и передвинул команду вперёд. Это
+   * прямая причина скачка картинки, потому что показать её действие
+   * клиент успел ещё на назначенном такте.
+   *
+   * Обработчика нет — очередь отданных команд не ведётся вовсе,
+   * и участник не платит за диагностику ни памятью, ни временем.
+   */
+  readonly onCommandShift?: (ticks: number) => void;
 }
 
 export interface MatchGuest {
   receive(message: ServerMessage): void;
+  /**
+   * Продвинуть показываемый мир по местным часам.
+   *
+   * Зовётся из цикла отрисовки, один раз на кадр, и только там: кадр
+   * отрисовки — естественный момент спросить, который час, потому что
+   * именно к нему готовится картинка.
+   *
+   * Без часов в настройках не делает ничего.
+   */
+  advance(): void;
   /**
    * Отдать своё действие: оно немедленно попадает в предсказание
    * и уходит на сервер. Возвращает отправленную команду или `null`,
@@ -135,6 +171,27 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
   let delayTicks = 0;
   let serverTick = 0;
 
+  /**
+   * Якорь часов показа: тик и время, когда часы на него встали.
+   *
+   * Время `NaN` означает, что часы не заведены, — так бывает до первого
+   * кадра и после всякой смены состояния. Заводятся они сами, при первом
+   * же вопросе о целевом тике.
+   */
+  let anchorTick = 0;
+  let anchorAtMs = Number.NaN;
+
+  /**
+   * Такты, на которые назначались свои команды, в порядке отправки.
+   *
+   * Сопоставление идёт по порядку, а не по содержимому, и это не лень.
+   * Сервер складывает команды игрока в порядке получения и двигает
+   * опоздавшую только вперёд — значит порядок на выходе тот же, что
+   * на входе. Две же одинаковые команды подряд по содержимому
+   * неразличимы, и сравнение выбрало бы не ту.
+   */
+  const issuedTicks: number[] = [];
+
   /** Собственные команды, ещё не пришедшие обратно кадром. */
   const own = new Map<number, UnownedCommand[]>();
   /** Кадры, пришедшие раньше своей очереди. */
@@ -150,6 +207,11 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
   const setStatus = (next: GuestStatus): void => {
     if (status === next) return;
     status = next;
+    // Часы сбрасываются при всякой смене состояния, и это не осторожность
+    // впрок. Пока шёл догон по истории, часы стояли, а якорь остался
+    // в прошлом; не сбрось его — на выходе из догона накопившееся время
+    // разом швырнуло бы показ в потолок.
+    anchorAtMs = Number.NaN;
     options.onStatus?.(next);
   };
 
@@ -163,11 +225,67 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
   };
 
   /**
-   * Пересобрать предсказание.
+   * Пол показа: тик, ниже которого картинка опускаться не вправе.
    *
-   * Горизонт — задержка плюс один тик. Плюс один не описка: команда
-   * назначается на тик `подтверждённый + задержка`, и чтобы игрок увидел
-   * её действие немедленно, этот тик обязан войти в предсказание.
+   * Собственная команда назначается на `подтверждённый + задержка`
+   * (см. `issue`), и чтобы игрок увидел её действие немедленно, этот
+   * тик обязан войти в показ — отсюда «плюс один». Опустись показ ниже,
+   * нажатие перестало бы давать отклик в том же кадре, то есть
+   * сломалось бы главное требование проекта.
+   */
+  const displayFloor = (): number => (confirmed === null ? 0 : confirmed.tick + delayTicks + 1);
+
+  /**
+   * Тик, который должен быть на экране.
+   *
+   * Без часов — ровно пол: показ двигается приходом кадров, как было
+   * всегда. С часами картинка идёт своим ходом, и правил у неё три.
+   *
+   * **Пол.** Ниже нельзя никогда: там остались бы собственные команды.
+   * Провалившись под пол, часы встают на него заново — с запасом,
+   * чтобы не проваливаться обратно на следующем же кадре.
+   *
+   * **Потолок** — подтверждённый плюс предохранитель. Дальше врать
+   * нельзя: на длинной заминке картинка обязана честно остановиться,
+   * а не уехать в выдуманное будущее. Остановка эта не молчаливая —
+   * её ловит прибор промежутков показа на клиенте.
+   *
+   * **Ход.** Между полом и потолком тик прибавляется каждые
+   * `MS_PER_TICK` местного времени, и ни приход кадра, ни его опоздание
+   * на это не влияют. В этом весь смысл затеи.
+   *
+   * Функция не только считает, но и ведёт якорь часов, то есть имеет
+   * последствия. Звать её можно сколько угодно раз за кадр: часы
+   * монотонны, и цель от повторного вопроса только растёт.
+   */
+  const displayTarget = (): number => {
+    const floor = displayFloor();
+    const clock = options.now;
+    if (clock === undefined || confirmed === null || status !== 'playing') return floor;
+
+    const nowMs = clock();
+    if (Number.isNaN(anchorAtMs)) {
+      anchorTick = floor + DISPLAY_LEAD_TICKS;
+      anchorAtMs = nowMs;
+    }
+
+    let target = anchorTick + Math.floor((nowMs - anchorAtMs) / MS_PER_TICK);
+    if (target < floor) {
+      anchorTick = floor + DISPLAY_LEAD_TICKS;
+      anchorAtMs = nowMs;
+      target = anchorTick;
+    }
+
+    return Math.min(target, confirmed.tick + PREDICTION_REPLAY_LIMIT_TICKS);
+  };
+
+  /**
+   * Пересобрать предсказание от подтверждённого состояния.
+   *
+   * Горизонт — расстояние от подтверждённого тика до целевого,
+   * обрезанное предохранителем. Предохранитель не украшение: без него
+   * долгая заминка обернулась бы многосекундным пересчётом внутри
+   * одного кадра.
    *
    * Участник без предсказания уходит по первой же ветке: показываемое
    * состояние у него равно подтверждённому, и шагов симуляции здесь
@@ -182,7 +300,10 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
       return;
     }
 
-    const horizon = Math.min(delayTicks + 1, PREDICTION_REPLAY_LIMIT_TICKS);
+    const horizon = Math.min(
+      Math.max(displayTarget() - confirmed.tick, 0),
+      PREDICTION_REPLAY_LIMIT_TICKS,
+    );
     const me = side;
     let world = confirmed;
 
@@ -193,6 +314,55 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
         commands === undefined ? [] : commands.map((command) => withPlayer(command, me)),
       );
     }
+
+    predicted = world;
+    options.onPredicted?.(world);
+  };
+
+  /**
+   * Продлить показ шагом от него самого, не пересобирая от основы.
+   *
+   * Когда двинулись только часы, а новых данных нет, тот же результат
+   * получается одним шагом вместо `задержка + 2`:
+   *
+   * ```
+   * step(показанный, свои команды на его тике) ≡ rebuild(горизонт + 1)
+   * ```
+   *
+   * Тождество держится на чистоте `step` — той самой, которой требует
+   * спецификация ядра, — и не оставлено рассуждением: его сличает тест.
+   * Разойдись эти два пути, показываемый мир зависел бы от того, каким
+   * путём его посчитали.
+   *
+   * Дешевизна важна именно там, где всё затевалось: во время заминки
+   * канала часы двигают показ каждый тик, а пересобирать нечего —
+   * основа не менялась.
+   */
+  const extend = (target: number): void => {
+    if (confirmed === null || predicted === null) return;
+
+    // Потолок здесь второй раз, и это не перестраховка впрок: цель
+    // приходит уже обрезанной, но `extend` обязан оставаться безопасным
+    // сам по себе — иначе первый же будущий вызов с непроверенной целью
+    // увёл бы клиент в многосекундный пересчёт внутри кадра.
+    const ceiling = confirmed.tick + PREDICTION_REPLAY_LIMIT_TICKS;
+    let world = predicted;
+
+    // Шаги идут без команд, и это не упущение. Собственная команда
+    // назначается на `подтверждённый + задержка`, то есть ровно на тик
+    // ниже пола, а показываемый тик пола не ниже никогда. Значит всё
+    // своё уже применено пересборкой к моменту, когда часы попросят
+    // следующий тик, и подмешивать здесь нечего.
+    //
+    // Утверждение это не рассуждение на полях: его пиннит тест
+    // «собственная команда всегда ниже показываемого тика». Сломайся
+    // правило пола — упадёт он, и упадёт здесь, а не в жалобе игрока
+    // на пропавшее нажатие.
+    while (world.tick < target && world.tick < ceiling) {
+      world = step(world, []);
+    }
+
+    if (world === predicted) return;
 
     predicted = world;
     options.onPredicted?.(world);
@@ -218,6 +388,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     confirmed = createWorld(seed);
     predicted = confirmed;
     own.clear();
+    issuedTicks.length = 0;
     buffered.clear();
     mine.clear();
     expected.clear();
@@ -238,6 +409,27 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     }
   };
 
+  /**
+   * Отметить, на сколько сервер сдвинул вернувшиеся свои команды.
+   *
+   * Пустая очередь — не ошибка: так бывает после пересборки, когда
+   * история приносит команды, отданные ещё до неё. Сказать про них
+   * нечего, и выдумывать нечего.
+   */
+  const noteShifts = (tick: number, commands: readonly Command[]): void => {
+    const report = options.onCommandShift;
+    if (report === undefined || side === null) return;
+
+    for (const command of commands) {
+      if (command.player !== side) continue;
+
+      const issuedAt = issuedTicks.shift();
+      if (issuedAt === undefined) continue;
+
+      report(tick - issuedAt);
+    }
+  };
+
   /** Применить всё, что уже можно применить, не оставляя дыр. */
   const drain = (): void => {
     if (confirmed === null || status === 'stopped') return;
@@ -252,6 +444,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
 
       forget(tick);
       remember(confirmed);
+      noteShifts(tick, commands);
       options.onFrame?.(tick, commands);
 
       if (pendingDelay !== null && confirmed.tick >= pendingDelay.fromTick) {
@@ -286,11 +479,13 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
           confirmed = createWorld(seed);
           predicted = confirmed;
           own.clear();
+          issuedTicks.length = 0;
           buffered.clear();
           mine.clear();
           expected.clear();
           pendingDelay = null;
           recoveredOnce = false;
+          anchorAtMs = Number.NaN;
 
           if (message.tick > 0) {
             // Матч уже идёт: мы либо вернулись после разрыва, либо
@@ -393,6 +588,20 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
       }
     },
 
+    advance() {
+      // Без часов, без предсказания и вне обычной игры делать нечего:
+      // показ в этих случаях двигается приходом кадров либо не двигается
+      // вовсе, потому что подтверждённая копия перестраивается.
+      if (options.now === undefined || !predicting) return;
+      if (confirmed === null || side === null || status !== 'playing') return;
+
+      const target = displayTarget();
+      if (predicted !== null && predicted.tick >= target) return;
+
+      // Продление, а не пересборка: основа не менялась, менялись часы.
+      extend(target);
+    },
+
     issue(intent) {
       if (confirmed === null || side === null) return null;
       if (status !== 'playing') return null;
@@ -406,6 +615,8 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
       } else {
         list.push(command);
       }
+
+      if (options.onCommandShift !== undefined) issuedTicks.push(tick);
 
       options.send({ type: MessageType.Command, command });
       rebuild();

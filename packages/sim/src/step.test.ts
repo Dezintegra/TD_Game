@@ -1016,6 +1016,7 @@ const withUnitAt = (
   cell: number,
   health = 100,
   id = 900,
+  unitType: UnitType = UnitType.Assault,
 ): WorldState => ({
   ...world,
   units: [
@@ -1023,7 +1024,7 @@ const withUnitAt = (
     {
       id: asEntityId(id),
       owner: asPlayerId(owner),
-      unitType: UnitType.Assault,
+      unitType,
       position: cellCentre(cell),
       health,
       readyAtTick: asTickNumber(0),
@@ -1125,6 +1126,21 @@ const wallAt = (cell: number, owner: number, id: number) => ({
   facing: DIRECTION_SOUTH,
 });
 
+/**
+ * Постройка на том же месте и с теми же сроками, но стреляющая.
+ *
+ * Собрана из стены заменой вида: тесты ниже сравнивают именно
+ * «стреляет — не стреляет», и любое второе различие между двумя
+ * расстановками сделало бы сравнение недоказательным.
+ */
+const towerAt = (
+  cell: number,
+  owner: number,
+  id: number,
+  kind: StructureKind = StructureKind.TowerBasic,
+  health = 10_000,
+) => ({ ...wallAt(cell, owner, id), kind, health });
+
 describe('остановка юнита на противнике', () => {
   const MINE = cellIndex(20, 20);
   const THEIRS = cellIndex(20, 22);
@@ -1185,6 +1201,105 @@ describe('остановка юнита на противнике', () => {
     const mine = after.units.find((unit) => unit.id === asEntityId(900));
 
     expect(mine?.position).not.toEqual(cellCentre(MINE));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Остановка юнита на стреляющей постройке
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Войско снимает башни, а не проходит их строй насквозь.
+ *
+ * До этого правила остановка была только на живых, и войско, нацеленное
+ * на базу, шло сквозь строй башен под их огнём. Расплата двойная: и потери,
+ * и бесплатное усиление обороны — башня получает прибавку к силе за каждое
+ * убийство.
+ *
+ * Стена по-прежнему не останавливает, и это не забытый случай, а граница
+ * правила: стена не стреляет, и сносить её просто так нечего ради.
+ */
+describe('остановка юнита на стреляющей постройке', () => {
+  const MINE = cellIndex(20, 20);
+  /** Ровно две клетки — дальность штурмовика, то есть впритык. */
+  const THEIRS = cellIndex(20, 22);
+
+  const TOUGH = 1_000_000;
+
+  const engaging = (world: WorldState): WorldState => ({
+    ...world,
+    players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
+  });
+
+  /** Мир с одним моим юнитом и одной чужой постройкой. */
+  const facing = (
+    structure: ReturnType<typeof wallAt>,
+    stance: (world: WorldState) => WorldState = engaging,
+    unitType: UnitType = UnitType.Assault,
+  ): WorldState => {
+    const world = stance(withUnitAt(openWorld(), 0, MINE, TOUGH, 900, unitType));
+    return { ...world, structures: [...world.structures, structure] };
+  };
+
+  const positionAfter = (world: WorldState, ticks: number) =>
+    run(world, ticks).units.find((unit) => unit.id === asEntityId(900))?.position;
+
+  it('в режиме «Бой» вражеская башня останавливает', () => {
+    expect(positionAfter(facing(towerAt(THEIRS, 1, 902)), 4)).toEqual(cellCentre(MINE));
+  });
+
+  it('стена на том же месте не останавливает', () => {
+    // Разница между этим тестом и предыдущим — ровно один признак:
+    // стреляет постройка или нет.
+    expect(positionAfter(facing(wallAt(THEIRS, 1, 902)), 4)).not.toEqual(cellCentre(MINE));
+  });
+
+  it('в режиме «Прорыв» башня не останавливает', () => {
+    const asIs = (world: WorldState): WorldState => world;
+
+    expect(positionAfter(facing(towerAt(THEIRS, 1, 902), asIs), 4)).not.toEqual(cellCentre(MINE));
+  });
+
+  it('после разрушения башни движение возобновляется', () => {
+    // Прочности ровно на один выстрел штурмовика. На первом тике юнит
+    // стоит и стреляет, дальше идти уже некуда — башни нет.
+    const world = facing(towerAt(THEIRS, 1, 902, StructureKind.TowerBasic, 10));
+    const after = run(world, 6);
+
+    expect(after.structures.some((entry) => entry.id === asEntityId(902))).toBe(false);
+    expect(after.units.find((unit) => unit.id === asEntityId(900))?.position).not.toEqual(
+      cellCentre(MINE),
+    );
+  });
+
+  it('башня за стеной не останавливает пехоту, но останавливает Теслу', () => {
+    // Пара, ради которой у Теслы отдельный столбец в линии огня: навесом
+    // бьют по тому, что стоит, поэтому башню за стеной она достаёт —
+    // а значит, и стоять ради неё обязана.
+    const withWall = (world: WorldState): WorldState => ({
+      ...world,
+      structures: [...world.structures, wallAt(cellIndex(20, 21), 1, 903)],
+    });
+
+    const infantry = withWall(facing(towerAt(THEIRS, 1, 902)));
+    const tesla = withWall(facing(towerAt(THEIRS, 1, 902), engaging, UnitType.Tesla));
+    // Контроль: без башни за той же стеной Тесла идёт вперёд. Без него
+    // тест не отличал бы остановку ради башни от остановки по любой
+    // другой причине.
+    const alone = withWall(facing(wallAt(THEIRS, 1, 902), engaging, UnitType.Tesla));
+
+    expect(positionAfter(infantry, 4)).not.toEqual(cellCentre(MINE));
+    expect(positionAfter(tesla, 4)).toEqual(cellCentre(MINE));
+    expect(positionAfter(alone, 4)).not.toEqual(cellCentre(MINE));
+  });
+
+  it('башня вне радиуса юнита с маршрута его не сбивает', () => {
+    // Снайперская башня достаёт на восемь клеток и стреляет по юниту,
+    // а он до неё не дотягивается. Преследования в игре нет: юнит идёт
+    // дальше, а не разворачивается на обидчика.
+    const far = towerAt(cellIndex(20, 26), 1, 902, StructureKind.TowerSniper);
+
+    expect(positionAfter(facing(far), 4)).not.toEqual(cellCentre(MINE));
   });
 });
 

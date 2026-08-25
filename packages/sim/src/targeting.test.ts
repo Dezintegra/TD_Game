@@ -380,17 +380,100 @@ describe('навесной огонь Теслы', () => {
     });
   });
 
-  it('без назначенной цели ближайшей постройкой остаётся стена', () => {
-    // Порядок выбора цели навес не меняет: среди построек по-прежнему
-    // берётся ближайшая. Способность работает через назначенную игроком
-    // цель — первую ступень и единственный прямой приказ игрока в выборе
-    // цели. Тест закрепляет решение, чтобы следующий не «починил» его
-    // молча, приняв за недочёт.
+  it('без назначенной цели выбирается башня, а не стоящая ближе стена', () => {
+    // Прежде здесь закреплялось обратное: «среди построек по-прежнему
+    // берётся ближайшая», то есть стена, а способность работала только
+    // через назначенную игроком цель. Решение отменено осознанно — вместе
+    // с правилом, по которому стреляющая постройка останавливает юнита.
+    //
+    // Одно без другого не имеет смысла: юнит, вставший ради башни, ломал
+    // бы прикрывающую её стену, пока башня расстреливает его в упор,
+    // а стену для того перед башней и ставят. Поэтому у стреляющей
+    // постройки теперь своя ступень, выше прочих построек.
+    //
+    // Навес при этом остаётся навесом: стена не мешает Тесле видеть
+    // башню, и потому башня ступень занимает.
     const world = behindWall();
 
-    expect(targetOf(world, { range: TESLA_RANGE, elevated: false, indirect: true })).toEqual({
+    expect(targetOf(world, { range: TESLA_RANGE, elevated: false, indirect: true })).toEqual(
+      towerTarget(world),
+    );
+  });
+
+  it('без навеса за той же стеной остаётся только стена', () => {
+    // Проверка того, что ступень стреляющей постройки не отменяет линию
+    // огня: башню за стеной пехота не видит, ступень не занята, и цель
+    // находится на следующей — ею оказывается сама стена.
+    const world = behindWall();
+
+    expect(targetOf(world, { range: TESLA_RANGE, elevated: false })).toEqual({
       kind: TargetKind.Structure,
       index: structureIndex(world, WALL_ID),
     });
+  });
+});
+
+describe('стреляющая постройка как цель', () => {
+  const WALL_ID = 90;
+  const TOWER_ID = 91;
+
+  it('важнее стоящей ближе стены', () => {
+    // Стена вдвое ближе башни — и всё равно проигрывает ей ступень.
+    // Стена стоит сбоку, а не между: линию огня этот тест не проверяет.
+    const world = arrange({
+      structures: [
+        structure(WALL_ID, FOE, StructureKind.Wall, 0, 1),
+        structure(TOWER_ID, FOE, StructureKind.TowerBasic, 2, 0),
+      ],
+    });
+
+    expect(targetOf(world, { range: UNIT_RANGE, elevated: false })).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, TOWER_ID),
+    });
+  });
+
+  it('уступает живому противнику', () => {
+    // Ступень стреляющей постройки стоит НИЖЕ юнитов, и башня ближе
+    // юнита ничего не меняет. Довод тот же, по которому генерал выше
+    // преграды, только наоборот: живой противник уйдёт, а башня
+    // останется там же.
+    const world = arrange({
+      structures: [structure(TOWER_ID, FOE, StructureKind.TowerBasic, 1, 0)],
+      units: [unit(80, FOE, 2, 0)],
+    });
+
+    expect(targetOf(world, { range: UNIT_RANGE, elevated: false })?.kind).toBe(TargetKind.Unit);
+  });
+
+  it('за стеной ступень не занимает', () => {
+    // Стена перекрывает линию огня пехоте, башня недосягаема, и цель
+    // находится на следующей ступени — ею оказывается сама стена.
+    const world = arrange({
+      structures: [
+        structure(WALL_ID, FOE, StructureKind.Wall, 1, 0),
+        structure(TOWER_ID, FOE, StructureKind.TowerBasic, 2, 0),
+      ],
+    });
+
+    expect(targetOf(world, { range: UNIT_RANGE, elevated: false })).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, WALL_ID),
+    });
+  });
+
+  it('назначенная игроком цель ступень перебивает', () => {
+    // Прямой приказ игрока сильнее любой автоматики — в том числе новой.
+    const world = arrange({
+      structures: [
+        structure(WALL_ID, FOE, StructureKind.Wall, 0, 1),
+        structure(TOWER_ID, FOE, StructureKind.TowerBasic, 2, 0),
+      ],
+    });
+    const wallIndex = structureIndex(world, WALL_ID);
+
+    expect(
+      targetOf(world, { range: UNIT_RANGE, elevated: false, globalTarget: wallIndex }),
+    ).toEqual({ kind: TargetKind.Structure, index: wallIndex });
   });
 });

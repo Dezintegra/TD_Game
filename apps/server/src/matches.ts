@@ -135,6 +135,20 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
     'td_tick_debt_total',
     'Сколько раз матч признал отставание и сдвинул точку отсчёта',
   );
+  // Ряд один на все матчи, а не на каждый: кадр уходит всем местам
+  // одной рассылкой, и промежутки у мест совпадают по построению.
+  // Границы и бюджет по умолчанию — миллисекунды и тик: промежуток
+  // длиннее тика и есть то, чего здесь быть не должно.
+  const sendGapMs = metrics?.histogram(
+    'td_frame_send_gap_ms',
+    'Промежуток между отправками кадра команд',
+  );
+  // Без разметки, и это решение, а не упущение. Сторона нумеруется
+  // внутри матча, поэтому «сторона 0» — разные люди в разных матчах,
+  // и метка сообщила бы только ложное ощущение, что ряды сравнимы.
+  // Превышением считается тик: обход длиннее тика — ровно тот случай,
+  // когда сервер обязан поднять задержку ввода.
+  const rttMs = metrics?.histogram('td_player_rtt_ms', 'Время кругового обхода до участника');
 
   const measure: HostMeasure | undefined =
     metrics === undefined
@@ -150,6 +164,8 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
           },
           advanced: (ticks) => advancedTicks?.add(ticks),
           debt: (ticks) => debts?.add(ticks),
+          sent: (gapMs) => sendGapMs?.add(gapMs),
+          rtt: (ms) => rttMs?.add(ms),
         };
 
   const dispatch = (entry: Entry): void => {
