@@ -1,5 +1,6 @@
 import {
   CHECKSUM_INTERVAL_TICKS,
+  COMMAND_CARRY_LIMIT_TICKS,
   DISPLAY_LEAD_TICKS,
   MS_PER_TICK,
   PREDICTION_REPLAY_LIMIT_TICKS,
@@ -192,7 +193,19 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
    */
   const issuedTicks: number[] = [];
 
-  /** Собственные команды, ещё не пришедшие обратно кадром. */
+  /**
+   * Собственные команды, ещё не пришедшие обратно кадром.
+   *
+   * Ключ — тик, на котором команду **ждут**, а поле `tick` самой команды
+   * остаётся тем, на который её назначили при отправке. Расходятся эти
+   * два числа намеренно: команду, не увиденную в кадре своего тика,
+   * клиент переставляет вперёд (см. `settle`), и тогда ключ говорит
+   * «где ждём», а `tick` — «на что назначали». Второе нужно, чтобы
+   * знать, давно ли команда в пути.
+   *
+   * Никого это не обманывает: `step` поля `tick` не читает вовсе,
+   * а на сервер команда ушла в исходном виде ещё при отправке.
+   */
   const own = new Map<number, UnownedCommand[]>();
   /** Кадры, пришедшие раньше своей очереди. */
   const buffered = new Map<number, readonly Command[]>();
@@ -215,13 +228,87 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     options.onStatus?.(next);
   };
 
-  const forget = (upToTick: number): void => {
-    for (const tick of own.keys()) {
-      if (tick <= upToTick) own.delete(tick);
-    }
+  /** Забыть контрольные суммы, которые сверять уже не с чем. */
+  const forgetChecksums = (upToTick: number): void => {
     for (const tick of mine.keys()) {
       if (tick < upToTick - CHECKSUM_MEMORY * CHECKSUM_INTERVAL_TICKS) mine.delete(tick);
     }
+  };
+
+  /**
+   * Уладить очередь своих команд после того, как мир продвинулся.
+   *
+   * `played` — сколько своих команд было в проигранных кадрах. Столько
+   * самых старых записей снимается с очереди: они подтверждены. Всё
+   * остальное, что осталось на тиках ниже подтверждённого, **не теряется,
+   * а переставляется** на `confirmed.tick`.
+   *
+   * Почему переставляется. Сервер отдать команду назад не умеет:
+   * опоздавшую он двигает вперёд (`clamp` в `host.ts`), а отданную
+   * до начала матча ставит в очередь. Значит своя команда, не пришедшая
+   * кадром, — ещё летящая, и удалять её из предсказания значит показать
+   * игроку исчезновение действия, которое через долю секунды вернётся.
+   * Ровно это и мигало: заказанная пачка на доли секунды худела вдвое.
+   *
+   * Почему именно на `confirmed.tick`. Куда сервер положил команду,
+   * клиент узнаёт только из кадра. Честная догадка одна — «на ближайший,
+   * который сервер ещё не сыграл». Догадка может оказаться короткой,
+   * тогда следующий кадр придёт снова без команды и она переедет ещё
+   * на тик. На экране при этом не меняется ничего: команда каждый раз
+   * применяется первым же шагом пересборки, то есть её действие видно
+   * непрерывно.
+   *
+   * Оставить команду лежать на сыгранном тике было бы не легче, а хуже:
+   * `rebuild` ключи ниже `confirmed.tick` не читает никогда, так что
+   * картинка просела бы точно так же, а карта росла бы вечно.
+   *
+   * Сопоставление по порядку, а не по содержимому, — по той же причине,
+   * что и в `issuedTicks`: две одинаковые команды подряд по полям
+   * неразличимы.
+   *
+   * Отвергнутая ядром команда считается пришедшей. Кадр перечисляет
+   * команды, **исполнявшиеся** на тике, независимо от того, приняло их
+   * ядро или нет, — значит отказ виден, и предсказание поправляется
+   * один раз, законной поправкой.
+   */
+  const settle = (played: number): void => {
+    if (confirmed === null) return;
+
+    const boundary = confirmed.tick;
+    const stale = [...own.keys()].filter((tick) => tick < boundary).sort((a, b) => a - b);
+    if (stale.length === 0) return;
+
+    let left = played;
+    const carried: UnownedCommand[] = [];
+
+    for (const tick of stale) {
+      const list = own.get(tick) ?? [];
+      own.delete(tick);
+
+      for (const command of list) {
+        // Подтверждена кадром: снимаем с очереди.
+        if (left > 0) {
+          left -= 1;
+          continue;
+        }
+
+        // Несём слишком долго. Дальше нести — врать дольше, чем стоит
+        // любая просадка: команда, которой нет в кадрах вторую секунду,
+        // скорее всего не долетела вовсе.
+        if (boundary - command.tick > COMMAND_CARRY_LIMIT_TICKS) continue;
+
+        carried.push(command);
+      }
+    }
+
+    if (carried.length === 0) return;
+
+    // Перенесённые старше всего, что могло бы лежать на границе, поэтому
+    // встают перед ним. В сегодняшнем коде ячейка границы всегда пуста:
+    // свежая команда получает тик `подтверждённый + задержка`, а задержка
+    // не меньше INPUT_DELAY_MIN_TICKS. Порядок здесь на случай, если
+    // это перестанет быть правдой.
+    own.set(boundary, [...carried, ...(own.get(boundary) ?? [])]);
   };
 
   /**
@@ -409,6 +496,16 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     }
   };
 
+  /** Сколько в списке команд нашей стороны. */
+  const countMine = (commands: readonly Command[]): number => {
+    if (side === null) return 0;
+
+    let total = 0;
+    for (const command of commands) if (command.player === side) total += 1;
+
+    return total;
+  };
+
   /**
    * Отметить, на сколько сервер сдвинул вернувшиеся свои команды.
    *
@@ -442,7 +539,8 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
       buffered.delete(tick);
       confirmed = step(confirmed, commands);
 
-      forget(tick);
+      settle(countMine(commands));
+      forgetChecksums(tick);
       remember(confirmed);
       noteShifts(tick, commands);
       options.onFrame?.(tick, commands);
@@ -522,17 +620,25 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
           if (message.throughTick >= confirmed.tick) {
             let world = confirmed;
             const target = message.throughTick;
+            let played = 0;
 
             while (world.tick <= target) {
               const commands = map.get(world.tick) ?? [];
               const tick = world.tick;
+              played += countMine(commands);
               world = step(world, commands);
               remember(world);
               options.onFrame?.(tick, commands);
             }
 
             confirmed = world;
-            forget(confirmed.tick - 1);
+
+            // Правило то же, что после обычного кадра: сколько своих
+            // проиграно, столько записей снято, остальное перенесено.
+            // Пустая очередь здесь обычное дело — после рассинхрона её
+            // чистит `verify`, и снимать бывает нечего.
+            settle(played);
+            forgetChecksums(confirmed.tick - 1);
           }
 
           if (message.throughTick + 1 < serverTick && buffered.get(confirmed.tick) === undefined) {
