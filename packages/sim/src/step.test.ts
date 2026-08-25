@@ -43,7 +43,7 @@ import { createWorld } from './world.js';
 import type { PlayerState, StructureState, WorldState } from './world.js';
 import { step } from './step.js';
 import { checksum } from './checksum.js';
-import { cellAt, cellCentre, cellIndex, squaredDistanceToFootprint } from './map.js';
+import { cellAt, cellCentre, cellIndex, cellX, squaredDistanceToFootprint } from './map.js';
 import { buildOccupancy } from './occupancy.js';
 import { playerStats } from './stats.js';
 
@@ -1620,6 +1620,70 @@ describe('остановка у назначенной цели', () => {
       );
       expect(apart).toBeLessThanOrEqual(TESLA.range * TESLA.range);
       expect(apart).toBeGreaterThan(TOWER_RANGE * TOWER_RANGE);
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Пролом перегородившей путь постройки
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Преграда останавливает юнита в любом режиме, и он её ломает.
+ *
+ * Это вторая из двух остановок, не зависящих от режима, и причина у неё
+ * простая: не остановившийся у преграды юнит не сможет её сломать
+ * и упрётся в неё навсегда. «Прорыв» отменяет остановку на ВСТРЕЧНОМ,
+ * а перегородившая путь стена — не встречный, а дорога.
+ *
+ * Стена стои́т поперёк всей карты: пока существует обход, юнит идёт
+ * в обход, каким бы длинным тот ни был, и пролом не включается вовсе.
+ */
+describe('пролом преграды в любом режиме', () => {
+  const START = cellIndex(20, 20);
+  const FENCE_X = 24;
+
+  const TOUGH = 1_000_000;
+  /** Прочность одной секции: с запасом, чтобы за отрезок её не снесли. */
+  const PLANK = 10_000;
+
+  /** Тиков с запасом на четыре клетки до стены. */
+  const LONG_ENOUGH = 2 * Math.ceil(cellsToUnits(4) / UNIT_STATS[UnitType.Assault].speed);
+
+  const fenced = (stance: AttackStance): WorldState => {
+    const world = withUnitAt(openWorld(), 0, START, TOUGH, 900);
+    const fence = Array.from({ length: MAP_HEIGHT_CELLS }, (_, y) => ({
+      ...wallAt(cellIndex(FENCE_X, y), 1, 9000 + y),
+      health: PLANK,
+    }));
+
+    return patchPlayer({ ...world, structures: [...world.structures, ...fence] }, 0, { stance });
+  };
+
+  const fenceHealth = (world: WorldState): number =>
+    world.structures
+      .filter((structure) => cellX(structure.cell) === FENCE_X)
+      .reduce((sum, structure) => sum + structure.health, 0);
+
+  const cellOfUnit = (world: WorldState): number =>
+    cellAt(world.units.find((unit) => unit.id === asEntityId(900))?.position ?? cellCentre(START));
+
+  for (const stance of ATTACK_STANCES) {
+    it(`в режиме «${ATTACK_STANCE_LABEL[stance]}» юнит встаёт у стены и ломает её`, () => {
+      const arrived = run(fenced(stance), LONG_ENOUGH);
+
+      // Дошёл до стены и упёрся в неё, а не прошёл насквозь и не застрял
+      // на полдороге.
+      expect(cellX(cellOfUnit(arrived))).toBe(FENCE_X - 1);
+
+      // Урон проверяется ПОСЛЕ остановки, а не за весь путь. Стена
+      // попадает в радиус ещё на подходе, и юнит успевает задеть её
+      // мимоходом; такой урон доказывал бы, что юнит стрелял, но ничего
+      // не говорил бы о том, ломает ли он преграду, стоя перед ней.
+      const standing = run(arrived, UNIT_STATS[UnitType.Assault].cooldownTicks + 1);
+
+      expect(cellOfUnit(standing)).toBe(cellOfUnit(arrived));
+      expect(fenceHealth(standing)).toBeLessThan(fenceHealth(arrived));
     });
   }
 });
