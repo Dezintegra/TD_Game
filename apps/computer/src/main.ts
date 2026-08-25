@@ -3,6 +3,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { createMetrics } from '@td/shared';
 import type { ComputerService } from '@td/bot';
 import { API_URL, COMPUTER_SECRET, METRICS_HOST, METRICS_PORT, WS_URL } from './config.js';
+import { awaitAcceptance, offerDeclaration } from './handshake.js';
 import { startComputerServices } from './services.js';
 
 /**
@@ -152,11 +153,41 @@ if (COMPUTER_SECRET === '') {
   setInterval(() => undefined, 60_000);
 } else {
   log(`Сервер ${API_URL}, игровой сокет ${WS_URL}`);
-  services = startComputerServices({
-    apiUrl: API_URL,
-    wsUrl: WS_URL,
-    secret: COMPUTER_SECRET,
-    metrics,
-    log: botLog,
+
+  /**
+   * Сперва рукопожатие, потом найм.
+   *
+   * Служба ходит к серверу по сети, значит сервер должен быть готов
+   * раньше. В одном процессе это решалось вызовом после `listen`;
+   * между процессами так уже нельзя — в compose оба контейнера
+   * стартуют разом. Поэтому ждём с нарастающей паузой, а не падаем:
+   * перезапуск по кругу шумит в журнале и ничего не чинит.
+   */
+  const accepted = await awaitAcceptance({
+    offer: () =>
+      offerDeclaration({
+        apiUrl: API_URL,
+        secret: COMPUTER_SECRET,
+        post: (url, init) => fetch(url, init),
+      }),
+    // Таймер ожидания намеренно НЕ помечен `unref`: пока служба ждёт
+    // сервера, держать процесс живым больше нечему, и помеченный таймер
+    // дал бы тихий выход вместо ожидания.
+    wait: (ms) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      }),
+    log,
+    stopped: () => leaving,
   });
+
+  if (accepted) {
+    services = startComputerServices({
+      apiUrl: API_URL,
+      wsUrl: WS_URL,
+      secret: COMPUTER_SECRET,
+      metrics,
+      log: botLog,
+    });
+  }
 }
