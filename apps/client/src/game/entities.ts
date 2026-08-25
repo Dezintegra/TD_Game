@@ -288,8 +288,25 @@ export const drawEntities = (
 
     const attackTier = tier?.attack ?? 0;
     const fireTier = tier?.fire ?? 0;
-    const body = machines.unit(side, unit.unitType, unit.facing, attackTier, fireTier, false);
-    const mirror = machines.unit(side, unit.unitType, unit.facing, attackTier, fireTier, true);
+    const rangeTier = tier?.range ?? 0;
+    const body = machines.unit(
+      side,
+      unit.unitType,
+      unit.facing,
+      attackTier,
+      fireTier,
+      rangeTier,
+      false,
+    );
+    const mirror = machines.unit(
+      side,
+      unit.unitType,
+      unit.facing,
+      attackTier,
+      fireTier,
+      rangeTier,
+      true,
+    );
     const anchor = worldToScreen(x, y);
 
     // Машина висит над полем и медленно покачивается. Величина считается
@@ -395,6 +412,7 @@ const readinessOf = (structure: StructureState, tick: number): number => {
 interface WeaponTiers {
   readonly attack: number;
   readonly fire: number;
+  readonly range: number;
 }
 
 /**
@@ -402,14 +420,22 @@ interface WeaponTiers {
  *
  * Считаются раз на кадр на игрока, а не на юнита: игроков двое, типов три,
  * а юнитов сотни.
+ *
+ * Дальность есть не у всех типов: у штурмовика такой ветки нет вовсе.
+ * `upgradeBranchIndex` отвечает на это −1, уровня по такому индексу
+ * не находится, и ступень остаётся нулевой — то есть модель штурмовика
+ * по оси дальности не меняется сама собой, без единого условия здесь.
+ * Свойство закреплено тестом: молчаливый ноль легко превратить
+ * в молчаливую единицу.
  */
 const weaponTiersOf = (player: PlayerState): readonly WeaponTiers[] =>
   UNIT_TYPES.map((unitType) => {
     const target = UNIT_UPGRADE_TARGET[unitType];
     const attack = player.upgrades[upgradeBranchIndex(target, UpgradeStat.Attack)]?.level ?? 0;
     const fire = player.upgrades[upgradeBranchIndex(target, UpgradeStat.FireRate)]?.level ?? 0;
+    const range = player.upgrades[upgradeBranchIndex(target, UpgradeStat.Range)]?.level ?? 0;
 
-    return { attack: weaponTier(attack), fire: weaponTier(fire) };
+    return { attack: weaponTier(attack), fire: weaponTier(fire), range: weaponTier(range) };
   });
 
 // ─────────────────────────────────────────────────────────────────────────

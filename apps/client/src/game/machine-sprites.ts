@@ -19,9 +19,11 @@ import { TIER_COUNT, clampTier } from './models.js';
  * остаётся положить спрайтом. Из кадра ушла тесселяция, и вместе с ней
  * ушёл потолок на число деталей.
  *
- * Кеш ленивый. Комбинаций 486 у машин плюс 16 у генералов, и все они
- * разом не встречаются никогда: в матче участвуют три типа, две стороны,
- * восемь румбов — сорок восемь картинок на ступень прокачки.
+ * Кеш ленивый, и это главное. Осей прокачки на модели три — атака,
+ * скорострельность, дальность, — то есть мест в кеше 1458 у машин
+ * плюс 16 у генералов. Разом они не встречаются никогда: у игрока
+ * в каждый момент одна тройка ступеней на тип, а картинок на неё —
+ * три типа на восемь румбов, на две стороны, на два отражения.
  *
  * Отражение считается за отдельную запись, а не выводится из машины
  * переворотом: в отражении видно днище, и перекрытие деталей там другое.
@@ -61,11 +63,12 @@ export interface MachineSprites {
     facing: number,
     attackTier: number,
     fireTier: number,
+    rangeTier: number,
     mirror: boolean,
   ): MachineSprite;
   general(side: number, facing: number, mirror: boolean): MachineSprite;
   /** Высота модели юнита в клетках. Нужна полосе здоровья. */
-  unitHeight(unitType: UnitType, attackTier: number, fireTier: number): number;
+  unitHeight(unitType: UnitType, attackTier: number, fireTier: number, rangeTier: number): number;
   /** Освободить видеопамять. Обязательно при смене матча. */
   dispose(): void;
 }
@@ -82,7 +85,13 @@ export const createMachineSprites = (
   resolution: number,
 ): MachineSprites => {
   const unitCacheSize =
-    UNIT_TYPES.length * DIRECTION_COUNT * TIER_COUNT * TIER_COUNT * SIDE_COUNT * MIRROR_COUNT;
+    UNIT_TYPES.length *
+    DIRECTION_COUNT *
+    TIER_COUNT *
+    TIER_COUNT *
+    TIER_COUNT *
+    SIDE_COUNT *
+    MIRROR_COUNT;
 
   const units = new Array<MachineSprite | undefined>(unitCacheSize);
   const generals = new Array<MachineSprite | undefined>(
@@ -111,10 +120,13 @@ export const createMachineSprites = (
     facing: number,
     attack: number,
     fire: number,
+    range: number,
     side: number,
     mirror: boolean,
   ): number =>
-    ((((unitType * DIRECTION_COUNT + facing) * TIER_COUNT + attack) * TIER_COUNT + fire) *
+    (((((unitType * DIRECTION_COUNT + facing) * TIER_COUNT + attack) * TIER_COUNT + fire) *
+      TIER_COUNT +
+      range) *
       SIDE_COUNT +
       side) *
       MIRROR_COUNT +
@@ -126,19 +138,21 @@ export const createMachineSprites = (
     facing: number,
     attackTier: number,
     fireTier: number,
+    rangeTier: number,
     mirror: boolean,
   ): MachineSprite => {
     const rumb = normaliseFacing(facing);
     const attack = clampTier(attackTier);
     const fire = clampTier(fireTier);
-    const index = unitIndex(unitType, rumb, attack, fire, side, mirror);
+    const range = clampTier(rangeTier);
+    const index = unitIndex(unitType, rumb, attack, fire, range, side, mirror);
 
     const cached = units[index];
     if (cached !== undefined) return cached;
 
     const baked = bakeArmour(
       renderer,
-      unitSolids(unitType, attack, fire),
+      unitSolids(unitType, attack, fire, range),
       rumb,
       armourColors(side),
       mirror,
@@ -172,8 +186,8 @@ export const createMachineSprites = (
   return {
     unit,
     general,
-    unitHeight: (unitType, attackTier, fireTier) =>
-      unit(0, unitType, DIRECTION_SOUTH, attackTier, fireTier, false).modelHeight,
+    unitHeight: (unitType, attackTier, fireTier, rangeTier) =>
+      unit(0, unitType, DIRECTION_SOUTH, attackTier, fireTier, rangeTier, false).modelHeight,
     dispose() {
       // Уничтожать обязательно, и это не педантизм: текстура живёт
       // в видеопамяти, а сборщик мусора о видеопамяти не знает. Кеш

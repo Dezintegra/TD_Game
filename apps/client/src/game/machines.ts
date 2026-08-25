@@ -26,9 +26,11 @@ import { box, column, roller, taper, tube, upright } from './solids.js';
  * корпуса и посадка башни взяты прежние до сотых: по ним игрок узнаёт
  * тип с одного взгляда, и менять их из-за отделки нельзя.
  *
- * Прокачка на модели тоже прежняя: атака удлиняет и утолщает ствол,
- * скорострельность добавляет стволов, верхняя ступень атаки даёт
- * дульный тормоз.
+ * Прокачка на модели: атака удлиняет и утолщает ствол, скорострельность
+ * добавляет стволов, верхняя ступень атаки даёт дульный тормоз.
+ * Дальность — ось третья и самая молодая: у снайпера от неё растёт
+ * прицел, у Теслы поднимается мортира, а у штурмовика, у которого этой
+ * ветки нет, не меняется ничего.
  *
  * ## Местные координаты
  *
@@ -103,6 +105,56 @@ const ATTACK_CALIBRE = [1, 1.2, 1.45] as const;
 /** Сколько стволов даёт ступень скорострельности. */
 const FIRE_BARRELS = [1, 2, 3] as const;
 
+/**
+ * Чем модель показывает ступень дальности.
+ *
+ * Длиной ствола — нельзя, и это прямой запрет требования. Длину ствола
+ * уже занимает атака, а две ветки, меняющие одну деталь в одну сторону,
+ * читаются как одна: игрок, увидев длинный ствол, перестанет понимать,
+ * во что вложился противник, — то есть требование потеряет смысл ровно
+ * там, где нужнее всего.
+ *
+ * Дальность — единственная характеристика, ошибка в чтении которой
+ * стоит всего войска сразу: атака и скорострельность отвечают, сколько
+ * продлится бой, а дальность — состоится ли он вообще.
+ */
+const RangeLook = {
+  /** Ничем: у штурмовика ветки дальности нет, и модель по ней не меняется. */
+  None: 0,
+  /**
+   * Прицел. Оптика на мачте вытягивается вперёд по ступеням: для длинной
+   * низкой машины с вынесенным стволом это своя деталь, и в языке боевой
+   * техники прицел означает ровно дальность.
+   */
+  Sight: 1,
+  /**
+   * Угол мортиры. Ствол задирается к небу: навесная стрельба дальше —
+   * это то, как мортира работает на самом деле, поэтому объяснять
+   * деталь не придётся.
+   */
+  Elevation: 2,
+} as const;
+
+type RangeLook = (typeof RangeLook)[keyof typeof RangeLook];
+
+/**
+ * Насколько ступень дальности поднимает срез мортиры, в клетках.
+ *
+ * Сверху числа упёрты, и упёрты не вкусом. Признак генерала — величина
+ * отрыва от земли: его машина висит целиком выше любой обычной, и
+ * пересекись они по высоте, опознавать генерала пришлось бы по деталям,
+ * которых на сорока пикселях не разглядеть. Днище генерала приходится
+ * на 0,488 клетки, а срез мортиры при верхней ступени атаки — на 0,391
+ * ещё до всякого подъёма: свободного места остаётся нецелых сто тысячных,
+ * и девяносто из них здесь и взяты.
+ *
+ * Что получается на экране: клетка — это около 52 пикселей по высоте,
+ * то есть подъём в два и в пять пикселей при длине ствола в сорок.
+ * Угол — девять и восемнадцать градусов. Мало, но это тот максимум,
+ * который признак генерала оставляет, а он важнее.
+ */
+const RANGE_ELEVATION = [0, 0.045, 0.09] as const;
+
 interface Mount {
   /** Откуда ствол выходит: смещение вперёд от центра машины. */
   readonly forward: number;
@@ -115,14 +167,19 @@ interface Mount {
 /**
  * Стволы.
  *
- * Две оси прокачки дают два независимых изменения модели: атака удлиняет
- * и утолщает ствол, скорострельность добавляет стволов.
+ * Три оси прокачки дают три независимых изменения модели: атака удлиняет
+ * и утолщает ствол, скорострельность добавляет стволов, дальность — там,
+ * где она показывается углом, — задирает срез вверх.
+ *
+ * Подъём задан на срезе, а не уклоном на клетку длины, и это не мелочь:
+ * иначе прокачка атаки, удлиняющая ствол, поднимала бы заодно и угол,
+ * то есть две ветки снова слились бы в одну.
  *
  * Кожух у казённой части — деталь, которой раньше не было и которая
  * теперь ничего не стоит. Нужна она не для красоты: тонкая труба
  * без утолщения у основания читается антенной, а не орудием.
  */
-const barrels = (mount: Mount, attackTier: number, fireTier: number): Solid[] => {
+const barrels = (mount: Mount, attackTier: number, fireTier: number, rise: number): Solid[] => {
   const attack = clampTier(attackTier);
   const fire = clampTier(fireTier);
 
@@ -130,11 +187,18 @@ const barrels = (mount: Mount, attackTier: number, fireTier: number): Solid[] =>
   const calibre = mount.calibre * (ATTACK_CALIBRE[attack] ?? 1);
   const count = FIRE_BARRELS[fire] ?? 1;
 
+  const slope = length === 0 ? 0 : rise / length;
+  const axisAt = (forward: number): number => mount.axis + (forward - mount.forward) * slope;
+
   const solids: Solid[] = [];
   const spacing = calibre * 1.25;
   // Стволы расходятся от оси симметрично: при двух — по обе стороны,
   // при трёх — средний по оси.
   const first = -((count - 1) / 2) * spacing;
+
+  /** Отрезок ствола, лежащий на общей наклонной оси. */
+  const along = (label: string, from: number, to: number, side: number, radius: number): Solid =>
+    tube(label, from, to, side, axisAt(from), radius, Material.Gun, 12, (to - from) * slope);
 
   for (let index = 0; index < count; index += 1) {
     const side = first + index * spacing;
@@ -142,36 +206,94 @@ const barrels = (mount: Mount, attackTier: number, fireTier: number): Solid[] =>
     const to = mount.forward + length;
 
     solids.push(
-      tube(`ствол ${index + 1}`, from, to, side, mount.axis, calibre / 2, Material.Gun),
-      tube(
+      along(`ствол ${index + 1}`, from, to, side, calibre / 2),
+      along(
         `кожух ${index + 1}`,
         from - calibre * 0.35,
         from + length * 0.26,
         side,
-        mount.axis,
         calibre * 0.66,
-        Material.Gun,
-        12,
       ),
     );
 
     if (attack === 2) {
       solids.push(
-        tube(
+        along(
           `дульный тормоз ${index + 1}`,
           to - calibre * 1.1,
           to + calibre * 0.25,
           side,
-          mount.axis,
           calibre * 0.95,
-          Material.Gun,
-          12,
         ),
       );
     }
   }
 
   return solids;
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Прицел снайпера
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Где стоит мачта прицела и на какой высоте кончается. */
+const SIGHT_FORWARD = -0.185;
+const SIGHT_MAST_BASE = 0.235;
+const SIGHT_MAST_HEIGHT = 0.05;
+
+/**
+ * Оптика по ступеням дальности: длина, ширина и высота корпуса.
+ *
+ * Растёт прежде всего ДЛИНА, и это не произвол. Прицел виден сверху под
+ * углом, и его толщина на экране — три пикселя: расти ей некуда, прибавку
+ * в полтора пикселя никто не заметит. Длина же уходит вперёд по экрану
+ * и за две ступени вытягивается с трёх пикселей до четырнадцати —
+ * настолько же, насколько атака удлиняет ствол.
+ */
+const SIGHT_LENGTH = [0.05, 0.13, 0.22] as const;
+const SIGHT_WIDTH = [0.052, 0.06, 0.07] as const;
+const SIGHT_HEIGHT = [0.028, 0.034, 0.042] as const;
+
+/** Линза: она же маркер стороны, поэтому растёт вместе с корпусом. */
+const LENS_WIDTH = [0.03, 0.038, 0.048] as const;
+const LENS_HEIGHT = [0.016, 0.02, 0.026] as const;
+
+/**
+ * Прицел снайпера.
+ *
+ * Корпус растёт ВПЕРЁД от мачты: задний срез остаётся на месте, поэтому
+ * прицел не съезжает с опоры, а вытягивается над башней — как настоящая
+ * оптика, вынесенная объективом к цели.
+ */
+const sight = (rangeTier: number): Solid[] => {
+  const tier = clampTier(rangeTier);
+  const length = SIGHT_LENGTH[tier] ?? SIGHT_LENGTH[0];
+  const width = SIGHT_WIDTH[tier] ?? SIGHT_WIDTH[0];
+  const height = SIGHT_HEIGHT[tier] ?? SIGHT_HEIGHT[0];
+  const top = SIGHT_MAST_BASE + SIGHT_MAST_HEIGHT;
+  // Задний срез корпуса стои́т над мачтой при любой ступени.
+  const back = SIGHT_FORWARD - SIGHT_LENGTH[0] / 2;
+
+  return [
+    upright(
+      'стойка прицела',
+      box(SIGHT_FORWARD, 0, 0.022, 0.03),
+      SIGHT_MAST_BASE,
+      SIGHT_MAST_HEIGHT,
+      Material.Gun,
+      { inset: 0.004 },
+    ),
+    upright('блок прицела', box(back + length / 2, 0, length, width), top, height, Material.Gun, {
+      inset: 0.008,
+    }),
+    upright(
+      'линза прицела',
+      box(back + length - 0.002, 0, 0.005, LENS_WIDTH[tier] ?? LENS_WIDTH[0]),
+      top + 0.006,
+      LENS_HEIGHT[tier] ?? LENS_HEIGHT[0],
+      Material.Neon,
+    ),
+  ];
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -289,6 +411,8 @@ const lamps = (forward: number, offset: number, base: number): Solid[] => [
 interface Chassis {
   readonly solids: readonly Solid[];
   readonly mount: Mount;
+  /** Чем этот тип показывает ступень дальности. */
+  readonly rangeLook: RangeLook;
 }
 
 /**
@@ -348,6 +472,9 @@ const ASSAULT: Chassis = {
   // Срез ствола вынесен за нос корпуса: орудие, не достающее до лба,
   // читается не орудием, а трубой на крыше.
   mount: { forward: 0.05, axis: 0.25, length: 0.34, calibre: 0.038 },
+  // Ветки дальности у штурмовика нет, поэтому и показывать нечего.
+  // Две клетки — то, что делает его дешёвым мясом ближнего боя.
+  rangeLook: RangeLook.None,
 };
 
 /**
@@ -377,15 +504,9 @@ const SNIPER: Chassis = {
     upright('маска орудия', taper(-0.035, 0, 0.06, 0.075, 0.11), 0.172, 0.056, Material.Hull, {
       inset: 0.006,
     }),
-    // Мачта прицела. У снайпера она вместо командирской башенки: высокая
-    // тонкая стойка над кормой — второй после ствола признак типа.
-    upright('стойка прицела', box(-0.185, 0, 0.022, 0.03), 0.235, 0.05, Material.Gun, {
-      inset: 0.004,
-    }),
-    upright('блок прицела', box(-0.185, 0, 0.05, 0.052), 0.285, 0.028, Material.Gun, {
-      inset: 0.008,
-    }),
-    upright('линза прицела', box(-0.162, 0, 0.005, 0.03), 0.291, 0.016, Material.Neon),
+    // Мачта прицела с оптикой стои́т не здесь, а в `sight`: она растёт
+    // по ступеням дальности. У снайпера она вместо командирской башенки:
+    // высокая тонкая стойка над кормой — второй после ствола признак типа.
     tube('выхлоп', -0.24, -0.14, -0.14, 0.19, 0.01, Material.Tread, 10),
     ...lamps(0.362, 0.055, 0.086),
     ...markerPair(-0.02, 0.162, 0.34, 0.026, 0.139),
@@ -396,6 +517,7 @@ const SNIPER: Chassis = {
   // Ствол вынесен далеко вперёд и тонок: дальность снайпера должна
   // читаться с поля раньше, чем игрок наведёт на него курсор.
   mount: { forward: -0.04, axis: 0.2, length: 0.52, calibre: 0.03 },
+  rangeLook: RangeLook.Sight,
 };
 
 /**
@@ -446,6 +568,7 @@ const TESLA: Chassis = {
   ],
   // Мортира короткая и толстая — противоположность снайперскому стволу.
   mount: { forward: 0.06, axis: 0.3, length: 0.28, calibre: 0.066 },
+  rangeLook: RangeLook.Elevation,
 };
 
 const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
@@ -454,15 +577,19 @@ const CHASSIS: Readonly<Record<UnitType, Chassis>> = {
   [UnitType.Tesla]: TESLA,
 };
 
-/** Тела боевой машины: шасси и стволы по ступеням прокачки. */
+/** Тела боевой машины: шасси, прицел и стволы по ступеням прокачки. */
 export const unitSolids = (
   unitType: UnitType,
   attackTier: number,
   fireTier: number,
+  rangeTier: number,
 ): readonly Solid[] => {
   const chassis = CHASSIS[unitType] ?? ASSAULT;
+  const range = clampTier(rangeTier);
+  const rise = chassis.rangeLook === RangeLook.Elevation ? (RANGE_ELEVATION[range] ?? 0) : 0;
+  const optics = chassis.rangeLook === RangeLook.Sight ? sight(range) : [];
 
-  return [...chassis.solids, ...barrels(chassis.mount, attackTier, fireTier)];
+  return [...chassis.solids, ...optics, ...barrels(chassis.mount, attackTier, fireTier, rise)];
 };
 
 // ─────────────────────────────────────────────────────────────────────────

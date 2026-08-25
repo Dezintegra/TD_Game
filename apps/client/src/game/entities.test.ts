@@ -196,7 +196,7 @@ const fakeSprite = (mirror: boolean): MachineSprite => ({
 });
 
 const FAKE_MACHINES: MachineSprites = {
-  unit: (_side, _unitType, _facing, _attack, _fire, mirror) => fakeSprite(mirror),
+  unit: (_side, _unitType, _facing, _attack, _fire, _range, mirror) => fakeSprite(mirror),
   general: (_side, _facing, mirror) => fakeSprite(mirror),
   unitHeight: () => MODEL_HEIGHT,
   dispose: () => undefined,

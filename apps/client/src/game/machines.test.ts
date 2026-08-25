@@ -38,29 +38,29 @@ const span = (solids: readonly Solid[]): { length: number; width: number; height
 describe('состав машины', () => {
   it('каждый тип собран из многих тел', () => {
     for (const unitType of UNIT_TYPES) {
-      expect(unitSolids(unitType, 0, 0).length).toBeGreaterThan(20);
+      expect(unitSolids(unitType, 0, 0, 0).length).toBeGreaterThan(20);
     }
   });
 
   it('число колёс различает типы', () => {
     // Число колёс — признак типа, а не отделка: по нему игрок отличает
     // тяжёлую машину от средней раньше, чем разглядит пропорции.
-    expect(labelled(unitSolids(UnitType.Tesla, 0, 0), 'колесо')).toHaveLength(6);
-    expect(labelled(unitSolids(UnitType.Assault, 0, 0), 'колесо')).toHaveLength(4);
-    expect(labelled(unitSolids(UnitType.Sniper, 0, 0), 'колесо')).toHaveLength(4);
+    expect(labelled(unitSolids(UnitType.Tesla, 0, 0, 0), 'колесо')).toHaveLength(6);
+    expect(labelled(unitSolids(UnitType.Assault, 0, 0, 0), 'колесо')).toHaveLength(4);
+    expect(labelled(unitSolids(UnitType.Sniper, 0, 0, 0), 'колесо')).toHaveLength(4);
   });
 
   it('колёса и стволы круглые в сечении', () => {
-    const solids = unitSolids(UnitType.Assault, 0, 0);
+    const solids = unitSolids(UnitType.Assault, 0, 0, 0);
 
     for (const wheel of labelled(solids, 'колесо')) expect(wheel.round).toBe(true);
     for (const barrel of labelled(solids, 'ствол 1')) expect(barrel.round).toBe(true);
   });
 
   it('силуэты типов остаются разными', () => {
-    const sniper = span(unitSolids(UnitType.Sniper, 0, 0));
-    const tesla = span(unitSolids(UnitType.Tesla, 0, 0));
-    const assault = span(unitSolids(UnitType.Assault, 0, 0));
+    const sniper = span(unitSolids(UnitType.Sniper, 0, 0, 0));
+    const tesla = span(unitSolids(UnitType.Tesla, 0, 0, 0));
+    const assault = span(unitSolids(UnitType.Assault, 0, 0, 0));
 
     // Снайпер длинный и низкий, Тесла широкая и высокая, штурмовик
     // посередине. Различие по габаритам обязано сохраниться, иначе типы
@@ -72,7 +72,7 @@ describe('состав машины', () => {
 
   it('у каждой машины есть маска орудия', () => {
     for (const unitType of UNIT_TYPES) {
-      const solids = unitSolids(unitType, 0, 0);
+      const solids = unitSolids(unitType, 0, 0, 0);
       const masks = solids.filter((solid) => solid.label.startsWith('маска'));
 
       expect(masks.length).toBeGreaterThan(0);
@@ -91,8 +91,13 @@ describe('машина генерала', () => {
       ),
     );
 
+    // Ступени дальности перебираются наравне с прочими: поднятая мортира
+    // забирается выше всего, что есть у машины, и именно она ближе всех
+    // подходит к днищу генерала.
     for (const unitType of UNIT_TYPES) {
-      expect(lowest).toBeGreaterThan(span(unitSolids(unitType, 2, 2)).height);
+      for (const range of [0, 1, 2]) {
+        expect(lowest).toBeGreaterThan(span(unitSolids(unitType, 2, 2, range)).height);
+      }
     }
   });
 
@@ -106,22 +111,22 @@ describe('машина генерала', () => {
 
 describe('прокачка на модели', () => {
   it('атака удлиняет ствол', () => {
-    const short = span(labelled(unitSolids(UnitType.Assault, 0, 0), 'ствол 1'));
-    const long = span(labelled(unitSolids(UnitType.Assault, 2, 0), 'ствол 1'));
+    const short = span(labelled(unitSolids(UnitType.Assault, 0, 0, 0), 'ствол 1'));
+    const long = span(labelled(unitSolids(UnitType.Assault, 2, 0, 0), 'ствол 1'));
 
     expect(long.length).toBeGreaterThan(short.length);
   });
 
   it('атака утолщает ствол', () => {
-    const thin = span(labelled(unitSolids(UnitType.Assault, 0, 0), 'ствол 1'));
-    const thick = span(labelled(unitSolids(UnitType.Assault, 2, 0), 'ствол 1'));
+    const thin = span(labelled(unitSolids(UnitType.Assault, 0, 0, 0), 'ствол 1'));
+    const thick = span(labelled(unitSolids(UnitType.Assault, 2, 0, 0), 'ствол 1'));
 
     expect(thick.width).toBeGreaterThan(thin.width);
   });
 
   it('скорострельность добавляет стволы', () => {
     const barrels = (fire: number): number =>
-      unitSolids(UnitType.Assault, 0, fire).filter((solid) => solid.label.startsWith('ствол '))
+      unitSolids(UnitType.Assault, 0, fire, 0).filter((solid) => solid.label.startsWith('ствол '))
         .length;
 
     expect(barrels(0)).toBe(1);
@@ -131,7 +136,7 @@ describe('прокачка на модели', () => {
 
   it('верхняя ступень атаки добавляет дульный тормоз', () => {
     const brakes = (attack: number): number =>
-      unitSolids(UnitType.Assault, attack, 0).filter((solid) =>
+      unitSolids(UnitType.Assault, attack, 0, 0).filter((solid) =>
         solid.label.startsWith('дульный тормоз'),
       ).length;
 
@@ -141,16 +146,115 @@ describe('прокачка на модели', () => {
   });
 
   it('прокачка чужого типа модель не трогает', () => {
-    const plain = unitSolids(UnitType.Sniper, 0, 0);
-    const same = unitSolids(UnitType.Sniper, 0, 0);
+    const plain = unitSolids(UnitType.Sniper, 0, 0, 0);
+    const same = unitSolids(UnitType.Sniper, 0, 0, 0);
 
     expect(plain).toEqual(same);
   });
 });
 
+describe('дальность на модели', () => {
+  /** Насколько высоко забрался срез ствола над казённой частью. */
+  const muzzleRise = (solids: readonly Solid[]): number => {
+    const barrel = labelled(solids, 'ствол 1')[0];
+    if (barrel === undefined) return 0;
+
+    const breech = Math.max(...barrel.bottom.map((point) => point.up));
+    const muzzle = Math.max(...barrel.top.map((point) => point.up));
+
+    return muzzle - breech;
+  };
+
+  it('прицел снайпера растёт с первой же ступени', () => {
+    // Первая ступень обязана быть заметна: связь «купил — изменилось
+    // на поле» устанавливается именно ею, а не верхней.
+    const plain = span(labelled(unitSolids(UnitType.Sniper, 0, 0, 0), 'блок прицела'));
+    const first = span(labelled(unitSolids(UnitType.Sniper, 0, 0, 1), 'блок прицела'));
+    const top = span(labelled(unitSolids(UnitType.Sniper, 0, 0, 2), 'блок прицела'));
+
+    expect(first.length).toBeGreaterThan(plain.length);
+    expect(top.length).toBeGreaterThan(first.length);
+  });
+
+  it('ствол мортиры поднимается с первой же ступени', () => {
+    const plain = muzzleRise(unitSolids(UnitType.Tesla, 0, 0, 0));
+    const first = muzzleRise(unitSolids(UnitType.Tesla, 0, 0, 1));
+    const top = muzzleRise(unitSolids(UnitType.Tesla, 0, 0, 2));
+
+    expect(plain).toBe(0);
+    expect(first).toBeGreaterThan(0);
+    expect(top).toBeGreaterThan(first);
+  });
+
+  it('дальность не удлиняет ствол', () => {
+    // Требование прямое, и держится оно вот на чём: длину ствола занимает
+    // атака, и две ветки, меняющие одну деталь в одну сторону, читаются
+    // как одна. Игрок перестал бы понимать, во что вложился противник.
+    const barrelLength = (solids: readonly Solid[]): number => {
+      const barrel = labelled(solids, 'ствол 1')[0];
+      if (barrel === undefined) return 0;
+
+      const from = Math.min(...barrel.bottom.map((point) => point.forward));
+      const to = Math.max(...barrel.top.map((point) => point.forward));
+
+      return to - from;
+    };
+
+    for (const unitType of [UnitType.Sniper, UnitType.Tesla]) {
+      const plain = barrelLength(unitSolids(unitType, 0, 0, 0));
+
+      expect(barrelLength(unitSolids(unitType, 0, 0, 1))).toBeCloseTo(plain, 9);
+      expect(barrelLength(unitSolids(unitType, 0, 0, 2))).toBeCloseTo(plain, 9);
+    }
+  });
+
+  it('атака и дальность различимы на модели снайпера', () => {
+    // Два снайпера, прокачанные каждый по своей ветке, обязаны отличаться
+    // друг от друга: иначе панель прокачки соперника читается наугад.
+    const byAttack = unitSolids(UnitType.Sniper, 2, 0, 0);
+    const byRange = unitSolids(UnitType.Sniper, 0, 0, 2);
+
+    expect(span(labelled(byAttack, 'ствол 1')).length).toBeGreaterThan(
+      span(labelled(byRange, 'ствол 1')).length,
+    );
+    expect(span(labelled(byRange, 'блок прицела')).length).toBeGreaterThan(
+      span(labelled(byAttack, 'блок прицела')).length,
+    );
+  });
+
+  it('модель штурмовика по оси дальности не меняется', () => {
+    // Ветки дальности у штурмовика нет вовсе, и модель обязана это
+    // повторять: две клетки — то, что отличает его от дальнобойных типов.
+    const plain = unitSolids(UnitType.Assault, 0, 0, 0);
+
+    expect(unitSolids(UnitType.Assault, 0, 0, 1)).toEqual(plain);
+    expect(unitSolids(UnitType.Assault, 0, 0, 2)).toEqual(plain);
+  });
+
+  it('прицел есть только у снайпера', () => {
+    // Ось дальности показывается только у тех типов, у которых эта ветка
+    // есть. У Теслы её показывает угол, у штурмовика — ничто.
+    for (const unitType of [UnitType.Assault, UnitType.Tesla]) {
+      expect(labelled(unitSolids(unitType, 0, 0, 2), 'блок прицела')).toHaveLength(0);
+    }
+
+    expect(labelled(unitSolids(UnitType.Sniper, 0, 0, 0), 'блок прицела')).toHaveLength(1);
+  });
+
+  it('снайпер остаётся ниже штурмовика на любой ступени прицела', () => {
+    // Габариты — признак типа, и прокачка не вправе их путать: снайпер
+    // узнаётся тем, что он длинный и низкий.
+    const assault = span(unitSolids(UnitType.Assault, 0, 0, 0));
+
+    for (const tier of [0, 1, 2]) {
+      expect(span(unitSolids(UnitType.Sniper, 2, 2, tier)).height).toBeLessThan(assault.height);
+    }
+  });
+});
+
 describe('маркеры стороны', () => {
   it('есть у каждой машины и лежат на горизонтали', () => {
-    const machines = [...UNIT_TYPES.map((type) => unitSolids(type, 0, 0)), generalSolids()];
+    const machines = [...UNIT_TYPES.map((type) => unitSolids(type, 0, 0, 0)), generalSolids()];
 
     for (const solids of machines) {
       const markers = solids.filter((solid) => solid.material === Material.Neon);
@@ -170,7 +274,7 @@ describe('маркеры стороны', () => {
   it('маркеры разбросаны по всей машине', () => {
     // Иначе на румбе, где маркер закрыт корпусом, сторона не читается
     // вовсе. Раскидать их по длине — самый дешёвый способ этого избежать.
-    const markers = unitSolids(UnitType.Assault, 0, 0).filter(
+    const markers = unitSolids(UnitType.Assault, 0, 0, 0).filter(
       (solid) => solid.material === Material.Neon,
     );
     const forwards = markers.map((marker) => marker.bottom[0]?.forward ?? 0);
