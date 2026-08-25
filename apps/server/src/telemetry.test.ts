@@ -8,6 +8,7 @@ import {
 } from '@td/shared';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from './main.js';
+import type { ReadingsSink } from './readings.js';
 
 /**
  * Отчёт о плавности приходит из недоверенного источника: его шлёт
@@ -19,14 +20,32 @@ import { buildServer } from './main.js';
  * не послабление: открытая вкладка живёт дольше выкладки, и отчёт
  * от прежнего бандла обязан приниматься, иначе счётчик отвергнутых
  * покраснеет от нашей же выкладки.
+ *
+ * Каждый отчёт предъявляет билет: матч и сторону сервер берёт из него,
+ * а не из тела. Билет у каждой проверки свой, и это не осторожность
+ * впрок — снимки накопительные, и в общие ряды вливается разность
+ * с прошлым снимком того же билета. Один билет на все проверки означал
+ * бы, что вторая из них вливает ноль.
  */
 
 let app: FastifyInstance;
+let readings: ReadingsSink;
+let issued = 0;
 
 beforeAll(async () => {
-  const built = await buildServer({ record: false });
+  const built = await buildServer({ record: false, readings: false });
   app = built.app;
+  readings = built.readings;
 });
+
+/** Свежий билет живого матча — такой, какой выдал бы сервер. */
+const freshTicket = (): string => {
+  issued += 1;
+  const ticket = `ticket-${String(issued)}`;
+  readings.matchStarted(`m${String(issued)}`, new Map([[ticket, 0]]));
+
+  return ticket;
+};
 
 afterAll(async () => {
   await app.close();
@@ -64,8 +83,8 @@ const rowValue = async (name: string): Promise<number> => {
   return Number(line.slice(name.length + 1));
 };
 
-const report = (body: unknown): Promise<{ statusCode: number }> =>
-  app.inject({ method: 'POST', url: '/api/telemetry', payload: body as object });
+const report = (body: object, ticket = freshTicket()): Promise<{ statusCode: number }> =>
+  app.inject({ method: 'POST', url: '/api/telemetry', payload: { ticket, ...body } });
 
 describe('отчёт о плавности', () => {
   it('принимает набор про показ и отдаёт его отдельным рядом', async () => {
@@ -203,5 +222,83 @@ describe('отчёт о плавности', () => {
 
     expect(response.statusCode).toBe(400);
     expect(await rowValue('td_client_reports_rejected_total')).toBe(rejected + 1);
+  });
+});
+
+describe('опознание отчёта', () => {
+  it('без билета отчёт отвергается', async () => {
+    // Точка приёма смотрит в интернет. Прими она отчёт без билета —
+    // и завести файл несуществующего матча мог бы кто угодно.
+    const rejected = await rowValue('td_client_reports_rejected_total');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/telemetry',
+      payload: { frame: snapshotOf([16]), netGap: snapshotOf([33]) },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await rowValue('td_client_reports_rejected_total')).toBe(rejected + 1);
+  });
+
+  it('с выдуманным билетом отчёт отвергается', async () => {
+    const response = await report({ frame: snapshotOf([16]) }, 'такого-билета-нет');
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('матч и сторона из тела запроса не берутся', async () => {
+    // Назвавшись чужим матчем, дописать в его файл нельзя: сторона
+    // и матч приходят из билета, а тело на этот счёт не спрашивают.
+    const response = await report({
+      matchId: 'чужой-матч',
+      side: 1,
+      frame: snapshotOf([16]),
+    });
+
+    expect(response.statusCode).toBe(204);
+  });
+
+  it('пустой отчёт отвергается', async () => {
+    // Отчёт без единого ряда не несёт ничего, и принимать его значило
+    // бы считать доставленным то, чего не было.
+    const response = await report({});
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('повторный накопительный снимок не удваивает ряды', async () => {
+    // Главное свойство всей затеи: клиент шлёт копилку целиком каждые
+    // пять секунд, и сколько бы раз он её ни прислал, наблюдений
+    // в общих рядах столько же, сколько он их сделал.
+    const ticket = freshTicket();
+    const before = await rowValue('td_client_general_jump_cells_count{source="client"}');
+
+    await report({ jump: jumpsOf([0.4, 1.2]) }, ticket);
+    await report({ jump: jumpsOf([0.4, 1.2]) }, ticket);
+    await report({ jump: jumpsOf([0.4, 1.2]) }, ticket);
+
+    expect(await rowValue('td_client_general_jump_cells_count{source="client"}')).toBe(before + 2);
+  });
+
+  it('приращение доезжает следующим снимком', async () => {
+    const ticket = freshTicket();
+    const before = await rowValue('td_client_general_jump_cells_count{source="client"}');
+
+    await report({ jump: jumpsOf([0.4, 1.2]) }, ticket);
+    await report({ jump: jumpsOf([0.4, 1.2, 2.5]) }, ticket);
+
+    expect(await rowValue('td_client_general_jump_cells_count{source="client"}')).toBe(before + 3);
+  });
+
+  it('после конца матча последний снимок ещё принимается', async () => {
+    // Он же и самый нужный: в нём итог всей партии. Уходит он по исходу
+    // матча, то есть заведомо позже, чем сиденье снято реестром.
+    const ticket = freshTicket();
+    readings.matchFinished(`m${String(issued)}`);
+
+    const response = await report({ frame: snapshotOf([16]) }, ticket);
+
+    expect(response.statusCode).toBe(204);
   });
 });

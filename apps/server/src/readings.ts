@@ -1,7 +1,18 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { TELEMETRY_GRACE_MS, TELEMETRY_MAX_SNAPSHOTS } from '@td/shared';
-import type { HistogramSnapshot, ReadingRows, ReadingsRecord } from '@td/shared';
+import {
+  READING_ROWS,
+  TELEMETRY_GRACE_MS,
+  TELEMETRY_MAX_SNAPSHOTS,
+  readSnapshot,
+} from '@td/shared';
+import type {
+  Histogram,
+  HistogramSnapshot,
+  ReadingRow,
+  ReadingRows,
+  ReadingsRecord,
+} from '@td/shared';
 import { runStamp, safeName } from './recording.js';
 
 /**
@@ -347,6 +358,125 @@ export const createReadingsWriter = (options: ReadingsWriterOptions): ReadingsWr
 
     async drain() {
       await Promise.all([...files.values()].map((file) => file.queue));
+    },
+  };
+};
+
+/**
+ * Приёмник показаний: опознать, посчитать новое, влить и сохранить.
+ *
+ * Собран отдельно от точки HTTP затем, чтобы проверялся без поднятого
+ * сервера: всё, что здесь происходит, — это разбор недоверенного тела
+ * и три следствия из него.
+ */
+export interface ReadingsSink {
+  /** Матч начался: его билеты становятся опознаваемыми. */
+  matchStarted(matchId: string, tickets: ReadonlyMap<string, number>): void;
+  /** Матч кончился: билеты доживают отпущенный срок. */
+  matchFinished(matchId: string): void;
+  /** Разобрать присланное. `false` — отвергнуто. */
+  accept(body: unknown): boolean;
+  /** Дождаться, пока всё записано. */
+  drain(): Promise<void>;
+}
+
+export interface ReadingsSinkOptions {
+  /** Куда вливать приращение. Ряд на имя. */
+  readonly rows: Readonly<Record<ReadingRow, Histogram>>;
+  /** Куда складывать снимки. `undefined` — хранение выключено. */
+  readonly writer?: ReadingsWriter | undefined;
+  readonly book?: TicketBook | undefined;
+  /** Часы сервера: время в записи ставится своё, а не присланное. */
+  readonly now?: () => number;
+}
+
+/**
+ * Билет длиннее этого не бывает, и принимать такой незачем.
+ *
+ * Ключи карты живут в памяти, а строку любой длины прислать может кто
+ * угодно. Настоящий билет — короткая строка, выданная сервером.
+ */
+const MAX_TICKET_LENGTH = 128;
+
+/** Число из недоверенного тела: нечисло и бесконечность становятся нулём. */
+const finiteOr = (value: unknown, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+export const createReadingsSink = (options: ReadingsSinkOptions): ReadingsSink => {
+  const book = options.book ?? createTicketBook();
+  const now = options.now ?? (() => Date.now());
+
+  return {
+    matchStarted(matchId, tickets) {
+      book.register(matchId, tickets);
+    },
+
+    matchFinished(matchId) {
+      book.finish(matchId);
+    },
+
+    accept(body) {
+      if (typeof body !== 'object' || body === null) return false;
+
+      const candidate = body as Record<string, unknown>;
+      const ticket = candidate['ticket'];
+      if (typeof ticket !== 'string' || ticket.length === 0) return false;
+      if (ticket.length > MAX_TICKET_LENGTH) return false;
+
+      const seat = book.resolve(ticket);
+      if (seat === undefined) return false;
+
+      // Ряд, которого нет, — это старый бандл в открытой вкладке, и это
+      // допустимо. Ряд, который есть, но порчен, отвергает отчёт целиком:
+      // принять половину значило бы принять неизвестно что.
+      const rows: { -readonly [Row in ReadingRow]?: HistogramSnapshot } = {};
+      for (const row of READING_ROWS) {
+        const sent = candidate[row];
+        if (sent === undefined) continue;
+
+        const snapshot = readSnapshot(sent);
+        if (snapshot === null) return false;
+
+        rows[row] = snapshot;
+      }
+
+      // Отчёт без единого ряда не несёт ничего: принимать его — значит
+      // считать доставленным то, чего не было.
+      if (Object.keys(rows).length === 0) return false;
+
+      const delta = deltaOf(book.lastOf(ticket), rows);
+
+      let merged = true;
+      for (const row of READING_ROWS) {
+        const increment = delta[row];
+        if (increment === undefined) continue;
+
+        if (!options.rows[row].merge(increment)) merged = false;
+      }
+
+      // Не сошлись границы корзин — снимок не запоминается. Запомни мы
+      // его, следующая разность считалась бы от чужой копилки.
+      if (!merged) return false;
+
+      book.remember(ticket, rows);
+
+      options.writer?.append({
+        t: 'readings',
+        matchId: seat.matchId,
+        side: seat.side,
+        seq: finiteOr(candidate['seq'], 0),
+        atMs: now(),
+        tick: finiteOr(candidate['tick'], 0),
+        delayTicks: finiteOr(candidate['delayTicks'], 0),
+        pending: finiteOr(candidate['pending'], 0),
+        ...rows,
+      });
+
+      return true;
+    },
+
+    async drain() {
+      await options.writer?.drain();
     },
   };
 };
