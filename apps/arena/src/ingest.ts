@@ -119,7 +119,7 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSample = db.prepare(`
-    insert into sample values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    insert into sample values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertTower = db.prepare('insert into tower values (?, ?, ?, ?)');
   const insertWallSite = db.prepare('insert into wall_site values (?, ?, ?, ?, ?, ?, ?, ?)');
@@ -177,6 +177,7 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
             record.queueLen,
             record.upgradeTotalLevel,
             record.targetStructure,
+            bit(record.pathToEnemy),
           );
           rows += 1;
           break;

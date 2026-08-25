@@ -13,7 +13,13 @@ import {
 import type { PlayerId } from '@td/shared';
 import { cellIndex, createWorld } from '@td/sim';
 import type { WorldState } from '@td/sim';
-import { approachOf, corridorWidthAt, corridorWidths, sealsApproach } from './approach.js';
+import {
+  approachOf,
+  basesConnected,
+  corridorWidthAt,
+  corridorWidths,
+  sealsApproach,
+} from './approach.js';
 
 /**
  * Проверка «не запереть себя».
@@ -120,6 +126,16 @@ describe('постройка не должна запирать путь меж�
 
     // Проход уже закрыт: вероятного пути между базами не существует вовсе.
     expect(approachOf(walled, ME)).toBeUndefined();
+    // И это ровно то, что должна увидеть страховочная величина разбора.
+    expect(basesConnected(walled, ME)).toBe(false);
+    expect(basesConnected(walled, asPlayerId(1))).toBe(false);
+  });
+
+  it('на нетронутой карте путь есть у обеих сторон', () => {
+    const world = createWorld(SEED);
+
+    expect(basesConnected(world, ME)).toBe(true);
+    expect(basesConnected(world, asPlayerId(1))).toBe(true);
   });
 });
 

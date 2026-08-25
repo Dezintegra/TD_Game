@@ -535,6 +535,57 @@ const towerLife = (db: DatabaseSync): string[] => {
 };
 
 /**
+ * Матчи, в которых сторона осталась без пути к чужой базе.
+ *
+ * Страховочная величина, и она важнее остальных. Своя постройка
+ * непроходима, и ломать своё юнит не станет, поэтому успешное сужение
+ * подхода запирает не только противника, но и собственную армию.
+ * В мире это следа не оставляет: юниты просто перестают доходить,
+ * и со стороны выглядит, будто их перебили по дороге.
+ *
+ * Печатается всегда, в том числе нулём. Величина, которая появляется
+ * только когда стало плохо, ничего не сторожит: по её отсутствию нельзя
+ * отличить «не случилось» от «не померили».
+ */
+const lockedIn = (db: DatabaseSync): string[] => {
+  const out: string[] = [];
+
+  const totals = query(
+    db,
+    `select count(*) as samples,
+            sum(case when path_to_enemy = 0 then 1 else 0 end) as locked
+       from sample`,
+  )[0];
+
+  if (totals === undefined || num(totals, 'samples') === 0) return out;
+
+  const sides = query(
+    db,
+    `select count(*) as n from (
+       select match_id, player from sample where path_to_enemy = 0
+        group by match_id, player
+     )`,
+  )[0];
+
+  const played = query(
+    db,
+    'select count(*) as n from (select match_id, player from sample group by match_id, player)',
+  )[0];
+
+  out.push('');
+  out.push('  армия заперта (нет пути от своей базы к чужой по проходимым клеткам):');
+  out.push(
+    `    сторон, у которых такое случалось: ${String(num(sides ?? {}, 'n'))} ` +
+      `из ${String(num(played ?? {}, 'n'))}`,
+  );
+  out.push(
+    `    доля времени без пути: ` + `${percent(num(totals, 'locked'), num(totals, 'samples'))}`,
+  );
+
+  return out;
+};
+
+/**
  * Ширина коридора, при которой место считается горлом, в клетках.
  *
  * Не подобрана. Генерация не оставляет на карте проходов уже трёх клеток
@@ -674,6 +725,7 @@ export const reportBatch = (db: DatabaseSync): string => {
 
   out.push(...towerLife(db));
   out.push(...wallSites(db));
+  out.push(...lockedIn(db));
 
   // ── Сверка предсказания с исходом ─────────────────────────────────
   //

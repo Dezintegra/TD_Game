@@ -46,7 +46,12 @@ create table if not exists sample (
   general_alive       integer not null,
   queue_len           integer not null,
   upgrade_total_level integer not null,
-  target_structure    integer not null
+  target_structure    integer not null,
+  -- Есть ли у войск стороны путь от своей базы к чужой по проходимым
+  -- клеткам. Ноль означает, что сторона заперла сама себя: своё юнит
+  -- не ломает, и коридор, перекрытый своими стенами, останавливает
+  -- собственную армию так же надёжно, как чужую.
+  path_to_enemy       integer not null
 );
 
 -- Клетки живых башен стороны на момент снимка.

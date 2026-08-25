@@ -139,6 +139,41 @@ export const corridorWidthAt = (approach: Approach, widths: Int32Array, cell: nu
 };
 
 /**
+ * Есть ли у войск стороны путь от своей базы к чужой по проходимым клеткам.
+ *
+ * Тот же вопрос, что задаёт `sealsApproach`, только про мир как он есть,
+ * а не про мир с гипотетической постройкой. Отдельно нужен разбору:
+ * запертая армия означает, что сторона обыграла сама себя, и такой матч
+ * надо уметь отличить от матча, где просто не повезло.
+ *
+ * Ответ по построению одинаков для обеих сторон — занятость не различает
+ * владельцев, — но спрашивается он всё-таки про сторону: «своя база»
+ * и «чужая» у каждой свои, и правило навигации, из которого всё растёт,
+ * сформулировано именно так.
+ *
+ * Занятость можно передать готовую. Она стоит прохода по карте, и тому,
+ * кто спрашивает про обе стороны подряд, считать её дважды незачем.
+ */
+export const basesConnected = (
+  world: WorldState,
+  me: PlayerId,
+  occupancy: Occupancy = buildOccupancy(world.map, world.structures),
+): boolean => {
+  const homeCell = world.map.baseCells[me];
+  const enemyCell = world.map.baseCells[otherPlayer(me)];
+  // Карты без баз не бывает, а если она случилась — запирать нечего.
+  if (homeCell === undefined || enemyCell === undefined) return true;
+
+  const field = walkField(occupancy, baseSeeds(homeCell));
+
+  // Достижимость меряется по КОЛЬЦУ вокруг чужой базы, а не по её клеткам.
+  // Сами клетки базы непроходимы — их занимает сама база, — и поле
+  // до них не доходит никогда. Проверка по ним всегда отвечала бы
+  // «заперто», то есть запрещала бы вообще любую постройку.
+  return ringAround(enemyCell).some((cell) => (field[cell] ?? UNREACHABLE) !== UNREACHABLE);
+};
+
+/**
  * Запрёт ли постройка в этой клетке путь между базами.
  *
  * Проверка нужна потому, что запечатывание прохода — законный ход,
@@ -162,20 +197,10 @@ export const sealsApproach = (
   approach: Approach,
   cell: number,
 ): boolean => {
-  const homeCell = world.map.baseCells[me];
-  const enemyCell = world.map.baseCells[otherPlayer(me)];
-  if (homeCell === undefined || enemyCell === undefined) return false;
-
   const blocked = Uint8Array.from(approach.occupancy.blocked);
   blocked[cell] = 1;
 
-  const field = walkField({ ...approach.occupancy, blocked }, baseSeeds(homeCell));
-
-  // Достижимость меряется по КОЛЬЦУ вокруг чужой базы, а не по её клеткам.
-  // Сами клетки базы непроходимы — их занимает сама база, — и поле
-  // до них не доходит никогда. Проверка по ним всегда отвечала бы
-  // «заперто», то есть запрещала бы вообще любую постройку.
-  return !ringAround(enemyCell).some((cell) => (field[cell] ?? UNREACHABLE) !== UNREACHABLE);
+  return !basesConnected(world, me, { ...approach.occupancy, blocked });
 };
 
 export const approachOf = (world: WorldState, me: PlayerId): Approach | undefined => {

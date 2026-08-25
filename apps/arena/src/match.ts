@@ -9,7 +9,14 @@
 import type { Command, PlayerId } from '@td/shared';
 import { UNREACHABLE, cellAt, checksum, createWorld, playerStats, step } from '@td/sim';
 import type { WorldState } from '@td/sim';
-import { approachOf, corridorWidthAt, corridorWidths, createOpponent, profileByName } from '@td/ai';
+import {
+  approachOf,
+  basesConnected,
+  corridorWidthAt,
+  corridorWidths,
+  createOpponent,
+  profileByName,
+} from '@td/ai';
 import type { Approach, DecisionRecord, Opponent } from '@td/ai';
 import type { LogWriter } from './log.js';
 import type {
@@ -115,7 +122,7 @@ export interface MatchResult {
   readonly recovered: ReadonlyMap<number, readonly Command[]>;
 }
 
-const sampleOf = (world: WorldState, player: PlayerId): SampleRecord => {
+const sampleOf = (world: WorldState, player: PlayerId, pathToEnemy: boolean): SampleRecord => {
   const state = world.players[player];
   const general = world.generals[player];
   const stats = state === undefined ? undefined : playerStats(state);
@@ -160,6 +167,7 @@ const sampleOf = (world: WorldState, player: PlayerId): SampleRecord => {
     queueLen: state?.queue.length ?? 0,
     upgradeTotalLevel: state?.upgrades.reduce((sum, upgrade) => sum + upgrade.level, 0) ?? 0,
     targetStructure: state?.targetStructure ?? 0,
+    pathToEnemy,
   };
 };
 
@@ -331,8 +339,14 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     }
 
     if (world.tick % SAMPLE_EVERY === 0) {
+      // Связность баз считается ОДИН раз на тик, а не по разу на сторону.
+      // Занятость владельцев не различает, поэтому путь от своей базы
+      // к чужой есть либо у обоих, либо ни у кого; спросить дважды значило
+      // бы заплатить лишним обходом карты за тот же ответ.
+      const connected = basesConnected(world, asPlayerId(0));
+
       for (let player = 0; player < PLAYERS_PER_MATCH; player += 1) {
-        log.write(sampleOf(world, asPlayerId(player)));
+        log.write(sampleOf(world, asPlayerId(player), connected));
       }
     }
 
