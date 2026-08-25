@@ -188,6 +188,20 @@ describe('сборка базы', () => {
     expect(row.moments).toBeLessThan(SECONDS);
   });
 
+  it('места стен доезжают до базы вместе с геометрией подхода', () => {
+    // Коридор подхода через минуту уже другой, а мира в базе нет:
+    // не снятая при постройке ширина потеряна навсегда.
+    const row = db
+      .prepare(
+        `select count(*) as walls, sum(on_path) as on_path, max(narrowest) as narrowest
+           from wall_site where match_id = ?`,
+      )
+      .get(MATCH_ID) as { walls: number; on_path: number; narrowest: number };
+
+    expect(row.walls).toBeGreaterThan(0);
+    expect(row.narrowest).toBeGreaterThan(0);
+  });
+
   it('в базе есть то, чего не произошло', () => {
     // Мир показывает, что случилось; только эта таблица покажет, чего
     // противник хотел и что ему помешало.
@@ -231,6 +245,13 @@ describe('сводка', () => {
     expect(batch).toContain('башни и их потери');
     expect(batch).toContain('башен на пике');
     expect(batch).toContain('построек за матч на сторону');
+  });
+
+  it('сводка пачки называет, куда ложатся стены', () => {
+    const batch = reportBatch(db);
+
+    expect(batch).toContain('куда ложатся стены');
+    expect(batch).toContain('в горле');
   });
 
   it('неизвестный матч не роняет сводку', () => {

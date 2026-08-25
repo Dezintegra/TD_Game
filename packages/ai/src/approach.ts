@@ -76,6 +76,69 @@ const ringAround = (cell: number): readonly number[] => {
 };
 
 /**
+ * Ширина коридора подхода по глубине от своей базы, в клетках.
+ *
+ * Индекс — глубина, значение — сколько клеток коридора лежит на ней.
+ * Там, где значение мало, подход узок: перекрыть одну клетку из трёх —
+ * треть подхода, одну из тридцати — ничего.
+ *
+ * Считается ОДНИМ проходом по уже посчитанным `onPath` и `fromHome`.
+ * Обхода карты не добавляется: оба массива уже в руках.
+ *
+ * ## Чего эта мерка не умеет
+ *
+ * Она видит узость **по глубине, а не топологию**. Два раздельных прохода
+ * одинаковой глубины — скажем, коридор, обтекающий скальный массив
+ * с двух сторон, — она сложит в одну ширину и не заметит, что перекрыть
+ * надо оба.
+ *
+ * Упрощение осознанное. Точное решение — минимальный разрез графа,
+ * задача другого класса сложности, и решать её дважды в секунду незачем.
+ * Ошибка при этом безопасная: мерка **недооценивает** ценность
+ * перекрытия при двух проходах, то есть противник осторожничает там,
+ * где мог бы действовать. Обратной ошибки — счесть узким широкое место —
+ * она не делает никогда.
+ */
+export const corridorWidths = (approach: Approach): Int32Array => {
+  let deepest = 0;
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (approach.onPath[cell] !== 1) continue;
+
+    const depth = approach.fromHome[cell] ?? UNREACHABLE;
+    if (depth === UNREACHABLE) continue;
+    if (depth > deepest) deepest = depth;
+  }
+
+  const widths = new Int32Array(deepest + 1);
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (approach.onPath[cell] !== 1) continue;
+
+    const depth = approach.fromHome[cell] ?? UNREACHABLE;
+    if (depth === UNREACHABLE) continue;
+
+    widths[depth] = (widths[depth] ?? 0) + 1;
+  }
+
+  return widths;
+};
+
+/**
+ * Ширина коридора на глубине этой клетки. Ноль — клетка вне коридора.
+ *
+ * Обёртка нужна затем, что за пределами массива ширин ответ должен быть
+ * нулём, а не `undefined`: клетка глубже самого дальнего места коридора
+ * подходом не является вовсе.
+ */
+export const corridorWidthAt = (approach: Approach, widths: Int32Array, cell: number): number => {
+  const depth = approach.fromHome[cell] ?? UNREACHABLE;
+  if (depth === UNREACHABLE) return 0;
+
+  return widths[depth] ?? 0;
+};
+
+/**
  * Запрёт ли постройка в этой клетке путь между базами.
  *
  * Проверка нужна потому, что запечатывание прохода — законный ход,

@@ -61,6 +61,22 @@ create table if not exists tower (
   cell     integer not null
 );
 
+-- Куда легла стена и какова была геометрия подхода в тот момент.
+--
+-- Коридор подхода зависит от расстановки скал И построек, а через минуту
+-- он уже другой; мира в базе нет, поэтому восстановить его потом нельзя.
+-- Отсюда и таблица: величины снимаются в момент постройки.
+create table if not exists wall_site (
+  match_id  text not null,
+  tick      integer not null,
+  player    integer not null,
+  cell      integer not null,
+  depth     integer not null,
+  width     integer not null,
+  narrowest integer not null,
+  on_path   integer not null
+);
+
 create table if not exists decision (
   match_id          text not null,
   tick              integer not null,
@@ -134,6 +150,7 @@ create table if not exists command (
 
 create index if not exists sample_by_match   on sample   (match_id, player, tick);
 create index if not exists tower_by_match    on tower    (match_id, player, tick);
+create index if not exists wall_by_match     on wall_site (match_id, player, tick);
 create index if not exists decision_by_match on decision (match_id, player, tick);
 create index if not exists attempt_by_match  on attempt  (match_id, player, tick);
 create index if not exists frontier_by_match on frontier (match_id, player, tick);
@@ -144,6 +161,7 @@ create index if not exists command_by_match  on command  (match_id, player, tick
 export const CHILD_TABLES: readonly string[] = [
   'sample',
   'tower',
+  'wall_site',
   'decision',
   'attempt',
   'frontier',

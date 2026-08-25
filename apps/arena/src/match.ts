@@ -1,4 +1,5 @@
 ﻿import {
+  CommandKind,
   PLAYERS_PER_MATCH,
   StructureKind,
   TICKS_PER_SECOND,
@@ -6,10 +7,10 @@
   flatten,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
-import { cellAt, checksum, createWorld, playerStats, step } from '@td/sim';
+import { UNREACHABLE, cellAt, checksum, createWorld, playerStats, step } from '@td/sim';
 import type { WorldState } from '@td/sim';
-import { createOpponent, profileByName } from '@td/ai';
-import type { DecisionRecord, Opponent } from '@td/ai';
+import { approachOf, corridorWidthAt, corridorWidths, createOpponent, profileByName } from '@td/ai';
+import type { Approach, DecisionRecord, Opponent } from '@td/ai';
 import type { LogWriter } from './log.js';
 import type {
   CommandRecord,
@@ -17,6 +18,7 @@ import type {
   MatchHeader,
   SampleRecord,
   TowersRecord,
+  WallSiteRecord,
 } from './records.js';
 import { codeVersion } from './version.js';
 
@@ -252,6 +254,15 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     if (issued.length > 0) {
       const refused = new Map(next.rejections.map((entry) => [entry.index, entry.reason]));
 
+      // Геометрия подхода считается лениво и не больше раза на сторону
+      // за тик: два обхода карты стоят дороже всего остального в этом
+      // цикле, а стену за решение ставят не всегда.
+      const corridors = new Map<number, Approach | undefined>();
+      const corridorOf = (player: PlayerId): Approach | undefined => {
+        if (!corridors.has(player)) corridors.set(player, approachOf(world, player));
+        return corridors.get(player);
+      };
+
       issued.forEach((command, index) => {
         const reason = refused.get(index);
         const [arg0, arg1] = flatten(command);
@@ -266,6 +277,35 @@ export const runMatch = (options: MatchOptions): MatchResult => {
           rejectReason: reason ?? null,
         };
         log.write(record);
+
+        if (reason !== undefined) return;
+        if (command.kind !== CommandKind.Build) return;
+        if (command.structure !== StructureKind.Wall) return;
+
+        // Коридор берётся ДО шага — тот самый, который видел противник,
+        // когда выбирал место. После шага стена уже стоит, и клетка,
+        // куда она легла, стала непроходимой: ширина на её глубине
+        // оказалась бы на единицу меньше, чем была при решении.
+        const approach = corridorOf(command.player);
+        if (approach === undefined) return;
+
+        const widths = corridorWidths(approach);
+        const depth = approach.fromHome[command.cell] ?? UNREACHABLE;
+        const occupied = [...widths].filter((width) => width > 0);
+
+        const site: WallSiteRecord = {
+          t: 'wallsite',
+          tick: world.tick,
+          player: command.player,
+          cell: command.cell,
+          depth: depth === UNREACHABLE ? -1 : depth,
+          width: corridorWidthAt(approach, widths, command.cell),
+          // Пустых глубин в коридоре не бывает, но пустой коридор бывает:
+          // ширина ноль честнее, чем `Infinity` от `Math.min` без чисел.
+          narrowest: occupied.length === 0 ? 0 : Math.min(...occupied),
+          onPath: approach.onPath[command.cell] === 1,
+        };
+        log.write(site);
       });
     }
 

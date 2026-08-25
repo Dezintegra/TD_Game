@@ -85,6 +85,32 @@ export interface TowersRecord {
   readonly cells: readonly number[];
 }
 
+/**
+ * Место, куда легла стена, вместе с геометрией подхода на тот момент.
+ *
+ * Записывается при постройке, а не считается потом: коридор подхода
+ * зависит от расстановки скал И построек, и через минуту он уже другой.
+ * Восстановить его по базе нельзя — мира в базе нет.
+ *
+ * Здесь лежат факты (глубина, ширина, самое узкое место коридора),
+ * а не вывод «стена в горле»: что считать горлом, решает сводка,
+ * и решение это можно передумать, не переигрывая матчей.
+ */
+export interface WallSiteRecord {
+  readonly t: 'wallsite';
+  readonly tick: number;
+  readonly player: number;
+  readonly cell: number;
+  /** Глубина клетки от своей базы по проходимым клеткам. −1 — недостижима. */
+  readonly depth: number;
+  /** Ширина коридора на этой глубине, в клетках. Ноль — клетка вне коридора. */
+  readonly width: number;
+  /** Самое узкое место коридора на тот момент. Есть с чем сравнить ширину. */
+  readonly narrowest: number;
+  /** Лежит ли клетка в коридоре вероятного пути. */
+  readonly onPath: boolean;
+}
+
 export interface CommandRecord {
   readonly t: 'command';
   readonly tick: number;
@@ -121,7 +147,13 @@ export interface DecisionLogRecord extends Omit<DecisionRecord, 'attempts' | 'fr
 }
 
 export type LogRecord =
-  MatchHeader | MatchFooter | SampleRecord | TowersRecord | CommandRecord | DecisionLogRecord;
+  | MatchHeader
+  | MatchFooter
+  | SampleRecord
+  | TowersRecord
+  | WallSiteRecord
+  | CommandRecord
+  | DecisionLogRecord;
 
 // Тонкая запись матча живёт не здесь, а в `@td/shared`: пишет её игровой
 // сервер, читает арена, и приложения друг друга не импортируют. См.

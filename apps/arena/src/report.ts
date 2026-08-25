@@ -534,6 +534,72 @@ const towerLife = (db: DatabaseSync): string[] => {
   return out;
 };
 
+/**
+ * Ширина коридора, при которой место считается горлом, в клетках.
+ *
+ * Не подобрана. Генерация не оставляет на карте проходов уже трёх клеток
+ * (§ 2.1 замысла: «проход уже трёх клеток на карте не встречается,
+ * генерация заращивает такие места скалой»). Значит коридор в три клетки
+ * узок настолько, насколько карта вообще позволяет, и называть горлом
+ * что-то шире означало бы называть горлом обычное место.
+ *
+ * Величина живёт в сводке, а не в противнике, и это существенно: она
+ * нужна, чтобы НАЗВАТЬ долю, а не чтобы принять решение. Сам противник
+ * никакого порога узости не знает — ценность перекрытия у него обратна
+ * ширине, непрерывно.
+ */
+const THROAT_WIDTH_CELLS = 3;
+
+/**
+ * Куда ложатся стены: в горло подхода или где придётся.
+ *
+ * Величина, ради которой заведена таблица `wall_site`. Стена в узком
+ * месте стоит десяти стен в широком: перекрыть одну клетку из трёх —
+ * треть подхода, одну из тридцати — ничего. Нынешний противник о ширине
+ * коридора не знает вовсе и ставит стену рядом со своей башней, так что
+ * доля показывает, сколько попаданий в горло вышло случайно.
+ *
+ * Рядом с долей печатается ширина: сама по себе доля не говорит, было ли
+ * куда попадать. Если самое узкое место коридора в матче — девять клеток,
+ * то нулевая доля означает не промах, а отсутствие горла.
+ */
+const wallSites = (db: DatabaseSync): string[] => {
+  const out: string[] = [];
+
+  const walls = query(db, 'select width, narrowest, on_path from wall_site');
+  if (walls.length === 0) return out;
+
+  const onPath = walls.filter((row) => num(row, 'on_path') === 1);
+  const throats = walls.filter(
+    (row) => num(row, 'on_path') === 1 && num(row, 'width') <= THROAT_WIDTH_CELLS,
+  );
+
+  const median = (values: readonly number[]): number => {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)] ?? 0;
+  };
+
+  out.push('');
+  out.push(`  куда ложатся стены (стен ${String(walls.length)}):`);
+  out.push(
+    `    ${padEnd('в коридоре вероятного пути', 30)}${pad(onPath.length, 5)} ` +
+      `${pad(percent(onPath.length, walls.length), 7)}`,
+  );
+  out.push(
+    `    ${padEnd(`в горле, не шире ${String(THROAT_WIDTH_CELLS)} клеток`, 30)}` +
+      `${pad(throats.length, 5)} ${pad(percent(throats.length, walls.length), 7)}`,
+  );
+  out.push(
+    `    ширина коридора на глубине стены: медиана ` +
+      `${median(onPath.map((row) => num(row, 'width'))).toFixed(0)} клеток   ` +
+      `самое узкое место коридора: медиана ` +
+      `${median(walls.map((row) => num(row, 'narrowest'))).toFixed(0)}`,
+  );
+
+  return out;
+};
+
 export const reportBatch = (db: DatabaseSync): string => {
   const out: string[] = [];
 
@@ -607,6 +673,7 @@ export const reportBatch = (db: DatabaseSync): string => {
   }
 
   out.push(...towerLife(db));
+  out.push(...wallSites(db));
 
   // ── Сверка предсказания с исходом ─────────────────────────────────
   //
