@@ -154,6 +154,30 @@ describe('состав столбцов', () => {
     ]);
   });
 
+  it('дальность стрелка стои́т в группе своего типа, а не в конце', () => {
+    // Ветка дописана в самый КОНЕЦ таблицы — иначе поехали бы индексы,
+    // а индекс ветки лежит в сохранённых записях матчей. В интерфейсе же
+    // она обязана оказаться рядом с прочими ветками своего типа: группы
+    // строятся по цели прокачки, а не по порядку в таблице, и вот это
+    // свойство здесь и закрепляется.
+    for (const target of [UpgradeTarget.UnitSniper, UpgradeTarget.UnitTesla]) {
+      const range = upgradeBranchIndex(target, UpgradeStat.Range);
+
+      expect(range).toBeGreaterThan(0);
+      expect(rows[target]?.map((row) => row.branch)).toContain(range);
+      // Пять строк вместо четырёх: у этих двух типов группа выросла,
+      // и от этого зависит, помещается ли панель целиком.
+      expect(rows[target]).toHaveLength(5);
+    }
+  });
+
+  it('у штурмовика строки дальности нет', () => {
+    // Две клетки — то, что отличает его от дальнобойных типов, и ветка
+    // стёрла бы разницу ролей. Строка без ветки заняла бы место зря.
+    expect(upgradeBranchIndex(UpgradeTarget.UnitAssault, UpgradeStat.Range)).toBe(-1);
+    expect(rows[UpgradeTarget.UnitAssault]).toHaveLength(4);
+  });
+
   it('ни одна ветка не осталась без места', () => {
     const placed = rows
       .flat()
