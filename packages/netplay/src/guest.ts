@@ -273,6 +273,10 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
    */
   const settle = (played: number): void => {
     if (confirmed === null) return;
+    // Обычное состояние матча — очередь пуста, и звана эта функция
+    // тридцать раз в секунду. Выход до первой же выборки ключей бережёт
+    // тридцать пустых массивов в секунду на ровном месте.
+    if (own.size === 0) return;
 
     const boundary = confirmed.tick;
     const stale = [...own.keys()].filter((tick) => tick < boundary).sort((a, b) => a - b);
