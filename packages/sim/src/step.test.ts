@@ -3,6 +3,7 @@ import {
   AttackStance,
   BASE_BUILD_EXCLUSION,
   BASE_INCOME_PER_TICK,
+  BASE_INSET_CELLS,
   BUILDABLE_KINDS,
   CommandKind,
   DIRECTION_SOUTH,
@@ -1360,7 +1361,17 @@ describe('расталкивание в связке с движением и б
     // заново вдавливает передних друг в друга, и обложившая цель толпа
     // шевелится до конца матча — на поле это читается как муравейник,
     // а не как войско на позиции.
-    const spot = cellCentre(cellIndex(41, 37));
+    // Место — у чужой базы, куда войско и приходит. Считается от размера
+    // карты: вписанные числа были сняты на поле 48 × 48 и на поле 38 × 38
+    // уехали за его край, а `cellIndex` за краем не ошибается, а молча
+    // заворачивает на другую строку. Толпа тогда встаёт не там, где
+    // задумано, и тест меряет что угодно, кроме затухания толчка.
+    const spot = cellCentre(
+      cellIndex(
+        MAP_WIDTH_CELLS - 1 - BASE_INSET_CELLS,
+        MAP_HEIGHT_CELLS - 1 - BASE_INSET_CELLS - 4,
+      ),
+    );
     const crowd = 40;
 
     let world: WorldState = {
@@ -1404,7 +1415,12 @@ describe('расталкивание в связке с движением и б
   it('остановившаяся у цели машина стреляет в тот же тик, когда её сдвинуло', () => {
     // Толчок — это не движение. Машина, дошедшая до цели, остаётся
     // дошедшей: правило остановки продолжает действовать, стрельба тоже.
-    const spot = cellCentre(cellIndex(41, 38));
+    const spot = cellCentre(
+      cellIndex(
+        MAP_WIDTH_CELLS - 1 - BASE_INSET_CELLS,
+        MAP_HEIGHT_CELLS - 1 - BASE_INSET_CELLS - 3,
+      ),
+    );
     const world: WorldState = {
       ...openWorld(),
       units: [700, 701].map((id) => ({

@@ -96,11 +96,31 @@ describe('прикрытие генерала считается рядом с �
 
 describe('цели прокачки выбираются долями, а не порядком', () => {
   /** Все ветки, купленные противником за матч. */
-  const boughtBranches = (profile: AiProfile, seconds: number): readonly number[] => {
-    const opponent = createOpponent(AI, SEED, profile);
+  /**
+   * Отдельный мир для проверок прокачки.
+   *
+   * Общий `SEED` файла после перехода на карту 38 × 38 даёт поле, на котором
+   * противник за восемь минут покупает всего двенадцать уровней и все —
+   * одной цели: войско у него однородное, и умножать остальным целям нечего.
+   * Проверять на таком стенде правило «цели выбираются долями» нечем —
+   * долям просто не из чего сложиться.
+   *
+   * Здесь выбран мир, где покупок два десятка и целей три. Это выбор стенда
+   * с достаточной выборкой, а не подгонка результата, и страхует его
+   * проверка числа покупок ниже: выродится стенд — тест упадёт, а не начнёт
+   * молча охранять пустоту.
+   */
+  const UPGRADE_SEED = 20260820;
+
+  const boughtBranches = (
+    profile: AiProfile,
+    seconds: number,
+    seed: number = UPGRADE_SEED,
+  ): readonly number[] => {
+    const opponent = createOpponent(AI, seed, profile);
     const branches: number[] = [];
 
-    let world = createWorld(SEED);
+    let world = createWorld(seed);
     for (let tick = 0; tick < seconds * TICKS_PER_SECOND; tick += 1) {
       const commands = opponent.decide(world);
       for (const command of commands) {
@@ -139,10 +159,12 @@ describe('цели прокачки выбираются долями, а не �
     // Прежний порядок «по предпочтению» вырождался в первый пункт: ветка
     // не кончается никогда, поэтому до второй цели очередь не доходила
     // ни разу за матч. Из восьми названных целей покупки получали две.
-    const targets = new Set(
-      boughtBranches(BASELINE_PROFILE, 240).map((branch) => UPGRADE_BRANCHES[branch]?.target),
-    );
+    const branches = boughtBranches(BASELINE_PROFILE, 240);
+    const targets = new Set(branches.map((branch) => UPGRADE_BRANCHES[branch]?.target));
 
+    // Сначала — что покупок вообще хватает. Три покупки разошлись бы
+    // по целям и при выборе наугад, и тест перестал бы что-либо значить.
+    expect(branches.length).toBeGreaterThanOrEqual(10);
     expect(targets.size).toBeGreaterThan(1);
   });
 });
