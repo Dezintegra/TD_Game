@@ -82,7 +82,12 @@
         "HOST",
         "CLIENT_PORT",
         "VITE_API_URL",
-        "VITE_WS_URL"
+        "VITE_WS_URL",
+        "COMPUTER_SECRET",
+        "COMPUTER_API_URL",
+        "COMPUTER_WS_URL",
+        "COMPUTER_METRICS_PORT",
+        "COMPUTER_METRICS_HOST"
       ]
     }
   }

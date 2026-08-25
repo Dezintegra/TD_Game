@@ -22,6 +22,7 @@ import {
   SEPARATION_PUSH_SPEED_PERCENT,
   SEPARATION_WALL_CLEARANCE,
   SHOT_LIFETIME_TICKS,
+  SNIPER_TOWER_OVERREACH_CELLS,
   STRUCTURE_STATS,
   STRUCTURE_WEAPON,
   ShotSide,
@@ -40,6 +41,7 @@ import {
   VETERAN_STRUCTURE_PPM,
   VETERAN_UNIT_PPM,
   energy,
+  isArmedStructure,
   killsToNextRank,
   nukeCost,
   upgradeBranchIndex,
@@ -85,8 +87,33 @@ describe('баланс: соотношения из игрового замыс�
   });
 
   it('Тесла достаёт ровно на клетку дальше базовой башни', () => {
+    // Единственное, ради чего Тесла существует: остановившись у цели,
+    // она расстреливает её, оставаясь вне досягаемости.
     const tower = STRUCTURE_STATS[StructureKind.TowerBasic];
     expect(tesla.range).toBe(tower.range + cellsToUnits(1));
+  });
+
+  it('снайперская башня перекрывает обоих дальнобойных на одно и то же', () => {
+    // Башня заведена как ответ дальнобойным, и отвечать она обязана
+    // одинаково, а не по-разному в зависимости от того, кто подошёл.
+    // Совпадение дальностей Теслы и снайпера — следствие этого правила,
+    // а не копия числа из строки в строку.
+    const sniperTower = STRUCTURE_STATS[StructureKind.TowerSniper];
+    const overreach = cellsToUnits(SNIPER_TOWER_OVERREACH_CELLS);
+
+    expect(sniperTower.range - tesla.range).toBe(overreach);
+    expect(sniperTower.range - sniper.range).toBe(overreach);
+  });
+
+  it('перекрытие Тесла проходит ровно за одну перезарядку башни', () => {
+    // Отсюда и взялись две клетки. Подходя под огонь, Тесла получает
+    // ровно ОДНО бесплатное попадание, и дуэль решает тот, кто открыл
+    // огонь, а не фора. При прежнем разрыве в четыре клетки бесплатных
+    // попаданий было два-три, и решала именно фора.
+    const sniperTower = STRUCTURE_STATS[StructureKind.TowerSniper];
+    const ticksToClose = cellsToUnits(SNIPER_TOWER_OVERREACH_CELLS) / tesla.speed;
+
+    expect(ticksToClose).toBe(sniperTower.cooldownTicks);
   });
 
   it('Тесла прочна ровно как базовая башня', () => {
@@ -704,5 +731,32 @@ describe('направления', () => {
     expect(DIRECTION_VECTORS[directionTowards(1000, 0)]).toEqual({ x: 1000, y: 0 });
     expect(DIRECTION_VECTORS[directionTowards(-5, -5)]).toEqual({ x: -707, y: -707 });
     expect(DIRECTION_VECTORS[directionTowards(0, 42)]).toEqual({ x: 0, y: 1000 });
+  });
+});
+
+describe('баланс: какая постройка считается стреляющей', () => {
+  it('башни стреляют, стена и база — нет', () => {
+    expect(isArmedStructure(StructureKind.TowerBasic)).toBe(true);
+    expect(isArmedStructure(StructureKind.TowerSniper)).toBe(true);
+    expect(isArmedStructure(StructureKind.Wall)).toBe(false);
+    expect(isArmedStructure(StructureKind.Base)).toBe(false);
+  });
+
+  it('ответ есть у каждого вида, а не только у названных', () => {
+    // Признак выводится из таблицы, а не перечисляет виды поимённо,
+    // и проверка сторожит именно это: новый вид постройки не должен
+    // молча получить `undefined` вместо ответа.
+    for (const kind of Object.values(StructureKind)) {
+      expect(typeof isArmedStructure(kind)).toBe('boolean');
+    }
+  });
+
+  it('стреляющим считается тот, у кого положительны и атака, и дальность', () => {
+    // Оба условия обязательны, и одного мало: постройка с уроном,
+    // но нулевой дальностью, стрелять всё равно не может.
+    for (const kind of Object.values(StructureKind)) {
+      const stats = STRUCTURE_STATS[kind];
+      expect(isArmedStructure(kind)).toBe(stats.attack > 0 && stats.range > 0);
+    }
   });
 });

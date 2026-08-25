@@ -261,6 +261,12 @@ export interface SmoothnessView {
   readonly displayGapP95: number;
   /** Сколько раз показываемый мир простоял дольше тика. Точное число. */
   readonly displayGapLong: number;
+  /** Сколько своих команд сервер сдвинул: прямая причина скачков. */
+  readonly shiftedCommands: number;
+  /** Сколько раз генерал уехал сверх того, что мог пройти. */
+  readonly jumpCount: number;
+  /** Самый большой такой скачок, в клетках. */
+  readonly jumpMaxCells: number;
 }
 
 interface HudState {
@@ -308,12 +314,38 @@ interface HudState {
    */
   readonly displayGapP95: number;
   readonly displayGapLong: number;
+  /**
+   * Скачки картинки и их прямая причина.
+   *
+   * `shiftedCommands` — сколько своих команд сервер сдвинул: клиент
+   * показал действие на назначенном такте, а исполнилось оно позже.
+   * `jumpCount` и `jumpMaxCells` — сколько раз и насколько далеко
+   * генерал уехал сверх того, что мог пройти.
+   */
+  readonly shiftedCommands: number;
+  readonly jumpCount: number;
+  readonly jumpMaxCells: number;
   /** Seed текущей карты. Карта восстанавливается из него целиком. */
   readonly seed: number;
   /** Какая доля карты помещается на экран, в процентах. */
   readonly visiblePercent: number;
   /** Доля непроходимых клеток на текущей карте, в процентах. */
   readonly rockPercent: number;
+  /**
+   * Действующий масштаб мира.
+   *
+   * Диагностическая величина, игроку не показывается. Нужна проверкам:
+   * «сколько клеток видно по вертикали» иначе не посчитать, а это
+   * главное число мобильной раскладки — при четырёх клетках стрелок
+   * и его мишень на экране одновременно не помещаются.
+   *
+   * В разметку уходит БЕЗ округления, в отличие от соседних диагностик.
+   * Те читает человек, и лишние знаки ему мешают; этот читает проверка,
+   * которая делит на него высоту поля. Округление до четырёх знаков
+   * стоило ей ровно того, ради чего она живёт: вместо десяти клеток
+   * выходило 9,999981, и проверка падала на верном коде.
+   */
+  readonly viewScale: number;
   readonly match: MatchSnapshot;
   /**
    * Сообщения об отклонённых командах игрока.
@@ -388,7 +420,7 @@ interface HudState {
   setFps(fps: number): void;
   /** Показания плавности разом: они меняются вместе и читаются вместе. */
   setSmoothness(smoothness: SmoothnessView): void;
-  setMapInfo(seed: number, visiblePercent: number, rockPercent: number): void;
+  setMapInfo(seed: number, visiblePercent: number, rockPercent: number, viewScale: number): void;
   setMatch(match: MatchSnapshot): void;
   setNotices(notices: readonly Notice[]): void;
   setPhase(phase: MatchPhaseView): void;
@@ -444,9 +476,13 @@ export const useHudStore = create<HudState>((set) => ({
   netGapMax: 0,
   displayGapP95: 0,
   displayGapLong: 0,
+  shiftedCommands: 0,
+  jumpCount: 0,
+  jumpMaxCells: 0,
   seed: 0,
   visiblePercent: 0,
   rockPercent: 0,
+  viewScale: 1,
   match: EMPTY_MATCH,
   notices: [],
   phase: 'connecting',
@@ -478,11 +514,15 @@ export const useHudStore = create<HudState>((set) => ({
       state.netGapP95 === smoothness.netGapP95 &&
       state.netGapMax === smoothness.netGapMax &&
       state.displayGapP95 === smoothness.displayGapP95 &&
-      state.displayGapLong === smoothness.displayGapLong
+      state.displayGapLong === smoothness.displayGapLong &&
+      state.shiftedCommands === smoothness.shiftedCommands &&
+      state.jumpCount === smoothness.jumpCount &&
+      state.jumpMaxCells === smoothness.jumpMaxCells
         ? state
         : smoothness,
     ),
-  setMapInfo: (seed, visiblePercent, rockPercent) => set({ seed, visiblePercent, rockPercent }),
+  setMapInfo: (seed, visiblePercent, rockPercent, viewScale) =>
+    set({ seed, visiblePercent, rockPercent, viewScale }),
   setMatch: (match) => set({ match }),
   setNotices: (notices) => set({ notices }),
   setPhase: (phase) => set({ phase }),
@@ -523,8 +563,8 @@ export const hudActions = {
   registerPong: (latencyMs: number) => useHudStore.getState().registerPong(latencyMs),
   setFps: (fps: number) => useHudStore.getState().setFps(fps),
   setSmoothness: (smoothness: SmoothnessView) => useHudStore.getState().setSmoothness(smoothness),
-  setMapInfo: (seed: number, visiblePercent: number, rockPercent: number) =>
-    useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent),
+  setMapInfo: (seed: number, visiblePercent: number, rockPercent: number, viewScale: number) =>
+    useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent, viewScale),
   setMatch: (match: MatchSnapshot) => useHudStore.getState().setMatch(match),
   setNotices: (notices: readonly Notice[]) => useHudStore.getState().setNotices(notices),
   setPhase: (phase: MatchPhaseView) => useHudStore.getState().setPhase(phase),

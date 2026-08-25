@@ -10,6 +10,8 @@
   TICKS_PER_SECOND,
   Terrain,
   UNIT_CAP,
+  COUNT_BOUNDS,
+  COUNT_BUDGET,
   asPlayerId,
   createHistogram,
   distanceSquared,
@@ -59,6 +61,7 @@ import { attachControls } from './controls.js';
 import type { ControlState } from './controls.js';
 import { createRejectionFeed } from './rejections.js';
 import { createDisplayGauge } from './display-gauge.js';
+import { createJumpGauge } from './jump-gauge.js';
 import { createAudio } from '../audio/index.js';
 
 /**
@@ -245,6 +248,22 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   const frameGap = createHistogram();
   const netGap = createHistogram();
   const displayGap = createDisplayGauge();
+  /**
+   * На сколько тактов сервер сдвинул мои команды.
+   *
+   * Прямая причина скачка картинки: действие показано на назначенном
+   * такте, а исполнено позже. Границы в тактах, превышение — любой
+   * ненулевой сдвиг.
+   */
+  const commandShift = createHistogram({ bounds: COUNT_BOUNDS, budget: COUNT_BUDGET });
+  /**
+   * Скачки генерала и очередь своих команд в момент скачка.
+   *
+   * Ровно та пара, которую описал игрок: генерал дёргается, и в этот
+   * момент справа сверху мигает «в пути 1–2». Одним прибором, потому
+   * что вторая величина имеет смысл только вместе с первой.
+   */
+  const jumpGauge = createJumpGauge();
   let lastFrameArrivalMs = Number.NaN;
 
   /**
@@ -258,7 +277,20 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
    * диагностика не имеет права ломать игру. Отсюда и молчаливый
    * перехват, и `void` у вызова.
    */
+  /**
+   * Отчёт уходит один раз за матч.
+   *
+   * Поводов уйти теперь несколько — исход, выход в меню, закрытая
+   * вкладка, — а показания одни. Два отчёта с одной партии не сломали
+   * бы ничего, кроме самой выборки: одни и те же наблюдения попали бы
+   * в неё дважды и перевесили бы чужие.
+   */
+  let reported = false;
+
   const reportSmoothness = async (): Promise<void> => {
+    if (reported) return;
+    reported = true;
+
     try {
       await fetch(`${API_URL}/api/telemetry`, {
         method: 'POST',
@@ -267,6 +299,9 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
           frame: frameGap.snapshot(),
           netGap: netGap.snapshot(),
           displayGap: displayGap.snapshot(),
+          shift: commandShift.snapshot(),
+          jump: jumpGauge.jumps(),
+          pendingOnJump: jumpGauge.pending(),
         }),
         keepalive: true,
       });
@@ -279,6 +314,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     const frame = frameGap.snapshot();
     const net = netGap.snapshot();
     const display = displayGap.snapshot();
+    const jumps = jumpGauge.jumps();
 
     hudActions.setSmoothness({
       frameP50: Math.round(frame.p50 * 10) / 10,
@@ -289,6 +325,9 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       netGapMax: Math.round(net.max * 10) / 10,
       displayGapP95: Math.round(display.p95 * 10) / 10,
       displayGapLong: display.overBudget,
+      shiftedCommands: commandShift.snapshot().overBudget,
+      jumpCount: jumps.count,
+      jumpMaxCells: Math.round(jumps.max * 100) / 100,
     });
   };
 
@@ -298,6 +337,10 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   // создан — до подключения отправлять нечего.
   const guest = createMatchGuest({
     send: (message) => net.send(message),
+
+    // Сдвиг своей команды: назначал на один такт, исполнили на другом.
+    // Считается участником — только он знает обе величины сразу.
+    onCommandShift: (ticks) => commandShift.add(ticks),
 
     // Часы показа. Мир на экране двигается ими, а не приходом кадров:
     // канал дрожит у всех, и показывать это дрожание игроку незачем.
@@ -361,6 +404,20 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       // от своих входов.
       displayGap.observe(world.tick, performance.now());
 
+      // Прибор скачков. Скорость берётся с учётом прокачки: постоянная
+      // из баланса дала бы ложные телепорты у прокачанного генерала.
+      const mine = world.generals[localPlayer];
+      const me = world.players[localPlayer];
+      if (mine !== undefined && mine.alive && me !== undefined) {
+        jumpGauge.observe(
+          world.tick,
+          mine.position.x,
+          mine.position.y,
+          playerStats(me).general.speed,
+          guest.pendingCount,
+        );
+      }
+
       const serverTick = guest.serverTick;
       hudActions.setNetwork(
         guest.delayTicks,
@@ -418,7 +475,16 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
   const publishMapInfo = (world: WorldState): void => {
     const { width, height } = scene.viewportSize;
-    hudActions.setMapInfo(seed, visibleMapPercent(width, height), rockPercent(world.map));
+    // Видимая площадь делится на масштаб дважды — по обеим осям:
+    // уменьшенная картинка показывает больше мира в том же окне.
+    // Без этого доля карты врала бы ровно на телефоне, где масштаб
+    // и появляется.
+    hudActions.setMapInfo(
+      seed,
+      visibleMapPercent(width / scene.scale, height / scene.scale),
+      rockPercent(world.map),
+      scene.scale,
+    );
   };
 
   const loop = createRenderLoop({
@@ -486,6 +552,11 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
    * одной арифметики, которые рано или поздно разойдутся на единицу.
    */
   const send = (intent: CommandIntent): void => {
+    // Прибор скачков предупреждается ДО отправки: `issue` пересобирает
+    // предсказание синхронно, и обновление показа прилетит внутри этого
+    // же вызова. Отметь мы после — отметка опоздала бы ровно на то
+    // событие, ради которого поставлена.
+    jumpGauge.mine();
     guest.issue(intent);
   };
 
@@ -540,6 +611,15 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     nuke: (cell) => send({ kind: CommandKind.LaunchNuke, cell }),
     pan: (dx, dy) => scene.panBy(dx, dy),
+    zoom: (factor, x, y) => {
+      scene.zoomBy(factor, x, y);
+      // Масштаб меняет видимую долю карты, а она — диагностическая
+      // величина, по которой проверки судят о числе видимых клеток.
+      // Не обнови её здесь — она осталась бы от дефолтного масштаба,
+      // то есть врала бы ровно после жеста.
+      const world = guest.predicted;
+      if (world !== null) publishMapInfo(world);
+    },
     jumpTo: (cell) => scene.centreOnCell(cell),
     recentre: () => scene.setFollowing(true),
     toggleSound: () => {
@@ -657,6 +737,19 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
   observer.observe(host);
   window.addEventListener('resize', relayout);
 
+  /**
+   * Закрытая вкладка — тоже конец матча, и показания за ней пропадать
+   * не должны.
+   *
+   * `pagehide`, а не `beforeunload`: второй не срабатывает вовсе, если
+   * страницу выгружает мобильный браузер, уводя её в фон. Запрос уходит
+   * с `keepalive`, поэтому переживает выгрузку — на то он там и стоит.
+   */
+  const leaveHandler = (): void => {
+    void reportSmoothness();
+  };
+  window.addEventListener('pagehide', leaveHandler);
+
   // Накопленное отдаётся участнику ЗДЕСЬ, а не сразу после его создания,
   // и это не вкусовщина. Приветствие тянет за собой `onPredicted`, а тот —
   // `publishMapInfo` и показания HUD, объявленные ниже участника. Отдай мы
@@ -677,6 +770,18 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
   return {
     stop() {
+      // Показания уезжают и отсюда, а не только по исходу матча.
+      //
+      // Прежде отчёт был привязан к исходу, и на боевом стенде это
+      // означало, что он не уходит почти никогда: выход игрока в меню
+      // исходом не считается — сервер держит место ещё полминуты,
+      // и до технического поражения клиент успевает уйти со страницы.
+      // Матч при этом остаётся идти, а показания пропадают вместе
+      // со вкладкой. Проверено 24.08.2026: две минуты игры,
+      // ноль принятых отчётов.
+      void reportSmoothness();
+
+      window.removeEventListener('pagehide', leaveHandler);
       observer.disconnect();
       window.removeEventListener('resize', relayout);
       setMatchCommands(null);

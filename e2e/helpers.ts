@@ -132,3 +132,48 @@ export const openMatchMenu = async (page: Page): Promise<void> => {
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('match-menu')).toBeVisible();
 };
+
+/**
+ * Состав своего войска и номер подтверждённого тика — ОДНИМ снимком.
+ *
+ * Читается всё разом, а не по счётчику за вызов, и дело не в скорости.
+ * Между двумя чтениями из Playwright проходит настоящее время, а HUD
+ * за это время успевает перерисоваться: на экране живёт ПРЕДСКАЗАННЫЙ
+ * мир, и он пересобирается на каждом пришедшем кадре. Прочитав сумму
+ * до пересборки, а слагаемое после, тест сравнивает два разных мгновения
+ * матча — и падает на арифметике, которая на самом деле сходится.
+ *
+ * Внутри страницы всё чтение — один синхронный проход, и React
+ * перерисоваться посреди него не может.
+ */
+export interface UnitTally {
+  /** Суммарный счётчик своей стороны — тот, что показан как «N/200». */
+  readonly total: number;
+  /** По видам, в порядке значков: штурмовик, снайпер, Тесла. */
+  readonly byType: readonly number[];
+  /**
+   * Последний подтверждённый сервером тик.
+   *
+   * Берётся из того же снимка намеренно: по нему видно, дошёл ли заказ
+   * до сервера или на экране пока только надежда клиента.
+   */
+  readonly confirmedTick: number;
+}
+
+export const unitTally = async (page: Page): Promise<UnitTally> =>
+  page.evaluate(() => {
+    // То же отбрасывание единиц измерения, что и в `number`: значок
+    // юнита рисуется рядом с цифрой, и в текст попадает не только она.
+    const digits = (testId: string): number => {
+      const node = document.querySelector(`[data-testid="${testId}"]`);
+      return Number((node?.textContent ?? '').replace(/[^\d.-]/g, ''));
+    };
+
+    const diagnostics = document.querySelector('[data-testid="diagnostics"]');
+
+    return {
+      total: digits('unit-count'),
+      byType: [digits('own-unit-0'), digits('own-unit-1'), digits('own-unit-2')],
+      confirmedTick: Number(diagnostics?.getAttribute('data-tick') ?? '0'),
+    };
+  });

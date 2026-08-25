@@ -30,6 +30,7 @@ export default defineWorkspace([
   'packages/netplay',
   'packages/bot',
   'apps/server',
+  'apps/computer',
   'apps/client',
   'apps/arena',
 ]);

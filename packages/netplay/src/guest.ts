@@ -104,6 +104,18 @@ export interface MatchGuestOptions {
    * тем же способом.
    */
   readonly now?: () => number;
+  /**
+   * Своя команда вернулась кадром, и вот на сколько тактов её сдвинули.
+   *
+   * Ноль — исполнена там, где её ждали. Больше нуля — опоздала: такт
+   * назначения сервер уже сыграл и передвинул команду вперёд. Это
+   * прямая причина скачка картинки, потому что показать её действие
+   * клиент успел ещё на назначенном такте.
+   *
+   * Обработчика нет — очередь отданных команд не ведётся вовсе,
+   * и участник не платит за диагностику ни памятью, ни временем.
+   */
+  readonly onCommandShift?: (ticks: number) => void;
 }
 
 export interface MatchGuest {
@@ -168,6 +180,17 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
    */
   let anchorTick = 0;
   let anchorAtMs = Number.NaN;
+
+  /**
+   * Такты, на которые назначались свои команды, в порядке отправки.
+   *
+   * Сопоставление идёт по порядку, а не по содержимому, и это не лень.
+   * Сервер складывает команды игрока в порядке получения и двигает
+   * опоздавшую только вперёд — значит порядок на выходе тот же, что
+   * на входе. Две же одинаковые команды подряд по содержимому
+   * неразличимы, и сравнение выбрало бы не ту.
+   */
+  const issuedTicks: number[] = [];
 
   /** Собственные команды, ещё не пришедшие обратно кадром. */
   const own = new Map<number, UnownedCommand[]>();
@@ -365,6 +388,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     confirmed = createWorld(seed);
     predicted = confirmed;
     own.clear();
+    issuedTicks.length = 0;
     buffered.clear();
     mine.clear();
     expected.clear();
@@ -385,6 +409,27 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     }
   };
 
+  /**
+   * Отметить, на сколько сервер сдвинул вернувшиеся свои команды.
+   *
+   * Пустая очередь — не ошибка: так бывает после пересборки, когда
+   * история приносит команды, отданные ещё до неё. Сказать про них
+   * нечего, и выдумывать нечего.
+   */
+  const noteShifts = (tick: number, commands: readonly Command[]): void => {
+    const report = options.onCommandShift;
+    if (report === undefined || side === null) return;
+
+    for (const command of commands) {
+      if (command.player !== side) continue;
+
+      const issuedAt = issuedTicks.shift();
+      if (issuedAt === undefined) continue;
+
+      report(tick - issuedAt);
+    }
+  };
+
   /** Применить всё, что уже можно применить, не оставляя дыр. */
   const drain = (): void => {
     if (confirmed === null || status === 'stopped') return;
@@ -399,6 +444,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
 
       forget(tick);
       remember(confirmed);
+      noteShifts(tick, commands);
       options.onFrame?.(tick, commands);
 
       if (pendingDelay !== null && confirmed.tick >= pendingDelay.fromTick) {
@@ -433,6 +479,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
           confirmed = createWorld(seed);
           predicted = confirmed;
           own.clear();
+          issuedTicks.length = 0;
           buffered.clear();
           mine.clear();
           expected.clear();
@@ -481,10 +528,28 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
               const tick = world.tick;
               world = step(world, commands);
               remember(world);
+
+              // Подтверждённый мир виден наружу СРАЗУ, а не после всей
+              // перемотки, — и это не наведение порядка.
+              //
+              // Обработчик кадра читает не свой довод, а `guest.confirmed`:
+              // ему нужен мир целиком, а не номер тика. Пока присваивание
+              // стояло за циклом, все кадры догона показывали ему мир,
+              // оставшийся ДО перемотки. Клиент из-за этого переставал
+              // сообщать о своей сверке: показания `data-sync-tick`
+              // отстают на столько тиков, сколько принесла история.
+              //
+              // 24.08.2026 на этом упала проверка лобби (прогон
+              // 32787218595): у обеих сторон время матча шло 1:13, а
+              // сверка стояла на 1590 и 1410 — на 600 и 780 тиков позади.
+              // Сойтись на общем тике им было негде.
+              //
+              // Живые кадры (`drain`) так делали всегда; договор здесь
+              // тот же: к приходу обработчика мир уже на тик впереди.
+              confirmed = world;
               options.onFrame?.(tick, commands);
             }
 
-            confirmed = world;
             forget(confirmed.tick - 1);
           }
 
@@ -568,6 +633,8 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
       } else {
         list.push(command);
       }
+
+      if (options.onCommandShift !== undefined) issuedTicks.push(tick);
 
       options.send({ type: MessageType.Command, command });
       rebuild();
