@@ -19,12 +19,12 @@
 
 ## 2. Мир шагает в одном месте
 
-- [ ] 2.1 Разбор `MessageType.History` в `packages/netplay/src/guest.ts`
+- [x] 2.1 Разбор `MessageType.History` в `packages/netplay/src/guest.ts`
       перестаёт шагать сам: раскладывает команды по тикам, дополняет
       тики без команд пустым списком от `confirmed.tick` до
       `throughTick` включительно и кладёт всё в `buffered`.
       Проигрыванием занимается `drain`.
-- [ ] 2.2 Тест в `guest.*.test.ts`: догон через `buffered` даёт тот же
+- [x] 2.2 Тест в `guest.*.test.ts`: догон через `buffered` даёт тот же
       мир и те же контрольные суммы, что прежний цикл, — тик в тик,
       с тем же числом вызовов `onFrame`.
 - [ ] 2.3 `convergence.match.test.ts` зелёный: три копии мира сходятся.

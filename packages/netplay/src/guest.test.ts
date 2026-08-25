@@ -274,6 +274,56 @@ describe('сторона участника', () => {
     expect(seen.map((it) => it.confirmed)).toEqual(seen.map((it) => it.tick + 1));
   });
 
+  it('догон через буфер повторяет живую игру тик в тик', () => {
+    // Смысл проверки — равенство ДВУХ ПУТЕЙ, а не «догнали до сорока».
+    // Пока история играла себя сама, путей шага мира было два, и они
+    // однажды разошлись. Теперь путь один, и это утверждение проверяется
+    // не чтением кода, а сличением следов: тик, сумма мира на нём
+    // и число вызовов обработчика.
+    const foe: Command = withPlayer(
+      { kind: CommandKind.MoveGeneral, tick: asTickNumber(10), direction: 7 },
+      FOE,
+    );
+    const TICKS = 40;
+
+    const trace = (): { seen: { tick: number; sum: number }[]; guest: MatchGuest } => {
+      const box: { guest?: MatchGuest } = {};
+      const seen: { tick: number; sum: number }[] = [];
+
+      // Сумма снимается из `guest.confirmed`, а не из довода: обработчику
+      // отдают номер тика, а мир он берёт сам, и договор «к приходу
+      // обработчика мир уже шагнул» держится ровно этим чтением.
+      box.guest = createMatchGuest({
+        send: () => {},
+        onFrame: (tick) => {
+          const world = box.guest?.confirmed ?? null;
+          seen.push({ tick, sum: world === null ? -1 : checksum(world) });
+        },
+      });
+
+      return { seen, guest: box.guest };
+    };
+
+    const alive = trace();
+    alive.guest.receive(welcome());
+    for (let tick = 0; tick < TICKS; tick += 1) {
+      alive.guest.receive(frame(tick, tick === 10 ? [foe] : []));
+    }
+
+    const behind = trace();
+    behind.guest.receive(welcome(TICKS));
+    behind.guest.receive({
+      type: MessageType.History,
+      fromTick: 0,
+      throughTick: TICKS - 1,
+      commands: [foe],
+    });
+
+    expect(behind.seen).toHaveLength(TICKS);
+    expect(behind.seen).toEqual(alive.seen);
+    expect(checksum(behind.guest.confirmed!)).toBe(checksum(alive.guest.confirmed!));
+  });
+
   it('расхождение вызывает одну пересборку из истории', () => {
     const table = bench();
     table.feed(CHECKSUM_INTERVAL_TICKS);

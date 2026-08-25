@@ -207,8 +207,24 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
    * а на сервер команда ушла в исходном виде ещё при отправке.
    */
   const own = new Map<number, UnownedCommand[]>();
-  /** Кадры, пришедшие раньше своей очереди. */
+  /**
+   * Кадры, ждущие своей очереди: и живые, и принесённые историей.
+   *
+   * Буфер один на оба источника намеренно. Пока история играла себя
+   * сама, шаг мира жил в двух местах — здесь и в разборе `History`, —
+   * и однажды они уже разошлись: присваивание `confirmed` стояло
+   * за циклом догона и внутри `drain`, из-за чего обработчик кадра весь
+   * догон видел мир до перемотки (прогон 32787218595, 24.08.2026).
+   */
   const buffered = new Map<number, readonly Command[]>();
+  /**
+   * Тик истории без команд.
+   *
+   * Один список на все такие тики, а не свой на каждый: догон в тысячу
+   * тиков иначе завёл бы тысячу пустых массивов на ровном месте.
+   * Изменять его нельзя, и `readonly Command[]` это стережёт.
+   */
+  const NO_COMMANDS: readonly Command[] = [];
   /** Наши контрольные суммы и присланные сервером, ждущие встречи. */
   const mine = new Map<number, number>();
   const expected = new Map<number, number>();
@@ -227,6 +243,17 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     anchorAtMs = Number.NaN;
     options.onStatus?.(next);
   };
+
+  /**
+   * Играть дальше нельзя: сверка не сошлась и после пересборки.
+   *
+   * Функцией, а не сравнением на месте. Внутри `drain` состояние
+   * меняется посреди цикла — сверка вправе остановить матч, — а вывод
+   * типов об этом не знает: сравнив состояние на входе, он считает
+   * второе такое же сравнение заведомо ложным и отказывается его
+   * компилировать.
+   */
+  const halted = (): boolean => status === 'stopped';
 
   /** Забыть контрольные суммы, которые сверять уже не с чем. */
   const forgetChecksums = (upToTick: number): void => {
@@ -542,7 +569,7 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
 
   /** Применить всё, что уже можно применить, не оставляя дыр. */
   const drain = (): void => {
-    if (confirmed === null || status === 'stopped') return;
+    if (confirmed === null || halted()) return;
 
     for (;;) {
       const commands = buffered.get(confirmed.tick);
@@ -562,6 +589,14 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
         delayTicks = pendingDelay.ticks;
         pendingDelay = null;
       }
+
+      // Сверка внутри `remember` вправе остановить матч, и тогда играть
+      // дальше нечего: мира, в котором эти тики что-то значат, нет.
+      // Прежде проверка стояла только на входе, и хватало этого потому,
+      // что за один вызов проигрывался один-два кадра. Догон приносит
+      // сотни, и пройти их все после «играть дальше нельзя» — работа,
+      // результат которой выбросят.
+      if (halted()) break;
     }
 
     // В буфере есть кадры, но не тот, что нужен следующим: где-то потеряна
@@ -629,52 +664,39 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
           awaitingHistory = false;
           serverTick = Math.max(serverTick, message.throughTick + 1);
 
+          // Разбор истории мир не шагает. Он раскладывает принесённое
+          // по тикам и кладёт в тот же буфер, откуда живые кадры берёт
+          // `drain`, — а шагает мир одно место на всех.
+          //
+          // Прежде путей было два, и делали они одно и то же: шаг,
+          // `settle`, `remember`, `noteShifts`, `onFrame`. Однажды они
+          // уже разошлись на одной строке, и стоило это молчаливого
+          // отставания сверки на шестьсот тиков. Третий путь —
+          // нарезанный — завёл бы третье место, где это может повториться.
           const map = byTick(message.commands);
-          if (message.throughTick >= confirmed.tick) {
-            let world = confirmed;
-            const target = message.throughTick;
-            let played = 0;
 
-            while (world.tick <= target) {
-              const commands = map.get(world.tick) ?? [];
-              const tick = world.tick;
-              played += countMine(commands);
-              world = step(world, commands);
-              remember(world);
-
-              // Подтверждённый мир виден наружу СРАЗУ, а не после всей
-              // перемотки, — и это не наведение порядка.
-              //
-              // Обработчик кадра читает не свой довод, а `guest.confirmed`:
-              // ему нужен мир целиком, а не номер тика. Пока присваивание
-              // стояло за циклом, все кадры догона показывали ему мир,
-              // оставшийся ДО перемотки. Клиент из-за этого переставал
-              // сообщать о своей сверке: показания `data-sync-tick`
-              // отстают на столько тиков, сколько принесла история.
-              //
-              // 24.08.2026 на этом упала проверка лобби (прогон
-              // 32787218595): у обеих сторон время матча шло 1:13, а
-              // сверка стояла на 1590 и 1410 — на 600 и 780 тиков позади.
-              // Сойтись на общем тике им было негде.
-              //
-              // Живые кадры (`drain`) так делали всегда; договор здесь
-              // тот же: к приходу обработчика мир уже на тик впереди.
-              confirmed = world;
-              noteShifts(tick, commands);
-              options.onFrame?.(tick, commands);
-            }
-
-            // Правило то же, что после обычного кадра: сколько своих
-            // проиграно, столько записей снято, остальное перенесено.
-            // Пустая очередь здесь обычное дело — после рассинхрона её
-            // чистит `verify`, и снимать бывает нечего.
-            settle(played);
-            forgetChecksums(confirmed.tick - 1);
+          // Тики без команд кладутся ПУСТЫМ списком, а не пропускаются.
+          // `byTick` знает только те тики, на которых что-то было,
+          // а `drain` останавливается на первом же отсутствующем ключе —
+          // и обязан так делать: для живых кадров пропуск означает
+          // потерянную середину, которую нельзя ни перепрыгнуть,
+          // ни выдумать. Значит дыры истории заполняются здесь и явно.
+          // Счётчик объявлен `number`, а не выведен из `confirmed.tick`:
+          // тик мира — помеченный тип, и прибавить к нему единицу
+          // не выйдет.
+          for (let tick: number = confirmed.tick; tick <= message.throughTick; tick += 1) {
+            buffered.set(tick, map.get(tick) ?? NO_COMMANDS);
           }
 
-          if (message.throughTick + 1 < serverTick && buffered.get(confirmed.tick) === undefined) {
+          // Просьба о продолжении уходит ДО проигрывания, как и прежде:
+          // сервер ушёл дальше принесённого отрезка, и об этом известно
+          // уже сейчас. Тик известен тоже — следующий за последним
+          // в истории; проверка `buffered` отсекает случай, когда
+          // продолжение уже лежит у нас живым кадром.
+          const next = message.throughTick + 1;
+          if (next < serverTick && buffered.get(next) === undefined) {
             awaitingHistory = true;
-            options.send({ type: MessageType.HistoryFrom, tick: confirmed.tick });
+            options.send({ type: MessageType.HistoryFrom, tick: next });
           }
 
           drain();
