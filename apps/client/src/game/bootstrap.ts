@@ -559,7 +559,8 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
    * отклоняются молча.
    */
   const train = (unitType: UnitType, count: number): void => {
-    for (let order = 0; order < count; order += 1) {
+    // ПОРЧА для проверки чувствительности сквозной проверки. Не сливать.
+    for (let order = 0; order < Math.min(count, 5); order += 1) {
       send({ kind: CommandKind.TrainUnit, unitType });
     }
   };
