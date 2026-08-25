@@ -69,6 +69,18 @@ export const logPath = process.env['PERF_LOG'] ?? join(mainTree, '.perf-log.json
 // заметно ниже, при семи работающих сессиях 41–79%.
 export const BUSY_LIMIT = 0.35;
 
+// Ход мира: тридцать тиков в секунду. Число держит сервер, и оно
+// не зависит ни от машины, ни от видеокарты, ни от нагрузки — отсюда
+// вся сила этой величины как свидетеля. За шестисекундное окно замера
+// тик обязан вырасти примерно на сто восемьдесят; когда он вырастает
+// на пятьсот, замер описывает догон истории, а не отрисовку.
+//
+// Значение продублировано из `TICKS_PER_SECOND` (`packages/shared`)
+// намеренно: сюда пакет не импортируется — `--history` обязан работать
+// и до сборки, а импорт из `dist` этого бы лишил. Совпадение
+// сторожит тест `perf-common.test.mjs`.
+export const WORLD_TICKS_PER_SECOND = 30;
+
 // Через сколько замок считается брошенным. Замер идёт около минуты,
 // так что четверть часа — это уже наверняка забытый файл после падения.
 const LOCK_STALE_MS = 15 * 60 * 1000;
@@ -188,12 +200,45 @@ export const lastOfKind = (kind) =>
     .at(-1);
 
 /**
+ * Сколько тиков в секунду шёл мир за окно замера, или null.
+ *
+ * Скорость не хранится, а выводится: в записи лежат тик в начале окна
+ * и тик в конце. Хранить производную вместо слагаемых было бы дешевле
+ * на одно поле и хуже — по двум тикам видно и скорость, и то, где
+ * именно шёл замер, а по одной скорости только скорость.
+ *
+ * null означает «судить не о чем»: запись старого образца или окно
+ * нулевой длины. Ноль на этом месте читался бы как «мир стоял».
+ */
+export const tickRate = (scene) => {
+  if (scene === undefined || scene === null) return null;
+  const { tickFrom, tickTo, windowMs } = scene;
+  if (typeof tickFrom !== 'number' || typeof tickTo !== 'number') return null;
+  if (typeof windowMs !== 'number' || windowMs <= 0) return null;
+  return Math.round(((tickTo - tickFrom) / (windowMs / 1000)) * 10) / 10;
+};
+
+/** Обстановка одной сцены человеческой строкой. */
+export const describeContext = (scene) => {
+  if (scene === undefined || scene === null) return 'обстановка не снята';
+
+  const rate = tickRate(scene);
+  const parts = [
+    rate === null ? 'ход мира неизвестен' : `мир ${rate} тик/с (норма ${WORLD_TICKS_PER_SECOND})`,
+    `сверка ${scene.syncFrom}→${scene.syncTo}, отстаёт на ${scene.syncBehind}`,
+    `связь ${scene.latencyMs} мс, ввод ${scene.inputDelayTicks} тик.`,
+    `длинных кадров ${scene.frameLong}, p95 ${scene.frameP95} мс, макс ${scene.frameMax} мс`,
+  ];
+  return parts.join('; ');
+};
+
+/**
  * Дописать замер в журнал и показать, что изменилось с прошлого раза.
  *
  * Пишется и провалившийся замер: провал порога — тоже число, и когда он
  * случится, важнее всего будет увидеть, каким был предыдущий прогон.
  */
-export const recordEntry = ({ kind, measurements, busy, passed, unit = '' }) => {
+export const recordEntry = ({ kind, measurements, context, busy, passed, unit = '' }) => {
   const previous = lastOfKind(kind);
 
   appendFileSync(
@@ -210,6 +255,11 @@ export const recordEntry = ({ kind, measurements, busy, passed, unit = '' }) => 
       busy: Math.round(busy * 100) / 100,
       passed,
       measurements,
+      // Пустой обстановки в записи не бывает: либо она есть, либо поля
+      // нет вовсе. Пустой объект читался бы как «мерили и ничего
+      // не намеряли», а на деле означал бы «замер про обстановку
+      // не знает» — как у стоимости тика, где матча не бывает.
+      ...(context !== undefined && Object.keys(context).length > 0 ? { context } : {}),
     })}\n`,
   );
 
@@ -218,10 +268,12 @@ export const recordEntry = ({ kind, measurements, busy, passed, unit = '' }) => 
     const before = previous?.measurements?.[name];
     if (before === undefined) {
       note(`${name}: ${value}${unit}`);
-      continue;
+    } else {
+      const delta = Math.round((value - before) * 10) / 10;
+      note(`${name}: ${value}${unit} (было ${before}${unit}, ${delta > 0 ? '+' : ''}${delta})`);
     }
-    const delta = Math.round((value - before) * 10) / 10;
-    note(`${name}: ${value}${unit} (было ${before}${unit}, ${delta > 0 ? '+' : ''}${delta})`);
+    const scene = context?.[name];
+    if (scene !== undefined) note(`   ${describeContext(scene)}`);
   }
   note(`журнал: ${logPath}, вся история — ключ --history`);
 };

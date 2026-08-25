@@ -159,13 +159,23 @@ const run = spawnSync(
 );
 
 // ── Журнал ───────────────────────────────────────────────────────────
+//
+// Обстановка складывается по сценам, а не сливается в одну. Сцены —
+// это разные окна разного матча: у «камеры в движении» свой ход мира
+// и свои длинные кадры, у «войск на поле» — свои. Одно усреднённое
+// число спрятало бы ровно тот случай, ради которого всё затевалось:
+// одна сцена измерена на догоне, вторая на ровном ходу.
 const measurements = {};
+const context = {};
 if (existsSync(measurementsPath)) {
   for (const line of readFileSync(measurementsPath, 'utf8').split('\n')) {
     if (line.trim() === '') continue;
     try {
-      const { name, value } = JSON.parse(line);
-      measurements[name] = value;
+      const entry = JSON.parse(line);
+      measurements[entry.name] = entry.value;
+      if (entry.context !== undefined && entry.context !== null) {
+        context[entry.name] = entry.context;
+      }
     } catch {
       // Одна битая строка — не повод потерять остальные.
     }
@@ -176,6 +186,13 @@ if (Object.keys(measurements).length === 0) {
   die('замер не дал ни одного числа — прогон, похоже, не дошёл до самих проверок');
 }
 
-recordEntry({ kind: 'кадры', measurements, busy, passed: run.status === 0, unit: ' к/с' });
+recordEntry({
+  kind: 'кадры',
+  measurements,
+  context,
+  busy,
+  passed: run.status === 0,
+  unit: ' к/с',
+});
 
 process.exit(run.status ?? 1);

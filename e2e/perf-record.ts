@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { MatchSnapshot } from './helpers.js';
 
 /**
  * Запись измеренной величины для журнала замеров.
@@ -17,10 +18,87 @@ import { dirname } from 'node:path';
  * Без него запись молча не ведётся: прямой прогон Playwright — это отладка,
  * и засорять журнал отладочными цифрами не нужно.
  */
-export const record = (name: string, value: number): void => {
+
+/**
+ * Обстановка, в которой снято число кадров.
+ *
+ * Существует потому, что одно лишь число кадров описывает следствие
+ * и молчит о причине. Восемь кадров в секунду выходят и при просевшей
+ * отрисовке, и при главном потоке, вставшем колом на догоне истории, —
+ * а лечатся эти два случая противоположным. Разбор такого случая стоил
+ * часов, двух ошибочных гипотез и одного неверного вывода, и всё это
+ * время нужные числа стояли рядом на экране.
+ */
+export interface RunContext {
+  /** Тик показанного мира в начале окна замера. */
+  readonly tickFrom: number;
+  /** Он же в конце. Скорость хода выводится делением, а не хранится. */
+  readonly tickTo: number;
+  /** Длина окна по часам машины, мс. Без неё делить не на что. */
+  readonly windowMs: number;
+  /** Подтверждённый тик в начале окна — по нему видно, двигалась ли сверка. */
+  readonly syncFrom: number;
+  /** Он же в конце. */
+  readonly syncTo: number;
+  /** На сколько тиков подтверждённый мир отстал от показанного. */
+  readonly syncBehind: number;
+  /** Время оборота пакета на конец окна, мс. */
+  readonly latencyMs: number;
+  /** Задержка ввода на конец окна, тиков. */
+  readonly inputDelayTicks: number;
+  /** Кадры длиннее бюджета ЗА ОКНО, а не с начала страницы. */
+  readonly frameLong: number;
+  /** 95-й перцентиль длительности кадра, мс. Копится с начала матча. */
+  readonly frameP95: number;
+  /** Самый долгий кадр, мс. Копится с начала матча. */
+  readonly frameMax: number;
+  /** Ответы сервера на ping за окно. */
+  readonly pongs: number;
+}
+
+/**
+ * Собрать обстановку из двух снимков — до окна и после.
+ *
+ * Накопительные величины берутся разностью, а не значением с конца.
+ * Причина в разогреве: `data-frame-long` считает с начала страницы,
+ * и первые секунды матча заняты запеканием рельефа. В воспроизведении
+ * разрыва «длинных кадров 7» стояло ДО окна, на ровной шестидесятке, —
+ * записанное как есть, это число обвинило бы отрисовку в чужой работе.
+ *
+ * Перцентили разностью не считаются: они не счётчики, и вычитать их
+ * бессмысленно. Они пишутся как есть, с оговоркой в поле — копятся
+ * с начала матча.
+ */
+export const runContext = (before: MatchSnapshot, after: MatchSnapshot): RunContext => ({
+  tickFrom: before.tick,
+  tickTo: after.tick,
+  windowMs: after.at - before.at,
+  syncFrom: before.syncTick,
+  syncTo: after.syncTick,
+  syncBehind: after.tick - after.syncTick,
+  latencyMs: after.latencyMs,
+  inputDelayTicks: after.inputDelayTicks,
+  frameLong: after.frameLong - before.frameLong,
+  frameP95: after.frameP95,
+  frameMax: after.frameMax,
+  pongs: after.pongs - before.pongs,
+});
+
+/**
+ * Число и обстановка, в которой оно снято, — одной строкой на сцену.
+ *
+ * Строчный JSON остаётся: одна битая строка уносит одну сцену, а не весь
+ * прогон. Класть обстановку отдельной строкой было бы хуже — тогда две
+ * строки пришлось бы сшивать по имени, и потеря любой из них дала бы
+ * число без обстановки или обстановку без числа.
+ *
+ * Обстановка необязательна намеренно. Замер стоимости тика пишет тем же
+ * способом, а матча у него не бывает вовсе: ни браузера, ни сервера.
+ */
+export const record = (name: string, value: number, context?: RunContext): void => {
   const out = process.env['PERF_OUT'];
   if (out === undefined || out === '') return;
 
   mkdirSync(dirname(out), { recursive: true });
-  appendFileSync(out, `${JSON.stringify({ name, value })}\n`, 'utf8');
+  appendFileSync(out, `${JSON.stringify({ name, value, context })}\n`, 'utf8');
 };
