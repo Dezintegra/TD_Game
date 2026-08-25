@@ -1,5 +1,13 @@
-import { FRAME_WORK_BUDGET_MS, asPlayerId } from '@td/shared';
+import {
+  COMMAND_CARRY_LIMIT_TICKS,
+  CommandKind,
+  FRAME_WORK_BUDGET_MS,
+  asPlayerId,
+  withPlayer,
+} from '@td/shared';
+import { checksum, createWorld, step } from '@td/sim';
 import { MessageType } from '@td/protocol';
+import type { Command, CommandIntent } from '@td/shared';
 import type { ClientMessage, ServerMessage } from '@td/protocol';
 import { describe, expect, it } from 'vitest';
 import { createMatchGuest } from './guest.js';
@@ -19,6 +27,8 @@ const SEED = 4242;
 const ME = asPlayerId(1);
 const DELAY = 3;
 
+const goEast: CommandIntent = { kind: CommandKind.MoveGeneral, direction: 1 };
+
 /** Часы, дорожающие на каждый вопрос ровно на миллисекунду. */
 const tickingClock = (): (() => number) => {
   let ms = 1_000;
@@ -37,11 +47,11 @@ const welcome = (tick: number): ServerMessage => ({
   delayTicks: DELAY,
 });
 
-const history = (throughTick: number): ServerMessage => ({
+const history = (throughTick: number, commands: readonly Command[] = []): ServerMessage => ({
   type: MessageType.History,
   fromTick: 0,
   throughTick,
-  commands: [],
+  commands,
 });
 
 const frame = (tick: number): ServerMessage => ({
@@ -198,6 +208,119 @@ describe('догон по истории', () => {
     expect(table.outgoing.filter((message) => message.type === MessageType.HistoryFrom)).toEqual(
       [],
     );
+  });
+
+  it('отставание от сервера сокращается от порции к порции', () => {
+    const BROUGHT = 599;
+    const BUDGET = 5;
+
+    const table = bench({ clock: true });
+    table.guest.receive(welcome(600));
+    table.guest.receive(history(BROUGHT));
+
+    const gaps: number[] = [];
+    // Тик, который сервер сыграет следующим.
+    let ahead = 600;
+
+    for (let frames = 0; frames < 2_000 && table.guest.status !== 'playing'; frames += 1) {
+      // Сервер не ждёт, пока его догонят: каждый кадр он досчитывает
+      // ещё один тик и присылает его. Это вдвое быстрее настоящего —
+      // тридцать тиков в секунду против шестидесяти кадров, — то есть
+      // проверка строже жизни.
+      table.guest.receive(frame(ahead));
+      ahead += 1;
+
+      table.guest.advance(BUDGET);
+      gaps.push(ahead - (table.guest.confirmed?.tick ?? 0));
+    }
+
+    // Догон кончается, а не длится вечно: ряд сходится, потому что
+    // порция длиннее того, что сервер успевает досчитать.
+    expect(table.guest.status).toBe('playing');
+    expect(gaps.at(-1)).toBe(0);
+    expect(gaps.length).toBeGreaterThan(10);
+
+    for (let index = 1; index < gaps.length; index += 1) {
+      expect(gaps[index]).toBeLessThan(gaps[index - 1] ?? 0);
+    }
+  });
+
+  it('своя команда, вернувшаяся нарезанной историей, снимается ровно раз', () => {
+    const table = bench({ clock: true });
+    table.guest.receive(welcome(0));
+    for (let tick = 0; tick < 10; tick += 1) table.guest.receive(frame(tick));
+
+    const issued = table.guest.issue(goEast);
+    expect(issued).not.toBeNull();
+    if (issued === null) return;
+    expect(table.guest.pendingCount).toBe(1);
+
+    // Кадр из будущего проделывает дыру, и участник просит историю.
+    // Отрезок принесёт нашу команду обратно — ту самую, на её такте.
+    table.guest.receive(frame(120));
+    const mine = withPlayer(issued, ME);
+    table.guest.receive(history(119, [mine]));
+
+    // Ждать здесь надо тика, а не состояния: дыра посреди обычной игры
+    // состояния не меняет — участник всё это время «играет».
+    for (let frames = 0; frames < 1_000 && (table.guest.confirmed?.tick ?? 0) < 121; frames += 1) {
+      table.guest.advance(3);
+    }
+
+    expect(table.guest.confirmed?.tick).toBe(121);
+
+    // `settle` теперь зовётся на каждой порции, а не один раз на весь
+    // догон, — и снимает ровно подтверждённое: очередь пуста, а не
+    // ушла в минус и не осталась с фантомом.
+    expect(table.guest.pendingCount).toBe(0);
+
+    // Команда исполнена ровно один раз и ровно на своём такте: мир
+    // сошёлся с эталоном, посчитанным без всякой нарезки.
+    let truth = createWorld(SEED);
+    for (let tick = 0; tick < 121; tick += 1) {
+      truth = step(truth, tick === issued.tick ? [mine] : []);
+    }
+    expect(checksum(table.guest.confirmed!)).toBe(checksum(truth));
+  });
+
+  it('срок переноса своей команды считается в тиках, а не в порциях', () => {
+    const table = bench({ clock: true });
+    table.guest.receive(welcome(0));
+    for (let tick = 0; tick < 10; tick += 1) table.guest.receive(frame(tick));
+
+    const issued = table.guest.issue(goEast);
+    if (issued === null) return;
+
+    // Догон в полсотни тиков, нарезанный по одному тику на порцию:
+    // полсотни вызовов `settle` вместо одного. Команды в истории нет —
+    // она ещё летит.
+    const short = issued.tick + COMMAND_CARRY_LIMIT_TICKS - 15;
+    table.guest.receive(frame(short));
+    table.guest.receive(history(short - 1));
+
+    for (
+      let frames = 0;
+      frames < 1_000 && (table.guest.confirmed?.tick ?? 0) <= short;
+      frames += 1
+    ) {
+      table.guest.advance(0);
+    }
+
+    // Срок жизни отсчитывается от такта назначения по тикам мира,
+    // поэтому полсотни вызовов его не расходуют: команда всё ещё
+    // в пути, и предсказание её показывает.
+    expect((table.guest.confirmed?.tick ?? 0) - issued.tick).toBeLessThanOrEqual(
+      COMMAND_CARRY_LIMIT_TICKS,
+    );
+    expect(table.guest.pendingCount).toBe(1);
+
+    // А вот когда мир уходит за срок — команда снимается, и это уже
+    // не нарезка, а честное «не долетела».
+    let tick = table.guest.confirmed?.tick ?? 0;
+    const beyond = issued.tick + COMMAND_CARRY_LIMIT_TICKS + 2;
+    for (; tick <= beyond; tick += 1) table.guest.receive(frame(tick));
+
+    expect(table.guest.pendingCount).toBe(0);
   });
 
   it('участник без часов догоняет целиком в момент получения', () => {
