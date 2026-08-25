@@ -118,12 +118,6 @@ importers:
 
   apps/server:
     dependencies:
-      '@td/ai':
-        specifier: workspace:*
-        version: link:../../packages/ai
-      '@td/bot':
-        specifier: workspace:*
-        version: link:../../packages/bot
       '@td/netplay':
         specifier: workspace:*
         version: link:../../packages/netplay

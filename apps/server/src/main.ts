@@ -1,9 +1,6 @@
 import Fastify from 'fastify';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { PROTOCOL_VERSION } from '@td/protocol';
-import { startComputerService } from '@td/bot';
-import { ADAPTIVE_SWARM_PROFILE, BULWARK_PROFILE, STRATEGIST_PROFILE } from '@td/ai';
-import type { ComputerService } from '@td/bot';
 import {
   COUNT_BOUNDS,
   COUNT_BUDGET,
@@ -11,7 +8,6 @@ import {
   createMetrics,
   mergeReport,
 } from '@td/shared';
-import type { Command } from '@td/shared';
 import {
   COMPUTER_SECRET,
   MATCHLOG_DIR,
@@ -254,6 +250,16 @@ export const buildServer = async (options: BuildOptions = {}) => {
    * Личности объявляет служба дежурных, предъявляя общий секрет; сервер
    * запоминает и дальше отвечает сам. Пустой секрет означает закрытую
    * регистрацию, то есть недоступную игру с компьютером.
+   *
+   * Саму службу сервер больше не поднимает: она живёт своим процессом
+   * (`apps/computer`) и ходит сюда по сети, как всякий участник. Прежде
+   * дежурные исполнялись в том же потоке, который считает тики
+   * и рассылает кадры, и любая их заминка задерживала рассылку ВСЕМ
+   * идущим матчам — включая матчи двух людей, к которым компьютер
+   * отношения не имеет.
+   *
+   * Отсюда и порядок правил: пока сервер знал о службе хоть что-нибудь
+   * помимо её объявления, уехать ей было некуда.
    */
   const computers = createComputerRegistry({ secret: COMPUTER_SECRET });
 
@@ -316,17 +322,6 @@ export const buildServer = async (options: BuildOptions = {}) => {
   // мгновенная, и история у неё есть у того, кто опрашивает.
   metrics.gauge('td_matches_running', 'Сколько матчей идёт сейчас', () => matches.size);
 
-  // Служба поднимается не здесь, а после `listen`: она ходит к серверу
-  // по сети, как и все прочие клиенты, и до открытия порта ходить ей
-  // некуда. Отсюда и ссылка-держатель — её надо закрыть при остановке
-  // сервера, а к моменту объявления маршрутов её ещё нет.
-  //
-  // Отвечать на вопрос «кто из игроков компьютер» этот держатель больше
-  // не помогает: за ответ отвечает реестр объявленных личностей.
-  // Разница в том, что реестру всё равно, в каком процессе живёт
-  // служба, — и это единственное, что держало её внутри сервера.
-  const computerRef: { current: ComputerService[] } = { current: [] };
-
   const lobbies = registerLobbyRoutes(app, {
     onMatchStart: (start) => matches.start(start),
     onMatchAbandon: (ticket) => matches.forfeit(ticket),
@@ -347,157 +342,16 @@ export const buildServer = async (options: BuildOptions = {}) => {
   app.addHook('onClose', () => {
     lobbies.close();
     matches.close();
-    for (const service of computerRef.current) service.close();
   });
 
-  /**
-   * Поднять службы компьютерных соперников — по одной на манеру.
-   *
-   * Вызывается после `listen`, потому что адрес до этого момента
-   * неизвестен: в бою он берётся из настроек, а в тестах порт выдаёт
-   * система. Тесты службы не поднимают вовсе — им нужен сервер,
-   * а не соперник.
-   *
-   * Манер две, и обе выбраны замером — 2017 матчей чемпионата плюс
-   * прогон против записи живого матча с человеком.
-   *
-   * Основная — рой, отвечающий на потери: 72% побед в чемпионате
-   * и победа над записью человека за 6,7 минуты. Он единственный силён
-   * по обеим меркам сразу. Обычный рой сильнее в чемпионате (76%),
-   * но именно ему человек и выиграл; манеры, бьющие человека надёжнее,
-   * заметно слабее в чемпионате.
-   *
-   * Вторая — «Оплот»: четыре минуты обороны человеческой манерой
-   * (стены первыми, дешёвые башни, дальность, генерал дома), затем
-   * переход в наступление. В чемпионате он слаб — 27%, потому что
-   * четыре минуты без войска не наверстать, — но играет ЗАМЕТНО иначе,
-   * и запись человека он тоже обыграл. Вторая комната нужна ради
-   * разнообразия соперника, а не ради второй ступени сложности.
-   *
-   * Третья — «Стратег», и он здесь не ради разнообразия, а ради того,
-   * чтобы в игре вообще существовал ядерный удар. Ни рой, ни оплот
-   * не наносят его ни разу: запас под удар держится, только пока
-   * достижим за горизонт накопления, а при сорока пяти секундах удар
-   * недостижим всегда. Стратегу горизонт поднят до полутораста —
-   * и удары появляются: 18 на 24 матчах против нуля у прочих.
-   *
-   * По силе он между двумя первыми: 79% побед против оплота, 17%
-   * против роя. Копит и бьёт; пока копит — держит энергию в казне
-   * вместо поля (14 927 против 1199 у базового) и строит втрое меньше.
-   * Это и есть зацепка для игрока.
-   *
-   * Дороже он при этом не стоит, вопреки ожиданию: 1,3 мс на решение
-   * против 1,4 у роя, p99 2,4 против 2,6, ни одного решения сверх
-   * бюджета тика. Разбор замера — в задаче 2.2 изменения
-   * `add-strategist-opponent`.
-   *
-   * Прежний базовый профиль в игре не встречается: 40% побед, двенадцатое
-   * место из восемнадцати. Умолчанием библиотеки он при этом остаётся —
-   * там оно значит другое и стережётся эталоном.
-   */
-  const startComputer = (host: string, port: number): readonly ComputerService[] => {
-    const apiUrl = `http://${host}:${String(port)}`;
-    const wsUrl = `ws://${host}:${String(port)}/game`;
-    const botLog = (message: string): void => {
-      console.info(`[bot] ${message}`);
-    };
-
-    /**
-     * Прибор раздумий, размеченный манерой.
-     *
-     * Имя манеры берётся из того же значения, которым служба и играет,
-     * а не выводится заново: два источника одного сведения однажды
-     * разойдутся, и в показаниях появится манера, которой никто
-     * не играл. Ровно так когда-то запись матча получала
-     * правдоподобную неправду.
-     */
-    const measureFor = (profile: string) => {
-      const duration = metrics.histogram(
-        'td_ai_decision_duration_ms',
-        'Длительность одного решения компьютерного соперника',
-        { profile },
-      );
-      // Границы в штуках: команд за решение бывает от нуля до десятка,
-      // и миллисекундные корзины сложили бы их все в первую.
-      const commands = metrics.histogram(
-        'td_ai_decision_commands',
-        'Сколько команд дало одно решение',
-        { profile },
-        { bounds: [0, 1, 2, 4, 8, 16, 32], budget: Number.POSITIVE_INFINITY },
-      );
-      const decisions = metrics.counter(
-        'td_ai_decisions_total',
-        'Сколько решений принято. Частота выводится из него производной',
-      );
-
-      return {
-        decision: (run: () => readonly Command[]): readonly Command[] => {
-          const started = performance.now();
-          try {
-            const result = run();
-            commands.add(result.length);
-            return result;
-          } finally {
-            duration.add(performance.now() - started);
-            decisions.add();
-          }
-        },
-      };
-    };
-
-    const services = [
-      startComputerService({
-        apiUrl,
-        wsUrl,
-        profile: ADAPTIVE_SWARM_PROFILE.id,
-        name: 'Компьютер',
-        title: 'Матч с компьютером',
-        log: botLog,
-        measure: measureFor(ADAPTIVE_SWARM_PROFILE.id),
-        secret: COMPUTER_SECRET,
-      }),
-      startComputerService({
-        apiUrl,
-        wsUrl,
-        profile: BULWARK_PROFILE.id,
-        name: 'Компьютер-оплот',
-        // Двадцать знаков — предел для названия комнаты, общий с именем
-        // игрока. «Матч с компьютером: рой» в него не влезал, и комната
-        // молча не создавалась вовсе.
-        title: 'Матч с оплотом',
-        log: botLog,
-        measure: measureFor(BULWARK_PROFILE.id),
-        secret: COMPUTER_SECRET,
-      }),
-      startComputerService({
-        apiUrl,
-        wsUrl,
-        profile: STRATEGIST_PROFILE.id,
-        name: 'Компьютер-стратег',
-        // Семнадцать знаков при пределе в двадцать — тот же предел,
-        // что у имени игрока, и на нём уже спотыкались соседние
-        // названия.
-        title: 'Матч со стратегом',
-        log: botLog,
-        measure: measureFor(STRATEGIST_PROFILE.id),
-        secret: COMPUTER_SECRET,
-      }),
-    ];
-
-    computerRef.current = services;
-    return services;
-  };
-
-  return { app, lobbies, matches, startComputer, getTransport: () => transportRef.current };
+  return { app, lobbies, matches, getTransport: () => transportRef.current };
 };
 
 const isDirectRun = process.argv[1]?.includes('main');
 
 if (isDirectRun) {
-  const { app, startComputer } = await buildServer();
+  const { app } = await buildServer();
   await app.listen({ port: SERVER_PORT, host: SERVER_HOST });
-
-  startComputer(SERVER_HOST, SERVER_PORT);
 
   console.info(`Сервер слушает http://${SERVER_HOST}:${SERVER_PORT}`);
   console.info(`Игровой сокет: ws://${SERVER_HOST}:${SERVER_PORT}/game`);
