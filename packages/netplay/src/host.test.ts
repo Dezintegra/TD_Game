@@ -139,6 +139,42 @@ describe('ведущая сторона матча', () => {
     expect(carrying[0]?.tick).toBeGreaterThan(stale);
   });
 
+  it('команду, отданную до прихода соперника, ставит в очередь', () => {
+    // Приветствие уходит сразу по подключению, и участник считает себя
+    // в игре раньше, чем придёт соперник. Молча съеденная здесь команда
+    // уносила бы с собой уплаченную энергию.
+    const table = bench(false);
+    table.host.join(P0);
+    table.runMs(300);
+
+    expect(table.host.phase).toBe('awaiting-players');
+    table.host.submit(P0, move(2));
+
+    table.host.join(P1);
+    table.runMs(600);
+
+    const carrying = frames(table.sent, P0).filter((frame) => frame.commands.length > 0);
+
+    expect(carrying).toHaveLength(1);
+    expect(carrying[0]?.commands[0]?.player).toBe(P0);
+    expect(table.host.history).toHaveLength(1);
+  });
+
+  it('команду, отданную после конца матча, отбрасывает', () => {
+    // Класть её некуда: сыгранное не переписать, а несыгранного
+    // больше не будет.
+    const table = bench();
+    table.runMs(200);
+
+    table.host.forfeit(P0);
+    expect(table.host.phase).toBe('finished');
+
+    table.host.submit(P1, move(table.host.world.tick + 2));
+    table.runMs(300);
+
+    expect(table.host.history).toHaveLength(0);
+  });
+
   it('не даёт запланировать команду далеко в будущее', () => {
     const table = bench();
     table.runMs(200);
