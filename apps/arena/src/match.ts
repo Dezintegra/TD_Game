@@ -11,7 +11,13 @@ import type { WorldState } from '@td/sim';
 import { createOpponent, profileByName } from '@td/ai';
 import type { DecisionRecord, Opponent } from '@td/ai';
 import type { LogWriter } from './log.js';
-import type { CommandRecord, MatchFooter, MatchHeader, SampleRecord } from './records.js';
+import type {
+  CommandRecord,
+  MatchFooter,
+  MatchHeader,
+  SampleRecord,
+  TowersRecord,
+} from './records.js';
 import { codeVersion } from './version.js';
 
 /**
@@ -35,6 +41,17 @@ export const MATCH_TICK_CAP = 20 * 60 * TICKS_PER_SECOND;
 
 /** Как часто снимается состояние сторон. Раз в игровую секунду. */
 const SAMPLE_EVERY = TICKS_PER_SECOND;
+
+/**
+ * Как часто снимаются клетки башен. Раз в десять игровых секунд.
+ *
+ * Реже, чем всё остальное, и намеренно. Снимок состояния — четыре десятка
+ * чисел на сторону, снимок башен — строка на каждую башню, то есть
+ * на порядок больше строк в базе. А отвечает он на вопрос, который
+ * за секунду не меняется: башня строится секундами и стоит потом минуты,
+ * поэтому разброс башен, снятый раз в десять секунд, тот же самый.
+ */
+const TOWERS_EVERY = 10 * TICKS_PER_SECOND;
 
 /**
  * Как часто снимается контрольная сумма при записи матча.
@@ -143,6 +160,28 @@ const sampleOf = (world: WorldState, player: PlayerId): SampleRecord => {
     targetStructure: state?.targetStructure ?? 0,
   };
 };
+
+/**
+ * Клетки живых башен стороны.
+ *
+ * Считается так же, как их число в снимке: недостроенная башня входит
+ * в оба счёта. Она уже занимает клетку и уже стоит денег, а через
+ * несколько секунд начнёт стрелять; выкидывать её значило бы получать
+ * разное число башен из двух записей одного тика.
+ */
+const towersOf = (world: WorldState, player: PlayerId): TowersRecord => ({
+  t: 'towers',
+  tick: world.tick,
+  player,
+  cells: world.structures
+    .filter(
+      (structure) =>
+        structure.owner === player &&
+        structure.kind !== StructureKind.Base &&
+        structure.kind !== StructureKind.Wall,
+    )
+    .map((structure) => structure.cell),
+});
 
 export const runMatch = (options: MatchOptions): MatchResult => {
   const {
@@ -254,6 +293,12 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     if (world.tick % SAMPLE_EVERY === 0) {
       for (let player = 0; player < PLAYERS_PER_MATCH; player += 1) {
         log.write(sampleOf(world, asPlayerId(player)));
+      }
+    }
+
+    if (world.tick % TOWERS_EVERY === 0) {
+      for (let player = 0; player < PLAYERS_PER_MATCH; player += 1) {
+        log.write(towersOf(world, asPlayerId(player)));
       }
     }
 

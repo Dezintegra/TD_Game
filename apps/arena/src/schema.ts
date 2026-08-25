@@ -49,6 +49,18 @@ create table if not exists sample (
   target_structure    integer not null
 );
 
+-- Клетки живых башен стороны на момент снимка.
+--
+-- Отдельной таблицей, а не списком в снимке: список в ячейке пришлось бы
+-- разбирать в каждом запросе, а «где стояли башни» — вопрос, который
+-- задают по-разному. Строк много, но они узкие: четыре числа.
+create table if not exists tower (
+  match_id text not null,
+  tick     integer not null,
+  player   integer not null,
+  cell     integer not null
+);
+
 create table if not exists decision (
   match_id          text not null,
   tick              integer not null,
@@ -121,6 +133,7 @@ create table if not exists command (
 );
 
 create index if not exists sample_by_match   on sample   (match_id, player, tick);
+create index if not exists tower_by_match    on tower    (match_id, player, tick);
 create index if not exists decision_by_match on decision (match_id, player, tick);
 create index if not exists attempt_by_match  on attempt  (match_id, player, tick);
 create index if not exists frontier_by_match on frontier (match_id, player, tick);
@@ -130,6 +143,7 @@ create index if not exists command_by_match  on command  (match_id, player, tick
 /** Таблицы, зависящие от матча. Чистятся при повторной сборке. */
 export const CHILD_TABLES: readonly string[] = [
   'sample',
+  'tower',
   'decision',
   'attempt',
   'frontier',

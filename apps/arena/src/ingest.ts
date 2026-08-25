@@ -121,6 +121,7 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
   const insertSample = db.prepare(`
     insert into sample values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const insertTower = db.prepare('insert into tower values (?, ?, ?, ?)');
   const insertDecision = db.prepare(`
     insert into decision values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
@@ -177,6 +178,13 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
             record.targetStructure,
           );
           rows += 1;
+          break;
+
+        case 'towers':
+          for (const cell of record.cells) {
+            insertTower.run(matchId, record.tick, record.player, cell);
+            rows += 1;
+          }
           break;
 
         case 'decision':

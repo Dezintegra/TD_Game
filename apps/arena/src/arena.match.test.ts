@@ -171,6 +171,23 @@ describe('сборка базы', () => {
     expect(row.chosen).toBeGreaterThan(0);
   });
 
+  it('клетки башен доезжают до базы', () => {
+    // Число башен в снимке отвечает «сколько», клетки — «где».
+    // Без вторых нельзя сказать, разбросаны ли башни по карте
+    // или собраны в кучу, а вся правка ровно об этом.
+    const row = db
+      .prepare(
+        `select count(*) as rows, count(distinct tick) as moments
+           from tower where match_id = ?`,
+      )
+      .get(MATCH_ID) as { rows: number; moments: number };
+
+    expect(row.rows).toBeGreaterThan(0);
+    // Снимаются реже состояния — раз в десять секунд, — поэтому моментов
+    // заведомо меньше, чем секунд матча.
+    expect(row.moments).toBeLessThan(SECONDS);
+  });
+
   it('в базе есть то, чего не произошло', () => {
     // Мир показывает, что случилось; только эта таблица покажет, чего
     // противник хотел и что ему помешало.
@@ -206,6 +223,14 @@ describe('сводка', () => {
     expect(text).toContain('где стоял генерал');
     expect(text).toContain('что помешало покупке');
     expect(text).toContain('отрыв выбранного рубежа');
+  });
+
+  it('сводка пачки называет потери башен и их разброс', () => {
+    const batch = reportBatch(db);
+
+    expect(batch).toContain('башни и их потери');
+    expect(batch).toContain('башен на пике');
+    expect(batch).toContain('построек за матч на сторону');
   });
 
   it('неизвестный матч не роняет сводку', () => {

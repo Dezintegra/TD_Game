@@ -66,6 +66,25 @@ export interface SampleRecord {
   readonly targetStructure: number;
 }
 
+/**
+ * Клетки живых башен стороны. Снимаются реже состояния — раз в десять
+ * игровых секунд, см. `TOWERS_EVERY`.
+ *
+ * Клетки, а не готовый разброс: в базе живут факты, а не выводы
+ * (см. `schema.ts`). Среднее расстояние между башнями — вывод, и считает
+ * его сводка; из клеток же можно спросить и другое — например, сбились ли
+ * башни в кучу у одного горла или растянулись вдоль всего коридора.
+ *
+ * Стены сюда не идут: они не стреляют, и вопрос о взаимном прикрытии
+ * к ним не относится.
+ */
+export interface TowersRecord {
+  readonly t: 'towers';
+  readonly tick: number;
+  readonly player: number;
+  readonly cells: readonly number[];
+}
+
 export interface CommandRecord {
   readonly t: 'command';
   readonly tick: number;
@@ -102,7 +121,7 @@ export interface DecisionLogRecord extends Omit<DecisionRecord, 'attempts' | 'fr
 }
 
 export type LogRecord =
-  MatchHeader | MatchFooter | SampleRecord | CommandRecord | DecisionLogRecord;
+  MatchHeader | MatchFooter | SampleRecord | TowersRecord | CommandRecord | DecisionLogRecord;
 
 // Тонкая запись матча живёт не здесь, а в `@td/shared`: пишет её игровой
 // сервер, читает арена, и приложения друг друга не импортируют. См.
