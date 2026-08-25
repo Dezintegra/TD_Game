@@ -5,9 +5,11 @@ import {
   NUKE_COST,
   TICKS_PER_SECOND,
   UPGRADE_BRANCHES,
+  UpgradeStat,
   UpgradeTarget,
   asPlayerId,
   cellsToUnits,
+  upgradeBranchIndex,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
 import { createWorld, playerStats, step } from '@td/sim';
@@ -15,6 +17,7 @@ import { createOpponent } from './opponent.js';
 import {
   BASELINE_PROFILE,
   PROFILES,
+  LONG_RANGE_PROFILE,
   STRATEGIST_PROFILE,
   escortRadius,
   patienceDecisions,
@@ -166,6 +169,32 @@ describe('цели прокачки выбираются долями, а не �
     // по целям и при выборе наугад, и тест перестал бы что-либо значить.
     expect(branches.length).toBeGreaterThanOrEqual(10);
     expect(targets.size).toBeGreaterThan(1);
+  });
+
+  it('дальнобойный профиль покупает дальность стрелков, а обычный — нет', () => {
+    // Ради этого свойства профиль и заведён: без него замерить ветки
+    // дальности на арене нечем. Внутри цели противник берёт самую
+    // дешёвую ветку, а дальность стоит 240 и 480 при 60 и 120 у прочих
+    // веток тех же типов — то есть обычный профиль не выберет её ни разу
+    // за матч расчётной длины, и замер показал бы ровно ноль.
+    const rangeBranches = new Set([
+      upgradeBranchIndex(UpgradeTarget.UnitSniper, UpgradeStat.Range),
+      upgradeBranchIndex(UpgradeTarget.UnitTesla, UpgradeStat.Range),
+    ]);
+
+    const bought = boughtBranches(LONG_RANGE_PROFILE, 480);
+    const range = bought.filter((branch) => rangeBranches.has(branch));
+
+    expect(range.length).toBeGreaterThan(0);
+    // И обратная страховка: покупки идут не только в дальность, иначе
+    // профиль был бы не манерой, а одной кнопкой.
+    expect(bought.length).toBeGreaterThan(range.length);
+
+    // Обычный профиль на том же стенде дальность не берёт вовсе.
+    const baseline = boughtBranches(BASELINE_PROFILE, 480);
+
+    expect(baseline.length).toBeGreaterThan(0);
+    expect(baseline.filter((branch) => rangeBranches.has(branch))).toEqual([]);
   });
 });
 
