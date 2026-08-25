@@ -2,7 +2,8 @@ import { asPlayerId } from '@td/shared';
 import { createMatchGuest } from '@td/netplay';
 import { DEFAULT_PROFILE_ID, createOpponent, profileByName } from '@td/ai';
 import { MessageType, decode, encode, isFromServer } from '@td/protocol';
-import type { Command, CommandIntent, ComputerSide } from '@td/shared';
+import { computerMindOf } from '@td/shared';
+import type { Command, CommandIntent } from '@td/shared';
 import type { GuestOutcome } from '@td/netplay';
 
 /**
@@ -76,44 +77,19 @@ export interface Participant {
 }
 
 /**
- * Seed решений выводится из seed мира и стороны.
+ * Seed решений и манера компьютерной стороны выводятся в `@td/shared`.
  *
- * Те же числа, что в арене, и это не совпадение: матч компьютера против
- * компьютера должен воспроизводиться одинаково независимо от того, где
- * он идёт — в безголовом прогоне или через сервер. Разные слагаемые
- * у сторон нужны, чтобы два компьютера в одном матче не играли зеркально
- * одно и то же.
+ * Вывод там, а не здесь, потому что нужен он двоим сразу: и компьютеру,
+ * который собирает противника, и серверу, который пишет состав сторон
+ * в запись матча. Любой второй источник этих сведений рано или поздно
+ * разойдётся с настоящим — ровно так клиент писал `profiles: []`
+ * и `aiSeeds: [0, 0]`, правдоподобную неправду.
+ *
+ * Здесь они переизданы затем, чтобы вызывающим не пришлось знать, что
+ * вывод переехал: `joinMatch` ниже пользуется тем же значением, что
+ * и ответ на вопрос «какой манерой играет эта сторона».
  */
-export const aiSeedOf = (seed: number, side: number): number =>
-  side === 0 ? (seed ^ 0x5bf03635) >>> 0 : (seed ^ 0x2f6e1a77) >>> 0;
-
-/**
- * Чем компьютер думает на этой стороне.
- *
- * Спрашивать об этом надо здесь, а не выводить у себя. Записи матча нужно
- * знать профиль и seed решений, чтобы воспроизведение собрало того же
- * противника, и любой второй источник этих сведений рано или поздно
- * разойдётся с настоящим. Ровно так клиент писал `profiles: []`
- * и `aiSeeds: [0, 0]` — правдоподобную неправду.
- *
- * Тем же значением пользуется и `joinMatch` ниже: у ответа и у дела один
- * источник.
- *
- * Профиль приходит снаружи, а не подставляется здесь постоянной. Пока
- * манера была одна, постоянная совпадала с правдой; со второй манерой
- * совпадать перестаёт — и молча: запись матча получила бы профиль,
- * которым никто не играл, а воспроизведение собрало бы не того
- * противника и разошлось бы не сразу, а через десятки решений.
- */
-export const computerMindOf = (
-  worldSeed: number,
-  side: number,
-  profile: string = DEFAULT_PROFILE_ID,
-): ComputerSide => ({
-  who: 'computer',
-  profile,
-  seed: aiSeedOf(worldSeed, side),
-});
+export { aiSeedOf, computerMindOf } from '@td/shared';
 
 /** Команда, отданная противником, — это намерение: тик и сторону проставят за него. */
 const intentOf = (command: Command): CommandIntent => {
@@ -125,7 +101,7 @@ export const joinMatch = (options: ParticipantOptions): Participant => {
   const me = asPlayerId(options.side);
   // Профиль и seed берутся оттуда же, откуда о них узнаёт запись матча.
   // Разойтись они не могут по построению.
-  const mind = computerMindOf(options.seed, options.side, options.profile);
+  const mind = computerMindOf(options.seed, options.side, options.profile ?? DEFAULT_PROFILE_ID);
   const opponent = createOpponent(me, mind.seed, profileByName(mind.profile));
 
   let socket: BotSocket | undefined;

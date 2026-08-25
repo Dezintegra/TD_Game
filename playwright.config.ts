@@ -1,8 +1,14 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * E2E проверяет сквозную вертикаль целиком: клиент, протокол, сервер.
- * Playwright сам поднимает оба процесса перед прогоном и гасит после.
+ * E2E проверяет сквозную вертикаль целиком: клиент, протокол, сервер
+ * и компьютерного соперника. Playwright сам поднимает все три процесса
+ * перед прогоном и гасит после.
+ *
+ * Процессов стало три, а не два, и это не усложнение ради усложнения:
+ * служба компьютерных дежурных уехала из процесса сервера в свой
+ * (`apps/computer`). Поднимать её обязательно — без неё в списке нет
+ * ни одной комнаты компьютера, а на них стоит половина проверок.
  */
 
 // Порты читаются из среды теми же именами, которые понимают сами
@@ -13,8 +19,23 @@ import { defineConfig, devices } from '@playwright/test';
 const CLIENT_PORT = Number(process.env['CLIENT_PORT'] ?? 5173);
 const SERVER_PORT = Number(process.env['PORT'] ?? 3001);
 
+// Служба ничего не слушает по делу, но Playwright умеет ждать только
+// адрес. Ждём её показания: порт берётся соседним с серверным, чтобы
+// второе рабочее дерево не подралось с первым и здесь тоже.
+const COMPUTER_METRICS_PORT = Number(process.env['COMPUTER_METRICS_PORT'] ?? SERVER_PORT + 1);
+
 const CLIENT_URL = `http://127.0.0.1:${CLIENT_PORT}`;
 const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
+
+/**
+ * Секрет, которым служба заверяет свои личности перед сервером.
+ *
+ * У прогона он свой и заведомо не боевой. Пустым его оставить нельзя:
+ * пустой означает «регистрация закрыта», и служба намеренно не поднимет
+ * ни одного дежурного — комнаты компьютера иначе встали бы в списке
+ * непомеченными, то есть человеческими на вид.
+ */
+const COMPUTER_SECRET = process.env['COMPUTER_SECRET'] ?? 'e2e-секрет';
 
 export default defineConfig({
   testDir: './e2e',
@@ -111,6 +132,28 @@ export default defineConfig({
       url: `${SERVER_URL}/health`,
       reuseExistingServer: !process.env['CI'],
       timeout: 60_000,
+      // Без секрета сервер закрывает регистрацию компьютера, и список
+      // комнат остаётся пустым. Значение то же, что у службы: они
+      // сверяются им друг с другом.
+      env: { COMPUTER_SECRET },
+    },
+    {
+      // Служба дежурных. Сервера она может и не дождаться с первой
+      // попытки — и не должна: у объявления есть нарастающая пауза,
+      // и падать при неготовом сервере ей запрещено.
+      command: 'pnpm --filter @td/computer dev',
+      url: `http://127.0.0.1:${COMPUTER_METRICS_PORT}/metrics`,
+      reuseExistingServer: !process.env['CI'],
+      timeout: 60_000,
+      env: {
+        COMPUTER_SECRET,
+        COMPUTER_METRICS_PORT: String(COMPUTER_METRICS_PORT),
+        // Адрес сервера служба выводит из PORT сама, но выводить его
+        // из среды прогона надёжнее: так нацеленный на чужой сервер
+        // прогон не окажется наполовину своим.
+        COMPUTER_API_URL: SERVER_URL,
+        COMPUTER_WS_URL: `ws://127.0.0.1:${SERVER_PORT}/game`,
+      },
     },
     {
       command: 'pnpm --filter @td/client dev',
