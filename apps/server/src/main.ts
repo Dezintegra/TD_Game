@@ -1,23 +1,20 @@
 import Fastify from 'fastify';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { PROTOCOL_VERSION } from '@td/protocol';
-import {
-  COUNT_BOUNDS,
-  COUNT_BUDGET,
-  JUMP_BOUNDS_CELLS,
-  createMetrics,
-  mergeReport,
-} from '@td/shared';
+import { COUNT_BOUNDS, COUNT_BUDGET, JUMP_BOUNDS_CELLS, createMetrics } from '@td/shared';
 import {
   COMPUTER_SECRET,
   MATCHLOG_DIR,
   MATCHLOG_ENABLED,
   SERVER_HOST,
   SERVER_PORT,
+  TELEMETRY_DIR,
+  TELEMETRY_ENABLED,
 } from './config.js';
 import { createGameHandlers } from './game-server.js';
 import { createMatchRegistry } from './matches.js';
 import { createMatchRecorder } from './recording.js';
+import { createReadingsSink, createReadingsWriter } from './readings.js';
 import { registerLobbyRoutes } from './lobby-routes.js';
 import { createWsTransport } from './ws-transport.js';
 import { createComputerRegistry } from './computer-registry.js';
@@ -47,6 +44,15 @@ export interface BuildOptions {
    * и упадёт на своей.
    */
   readonly record?: boolean;
+  /**
+   * Хранить ли показания игроков. Не указано — как велит настройка.
+   *
+   * Существует по той же причине и с той же оговоркой, что `record`:
+   * иначе каждый прогон проверок оставлял бы файлы показаний, а тест,
+   * смотрящий на переменную среды, однажды прошёл бы на чужой машине
+   * и упал на своей.
+   */
+  readonly readings?: boolean;
 }
 
 export const buildServer = async (options: BuildOptions = {}) => {
@@ -179,32 +185,43 @@ export const buildServer = async (options: BuildOptions = {}) => {
     'Сколько отчётов отвергнуто как неразбираемые',
   );
 
-  app.post<{
-    Body: {
-      frame?: unknown;
-      netGap?: unknown;
-      displayGap?: unknown;
-      shift?: unknown;
-      jump?: unknown;
-      pendingOnJump?: unknown;
-    };
-  }>('/api/telemetry', (request, reply) => {
-    // Набор про показ — необязательный, и это не послабление
-    // к порядку. Страница живёт у игрока в открытой вкладке дольше,
-    // чем выкладка: отчёт от прежнего бандла обязан приниматься,
-    // иначе счётчик отвергнутых покраснеет от нашей же выкладки.
-    // Пришедший, но порченый — отвергается наравне с остальными.
-    const displayGap = request.body?.displayGap;
-    const shift = request.body?.shift;
-    const jump = request.body?.jump;
-    const pendingOnJump = request.body?.pendingOnJump;
-    const ok =
-      mergeReport(clientFrame, request.body?.frame) &&
-      mergeReport(clientNetGap, request.body?.netGap) &&
-      (displayGap === undefined || mergeReport(clientDisplayGap, displayGap)) &&
-      (shift === undefined || mergeReport(clientShift, shift)) &&
-      (jump === undefined || mergeReport(clientJump, jump)) &&
-      (pendingOnJump === undefined || mergeReport(clientPendingOnJump, pendingOnJump));
+  const log = (message: string): void => console.info(`[game] ${message}`);
+
+  /**
+   * Куда складывать снимки показаний.
+   *
+   * Отсутствует — хранение выключено, и показания живут только
+   * в счётчиках выше, как жили раньше.
+   */
+  const keepReadings = options.readings ?? TELEMETRY_ENABLED;
+  const readingsWriter = keepReadings ? createReadingsWriter({ dir: TELEMETRY_DIR }) : undefined;
+
+  // Состояние хранения служба называет вслух, как и состояние записи
+  // матчей, и по той же причине: настройка, выставленная и не доехавшая,
+  // снаружи выглядит ровно как невыставленная.
+  if (readingsWriter === undefined) {
+    log('Хранение показаний выключено настройкой. Убрать TELEMETRY=0 — и оно вернётся.');
+  } else {
+    log(`Показания игроков сохраняются, каталог ${TELEMETRY_DIR}`);
+  }
+
+  const readings = createReadingsSink({
+    rows: {
+      frame: clientFrame,
+      netGap: clientNetGap,
+      displayGap: clientDisplayGap,
+      shift: clientShift,
+      jump: clientJump,
+      pendingOnJump: clientPendingOnJump,
+    },
+    writer: readingsWriter,
+  });
+
+  app.post('/api/telemetry', (request, reply) => {
+    // Разбор целиком в приёмнике: здесь только доставка ответа.
+    // Присланное — недоверенное тело, и обращаться с ним умеет тот,
+    // кто проверяется без поднятого сервера.
+    const ok = readings.accept(request.body);
 
     if (ok) reportsAccepted.add();
     else reportsRejected.add();
@@ -225,8 +242,6 @@ export const buildServer = async (options: BuildOptions = {}) => {
     }
     return transportRef.current;
   };
-
-  const log = (message: string): void => console.info(`[game] ${message}`);
 
   // Запись матчей — за флагом и по умолчанию выключена. Без неё
   // не создаётся ни писателя, ни наблюдателя, и ведущий матча работает
@@ -315,7 +330,16 @@ export const buildServer = async (options: BuildOptions = {}) => {
     () => computers.size,
   );
 
-  const matches = createMatchRegistry({ transport, log, recorder, metrics });
+  const matches = createMatchRegistry({
+    transport,
+    log,
+    recorder,
+    metrics,
+    // Приёмник показаний узнаёт о конце матча отсюда: билет обязан
+    // опознаваться ещё некоторое время после исхода, потому что
+    // последний снимок уходит уже после него.
+    onFinished: (matchId) => readings.matchFinished(matchId),
+  });
 
   // Число идущих матчей — сведение о службе, а не о людях, и отдавать
   // его можно. Читается в момент опроса, а не копится: величина
@@ -323,7 +347,10 @@ export const buildServer = async (options: BuildOptions = {}) => {
   metrics.gauge('td_matches_running', 'Сколько матчей идёт сейчас', () => matches.size);
 
   const lobbies = registerLobbyRoutes(app, {
-    onMatchStart: (start) => matches.start(start),
+    onMatchStart: (start) => {
+      matches.start(start);
+      readings.matchStarted(start.matchId, start.tickets);
+    },
     onMatchAbandon: (ticket) => matches.forfeit(ticket),
     // Ответ берётся из реестра объявленных личностей, а не вызовом
     // в память службы. Разница в том, что реестру всё равно, в каком
@@ -339,12 +366,16 @@ export const buildServer = async (options: BuildOptions = {}) => {
 
   // Таймеры комнат помечены `unref`, но потоки SSE держат соединения
   // открытыми, и без явного закрытия `app.close()` ждал бы их вечно.
-  app.addHook('onClose', () => {
+  app.addHook('onClose', async () => {
     lobbies.close();
     matches.close();
+    // Недописанные строки показаний дописываются: закрытая посреди
+    // записи служба оставила бы обрубленный файл, а он читается
+    // как поломка.
+    await readings.drain();
   });
 
-  return { app, lobbies, matches, getTransport: () => transportRef.current };
+  return { app, lobbies, matches, readings, getTransport: () => transportRef.current };
 };
 
 const isDirectRun = process.argv[1]?.includes('main');

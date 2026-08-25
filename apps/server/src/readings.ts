@@ -1,0 +1,482 @@
+import { appendFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import {
+  READING_ROWS,
+  TELEMETRY_GRACE_MS,
+  TELEMETRY_MAX_SNAPSHOTS,
+  readSnapshot,
+} from '@td/shared';
+import type {
+  Histogram,
+  HistogramSnapshot,
+  ReadingRow,
+  ReadingRows,
+  ReadingsRecord,
+} from '@td/shared';
+import { runStamp, safeName } from './recording.js';
+
+/**
+ * Приём показаний клиента: кто их прислал, что в них нового и куда их деть.
+ *
+ * Точка `/api/telemetry` смотрит в интернет — `nginx` проксирует `/api/`
+ * целиком, — поэтому всё здесь исходит из того, что присылающий может
+ * оказаться кем угодно и прислать что угодно.
+ */
+
+/** Чьи это показания. Матч и сторона опознают партию, но не человека. */
+export interface ReadingsSeat {
+  readonly matchId: string;
+  readonly side: number;
+}
+
+/**
+ * Карта билетов: по билету — матч и сторона.
+ *
+ * Билет выдал сервер, значит по нему и опознаём. Взять `matchId`
+ * и сторону из тела запроса было бы проще всего — и неверно: прислав
+ * чужой идентификатор, кто угодно дописал бы в чужой файл.
+ *
+ * ## Почему карта своя, а не сиденья реестра матчей
+ *
+ * Реестр снимает сиденья, когда матч закрывается, а последний снимок
+ * уходит уже после исхода — по событию конца матча и по выходу игрока
+ * в меню. Опознавай мы реестром, самый нужный снимок отвергался бы
+ * всегда.
+ *
+ * Держать ради этого сиденья в самом реестре нельзя: он ведёт матчи,
+ * и платить за диагностику его памятью — значит связать одно с другим
+ * там, где связи нет.
+ *
+ * ## Почему без таймеров
+ *
+ * Забывание ленивое: просроченное отбрасывается при обращении и при
+ * заведении нового матча. Таймер на каждый матч держал бы цикл событий
+ * и требовал бы отмены при закрытии службы — цена несоразмерная задаче
+ * «забыть строку через две минуты».
+ */
+export interface TicketBook {
+  /** Матч начался: запомнить его билеты. */
+  register(matchId: string, tickets: ReadonlyMap<string, number>): void;
+  /** Матч кончился: билеты доживают отпущенный срок и забываются. */
+  finish(matchId: string): void;
+  /** Чей билет. Неизвестный или просроченный — `undefined`. */
+  resolve(ticket: string): ReadingsSeat | undefined;
+  /**
+   * Прошлый снимок этого билета — тот, с которым считать разность.
+   *
+   * Живёт здесь, а не во второй карте рядом, потому что срок жизни
+   * у него ровно тот же, что у билета. Вторая карта со своим сроком
+   * однажды разошлась бы с первой и потекла бы памятью.
+   */
+  lastOf(ticket: string): ReadingRows | undefined;
+  /** Запомнить снимок как прошлый. */
+  remember(ticket: string, rows: ReadingRows): void;
+  /** Сколько билетов помнится. Для проверок и для показаний о службе. */
+  readonly size: number;
+}
+
+export interface TicketBookOptions {
+  /** Часы. Внедрены ради проверяемости отсрочки. */
+  readonly now?: () => number;
+  readonly graceMs?: number;
+}
+
+interface BookEntry {
+  readonly seat: ReadingsSeat;
+  /** Когда матч кончился. `undefined` — ещё идёт. */
+  endedAtMs?: number;
+  /** Прошлый принятый снимок. `undefined` — снимков ещё не было. */
+  last?: ReadingRows;
+}
+
+export const createTicketBook = (options: TicketBookOptions = {}): TicketBook => {
+  const now = options.now ?? (() => Date.now());
+  const graceMs = options.graceMs ?? TELEMETRY_GRACE_MS;
+
+  const entries = new Map<string, BookEntry>();
+
+  const expired = (entry: BookEntry, at: number): boolean =>
+    entry.endedAtMs !== undefined && at - entry.endedAtMs > graceMs;
+
+  const sweep = (): void => {
+    const at = now();
+    for (const [ticket, entry] of entries) {
+      if (expired(entry, at)) entries.delete(ticket);
+    }
+  };
+
+  return {
+    register(matchId, tickets) {
+      // Уборка при заведении, а не по таймеру: матчи заводятся регулярно,
+      // и этого хватает, чтобы карта не росла. Служба без матчей карту
+      // не растит вовсе, и подметать в ней нечего.
+      sweep();
+
+      for (const [ticket, side] of tickets) {
+        entries.set(ticket, { seat: { matchId, side } });
+      }
+    },
+
+    finish(matchId) {
+      const at = now();
+      for (const entry of entries.values()) {
+        if (entry.seat.matchId === matchId) entry.endedAtMs = at;
+      }
+    },
+
+    resolve(ticket) {
+      const entry = entries.get(ticket);
+      if (entry === undefined) return undefined;
+
+      if (expired(entry, now())) {
+        entries.delete(ticket);
+        return undefined;
+      }
+
+      return entry.seat;
+    },
+
+    lastOf(ticket) {
+      return entries.get(ticket)?.last;
+    },
+
+    remember(ticket, rows) {
+      const entry = entries.get(ticket);
+      if (entry === undefined) return;
+
+      entry.last = rows;
+    },
+
+    get size() {
+      return entries.size;
+    },
+  };
+};
+
+/**
+ * Разность двух снимков одного ряда.
+ *
+ * Снимки накопительные: клиент шлёт всё, что скопилось с начала матча,
+ * и шлёт десятки раз за партию. Влей мы каждый целиком — одни и те же
+ * наблюдения посчитались бы столько раз, сколько было отправок.
+ *
+ * Все поля снимка, кроме перцентилей и максимума, — монотонные
+ * счётчики, поэтому разность честная. Максимум не вычитается, а едет
+ * как есть: он монотонен, а `merge` берёт от него большее. Перцентили
+ * не пересылаются вовсе — они пересчитываются из корзин при отдаче.
+ *
+ * ## Убывший счётчик — не порча, а перезапуск копилки
+ *
+ * Игрок перезагрузил страницу посреди матча: билет тот же, копилка
+ * новая, счёт пошёл с нуля. Вычти мы здесь — получилось бы
+ * отрицательное число наблюдений, то есть тихая порча всей выборки.
+ *
+ * Поэтому убывание любого счётчика читается как перезапуск, и снимок
+ * отдаётся целиком, как первый. Приём известен по Prometheus (counter
+ * reset) и работает здесь по той же причине.
+ *
+ * Границы корзин, разошедшиеся с прошлым снимком, читаются так же:
+ * это другая копилка, и вычитать из неё нечего.
+ */
+const rowDelta = (
+  previous: HistogramSnapshot | undefined,
+  next: HistogramSnapshot,
+): HistogramSnapshot => {
+  if (previous === undefined) return next;
+  if (previous.buckets.length !== next.buckets.length) return next;
+
+  for (let index = 0; index < next.buckets.length; index += 1) {
+    if (previous.buckets[index]?.bound !== next.buckets[index]?.bound) return next;
+  }
+
+  const restarted =
+    next.count < previous.count ||
+    next.sum < previous.sum ||
+    next.overBudget < previous.overBudget ||
+    next.overflow < previous.overflow;
+
+  if (restarted) return next;
+
+  const buckets = next.buckets.map((bucket, index) => ({
+    bound: bucket.bound,
+    count: bucket.count - (previous.buckets[index]?.count ?? 0),
+  }));
+
+  // Корзина, похудевшая при выросшем итоге, означает то же самое:
+  // копилку начали заново, а совпадение итогов случайно.
+  if (buckets.some((bucket) => bucket.count < 0)) return next;
+
+  return {
+    count: next.count - previous.count,
+    sum: next.sum - previous.sum,
+    max: next.max,
+    overBudget: next.overBudget - previous.overBudget,
+    overflow: next.overflow - previous.overflow,
+    buckets,
+    p50: 0,
+    p95: 0,
+    p99: 0,
+  };
+};
+
+/**
+ * Что в присланном снимке нового по сравнению с прошлым.
+ *
+ * Ряд, которого в новом снимке нет, отсутствует и в разности: старый
+ * бандл в открытой вкладке шлёт не все ряды, и требовать от него
+ * полноты значило бы отвергать показания из-за собственной выкладки.
+ */
+export const deltaOf = (previous: ReadingRows | undefined, next: ReadingRows): ReadingRows => {
+  const delta: { -readonly [Row in keyof ReadingRows]: ReadingRows[Row] } = {};
+
+  for (const [row, snapshot] of Object.entries(next) as [
+    keyof ReadingRows,
+    HistogramSnapshot | undefined,
+  ][]) {
+    if (snapshot === undefined) continue;
+
+    delta[row] = rowDelta(previous?.[row], snapshot);
+  }
+
+  return delta;
+};
+
+/**
+ * Писатель показаний: строка на снимок, файл на сторону матча.
+ *
+ * ## Почему файл на сторону, а не на матч
+ *
+ * В партии двух людей отчётов два, приходят они вперемежку, и в одном
+ * файле две копилки перемешались бы. А сравнивать их между собой как
+ * раз и интересно: у одного канал рваный, у другого ровный, и видно
+ * это только порознь.
+ *
+ * ## Почему дописывание, а не поток
+ *
+ * Запись матча держит поток на матч, и правильно: там тридцать строк
+ * в секунду. Здесь их одна на пять секунд на игрока — то есть открытый
+ * поток простаивал бы всё время матча, а закрывать его пришлось бы
+ * позже конца матча: последний, самый нужный снимок приходит уже после
+ * исхода.
+ *
+ * Дописывание снимает вопрос о сроке жизни файла целиком. Плата —
+ * открытие файла на строку, и при 0,2 записи в секунду она не стоит
+ * обсуждения.
+ *
+ * Дописывания одного файла выстраиваются в очередь: два незавершённых
+ * `appendFile` в один файл перемешали бы строки. Очередь — обещание
+ * на файл, к которому цепляется следующее.
+ */
+export interface ReadingsWriter {
+  /** Положить строку. Ошибки записи наружу не выходят. */
+  append(record: ReadingsRecord): void;
+  /** Дождаться, пока всё дописано. Проверкам и закрытию службы. */
+  drain(): Promise<void>;
+}
+
+export interface ReadingsWriterOptions {
+  readonly dir: string;
+  /** Часы. Внедрены ради проверяемости имени файла. */
+  readonly now?: () => Date;
+  readonly maxSnapshots?: number;
+  readonly log?: (message: string) => void;
+}
+
+interface FileState {
+  readonly path: string;
+  lines: number;
+  stopped: boolean;
+  queue: Promise<void>;
+}
+
+export const createReadingsWriter = (options: ReadingsWriterOptions): ReadingsWriter => {
+  const now = options.now ?? (() => new Date());
+  const maxSnapshots = options.maxSnapshots ?? TELEMETRY_MAX_SNAPSHOTS;
+  const log = options.log ?? ((message: string) => console.info(`[readings] ${message}`));
+
+  // Отметка запуска берётся один раз, как у записи матчей: идентификатор
+  // матча — счётчик, обнуляемый при перезапуске, и `m1` завтрашнего
+  // запуска дописался бы в хвост сегодняшнего.
+  const stamp = runStamp(now());
+  const files = new Map<string, FileState>();
+
+  // Каталог заводится один раз и заранее: делать это на каждую строку
+  // значило бы платить обращением к диску за то, что меняется однажды.
+  const ready = mkdir(options.dir, { recursive: true }).then(
+    () => undefined,
+    (error: unknown) => {
+      log(`каталог ${options.dir} не завести: ${String(error)}`);
+    },
+  );
+
+  const fileOf = (matchId: string, side: number): FileState => {
+    const key = `${matchId}:${String(side)}`;
+    const known = files.get(key);
+    if (known !== undefined) return known;
+
+    const fresh: FileState = {
+      path: join(options.dir, `${stamp}-${safeName(matchId)}-${String(side)}.jsonl`),
+      lines: 0,
+      stopped: false,
+      queue: ready,
+    };
+
+    files.set(key, fresh);
+    return fresh;
+  };
+
+  return {
+    append(record) {
+      const file = fileOf(record.matchId, record.side);
+      if (file.stopped) return;
+
+      if (file.lines >= maxSnapshots) {
+        file.stopped = true;
+        // Молча обрывать нельзя: файл, кончившийся без объяснения,
+        // читается как поломка службы, и разбираться в нём будут
+        // дольше, чем он того стоит.
+        log(
+          `показания матча ${record.matchId} стороны ${String(record.side)} ` +
+            `дошли до предела в ${String(maxSnapshots)} снимков, дальше не пишутся`,
+        );
+        return;
+      }
+
+      file.lines += 1;
+
+      const line = `${JSON.stringify(record)}\n`;
+      file.queue = file.queue.then(
+        () => appendFile(file.path, line, 'utf8'),
+        () => appendFile(file.path, line, 'utf8'),
+      );
+      file.queue = file.queue.then(undefined, (error: unknown) => {
+        // Диагностика не имеет права ломать игру. Ни матч, ни ответ
+        // на запрос от неудачной записи не меняются.
+        log(`строка показаний не записана в ${file.path}: ${String(error)}`);
+      });
+    },
+
+    async drain() {
+      await Promise.all([...files.values()].map((file) => file.queue));
+    },
+  };
+};
+
+/**
+ * Приёмник показаний: опознать, посчитать новое, влить и сохранить.
+ *
+ * Собран отдельно от точки HTTP затем, чтобы проверялся без поднятого
+ * сервера: всё, что здесь происходит, — это разбор недоверенного тела
+ * и три следствия из него.
+ */
+export interface ReadingsSink {
+  /** Матч начался: его билеты становятся опознаваемыми. */
+  matchStarted(matchId: string, tickets: ReadonlyMap<string, number>): void;
+  /** Матч кончился: билеты доживают отпущенный срок. */
+  matchFinished(matchId: string): void;
+  /** Разобрать присланное. `false` — отвергнуто. */
+  accept(body: unknown): boolean;
+  /** Дождаться, пока всё записано. */
+  drain(): Promise<void>;
+}
+
+export interface ReadingsSinkOptions {
+  /** Куда вливать приращение. Ряд на имя. */
+  readonly rows: Readonly<Record<ReadingRow, Histogram>>;
+  /** Куда складывать снимки. `undefined` — хранение выключено. */
+  readonly writer?: ReadingsWriter | undefined;
+  readonly book?: TicketBook | undefined;
+  /** Часы сервера: время в записи ставится своё, а не присланное. */
+  readonly now?: () => number;
+}
+
+/**
+ * Билет длиннее этого не бывает, и принимать такой незачем.
+ *
+ * Ключи карты живут в памяти, а строку любой длины прислать может кто
+ * угодно. Настоящий билет — короткая строка, выданная сервером.
+ */
+const MAX_TICKET_LENGTH = 128;
+
+/** Число из недоверенного тела: нечисло и бесконечность становятся нулём. */
+const finiteOr = (value: unknown, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+export const createReadingsSink = (options: ReadingsSinkOptions): ReadingsSink => {
+  const book = options.book ?? createTicketBook();
+  const now = options.now ?? (() => Date.now());
+
+  return {
+    matchStarted(matchId, tickets) {
+      book.register(matchId, tickets);
+    },
+
+    matchFinished(matchId) {
+      book.finish(matchId);
+    },
+
+    accept(body) {
+      if (typeof body !== 'object' || body === null) return false;
+
+      const candidate = body as Record<string, unknown>;
+      const ticket = candidate['ticket'];
+      if (typeof ticket !== 'string' || ticket.length === 0) return false;
+      if (ticket.length > MAX_TICKET_LENGTH) return false;
+
+      const seat = book.resolve(ticket);
+      if (seat === undefined) return false;
+
+      // Ряд, которого нет, — это старый бандл в открытой вкладке, и это
+      // допустимо. Ряд, который есть, но порчен, отвергает отчёт целиком:
+      // принять половину значило бы принять неизвестно что.
+      const rows: { -readonly [Row in ReadingRow]?: HistogramSnapshot } = {};
+      for (const row of READING_ROWS) {
+        const sent = candidate[row];
+        if (sent === undefined) continue;
+
+        const snapshot = readSnapshot(sent);
+        if (snapshot === null) return false;
+
+        rows[row] = snapshot;
+      }
+
+      // Отчёт без единого ряда не несёт ничего: принимать его — значит
+      // считать доставленным то, чего не было.
+      if (Object.keys(rows).length === 0) return false;
+
+      const delta = deltaOf(book.lastOf(ticket), rows);
+
+      let merged = true;
+      for (const row of READING_ROWS) {
+        const increment = delta[row];
+        if (increment === undefined) continue;
+
+        if (!options.rows[row].merge(increment)) merged = false;
+      }
+
+      // Не сошлись границы корзин — снимок не запоминается. Запомни мы
+      // его, следующая разность считалась бы от чужой копилки.
+      if (!merged) return false;
+
+      book.remember(ticket, rows);
+
+      options.writer?.append({
+        t: 'readings',
+        matchId: seat.matchId,
+        side: seat.side,
+        seq: finiteOr(candidate['seq'], 0),
+        atMs: now(),
+        tick: finiteOr(candidate['tick'], 0),
+        delayTicks: finiteOr(candidate['delayTicks'], 0),
+        pending: finiteOr(candidate['pending'], 0),
+        ...rows,
+      });
+
+      return true;
+    },
+
+    async drain() {
+      await options.writer?.drain();
+    },
+  };
+};

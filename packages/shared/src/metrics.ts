@@ -127,26 +127,31 @@ const renderHistogram = (series: Series, snapshot: HistogramSnapshot): string =>
 const MAX_REPORT_OBSERVATIONS = 1_000_000;
 
 /**
- * Влить присланный снимок, если он на снимок похож.
+ * Прочитать присланный снимок, если он на снимок похож.
  *
  * Тело запроса — `unknown` не для строгости ради строгости: это
  * браузер игрока, и прислать он может что угодно, включая
  * правдоподобную чепуху. Форму проверяем здесь, числа — в `merge`.
+ *
+ * Отдельно от вливания потому, что вливают снимок не всегда целиком.
+ * Приёмник, которому снимки приходят десятками за матч, вливает
+ * разность с прошлым — а посчитать разность можно только над уже
+ * прочитанным. Две проверки формы в двух местах разошлись бы.
  */
-export const mergeReport = (histogram: Histogram, value: unknown): boolean => {
-  if (typeof value !== 'object' || value === null) return false;
+export const readSnapshot = (value: unknown): HistogramSnapshot | null => {
+  if (typeof value !== 'object' || value === null) return null;
 
   const candidate = value as Partial<HistogramSnapshot>;
-  if (!Array.isArray(candidate.buckets)) return false;
-  if (typeof candidate.count !== 'number') return false;
-  if (candidate.count > MAX_REPORT_OBSERVATIONS) return false;
+  if (!Array.isArray(candidate.buckets)) return null;
+  if (typeof candidate.count !== 'number') return null;
+  if (candidate.count > MAX_REPORT_OBSERVATIONS) return null;
 
   for (const bucket of candidate.buckets) {
-    if (typeof bucket !== 'object' || bucket === null) return false;
-    if (typeof bucket.bound !== 'number' || typeof bucket.count !== 'number') return false;
+    if (typeof bucket !== 'object' || bucket === null) return null;
+    if (typeof bucket.bound !== 'number' || typeof bucket.count !== 'number') return null;
   }
 
-  return histogram.merge({
+  return {
     count: candidate.count,
     sum: typeof candidate.sum === 'number' ? candidate.sum : Number.NaN,
     max: typeof candidate.max === 'number' ? candidate.max : Number.NaN,
@@ -158,7 +163,13 @@ export const mergeReport = (histogram: Histogram, value: unknown): boolean => {
     p50: 0,
     p95: 0,
     p99: 0,
-  });
+  };
+};
+
+/** Влить присланный снимок целиком, если он на снимок похож. */
+export const mergeReport = (histogram: Histogram, value: unknown): boolean => {
+  const snapshot = readSnapshot(value);
+  return snapshot !== null && histogram.merge(snapshot);
 };
 
 export const createMetrics = (): Metrics => {

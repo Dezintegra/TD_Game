@@ -96,6 +96,15 @@ export interface MatchRegistryOptions {
   readonly recorder?: MatchRecorder | undefined;
   /** Приборы. Отсутствуют — не меряется ничего. */
   readonly metrics?: Metrics | undefined;
+  /**
+   * Матч кончился.
+   *
+   * Нужен тому, кто переживает матч и должен узнать о его конце:
+   * приёмнику показаний, который держит билеты ещё некоторое время
+   * после исхода. Своего опроса заводить незачем — место, где кончается
+   * матч, здесь одно, и знать о конце все обязаны из него.
+   */
+  readonly onFinished?: (matchId: string) => void;
 }
 
 export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistry => {
@@ -174,6 +183,7 @@ export const createMatchRegistry = (options: MatchRegistryOptions): MatchRegistr
     if (entry.host.phase === 'finished' && entry.finishedAtMs === null) {
       entry.finishedAtMs = now();
       options.log?.(`Матч ${entry.id} завершён: ${String(entry.host.outcome?.reason)}`);
+      options.onFinished?.(entry.id);
 
       // Запись закрывается здесь, а не по отдельному вызову наблюдателя:
       // место, где кончается матч, должно остаться одно.
