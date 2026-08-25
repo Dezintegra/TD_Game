@@ -80,6 +80,49 @@ describe('сдвиг своей команды', () => {
     expect(shifts.length).toBe(2);
   });
 
+  it('команда, вернувшаяся историей, не сбивает счёт следующим', () => {
+    // Подтверждённый мир двигают два пути: обычный кадр и прокрутка
+    // по истории после догона. Очередь отданных тактов снимается по одной
+    // записи на вернувшуюся команду, поэтому путь, забывший её снять,
+    // не теряет одно наблюдение — он сдвигает соответствие навсегда:
+    // запись достаётся следующей своей команде, и прибор меряет разницу
+    // между двумя нажатиями игрока вместо сдвига сервера.
+    const { table, shifts } = tableWithShifts(15);
+    table.run(500);
+
+    const guest = table.guests[ME];
+    if (guest === undefined) throw new Error('нет участника');
+
+    // Обратный путь обрывается сразу после отправки: команда до сервера
+    // доезжает и исполняется, а кадр с нею участник получит уже историей.
+    const issued = [guest.issue(move(1))];
+    table.setLinkUp(ME, false);
+    table.run(1500);
+
+    table.setLinkUp(ME, true);
+    table.run(1500);
+    expect(guest.status).toBe('playing');
+
+    // Следующие две команды идут по целому каналу и возвращаются кадрами.
+    issued.push(guest.issue(move(5)));
+    table.run(600);
+    issued.push(guest.issue(move(7)));
+    table.run(600);
+
+    // Истина — журнал ведущего: там у команды стоит тот такт, на котором
+    // её исполнили. Сверяемся с ним, а не с ожидаемыми числами: так тест
+    // не придётся переписывать, если стенд начнёт двигать команды иначе.
+    const executed = table.host.history.filter((command) => command.player === ME);
+    const expectedShifts = executed.map((command, index) => {
+      const assigned = issued[index];
+      if (assigned === undefined || assigned === null) throw new Error('команда не отдана');
+      return command.tick - assigned.tick;
+    });
+
+    expect(executed).toHaveLength(issued.length);
+    expect(shifts).toEqual(expectedShifts);
+  });
+
   it('участник со счётом сдвигов играет тот же матч', () => {
     // Приборы наблюдают и не участвуют. Проверяется сличением двух
     // одинаковых матчей, а не рассуждением о том, что обработчик
