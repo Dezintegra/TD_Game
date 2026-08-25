@@ -7,6 +7,7 @@ import {
   WORLD_TICKS_PER_SECOND,
   busySamples,
   comparability,
+  lastComparable,
   summariseBusy,
 } from './perf-common.mjs';
 
@@ -202,5 +203,131 @@ describe('годность записи', () => {
     // обстановки здесь — свойство замера, а не беда прогона.
     const tick = { kind: 'тик', busy: 0.23, passed: true, measurements: { 'тик, мкс': 202.5 } };
     expect(comparability(tick).state).toBe(NO_CONTEXT);
+  });
+});
+
+describe('выбор «было»', () => {
+  it('прогон под нагрузкой основанием не становится', () => {
+    const journal = [
+      entry({ at: '2026-08-25T11:06:17Z', commit: 'c24ae2c', busyMedian: 0.26 }),
+      entry({ at: '2026-08-25T11:12:58Z', commit: 'c24ae2c', busyMedian: 0.65 }),
+      entry({ at: '2026-08-25T11:14:57Z', commit: 'bc6079c', busyMedian: 0.86 }),
+      entry({ at: '2026-08-25T11:18:22Z', commit: 'bc6079c', busyMedian: 0.76 }),
+      entry({ at: '2026-08-25T11:24:04Z', commit: 'bc6079c', busyMedian: 1 }),
+    ];
+
+    const { entry: basis, skipped } = lastComparable('кадры', journal);
+
+    expect(basis.at).toBe('2026-08-25T11:06:17Z');
+    expect(skipped).toBe(4);
+  });
+
+  it('негодная запись основанием не становится', () => {
+    const journal = [
+      entry({ at: '2026-08-25T11:06:17Z' }),
+      entry({
+        at: '2026-08-25T11:12:58Z',
+        context: { 'камера в движении': calmScene({ tickTo: 640, syncTo: 635 }) },
+      }),
+    ];
+
+    expect(lastComparable('кадры', journal).entry.at).toBe('2026-08-25T11:06:17Z');
+  });
+
+  it('замер другого вида основанием не становится', () => {
+    const journal = [
+      entry({ at: '2026-08-25T11:06:17Z' }),
+      { kind: 'тик', at: '2026-08-25T12:16:32Z', busy: 0.23, measurements: { 'тик, мкс': 202.5 } },
+    ];
+
+    expect(lastComparable('кадры', journal).entry.at).toBe('2026-08-25T11:06:17Z');
+  });
+
+  it('сопоставимого нет — так и говорится, а не берётся что попало', () => {
+    const journal = [
+      entry({ at: '2026-08-25T11:12:58Z', busyMedian: 0.65 }),
+      entry({ at: '2026-08-25T11:24:04Z', busyMedian: 1 }),
+    ];
+
+    const { entry: basis, skipped } = lastComparable('кадры', journal);
+    expect(basis).toBeUndefined();
+    expect(skipped).toBe(2);
+  });
+
+  it('тихая запись старого образца основанием остаётся', () => {
+    // Обстановки в ней нет, но занятость записана и была тихой. Это
+    // честное «было» по кадрам — просто оно не расскажет, чем занимался
+    // мир. Объявлять её негодной было бы выводом из отсутствия данных.
+    const old = entry({ at: '2026-08-25T10:57:08Z', busy: 0.11 });
+    delete old.context;
+    delete old.busyMedian;
+    delete old.busyMax;
+
+    const { entry: basis } = lastComparable('кадры', [old]);
+    expect(basis).toBe(old);
+    expect(comparability(basis).state).toBe(NO_CONTEXT);
+  });
+
+  it('настоящий кусок журнала от 25.08.2026: четыре прогона под нагрузкой пропущены', () => {
+    // Записи скопированы из `.perf-log.jsonl` как есть. Журнал лежит вне
+    // репозитория — он говорит об этой машине и о том, чем она была
+    // занята в ту минуту, — поэтому кусок перенесён сюда, а не читается
+    // с диска: иначе проверка зависела бы от того, кто её запускает.
+    //
+    // Все шесть записей старого образца: обстановки в них нет вовсе,
+    // и отсеиваются они одной лишь занятостью.
+    const real = [
+      {
+        at: '2026-08-25T11:06:17.577Z',
+        kind: 'кадры',
+        commit: 'c24ae2c',
+        busy: 0.26,
+        passed: true,
+      },
+      {
+        at: '2026-08-25T11:12:58.131Z',
+        kind: 'кадры',
+        commit: 'c24ae2c',
+        busy: 0.65,
+        passed: true,
+      },
+      {
+        at: '2026-08-25T11:14:57.889Z',
+        kind: 'кадры',
+        commit: 'bc6079c',
+        busy: 0.86,
+        passed: true,
+      },
+      {
+        at: '2026-08-25T11:18:22.370Z',
+        kind: 'кадры',
+        commit: 'bc6079c',
+        busy: 0.76,
+        passed: false,
+      },
+      {
+        at: '2026-08-25T11:20:29.899Z',
+        kind: 'кадры',
+        commit: 'bc6079c',
+        busy: 0.24,
+        passed: false,
+      },
+      { at: '2026-08-25T11:24:04.803Z', kind: 'кадры', commit: 'bc6079c', busy: 1, passed: false },
+    ];
+
+    const { entry: basis } = lastComparable('кадры', real);
+
+    // Ни одна из четырёх записей с занятостью 0,65–1,00 основанием
+    // не стала — ради этого всё и затевалось.
+    expect([0.65, 0.86, 0.76, 1]).not.toContain(basis.busy);
+    expect(basis.busy).toBeLessThanOrEqual(0.35);
+
+    // Выбралась запись 11:20 с занятостью 0,24 — та самая, что дала
+    // 50 и 25 к/с. Это названный предел выбранного правила
+    // (`design.md`, раздел 6, вариант В): по числу «до прогона» она
+    // тихая, и отличить её сегодня не от чего. Именно поэтому
+    // изменение и заводит наблюдение за нагрузкой ВО ВРЕМЯ прогона:
+    // у записи нового образца такой лазейки уже нет.
+    expect(basis.at).toBe('2026-08-25T11:20:29.899Z');
   });
 });

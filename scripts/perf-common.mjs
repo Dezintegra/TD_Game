@@ -288,11 +288,15 @@ export const readLog = () => {
     .filter((it) => it !== null);
 };
 
-/** Последний замер того же вида — с ним и сравнивают свежий. */
-export const lastOfKind = (kind) =>
-  readLog()
-    .filter((entry) => entry.kind === kind)
-    .at(-1);
+/**
+ * Занятость, по которой судят о прогоне.
+ *
+ * Медиана за прогон, когда она есть; у записи старого образца —
+ * единственное, что в ней вообще записано. Максимум сюда не годится:
+ * по нему негодным объявлялся бы всякий прогон, где секунду поработал
+ * антивирус.
+ */
+const judgedBusy = (entry) => entry?.busyMedian ?? entry?.busy;
 
 /**
  * Сколько тиков в секунду шёл мир за окно замера, или null.
@@ -362,7 +366,7 @@ export const comparability = (entry) => {
 
   // Занятость ЗА прогон, а не до него: до прогона — это «начинать можно»,
   // и порогом допуска остаётся именно она, а здесь вопрос другой.
-  const load = entry.busyMedian;
+  const load = entry?.busyMedian;
   if (typeof load === 'number' && load > BUSY_LIMIT) {
     reasons.push(`занятость за прогон ${percent(load)} выше порога ${percent(BUSY_LIMIT)}`);
   }
@@ -395,6 +399,51 @@ export const comparability = (entry) => {
   return reasons.length === 0
     ? { state: COMPARABLE, reason: null }
     : { state: INCOMPARABLE, reason: reasons.join('; ') };
+};
+
+/**
+ * С чем сравнивать свежий замер — последняя СОПОСТАВИМАЯ запись
+ * того же вида.
+ *
+ * Раньше бралась просто последняя, какой бы та ни была. Пример, почему
+ * так нельзя, лежит прямо в журнале: 25.08.2026 в него легли четыре
+ * прогона под искусственной нагрузкой — их снимали нарочно, ключом
+ * `--force`, чтобы проверить, можно ли подстроить просадку средой.
+ * Записи честные и помечены занятостью 0,65–1,00, результат до 37 и 20
+ * к/с. Но следующий обычный замер взял бы «прошлый раз» именно из них,
+ * и настоящая просадка на их фоне выглядела бы улучшением.
+ *
+ * Сопоставимой считается запись, снятая при занятости не выше того же
+ * порога, при котором замер вообще допускается, и не помеченная
+ * негодной. Второго порога с тем же смыслом и другим значением
+ * не заводится: `BUSY_LIMIT` подобран замером на этой машине
+ * и означает ровно нужное — «рядом ничего не идёт».
+ *
+ * Ключ `--force` в правило не входит. Он говорит о намерении
+ * меряющего, а не о том, что вышло: форсировать можно и на тихой
+ * машине, просто чтобы не ждать проверки.
+ *
+ * Возвращается ещё и число пропущенных записей — чтобы сказать вслух,
+ * сколько прогонов подряд оказались несопоставимыми, а не молча
+ * промолчать про сравнение.
+ */
+export const lastComparable = (kind, entries = readLog()) => {
+  const same = entries.filter((entry) => entry.kind === kind);
+
+  for (let index = same.length - 1; index >= 0; index -= 1) {
+    const candidate = same[index];
+    if (comparability(candidate).state === INCOMPARABLE) continue;
+
+    // Проверка занятости повторяется здесь ради записей старого
+    // образца: годность их не судит вовсе, а занятость в них записана
+    // и говорит ровно то, что нужно.
+    const load = judgedBusy(candidate);
+    if (typeof load === 'number' && load > BUSY_LIMIT) continue;
+
+    return { entry: candidate, skipped: same.length - 1 - index };
+  }
+
+  return { entry: undefined, skipped: same.length };
 };
 
 /**
@@ -457,7 +506,7 @@ export const recordEntry = ({
     if (verdict.reason !== null) entry.incomparable = verdict.reason;
   }
 
-  const previous = lastOfKind(kind);
+  const { entry: previous, skipped } = lastComparable(kind);
   appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
 
   step('Записано в журнал');
@@ -471,6 +520,26 @@ export const recordEntry = ({
     }
     const scene = context?.[name];
     if (scene !== undefined) note(`   ${describeContext(scene)}`);
+  }
+
+  // Про сравнение говорится вслух всегда. Молчаливое сравнение
+  // с несопоставимым и есть та беда, от которой всё это заводилось:
+  // замер под нагрузкой даёт вдвое меньшее число, и настоящая просадка
+  // на его фоне выглядит улучшением.
+  if (previous === undefined) {
+    note(
+      skipped === 0
+        ? 'сравнивать не с чем: это первый замер этого вида'
+        : `сравнивать не с чем: последние ${skipped} записей сняты под нагрузкой` +
+            ' или помечены негодными — число показано одиноко',
+    );
+  } else {
+    const when = new Date(previous.at).toLocaleString('ru-RU');
+    const basis = `«было» — ${previous.commit} от ${when}, занятость ${percent(judgedBusy(previous))}`;
+    note(skipped === 0 ? basis : `${basis}; пропущено несопоставимых записей: ${skipped}`);
+    if (comparability(previous).state === NO_CONTEXT) {
+      note('   основание старого образца: кадры в нём есть, а чем занимался мир — неизвестно');
+    }
   }
   if (load !== undefined && load !== null) {
     note(
