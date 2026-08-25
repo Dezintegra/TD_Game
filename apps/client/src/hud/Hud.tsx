@@ -423,6 +423,7 @@ const Diagnostics = () => {
   const seed = useHudStore((state) => state.seed);
   const visiblePercent = useHudStore((state) => state.visiblePercent);
   const rockPercent = useHudStore((state) => state.rockPercent);
+  const viewScale = useHudStore((state) => state.viewScale);
   const tick = useHudStore((state) => state.tick);
   const fps = useHudStore((state) => state.fps);
   const pongCount = useHudStore((state) => state.pongCount);
@@ -448,6 +449,7 @@ const Diagnostics = () => {
       data-seed={String(seed)}
       data-visible-percent={visiblePercent.toFixed(1)}
       data-rock-percent={rockPercent.toFixed(1)}
+      data-view-scale={String(viewScale)}
       data-tick={String(tick)}
       data-fps={String(fps)}
       data-pong-count={String(pongCount)}
