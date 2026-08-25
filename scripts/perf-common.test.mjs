@@ -44,9 +44,12 @@ const calmScene = (over = {}) => ({
 const entry = (over = {}) => ({
   kind: 'кадры',
   commit: '7969969',
-  busy: 0.12,
-  busyMedian: 0.14,
-  busyMax: 0.3,
+  // Числа настоящие — из прогона 25.08.2026 на тихой машине. Занятость
+  // за прогон вдвое выше занятости до него, потому что в неё входит
+  // сам замер: Playwright, Chromium, свой клиент и свой сервер.
+  busy: 0.07,
+  busyMedian: 0.32,
+  busyMax: 0.6,
   passed: true,
   measurements: { 'камера в движении': 60, 'войска на поле': 60 },
   context: { 'камера в движении': calmScene(), 'войска на поле': calmScene() },
@@ -157,6 +160,28 @@ describe('годность записи', () => {
 
     expect(verdict.state).toBe(INCOMPARABLE);
     expect(verdict.reason).toContain('сверка стояла');
+  });
+
+  it('своя же цена замера негодным его не делает', () => {
+    // Замер стоит машине 31-32% (два прогона 25.08.2026 на тихой машине).
+    // Порог допуска в 35% мерился, когда ничего этого не запущено, и оставь
+    // его здесь — обычный прогон объявлялся бы негодным от любого шороха
+    // рядом. Порог за прогон поэтому свой: величина другая, число другое.
+    expect(comparability(entry({ busy: 0.06, busyMedian: 0.32, busyMax: 1 })).state).toBe(
+      COMPARABLE,
+    );
+    expect(comparability(entry({ busy: 0.07, busyMedian: 0.31, busyMax: 0.6 })).state).toBe(
+      COMPARABLE,
+    );
+  });
+
+  it('занятость ДО прогона выше порога допуска делает запись негодной', () => {
+    // Форсированный прогон на занятой машине. Ключ --force сам решением
+    // не служит, а вот измеренная занятость — служит.
+    const verdict = comparability(entry({ busy: 0.86, busyMedian: 0.9, forced: true }));
+
+    expect(verdict.state).toBe(INCOMPARABLE);
+    expect(verdict.reason).toContain('до прогона');
   });
 
   it('нагрузка ЗА прогон делает запись негодной, а тихое начало её не спасает', () => {
@@ -365,7 +390,7 @@ describe('история переживает пополнение журнал�
 
     expect(printed).not.toContain('undefined');
     expect(printed).not.toContain('NaN');
-    expect(printed).toContain('за прогон 14%');
+    expect(printed).toContain('за прогон 32%');
     expect(printed).toContain('мир 30 тик/с');
     expect(printed).toContain('связь 14 мс');
   });
