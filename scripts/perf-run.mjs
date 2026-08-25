@@ -19,7 +19,7 @@
  * цифра рядом с прошлой и с пометкой, при какой загрузке она снята.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -33,6 +33,7 @@ import {
   recordEntry,
   repoRoot,
   requireQuietMachine,
+  startBusySampling,
   step,
   warn,
 } from './perf-common.mjs';
@@ -147,25 +148,51 @@ if (force && busy > BUSY_LIMIT) warn('машина занята, к цифре �
 mkdirSync(dirname(measurementsPath), { recursive: true });
 rmSync(measurementsPath, { force: true });
 
-const run = spawnSync(
-  'pnpm',
-  ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
-  {
-    stdio: 'inherit',
-    shell: true,
-    cwd: repoRoot,
-    env: { ...process.env, PERF_OUT: measurementsPath },
-  },
-);
+// Прогон запускается `spawn`, а не `spawnSync`, и это цена наблюдения
+// за нагрузкой: синхронный запуск не отдаёт управление до конца прогона,
+// то есть взять пробу посреди него было бы неоткуда. `stdio: 'inherit'`
+// сохранён — вывод Playwright нужен на экране по ходу дела, а не пачкой
+// в конце.
+const sampling = startBusySampling();
+
+const status = await new Promise((resolve) => {
+  const child = spawn(
+    'pnpm',
+    ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
+    {
+      stdio: 'inherit',
+      shell: true,
+      cwd: repoRoot,
+      env: { ...process.env, PERF_OUT: measurementsPath },
+    },
+  );
+
+  // Не запустился вовсе — это не «замер провалился», но и не успех.
+  // Ниже такой прогон отсеется по отсутствию чисел.
+  child.on('error', () => resolve(1));
+  child.on('close', (code) => resolve(code ?? 1));
+});
+
+const load = sampling.stop();
 
 // ── Журнал ───────────────────────────────────────────────────────────
+//
+// Обстановка складывается по сценам, а не сливается в одну. Сцены —
+// это разные окна разного матча: у «камеры в движении» свой ход мира
+// и свои длинные кадры, у «войск на поле» — свои. Одно усреднённое
+// число спрятало бы ровно тот случай, ради которого всё затевалось:
+// одна сцена измерена на догоне, вторая на ровном ходу.
 const measurements = {};
+const context = {};
 if (existsSync(measurementsPath)) {
   for (const line of readFileSync(measurementsPath, 'utf8').split('\n')) {
     if (line.trim() === '') continue;
     try {
-      const { name, value } = JSON.parse(line);
-      measurements[name] = value;
+      const entry = JSON.parse(line);
+      measurements[entry.name] = entry.value;
+      if (entry.context !== undefined && entry.context !== null) {
+        context[entry.name] = entry.context;
+      }
     } catch {
       // Одна битая строка — не повод потерять остальные.
     }
@@ -176,6 +203,15 @@ if (Object.keys(measurements).length === 0) {
   die('замер не дал ни одного числа — прогон, похоже, не дошёл до самих проверок');
 }
 
-recordEntry({ kind: 'кадры', measurements, busy, passed: run.status === 0, unit: ' к/с' });
+recordEntry({
+  kind: 'кадры',
+  measurements,
+  context,
+  busy,
+  load,
+  forced: force,
+  passed: status === 0,
+  unit: ' к/с',
+});
 
-process.exit(run.status ?? 1);
+process.exit(status);

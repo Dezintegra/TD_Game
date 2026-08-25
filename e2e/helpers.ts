@@ -121,6 +121,65 @@ export const medianFps = async (page: Page, samples = 6): Promise<number> => {
 };
 
 /**
+ * Показания, описывающие положение дел в матче, — ОДНИМ снимком.
+ *
+ * Снимается всё разом по той же причине, что и в `unitTally`: между
+ * двумя чтениями из Playwright проходит настоящее время, а HUD за это
+ * время перерисовывается. Тик, снятый до перерисовки, и число длинных
+ * кадров, снятое после, описывали бы разные мгновения матча — и разность
+ * между двумя такими снимками врала бы ровно на этот зазор.
+ *
+ * Заводить ради этих чисел второй прибор нельзя: всё перечисленное
+ * клиент уже считает и уже выводит в разметку. Два источника одной
+ * величины, разойдясь, припишут числа не тому, что мерили.
+ */
+export interface MatchSnapshot {
+  /** Момент снимка по часам машины — из него выводится длина окна. */
+  readonly at: number;
+  /** Тик показанного мира: тот, что игрок видит на экране. */
+  readonly tick: number;
+  /** Последний подтверждённый сервером тик. */
+  readonly syncTick: number;
+  /** Кадры длиннее бюджета с начала страницы. Накопительный счётчик. */
+  readonly frameLong: number;
+  /** 95-й перцентиль длительности кадра, мс. Копится с начала матча. */
+  readonly frameP95: number;
+  /** Самый долгий кадр, мс. Копится с начала матча. */
+  readonly frameMax: number;
+  /** Ответы сервера на ping. Накопительный счётчик. */
+  readonly pongs: number;
+  /** Время оборота пакета, мс. */
+  readonly latencyMs: number;
+  /** Задержка ввода в тиках; ноль, когда сервер её не назначил. */
+  readonly inputDelayTicks: number;
+}
+
+export const matchSnapshot = async (page: Page): Promise<MatchSnapshot> =>
+  page.evaluate(() => {
+    const diagnostics = document.querySelector('[data-testid="diagnostics"]');
+    const attr = (name: string): number => Number(diagnostics?.getAttribute(`data-${name}`) ?? '0');
+
+    // Время оборота пакета живёт не в диагностических атрибутах, а на своей
+    // строке: игроку оно показывается текстом, и там ему быть запрещено.
+    const latencyNode = document.querySelector('[data-testid="latency"]');
+    const delayNode = document.querySelector('[data-testid="input-delay"]');
+
+    return {
+      at: Date.now(),
+      tick: attr('tick'),
+      syncTick: attr('sync-tick'),
+      frameLong: attr('frame-long'),
+      frameP95: attr('frame-p95'),
+      frameMax: attr('frame-max'),
+      pongs: attr('pong-count'),
+      latencyMs: Number((latencyNode?.textContent ?? '').replace(/[^\d.-]/g, '')),
+      // Строка «ввод N мс» показывается только при назначенной задержке,
+      // поэтому её отсутствие — это ноль, а не отсутствие сведений.
+      inputDelayTicks: Number(delayNode?.getAttribute('data-ticks') ?? '0'),
+    };
+  });
+
+/**
  * Открыть меню матча.
  *
  * Выход и перезапуск переехали в него с постоянных панелей: они нужны раз

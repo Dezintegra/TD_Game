@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { bootGame, medianFps, number } from './helpers.js';
-import { record } from './perf-record.js';
+import { bootGame, matchSnapshot, medianFps, number } from './helpers.js';
+import { record, runContext } from './perf-record.js';
 
 /**
  * Замеры частоты кадров.
@@ -24,6 +24,14 @@ import { record } from './perf-record.js';
  * свободна и что замер не ведёт кто-то ещё. Прогон обязателен перед
  * деплоем и предлагается по ходу обычной задачи, когда правка могла
  * задеть отрисовку.
+ *
+ * В-третьих, каждая сцена снимает вокруг своего окна обстановку матча
+ * (`matchSnapshot` до и после). Одно число кадров описывает следствие
+ * и молчит о причине: восемь кадров выходят и при просевшей отрисовке,
+ * и при главном потоке, вставшем колом на догоне истории. Отличает их
+ * ход мира — сервер держит тридцать тиков в секунду независимо
+ * от машины, так что за шестисекундное окно тик обязан вырасти примерно
+ * на сто восемьдесят. В том разборе он вырос на пятьсот с лишним.
  */
 
 test('частота кадров держится при непрерывном движении камеры', async ({ page }) => {
@@ -39,11 +47,15 @@ test('частота кадров держится при непрерывном
   // ровные шестьдесят. Мерить разогрев незачем — его надо переждать.
   await page.waitForTimeout(3000);
 
+  // Снимок берётся ПОСЛЕ разогрева: длинные кадры запекания рельефа
+  // остаются за скобками окна и в разность не попадают.
+  const before = await matchSnapshot(page);
   const fps = await medianFps(page);
+  const after = await matchSnapshot(page);
 
   await page.keyboard.up('ArrowRight');
 
-  record('камера в движении', fps);
+  record('камера в движении', fps, runContext(before, after));
   expect(fps).toBeGreaterThanOrEqual(55);
 });
 
@@ -58,8 +70,10 @@ test('частота кадров держится, когда на поле п�
 
   expect(await number(page, 'unit-count')).toBeGreaterThan(0);
 
+  const before = await matchSnapshot(page);
   const fps = await medianFps(page);
+  const after = await matchSnapshot(page);
 
-  record('войска на поле', fps);
+  record('войска на поле', fps, runContext(before, after));
   expect(fps).toBeGreaterThanOrEqual(55);
 });
