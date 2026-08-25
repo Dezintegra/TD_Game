@@ -171,6 +171,52 @@ describe('сборка базы', () => {
     expect(row.chosen).toBeGreaterThan(0);
   });
 
+  it('клетки башен доезжают до базы', () => {
+    // Число башен в снимке отвечает «сколько», клетки — «где».
+    // Без вторых нельзя сказать, разбросаны ли башни по карте
+    // или собраны в кучу, а вся правка ровно об этом.
+    const row = db
+      .prepare(
+        `select count(*) as rows, count(distinct tick) as moments
+           from tower where match_id = ?`,
+      )
+      .get(MATCH_ID) as { rows: number; moments: number };
+
+    expect(row.rows).toBeGreaterThan(0);
+    // Снимаются реже состояния — раз в десять секунд, — поэтому моментов
+    // заведомо меньше, чем секунд матча.
+    expect(row.moments).toBeLessThan(SECONDS);
+  });
+
+  it('места стен доезжают до базы вместе с геометрией подхода', () => {
+    // Коридор подхода через минуту уже другой, а мира в базе нет:
+    // не снятая при постройке ширина потеряна навсегда.
+    const row = db
+      .prepare(
+        `select count(*) as walls, sum(on_path) as on_path, max(narrowest) as narrowest
+           from wall_site where match_id = ?`,
+      )
+      .get(MATCH_ID) as { walls: number; on_path: number; narrowest: number };
+
+    expect(row.walls).toBeGreaterThan(0);
+    expect(row.narrowest).toBeGreaterThan(0);
+  });
+
+  it('признак «есть путь к чужой базе» снимается по каждому снимку', () => {
+    // Страховочная величина: в мире запертая армия следа не оставляет,
+    // юниты просто перестают доходить. На нетронутой минуте путь есть
+    // всегда — величина должна это подтверждать, а не молчать.
+    const row = db
+      .prepare(
+        `select count(*) as samples, sum(path_to_enemy) as open
+           from sample where match_id = ?`,
+      )
+      .get(MATCH_ID) as { samples: number; open: number };
+
+    expect(row.samples).toBeGreaterThan(0);
+    expect(row.open).toBe(row.samples);
+  });
+
   it('в базе есть то, чего не произошло', () => {
     // Мир показывает, что случилось; только эта таблица покажет, чего
     // противник хотел и что ему помешало.
@@ -206,6 +252,31 @@ describe('сводка', () => {
     expect(text).toContain('где стоял генерал');
     expect(text).toContain('что помешало покупке');
     expect(text).toContain('отрыв выбранного рубежа');
+  });
+
+  it('сводка пачки называет потери башен и их разброс', () => {
+    const batch = reportBatch(db);
+
+    expect(batch).toContain('башни и их потери');
+    expect(batch).toContain('башен на пике');
+    expect(batch).toContain('построек за матч на сторону');
+  });
+
+  it('сводка пачки называет, куда ложатся стены', () => {
+    const batch = reportBatch(db);
+
+    expect(batch).toContain('куда ложатся стены');
+    expect(batch).toContain('в горле');
+  });
+
+  it('сводка пачки печатает страховку «армия заперта» даже нулём', () => {
+    // Величина, которая появляется только когда стало плохо, ничего
+    // не сторожит: по её отсутствию нельзя отличить «не случилось»
+    // от «не померили».
+    const batch = reportBatch(db);
+
+    expect(batch).toContain('армия заперта');
+    expect(batch).toContain('сторон, у которых такое случалось: 0');
   });
 
   it('неизвестный матч не роняет сводку', () => {

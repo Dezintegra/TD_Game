@@ -1,4 +1,5 @@
 ﻿import {
+  CommandKind,
   PLAYERS_PER_MATCH,
   StructureKind,
   TICKS_PER_SECOND,
@@ -6,12 +7,26 @@
   flatten,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
-import { cellAt, checksum, createWorld, playerStats, step } from '@td/sim';
+import { UNREACHABLE, cellAt, checksum, createWorld, playerStats, step } from '@td/sim';
 import type { WorldState } from '@td/sim';
-import { createOpponent, profileByName } from '@td/ai';
-import type { DecisionRecord, Opponent } from '@td/ai';
+import {
+  approachOf,
+  basesConnected,
+  corridorWidthAt,
+  corridorWidths,
+  createOpponent,
+  profileByName,
+} from '@td/ai';
+import type { Approach, DecisionRecord, Opponent } from '@td/ai';
 import type { LogWriter } from './log.js';
-import type { CommandRecord, MatchFooter, MatchHeader, SampleRecord } from './records.js';
+import type {
+  CommandRecord,
+  MatchFooter,
+  MatchHeader,
+  SampleRecord,
+  TowersRecord,
+  WallSiteRecord,
+} from './records.js';
 import { codeVersion } from './version.js';
 
 /**
@@ -35,6 +50,17 @@ export const MATCH_TICK_CAP = 20 * 60 * TICKS_PER_SECOND;
 
 /** Как часто снимается состояние сторон. Раз в игровую секунду. */
 const SAMPLE_EVERY = TICKS_PER_SECOND;
+
+/**
+ * Как часто снимаются клетки башен. Раз в десять игровых секунд.
+ *
+ * Реже, чем всё остальное, и намеренно. Снимок состояния — четыре десятка
+ * чисел на сторону, снимок башен — строка на каждую башню, то есть
+ * на порядок больше строк в базе. А отвечает он на вопрос, который
+ * за секунду не меняется: башня строится секундами и стоит потом минуты,
+ * поэтому разброс башен, снятый раз в десять секунд, тот же самый.
+ */
+const TOWERS_EVERY = 10 * TICKS_PER_SECOND;
 
 /**
  * Как часто снимается контрольная сумма при записи матча.
@@ -96,7 +122,7 @@ export interface MatchResult {
   readonly recovered: ReadonlyMap<number, readonly Command[]>;
 }
 
-const sampleOf = (world: WorldState, player: PlayerId): SampleRecord => {
+const sampleOf = (world: WorldState, player: PlayerId, pathToEnemy: boolean): SampleRecord => {
   const state = world.players[player];
   const general = world.generals[player];
   const stats = state === undefined ? undefined : playerStats(state);
@@ -141,8 +167,31 @@ const sampleOf = (world: WorldState, player: PlayerId): SampleRecord => {
     queueLen: state?.queue.length ?? 0,
     upgradeTotalLevel: state?.upgrades.reduce((sum, upgrade) => sum + upgrade.level, 0) ?? 0,
     targetStructure: state?.targetStructure ?? 0,
+    pathToEnemy,
   };
 };
+
+/**
+ * Клетки живых башен стороны.
+ *
+ * Считается так же, как их число в снимке: недостроенная башня входит
+ * в оба счёта. Она уже занимает клетку и уже стоит денег, а через
+ * несколько секунд начнёт стрелять; выкидывать её значило бы получать
+ * разное число башен из двух записей одного тика.
+ */
+const towersOf = (world: WorldState, player: PlayerId): TowersRecord => ({
+  t: 'towers',
+  tick: world.tick,
+  player,
+  cells: world.structures
+    .filter(
+      (structure) =>
+        structure.owner === player &&
+        structure.kind !== StructureKind.Base &&
+        structure.kind !== StructureKind.Wall,
+    )
+    .map((structure) => structure.cell),
+});
 
 export const runMatch = (options: MatchOptions): MatchResult => {
   const {
@@ -213,6 +262,15 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     if (issued.length > 0) {
       const refused = new Map(next.rejections.map((entry) => [entry.index, entry.reason]));
 
+      // Геометрия подхода считается лениво и не больше раза на сторону
+      // за тик: два обхода карты стоят дороже всего остального в этом
+      // цикле, а стену за решение ставят не всегда.
+      const corridors = new Map<number, Approach | undefined>();
+      const corridorOf = (player: PlayerId): Approach | undefined => {
+        if (!corridors.has(player)) corridors.set(player, approachOf(world, player));
+        return corridors.get(player);
+      };
+
       issued.forEach((command, index) => {
         const reason = refused.get(index);
         const [arg0, arg1] = flatten(command);
@@ -227,6 +285,35 @@ export const runMatch = (options: MatchOptions): MatchResult => {
           rejectReason: reason ?? null,
         };
         log.write(record);
+
+        if (reason !== undefined) return;
+        if (command.kind !== CommandKind.Build) return;
+        if (command.structure !== StructureKind.Wall) return;
+
+        // Коридор берётся ДО шага — тот самый, который видел противник,
+        // когда выбирал место. После шага стена уже стоит, и клетка,
+        // куда она легла, стала непроходимой: ширина на её глубине
+        // оказалась бы на единицу меньше, чем была при решении.
+        const approach = corridorOf(command.player);
+        if (approach === undefined) return;
+
+        const widths = corridorWidths(approach);
+        const depth = approach.fromHome[command.cell] ?? UNREACHABLE;
+        const occupied = [...widths].filter((width) => width > 0);
+
+        const site: WallSiteRecord = {
+          t: 'wallsite',
+          tick: world.tick,
+          player: command.player,
+          cell: command.cell,
+          depth: depth === UNREACHABLE ? -1 : depth,
+          width: corridorWidthAt(approach, widths, command.cell),
+          // Пустых глубин в коридоре не бывает, но пустой коридор бывает:
+          // ширина ноль честнее, чем `Infinity` от `Math.min` без чисел.
+          narrowest: occupied.length === 0 ? 0 : Math.min(...occupied),
+          onPath: approach.onPath[command.cell] === 1,
+        };
+        log.write(site);
       });
     }
 
@@ -252,8 +339,20 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     }
 
     if (world.tick % SAMPLE_EVERY === 0) {
+      // Связность баз считается ОДИН раз на тик, а не по разу на сторону.
+      // Занятость владельцев не различает, поэтому путь от своей базы
+      // к чужой есть либо у обоих, либо ни у кого; спросить дважды значило
+      // бы заплатить лишним обходом карты за тот же ответ.
+      const connected = basesConnected(world, asPlayerId(0));
+
       for (let player = 0; player < PLAYERS_PER_MATCH; player += 1) {
-        log.write(sampleOf(world, asPlayerId(player)));
+        log.write(sampleOf(world, asPlayerId(player), connected));
+      }
+    }
+
+    if (world.tick % TOWERS_EVERY === 0) {
+      for (let player = 0; player < PLAYERS_PER_MATCH; player += 1) {
+        log.write(towersOf(world, asPlayerId(player)));
       }
     }
 

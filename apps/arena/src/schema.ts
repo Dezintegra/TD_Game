@@ -46,7 +46,40 @@ create table if not exists sample (
   general_alive       integer not null,
   queue_len           integer not null,
   upgrade_total_level integer not null,
-  target_structure    integer not null
+  target_structure    integer not null,
+  -- Есть ли у войск стороны путь от своей базы к чужой по проходимым
+  -- клеткам. Ноль означает, что сторона заперла сама себя: своё юнит
+  -- не ломает, и коридор, перекрытый своими стенами, останавливает
+  -- собственную армию так же надёжно, как чужую.
+  path_to_enemy       integer not null
+);
+
+-- Клетки живых башен стороны на момент снимка.
+--
+-- Отдельной таблицей, а не списком в снимке: список в ячейке пришлось бы
+-- разбирать в каждом запросе, а «где стояли башни» — вопрос, который
+-- задают по-разному. Строк много, но они узкие: четыре числа.
+create table if not exists tower (
+  match_id text not null,
+  tick     integer not null,
+  player   integer not null,
+  cell     integer not null
+);
+
+-- Куда легла стена и какова была геометрия подхода в тот момент.
+--
+-- Коридор подхода зависит от расстановки скал И построек, а через минуту
+-- он уже другой; мира в базе нет, поэтому восстановить его потом нельзя.
+-- Отсюда и таблица: величины снимаются в момент постройки.
+create table if not exists wall_site (
+  match_id  text not null,
+  tick      integer not null,
+  player    integer not null,
+  cell      integer not null,
+  depth     integer not null,
+  width     integer not null,
+  narrowest integer not null,
+  on_path   integer not null
 );
 
 create table if not exists decision (
@@ -121,6 +154,8 @@ create table if not exists command (
 );
 
 create index if not exists sample_by_match   on sample   (match_id, player, tick);
+create index if not exists tower_by_match    on tower    (match_id, player, tick);
+create index if not exists wall_by_match     on wall_site (match_id, player, tick);
 create index if not exists decision_by_match on decision (match_id, player, tick);
 create index if not exists attempt_by_match  on attempt  (match_id, player, tick);
 create index if not exists frontier_by_match on frontier (match_id, player, tick);
@@ -130,6 +165,8 @@ create index if not exists command_by_match  on command  (match_id, player, tick
 /** Таблицы, зависящие от матча. Чистятся при повторной сборке. */
 export const CHILD_TABLES: readonly string[] = [
   'sample',
+  'tower',
+  'wall_site',
   'decision',
   'attempt',
   'frontier',

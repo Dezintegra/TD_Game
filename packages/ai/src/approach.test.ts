@@ -13,7 +13,13 @@ import {
 import type { PlayerId } from '@td/shared';
 import { cellIndex, createWorld } from '@td/sim';
 import type { WorldState } from '@td/sim';
-import { approachOf, sealsApproach } from './approach.js';
+import {
+  approachOf,
+  basesConnected,
+  corridorWidthAt,
+  corridorWidths,
+  sealsApproach,
+} from './approach.js';
 
 /**
  * Проверка «не запереть себя».
@@ -120,5 +126,103 @@ describe('постройка не должна запирать путь меж�
 
     // Проход уже закрыт: вероятного пути между базами не существует вовсе.
     expect(approachOf(walled, ME)).toBeUndefined();
+    // И это ровно то, что должна увидеть страховочная величина разбора.
+    expect(basesConnected(walled, ME)).toBe(false);
+    expect(basesConnected(walled, asPlayerId(1))).toBe(false);
+  });
+
+  it('на нетронутой карте путь есть у обеих сторон', () => {
+    const world = createWorld(SEED);
+
+    expect(basesConnected(world, ME)).toBe(true);
+    expect(basesConnected(world, asPlayerId(1))).toBe(true);
+  });
+});
+
+/**
+ * Карта с двумя раздельными проходами одинаковой глубины — «восьмёрка».
+ *
+ * Те же ворота, но коридоров два: по строке базы и через две строки
+ * от неё, разделённые скалой. Нужна затем, чтобы показать границу мерки
+ * ширины: она считает клетки по глубине и о том, что проходов два,
+ * не знает.
+ */
+const twinCorridor = (): { world: WorldState; gate: number } => {
+  const world = createWorld(SEED);
+  const cells = Uint8Array.from(world.map.cells).fill(Terrain.Rock);
+
+  const home = world.map.baseCells[ME] ?? 0;
+  const enemy = world.map.baseCells[1] ?? 0;
+
+  const hx = home % MAP_WIDTH_CELLS;
+  const hy = Math.floor(home / MAP_WIDTH_CELLS);
+  const ex = enemy % MAP_WIDTH_CELLS;
+  const ey = Math.floor(enemy / MAP_WIDTH_CELLS);
+
+  const clear = (x: number, y: number): void => {
+    if (x < 0 || y < 0 || x >= MAP_WIDTH_CELLS || y >= MAP_HEIGHT_CELLS) return;
+    cells[cellIndex(x, y)] = Terrain.Ground;
+  };
+
+  for (const [bx, by] of [
+    [hx, hy],
+    [ex, ey],
+  ] as const) {
+    for (let dy = -2; dy <= 2; dy += 1) {
+      for (let dx = -2; dx <= 2; dx += 1) clear(bx + dx, by + dy);
+    }
+  }
+
+  // Два прохода в клетку шириной, между ними строка скалы.
+  for (let x = Math.min(hx, ex); x <= Math.max(hx, ex); x += 1) {
+    clear(x, hy);
+    clear(x, hy + 2);
+  }
+  for (let y = Math.min(hy, ey); y <= Math.max(hy, ey); y += 1) clear(ex, y);
+
+  return {
+    world: { ...world, map: { ...world.map, cells } },
+    gate: cellIndex(Math.round((hx + ex) / 2), hy),
+  };
+};
+
+describe('ширина коридора по глубине', () => {
+  it('в одинарном проходе ширина равна единице', () => {
+    const { world, gate } = corridor();
+    const approach = approachOf(world, ME);
+    if (approach === undefined) throw new Error('вероятный путь не посчитан');
+
+    const widths = corridorWidths(approach);
+
+    expect(corridorWidthAt(approach, widths, gate)).toBe(1);
+  });
+
+  it('у своей базы коридор шире, чем в горле', () => {
+    // Обратная страховка: мерка, отвечающая единицей везде, ничего
+    // не измеряет. У базы расчищена площадка пять на пять, и коридор
+    // там заведомо шире одинарного прохода.
+    const { world, gate } = corridor();
+    const approach = approachOf(world, ME);
+    if (approach === undefined) throw new Error('вероятный путь не посчитан');
+
+    const widths = corridorWidths(approach);
+    const widest = Math.max(...widths);
+
+    expect(widest).toBeGreaterThan(corridorWidthAt(approach, widths, gate));
+  });
+
+  it('два раздельных прохода складываются в одну ширину', () => {
+    // Известная граница мерки: она видит узость по глубине, а не топологию.
+    // Ошибка безопасная — горло из двух одинарных проходов выглядит вдвое
+    // шире, чем оно есть, то есть противник осторожничает там, где мог бы
+    // перекрывать. Обратной ошибки — счесть узким широкое место — мерка
+    // не делает никогда.
+    const { world, gate } = twinCorridor();
+    const approach = approachOf(world, ME);
+    if (approach === undefined) throw new Error('вероятный путь не посчитан');
+
+    const widths = corridorWidths(approach);
+
+    expect(corridorWidthAt(approach, widths, gate)).toBe(2);
   });
 });

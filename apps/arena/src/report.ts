@@ -11,6 +11,7 @@ import {
   UpgradeTarget,
 } from '@td/shared';
 import type { UnitType } from '@td/shared';
+import { cellX, cellY } from '@td/sim';
 import { profileByName } from '@td/ai';
 import type { AiProfile } from '@td/ai';
 import type { DatabaseSync } from 'node:sqlite';
@@ -411,6 +412,245 @@ export const reportMatch = (db: DatabaseSync, matchId: string): string => {
   return out.join('\n');
 };
 
+/**
+ * Живучесть башен и их разброс по карте.
+ *
+ * Две величины, ради которых понадобилось мерило. Первая — доля
+ * потерянных за матч башен: противник строит много и теряет почти всё,
+ * а из одного числа «башен к концу» этого не видно, потому что оно
+ * одинаково у того, кто построил четыре, и у того, кто построил
+ * двенадцать и потерял восемь.
+ *
+ * Пик и конец, а не «построено и осталось»: часть построек — стены,
+ * и смешивать их с башнями в одном счёте нельзя. Пик берётся по снимкам
+ * состояния (раз в секунду), конец — по последнему снимку матча.
+ *
+ * Вторая — среднее расстояние между своими башнями. Нынешняя мерка места
+ * считает только ЕЩЁ НЕ накрытые клетки пути, то есть прямо расталкивает
+ * башни; величина показывает, насколько сильно. Считается по парам
+ * башен, живым на один и тот же момент, и усредняется сначала по
+ * моментам, потом по сторонам — иначе матч, в котором башен было много,
+ * перевесил бы десяток матчей, где их было две.
+ */
+const towerLife = (db: DatabaseSync): string[] => {
+  const out: string[] = [];
+
+  const sides = query(
+    db,
+    `with last as (select match_id, player, max(tick) as tick from sample group by match_id, player)
+     select s.match_id as match_id, s.player as player, s.towers as ending,
+            (select max(towers) from sample p
+              where p.match_id = s.match_id and p.player = s.player) as peak
+       from sample s
+       join last l on l.match_id = s.match_id and l.player = s.player and l.tick = s.tick`,
+  );
+
+  if (sides.length === 0) return out;
+
+  const withTowers = sides.filter((row) => num(row, 'peak') > 0);
+  const avg = (values: readonly number[]): number =>
+    values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
+
+  const peak = avg(withTowers.map((row) => num(row, 'peak')));
+  const ending = avg(withTowers.map((row) => num(row, 'ending')));
+  const lost = avg(
+    withTowers.map((row) => (num(row, 'peak') - num(row, 'ending')) / num(row, 'peak')),
+  );
+
+  const built = query(
+    db,
+    `select count(*) as n from command
+      where kind = ${String(CommandKind.Build)} and accepted = 1`,
+  )[0];
+
+  out.push('');
+  out.push(`  башни и их потери (сторон в счёте ${String(withTowers.length)}):`);
+  out.push(
+    `    построек за матч на сторону ${(num(built ?? {}, 'n') / Math.max(1, sides.length)).toFixed(1)}`,
+  );
+  out.push(
+    `    башен на пике ${peak.toFixed(1)}   к концу матча ${ending.toFixed(1)}   ` +
+      `потеряно ${(lost * 100).toFixed(0)}%`,
+  );
+
+  // ── Разброс своих башен ───────────────────────────────────────────
+  const towers = query(
+    db,
+    'select match_id, player, tick, cell from tower order by match_id, player, tick',
+  );
+
+  const perMoment: number[] = [];
+  const perSide = new Map<string, number[]>();
+
+  let key = '';
+  let cells: number[] = [];
+
+  const flush = (): void => {
+    if (cells.length >= 2) {
+      let sum = 0;
+      let pairs = 0;
+
+      for (let i = 0; i < cells.length; i += 1) {
+        for (let j = i + 1; j < cells.length; j += 1) {
+          const a = cells[i] ?? 0;
+          const b = cells[j] ?? 0;
+          sum += Math.hypot(cellX(a) - cellX(b), cellY(a) - cellY(b));
+          pairs += 1;
+        }
+      }
+
+      const mean = sum / pairs;
+      perMoment.push(mean);
+
+      const side = key.slice(0, key.lastIndexOf('|'));
+      const list = perSide.get(side) ?? [];
+      list.push(mean);
+      perSide.set(side, list);
+    }
+
+    cells = [];
+  };
+
+  for (const row of towers) {
+    const rowKey = `${str(row, 'match_id')}|${String(num(row, 'player'))}|${String(num(row, 'tick'))}`;
+    if (rowKey !== key) {
+      flush();
+      key = rowKey;
+    }
+    cells.push(num(row, 'cell'));
+  }
+  flush();
+
+  if (perMoment.length > 0) {
+    const bySide = [...perSide.values()].map((list) => avg(list));
+    out.push(
+      `    среднее расстояние между своими башнями ${avg(bySide).toFixed(1)} клеток ` +
+        `(моментов с двумя башнями и более: ${String(perMoment.length)})`,
+    );
+  } else {
+    out.push('    двух башен разом на карте не было ни разу: разброс мерить не на чем');
+  }
+
+  return out;
+};
+
+/**
+ * Матчи, в которых сторона осталась без пути к чужой базе.
+ *
+ * Страховочная величина, и она важнее остальных. Своя постройка
+ * непроходима, и ломать своё юнит не станет, поэтому успешное сужение
+ * подхода запирает не только противника, но и собственную армию.
+ * В мире это следа не оставляет: юниты просто перестают доходить,
+ * и со стороны выглядит, будто их перебили по дороге.
+ *
+ * Печатается всегда, в том числе нулём. Величина, которая появляется
+ * только когда стало плохо, ничего не сторожит: по её отсутствию нельзя
+ * отличить «не случилось» от «не померили».
+ */
+const lockedIn = (db: DatabaseSync): string[] => {
+  const out: string[] = [];
+
+  const totals = query(
+    db,
+    `select count(*) as samples,
+            sum(case when path_to_enemy = 0 then 1 else 0 end) as locked
+       from sample`,
+  )[0];
+
+  if (totals === undefined || num(totals, 'samples') === 0) return out;
+
+  const sides = query(
+    db,
+    `select count(*) as n from (
+       select match_id, player from sample where path_to_enemy = 0
+        group by match_id, player
+     )`,
+  )[0];
+
+  const played = query(
+    db,
+    'select count(*) as n from (select match_id, player from sample group by match_id, player)',
+  )[0];
+
+  out.push('');
+  out.push('  армия заперта (нет пути от своей базы к чужой по проходимым клеткам):');
+  out.push(
+    `    сторон, у которых такое случалось: ${String(num(sides ?? {}, 'n'))} ` +
+      `из ${String(num(played ?? {}, 'n'))}`,
+  );
+  out.push(
+    `    доля времени без пути: ` + `${percent(num(totals, 'locked'), num(totals, 'samples'))}`,
+  );
+
+  return out;
+};
+
+/**
+ * Ширина коридора, при которой место считается горлом, в клетках.
+ *
+ * Не подобрана. Генерация не оставляет на карте проходов уже трёх клеток
+ * (§ 2.1 замысла: «проход уже трёх клеток на карте не встречается,
+ * генерация заращивает такие места скалой»). Значит коридор в три клетки
+ * узок настолько, насколько карта вообще позволяет, и называть горлом
+ * что-то шире означало бы называть горлом обычное место.
+ *
+ * Величина живёт в сводке, а не в противнике, и это существенно: она
+ * нужна, чтобы НАЗВАТЬ долю, а не чтобы принять решение. Сам противник
+ * никакого порога узости не знает — ценность перекрытия у него обратна
+ * ширине, непрерывно.
+ */
+const THROAT_WIDTH_CELLS = 3;
+
+/**
+ * Куда ложатся стены: в горло подхода или где придётся.
+ *
+ * Величина, ради которой заведена таблица `wall_site`. Стена в узком
+ * месте стоит десяти стен в широком: перекрыть одну клетку из трёх —
+ * треть подхода, одну из тридцати — ничего. Нынешний противник о ширине
+ * коридора не знает вовсе и ставит стену рядом со своей башней, так что
+ * доля показывает, сколько попаданий в горло вышло случайно.
+ *
+ * Рядом с долей печатается ширина: сама по себе доля не говорит, было ли
+ * куда попадать. Если самое узкое место коридора в матче — девять клеток,
+ * то нулевая доля означает не промах, а отсутствие горла.
+ */
+const wallSites = (db: DatabaseSync): string[] => {
+  const out: string[] = [];
+
+  const walls = query(db, 'select width, narrowest, on_path from wall_site');
+  if (walls.length === 0) return out;
+
+  const onPath = walls.filter((row) => num(row, 'on_path') === 1);
+  const throats = walls.filter(
+    (row) => num(row, 'on_path') === 1 && num(row, 'width') <= THROAT_WIDTH_CELLS,
+  );
+
+  const median = (values: readonly number[]): number => {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)] ?? 0;
+  };
+
+  out.push('');
+  out.push(`  куда ложатся стены (стен ${String(walls.length)}):`);
+  out.push(
+    `    ${padEnd('в коридоре вероятного пути', 30)}${pad(onPath.length, 5)} ` +
+      `${pad(percent(onPath.length, walls.length), 7)}`,
+  );
+  out.push(
+    `    ${padEnd(`в горле, не шире ${String(THROAT_WIDTH_CELLS)} клеток`, 30)}` +
+      `${pad(throats.length, 5)} ${pad(percent(throats.length, walls.length), 7)}`,
+  );
+  out.push(
+    `    ширина коридора на глубине стены: медиана ` +
+      `${median(onPath.map((row) => num(row, 'width'))).toFixed(0)} клеток   ` +
+      `самое узкое место коридора: медиана ` +
+      `${median(walls.map((row) => num(row, 'narrowest'))).toFixed(0)}`,
+  );
+
+  return out;
+};
+
 export const reportBatch = (db: DatabaseSync): string => {
   const out: string[] = [];
 
@@ -482,6 +722,10 @@ export const reportBatch = (db: DatabaseSync): string => {
         `максимум ${(sorted[sorted.length - 1] ?? 0).toFixed(2)}`,
     );
   }
+
+  out.push(...towerLife(db));
+  out.push(...wallSites(db));
+  out.push(...lockedIn(db));
 
   // ── Сверка предсказания с исходом ─────────────────────────────────
   //

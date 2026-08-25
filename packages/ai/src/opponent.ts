@@ -41,12 +41,18 @@ import type { Occupancy, PlayerState, PlayerStats, WorldState } from '@td/sim';
 import { approachOf, otherPlayer, sealsApproach, walkField } from './approach.js';
 import type { Approach } from './approach.js';
 import {
+  addCover,
+  coverField,
   coveredCells,
+  flowDensity,
   freshCoverage,
   markCovered,
+  ownTowers,
   pickVerdict,
   rangeInCells,
   rankFrontiers,
+  siteCover,
+  siteValue,
   situationOf,
   towerGain,
 } from './posture.js';
@@ -721,7 +727,7 @@ const spendEfficiency = (
   const towerPrice = stats.structures[StructureKind.TowerBasic].cost;
   if (towerPrice > 0) {
     efficiency.build = worth(
-      towerGain(towerSiteCoverage(world, me, stats, approach, covered), stats, profile),
+      towerGain(towerSiteCoverage(world, me, stats, profile, approach, covered), stats, profile),
       towerPrice,
     );
   }
@@ -754,6 +760,20 @@ const outvalues = (candidate: number | undefined, saving: number): boolean =>
  * постройка. Функция детерминированная, поэтому два вызова за решение —
  * это не два источника истины, а один ответ, полученный дважды.
  *
+ * ## Прикрытие сюда НЕ входит, и это решение, а не упущение
+ *
+ * Место выбирается по `siteValue` — покрытие плюс прибавка к живучести, —
+ * а покупка оценивается одним покрытием, как и прежде. Разница
+ * намеренная: прибавка к живучести отвечает на вопрос «КУДА поставить»,
+ * а не «стоит ли ставить вообще». Пусти её в сравнение покупок — и башня
+ * подорожает в оценке вдвое-втрое против юнита и прокачки, то есть
+ * изменится расклад трат. А траты — предмет `fix-ai-spending`, и это
+ * изменение их не касается по своему же условию.
+ *
+ * Замер подтверждает, что цена вопроса не теоретическая: на эталонном
+ * сценарии подстановка `siteValue` в сравнение покупок сдвинула войско
+ * и накопления, тогда как сама расстановка от неё не менялась вовсе.
+ *
  * Прежде вместо этого бралась выгода РУБЕЖА генерала, и место, где башня
  * встанет, в расчёт не входило вовсе. Отсюда и брались нелепости:
  * простреливаемый вражескими башнями рубеж обесценивал покупку, хотя
@@ -763,6 +783,7 @@ const towerSiteCoverage = (
   world: WorldState,
   me: PlayerId,
   stats: PlayerStats,
+  profile: AiProfile,
   approach: Approach,
   covered: Uint8Array,
 ): number => {
@@ -772,12 +793,14 @@ const towerSiteCoverage = (
   const rangeCells = rangeInCells(stats.structures[StructureKind.TowerBasic].range);
   const cell = towerBuildCell(
     world,
-    me,
     general.position,
     stats.general.buildRadius,
     approach,
     covered,
-    rangeCells,
+    stats,
+    profile,
+    StructureKind.TowerBasic,
+    coverField(ownTowers(world, me, stats)),
   );
   if (cell < 0) return 0;
 
@@ -1274,6 +1297,13 @@ const tryBuild = (
     )
     .map((structure) => structure.cell);
 
+  // Поле дружественного огня по ВСЕЙ карте — для взаимного прикрытия.
+  // Радиус генерала здесь ни при чём: башня прикрывает соседа своей
+  // дальностью, а не тем, в чьей окрестности стоит. Поле пополняется
+  // заказанными этим же решением: в мире их ещё нет, а прикрывают они
+  // уже по-настоящему.
+  const cover = coverField(ownTowers(world, me, stats));
+
   let purse = player.energy;
   let placed = 0;
   // Чем кончилась попытка, оборвавшая группу. Когда не поставлено ничего,
@@ -1285,6 +1315,8 @@ const tryBuild = (
   // присваивает своё. Оно стоит здесь потому, что бесконечный `for`
   // не позволяет вывести это правило из текста.
   let stopped: Attempt = passing(AttemptNote.NoTowerSite);
+  /** Сколько раз стене не нашлось места, не запирающего своих. */
+  let skippedWalls = 0;
 
   for (;;) {
     // Стена ставится только когда есть что прикрывать. Стена сама по себе
@@ -1326,28 +1358,80 @@ const tryBuild = (
     const towerRange = rangeInCells(stats.structures[kind].range);
     // Место для стены открытия ищется как для башни: прикрывать ещё
     // нечего, а перекрыть путь у своей базы — ровно то, что нужно.
-    const cell =
+    const pick = (skip: ReadonlySet<number>): number =>
       shielding && !opening
-        ? shieldBuildCell(world, me, general.position, radius, local, towerCells, profile)
-        : towerBuildCell(world, me, general.position, radius, local, fresh, towerRange);
-
-    // Места нет — и это не то же самое, что «нет денег». Башне нужен
-    // ненакрытый путь в радиусе, стене — своя башня, которую она прикроет;
-    // и то и другое кончается задолго до энергии.
-    if (cell < 0) {
-      stopped = passing(shielding ? AttemptNote.NoShieldSite : AttemptNote.NoTowerSite);
-      break;
-    }
+        ? shieldBuildCell(world, me, general.position, radius, local, towerCells, profile, skip)
+        : towerBuildCell(
+            world,
+            general.position,
+            radius,
+            local,
+            fresh,
+            stats,
+            profile,
+            kind,
+            cover,
+            skip,
+          );
 
     // Запечатать проход себе — законный ход по правилам игры и почти
     // наверняка ошибка по замыслу: своё войско выходит из своей базы,
     // и последняя закрытая щель останавливает его так же надёжно, как чужое.
-    // Обход карты здесь один и только для уже выбранного места — но
-    // по занятости, УЖЕ учитывающей заказанное этим решением: группа
+    //
+    // Отказ не молчаливый и не окончательный: отвергнутое место
+    // откладывается, и берётся следующее по ценности. Перебор ограничен
+    // `sealRetries`, потому что каждая проверка стоит обхода карты.
+    // Проверять КАЖДОГО кандидата было бы нельзя — это сотни обходов
+    // за решение.
+    //
+    // Занятость при этом УЖЕ учитывает заказанное этим решением: группа
     // способна запереть проход тем, чего не делает ни одна её постройка
     // по отдельности.
-    if (sealsApproach(world, me, local, cell)) {
+    const rejected = new Set<number>();
+    let cell = -1;
+    let sealed = false;
+
+    for (let tries = 0; tries <= profile.building.sealRetries; tries += 1) {
+      cell = pick(rejected);
+      if (cell < 0) break;
+
+      if (!sealsApproach(world, me, local, cell)) {
+        sealed = false;
+        break;
+      }
+
+      rejected.add(cell);
+      cell = -1;
+      sealed = true;
+    }
+
+    if (sealed) {
       stopped = passing(AttemptNote.WouldSealPath);
+
+      // Стена, которой некуда встать, не повод бросать всю группу.
+      // Стена и башня — разные покупки: то, что перекрыть подход
+      // не вышло, ничего не говорит о том, есть ли место под башню.
+      // Прежде отказ обрывал группу целиком, и замер показал цену:
+      // построек за три минуты стало вдвое меньше, а осадный профиль
+      // перестал доживать до Теслы на всех пяти проверенных мирах.
+      //
+      // Счётчик построек уже сдвинут, поэтому следующий заход выберет
+      // другой вид, и цикл не топчется. Отдельная граница нужна лишь
+      // на случай профиля, у которого стена — каждая постройка.
+      if (shielding) {
+        skippedWalls += 1;
+        if (skippedWalls <= profile.building.sealRetries) continue;
+      }
+
+      break;
+    }
+
+    // Места нет — и это не то же самое, что «нет денег». Башне нужен
+    // ненакрытый путь в радиусе, стене — перекрываемый подход или своя
+    // башня, которую она прикроет; и то и другое кончается задолго
+    // до энергии.
+    if (cell < 0) {
+      stopped = passing(shielding ? AttemptNote.NoShieldSite : AttemptNote.NoTowerSite);
       break;
     }
 
@@ -1367,6 +1451,12 @@ const tryBuild = (
     blocked[cell] = 1;
     if (!shielding) {
       towerCells.push(cell);
+      addCover(
+        cover,
+        cell,
+        stats.structures[kind].attack / Math.max(1, stats.structures[kind].cooldownTicks),
+        towerRange,
+      );
       // Стена не стреляет, и накрывать ей нечего: помечается только башня.
       markCovered(fresh, cell, towerRange);
     }
@@ -1430,8 +1520,11 @@ const forEachBuildCandidate = (
 };
 
 /**
- * Место под башню: клетка, накрывающая как можно больше ЕЩЁ НЕ НАКРЫТОГО
- * вероятного пути.
+ * Место под башню: там, где ценность выше всего.
+ *
+ * Ценность — `siteValue`: покрытие ЕЩЁ НЕ накрытого вероятного пути плюс
+ * прибавка к живучести от взаимного прикрытия со своими башнями. Обе
+ * величины в энергии, поэтому сравниваются напрямую.
  *
  * Слово «ещё не накрытого» здесь главное. Прежняя мерка считала все клетки
  * пути подряд и не знала, что они уже простреливаются тремя своими
@@ -1440,46 +1533,68 @@ const forEachBuildCandidate = (
  * Счётчик врал: три башни в скальном горле и три в чистом поле накрывают
  * совершенно разное.
  *
- * При равном покрытии выбирается ближайшая к чужой базе — так башни
- * сами собой выстраиваются в сторону противника, а не кольцом вокруг
- * генерала.
+ * Но у той же мерки есть и обратная беда: накрытые своими клетки
+ * вычитаются, значит лучшее место — всегда подальше от своих. Разброс
+ * башен оказался не случайностью, а замыслом алгоритма, и платой за него
+ * были две трети башен, потерянных за матч. Прикрытие тянет обратно,
+ * и спор двух сил решается сравнением, а не правилом.
+ *
+ * При равной ценности выбирается место с большей ПЛОТНОСТЬЮ вражеского
+ * потока — той же, что в оценке рубежей: доля пути, пройденная войсками
+ * противника от их базы. Прежде здесь стояла прямая дистанция до чужой
+ * базы; плотность отвечает на тот же вопрос, но по дороге, а не сквозь
+ * скалы, и меряется тем же, чем меряется рубеж.
+ *
+ * Плотность именно РАЗРЕШАЕТ НИЧЬЮ, а не входит множителем, и это
+ * не мелочь. Множитель удалённости, применённый к покупке, обращает
+ * в ноль ценность башни у собственной базы — той самой, что расстреливает
+ * прорвавшихся в двух шагах от командного центра; беда эта названа
+ * в `value.ts` и повторять её незачем.
  *
  * Если накрывать нечего вовсе, место не выбирается. Это не пропуск хода,
  * а отказ от бесполезной покупки: та же нулевая выгода одновременно
  * уводит генерала на следующий рубеж, потому что рубежи оцениваются
  * той же меркой.
  */
-const towerBuildCell = (
+export const towerBuildCell = (
   world: WorldState,
-  me: PlayerId,
   from: Vec2,
   radius: number,
   approach: Approach,
   covered: Uint8Array,
-  rangeCells: number,
+  stats: PlayerStats,
+  profile: AiProfile,
+  kind: StructureKind,
+  cover: Float64Array,
+  skip: ReadonlySet<number> = new Set(),
 ): number => {
-  const enemyCell = world.map.baseCells[otherPlayer(me)];
-  if (enemyCell === undefined) return -1;
-
-  const enemy = cellCentre(enemyCell);
+  const baseline = stats.structures[kind];
+  const rangeCells = rangeInCells(baseline.range);
+  const damagePerTick = baseline.attack / Math.max(1, baseline.cooldownTicks);
 
   let best = -1;
-  let bestCoverage = 0;
-  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestValue = 0;
+  let bestDensity = -1;
 
-  forEachBuildCandidate(world, approach.occupancy, from, radius, (cell, point) => {
+  forEachBuildCandidate(world, approach.occupancy, from, radius, (cell) => {
+    if (skip.has(cell)) return;
+
     const coverage = freshCoverage(approach, covered, cell, rangeCells);
-    if (coverage < bestCoverage) return;
+    if (coverage <= 0) return;
 
-    const distance = distanceSquared(point, enemy);
-    if (coverage === bestCoverage && distance >= bestDistance) return;
+    const mutual = siteCover(approach, cover, cell, damagePerTick, rangeCells);
+    const value = siteValue(coverage, mutual, stats, profile);
+    if (value <= 0 || value < bestValue) return;
 
-    bestCoverage = coverage;
-    bestDistance = distance;
+    const density = flowDensity(approach, cell);
+    if (value === bestValue && density <= bestDensity) return;
+
+    bestValue = value;
+    bestDensity = density;
     best = cell;
   });
 
-  return bestCoverage > 0 ? best : -1;
+  return best;
 };
 
 /**
@@ -1493,8 +1608,33 @@ const towerBuildCell = (
  * башня, заказанная этим же решением, объекта в мире ещё не имеет —
  * он появится только после `step`, — а прикрывать её стеной уже
  * осмысленно. Ничего, кроме клетки, отсюда у башни и не спрашивалось.
+ *
+ * ## Почему здесь НЕТ узких мест коридора
+ *
+ * Замысел `fortify-approaches` предлагал ставить стену в горло подхода:
+ * клетка коридора шириной N перекрывает 1/N подхода, и перекрытие горла
+ * стоит десяти стен в широком месте. Правило было написано, измерено
+ * и снято — измерением же.
+ *
+ * По СВОЕЙ мерке оно работало: доля стен в горле выросла с 0,3% до 9,1%
+ * на двадцати матчах арены, медианная ширина коридора на глубине стены
+ * упала с восемнадцати клеток до двенадцати. Но зеркальный матч арены
+ * об усилении не говорит ничего — обе стороны играют одинаково, —
+ * и проверка осадного профиля против базового показала обратное:
+ * на ПЯТИ мирах из пяти осадный стал проигрывать раньше, а заказов Теслы
+ * за матч стало два вместо восемнадцати (правка живучести башен без стен
+ * давала восемнадцать, нынешний `main` — три).
+ *
+ * Причина не в подборе числа, а в самой затее: коридор один на обе
+ * стороны. Перекрывая горло, противник перекрывает и СВОЙ путь
+ * к чужой базе — своё войско в стену не стреляет и ломать её не станет,
+ * а обход стоит времени. Замысел предполагал, что в перекрытом горле
+ * врага будут ждать башни; но собирать их именно там противник не умеет,
+ * и получилось укрепление без гарнизона.
+ *
+ * Разбор целиком — в `openspec/changes/fortify-approaches/results.md`.
  */
-const shieldBuildCell = (
+export const shieldBuildCell = (
   world: WorldState,
   me: PlayerId,
   from: Vec2,
@@ -1502,6 +1642,7 @@ const shieldBuildCell = (
   approach: Approach,
   towers: readonly number[],
   profile: AiProfile,
+  skip: ReadonlySet<number> = new Set(),
 ): number => {
   const enemyCell = world.map.baseCells[otherPlayer(me)];
   if (enemyCell === undefined) return -1;
@@ -1514,6 +1655,8 @@ const shieldBuildCell = (
   let bestDistance = Number.POSITIVE_INFINITY;
 
   forEachBuildCandidate(world, approach.occupancy, from, radius, (cell, point) => {
+    if (skip.has(cell)) return;
+
     const distance = distanceSquared(point, enemy);
 
     const shields = towers.some((tower) => {

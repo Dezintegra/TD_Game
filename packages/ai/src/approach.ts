@@ -76,6 +76,104 @@ const ringAround = (cell: number): readonly number[] => {
 };
 
 /**
+ * Ширина коридора подхода по глубине от своей базы, в клетках.
+ *
+ * Индекс — глубина, значение — сколько клеток коридора лежит на ней.
+ * Там, где значение мало, подход узок: перекрыть одну клетку из трёх —
+ * треть подхода, одну из тридцати — ничего.
+ *
+ * Считается ОДНИМ проходом по уже посчитанным `onPath` и `fromHome`.
+ * Обхода карты не добавляется: оба массива уже в руках.
+ *
+ * ## Чего эта мерка не умеет
+ *
+ * Она видит узость **по глубине, а не топологию**. Два раздельных прохода
+ * одинаковой глубины — скажем, коридор, обтекающий скальный массив
+ * с двух сторон, — она сложит в одну ширину и не заметит, что перекрыть
+ * надо оба.
+ *
+ * Упрощение осознанное. Точное решение — минимальный разрез графа,
+ * задача другого класса сложности, и решать её дважды в секунду незачем.
+ * Ошибка при этом безопасная: мерка **недооценивает** ценность
+ * перекрытия при двух проходах, то есть противник осторожничает там,
+ * где мог бы действовать. Обратной ошибки — счесть узким широкое место —
+ * она не делает никогда.
+ */
+export const corridorWidths = (approach: Approach): Int32Array => {
+  let deepest = 0;
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (approach.onPath[cell] !== 1) continue;
+
+    const depth = approach.fromHome[cell] ?? UNREACHABLE;
+    if (depth === UNREACHABLE) continue;
+    if (depth > deepest) deepest = depth;
+  }
+
+  const widths = new Int32Array(deepest + 1);
+
+  for (let cell = 0; cell < MAP_CELL_COUNT; cell += 1) {
+    if (approach.onPath[cell] !== 1) continue;
+
+    const depth = approach.fromHome[cell] ?? UNREACHABLE;
+    if (depth === UNREACHABLE) continue;
+
+    widths[depth] = (widths[depth] ?? 0) + 1;
+  }
+
+  return widths;
+};
+
+/**
+ * Ширина коридора на глубине этой клетки. Ноль — клетка вне коридора.
+ *
+ * Обёртка нужна затем, что за пределами массива ширин ответ должен быть
+ * нулём, а не `undefined`: клетка глубже самого дальнего места коридора
+ * подходом не является вовсе.
+ */
+export const corridorWidthAt = (approach: Approach, widths: Int32Array, cell: number): number => {
+  const depth = approach.fromHome[cell] ?? UNREACHABLE;
+  if (depth === UNREACHABLE) return 0;
+
+  return widths[depth] ?? 0;
+};
+
+/**
+ * Есть ли у войск стороны путь от своей базы к чужой по проходимым клеткам.
+ *
+ * Тот же вопрос, что задаёт `sealsApproach`, только про мир как он есть,
+ * а не про мир с гипотетической постройкой. Отдельно нужен разбору:
+ * запертая армия означает, что сторона обыграла сама себя, и такой матч
+ * надо уметь отличить от матча, где просто не повезло.
+ *
+ * Ответ по построению одинаков для обеих сторон — занятость не различает
+ * владельцев, — но спрашивается он всё-таки про сторону: «своя база»
+ * и «чужая» у каждой свои, и правило навигации, из которого всё растёт,
+ * сформулировано именно так.
+ *
+ * Занятость можно передать готовую. Она стоит прохода по карте, и тому,
+ * кто спрашивает про обе стороны подряд, считать её дважды незачем.
+ */
+export const basesConnected = (
+  world: WorldState,
+  me: PlayerId,
+  occupancy: Occupancy = buildOccupancy(world.map, world.structures),
+): boolean => {
+  const homeCell = world.map.baseCells[me];
+  const enemyCell = world.map.baseCells[otherPlayer(me)];
+  // Карты без баз не бывает, а если она случилась — запирать нечего.
+  if (homeCell === undefined || enemyCell === undefined) return true;
+
+  const field = walkField(occupancy, baseSeeds(homeCell));
+
+  // Достижимость меряется по КОЛЬЦУ вокруг чужой базы, а не по её клеткам.
+  // Сами клетки базы непроходимы — их занимает сама база, — и поле
+  // до них не доходит никогда. Проверка по ним всегда отвечала бы
+  // «заперто», то есть запрещала бы вообще любую постройку.
+  return ringAround(enemyCell).some((cell) => (field[cell] ?? UNREACHABLE) !== UNREACHABLE);
+};
+
+/**
  * Запрёт ли постройка в этой клетке путь между базами.
  *
  * Проверка нужна потому, что запечатывание прохода — законный ход,
@@ -99,20 +197,10 @@ export const sealsApproach = (
   approach: Approach,
   cell: number,
 ): boolean => {
-  const homeCell = world.map.baseCells[me];
-  const enemyCell = world.map.baseCells[otherPlayer(me)];
-  if (homeCell === undefined || enemyCell === undefined) return false;
-
   const blocked = Uint8Array.from(approach.occupancy.blocked);
   blocked[cell] = 1;
 
-  const field = walkField({ ...approach.occupancy, blocked }, baseSeeds(homeCell));
-
-  // Достижимость меряется по КОЛЬЦУ вокруг чужой базы, а не по её клеткам.
-  // Сами клетки базы непроходимы — их занимает сама база, — и поле
-  // до них не доходит никогда. Проверка по ним всегда отвечала бы
-  // «заперто», то есть запрещала бы вообще любую постройку.
-  return !ringAround(enemyCell).some((cell) => (field[cell] ?? UNREACHABLE) !== UNREACHABLE);
+  return !basesConnected(world, me, { ...approach.occupancy, blocked });
 };
 
 export const approachOf = (world: WorldState, me: PlayerId): Approach | undefined => {

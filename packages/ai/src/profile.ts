@@ -231,6 +231,7 @@ export interface AiProfile {
     readonly cellsAroundGeneral: number;
     /** В скольких клетках от своей башни имеет смысл ставить стену. */
     readonly shieldRadiusCells: number;
+    readonly sealRetries: number;
     /**
      * Доли видов башни: сумма весов задаёт вероятности, как у состава войска.
      *
@@ -723,6 +724,10 @@ export const BASELINE_PROFILE: AiProfile = deepFreeze({
     wallEvery: 4,
     cellsAroundGeneral: 8,
     shieldRadiusCells: 2,
+    // Два запасных места. Обход карты на каждую попытку, а строит
+    // противник несколько раз в минуту: три обхода на постройку —
+    // это цена, которую видно на арене, а не в шуме.
+    sealRetries: 2,
     // Только базовые башни — ровно то, что было зашито в коде до появления
     // весов. Снайперская получает ноль, и это не забывчивость, а прежнее
     // поведение, записанное явно.
