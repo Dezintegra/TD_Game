@@ -154,7 +154,8 @@ describe('догон по истории', () => {
     const asks = (): number =>
       table.outgoing.filter((message) => message.type === MessageType.HistoryFrom).length;
 
-    for (let frames = 0; frames < 1_000 && (table.guest.confirmed?.tick ?? 0) <= BROUGHT; ) {
+    let frames = 0;
+    while (frames < 1_000 && (table.guest.confirmed?.tick ?? 0) <= BROUGHT) {
       frames += 1;
       table.guest.advance(BUDGET);
 
@@ -194,7 +195,9 @@ describe('догон по истории', () => {
 
     expect(table.guest.status).toBe('playing');
     expect(table.guest.confirmed?.tick).toBe(303);
-    expect(table.outgoing.filter((message) => message.type === MessageType.HistoryFrom)).toEqual([]);
+    expect(table.outgoing.filter((message) => message.type === MessageType.HistoryFrom)).toEqual(
+      [],
+    );
   });
 
   it('участник без часов догоняет целиком в момент получения', () => {
