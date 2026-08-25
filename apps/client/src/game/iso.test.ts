@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { MAP_CELL_COUNT, PROJECTION_YAW_DEG } from '@td/shared';
 import {
   CELL_SCREEN_AREA_PX,
+  CELL_SCREEN_HEIGHT_PX,
   MAP_BOUNDS,
   screenToWorld,
   visibleCellCount,
@@ -50,6 +51,19 @@ describe('проекция поля', () => {
 
     expect(Math.abs(alongX.x)).not.toBeCloseTo(Math.abs(alongY.x), 1);
     expect(alongX.y).not.toBeCloseTo(alongY.y, 1);
+  });
+
+  it('высота клетки на экране равна расстоянию между её верхом и низом', () => {
+    // Величина считается независимо от самой проекции — прямым замером
+    // ромба клетки: верхняя вершина в начале координат, нижняя — в углу,
+    // до которого дошли по обеим осям сразу.
+    const bottom = worldToScreen(1, 1);
+
+    expect(CELL_SCREEN_HEIGHT_PX).toBeCloseTo(bottom.y - worldToScreen(0, 0).y, 9);
+
+    // И то же число из углов проекции, чтобы правка масштаба или наклона
+    // не прошла мимо: 63 × (sin 40° + cos 40°) × sin 35°.
+    expect(CELL_SCREEN_HEIGHT_PX).toBeCloseTo(50.91, 2);
   });
 
   it('начало координат совпадает с северным углом карты', () => {
