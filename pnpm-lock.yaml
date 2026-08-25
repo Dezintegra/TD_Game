@@ -100,6 +100,22 @@ importers:
         specifier: ^6.0.7
         version: 6.4.3(@types/node@22.20.1)(tsx@4.23.12)
 
+  apps/computer:
+    dependencies:
+      '@td/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
+      '@td/bot':
+        specifier: workspace:*
+        version: link:../../packages/bot
+      '@td/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.12
+
   apps/server:
     dependencies:
       '@td/ai':

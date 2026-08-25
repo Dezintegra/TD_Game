@@ -50,6 +50,7 @@ FROM base AS manifests
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/arena/package.json apps/arena/
 COPY apps/client/package.json apps/client/
+COPY apps/computer/package.json apps/computer/
 COPY apps/server/package.json apps/server/
 COPY packages/ai/package.json packages/ai/
 COPY packages/bot/package.json packages/bot/
