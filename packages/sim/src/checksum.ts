@@ -51,6 +51,11 @@ export const checksum = (state: WorldState): number => {
     hash = mix(hash, player.energy);
     hash = mix(hash, player.targetStructure);
     hash = mix(hash, player.stance);
+    // Тик готовности пусковой установки. Величина меняет исход команд —
+    // пуск либо состоится, либо будет отклонён, — а значит расхождение
+    // по ней обязано обнаруживаться сверкой, а не через минуту
+    // по разошедшимся матчам.
+    hash = mix(hash, player.nukeReadyAtTick);
 
     for (const upgrade of player.upgrades) {
       hash = mix(hash, upgrade.level);

@@ -14,6 +14,9 @@ import {
   FIRST_MISSILE_SIDE,
   GENERAL_STATS,
   GENERAL_WEAPON,
+  NUKE_COOLDOWN_MAX_LEVEL,
+  NUKE_COOLDOWN_MIN_TICKS,
+  NUKE_COOLDOWN_TICKS,
   NUKE_COST,
   NUKE_DAMAGE,
   NUKE_DELAY_TICKS,
@@ -42,8 +45,10 @@ import {
   VETERAN_UNIT_PPM,
   energy,
   isArmedStructure,
+  isUpgradeMaxed,
   killsToNextRank,
-  nukeCost,
+  nukeCooldownTicks,
+  nukeLaunchCost,
   upgradeBranchIndex,
   veteranStructurePpm,
   veteranStructurePpmOf,
@@ -147,20 +152,55 @@ describe('баланс: соотношения из игрового замыс�
     expect(STRUCTURE_STATS[StructureKind.TowerSniper].range).toBeGreaterThan(tesla.range);
   });
 
-  it('ядерный удар при базовом радиусе стоит шестнадцать базовых юнитов', () => {
+  it('удар без единого купленного уровня стоит шестнадцать базовых юнитов', () => {
     expect(NUKE_COST).toBe(BASE_UNIT_COST * 16);
+    expect(nukeLaunchCost(0, 0)).toBe(NUKE_COST);
   });
 
-  it('удар в десять клеток стоит вдвое против прежних пятидесяти юнитов', () => {
-    // Платят за площадь, поэтому удвоение основания удваивает цену
-    // на всём диапазоне разом: круг в десять клеток стоил пятидесяти
-    // базовых стоимостей до введения прокачки и стоит ста после
-    // удорожания.
-    expect(nukeCost(cellsToUnits(10))).toBe(BASE_UNIT_COST * 100);
+  it('уровень радиуса удорожает пуск на пять процентов', () => {
+    expect(nukeLaunchCost(1, 0)).toBe(applyPpm(NUKE_COST, compoundPpm(5, 1)));
+    expect(nukeLaunchCost(1, 0) / NUKE_COST).toBeCloseTo(1.05, 2);
   });
 
-  it('цена растёт квадратом радиуса', () => {
-    expect(nukeCost(NUKE_RADIUS * 2)).toBe(NUKE_COST * 4);
+  it('уровень мощности удорожает пуск на десять процентов', () => {
+    expect(nukeLaunchCost(0, 1) / NUKE_COST).toBeCloseTo(1.1, 2);
+  });
+
+  it('накрытая площадь растёт быстрее цены пуска', () => {
+    // Ровно то, ради чего прежняя цена по площади и была отменена.
+    // Уровень радиуса даёт двадцать процентов радиуса, то есть сорок
+    // четыре процента накрытой площади, а стоит пять процентов цены.
+    // Пока это неравенство держится, прокачка радиуса окупается.
+    // Сравниваются ПРИБАВКИ, а не сами величины: 1,44 против 1,05
+    // отличаются в полтора раза, а прибавки — 44 процента против пяти —
+    // почти в девять, и говорит о выгоде именно вторая пара.
+    const areaGain = 1.2 * 1.2 - 1;
+    const priceGain = nukeLaunchCost(1, 0) / NUKE_COST - 1;
+
+    expect(areaGain).toBeGreaterThan(priceGain * 8);
+  });
+
+  it('откат цену пуска не двигает', () => {
+    // Учащение ударов оплачено ценой самой ветки, а не ценой каждого
+    // пуска. Довода у `nukeLaunchCost` для отката нет вовсе — этот тест
+    // сторожит, что его туда не добавят молча.
+    expect(nukeLaunchCost.length).toBe(2);
+  });
+
+  it('откат: минута между пусками, тридцать секунд предел, шаг десять', () => {
+    expect(NUKE_COOLDOWN_TICKS).toBe(TICKS_PER_SECOND * 60);
+    expect(NUKE_COOLDOWN_MIN_TICKS).toBe(TICKS_PER_SECOND * 30);
+    expect(nukeCooldownTicks(0)).toBe(TICKS_PER_SECOND * 60);
+    expect(nukeCooldownTicks(1)).toBe(TICKS_PER_SECOND * 50);
+    expect(nukeCooldownTicks(2)).toBe(TICKS_PER_SECOND * 40);
+    expect(nukeCooldownTicks(3)).toBe(TICKS_PER_SECOND * 30);
+  });
+
+  it('уровней отката ровно три, и ниже предела он не опускается', () => {
+    expect(NUKE_COOLDOWN_MAX_LEVEL).toBe(3);
+    // Второй рубеж: покупку четвёртого уровня отклоняет ядро, но и сам
+    // расчёт отрицательным откатом не отвечает.
+    expect(nukeCooldownTicks(99)).toBe(NUKE_COOLDOWN_MIN_TICKS);
   });
 
   it('базовый радиус ядерного удара — четыре клетки', () => {
@@ -453,10 +493,10 @@ describe('баланс: дальность юнитов прокачиваетс
     // Защита сохранённых записей матчей: индекс ветки едет в команде
     // покупки, и вставка в середину превратила бы старые записи
     // в бессмыслицу.
-    // Дописано двумя заходами: сначала дальность снайпера и Теслы,
-    // затем мощность и радиус ядерного удара. Порядок дописывания
-    // и есть порядок хвоста.
-    const nuclear = 2;
+    // Дописано тремя заходами: сначала дальность снайпера и Теслы,
+    // затем мощность и радиус ядерного удара, затем откат. Порядок
+    // дописывания и есть порядок хвоста.
+    const nuclear = 3;
     const ranged = 2;
     const end = UPGRADE_BRANCHES.length;
 
@@ -550,38 +590,82 @@ describe('баланс: ветки прокачки', () => {
     );
   });
 
-  it('ветки с пороговым эффектом дорожают на 25 процентов, прочие на 10', () => {
+  it('цена уровня растёт по трём ставкам: 10 обычные, 25 пороговые, 20 ядерные', () => {
     // Ускоренный рост цены — не привилегия экономики, а признак ветки,
-    // у которой уровень меняет не количество, а качество. У экономики это
-    // самоусиление, у дальности юнита — выход за круг ответного огня,
-    // у радиуса удара — расширение накрытого круга, единственным
-    // ограничителем которого цена и осталась.
+    // у которой уровень меняет не количество, а качество: у экономики
+    // это самоусиление, у дальности юнита — выход за круг ответного
+    // огня.
     //
-    // Мощность заряда сюда не входит намеренно: она меняет именно
-    // количество — сколько прочности снято, — и дорожает как всё
-    // количественное.
-    const steep = (entry: (typeof UPGRADE_BRANCHES)[number]): boolean =>
-      (entry.target === UpgradeTarget.Base && entry.stat !== UpgradeStat.NukeDamage) ||
-      (entry.stat === UpgradeStat.Range &&
-        (entry.target === UpgradeTarget.UnitSniper || entry.target === UpgradeTarget.UnitTesla));
+    // Три ядерные ветки стоят особняком и дорожают ОДИНАКОВО между
+    // собой. Прежде мощность росла на десять, а радиус на двадцать
+    // пять — три соседние строки одного столбца, дорожающие вразнобой,
+    // читаются не как решение, а как недосмотр.
+    const NUCLEAR: readonly UpgradeStat[] = [
+      UpgradeStat.NukeDamage,
+      UpgradeStat.NukeRadius,
+      UpgradeStat.NukeCooldown,
+    ];
+
+    const rateOf = (entry: (typeof UPGRADE_BRANCHES)[number]): number => {
+      if (NUCLEAR.includes(entry.stat)) return 20;
+      if (entry.target === UpgradeTarget.Base) return 25;
+      if (
+        entry.stat === UpgradeStat.Range &&
+        (entry.target === UpgradeTarget.UnitSniper || entry.target === UpgradeTarget.UnitTesla)
+      ) {
+        return 25;
+      }
+      return 10;
+    };
 
     for (const entry of UPGRADE_BRANCHES) {
-      expect(entry.costGrowthPercent).toBe(steep(entry) ? 25 : 10);
+      expect(entry.costGrowthPercent).toBe(rateOf(entry));
     }
   });
 
-  it('у каждой ветки положительная цена и ненулевой эффект', () => {
+  it('у каждой ветки положительная цена', () => {
     for (const entry of UPGRADE_BRANCHES) {
       expect(entry.baseCost).toBeGreaterThan(0);
-      expect(entry.effectPercent).not.toBe(0);
     }
+  });
+
+  it('нулевая прибавка за уровень есть ровно у одной ветки — у отката', () => {
+    // Ноль здесь означает «множитель не используется», а не «уровень
+    // ничего не даёт»: откат считается ступенями прямо из уровня.
+    // Исключение обязано оставаться единственным, иначе следующая
+    // ветка с нулём окажется просто забытой.
+    const idle = UPGRADE_BRANCHES.filter((entry) => entry.effectPercent === 0);
+
+    expect(idle.map((entry) => entry.stat)).toEqual([UpgradeStat.NukeCooldown]);
+  });
+
+  it('потолок уровня есть ровно у одной ветки — у отката', () => {
+    const capped = UPGRADE_BRANCHES.filter((entry) => entry.maxLevel !== undefined);
+
+    expect(capped.map((entry) => entry.stat)).toEqual([UpgradeStat.NukeCooldown]);
+    expect(capped[0]?.maxLevel).toBe(NUKE_COOLDOWN_MAX_LEVEL);
+  });
+
+  it('ветка без потолка не достигает его никогда', () => {
+    const attack =
+      UPGRADE_BRANCHES[upgradeBranchIndex(UpgradeTarget.UnitAssault, UpgradeStat.Attack)];
+    const cooldown =
+      UPGRADE_BRANCHES[upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeCooldown)];
+
+    expect(attack).toBeDefined();
+    expect(cooldown).toBeDefined();
+    if (attack === undefined || cooldown === undefined) return;
+
+    expect(isUpgradeMaxed(attack, 1_000)).toBe(false);
+    expect(isUpgradeMaxed(cooldown, NUKE_COOLDOWN_MAX_LEVEL - 1)).toBe(false);
+    expect(isUpgradeMaxed(cooldown, NUKE_COOLDOWN_MAX_LEVEL)).toBe(true);
   });
 
   it('шаг вдвое против общего есть только у двух ядерных веток', () => {
     // Правило «прибавка единая для всех веток» сохраняется, и его
     // единственное исключение обязано оставаться единственным. Ветка
     // юнита действует на десятки объектов весь матч, ядерная — на одно
-    // событие за игру, и за радиус вдобавок платят дважды: ценой уровня
+    // событие за игру, и за обе вдобавок платят дважды: ценой уровня
     // и ценой каждого пуска.
     const doubled = UPGRADE_BRANCHES.filter((entry) => entry.effectPercent === 20);
 

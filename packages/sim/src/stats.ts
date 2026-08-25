@@ -18,7 +18,8 @@ import {
   UpgradeStat,
   UpgradeTarget,
   applyPpm,
-  nukeCost,
+  nukeCooldownTicks,
+  nukeLaunchCost,
   veteranStructurePpmOf,
   veteranUnitPpmOf,
 } from '@td/shared';
@@ -72,6 +73,22 @@ const effectPpm = (player: PlayerState, target: UpgradeTarget, stat: UpgradeStat
   if (index < 0) return PPM_ONE;
 
   return player.upgrades[index]?.effectPpm ?? PPM_ONE;
+};
+
+/**
+ * Число купленных уровней ветки. Ноль, если такой ветки не существует.
+ *
+ * Нужна там, где характеристика выводится НЕ из накопленного множителя.
+ * Таких мест два, и оба ядерные: цена пуска растёт от уровней радиуса
+ * и мощности, а откат уменьшается ступенями по числу уровней. В обоих
+ * случаях сложный процент не подходит — обоснование при
+ * `nukeLaunchCost` и `nukeCooldownTicks` в балансе.
+ */
+const levelOf = (player: PlayerState, target: UpgradeTarget, stat: UpgradeStat): number => {
+  const index = branchIndexOf(target, stat);
+  if (index < 0) return 0;
+
+  return player.upgrades[index]?.level ?? 0;
 };
 
 /** Цена покупки объекта с учётом подорожания от прокачки этого типа. */
@@ -136,11 +153,20 @@ export interface NukeBaseline {
   /** Мощность заряда в единицах прочности. */
   readonly damage: number;
   /**
-   * Цена пуска. Выводится из радиуса — платят за накрытую площадь, —
+   * Цена пуска. Выводится из купленных уровней радиуса и мощности,
    * но лежит здесь готовой: её спрашивают и интерфейс, и противник
    * под управлением компьютера, и оба обязаны спрашивать одно и то же.
    */
   readonly cost: number;
+  /**
+   * Откат пусковой установки в тиках — сколько пройдёт от этого пуска
+   * до следующего возможного.
+   *
+   * Это ДЛИНА отката, а не оставшееся время: когда установка будет
+   * готова, знает сам игрок (`nukeReadyAtTick`), а здесь лежит
+   * характеристика, которую двигает прокачка.
+   */
+  readonly cooldownTicks: number;
 }
 
 export interface PlayerStats {
@@ -265,15 +291,19 @@ const generalBaseline = (player: PlayerState): GeneralBaseline => {
  * строения, а мощность и радиус заряда среди них не значатся.
  */
 const nukeBaseline = (player: PlayerState): NukeBaseline => {
-  const radius = applyPpm(
-    NUKE_RADIUS,
-    effectPpm(player, UpgradeTarget.Base, UpgradeStat.NukeRadius),
-  );
+  // Радиус и мощность считаются множителями, как всё прочее в игре.
+  // Цена пуска и откат — по числу УРОВНЕЙ: первая потому, что процент
+  // за уровень у неё свой и вдвое меньше прибавки к радиусу, второй
+  // потому, что уменьшается ровными десятками секунд, а ровные десятки
+  // постоянным множителем не выражаются.
+  const radiusLevel = levelOf(player, UpgradeTarget.Base, UpgradeStat.NukeRadius);
+  const damageLevel = levelOf(player, UpgradeTarget.Base, UpgradeStat.NukeDamage);
 
   return {
-    radius,
+    radius: applyPpm(NUKE_RADIUS, effectPpm(player, UpgradeTarget.Base, UpgradeStat.NukeRadius)),
     damage: applyPpm(NUKE_DAMAGE, effectPpm(player, UpgradeTarget.Base, UpgradeStat.NukeDamage)),
-    cost: nukeCost(radius),
+    cost: nukeLaunchCost(radiusLevel, damageLevel),
+    cooldownTicks: nukeCooldownTicks(levelOf(player, UpgradeTarget.Base, UpgradeStat.NukeCooldown)),
   };
 };
 

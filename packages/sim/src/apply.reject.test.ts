@@ -5,13 +5,17 @@ import {
   DIRECTION_SOUTH,
   MAP_CELL_COUNT,
   PRODUCTION_QUEUE_CAP,
+  NUKE_COOLDOWN_MAX_LEVEL,
   RejectReason,
   StructureKind,
   Terrain,
   UnitType,
+  UpgradeStat,
+  UpgradeTarget,
   asPlayerId,
   asTickNumber,
   distanceSquared,
+  upgradeBranchIndex,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { createWorld } from './world.js';
@@ -72,6 +76,14 @@ const rejectionOf = (world: WorldState, command: Command): Rejection | undefined
   expect(next.rejections.length).toBeLessThanOrEqual(1);
   return next.rejections[0];
 };
+
+const cooldownBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeCooldown);
+
+/** Уровни игрока, у которого ветка отката уже упёрлась в потолок. */
+const cappedUpgrades = (world: WorldState, level: number): PlayerState['upgrades'] =>
+  (world.players[HUMAN]?.upgrades ?? []).map((state, index) =>
+    index === cooldownBranch ? { ...state, level } : state,
+  );
 
 const reasonOf = (world: WorldState, command: Command): RejectReason | undefined =>
   rejectionOf(world, command)?.reason;
@@ -429,6 +441,50 @@ describe('отказ в производстве, прокачке, цели и 
     const command: Command = { kind: CommandKind.LaunchNuke, ...at(), cell: farFromGeneral(world) };
 
     expect(reasonOf(world, command)).toBe(RejectReason.NotEnoughEnergy);
+  });
+
+  it('уровень отката предельный, и это не «нет такой ветки»', () => {
+    // Причины разведены намеренно: `InvalidArgument` означает поломку
+    // клиента и игроку сообщать нечего, а «уровень предельный» —
+    // осмысленную команду, отклонённую игровым правилом.
+    const world = patchPlayer(rich(), HUMAN, {
+      upgrades: cappedUpgrades(rich(), NUKE_COOLDOWN_MAX_LEVEL),
+    });
+    const command: Command = { kind: CommandKind.BuyUpgrade, ...at(), branch: cooldownBranch };
+
+    expect(reasonOf(world, command)).toBe(RejectReason.UpgradeMaxed);
+  });
+
+  it('ветка без потолка отказа не получает', () => {
+    const command: Command = { kind: CommandKind.BuyUpgrade, ...at(), branch: 0 };
+
+    expect(reasonOf(rich(), command)).toBeUndefined();
+  });
+
+  it('второй удар подряд отклонён по откату, а не по нехватке энергии', () => {
+    // Кошелёк здесь полон намеренно: «не остыла» означает «подожди»,
+    // «не хватает» — «копи», и подменить первое вторым значило бы
+    // соврать игроку, которому копить уже незачем.
+    const world = rich();
+    const cell = farFromGeneral(world);
+    const launched = step(world, [{ kind: CommandKind.LaunchNuke, ...at(), cell }]);
+
+    expect(launched.nukes).toHaveLength(1);
+    expect(reasonOf(launched, { kind: CommandKind.LaunchNuke, ...at(), cell })).toBe(
+      RejectReason.NukeOnCooldown,
+    );
+  });
+
+  it('отклонённый по откату удар энергии не стоит', () => {
+    const world = rich();
+    const cell = farFromGeneral(world);
+    const launched = step(world, [{ kind: CommandKind.LaunchNuke, ...at(), cell }]);
+    const before = launched.players[HUMAN]?.energy ?? 0;
+
+    const after = step(launched, [{ kind: CommandKind.LaunchNuke, ...at(), cell }]);
+
+    expect(after.nukes).toHaveLength(1);
+    expect(after.players[HUMAN]?.energy).toBeGreaterThan(before);
   });
 
   it('удар в запретной зоне у базы', () => {
