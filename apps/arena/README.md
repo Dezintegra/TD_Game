@@ -260,9 +260,15 @@ select d.phase_index as phase, c.arg0 as unit_type, count(*) as n
 доход за матч это сумма скоростей, помноженная на `TICKS_PER_SECOND`.
 
 Цена пуска в базе не лежит вовсе, и подставлять её приходится снаружи:
-`NUKE_COST` при базовых уровнях. Для профиля, качающего радиус и мощность,
-это НИЖНЯЯ ГРАНИЦА — каждый купленный уровень радиуса удорожает пуск
-на пять процентов, мощности на десять.
+`NUKE_COST` при базовых уровнях — 12 000 внутренних единиц, то есть
+шестнадцать базовых стоимостей юнита. Для профиля, качающего радиус
+и мощность, это НИЖНЯЯ ГРАНИЦА: каждый купленный уровень радиуса
+удорожает пуск на пять процентов, мощности — на десять.
+
+Единицы внутренние, и путать их с видимыми нельзя. `ENERGY_SCALE`
+равен `TICKS_PER_SECOND`, поэтому всё, что лежит в базе, — и `energy`,
+и `income_per_tick` — в тридцать раз больше того, что игрок видит
+на экране.
 
 ```sql
 with income as (select match_id, player, sum(income_per_tick) * 30 as earned
@@ -271,7 +277,7 @@ with income as (select match_id, player, sum(income_per_tick) * 30 as earned
                    from command where kind = 5 and accepted = 1   -- 5 — LaunchNuke
                   group by match_id, player)
 select sum(coalesce(s.launches, 0)) as launches, sum(i.earned) as earned,
-       round(100.0 * sum(coalesce(s.launches, 0)) * 400 / sum(i.earned), 2) as pct
+       round(100.0 * sum(coalesce(s.launches, 0)) * 12000 / sum(i.earned), 2) as pct
   from income i left join strikes s
     on s.match_id = i.match_id and s.player = i.player;
 ```
