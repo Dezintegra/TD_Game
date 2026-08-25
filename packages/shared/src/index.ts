@@ -11,3 +11,4 @@ export * from './computer.js';
 export * from './player.js';
 export * from './histogram.js';
 export * from './metrics.js';
+export * from './readings.js';
