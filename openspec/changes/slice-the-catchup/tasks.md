@@ -40,7 +40,7 @@
 - [x] 3.3 `advance()` крутит качалку до проверки `status !== 'playing'`:
       догон идёт в состоянии `catching-up`, и сегодняшняя проверка
       его бы отсекла.
-- [ ] 3.4 Цикл отрисовки в `apps/client/src/game/bootstrap.ts` делит
+- [x] 3.4 Цикл отрисовки в `apps/client/src/game/bootstrap.ts` делит
       общий бюджет между `scene.bakeTerrain` и догоном, отдавая
       запеканию остаток первым (`design.md`, раздел 5).
       `TERRAIN_BAKE_BUDGET_MS` уступает место общему числу.
