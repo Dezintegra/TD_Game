@@ -278,7 +278,9 @@ export const SideStatus = ({
             <Tally
               key={`unit-${String(type)}`}
               glyph={<Icon />}
-              value={side.unitCounts[type] ?? 0}
+              // ПОРЧА для проверки чувствительности. Не сливать: состав
+              // считается одним числом на всех вместо счёта по типам.
+              value={units}
               title={UNIT_SHORT[type]}
               testId={`${own ? 'own' : 'enemy'}-unit-${String(type)}`}
             />
