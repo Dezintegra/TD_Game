@@ -44,6 +44,12 @@ const history = (throughTick: number): ServerMessage => ({
   commands: [],
 });
 
+const frame = (tick: number): ServerMessage => ({
+  type: MessageType.TickFrame,
+  tick,
+  commands: [],
+});
+
 interface Bench {
   readonly guest: MatchGuest;
   readonly outgoing: ClientMessage[];
@@ -128,6 +134,67 @@ describe('догон по истории', () => {
     expect(table.guest.status).toBe('playing');
     expect(table.guest.confirmed?.tick).toBe(TICKS);
     expect(new Set(portions)).toEqual(new Set([1]));
+  });
+
+  it('пока отложенное не доиграно, продолжения не просит', () => {
+    // Сервер ушёл дальше, чем принесла история: продолжение понадобится,
+    // но не сейчас. Прежде запрос уходил по факту разбора сообщения —
+    // при нарезке это означало бы «каждый кадр», и сервер отвечал бы
+    // историей на каждый.
+    const AHEAD = 900;
+    const BROUGHT = 599;
+    const BUDGET = 5;
+
+    const table = bench({ clock: true });
+    table.guest.receive(welcome(AHEAD));
+    // Первая просьба, отправленная приветствием, к делу не относится.
+    table.outgoing.length = 0;
+    table.guest.receive(history(BROUGHT));
+
+    const asks = (): number =>
+      table.outgoing.filter((message) => message.type === MessageType.HistoryFrom).length;
+
+    for (let frames = 0; frames < 1_000 && (table.guest.confirmed?.tick ?? 0) <= BROUGHT; ) {
+      frames += 1;
+      table.guest.advance(BUDGET);
+
+      // Проверка стоит внутри цикла, а не после него: смысл требования
+      // в том, что за ВСЁ время проигрывания не ушло ни одного запроса,
+      // а не в том, сколько их набралось к концу.
+      if ((table.guest.confirmed?.tick ?? 0) <= BROUGHT) expect(asks()).toBe(0);
+    }
+
+    expect(table.guest.confirmed?.tick).toBe(BROUGHT + 1);
+
+    // Отложенное кончилось, сервер впереди — вот теперь ровно одна
+    // просьба, и с того тика, до которого доиграли.
+    expect(asks()).toBe(1);
+    const asked = table.outgoing.find((message) => message.type === MessageType.HistoryFrom);
+    if (asked?.type === MessageType.HistoryFrom) expect(asked.tick).toBe(BROUGHT + 1);
+  });
+
+  it('живые кадры во время догона доигрываются, и продолжения не просят', () => {
+    const BROUGHT = 299;
+    const BUDGET = 5;
+
+    const table = bench({ clock: true });
+    table.guest.receive(welcome(302));
+    table.outgoing.length = 0;
+    table.guest.receive(history(BROUGHT));
+
+    // Кадры, пришедшие посреди догона, ложатся в тот же буфер и ждут
+    // своей очереди. Выбрасывать их нельзя: чаще всего именно ими
+    // отставание и закрывается, и второй запрос истории оказывается
+    // не нужен вовсе.
+    for (const tick of [300, 301, 302]) table.guest.receive(frame(tick));
+
+    for (let frames = 0; frames < 1_000 && table.guest.status !== 'playing'; frames += 1) {
+      table.guest.advance(BUDGET);
+    }
+
+    expect(table.guest.status).toBe('playing');
+    expect(table.guest.confirmed?.tick).toBe(303);
+    expect(table.outgoing.filter((message) => message.type === MessageType.HistoryFrom)).toEqual([]);
   });
 
   it('участник без часов догоняет целиком в момент получения', () => {

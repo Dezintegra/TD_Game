@@ -653,6 +653,23 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
     if (!paused && buffered.size > 0 && !awaitingHistory && status !== 'desynced') {
       awaitingHistory = true;
       options.send({ type: MessageType.HistoryFrom, tick: confirmed.tick });
+    } else if (
+      !paused &&
+      buffered.size === 0 &&
+      !awaitingHistory &&
+      confirmed.tick < serverTick &&
+      (status === 'catching-up' || status === 'desynced')
+    ) {
+      // Отложенное кончилось, а сервер всё ещё впереди: просим
+      // продолжение. Это единственное место, откуда его просят по ходу
+      // догона, — и стоит оно здесь, а не в разборе сообщения, ровно
+      // потому, что здесь известно, что играть больше нечего.
+      //
+      // Состояние в условии не украшение. В обычной игре сервер впереди
+      // всегда, на задержку канала, и без этой проверки участник просил
+      // бы историю каждый кадр всю партию.
+      awaitingHistory = true;
+      options.send({ type: MessageType.HistoryFrom, tick: confirmed.tick });
     }
 
     if (status === 'catching-up' && buffered.size === 0 && !awaitingHistory) {
@@ -775,17 +792,12 @@ export const createMatchGuest = (options: MatchGuestOptions): MatchGuest => {
             buffered.set(tick, map.get(tick) ?? NO_COMMANDS);
           }
 
-          // Просьба о продолжении уходит ДО проигрывания, как и прежде:
-          // сервер ушёл дальше принесённого отрезка, и об этом известно
-          // уже сейчас. Тик известен тоже — следующий за последним
-          // в истории; проверка `buffered` отсекает случай, когда
-          // продолжение уже лежит у нас живым кадром.
-          const next = message.throughTick + 1;
-          if (next < serverTick && buffered.get(next) === undefined) {
-            awaitingHistory = true;
-            options.send({ type: MessageType.HistoryFrom, tick: next });
-          }
-
+          // Просьбы о продолжении здесь нет, и это не забывчивость.
+          // При нарезке «сразу после разбора» означало бы «каждый кадр»:
+          // качалка ещё не доиграла принесённое, а запрос уже ушёл,
+          // и сервер ответил бы историей на каждый — петля завелась бы
+          // не от арифметики, а от места вызова. Просит `drain`, когда
+          // отложенное кончилось.
           drain(arrivalBudget());
           break;
         }
