@@ -124,6 +124,45 @@ describe('догон по истории', () => {
     expect(portions.reduce((sum, value) => sum + value, 0)).toBe(TICKS);
   });
 
+  it('показываемое состояние обновляется на каждой порции', () => {
+    // Требование спецификации — «догон сопровождается показом хода
+    // восстановления» — держится ровно на этом. Доля восстановления
+    // считается клиентом в обработчике показа (`onPredicted`), и пока
+    // догон шёл одним куском, обработчик звался один раз: полоса,
+    // посчитанная верно, появлялась готовой уже после догона.
+    //
+    // Проверяется здесь, а не сквозным тестом, и намеренно. В браузере
+    // догон может уложиться в один кадр — тогда показывать нечего,
+    // и сквозная проверка молча проходила бы, ничего не проверив.
+    // Здесь же порции заданы бюджетом, и утверждение точное.
+    const TICKS = 600;
+    const shown: number[] = [];
+
+    const guest = createMatchGuest({
+      send: () => {},
+      now: tickingClock(),
+      onPredicted: (world) => shown.push(world.tick),
+    });
+
+    guest.receive(welcome(TICKS));
+    guest.receive(history(TICKS - 1));
+
+    for (let frames = 0; frames < 1_000 && guest.status !== 'playing'; frames += 1) {
+      guest.advance(5);
+    }
+
+    expect(guest.status).toBe('playing');
+
+    // Показ обновился много раз, и каждый раз мир был дальше прежнего:
+    // именно это игрок и видит растущей полосой.
+    expect(shown.length).toBeGreaterThan(10);
+    const duringCatchUp = shown.filter((tick) => tick > 0 && tick < TICKS);
+    expect(duringCatchUp.length).toBeGreaterThan(10);
+    for (let index = 1; index < duringCatchUp.length; index += 1) {
+      expect(duringCatchUp[index]).toBeGreaterThan(duringCatchUp[index - 1] ?? -1);
+    }
+  });
+
   it('при нулевом остатке бюджета проигрывает по тику, но доигрывает', () => {
     const TICKS = 90;
 
