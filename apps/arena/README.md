@@ -248,6 +248,109 @@ select d.phase_index as phase, c.arg0 as unit_type, count(*) as n
 систематической ошибки в ней нет, и до и после правки она считается
 одинаково. Запрос целиком — в `src/report.ts`, он длинный.
 
+### Величины, которыми меряют траты противника
+
+Семь величин из предложения `fix-ai-spending`. Записаны здесь по той же
+причине, что и предыдущие: после правки мерить надо ТЕМ ЖЕ, а не похожим.
+Все семь считаются по пачке целиком, а не по матчу: одиночный матч
+об устройстве трат не говорит.
+
+**Доля дохода, ушедшая в удары.** Доход в базе лежит не суммой, а скоростью
+(`income_per_tick` в каждом снимке), и снимки идут раз в секунду, — значит
+доход за матч это сумма скоростей, помноженная на `TICKS_PER_SECOND`.
+
+Цена пуска в базе не лежит вовсе, и подставлять её приходится снаружи:
+`NUKE_COST` при базовых уровнях — 12 000 внутренних единиц, то есть
+шестнадцать базовых стоимостей юнита. Для профиля, качающего радиус
+и мощность, это НИЖНЯЯ ГРАНИЦА: каждый купленный уровень радиуса
+удорожает пуск на пять процентов, мощности — на десять.
+
+Единицы внутренние, и путать их с видимыми нельзя. `ENERGY_SCALE`
+равен `TICKS_PER_SECOND`, поэтому всё, что лежит в базе, — и `energy`,
+и `income_per_tick` — в тридцать раз больше того, что игрок видит
+на экране.
+
+```sql
+with income as (select match_id, player, sum(income_per_tick) * 30 as earned
+                  from sample group by match_id, player),
+     strikes as (select match_id, player, count(*) as launches
+                   from command where kind = 5 and accepted = 1   -- 5 — LaunchNuke
+                  group by match_id, player)
+select sum(coalesce(s.launches, 0)) as launches, sum(i.earned) as earned,
+       round(100.0 * sum(coalesce(s.launches, 0)) * 12000 / sum(i.earned), 2) as pct
+  from income i left join strikes s
+    on s.match_id = i.match_id and s.player = i.player;
+```
+
+**Ударов за матч.** Считаются ПРИНЯТЫЕ: отклонённая ядром команда удара
+не наносит, а решение противника тратит, и путать эти две беды нельзя.
+
+```sql
+select count(*) as launches, (select count(*) from match) as matches,
+       round(1.0 * count(*) / (select count(*) from match), 2) as per_match
+  from command where kind = 5 and accepted = 1;
+```
+
+**Энергия к концу матча.** Вторая половина, а не последний снимок: беда
+здесь в полке, на которую казна выходит и стоит, а не в цифре на последнем
+тике. Матчи разной длины, поэтому половина считается от предела каждого.
+
+```sql
+with span as (select match_id, max(tick) as last from sample group by match_id)
+select round(avg(s.energy), 0) as avg_energy, count(*) as samples
+  from sample s join span on span.match_id = s.match_id
+ where s.tick > span.last / 2;
+```
+
+**Живых юнитов.** Та же вторая половина. Рядом со средним считается доля
+снимков с крупным войском: среднее в пять машин при потолке в двести
+одинаково выходит и у того, кто всегда держит пять, и у того, кто копит
+до пятидесяти и теряет их разом.
+
+```sql
+with span as (select match_id, max(tick) as last from sample group by match_id)
+select round(avg(s.units_alive), 2) as avg_units,
+       sum(case when s.units_alive >= 25 then 1 else 0 end) as at_least_25,
+       count(*) as samples
+  from sample s join span on span.match_id = s.match_id
+ where s.tick > span.last / 2;
+```
+
+**Снято здоровья базы в ничьих.** Полное здоровье берётся из самой базы
+(`max(base_hp)` по матчу), а не из константы: числа баланса меняются,
+и запрос, знающий их наизусть, однажды соврёт молча.
+
+```sql
+with top as (select match_id, player, max(base_hp) as full
+               from sample group by match_id, player),
+     last as (select s.match_id, s.player, s.base_hp from sample s
+                join (select match_id, max(tick) as t from sample group by match_id) e
+                  on e.match_id = s.match_id and e.t = s.tick)
+select round(avg(100.0 * (t.full - l.base_hp) / t.full), 2) as pct_taken,
+       count(*) as sides
+  from last l join top t on t.match_id = l.match_id and t.player = l.player
+  join match m on m.match_id = l.match_id
+ where m.end_reason = 'timeout';
+```
+
+**Ничьих по времени.** `end_reason` отвечает прямо: `timeout` — упёрлись
+в предел, `base-destroyed` — кто-то победил.
+
+```sql
+select end_reason, count(*) as n from match group by end_reason;
+```
+
+**Доля решений с покупкой.** Считается по РЕШЕНИЯМ, а не по попыткам:
+за одно решение противник перебирает несколько трат, и покупка при этом
+совершается не более одной. Делить купленное на попытки значило бы
+занижать долю ровно во столько раз, сколько пунктов в порядке трат.
+
+```sql
+select (select count(distinct match_id || '/' || player || '/' || tick)
+          from attempt where result = 'bought') as bought,
+       (select count(*) from decision) as decisions;
+```
+
 ## Проверки баланса идут по расписанию
 
 Прогон на десятки матчей занимает машину надолго, поэтому посреди задачи

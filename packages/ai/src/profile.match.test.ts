@@ -213,6 +213,9 @@ describe('неприкосновенный запас держится, толь
   /** Доход, при котором запас ровно набирается за горизонт накопления. */
   const enough = NUKE_COST / (TICKS_PER_SECOND * BASELINE_PROFILE.spending.savingHorizonSeconds);
 
+  /** Цель, оправдывающая удар, есть — так это сообщается запасу. */
+  const AWAITED = true;
+
   it('базовый профиль не держит запас ни при каком доходе', () => {
     // Прежде это следовало из цены: удар стоил полусотни стоимостей
     // юнита и при доходе замера — четырнадцать за тик — объявлялся
@@ -222,22 +225,37 @@ describe('неприкосновенный запас держится, толь
     //
     // Проверяется обеими границами: и доходом замера, и заведомо
     // избыточным. Одной мало — первая проверяла бы достижимость,
-    // а не манеру.
-    expect(reserveOf(withReserve, 14, BASELINE_PROFILE)).toBe(0);
-    expect(reserveOf(withReserve, Math.ceil(enough) * 10, BASELINE_PROFILE)).toBe(0);
+    // а не манеру. И цель при этом названа: без неё проверка отвечала бы
+    // «ноль» по обстановке, а не по манере, то есть была бы пустой.
+    expect(reserveOf(withReserve, 14, BASELINE_PROFILE, 0, false, AWAITED)).toBe(0);
+    expect(
+      reserveOf(withReserve, Math.ceil(enough) * 10, BASELINE_PROFILE, 0, false, AWAITED),
+    ).toBe(0);
   });
 
-  it('у стратега запас держится, потому что он в ракету и вкладывается', () => {
+  it('у стратега запас держится, пока на карте есть по кому бить', () => {
     const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
     if (late === undefined) throw new Error('в профиле стратега нет фаз');
 
-    expect(reserveOf(late, 14, STRATEGIST_PROFILE)).toBe(NUKE_COST);
+    expect(reserveOf(late, 14, STRATEGIST_PROFILE, 0, false, AWAITED)).toBe(NUKE_COST);
+  });
+
+  it('целей нет — запаса нет и у стратега', () => {
+    // Главная правка `fix-ai-spending`: запас перестал быть свойством
+    // фазы и стал свойством обстановки. Держать деньги под удар,
+    // которого не по кому нанести, — и есть тот замкнутый круг, в котором
+    // энергия заперта, производить нечем, войско не растёт, скопления
+    // не набираются и удар не оправдан никогда.
+    const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
+    if (late === undefined) throw new Error('в профиле стратега нет фаз');
+
+    expect(reserveOf(late, 14, STRATEGIST_PROFILE)).toBe(0);
   });
 
   it('запас исчезает и у стратега, когда доход слишком мал', () => {
-    // Правило достижимости никуда не делось, оно лишь стало вторым
-    // условием после манеры: копить на то, чего не накопить, значит
-    // запрещать себе все покупки разом.
+    // Правило достижимости никуда не делось, оно лишь стало третьим
+    // условием после манеры и обстановки: копить на то, чего не накопить,
+    // значит запрещать себе все покупки разом.
     const late = STRATEGIST_PROFILE.phases[STRATEGIST_PROFILE.phases.length - 1];
     if (late === undefined) throw new Error('в профиле стратега нет фаз');
 
@@ -246,7 +264,7 @@ describe('неприкосновенный запас держится, толь
         NUKE_COST / (TICKS_PER_SECOND * STRATEGIST_PROFILE.spending.savingHorizonSeconds),
       ) - 1;
 
-    expect(reserveOf(late, meagre, STRATEGIST_PROFILE)).toBe(0);
+    expect(reserveOf(late, meagre, STRATEGIST_PROFILE, 0, false, AWAITED)).toBe(0);
   });
 
   it('граница проходит ровно там, где кончается горизонт накопления', () => {
