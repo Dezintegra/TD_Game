@@ -359,6 +359,21 @@ interface HudState {
   readonly visiblePercent: number;
   /** Доля непроходимых клеток на текущей карте, в процентах. */
   readonly rockPercent: number;
+  /**
+   * Действующий масштаб мира.
+   *
+   * Диагностическая величина, игроку не показывается. Нужна проверкам:
+   * «сколько клеток видно по вертикали» иначе не посчитать, а это
+   * главное число мобильной раскладки — при четырёх клетках стрелок
+   * и его мишень на экране одновременно не помещаются.
+   *
+   * В разметку уходит БЕЗ округления, в отличие от соседних диагностик.
+   * Те читает человек, и лишние знаки ему мешают; этот читает проверка,
+   * которая делит на него высоту поля. Округление до четырёх знаков
+   * стоило ей ровно того, ради чего она живёт: вместо десяти клеток
+   * выходило 9,999981, и проверка падала на верном коде.
+   */
+  readonly viewScale: number;
   readonly match: MatchSnapshot;
   /**
    * Сообщения об отклонённых командах игрока.
@@ -433,7 +448,7 @@ interface HudState {
   setFps(fps: number): void;
   /** Показания плавности разом: они меняются вместе и читаются вместе. */
   setSmoothness(smoothness: SmoothnessView): void;
-  setMapInfo(seed: number, visiblePercent: number, rockPercent: number): void;
+  setMapInfo(seed: number, visiblePercent: number, rockPercent: number, viewScale: number): void;
   setMatch(match: MatchSnapshot): void;
   setNotices(notices: readonly Notice[]): void;
   setPhase(phase: MatchPhaseView): void;
@@ -495,6 +510,7 @@ export const useHudStore = create<HudState>((set) => ({
   seed: 0,
   visiblePercent: 0,
   rockPercent: 0,
+  viewScale: 1,
   match: EMPTY_MATCH,
   notices: [],
   phase: 'connecting',
@@ -533,7 +549,8 @@ export const useHudStore = create<HudState>((set) => ({
         ? state
         : smoothness,
     ),
-  setMapInfo: (seed, visiblePercent, rockPercent) => set({ seed, visiblePercent, rockPercent }),
+  setMapInfo: (seed, visiblePercent, rockPercent, viewScale) =>
+    set({ seed, visiblePercent, rockPercent, viewScale }),
   setMatch: (match) => set({ match }),
   setNotices: (notices) => set({ notices }),
   setPhase: (phase) => set({ phase }),
@@ -574,8 +591,8 @@ export const hudActions = {
   registerPong: (latencyMs: number) => useHudStore.getState().registerPong(latencyMs),
   setFps: (fps: number) => useHudStore.getState().setFps(fps),
   setSmoothness: (smoothness: SmoothnessView) => useHudStore.getState().setSmoothness(smoothness),
-  setMapInfo: (seed: number, visiblePercent: number, rockPercent: number) =>
-    useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent),
+  setMapInfo: (seed: number, visiblePercent: number, rockPercent: number, viewScale: number) =>
+    useHudStore.getState().setMapInfo(seed, visiblePercent, rockPercent, viewScale),
   setMatch: (match: MatchSnapshot) => useHudStore.getState().setMatch(match),
   setNotices: (notices: readonly Notice[]) => useHudStore.getState().setNotices(notices),
   setPhase: (phase: MatchPhaseView) => useHudStore.getState().setPhase(phase),

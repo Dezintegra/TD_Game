@@ -1,6 +1,5 @@
 import { LOBBY_CAPACITY, LobbyError } from '@td/protocol';
-import { checkName } from '@td/shared';
-import { computerMindOf } from '@td/bot';
+import { checkName, computerMindOf } from '@td/shared';
 import type { MatchSide } from '@td/shared';
 import type { LobbySummary, LobbyView, MatchView, PlayerView } from '@td/protocol';
 

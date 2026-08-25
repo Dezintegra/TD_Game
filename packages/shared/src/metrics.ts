@@ -1,8 +1,14 @@
-import { createHistogram } from '@td/shared';
-import type { Histogram, HistogramOptions, HistogramSnapshot } from '@td/shared';
+import { createHistogram } from './histogram.js';
+import type { Histogram, HistogramOptions, HistogramSnapshot } from './histogram.js';
 
 /**
- * Приборы сервера и их отдача.
+ * Приборы и их отдача.
+ *
+ * Лежат в общем пакете, а не у сервера, потому что приборы нужны
+ * не одному процессу. Служба компьютерных дежурных уезжает в свой,
+ * и заминка её раздумий должна быть видна там же, где происходит, —
+ * иначе после переезда величины `td_ai_decision_*` просто исчезли бы
+ * из отдачи, и польза переезда осталась бы недоказуемой.
  *
  * Формат текстовый, прометеевский, и написан здесь своими руками,
  * а не взят библиотекой. Причина не в гордости: игровой сервер стоит

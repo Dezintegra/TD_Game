@@ -1,6 +1,13 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { bootGame, diagnostic, diagnosticNumber, number, openMatchMenu } from './helpers.js';
+import {
+  bootGame,
+  diagnostic,
+  diagnosticNumber,
+  number,
+  openMatchMenu,
+  unitTally,
+} from './helpers.js';
 
 /**
  * Сквозные проверки.
@@ -281,6 +288,22 @@ test('заказ юнита с клавиатуры доходит до симу
   await expect(page.getByTestId('unit-count')).not.toHaveText('0', { timeout: 8000 });
 });
 
+/**
+ * Запас подтверждённых тиков, после которого счётчикам можно верить.
+ *
+ * Своя команда назначается на «подтверждённый тик плюс задержка ввода»,
+ * а задержка ввода не превосходит девяти тиков — `INPUT_DELAY_MAX_TICKS`
+ * в `packages/shared/src/constants.ts`. Пока подтверждение не перешагнуло
+ * этот тик, показанный состав держится на командах, которые клиент ещё
+ * только надеется провести: сервер их, может быть, и не принял.
+ *
+ * Пятнадцать вместо девяти — запас, а не круглое число: полсекунды
+ * матча стоят дёшево. Но запас этот не бесконечный, и если предел
+ * задержки когда-нибудь поднимут выше пятнадцати, поднять придётся
+ * и здесь — иначе проверка снова начнёт верить предсказанию.
+ */
+const SETTLE_TICKS = 15;
+
 test('заказ пачки с зажатым модификатором даёт десять юнитов', async ({ page }) => {
   await bootGame(page);
 
@@ -289,16 +312,48 @@ test('заказ пачки с зажатым модификатором даё�
   // панели работают оба.
   await page.keyboard.press('Shift+Digit1');
 
-  await expect
-    .poll(async () => number(page, 'unit-count'), { timeout: 8000 })
-    .toBeGreaterThanOrEqual(10);
+  // Тик, с которого начинается отсчёт запаса, читается ПОСЛЕ нажатия:
+  // к этому мгновению команды уже отданы, значит назначены они не позже
+  // чем на «этот тик плюс задержка».
+  const orderedAt = (await unitTally(page)).confirmedTick;
 
-  // Заодно проверяется, что состав в верхней полосе считается ПО ТИПАМ,
-  // а не одним числом на всех: заказаны только штурмовики, и вырасти
-  // должен только их счётчик.
-  expect(await number(page, 'own-unit-0')).toBeGreaterThanOrEqual(10);
-  expect(await number(page, 'own-unit-1')).toBe(0);
-  expect(await number(page, 'own-unit-2')).toBe(0);
+  // Всё утверждение целиком — одной повторяемой попыткой, и оба условия
+  // внутри неё проверяются по ОДНОМУ снимку.
+  //
+  // Прежде здесь стояло ожидание суммарного счётчика, а следом отдельное
+  // чтение счётчика по типу — и 24.08.2026 проверка упала на прогоне
+  // 32783516359 с «ожидалось >= 10, получено 5», тогда как на снимке
+  // экрана с того же падения стояло честное «10». Между двумя чтениями
+  // прошла пересборка предсказания.
+  //
+  // Пачка — это десять отдельных команд, отданных подряд и назначенных
+  // на один тик. Сервер опоздавшие не теряет, а переносит на ближайший
+  // свободный (`clamp` в `packages/netplay/src/host.ts`), поэтому пачка
+  // законно разъезжается по двум соседним тикам. Клиент же показал все
+  // десять сразу — он предсказывал. Когда приходит кадр с первой
+  // половиной, предсказанные команды на этом тике забываются целиком
+  // (`forget` в `packages/netplay/src/guest.ts`), и счётчик на десятую
+  // долю секунды честно показывает пять. На загруженном runner'е окно
+  // это шире, и первое чтение попадало в пик, а второе — в провал.
+  //
+  // Ждать пика поэтому мало: пик рисует клиент, и он появился бы даже
+  // если бы сервер заказ отверг целиком. Ждём состояния, в котором
+  // предсказывать уже нечего.
+  await expect(async () => {
+    const tally = await unitTally(page);
+
+    // Заказ дошёл до сервера, а не только до предсказания.
+    expect(tally.confirmedTick).toBeGreaterThan(orderedAt + SETTLE_TICKS);
+
+    expect(tally.byType[0]).toBeGreaterThanOrEqual(10);
+
+    // Состав в верхней полосе считается ПО ТИПАМ, а не одним числом
+    // на всех: заказаны только штурмовики, и вырасти должен только их
+    // счётчик, а сумма обязана сойтись с ним одним.
+    expect(tally.byType[1]).toBe(0);
+    expect(tally.byType[2]).toBe(0);
+    expect(tally.total).toBe(tally.byType[0]);
+  }).toPass({ timeout: 15_000 });
 });
 
 test('режим строительства включается, а Esc сначала гасит его и лишь потом открывает меню', async ({
@@ -412,6 +467,25 @@ test('цель атаки назначается кнопкой-режимом',
   await page.keyboard.press('Escape');
   await expect(tile).not.toHaveCSS('border-color', 'rgb(0, 255, 41)');
   await expect(page.getByTestId('match-menu')).toBeHidden();
+});
+
+test('заказ постройки снимает выделение', async ({ page }) => {
+  await bootGame(page);
+
+  // Камера переносится к своей базе, и середина холста оказывается на ней.
+  // Способ надёжнее, чем гадать координаты клетки: база крупная, а кнопка
+  // ставит её ровно в центр.
+  await page.getByTestId('focus-base-select').click();
+
+  // Без `position`: Playwright сам целит в середину холста.
+  await page.locator('#scene canvas').click();
+  await expect(page.getByTestId('structure-info')).toBeVisible();
+
+  // Выбор вида постройки означает, что следующее нажатие по полю значит
+  // не «выбери», а «поставь». Окно сведений в этот момент закрывает игроку
+  // клетки — ровно те, в которые он прицеливается.
+  await page.getByTestId('build-1-select').click();
+  await expect(page.getByTestId('structure-info')).toBeHidden();
 });
 
 test('R сворачивает характеристики, оставляя плитки, и поле растёт', async ({ page }) => {
@@ -528,17 +602,27 @@ const sidesVisible = async (page: Page): Promise<void> => {
 const ORDER_TILES = ['train-0', 'train-1', 'train-2', 'build-1', 'build-2', 'build-3'] as const;
 
 /**
- * Где стоит заказ: сколько плиток за краем экрана, далеко ли последняя
- * от правого края и правда ли юниты правее построек.
+ * Где стоит заказ.
+ *
+ * Заказ теперь СТОЛБЕЦ у правого края поверх поля, а не строка в полосе,
+ * поэтому мерятся обе оси: `rightGap` сторожит прижатие к краю (дуга
+ * большого пальца), а `unitsTop` против `buildBottom` — порядок внутри
+ * столбца. Юниты обязаны стоять НИЖЕ построек: заказ юнита это одно
+ * нажатие, постановка постройки — два, и лучшее место в столбце
+ * достаётся частому действию.
+ *
+ * «За краем экрана» проверяется и по высоте: столбец из шести плиток
+ * в ландшафте укладывается в 311 точек впритык, и первая же лишняя
+ * точка высоты плитки выгонит верхнюю за верхний край поля.
  */
 const orderPlacement = async (
   page: Page,
-): Promise<{ offScreen: number; rightGap: number; unitsLeft: number; buildRight: number }> => {
-  const width = page.viewportSize()!.width;
+): Promise<{ offScreen: number; rightGap: number; unitsTop: number; buildBottom: number }> => {
+  const { width, height } = page.viewportSize()!;
   let offScreen = 0;
   let rightmost = 0;
-  let unitsLeft = Number.POSITIVE_INFINITY;
-  let buildRight = 0;
+  let unitsTop = Number.POSITIVE_INFINITY;
+  let buildBottom = 0;
 
   for (const id of ORDER_TILES) {
     const box = await page.getByTestId(id).boundingBox();
@@ -547,12 +631,43 @@ const orderPlacement = async (
       continue;
     }
     if (box.x < 0 || box.x + box.width > width + 1) offScreen += 1;
+    if (box.y < 0 || box.y + box.height > height + 1) offScreen += 1;
     rightmost = Math.max(rightmost, box.x + box.width);
-    if (id.startsWith('train-')) unitsLeft = Math.min(unitsLeft, box.x);
-    else buildRight = Math.max(buildRight, box.x + box.width);
+    if (id.startsWith('train-')) unitsTop = Math.min(unitsTop, box.y);
+    else buildBottom = Math.max(buildBottom, box.y + box.height);
   }
 
-  return { offScreen, rightGap: width - rightmost, unitsLeft, buildRight };
+  return { offScreen, rightGap: width - rightmost, unitsTop, buildBottom };
+};
+
+/**
+ * Сколько клеток видно по вертикали.
+ *
+ * Главная величина этого изменения: до него телефон в ландшафте
+ * показывал 4,3 клетки — меньше дальности выстрела, — и игрок физически
+ * не мог увидеть стрелка и его мишень одновременно.
+ *
+ * Считается высотой поля, делённой на высоту клетки при действующем
+ * масштабе. Высота клетки берётся не из кода клиента, а собирается здесь
+ * заново из углов проекции: проверка, зовущая проверяемую формулу,
+ * сверяла бы её с самой собой.
+ */
+const visibleRows = async (page: Page): Promise<number> => {
+  const box = await page.locator('#scene canvas').boundingBox();
+  if (box === null) return 0;
+
+  const scale = await diagnosticNumber(page, 'view-scale');
+  if (!Number.isFinite(scale) || scale === 0) return 0;
+
+  // 63 × (sin 40° + cos 40°) × sin 35° — высота ромба клетки на экране.
+  const yaw = (40 * Math.PI) / 180;
+  const cellHeight = 63 * (Math.sin(yaw) + Math.cos(yaw)) * Math.sin((35 * Math.PI) / 180);
+
+  // Округление до сотых намеренно. Дефолтный масштаб подобран так, чтобы
+  // клеток вышло РОВНО десять, и величина упирается в порог снизу:
+  // последний бит двоичной дроби решает, будет это 10 или 9,999999.
+  // Сотые доли клетки игроку не видны, а проверке дают устойчивость.
+  return Number((box.height / (cellHeight * scale)).toFixed(2));
 };
 
 /** Все ветки прокачки, показанные на экране. */
@@ -593,13 +708,15 @@ test.describe('телефон в портрете', () => {
     expect((await bottomOverflow(page)).x).toBeLessThanOrEqual(0);
     expect(await coveredButtons(page)).toBe(0);
 
-    // Весь заказ на экране и прижат к правому краю, под большой палец.
+    // Весь заказ на экране столбцом у правого края, под большой палец.
     const order = await orderPlacement(page);
     expect(order.offScreen).toBe(0);
     expect(order.rightGap).toBeLessThanOrEqual(12);
-    // Юниты правее построек: заказ юнита — одно нажатие, постановка
-    // постройки — два, и лучшее место достаётся частому действию.
-    expect(order.unitsLeft).toBeGreaterThan(order.buildRight);
+    // Юниты НИЖЕ построек: заказ юнита — одно нажатие, постановка
+    // постройки — два, и лучшее место в столбце достаётся частому
+    // действию. Раньше это же требование читалось «правее»: заказ был
+    // строкой в полосе.
+    expect(order.unitsTop).toBeGreaterThanOrEqual(order.buildBottom);
 
     // Цена видна и без подписи «цена»: число остаётся.
     await expect(page.getByTestId('train-0-cost')).toBeVisible();
@@ -621,7 +738,15 @@ test.describe('телефон в портрете', () => {
     // другое действие, и вешать его на похожее с виду число нельзя.
     expect(await page.getByTestId('base-health-enemy').evaluate((el) => el.tagName)).toBe('DIV');
 
-    expect(await fieldShare(page)).toBeGreaterThanOrEqual(70);
+    // Полосы внизу больше нет вовсе, и полю достаётся почти весь экран:
+    // 812 минус 114 верхней сводки — это 86 %. Прежний порог был 70,
+    // и держался он на полосе в 84 точки.
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(85);
+
+    // Главное число этого изменения. Портрет и раньше давал одиннадцать
+    // клеток, но проверялось это ничем: пропади они — заметил бы игрок,
+    // а не проверка.
+    expect(await visibleRows(page)).toBeGreaterThanOrEqual(10);
   });
 
   test('панель прокачки в портрете', async ({ page }) => {
@@ -686,9 +811,17 @@ test.describe('телефон в ландшафте', () => {
     const order = await orderPlacement(page);
     expect(order.offScreen).toBe(0);
     expect(order.rightGap).toBeLessThanOrEqual(12);
-    expect(order.unitsLeft).toBeGreaterThan(order.buildRight);
+    expect(order.unitsTop).toBeGreaterThanOrEqual(order.buildBottom);
 
-    expect(await fieldShare(page)).toBeGreaterThanOrEqual(54);
+    // 375 минус 64 верхней сводки — это 83 %. Прежний порог был 54,
+    // и держался он на полосе в 64 точки, то есть на пятой части
+    // всего экрана.
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(82);
+
+    // Ради этой строки всё и затевалось: было 4,3 клетки — меньше
+    // дальности выстрела, — и игрок физически не мог увидеть стрелка
+    // и его мишень одновременно.
+    expect(await visibleRows(page)).toBeGreaterThanOrEqual(10);
 
     // Из матча надо уметь выйти. На телефоне Esc нажать нечем, и до этой
     // кнопки выйти было нельзя ВООБЩЕ: ни выйти, ни сдаться, ни начать

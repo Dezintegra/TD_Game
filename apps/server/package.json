@@ -12,8 +12,6 @@
     "test:match": "vitest run --config vitest.match.config.ts"
   },
   "dependencies": {
-    "@td/ai": "workspace:*",
-    "@td/bot": "workspace:*",
     "@td/netplay": "workspace:*",
     "@td/protocol": "workspace:*",
     "@td/shared": "workspace:*",

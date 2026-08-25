@@ -56,12 +56,26 @@ export interface ComputerServiceOptions {
   /**
    * Как выдаются идентификаторы дежурных.
    *
-   * Случайные и известные только серверу, который эту службу запустил:
-   * по ним он отличает компьютер от человека и помечает комнату.
-   * Предсказуемый идентификатор позволил бы назваться компьютером
-   * со стороны — и врать игроку о том, с кем он играет.
+   * Случайные. Прежде этого хватало и как доказательства: идентификаторы
+   * придумывал сервер, и назваться компьютером со стороны было
+   * невозможно просто потому, что угадать их нельзя.
+   *
+   * Теперь доказывает не случайность, а **секрет**: служба объявляет свои
+   * личности, предъявляя его, и сервер верит объявлению, а не догадке
+   * о происхождении идентификатора. Случайность при этом остаётся —
+   * она мешает случайному совпадению с прозвищем живого игрока.
    */
   readonly makeId: (index: number) => string;
+  /**
+   * Общий секрет, которым служба заверяет свои личности перед сервером.
+   *
+   * Не указан — служба не объявляется вовсе, и сервер её дежурных
+   * компьютерными не считает. Это не поломка, а рабочий случай: так
+   * ведут себя тесты, которым сервер нужен, а соперник нет.
+   */
+  readonly secret?: string;
+  /** Как часто подтверждать, что служба жива, миллисекунды. */
+  readonly refreshMs?: number;
   readonly log?: (message: string) => void;
   /**
    * Приборы раздумий. Отсутствуют — не меряется ничего.
@@ -123,6 +137,10 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
   const idleTarget = Math.max(1, Math.min(options.idleTarget ?? 3, maxMatches));
   const name = options.name ?? DEFAULT_NAME;
   const title = options.title ?? DEFAULT_TITLE;
+  // Пустой секрет считается отсутствующим: «задан, но пуст» и «не задан»
+  // означают здесь одно и то же — сверять нечем.
+  const secret = options.secret === undefined || options.secret === '' ? undefined : options.secret;
+  const refreshMs = options.refreshMs ?? 20_000;
 
   const api: LobbyApi = createLobbyApi({
     apiUrl: options.apiUrl,
@@ -227,6 +245,24 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
     }
   };
 
+  /**
+   * Сказать серверу, кто мы такие.
+   *
+   * Объявляются все когда-либо выданные личности, а не только живые
+   * дежурные: отыгравший агент уходит, а его сторона в только что
+   * законченном матче обязана остаться помеченной компьютерной. Иначе
+   * на экране итога соперник задним числом превратился бы в человека —
+   * ровно та беда, ради которой `issued` и заведён отдельно от `agents`.
+   */
+  const announce = async (): Promise<void> => {
+    if (closed || secret === undefined || issued.size === 0) return;
+
+    await api.declare(
+      secret,
+      [...issued].map((id) => ({ id, profile: options.profile ?? DEFAULT_PROFILE_ID })),
+    );
+  };
+
   const hire = (): void => {
     const id = options.makeId(nextIndex);
     nextIndex += 1;
@@ -245,6 +281,12 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
     issued.add(id);
     agent.stop = api.listen(id, (view) => react(agent, view));
     options.log?.(`Компьютер ${agent.name} дежурит`);
+
+    // Объявляемся сразу за наймом, а не только по таймеру: между
+    // созданием дежурного и первым обновлением проходят секунды,
+    // и всё это время его комната стояла бы непомеченной — то есть
+    // выглядела бы человеческой.
+    void announce();
   };
 
   /**
@@ -262,7 +304,56 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
     while (idleCount() < idleTarget && agents.size < maxMatches) hire();
   };
 
-  refill();
+  /**
+   * Служба начинается с рукопожатия, а не с найма.
+   *
+   * Пустое объявление — способ спросить «а меня вообще примут?», не
+   * назвав ещё ни одной личности. Ответ решает, работать ли вообще.
+   *
+   * Почему это обязательно. Дежурный, чьё объявление сервер не принял,
+   * всё равно создал бы комнату — и она встала бы в списке
+   * **непомеченной**, то есть человеческой на вид. Игрок сел бы играть
+   * с компьютером, думая, что играет с человеком. Недоступная игра
+   * с компьютером — неприятность; игра, которая врёт о сопернике, —
+   * поломка обещания, на котором стоит вся спецификация
+   * `computer-player`.
+   *
+   * Поэтому при закрытой регистрации служба не поднимает никого,
+   * а список комнат остаётся пустым — и клиент показывает игроку
+   * причину, как того требует «Отсутствие компьютера видно,
+   * а не молчаливо».
+   */
+  if (secret === undefined) {
+    options.log?.(
+      'Секрет не задан: служба не объявляется и дежурных не поднимает. ' +
+        'Игра с компьютером будет недоступна.',
+    );
+  } else {
+    void api.declare(secret, []).then((accepted) => {
+      if (closed) return;
+
+      if (!accepted) {
+        options.log?.(
+          'Сервер не принял объявление службы: регистрация закрыта или секрет не тот. ' +
+            'Дежурных не поднимаю — иначе их комнаты встали бы непомеченными.',
+        );
+        return;
+      }
+
+      refill();
+    });
+  }
+
+  /**
+   * Подтверждать, что служба жива.
+   *
+   * Таймер помечен `unref`: он не должен держать процесс. Иначе тесты,
+   * поднявшие службу, не завершились бы никогда — те же грабли, что
+   * у таймеров реестра матчей.
+   */
+  const heartbeat =
+    secret === undefined ? undefined : setInterval(() => void announce(), refreshMs);
+  heartbeat?.unref?.();
 
   return {
     owns: (playerId) => issued.has(playerId),
@@ -275,7 +366,13 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
       return idleCount();
     },
     close() {
+      // Снимаем объявление ДО того, как отметились закрытыми: `announce`
+      // и `withdraw` молчат после `closed`, и порядок здесь решает,
+      // исчезнут комнаты сразу или через минуту.
+      if (secret !== undefined && issued.size > 0) void api.withdraw(secret, [...issued]);
+
       closed = true;
+      if (heartbeat !== undefined) clearInterval(heartbeat);
       for (const agent of [...agents.values()]) retire(agent);
     },
   };

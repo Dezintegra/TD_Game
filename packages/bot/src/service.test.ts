@@ -75,9 +75,17 @@ const createFake = (): Fake => {
   };
 };
 
+/** Секрет, которым служба заверяет свои личности перед сервером. */
+const SECRET = 'проба-секрета';
+
 /**
  * По умолчанию дежурный один: так проще проверять правила по одному.
  * Запас наготове — отдельная история, и у неё свой тест.
+ *
+ * Секрет передаётся всегда, потому что без него служба не поднимает
+ * никого вовсе — и это не поблажка тестам, а настоящее правило:
+ * дежурный, чьё объявление не принято, создал бы непомеченную комнату,
+ * и игрок сел бы играть с компьютером, думая, что играет с человеком.
  */
 const service = (fake: Fake, maxMatches = 2, idleTarget = 1) =>
   createComputerService({
@@ -87,6 +95,7 @@ const service = (fake: Fake, maxMatches = 2, idleTarget = 1) =>
     openSocket: fake.openSocket,
     maxMatches,
     idleTarget,
+    secret: SECRET,
     makeId: (index) => `computer-${String(index)}`,
   });
 
@@ -106,6 +115,14 @@ const roomView = (players: number, ready: boolean): PlayerView => ({
   match: null,
 });
 
+/**
+ * Дать микрозадачам доехать.
+ *
+ * Нужно теперь и сразу после создания службы: она начинается
+ * с рукопожатия — пустого объявления «а меня примут?» — и найм идёт
+ * только после ответа. Между созданием и первым дежурным появился
+ * зазор, которого раньше не было.
+ */
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('разбор потока состояния', () => {
@@ -251,6 +268,7 @@ describe('служба компьютерных соперников', () => {
       maxMatches: 2,
       idleTarget: 1,
       profile: 'swarm-2026-08',
+      secret: SECRET,
       makeId: (index) => `computer-${String(index)}`,
     });
     await settle();
@@ -269,6 +287,81 @@ describe('служба компьютерных соперников', () => {
     expect(running.profileOf('computer-0')).toBe(DEFAULT_PROFILE_ID);
 
     running.close();
+  });
+
+  it('без секрета не поднимает никого', async () => {
+    // Не поблажка настройке, а защита игрока. Дежурный, чьё объявление
+    // сервер не принял, всё равно создал бы комнату — и она встала бы
+    // в списке НЕПОМЕЧЕННОЙ, то есть человеческой на вид. Игрок сел бы
+    // играть с компьютером, думая, что играет с человеком.
+    //
+    // Недоступная игра с компьютером — неприятность. Игра, которая врёт
+    // о сопернике, — поломка обещания, на котором стоит весь замысел.
+    const fake = createFake();
+    const running = createComputerService({
+      apiUrl: 'http://bench',
+      wsUrl: 'ws://bench/game',
+      fetch: fake.fetch,
+      openSocket: fake.openSocket,
+      maxMatches: 2,
+      idleTarget: 1,
+      makeId: (index) => `computer-${String(index)}`,
+    });
+    await settle();
+
+    expect(fake.listeners).toHaveLength(0);
+    expect(running.idleCount).toBe(0);
+    expect(fake.posts.filter((post) => post.path.endsWith('/api/lobbies'))).toHaveLength(0);
+
+    running.close();
+  });
+
+  it('отвергнутое объявление тоже никого не поднимает', async () => {
+    // Секрет задан, но сервер его не принял: регистрация закрыта или
+    // секрет не тот. Итог обязан быть тем же, что и без секрета вовсе.
+    const fake = createFake();
+    const refusing: Fake = {
+      ...fake,
+      fetch: (url, init) =>
+        url.endsWith('/api/computer/declare')
+          ? Promise.resolve({
+              ok: false,
+              status: 403,
+              body: null,
+              text: () => Promise.resolve(''),
+            })
+          : fake.fetch(url, init),
+    };
+
+    const running = service(refusing);
+    await settle();
+
+    expect(fake.listeners).toHaveLength(0);
+    expect(running.idleCount).toBe(0);
+
+    running.close();
+  });
+
+  it('объявляет свои личности и снимает объявление на выходе', async () => {
+    const fake = createFake();
+    const running = service(fake);
+    await settle();
+
+    await fake.push('computer-0', emptyView);
+
+    const declared = fake.posts.filter((post) => post.path.endsWith('/api/computer/declare'));
+    // Первое объявление — пустое рукопожатие, дальше идут личности.
+    expect(declared.length).toBeGreaterThanOrEqual(2);
+    expect(declared[0]?.body['secret']).toBe(SECRET);
+    expect(declared.at(-1)?.body['identities']).toEqual([
+      { id: 'computer-0', profile: DEFAULT_PROFILE_ID },
+    ]);
+
+    running.close();
+
+    const withdrawn = fake.posts.filter((post) => post.path.endsWith('/api/computer/withdraw'));
+    expect(withdrawn).toHaveLength(1);
+    expect(withdrawn[0]?.body['ids']).toEqual(['computer-0']);
   });
 
   it('закрытие уводит дежурных из комнат', async () => {

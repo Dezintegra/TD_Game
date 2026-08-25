@@ -476,7 +476,16 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
   const publishMapInfo = (world: WorldState): void => {
     const { width, height } = scene.viewportSize;
-    hudActions.setMapInfo(seed, visibleMapPercent(width, height), rockPercent(world.map));
+    // Видимая площадь делится на масштаб дважды — по обеим осям:
+    // уменьшенная картинка показывает больше мира в том же окне.
+    // Без этого доля карты врала бы ровно на телефоне, где масштаб
+    // и появляется.
+    hudActions.setMapInfo(
+      seed,
+      visibleMapPercent(width / scene.scale, height / scene.scale),
+      rockPercent(world.map),
+      scene.scale,
+    );
   };
 
   const loop = createRenderLoop({
@@ -603,6 +612,15 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     setStance: (stance) => send({ kind: CommandKind.SetStance, stance }),
     nuke: (cell) => send({ kind: CommandKind.LaunchNuke, cell }),
     pan: (dx, dy) => scene.panBy(dx, dy),
+    zoom: (factor, x, y) => {
+      scene.zoomBy(factor, x, y);
+      // Масштаб меняет видимую долю карты, а она — диагностическая
+      // величина, по которой проверки судят о числе видимых клеток.
+      // Не обнови её здесь — она осталась бы от дефолтного масштаба,
+      // то есть врала бы ровно после жеста.
+      const world = guest.predicted;
+      if (world !== null) publishMapInfo(world);
+    },
     jumpTo: (cell) => scene.centreOnCell(cell),
     recentre: () => scene.setFollowing(true),
     toggleSound: () => {

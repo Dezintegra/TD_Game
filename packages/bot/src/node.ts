@@ -58,6 +58,15 @@ export interface NodeComputerOptions {
   readonly log?: (message: string) => void;
   /** Приборы раздумий. Отсутствуют — не меряется ничего. */
   readonly measure?: ParticipantMeasure | undefined;
+  /**
+   * Общий секрет, которым служба заверяет свои личности перед сервером.
+   *
+   * Пустой или отсутствующий означает, что служба не объявляется вовсе
+   * и её дежурные компьютерными не считаются.
+   */
+  readonly secret?: string;
+  /** Как часто подтверждать, что служба жива, миллисекунды. */
+  readonly refreshMs?: number;
 }
 
 export const startComputerService = (options: NodeComputerOptions): ComputerService => {
@@ -78,5 +87,7 @@ export const startComputerService = (options: NodeComputerOptions): ComputerServ
     ...(options.title === undefined ? {} : { title: options.title }),
     ...(options.log === undefined ? {} : { log: options.log }),
     ...(options.measure === undefined ? {} : { measure: options.measure }),
+    ...(options.secret === undefined ? {} : { secret: options.secret }),
+    ...(options.refreshMs === undefined ? {} : { refreshMs: options.refreshMs }),
   });
 };

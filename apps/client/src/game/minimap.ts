@@ -80,12 +80,31 @@ export const MINIMAP_ASPECT = PROJECTED_WIDTH / PROJECTED_HEIGHT;
  * Вписывать карту в квадрат больше нельзя: в проекции она параллелограмм,
  * и в квадрате заняла бы меньше трети площади, а остальное игрок принимал бы
  * за часть прибора.
+ *
+ * `insetRight` — ширина того, что лежит поверх поля у правого края.
+ * На телефоне там стоит столбец заказа, и без этого отступа он накрывает
+ * миникарту собой: замерено на 812 × 375 — столбец занимал правые
+ * 52 точки, миникарта начиналась на 660 и уходила под него на треть.
+ * Прибор ориентирования, наполовину закрытый кнопками, — это уже
+ * не прибор.
+ *
+ * Число приходит снаружи, а не вычисляется здесь: ширину столбца знает
+ * CSS, и второе её объявление в коде разошлось бы с первым молча.
  */
-export const minimapLayout = (viewportWidth: number, viewportHeight: number): MinimapLayout => {
+export const minimapLayout = (
+  viewportWidth: number,
+  viewportHeight: number,
+  insetRight = 0,
+): MinimapLayout => {
   const height = Math.round(Math.min(150, Math.max(96, viewportHeight * 0.17)));
   const width = Math.round(height * MINIMAP_ASPECT);
 
-  return { x: viewportWidth - width - PADDING_PX, y: PADDING_PX, width, height };
+  return {
+    x: viewportWidth - width - PADDING_PX - insetRight,
+    y: PADDING_PX,
+    width,
+    height,
+  };
 };
 
 /** Во сколько раз спроецированная карта ужимается до размера миникарты. */
