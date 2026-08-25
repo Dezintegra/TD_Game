@@ -1,5 +1,7 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  ATTACK_STANCES,
+  ATTACK_STANCE_LABEL,
   AttackStance,
   BASE_BUILD_EXCLUSION,
   BASE_INCOME_PER_TICK,
@@ -36,12 +38,12 @@ import {
   nukeBaseExclusion,
   upgradeBranchIndex,
 } from '@td/shared';
-import type { Command, PlayerId } from '@td/shared';
+import type { Command, PlayerId, Vec2 } from '@td/shared';
 import { createWorld } from './world.js';
 import type { PlayerState, StructureState, WorldState } from './world.js';
 import { step } from './step.js';
 import { checksum } from './checksum.js';
-import { cellAt, cellCentre, cellIndex } from './map.js';
+import { cellAt, cellCentre, cellIndex, cellX, squaredDistanceToFootprint } from './map.js';
 import { buildOccupancy } from './occupancy.js';
 import { playerStats } from './stats.js';
 
@@ -1314,6 +1316,138 @@ describe('остановка юнита на противнике', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// Огонь на ходу
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Движущийся юнит стреляет.
+ *
+ * Механика не новая: стрельба решается отдельно от движения и от него
+ * не зависит вовсе. Но заявлена она нигде не была, и до режимов атаки это
+ * ничего не стоило — встретивший противника юнит всё равно вставал.
+ * С «Прорывом» по умолчанию огонь на ходу стал обычным делом, и первая же
+ * правка движения сломала бы его молча.
+ *
+ * Поэтому тесты раздела зелены и на нынешнем коде. Так и задумано: они
+ * защищают, а не чинят.
+ */
+describe('огонь на ходу', () => {
+  const MINE = cellIndex(20, 20);
+  /** Ровно две клетки — дальность штурмовика, то есть впритык. */
+  const THEIRS = cellIndex(20, 22);
+
+  /** Здоровья с запасом: тесты про выстрелы, а не про то, кто кого убьёт. */
+  const TOUGH = 1_000_000;
+
+  const ASSAULT = UNIT_STATS[UnitType.Assault];
+
+  const unitOf = (world: WorldState, id: number) =>
+    world.units.find((unit) => unit.id === asEntityId(id));
+
+  /** Мой юнит и чужой в двух клетках от него. Режим у обоих — «Прорыв». */
+  const facingEachOther = (): WorldState =>
+    withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
+
+  /** Обе стороны в «Бою»: оба юнита сцепляются и стоят. */
+  const bothEngage = (world: WorldState): WorldState => ({
+    ...world,
+    players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
+  });
+
+  /**
+   * В «Бою» только соперник: мой юнит идёт, чужой стои́т.
+   *
+   * Стоящая мишень нужна затем, чтобы отрезок сравнения был честным:
+   * уйди она сама, число выстрелов различалось бы из-за её перемещения,
+   * а не из-за моего.
+   */
+  const enemyEngages = (world: WorldState): WorldState =>
+    patchPlayer(world, 1, { stance: AttackStance.Engage });
+
+  /**
+   * Окно ровно на два выстрела: первый на первом тике, второй — как только
+   * истечёт перезарядка. Выражено через перезарядку, а не числом: правка
+   * скорострельности не должна молча превращать окно в один выстрел.
+   */
+  const TWO_SHOTS = ASSAULT.cooldownTicks + 1;
+
+  /** Куда пришёл мой юнит за окно и сколько урона он успел нанести. */
+  const outcome = (world: WorldState): { position: Vec2 | undefined; damage: number } => {
+    const after = run(world, TWO_SHOTS);
+    return {
+      position: unitOf(after, 900)?.position,
+      damage: TOUGH - (unitOf(after, 901)?.health ?? 0),
+    };
+  };
+
+  it('юнит стреляет и смещается за один и тот же тик', () => {
+    const after = step(facingEachOther(), []);
+
+    // Урон проверяется точным числом, а не «меньше прежнего»: так видно,
+    // что выстрел был ровно один и полной силы, а не что кто-то кого-то
+    // задел по дороге.
+    expect(unitOf(after, 900)?.position).not.toEqual(cellCentre(MINE));
+    expect(unitOf(after, 901)?.health).toBe(TOUGH - ASSAULT.attack);
+  });
+
+  it('число выстрелов не зависит от того, идёт юнит или стоит', () => {
+    const standing = outcome(bothEngage(facingEachOther()));
+    const moving = outcome(enemyEngages(facingEachOther()));
+
+    // Контроль: миры и правда различаются тем, ради чего заведены, —
+    // один юнит стои́т, другой идёт. Без него тест сравнивал бы две
+    // одинаковые расстановки и проходил бы всегда.
+    expect(standing.position).toEqual(cellCentre(MINE));
+    expect(moving.position).not.toEqual(cellCentre(MINE));
+
+    expect(standing.damage / ASSAULT.attack).toBe(2);
+    expect(moving.damage / ASSAULT.attack).toBe(2);
+  });
+
+  it('урон на ходу равен урону с места', () => {
+    expect(outcome(enemyEngages(facingEachOther())).damage).toBe(
+      outcome(bothEngage(facingEachOther())).damage,
+    );
+  });
+
+  it('встречные колонны расходятся, обменявшись огнём', () => {
+    // Ситуация, которую замысел прежде объявлял ошибкой, а теперь считает
+    // штатной: две колонны прошли друг мимо друга, каждая понесла потери,
+    // и ни одна не встала. Отсутствием события было бы, если бы они
+    // не стреляли.
+    //
+    // Дороги параллельны и разведены на полторы клетки: колонны всю
+    // дорогу остаются в радиусе друг у друга, но бортами не задевают,
+    // и расталкивание в исход не вмешивается.
+    const AHEAD = cellIndex(21, 20);
+    const ONCOMING = cellIndex(21, 22);
+
+    let world = withUnitAt(withUnitAt(openWorld(), 0, AHEAD, TOUGH, 900), 1, ONCOMING, TOUGH, 901);
+    const apartAtStart = distanceSquared(cellCentre(AHEAD), cellCentre(ONCOMING));
+
+    for (let tick = 0; tick < TWO_SHOTS; tick += 1) {
+      const before = world;
+      world = step(world, []);
+
+      // Остановка — это несдвинувшийся за тик юнит, и ловить её надо
+      // каждый тик. Проверка одного лишь итога пропустила бы юнита,
+      // простоявшего половину отрезка: дойти он всё равно успел бы.
+      expect(unitOf(world, 900)?.position).not.toEqual(unitOf(before, 900)?.position);
+      expect(unitOf(world, 901)?.position).not.toEqual(unitOf(before, 901)?.position);
+    }
+
+    // Обменялись именно огнём, а не поводом: по выстрелу с каждой стороны
+    // и оба полной силы.
+    expect(unitOf(world, 900)?.health).toBe(TOUGH - ASSAULT.attack);
+    expect(unitOf(world, 901)?.health).toBe(TOUGH - ASSAULT.attack);
+
+    const mine = unitOf(world, 900)?.position ?? cellCentre(AHEAD);
+    const theirs = unitOf(world, 901)?.position ?? cellCentre(ONCOMING);
+    expect(distanceSquared(mine, theirs)).toBeGreaterThan(apartAtStart);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // Остановка юнита на стреляющей постройке
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -1410,6 +1544,148 @@ describe('остановка юнита на стреляющей построй
 
     expect(positionAfter(facing(far), 4)).not.toEqual(cellCentre(MINE));
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Остановка у назначенной цели
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Тесла обстреливает назначенную цель, не входя в радиус башни.
+ *
+ * Это единственное, ради чего она существует: дальность у неё на клетку
+ * больше дальности базовой башни, и остановка ровно на своей дальности
+ * означает, что башню достаёт она, а башня её — нет.
+ *
+ * Режим на это не влияет и не должен. «Прорыв» отменяет остановку
+ * на встречном — на живом противнике и на стреляющей постройке, — а не
+ * на назначенной цели: дошедшему до цели идти больше некуда. Перебор
+ * идёт по всем режимам списком, а не по двум названным: появится третий —
+ * и он проверится сам, а не будет забыт.
+ */
+describe('остановка у назначенной цели', () => {
+  const START = cellIndex(20, 20);
+  /** Семь клеток — на клетку дальше, чем достаёт Тесла: ей есть куда идти. */
+  const TARGET = cellIndex(20, 27);
+
+  const TOUGH = 1_000_000;
+  const TESLA = UNIT_STATS[UnitType.Tesla];
+  const TOWER_RANGE = STRUCTURE_STATS[StructureKind.TowerBasic].range;
+
+  /**
+   * Тиков с запасом на лишнюю клетку подхода. Считается от скорости Теслы,
+   * а не берётся числом: Тесла ходит втрое медленнее пехоты, и правка
+   * её скорости не должна молча обрывать тест на полдороге.
+   */
+  const LONG_ENOUGH = 2 * Math.ceil(cellsToUnits(1) / TESLA.speed);
+
+  /** Мир, где назначенная цель игрока — вражеская башня в семи клетках. */
+  const aimedAtTower = (stance: AttackStance): WorldState => {
+    const world = withUnitAt(openWorld(), 0, START, TOUGH, 900, UnitType.Tesla);
+    return patchPlayer(
+      { ...world, structures: [...world.structures, towerAt(TARGET, 1, 902)] },
+      0,
+      {
+        targetStructure: asEntityId(902),
+        stance,
+      },
+    );
+  };
+
+  const positionOf = (world: WorldState): Vec2 | undefined =>
+    world.units.find((unit) => unit.id === asEntityId(900))?.position;
+
+  for (const stance of ATTACK_STANCES) {
+    it(`в режиме «${ATTACK_STANCE_LABEL[stance]}» Тесла встаёт вне радиуса башни`, () => {
+      const arrived = run(aimedAtTower(stance), LONG_ENOUGH);
+      const settled = positionOf(arrived);
+
+      // Дошла: иначе «встала вне радиуса» означало бы всего лишь «стои́т
+      // там, где её поставили», и тест проходил бы при сломанном движении.
+      expect(settled).not.toEqual(cellCentre(START));
+      // И встала: лишний тик её больше не сдвигает.
+      expect(positionOf(step(arrived, []))).toEqual(settled);
+
+      // Встала между двумя дальностями: своей достаёт, в чужую не вошла.
+      // Верхняя граница здесь не украшение — без неё «дошла и встала»
+      // было бы выполнено и юнитом, шагнувшим на единицу и залипшим.
+      //
+      // Меряется расстояние до ОСНОВАНИЯ, а не до центра клетки: ровно им
+      // меряют и правило остановки, и наводка башни. По центру числа вышли
+      // бы на полклетки больше, и обе границы поехали бы вместе с ними.
+      const apart = squaredDistanceToFootprint(
+        settled ?? cellCentre(START),
+        TARGET,
+        STRUCTURE_STATS[StructureKind.TowerBasic].footprintRadius,
+      );
+      expect(apart).toBeLessThanOrEqual(TESLA.range * TESLA.range);
+      expect(apart).toBeGreaterThan(TOWER_RANGE * TOWER_RANGE);
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Пролом перегородившей путь постройки
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Преграда останавливает юнита в любом режиме, и он её ломает.
+ *
+ * Это вторая из двух остановок, не зависящих от режима, и причина у неё
+ * простая: не остановившийся у преграды юнит не сможет её сломать
+ * и упрётся в неё навсегда. «Прорыв» отменяет остановку на ВСТРЕЧНОМ,
+ * а перегородившая путь стена — не встречный, а дорога.
+ *
+ * Стена стои́т поперёк всей карты: пока существует обход, юнит идёт
+ * в обход, каким бы длинным тот ни был, и пролом не включается вовсе.
+ */
+describe('пролом преграды в любом режиме', () => {
+  const START = cellIndex(20, 20);
+  const FENCE_X = 24;
+
+  const TOUGH = 1_000_000;
+  /** Прочность одной секции: с запасом, чтобы за отрезок её не снесли. */
+  const PLANK = 10_000;
+
+  /** Тиков с запасом на четыре клетки до стены. */
+  const LONG_ENOUGH = 2 * Math.ceil(cellsToUnits(4) / UNIT_STATS[UnitType.Assault].speed);
+
+  const fenced = (stance: AttackStance): WorldState => {
+    const world = withUnitAt(openWorld(), 0, START, TOUGH, 900);
+    const fence = Array.from({ length: MAP_HEIGHT_CELLS }, (_, y) => ({
+      ...wallAt(cellIndex(FENCE_X, y), 1, 9000 + y),
+      health: PLANK,
+    }));
+
+    return patchPlayer({ ...world, structures: [...world.structures, ...fence] }, 0, { stance });
+  };
+
+  const fenceHealth = (world: WorldState): number =>
+    world.structures
+      .filter((structure) => cellX(structure.cell) === FENCE_X)
+      .reduce((sum, structure) => sum + structure.health, 0);
+
+  const cellOfUnit = (world: WorldState): number =>
+    cellAt(world.units.find((unit) => unit.id === asEntityId(900))?.position ?? cellCentre(START));
+
+  for (const stance of ATTACK_STANCES) {
+    it(`в режиме «${ATTACK_STANCE_LABEL[stance]}» юнит встаёт у стены и ломает её`, () => {
+      const arrived = run(fenced(stance), LONG_ENOUGH);
+
+      // Дошёл до стены и упёрся в неё, а не прошёл насквозь и не застрял
+      // на полдороге.
+      expect(cellX(cellOfUnit(arrived))).toBe(FENCE_X - 1);
+
+      // Урон проверяется ПОСЛЕ остановки, а не за весь путь. Стена
+      // попадает в радиус ещё на подходе, и юнит успевает задеть её
+      // мимоходом; такой урон доказывал бы, что юнит стрелял, но ничего
+      // не говорил бы о том, ломает ли он преграду, стоя перед ней.
+      const standing = run(arrived, UNIT_STATS[UnitType.Assault].cooldownTicks + 1);
+
+      expect(cellOfUnit(standing)).toBe(cellOfUnit(arrived));
+      expect(fenceHealth(standing)).toBeLessThan(fenceHealth(arrived));
+    });
+  }
 });
 
 describe('расталкивание в связке с движением и боем', () => {
