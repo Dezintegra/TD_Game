@@ -3,6 +3,7 @@
   BASE_BUILD_EXCLUSION,
   CHECKSUM_INTERVAL_TICKS,
   CommandKind,
+  FRAME_WORK_BUDGET_MS,
   NUKE_COST,
   NUKE_RADIUS_CELLS,
   STRUCTURE_STATS,
@@ -125,18 +126,6 @@ const HUD_EVERY_TICKS = 6;
 
 /** Как часто меряется задержка канала. */
 const PING_EVERY_MS = 1000;
-
-/**
- * Сколько времени за кадр отдаётся запеканию скал.
- *
- * Восемь миллисекунд — это «одна диагональ, и хватит»: диагональ обходится
- * примерно в двадцать, и меньший бюджет её всё равно не разрежет
- * (см. `bakeTerrain`). Смысл числа в другом — в том, что между
- * диагоналями главный поток освобождается, и браузер успевает разобрать
- * пришедшие кадры матча. Печь всю карту разом значило бы задержать первый
- * подтверждённый тик на всё время запекания.
- */
-const TERRAIN_BAKE_BUDGET_MS = 8;
 
 const PHASES: Readonly<Record<GuestStatus, MatchPhaseView>> = {
   idle: 'connecting',
@@ -496,19 +485,37 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
         net.ping(guest.confirmed?.tick ?? 0);
       }
 
+      // Карта берётся до отложенной работы, потому что за время работы
+      // она не меняется: `setMap` перестраивает геометрию только при
+      // смене карты, а мир, каким его покажут, читается ниже — после
+      // того, как догон продвинет показ.
+      const known = guest.predicted;
+      if (known === null) return;
+
+      // Отложенных работ в кадре две — запекание скал и догон матча
+      // по истории, — и бюджет у них ОДИН. Два отдельных в кадре
+      // складывались бы, и кадр оказался бы съеден целиком, только
+      // двумя работами вместо одной: перезагрузка страницы посреди
+      // матча заводит обе разом.
+      //
+      // Тратится он по порядку. Запекание идёт первым, потому что оно
+      // конечно и кончается навсегда — полторы секунды, — тогда как
+      // догон тянется, пока сервер впереди; и на догнанный мир поверх
+      // непропечённой карты всё равно смотреть нельзя.
+      scene.setMap(known.map, localPlayer);
+
+      const bakeStartedAt = performance.now();
+      scene.bakeTerrain(FRAME_WORK_BUDGET_MS);
+      const leftMs = Math.max(FRAME_WORK_BUDGET_MS - (performance.now() - bakeStartedAt), 0);
+
       // Часы показа спрашиваются ДО чтения мира, а не после, и порядок
       // этот единственно верный: после — значит кадр рисует то, что
       // насчитали в прошлый раз, и вся затея опаздывает ровно на кадр.
-      guest.advance();
+      // Этим же вызовом кадр отдаёт догону свой остаток бюджета.
+      guest.advance(leftMs);
 
       const world = guest.predicted;
       if (world === null) return;
-
-      // setMap перестраивает геометрию только при смене карты, поэтому
-      // безопасно вызывать его каждый кадр. Скалы он при этом не печёт —
-      // их допекает `bakeTerrain` понемногу, кадр за кадром.
-      scene.setMap(world.map, localPlayer);
-      scene.bakeTerrain(TERRAIN_BAKE_BUDGET_MS);
 
       const general = world.generals[localPlayer];
       if (general !== undefined && general.alive) {
