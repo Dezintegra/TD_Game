@@ -1,5 +1,7 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  ATTACK_STANCES,
+  ATTACK_STANCE_LABEL,
   AttackStance,
   BASE_BUILD_EXCLUSION,
   BASE_INCOME_PER_TICK,
@@ -41,7 +43,7 @@ import { createWorld } from './world.js';
 import type { PlayerState, StructureState, WorldState } from './world.js';
 import { step } from './step.js';
 import { checksum } from './checksum.js';
-import { cellAt, cellCentre, cellIndex } from './map.js';
+import { cellAt, cellCentre, cellIndex, squaredDistanceToFootprint } from './map.js';
 import { buildOccupancy } from './occupancy.js';
 import { playerStats } from './stats.js';
 
@@ -1542,6 +1544,84 @@ describe('остановка юнита на стреляющей построй
 
     expect(positionAfter(facing(far), 4)).not.toEqual(cellCentre(MINE));
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Остановка у назначенной цели
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Тесла обстреливает назначенную цель, не входя в радиус башни.
+ *
+ * Это единственное, ради чего она существует: дальность у неё на клетку
+ * больше дальности базовой башни, и остановка ровно на своей дальности
+ * означает, что башню достаёт она, а башня её — нет.
+ *
+ * Режим на это не влияет и не должен. «Прорыв» отменяет остановку
+ * на встречном — на живом противнике и на стреляющей постройке, — а не
+ * на назначенной цели: дошедшему до цели идти больше некуда. Перебор
+ * идёт по всем режимам списком, а не по двум названным: появится третий —
+ * и он проверится сам, а не будет забыт.
+ */
+describe('остановка у назначенной цели', () => {
+  const START = cellIndex(20, 20);
+  /** Семь клеток — на клетку дальше, чем достаёт Тесла: ей есть куда идти. */
+  const TARGET = cellIndex(20, 27);
+
+  const TOUGH = 1_000_000;
+  const TESLA = UNIT_STATS[UnitType.Tesla];
+  const TOWER_RANGE = STRUCTURE_STATS[StructureKind.TowerBasic].range;
+
+  /**
+   * Тиков с запасом на лишнюю клетку подхода. Считается от скорости Теслы,
+   * а не берётся числом: Тесла ходит втрое медленнее пехоты, и правка
+   * её скорости не должна молча обрывать тест на полдороге.
+   */
+  const LONG_ENOUGH = 2 * Math.ceil(cellsToUnits(1) / TESLA.speed);
+
+  /** Мир, где назначенная цель игрока — вражеская башня в семи клетках. */
+  const aimedAtTower = (stance: AttackStance): WorldState => {
+    const world = withUnitAt(openWorld(), 0, START, TOUGH, 900, UnitType.Tesla);
+    return patchPlayer(
+      { ...world, structures: [...world.structures, towerAt(TARGET, 1, 902)] },
+      0,
+      {
+        targetStructure: asEntityId(902),
+        stance,
+      },
+    );
+  };
+
+  const positionOf = (world: WorldState): Vec2 | undefined =>
+    world.units.find((unit) => unit.id === asEntityId(900))?.position;
+
+  for (const stance of ATTACK_STANCES) {
+    it(`в режиме «${ATTACK_STANCE_LABEL[stance]}» Тесла встаёт вне радиуса башни`, () => {
+      const arrived = run(aimedAtTower(stance), LONG_ENOUGH);
+      const settled = positionOf(arrived);
+
+      // Дошла: иначе «встала вне радиуса» означало бы всего лишь «стои́т
+      // там, где её поставили», и тест проходил бы при сломанном движении.
+      expect(settled).not.toEqual(cellCentre(START));
+      // И встала: лишний тик её больше не сдвигает.
+      expect(positionOf(step(arrived, []))).toEqual(settled);
+
+      // Встала между двумя дальностями: своей достаёт, в чужую не вошла.
+      // Верхняя граница здесь не украшение — без неё «дошла и встала»
+      // было бы выполнено и юнитом, шагнувшим на единицу и залипшим.
+      //
+      // Меряется расстояние до ОСНОВАНИЯ, а не до центра клетки: ровно им
+      // меряют и правило остановки, и наводка башни. По центру числа вышли
+      // бы на полклетки больше, и обе границы поехали бы вместе с ними.
+      const apart = squaredDistanceToFootprint(
+        settled ?? cellCentre(START),
+        TARGET,
+        STRUCTURE_STATS[StructureKind.TowerBasic].footprintRadius,
+      );
+      expect(apart).toBeLessThanOrEqual(TESLA.range * TESLA.range);
+      expect(apart).toBeGreaterThan(TOWER_RANGE * TOWER_RANGE);
+    });
+  }
 });
 
 describe('расталкивание в связке с движением и боем', () => {
