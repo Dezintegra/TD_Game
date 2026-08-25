@@ -348,7 +348,17 @@ export const createOpponent = (
 
       // Ядерный удар проверяется до остальных трат: он копится в запасе
       // фазы, и тратить этот запас на что-то другое было бы обидно.
-      const struck = tryNuke(commands, world, me, player, profile, approach, stats);
+      //
+      // Обход карты в поисках цели — самое дорогое, что есть в решении:
+      // сотни оценок выгоды на каждый ход. Поэтому он делается, только
+      // когда его ответ на что-то влияет, и делается РОВНО ОДИН РАЗ,
+      // а результат раздаётся всем, кому он нужен.
+      const nukeSearchDue =
+        world.tick >= player.nukeReadyAtTick && player.energy >= stats.nuke.cost;
+      const nukeTarget = nukeSearchDue
+        ? findNukeTarget(world, me, profile, approach, stats)
+        : undefined;
+      const struck = tryNuke(commands, world, me, player, stats, nukeTarget);
 
       const enemy = world.players[otherPlayer(me)];
       const enemyStats = enemy === undefined ? stats : playerStats(enemy);
@@ -1716,44 +1726,48 @@ const NUCLEAR_STATS: readonly UpgradeStat[] = [
 ];
 
 /**
- * Ядерный удар.
+ * Ядерный удар: поиск цели и решение бить — два шага, а не один.
  *
- * Бьём тогда и только тогда, когда уничтоженное стоит дороже самого удара,
- * и стоимость считается в энергии — той же единицей, в которой выражена
- * цена удара.
+ * Разделены потому, что потребителей у поиска стало два. Бить или нет —
+ * первый. Держать ли под удар неприкосновенный запас — второй: запас
+ * перестал быть свойством фазы и стал свойством обстановки, а обстановку
+ * знает ровно этот обход карты.
  *
- * Прежде порог задавался числом «шесть юнитов», и число это ничем
- * не выводилось. Удар стоит пятьдесят базовых стоимостей юнита, то есть
- * оружием ценой в пятьдесят машин уничтожалось шесть: переплата в восемь
- * раз, на которую уходила почти половина дохода за матч.
+ * Обход при этом остаётся ОДИН на решение. Второй ради запаса
+ * недопустим: перебор стоит сотен оценок выгоды, и удвоить его значило бы
+ * оплатить наблюдение ценой самого поведения.
+ */
+
+/** Лучшее место для удара и то, что удар в нём принесёт. */
+export interface NukeTarget {
+  /** Клетка, по которой имеет смысл бить. */
+  readonly cell: number;
+  /**
+   * Чистая ценность: уничтоженное у противника минус уничтоженное у себя,
+   * в энергии. С ценой удара НЕ сравнивается — это дело решения, а не
+   * поиска.
+   */
+  readonly net: number;
+}
+
+/**
+ * Лучшее место для удара на карте.
+ *
+ * Порога здесь нет намеренно. Поиск отвечает на вопрос «что на карте
+ * лучше всего», решение — на вопрос «стоит ли это цены»; сведи их в одно,
+ * и запас пришлось бы спрашивать вторым обходом с другим порогом.
  *
  * Свои потери входят в расчёт наравне с чужими, и не для симметрии:
  * взрыв не различает стороны, и из ста пятидесяти восьми ударов сорок
  * пять убили собственного генерала.
- *
- * Порог не хранится в профиле: он и есть цена удара. Поменяется цена
- * в балансе — порог пересчитается сам.
  */
-const tryNuke = (
-  commands: Command[],
+export const findNukeTarget = (
   world: WorldState,
   me: PlayerId,
-  player: PlayerState,
   profile: AiProfile,
   approach: Approach,
   myStats: PlayerStats,
-): boolean => {
-  // Откат проверяется ПЕРВЫМ, раньше цены и раньше перебора клеток.
-  // Перебор стоит сотен вычислений выгоды на каждое решение, и делать
-  // их ради команды, которую ядро заведомо отклонит, — чистый расход
-  // времени тика.
-  if (world.tick < player.nukeReadyAtTick) return false;
-
-  // Цена пуска выводится из купленных уровней радиуса и мощности,
-  // и потому спрашивается у своих характеристик, а не у константы.
-  const cost = myStats.nuke.cost;
-  if (player.energy < cost) return false;
-
+): NukeTarget | undefined => {
   const enemy = world.players[otherPlayer(me)];
   const enemyStats = enemy === undefined ? myStats : playerStats(enemy);
 
@@ -1772,7 +1786,7 @@ const tryNuke = (
   const exclusion = nukeBaseExclusion(myStats.nuke.radius);
 
   let bestCell = -1;
-  let bestNet = cost;
+  let bestNet = Number.NEGATIVE_INFINITY;
 
   for (let y = 0; y < MAP_HEIGHT_CELLS; y += profile.nuke.scanStep) {
     for (let x = 0; x < MAP_WIDTH_CELLS; x += profile.nuke.scanStep) {
@@ -1802,14 +1816,53 @@ const tryNuke = (
     }
   }
 
-  if (bestCell < 0) return false;
+  if (bestCell < 0) return undefined;
+
+  return { cell: bestCell, net: bestNet };
+};
+
+/**
+ * Оправдывает ли найденная цель удар по ней.
+ *
+ * Бьём тогда и только тогда, когда уничтоженное стоит дороже самого удара,
+ * и стоимость считается в энергии — той же единицей, в которой выражена
+ * цена удара.
+ *
+ * Прежде порог задавался числом «шесть юнитов», и число это ничем
+ * не выводилось. Удар стоил пятьдесят базовых стоимостей юнита, то есть
+ * оружием ценой в пятьдесят машин уничтожалось шесть: переплата в восемь
+ * раз, на которую уходила почти половина дохода за матч.
+ *
+ * Порог не хранится в профиле: он и есть цена удара. Поменяется цена
+ * в балансе — порог пересчитается сам.
+ */
+export const nukeWorthIt = (target: NukeTarget | undefined, cost: number): target is NukeTarget =>
+  target !== undefined && target.net > cost;
+
+/**
+ * Решение бить.
+ *
+ * Цена пуска выводится из купленных уровней радиуса и мощности, и потому
+ * спрашивается у своих характеристик, а не у константы.
+ */
+const tryNuke = (
+  commands: Command[],
+  world: WorldState,
+  me: PlayerId,
+  player: PlayerState,
+  myStats: PlayerStats,
+  target: NukeTarget | undefined,
+): boolean => {
+  if (world.tick < player.nukeReadyAtTick) return false;
+  if (player.energy < myStats.nuke.cost) return false;
+  if (!nukeWorthIt(target, myStats.nuke.cost)) return false;
 
   commands.push(
     command({
       kind: CommandKind.LaunchNuke,
       player: me,
       tick: asTickNumber(world.tick),
-      cell: bestCell,
+      cell: target.cell,
     }),
   );
 

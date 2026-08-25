@@ -12,13 +12,16 @@ import {
   asEntityId,
   asPlayerId,
   asTickNumber,
+  cellsToUnits,
   upgradeBranchIndex,
 } from '@td/shared';
 import type { Command } from '@td/shared';
 import { cellCentre, cellIndex, createWorld } from '@td/sim';
 import type { PlayerState, WorldState } from '@td/sim';
+import { playerStats } from '@td/sim';
+import { approachOf } from './approach.js';
 import { STRATEGIST_PROFILE } from './profile.js';
-import { createOpponent } from './opponent.js';
+import { createOpponent, findNukeTarget, nukeWorthIt } from './opponent.js';
 
 /**
  * Два правила ядерного удара, которые обязан знать не только ядро,
@@ -169,5 +172,56 @@ describe('противник и потолок уровня', () => {
     expect(boughtBranches(nothingButUpgrades(NUKE_COOLDOWN_MAX_LEVEL))).not.toContain(
       cooldownBranch,
     );
+  });
+});
+
+describe('поиск цели и решение бить — два шага', () => {
+  /**
+   * Поиск отвечает на вопрос «что на карте лучше всего», решение —
+   * на вопрос «стоит ли это цены удара». Разделены они не ради
+   * опрятности: у поиска стало два потребителя, и второй — накопление
+   * неприкосновенного запаса — обязан спрашивать обстановку ТЕМ ЖЕ
+   * обходом карты, а не своим.
+   */
+  const targetOf = (world: WorldState) => {
+    const player = world.players[ME];
+    const approach = approachOf(world, asPlayerId(ME));
+    if (player === undefined || approach === undefined) throw new Error('мир без стороны');
+
+    return {
+      target: findNukeTarget(
+        world,
+        asPlayerId(ME),
+        STRATEGIST_PROFILE,
+        approach,
+        playerStats(player),
+      ),
+      cost: playerStats(player).nuke.cost,
+    };
+  };
+
+  it('на нетронутой карте цель находится, но удара не оправдывает', () => {
+    // Поиск возвращает лучшее из имеющегося, каким бы бедным оно ни было:
+    // порог — дело решения. Пустой ответ означал бы, что поиск уже
+    // сравнил с ценой, и запас пришлось бы спрашивать вторым обходом.
+    const { target, cost } = targetOf(rich(createWorld(SEED)));
+
+    expect(target).toBeDefined();
+    expect(nukeWorthIt(target, cost)).toBe(false);
+  });
+
+  it('по толпе цель оправдывает удар, и найдена она там, где толпа', () => {
+    const { target, cost } = targetOf(withCrowd(rich(createWorld(SEED))));
+
+    expect(nukeWorthIt(target, cost)).toBe(true);
+
+    // Не сама клетка толпы, а ближайшая к ней клетка сетки обхода:
+    // перебор идёт с шагом `nuke.scanStep`, и требовать попадания
+    // ровно в толпу значило бы требовать, чтобы её поставили на узел.
+    // Достаточно, чтобы найденное было в радиусе поражения.
+    const found = cellCentre(target?.cell ?? -1);
+    const crowd = cellCentre(CROWD_CELL);
+    const radius = cellsToUnits(STRATEGIST_PROFILE.nuke.scanStep);
+    expect(Math.hypot(found.x - crowd.x, found.y - crowd.y)).toBeLessThanOrEqual(radius);
   });
 });
