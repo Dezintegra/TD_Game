@@ -7,6 +7,7 @@ export * from './balance.js';
 export * from './direction.js';
 export * from './commands.js';
 export * from './matchlog.js';
+export * from './computer.js';
 export * from './player.js';
 export * from './histogram.js';
 export * from './metrics.js';
