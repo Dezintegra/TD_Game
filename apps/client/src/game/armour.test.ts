@@ -83,7 +83,7 @@ describe('сборка сетки', () => {
   });
 
   it('нормали единичные', () => {
-    const mesh = buildArmourMesh(unitSolids(UnitType.Assault, 1, 1), 2);
+    const mesh = buildArmourMesh(unitSolids(UnitType.Assault, 1, 1, 0), 2);
 
     for (const [x, y, z] of normalsOf(mesh)) {
       expect(Math.sqrt(x * x + y * y + z * z)).toBeCloseTo(1, 5);
@@ -109,8 +109,8 @@ describe('сборка сетки', () => {
   it('одинаковые входы дают одинаковую сетку', () => {
     // Кеш спрайтов держится ровно на этом: две одинаковые машины в разных
     // концах карты обязаны давать одну и ту же картинку.
-    const first = buildArmourMesh(unitSolids(UnitType.Sniper, 0, 0), 4);
-    const second = buildArmourMesh(unitSolids(UnitType.Sniper, 0, 0), 4);
+    const first = buildArmourMesh(unitSolids(UnitType.Sniper, 0, 0, 0), 4);
+    const second = buildArmourMesh(unitSolids(UnitType.Sniper, 0, 0, 0), 4);
 
     expect(Array.from(first.positions)).toEqual(Array.from(second.positions));
     expect(Array.from(first.normals)).toEqual(Array.from(second.normals));
@@ -207,7 +207,7 @@ describe('круглые тела', () => {
 
 describe('отражение', () => {
   it('уходит под точку опоры, а машина остаётся над ней', () => {
-    const solids = unitSolids(UnitType.Assault, 0, 0);
+    const solids = unitSolids(UnitType.Assault, 0, 0, 0);
     const body = buildArmourMesh(solids, DIRECTION_SOUTH);
     const mirror = buildArmourMesh(solids, DIRECTION_SOUTH, true);
 

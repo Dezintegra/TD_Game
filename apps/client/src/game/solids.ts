@@ -215,7 +215,17 @@ export const roller = (
   };
 };
 
-/** Труба: цилиндр с осью вдоль хода. Ею заданы стволы и хвостовая балка. */
+/**
+ * Труба: цилиндр с осью вдоль хода. Ею заданы стволы и хвостовая балка.
+ *
+ * `rise` поднимает дальний конец над ближним. Нужен он мортире: навесная
+ * стрельба — это поднятый ствол, и показать её на модели иначе нечем.
+ *
+ * Труба при этом не поворачивается, а перекашивается: сечение остаётся
+ * кругом в плоскости «поперёк — вверх». Настоящий поворот дал бы эллипс
+ * в этой плоскости и потребовал бы пересчёта нормалей ради разницы,
+ * которой на сорока пикселях не видно.
+ */
 export const tube = (
   label: string,
   fromForward: number,
@@ -225,15 +235,22 @@ export const tube = (
   radius: number,
   material: number,
   corners = 12,
+  rise = 0,
 ): Solid => {
-  const ring = (at: number): Vec3[] =>
+  const ring = (at: number, lift: number): Vec3[] =>
     angles(corners).map((angle) => ({
       forward: at,
       side: side + Math.cos(angle) * radius,
-      up: up + Math.sin(angle) * radius,
+      up: up + lift + Math.sin(angle) * radius,
     }));
 
-  return { label, bottom: ring(fromForward), top: ring(toForward), material, round: true };
+  return {
+    label,
+    bottom: ring(fromForward, 0),
+    top: ring(toForward, rise),
+    material,
+    round: true,
+  };
 };
 
 /**
