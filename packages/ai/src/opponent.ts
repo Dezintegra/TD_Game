@@ -60,6 +60,7 @@ import {
   patienceDecisions,
   phaseAt,
   reserveOf,
+  savesForNuke,
   savingLimit,
 } from './profile.js';
 import { islandAim } from './islands.js';
@@ -353,12 +354,24 @@ export const createOpponent = (
       // сотни оценок выгоды на каждый ход. Поэтому он делается, только
       // когда его ответ на что-то влияет, и делается РОВНО ОДИН РАЗ,
       // а результат раздаётся всем, кому он нужен.
+      //
+      // Ищем при остывшей установке и в одном из двух случаев: либо
+      // ударить по карману прямо сейчас, либо манера копит под удар
+      // и ответ нужен, чтобы решить, копить ли дальше. Остывание —
+      // общее условие обоих: под оружие, которое ближайшую минуту
+      // не выстрелит, деньги тоже держать незачем.
       const nukeSearchDue =
-        world.tick >= player.nukeReadyAtTick && player.energy >= stats.nuke.cost;
+        world.tick >= player.nukeReadyAtTick &&
+        (player.energy >= stats.nuke.cost || savesForNuke(phase, profile));
       const nukeTarget = nukeSearchDue
         ? findNukeTarget(world, me, profile, approach, stats)
         : undefined;
       const struck = tryNuke(commands, world, me, player, stats, nukeTarget);
+
+      // Запас держится, когда цель есть, а удара не вышло, — то есть
+      // когда единственное, чего не хватает, это энергия. Ударили —
+      // копить больше не на что; цели нет — деньги свободны.
+      const nukeAwaited = !struck && nukeWorthIt(nukeTarget, stats.nuke.cost);
 
       const enemy = world.players[otherPlayer(me)];
       const enemyStats = enemy === undefined ? stats : playerStats(enemy);
@@ -429,7 +442,16 @@ export const createOpponent = (
           structure.kind !== StructureKind.Wall,
       );
 
-      const efficiency = spendEfficiency(world, me, player, phase, profile, approach, covered);
+      const efficiency = spendEfficiency(
+        world,
+        me,
+        player,
+        phase,
+        profile,
+        approach,
+        covered,
+        nukeAwaited,
+      );
 
       const spendOrder = escorting
         ? profile.escort.spend
@@ -482,6 +504,7 @@ export const createOpponent = (
                   roll,
                   push.wavePrice,
                   guarded,
+                  nukeAwaited,
                 )
               : spending === 'build'
                 ? tryBuild(
@@ -500,6 +523,7 @@ export const createOpponent = (
                     roll,
                     push.wavePrice,
                     guarded,
+                    nukeAwaited,
                   )
                 : tryTrain(
                     commands,
@@ -512,6 +536,7 @@ export const createOpponent = (
                     roll,
                     push.wavePrice,
                     guarded,
+                    nukeAwaited,
                   );
 
           if (observe !== undefined) attempts.push({ spending, ...attempt });
@@ -677,11 +702,16 @@ const spendEfficiency = (
   profile: AiProfile,
   approach: Approach,
   covered: Uint8Array,
+  /**
+   * Есть ли цель, оправдывающая удар, при нехватке энергии на него.
+   * Только в этом случае под удар держится неприкосновенный запас.
+   */
+  nukeAwaited: boolean,
 ): Readonly<Partial<Record<Spending, number>>> => {
   const stats = playerStats(player);
   const efficiency: Partial<Record<Spending, number>> = {};
 
-  const reserve = reserveOf(phase, stats.incomePerTick, profile);
+  const reserve = reserveOf(phase, stats.incomePerTick, profile, 0, false, nukeAwaited);
   const worth = (gain: number, price: number): number =>
     discountedEfficiency(gain, price + reserve, player.energy, stats.incomePerTick, profile);
 
@@ -882,6 +912,11 @@ const tryTrain = (
   roll: (bound: number) => number,
   wavePrice: number,
   guarded: boolean,
+  /**
+   * Есть ли цель, оправдывающая удар, при нехватке энергии на него.
+   * Только в этом случае под удар держится неприкосновенный запас.
+   */
+  nukeAwaited: boolean,
 ): Attempt => {
   if (player.queue.length >= profile.spending.queueTarget) return passing(AttemptNote.QueueFull);
 
@@ -906,7 +941,8 @@ const tryTrain = (
   }
 
   const price =
-    stats.units[chosen].cost + reserveOf(phase, stats.incomePerTick, profile, wavePrice, guarded);
+    stats.units[chosen].cost +
+    reserveOf(phase, stats.incomePerTick, profile, wavePrice, guarded, nukeAwaited);
 
   // Копить на юнита можно — и это не мелочность. «Юниты дёшевы, копить
   // незачем» верно для штурмовика за одну базовую стоимость и неверно
@@ -1207,13 +1243,18 @@ const tryBuild = (
   roll: (bound: number) => number,
   wavePrice: number,
   guarded: boolean,
+  /**
+   * Есть ли цель, оправдывающая удар, при нехватке энергии на него.
+   * Только в этом случае под удар держится неприкосновенный запас.
+   */
+  nukeAwaited: boolean,
 ): Attempt => {
   const general = world.generals[me];
   if (general === undefined || !general.alive) return passing(AttemptNote.GeneralDead);
 
   const stats = playerStats(player);
   const radius = stats.general.buildRadius;
-  const reserve = reserveOf(phase, stats.incomePerTick, profile, wavePrice, guarded);
+  const reserve = reserveOf(phase, stats.incomePerTick, profile, wavePrice, guarded, nukeAwaited);
 
   const fresh = Uint8Array.from(covered);
   const blocked = Uint8Array.from(approach.occupancy.blocked);
@@ -1632,6 +1673,11 @@ const tryUpgrade = (
   roll: (bound: number) => number,
   wavePrice: number,
   guarded: boolean,
+  /**
+   * Есть ли цель, оправдывающая удар, при нехватке энергии на него.
+   * Только в этом случае под удар держится неприкосновенный запас.
+   */
+  nukeAwaited: boolean,
 ): Attempt => {
   // Цель прокачки выбирается взвешенной жеребьёвкой — тем же способом
   // и тем же генератором, каким выбирается тип юнита.
@@ -1697,7 +1743,7 @@ const tryUpgrade = (
   if (bestBranch < 0) return passing(AttemptNote.NothingToUpgrade);
 
   const income = playerStats(player).incomePerTick;
-  const price = bestCost + reserveOf(phase, income, profile, wavePrice, guarded);
+  const price = bestCost + reserveOf(phase, income, profile, wavePrice, guarded, nukeAwaited);
   if (player.energy < price) {
     return waitOrPass(price, income, profile, AttemptNote.UpgradeUnaffordable, guarded);
   }

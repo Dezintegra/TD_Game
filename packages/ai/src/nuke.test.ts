@@ -11,6 +11,7 @@ import {
   UpgradeTarget,
   asEntityId,
   asPlayerId,
+  BASE_UNIT_COST,
   asTickNumber,
   cellsToUnits,
   upgradeBranchIndex,
@@ -223,5 +224,46 @@ describe('поиск цели и решение бить — два шага', (
     const crowd = cellCentre(CROWD_CELL);
     const radius = cellsToUnits(STRATEGIST_PROFILE.nuke.scanStep);
     expect(Math.hypot(found.x - crowd.x, found.y - crowd.y)).toBeLessThanOrEqual(radius);
+  });
+});
+
+describe('запас под удар держится по обстановке, а не по фазе', () => {
+  /**
+   * Тик поздней фазы: только в ней удар вообще интересен.
+   *
+   * Мир при этом НЕ шагает — `commandsOver` лишь двигает счётчик тиков.
+   * Это и нужно: энергия не прибывает, юниты не ходят, и разница между
+   * двумя проверками ниже остаётся ровно одна — есть ли по кому бить.
+   */
+  const LATE_TICK = 300 * 30 + 1;
+
+  /**
+   * Энергии хватает на покупку и не хватает на удар.
+   *
+   * Четыре базовых стоимости юнита при цене пуска в шестнадцать.
+   * Держится запас — не купится ничего; не держится — купится
+   * что-нибудь в первом же решении.
+   */
+  const poorAndLate = (world: WorldState): WorldState =>
+    patchPlayer({ ...world, tick: asTickNumber(LATE_TICK) }, ME, {
+      energy: BASE_UNIT_COST * 4,
+    });
+
+  const purchases = (world: WorldState): number =>
+    commandsOver(world, 300).filter(
+      (issued) =>
+        issued.kind === CommandKind.TrainUnit ||
+        issued.kind === CommandKind.Build ||
+        issued.kind === CommandKind.BuyUpgrade,
+    ).length;
+
+  it('бить некого — энергия достаётся тратам целиком', () => {
+    expect(purchases(poorAndLate(createWorld(SEED)))).toBeGreaterThan(0);
+  });
+
+  it('появилось скопление — энергия удерживается под удар', () => {
+    // Та же энергия, тот же тик, та же фаза. Изменилась одна обстановка,
+    // и запас — её свойство, а не свойство фазы.
+    expect(purchases(poorAndLate(withCrowd(createWorld(SEED))))).toBe(0);
   });
 });
