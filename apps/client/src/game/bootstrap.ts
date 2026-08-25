@@ -64,6 +64,7 @@ import type { ControlState } from './controls.js';
 import { createRejectionFeed } from './rejections.js';
 import { createDisplayGauge } from './display-gauge.js';
 import { createJumpGauge } from './jump-gauge.js';
+import { createReadingsSender } from './readings-sender.js';
 import { createAudio } from '../audio/index.js';
 
 /**
@@ -268,37 +269,34 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
    * перехват, и `void` у вызова.
    */
   /**
-   * Отчёт уходит один раз за матч.
+   * Отправка показаний серверу.
    *
-   * Поводов уйти теперь несколько — исход, выход в меню, закрытая
-   * вкладка, — а показания одни. Два отчёта с одной партии не сломали
-   * бы ничего, кроме самой выборки: одни и те же наблюдения попали бы
-   * в неё дважды и перевесили бы чужие.
+   * Часы, счёт снимков и сама отправка живут в своём модуле: там они
+   * проверяются, а здесь — нет, потому что здесь PixiJS и сцена.
+   *
+   * Заводится отправитель тут, до участника, а не рядом с запуском
+   * цикла отрисовки. Причина в порядке: исход матча может прийти
+   * с первым же разобранным сообщением, и к этому мгновению отправитель
+   * обязан существовать. Копилки при этом читаются не сейчас, а в момент
+   * отправки — `collect` зовётся тогда, когда снимок уже нужен.
    */
-  let reported = false;
-
-  const reportSmoothness = async (): Promise<void> => {
-    if (reported) return;
-    reported = true;
-
-    try {
-      await fetch(`${API_URL}/api/telemetry`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          frame: frameGap.snapshot(),
-          netGap: netGap.snapshot(),
-          displayGap: displayGap.snapshot(),
-          shift: commandShift.snapshot(),
-          jump: jumpGauge.jumps(),
-          pendingOnJump: jumpGauge.pending(),
-        }),
-        keepalive: true,
-      });
-    } catch {
-      // Не дошло — не беда. Игрок об этом знать не должен.
-    }
-  };
+  const readings = createReadingsSender({
+    apiUrl: API_URL,
+    ticket: options.ticket,
+    collect: () => ({
+      // Мгновенные величины рядом с распределениями: по ним и читается,
+      // что происходило именно в эти пять секунд.
+      tick: guest.predicted?.tick ?? 0,
+      delayTicks: guest.delayTicks,
+      pending: guest.pendingCount,
+      frame: frameGap.snapshot(),
+      netGap: netGap.snapshot(),
+      displayGap: displayGap.snapshot(),
+      shift: commandShift.snapshot(),
+      jump: jumpGauge.jumps(),
+      pendingOnJump: jumpGauge.pending(),
+    }),
+  });
 
   const publishSmoothness = (): void => {
     const frame = frameGap.snapshot();
@@ -435,7 +433,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       // Показания уезжают после исхода, а не во время матча: слать их
       // в игровом соединении значило бы добавить в горячий путь работу
       // ради диагностики, то есть дать измерению влиять на измеряемое.
-      void reportSmoothness();
+      readings.send();
     },
 
     onDesync: (tick, recovering) => {
@@ -779,7 +777,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
    * с `keepalive`, поэтому переживает выгрузку — на то он там и стоит.
    */
   const leaveHandler = (): void => {
-    void reportSmoothness();
+    readings.send();
   };
   window.addEventListener('pagehide', leaveHandler);
 
@@ -812,8 +810,9 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       // Матч при этом остаётся идти, а показания пропадают вместе
       // со вкладкой. Проверено 24.08.2026: две минуты игры,
       // ноль принятых отчётов.
-      void reportSmoothness();
+      readings.send();
 
+      readings.stop();
       window.removeEventListener('pagehide', leaveHandler);
       observer.disconnect();
       window.removeEventListener('resize', relayout);
