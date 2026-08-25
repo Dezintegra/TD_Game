@@ -32,10 +32,38 @@ export type FetchLike = (
   text(): Promise<string>;
 }>;
 
+/** Личность дежурного и манера, которой он играет. */
+export interface ComputerIdentity {
+  readonly id: string;
+  readonly profile: string;
+}
+
 export interface LobbyApi {
   create(playerId: string, name: string, title: string): Promise<boolean>;
   setReady(playerId: string, ready: boolean): Promise<boolean>;
   leave(playerId: string): Promise<boolean>;
+  /**
+   * Объявить серверу свои личности, предъявив общий секрет.
+   *
+   * Сервер обязан знать, кто из игроков — компьютер: иначе комнату
+   * нечем пометить, а врать игроку о том, с кем он играет, нельзя.
+   * Раньше он узнавал это вызовом в память службы, которая жила в том
+   * же процессе; объявление заменяет вызов и тем самым отпускает службу
+   * из процесса.
+   *
+   * Объявление повторяется, пока служба работает: у него есть срок,
+   * и не обновлённое вовремя перестаёт действовать. Иначе сервер вечно
+   * считал бы компьютерными личности процесса, которого больше нет.
+   */
+  declare(secret: string, identities: readonly ComputerIdentity[]): Promise<boolean>;
+  /**
+   * Снять объявление: служба уходит по-хорошему.
+   *
+   * Нужно затем, чтобы комнаты исчезали сразу, а не по истечении срока:
+   * игрок не должен минуту смотреть на комнату, в которую никто
+   * не войдёт.
+   */
+  withdraw(secret: string, ids: readonly string[]): Promise<boolean>;
   /**
    * Слушать состояние. Возвращает функцию остановки.
    *
@@ -109,6 +137,10 @@ export const createLobbyApi = (options: LobbyApiOptions): LobbyApi => ({
   setReady: (playerId, ready) => post(options, '/api/lobbies/ready', { playerId, ready }),
 
   leave: (playerId) => post(options, '/api/lobbies/leave', { playerId }),
+
+  declare: (secret, identities) => post(options, '/api/computer/declare', { secret, identities }),
+
+  withdraw: (secret, ids) => post(options, '/api/computer/withdraw', { secret, ids }),
 
   listen(playerId, onView) {
     const controller = new AbortController();

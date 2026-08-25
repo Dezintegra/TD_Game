@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { LobbyError } from '@td/protocol';
-import { computerMindOf } from '@td/bot';
+import { computerMindOf } from '@td/shared';
 import { DISCONNECT_GRACE_MS, createLobbyStore } from './lobbies.js';
 import type { LobbyStore, MatchStart } from './lobbies.js';
 

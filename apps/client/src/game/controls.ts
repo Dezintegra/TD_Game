@@ -106,6 +106,14 @@ export interface ControlHandlers {
   setStance(stance: number): void;
   nuke(cell: number): void;
   pan(dx: number, dy: number): void;
+  /**
+   * Приблизить или отдалить относительно точки на экране.
+   *
+   * `factor` больше единицы приближает, меньше — отдаляет. Границы
+   * диапазона держит сцена: управление сообщает жест, а не результат,
+   * и о том, докуда можно приблизиться, знать не должно.
+   */
+  zoom(factor: number, anchorX: number, anchorY: number): void;
   /** Перенести камеру в клетку — по клику на миникарте. */
   jumpTo(cell: number): void;
   /** Вернуть камеру к генералу и включить слежение. */
@@ -155,6 +163,35 @@ export interface Controls {
 
 /** Скорость прокрутки стрелками, экранных пикселей за кадр. */
 const ARROW_PAN_SPEED = 18;
+
+/**
+ * Насколько одна «щёлка» колеса меняет масштаб.
+ *
+ * Колесо приходит в разных единицах: пиксели, строки, страницы. Единицы
+ * приводятся к пикселям, а пиксели — к множителю через показательную
+ * функцию, и это не украшение. Приближение по своей природе умножается:
+ * шаг «плюс 0,1 к масштабу» на дефолте 0,611 даёт прибавку в шестнадцать
+ * процентов, а на четырёхкратном — в четыре. Показательная функция даёт
+ * одинаковый шаг ощущений на любом масштабе.
+ *
+ * 0,0015 подобрано так, чтобы обычная щёлка мыши (около 100 точек)
+ * меняла масштаб примерно на шестую часть: заметно, но не прыжком.
+ */
+const WHEEL_ZOOM_RATE = 0.0015;
+
+/** Строка колеса в пикселях, когда браузер меряет строками. */
+const WHEEL_LINE_PX = 16;
+
+/** Страница колеса в пикселях, когда браузер меряет страницами. */
+const WHEEL_PAGE_PX = 400;
+
+/**
+ * Расстояние между пальцами, ниже которого щипок не считается.
+ *
+ * Сведённые вплотную пальцы дают расстояние около нуля, и деление
+ * на него превращает любую дрожь в скачок масштаба во много раз.
+ */
+const PINCH_MIN_SPAN_PX = 16;
 
 const ARROW_KEYS: Readonly<Record<string, readonly [number, number]>> = {
   ArrowLeft: [-1, 0],
@@ -314,6 +351,25 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   /** Замирающий свайп. Живёт только пока палец на экране. */
   let stick: TouchStick | null = null;
 
+  /**
+   * Пальцы, лежащие на поле прямо сейчас.
+   *
+   * Одного `stick` для щипка мало: он знает про один палец и про точку
+   * отсчёта, а щипку нужны оба положения разом. Список ведётся только
+   * для касаний — у мыши указатель всегда один, и заводить ей запись
+   * значило бы держать состояние, которое некому менять.
+   */
+  const touches = new Map<number, { x: number; y: number }>();
+
+  /**
+   * Расстояние между пальцами на прошлом событии, либо null.
+   *
+   * Не «включён ли щипок», а именно расстояние: щипок ведёт масштаб
+   * отношением нового расстояния к прошлому, и хранить надо то, с чем
+   * сравнивают.
+   */
+  let pinchSpan: number | null = null;
+
   let direction = DIRECTION_STOP;
   let dragging = false;
   let lastX = 0;
@@ -349,7 +405,12 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     }
   };
 
-  const localPoint = (event: PointerEvent): { x: number; y: number } => {
+  // Принимает любое событие указателя: колесу нужна та же арифметика,
+  // что и пальцу, а общего предка у них только координаты окна.
+  const localPoint = (event: {
+    readonly clientX: number;
+    readonly clientY: number;
+  }): { x: number; y: number } => {
     const box = host.getBoundingClientRect();
     return { x: event.clientX - box.left, y: event.clientY - box.top };
   };
@@ -388,10 +449,58 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
    * мышью — то есть поставил бы постройку, которую игрок уже передумал
    * ставить.
    */
+  /**
+   * Снять выделение объекта.
+   *
+   * Одна функция на все случаи, и это условие работоспособности правила.
+   * Разложи снятие по трём обработчикам порознь — четвёртый режим,
+   * когда он появится, про выделение забудет, и заметит это не автор,
+   * а игрок посреди боя.
+   */
+  const clearSelection = (): void => {
+    if (selectedCell < 0) return;
+
+    selectedCell = -1;
+    handlers.select(-1);
+  };
+
   const setBuilding = (on: boolean): void => {
     building = on;
     if (!on) buildKind = null;
-    else aimingNuke = false;
+    else {
+      aimingNuke = false;
+      // Игрок собрался строить, значит следующее нажатие по полю значит
+      // не «выбери», а «поставь». Окно сведений в этот момент закрывает
+      // ему клетки — на телефоне заметную их часть, — и закрывает ровно
+      // тогда, когда он прицеливается.
+      clearSelection();
+    }
+  };
+
+  /**
+   * Наведение ядерного удара.
+   *
+   * Единственный вход в режим: и клавиша, и плитка тулбара идут сюда.
+   * Пока их было двое, каждая помнила свой набор того, что надо погасить,
+   * и наборы разошлись.
+   */
+  const setNukeAiming = (on: boolean): void => {
+    aimingNuke = on;
+    if (!on) return;
+
+    aimingTarget = false;
+    setBuilding(false);
+    clearSelection();
+  };
+
+  /** Наведение цели атаки. Единственный вход в режим — как у удара. */
+  const setTargetAiming = (on: boolean): void => {
+    aimingTarget = on;
+    if (!on) return;
+
+    aimingNuke = false;
+    setBuilding(false);
+    clearSelection();
   };
 
   const cancelModes = (): boolean => {
@@ -402,10 +511,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     aimingTarget = false;
     // Esc снимает и выделение: игрок нажимает его, чтобы «ничего
     // не было выбрано», и оставлять подсветку на поле было бы обманом.
-    if (selectedCell >= 0) {
-      selectedCell = -1;
-      handlers.select(-1);
-    }
+    clearSelection();
 
     return had;
   };
@@ -427,6 +533,12 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     if (open) {
       pressed.clear();
       syncDirection();
+
+      // Пальцы забываются вместе с клавишами, и по той же причине:
+      // пока игрок читает меню, событий отрыва до поля не дойдёт,
+      // и оставленные записи склеили бы прерванный жест со следующим.
+      touches.clear();
+      pinchSpan = null;
     }
 
     handlers.menuChanged(open);
@@ -512,8 +624,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     }
 
     if (event.code === NUKE_KEY) {
-      aimingNuke = !aimingNuke;
-      if (aimingNuke) setBuilding(false);
+      setNukeAiming(!aimingNuke);
       return;
     }
 
@@ -557,6 +668,10 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   const onBlur = (): void => {
     pressed.clear();
     syncDirection();
+
+    // То же и с пальцами: окно потеряло фокус, отрыва мы не увидим.
+    touches.clear();
+    pinchSpan = null;
   };
 
   /**
@@ -637,6 +752,39 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     handlers.setDirection(next);
   };
 
+  /**
+   * Расстояние и середина между двумя первыми пальцами.
+   *
+   * Двумя ПЕРВЫМИ, а не любыми: третий палец на экране — это ладонь,
+   * задевшая стекло, и пересчитывать из-за неё жест значило бы дёргать
+   * масштаб от того, как игрок держит телефон.
+   */
+  const pinchOf = (): { span: number; x: number; y: number } | null => {
+    const [first, second] = [...touches.values()];
+    if (first === undefined || second === undefined) return null;
+
+    const span = Math.hypot(second.x - first.x, second.y - first.y);
+    if (span < PINCH_MIN_SPAN_PX) return null;
+
+    return { span, x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+  };
+
+  /**
+   * Отменить джойстик, не выполняя действия.
+   *
+   * Зовётся, когда на экран лёг второй палец. Сброс направления
+   * обязателен: генерал, шедший на первом пальце, иначе продолжит идти
+   * всё время, пока игрок двумя пальцами разглядывает карту, — а
+   * разглядывает он обычно другой её конец. Об уходе генерала под огонь
+   * он узнает тогда, когда возвращать будет уже некого.
+   */
+  const abandonStick = (): void => {
+    if (stick === null) return;
+
+    stick = null;
+    syncStick();
+  };
+
   const onPointerDown = (event: PointerEvent): void => {
     // Меню накрывает поле собой, поэтому нажатие сюда и так не дойдёт.
     // Проверка стоит на случай, если меню когда-нибудь станет уже поля:
@@ -649,8 +797,17 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     // точку отсчёта. Что это было — тап или свайп, — станет известно
     // только по тому, уедет ли палец за порог.
     if (event.pointerType === 'touch') {
-      stick = { originX: point.x, originY: point.y, x: point.x, y: point.y, engaged: false };
+      touches.set(event.pointerId, { x: point.x, y: point.y });
       capture(event.pointerId);
+
+      // Второй палец отбирает жест у джойстика: дальше это щипок.
+      if (touches.size >= 2) {
+        abandonStick();
+        pinchSpan = pinchOf()?.span ?? null;
+        return;
+      }
+
+      stick = { originX: point.x, originY: point.y, x: point.x, y: point.y, engaged: false };
       return;
     }
 
@@ -680,6 +837,31 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   const onPointerMove = (event: PointerEvent): void => {
     const point = localPoint(event);
     hoverCell = handlers.cellAtScreen(point.x, point.y);
+
+    // Щипок ведёт масштаб отношением нового расстояния между пальцами
+    // к прошлому. Отношением, а не разностью: развести пальцы с двух
+    // сантиметров до четырёх и с десяти до двенадцати — разные жесты,
+    // хотя прибавка одна.
+    if (touches.has(event.pointerId)) {
+      touches.set(event.pointerId, { x: point.x, y: point.y });
+
+      if (touches.size >= 2) {
+        const pinch = pinchOf();
+
+        if (pinch !== null) {
+          // Расстояние не изменилось — сцену не тревожим. Так себя ведёт
+          // третий палец, задевший стекло: жест ведут двое первых,
+          // и от ладони на краю экрана масштаб дёргаться не должен.
+          if (pinchSpan !== null && pinch.span !== pinchSpan) {
+            handlers.zoom(pinch.span / pinchSpan, pinch.x, pinch.y);
+          }
+
+          pinchSpan = pinch.span;
+        }
+
+        return;
+      }
+    }
 
     // Замирающий свайп. Палец ведёт джойстик, пока он на экране, —
     // и держит направление, даже когда сам остановился. Держать
@@ -711,7 +893,27 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     lastY = event.clientY;
   };
 
+  /**
+   * Палец ушёл с экрана — отрывом или перехватом.
+   *
+   * Джойстик после щипка НЕ возобновляется, и это правило, а не
+   * упущение. Оставшийся на экране палец лежит там по инерции жеста,
+   * а не для того, чтобы вести генерала: возобновись джойстик — генерал
+   * тронулся бы сам собой в сторону, которую игрок не выбирал. Следующее
+   * касание начинает джойстик заново.
+   */
+  const forgetTouch = (pointerId: number): void => {
+    if (!touches.delete(pointerId)) return;
+
+    // Щипок кончается вместе со вторым пальцем, но расстояние забывается
+    // и при возвращении третьего: пересчитать его заново дешевле, чем
+    // сравнивать новое расстояние со старым, снятым с других пальцев.
+    if (touches.size < 2) pinchSpan = null;
+  };
+
   const onPointerUp = (event: PointerEvent): void => {
+    forgetTouch(event.pointerId);
+
     // Отрыв пальца: генерал останавливается, а действие выполняется —
     // но только если палец так и не уехал за порог, то есть это был тап,
     // а не свайп.
@@ -741,11 +943,39 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
    * Действие при этом НЕ выполняется: жест не завершён, а прерван.
    */
   const onPointerCancel = (event: PointerEvent): void => {
+    forgetTouch(event.pointerId);
+
     stick = null;
     syncStick();
 
     dragging = false;
     releaseCapture(event.pointerId);
+  };
+
+  /**
+   * Колесо мыши приближает и отдаляет.
+   *
+   * `preventDefault` обязателен, а слушатель — неленивый
+   * (`passive: false`). Без этого браузер прокручивает страницу поверх
+   * жеста, и на ноутбуке с тачпадом карта уезжает вместе со всей
+   * страницей.
+   */
+  const onWheel = (event: WheelEvent): void => {
+    event.preventDefault();
+
+    if (menuOpen) return;
+
+    const pixels =
+      event.deltaMode === 1
+        ? event.deltaY * WHEEL_LINE_PX
+        : event.deltaMode === 2
+          ? event.deltaY * WHEEL_PAGE_PX
+          : event.deltaY;
+
+    // Колесо от себя (отрицательная дельта) приближает — так же, как
+    // в любой карте, к которой игрок привык.
+    const point = localPoint(event);
+    handlers.zoom(Math.exp(-pixels * WHEEL_ZOOM_RATE), point.x, point.y);
   };
 
   const onContextMenu = (event: MouseEvent): void => {
@@ -777,6 +1007,9 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
   host.addEventListener('pointermove', onPointerMove);
   host.addEventListener('pointerup', onPointerUp);
   host.addEventListener('pointercancel', onPointerCancel);
+  // Неленивый слушатель: ленивому браузер не даст отменить прокрутку,
+  // и страница уедет вместе с картой.
+  host.addEventListener('wheel', onWheel, { passive: false });
   host.addEventListener('contextmenu', onContextMenu);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
@@ -806,19 +1039,11 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
     },
 
     setAimingNuke(aiming) {
-      aimingNuke = aiming;
-      if (aiming) {
-        aimingTarget = false;
-        setBuilding(false);
-      }
+      setNukeAiming(aiming);
     },
 
     setAimingTarget(aiming) {
-      aimingTarget = aiming;
-      if (aiming) {
-        aimingNuke = false;
-        setBuilding(false);
-      }
+      setTargetAiming(aiming);
     },
 
     setMenuOpen(open) {
@@ -830,6 +1055,7 @@ export const attachControls = (host: HTMLElement, handlers: ControlHandlers): Co
       host.removeEventListener('pointermove', onPointerMove);
       host.removeEventListener('pointerup', onPointerUp);
       host.removeEventListener('pointercancel', onPointerCancel);
+      host.removeEventListener('wheel', onWheel);
       host.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
