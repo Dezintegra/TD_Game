@@ -20,6 +20,7 @@ import {
   cellsToUnits,
   directionTowards,
   distanceSquared,
+  isUpgradeMaxed,
   nukeBaseExclusion,
 } from '@td/shared';
 import type { Command, PlayerId, Vec2 } from '@td/shared';
@@ -1668,6 +1669,11 @@ const tryUpgrade = (
     // на цели «база» рядом с добычей энергии и обгоняют её по цене
     // уже на шестом уровне.
     if (NUCLEAR_STATS.includes(branch.stat) && profile.nuke.invest !== true) return;
+    // Ветка на потолке из выбора выпадает. Иначе она осталась бы самой
+    // дешёвой из доступных (потолок цену не меняет), была бы выбрана,
+    // получила бы отказ — и была бы выбрана снова на следующем тике.
+    // И так до конца матча.
+    if (isUpgradeMaxed(branch, player.upgrades[index]?.level ?? 0)) return;
     // Названные фазой характеристики. Список отсутствует — разрешены все.
     if (phase.upgradeStats !== undefined && !phase.upgradeStats.includes(branch.stat)) return;
 
@@ -1703,7 +1709,11 @@ const tryUpgrade = (
 // ─────────────────────────────────────────────────────────────────────────
 
 /** Характеристики, которые описывают ракету, а не строение базы. */
-const NUCLEAR_STATS: readonly UpgradeStat[] = [UpgradeStat.NukeDamage, UpgradeStat.NukeRadius];
+const NUCLEAR_STATS: readonly UpgradeStat[] = [
+  UpgradeStat.NukeDamage,
+  UpgradeStat.NukeRadius,
+  UpgradeStat.NukeCooldown,
+];
 
 /**
  * Ядерный удар.
@@ -1733,7 +1743,13 @@ const tryNuke = (
   approach: Approach,
   myStats: PlayerStats,
 ): boolean => {
-  // Цена пуска выводится из радиуса — платят за накрытую площадь, —
+  // Откат проверяется ПЕРВЫМ, раньше цены и раньше перебора клеток.
+  // Перебор стоит сотен вычислений выгоды на каждое решение, и делать
+  // их ради команды, которую ядро заведомо отклонит, — чистый расход
+  // времени тика.
+  if (world.tick < player.nukeReadyAtTick) return false;
+
+  // Цена пуска выводится из купленных уровней радиуса и мощности,
   // и потому спрашивается у своих характеристик, а не у константы.
   const cost = myStats.nuke.cost;
   if (player.energy < cost) return false;

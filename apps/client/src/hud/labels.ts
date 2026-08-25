@@ -82,6 +82,7 @@ export const UPGRADE_STAT_SHORT: Readonly<Record<UpgradeStat, string>> = {
   [UpgradeStat.Income]: 'добыча',
   [UpgradeStat.NukeDamage]: 'мощн.',
   [UpgradeStat.NukeRadius]: 'радиус',
+  [UpgradeStat.NukeCooldown]: 'откат',
 };
 
 export const UPGRADE_UNIT: Readonly<Record<UpgradeStat, string>> = {
@@ -95,6 +96,7 @@ export const UPGRADE_UNIT: Readonly<Record<UpgradeStat, string>> = {
   [UpgradeStat.Income]: '/с',
   [UpgradeStat.NukeDamage]: '',
   [UpgradeStat.NukeRadius]: ' кл',
+  [UpgradeStat.NukeCooldown]: ' с',
 };
 
 /**
@@ -135,6 +137,14 @@ export const REJECT_LABEL: Readonly<Record<RejectReason, string>> = {
   // Отдельно от «Так нельзя»: игрок целился осмысленно — это его
   // постройка, она рядом, генерал жив, — и отказ пришёл по особому правилу.
   [RejectReason.CannotDemolishBase]: 'Командный центр снести нельзя',
+  // Не «Так нельзя»: ветка существует, команда осмысленна, и отказ
+  // пришёл по игровому правилу. Игроку сказано, что делать дальше, —
+  // вкладывать в другое.
+  [RejectReason.UpgradeMaxed]: 'Предельный уровень — вложите в другое',
+  // Отдельно от «Не хватает энергии», и разница для игрока
+  // принципиальная: там надо копить, здесь — ждать. Кошелёк при этом
+  // может быть полон.
+  [RejectReason.NukeOnCooldown]: 'Установка не остыла — подождите',
 };
 
 /**

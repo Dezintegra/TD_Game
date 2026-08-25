@@ -56,6 +56,8 @@ export interface WorkingPlayer {
   targetStructure: EntityId;
   stance: AttackStance;
   queue: UnitType[];
+  /** Тик, раньше которого ядерный удар пустить нельзя. См. PlayerState. */
+  nukeReadyAtTick: TickNumber;
 }
 
 export interface WorkingStructure {
@@ -170,6 +172,7 @@ export const toWorking = (state: WorldState): Working => ({
     targetStructure: player.targetStructure,
     stance: player.stance,
     queue: [...player.queue],
+    nukeReadyAtTick: player.nukeReadyAtTick,
   })),
   structures: state.structures.map((structure) => ({
     id: structure.id,
@@ -340,6 +343,7 @@ const toPlayerState = (player: WorkingPlayer): PlayerState => ({
   targetStructure: player.targetStructure,
   stance: player.stance,
   queue: player.queue,
+  nukeReadyAtTick: player.nukeReadyAtTick,
 });
 
 /**

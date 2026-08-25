@@ -409,6 +409,19 @@ test('прокачка живёт в тулбаре и поднимает сам
   // не помещается, полное живёт в подсказке при наведении.
   await expect(page.getByTestId('focus-base')).toContainText('добыча');
   await expect(page.getByTestId('focus-base')).toContainText('База');
+
+  // А прокачка ракеты — у ракеты, и это главное, ради чего плитку удара
+  // вообще снабдили столбцом. Раньше все три строки стояли у базы:
+  // ветки принадлежат цели «база», потому что пусковая установка стоит
+  // на её площадке. Игроку эта причина не видна и не нужна.
+  const nuke = page.getByTestId('aim-nuke');
+  await expect(nuke).toContainText('мощн.');
+  await expect(nuke).toContainText('радиус');
+  await expect(nuke).toContainText('откат');
+
+  // И ни одной из них не осталось у базы.
+  await expect(page.getByTestId('focus-base')).not.toContainText('мощн.');
+  await expect(page.getByTestId('focus-base')).not.toContainText('откат');
 });
 
 test('плитки генерала и базы переносят камеру, а не заказывают', async ({ page }) => {
@@ -755,12 +768,18 @@ test.describe('телефон в портрете', () => {
     // Панель показывает все восемь целей прокачки со всеми ветками,
     // и ничего не приходится доставать прокруткой.
     //
-    // Веток тридцать одна: к прежним двадцати девяти добавились мощность
-    // ядерного заряда и радиус поражения, обе у базы. Число здесь стоит
-    // числом намеренно — оно ловит ровно то, ради чего проверка и живёт:
-    // ветка, не поместившаяся на телефон, пропадает молча.
+    // Веток тридцать две — столько же, сколько в `UPGRADE_BRANCHES`.
+    // Число здесь стоит числом намеренно: оно ловит ровно то, ради чего
+    // проверка и живёт, — ветка, не поместившаяся на телефон, пропадает
+    // молча. Заводите новую ветку — правьте здесь и в соседней проверке
+    // ландшафта.
+    //
+    // Считаются КНОПКИ покупки, а не строки. У ветки, упёршейся
+    // в потолок уровня, кнопки нет вовсе (вместо неё стоит «макс.»),
+    // и в матче, где такая ветка прокачана до предела, число будет
+    // меньше. В начале матча предельных веток нет.
     await expect(page.getByTestId('focus-base')).toBeVisible();
-    expect(await branchCount(page)).toBe(31);
+    expect(await branchCount(page)).toBe(32);
     const overflow = await bottomOverflow(page);
     expect(overflow.x).toBeLessThanOrEqual(0);
     expect(overflow.y).toBeLessThanOrEqual(0);
@@ -824,11 +843,11 @@ test.describe('телефон в ландшафте', () => {
 
     expect(await canvasSize(page)).toEqual(before);
 
-    // Все двадцать девять веток видны и здесь: три ряда в 375 точек
+    // Все тридцать две ветки видны и здесь: три ряда в 375 точек
     // высоты не помещаются, поэтому группы встают рядом. Прокрутка
     // не годится по той же причине, по какой не годилась в полосе —
     // она не сообщает о себе, и пятая ветка для игрока исчезает.
-    expect(await branchCount(page)).toBe(31);
+    expect(await branchCount(page)).toBe(32);
     const overflow = await bottomOverflow(page);
     expect(overflow.x).toBeLessThanOrEqual(0);
     expect(overflow.y).toBeLessThanOrEqual(0);

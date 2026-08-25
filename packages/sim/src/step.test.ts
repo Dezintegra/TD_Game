@@ -11,6 +11,9 @@ import {
   MAP_CELL_COUNT,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
+  NUKE_COOLDOWN_MAX_LEVEL,
+  NUKE_COOLDOWN_MIN_TICKS,
+  NUKE_COOLDOWN_TICKS,
   NUKE_COST,
   NUKE_DAMAGE,
   NUKE_DELAY_TICKS,
@@ -18,6 +21,7 @@ import {
   PRODUCTION_QUEUE_CAP,
   STRUCTURE_STATS,
   StructureKind,
+  TICKS_PER_SECOND,
   Terrain,
   UNIT_STATS,
   UPGRADE_BRANCHES,
@@ -767,6 +771,56 @@ describe('ядерный удар', () => {
     expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK - NUKE_COST);
   });
 
+  it('первый удар в матче откатом не задержан', () => {
+    // Откат разделяет ПУСКИ, а не отделяет первый пуск от начала матча.
+    // Проверяется на нетронутом мире: тик готовности там нулевой.
+    expect(step(richWorld(), [nuke(0, CENTRE)]).nukes).toHaveLength(1);
+  });
+
+  it('второй удар подряд отклонён, и энергия за него не списана', () => {
+    const first = step(richWorld(), [nuke(0, CENTRE)]);
+    const before = first.players[0]?.energy ?? 0;
+
+    const second = step(first, [nuke(0, CENTRE)]);
+
+    // Записей об ударе по-прежнему одна — та, первая.
+    expect(second.nukes).toHaveLength(1);
+    expect(second.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK);
+  });
+
+  it('через минуту установка снова готова', () => {
+    const first = step(richWorld(), [nuke(0, CENTRE)]);
+    const cooled = run(first, NUKE_COOLDOWN_TICKS);
+
+    expect(step(cooled, [nuke(0, CENTRE)]).nukes.length).toBeGreaterThan(0);
+  });
+
+  it('откат считается от пуска, а не от взрыва', () => {
+    // Задержка в три секунды — свойство летящей ракеты, откат —
+    // свойство установки. Сложить их значило бы наказать дважды
+    // за одно, и следующий удар пришлось бы ждать шестьдесят три
+    // секунды вместо шестидесяти.
+    const first = step(richWorld(), [nuke(0, CENTRE)]);
+
+    expect(first.players[0]?.nukeReadyAtTick).toBe(first.tick + NUKE_COOLDOWN_TICKS);
+  });
+
+  it('откат не достаётся противнику', () => {
+    const first = step(richWorld(), [nuke(0, CENTRE)]);
+
+    expect(step(first, [nuke(1, CENTRE)]).nukes).toHaveLength(2);
+  });
+
+  it('тик готовности входит в контрольную сумму', () => {
+    // Величина меняет исход команд — пуск либо состоится, либо будет
+    // отклонён. Не войди она в сумму, расхождение клиента с сервером
+    // обнаружилось бы не сверкой, а через минуту по разошедшимся мирам.
+    const world = richWorld();
+    const armedLater = patchPlayer(world, 0, { nukeReadyAtTick: asTickNumber(500) });
+
+    expect(checksum(armedLater)).not.toBe(checksum(world));
+  });
+
   it('запись об ударе несёт мощность и радиус момента пуска', () => {
     const after = step(richWorld(), [nuke(0, CENTRE)]);
 
@@ -876,6 +930,10 @@ describe('ядерный удар', () => {
 describe('прокачка ядерного удара', () => {
   const damageBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeDamage);
   const radiusBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeRadius);
+  const cooldownBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeCooldown);
+
+  /** Та же середина карты, что и в описании выше: вне запретных зон обеих баз. */
+  const CENTRE = cellIndex(MAP_WIDTH_CELLS / 2, MAP_HEIGHT_CELLS / 2);
 
   /** Мир, в котором игрок 0 купил заданное число уровней одной ветки. */
   const levelled = (branch: number, levels: number): WorldState => {
@@ -889,6 +947,7 @@ describe('прокачка ядерного удара', () => {
   it('ветки существуют и принадлежат базе', () => {
     expect(damageBranch).toBeGreaterThanOrEqual(0);
     expect(radiusBranch).toBeGreaterThanOrEqual(0);
+    expect(cooldownBranch).toBeGreaterThanOrEqual(0);
   });
 
   it('уровень мощности усиливает заряд, не трогая радиус', () => {
@@ -899,13 +958,62 @@ describe('прокачка ядерного удара', () => {
     expect(nuclear.radius).toBe(NUKE_RADIUS);
   });
 
-  it('уровень радиуса расширяет круг и удорожает пуск', () => {
+  it('уровень радиуса расширяет круг вдесятеро сильнее, чем удорожает пуск', () => {
     const world = levelled(radiusBranch, 1);
     const nuclear = playerStats(world.players[0] as PlayerState).nuke;
 
     expect(nuclear.radius).toBeGreaterThan(NUKE_RADIUS);
-    expect(nuclear.cost).toBeGreaterThan(NUKE_COST);
     expect(nuclear.damage).toBe(NUKE_DAMAGE);
+
+    // Прежде цена росла квадратом радиуса — сорок четыре процента
+    // за уровень, — и ветку не покупали вовсе. Теперь пять процентов,
+    // и прокачка окупается. Это и есть суть правки, поэтому число
+    // проверяется, а не подразумевается.
+    expect(nuclear.cost / NUKE_COST).toBeCloseTo(1.05, 2);
+  });
+
+  it('уровень мощности удорожает пуск вдвое против уровня радиуса', () => {
+    const damaged = playerStats(levelled(damageBranch, 1).players[0] as PlayerState).nuke;
+    const widened = playerStats(levelled(radiusBranch, 1).players[0] as PlayerState).nuke;
+
+    expect(damaged.cost / NUKE_COST).toBeCloseTo(1.1, 2);
+    expect(damaged.cost).toBeGreaterThan(widened.cost);
+  });
+
+  it('уровень отката снимает десять секунд, три уровня доводят до предела', () => {
+    const nuclearAt = (levels: number): number =>
+      playerStats(levelled(cooldownBranch, levels).players[0] as PlayerState).nuke.cooldownTicks;
+
+    expect(nuclearAt(0)).toBe(NUKE_COOLDOWN_TICKS);
+    expect(nuclearAt(1)).toBe(NUKE_COOLDOWN_TICKS - TICKS_PER_SECOND * 10);
+    expect(nuclearAt(3)).toBe(NUKE_COOLDOWN_MIN_TICKS);
+  });
+
+  it('прокачанный откат и правда учащает удары', () => {
+    // Уровень мог бы покупаться, считаться и не доезжать до пуска —
+    // ровно так ветка «продаётся и не работает». Проверяется поэтому
+    // не характеристика, а сам второй удар.
+    const world = levelled(cooldownBranch, 3);
+    const first = step(world, [nuke(0, CENTRE)]);
+    const cooled = run(first, NUKE_COOLDOWN_MIN_TICKS);
+
+    expect(step(cooled, [nuke(0, CENTRE)]).nukes.length).toBeGreaterThan(0);
+  });
+
+  it('откат цену пуска не двигает', () => {
+    const world = levelled(cooldownBranch, 3);
+
+    expect(playerStats(world.players[0] as PlayerState).nuke.cost).toBe(NUKE_COST);
+  });
+
+  it('четвёртый уровень отката не покупается', () => {
+    const world = levelled(cooldownBranch, 3);
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, [buy(0, cooldownBranch)]);
+
+    expect(after.players[0]?.upgrades[cooldownBranch]?.level).toBe(NUKE_COOLDOWN_MAX_LEVEL);
+    expect(after.players[0]?.energy).toBe(before + BASE_INCOME_PER_TICK);
   });
 
   it('прокачка не достаётся противнику', () => {

@@ -5,10 +5,11 @@ import {
   UNIT_TYPES,
   UNIT_UPGRADE_TARGET,
   UPGRADE_BRANCHES,
-  UPGRADE_TARGETS,
+  UPGRADE_TARGET_COUNT,
   UpgradeStat,
   UpgradeTarget,
   energyToVisible,
+  isUpgradeMaxed,
   unitsToCells,
 } from '@td/shared';
 import type { UnitType, UpgradeBranch } from '@td/shared';
@@ -27,7 +28,46 @@ import type { StatRow } from './store.js';
  * дальность внутренними единицами, а скорость единицами за тик —
  * размазалось бы по всему интерфейсу, а снимок матча существует ровно
  * затем, чтобы этого не было.
+ *
+ * Раскладываются строки по ГРУППАМ, а не по целям прокачки, и это
+ * не синоним. Группа отвечает на вопрос «у какой плитки эта строка
+ * отвечает игроку», цель — на вопрос «чью прокачку она описывает
+ * в состоянии мира». Совпадают они везде, кроме ядерных веток.
  */
+
+/**
+ * Группа столбца для ядерных веток — своя, не совпадающая ни с одной
+ * целью прокачки.
+ *
+ * Ядерные ветки принадлежат цели `Base`, и вынести их оттуда нельзя:
+ * `UPGRADE_TARGET_COUNT` задаёт длину `purchasePpm`, входящего
+ * в контрольную сумму КАЖДОГО мира, включая миры без единого удара.
+ * Девятая цель сдвинула бы сумму всех сохранённых матчей и вдобавок
+ * изменила бы перебор целей у противника под управлением компьютера.
+ *
+ * А показывать их у базы нельзя по другой причине: игрок ищет прокачку
+ * ракеты у ракеты. На маленьком экране плитки базы нет вовсе (прямое
+ * требование `match-hud`), и прокачка удара оказывалась доступна только
+ * через панель прокачки у объекта, к которому удар отношения не имеет.
+ *
+ * Разрешается это здесь: группа — понятие интерфейса, и мира она
+ * не касается.
+ */
+export const NUKE_STAT_GROUP = UPGRADE_TARGET_COUNT;
+
+/** Сколько всего групп столбцов. Все цели плюс ядерная. */
+export const STAT_GROUP_COUNT = UPGRADE_TARGET_COUNT + 1;
+
+/** Характеристики, описывающие ракету, а не строение базы. */
+const NUCLEAR_STATS: readonly UpgradeStat[] = [
+  UpgradeStat.NukeDamage,
+  UpgradeStat.NukeRadius,
+  UpgradeStat.NukeCooldown,
+];
+
+/** Группа столбца, в которой показывается ветка. */
+const groupOf = (branch: UpgradeBranch): number =>
+  NUCLEAR_STATS.includes(branch.stat) ? NUKE_STAT_GROUP : branch.target;
 
 /** Цель прокачки → тип юнита. Обратная сторона `UNIT_UPGRADE_TARGET`. */
 const UNIT_BY_TARGET: ReadonlyMap<UpgradeTarget, UnitType> = new Map(
@@ -141,6 +181,8 @@ const readingOf = (branch: UpgradeBranch, stats: PlayerStats): Reading | undefin
         return whole(stats.nuke.damage);
       case UpgradeStat.NukeRadius:
         return cells(stats.nuke.radius);
+      case UpgradeStat.NukeCooldown:
+        return { value: stats.nuke.cooldownTicks / TICKS_PER_SECOND, fraction: 0 };
       default:
         return undefined;
     }
@@ -150,33 +192,42 @@ const readingOf = (branch: UpgradeBranch, stats: PlayerStats): Reading | undefin
 };
 
 /**
- * Строки по каждой цели прокачки: индекс цели — значение `UpgradeTarget`.
+ * Строки по каждой группе столбцов.
  *
- * Строк ровно столько, сколько у цели веток. Характеристики без ветки
+ * Строк ровно столько, сколько у группы веток. Характеристики без ветки
  * не показываются: столбец отвечает на вопрос «что можно улучшить»,
  * и строка без ответа занимает место зря.
+ *
+ * Уровни нужны здесь ради потолка: цена у предельной ветки смысла
+ * не имеет, и вместо неё показывается «макс.».
  */
 export const statRowsOf = (
   stats: PlayerStats,
   costs: readonly number[],
   energy: number,
+  levels: readonly number[],
 ): readonly (readonly StatRow[])[] => {
-  const rows: StatRow[][] = UPGRADE_TARGETS.map(() => []);
+  const rows: StatRow[][] = Array.from({ length: STAT_GROUP_COUNT }, () => []);
 
   UPGRADE_BRANCHES.forEach((branch, index) => {
     const reading = readingOf(branch, stats);
     if (reading === undefined) return;
 
     const cost = costs[index] ?? Number.POSITIVE_INFINITY;
-    const row = rows[branch.target];
+    const row = rows[groupOf(branch)];
     if (row === undefined) return;
+
+    const maxed = isUpgradeMaxed(branch, levels[index] ?? 0);
 
     row.push({
       branch: index,
       value: reading.value,
       fraction: reading.fraction,
       cost: energyToVisible(cost),
-      affordable: energy >= cost,
+      // Предельная ветка не «дорогая», а закрытая: приглушённая стрелка
+      // означала бы «копи», а копить тут не на что.
+      affordable: !maxed && energy >= cost,
+      maxed,
     });
   });
 

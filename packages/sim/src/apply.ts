@@ -25,10 +25,10 @@
   directionTowards,
   distanceSquared,
   growPpm,
+  isUpgradeMaxed,
   isValidDirection,
   isValidStance,
   nukeBaseExclusion,
-  nukeCost,
 } from '@td/shared';
 import type { Command, PlayerId, UnitType } from '@td/shared';
 import { killGeneral } from './combat.js';
@@ -431,6 +431,12 @@ const buyUpgrade = (working: Working, player: WorkingPlayer, branchIndex: number
   const current = player.upgrades[branchIndex];
   if (current === undefined) return RejectReason.InvalidArgument;
 
+  // Потолок проверяется до списания энергии. Ветка с потолком в игре
+  // одна — откат ядерного удара, — но проверка идёт по объявленному
+  // полю, а не по имени ветки: следующая ветка с потолком иначе
+  // продавалась бы сверх предела молча, списывая энергию ни за что.
+  if (isUpgradeMaxed(branch, current.level)) return RejectReason.UpgradeMaxed;
+
   const cost = upgradeCostOf(branchIndex, current);
   if (player.energy < cost) return RejectReason.NotEnoughEnergy;
 
@@ -514,13 +520,19 @@ const launchNuke = (working: Working, player: WorkingPlayer, cell: number): Outc
   if (!isValidCell(cell)) return RejectReason.InvalidCell;
 
   // Радиус и мощность берутся один раз, здесь, и дальше живут в записи
-  // об ударе. От радиуса же считаются и цена, и запретная зона: платят
-  // за накрытую площадь, а зона обязана расти вместе с кругом, иначе
-  // прокачавший радиус накрыл бы базу.
+  // об ударе. От радиуса считается запретная зона: она обязана расти
+  // вместе с кругом, иначе прокачавший радиус накрыл бы базу. Цена же
+  // от радиуса больше не зависит — она посчитана от уровней прокачки
+  // и лежит в характеристиках готовой.
   const nuke = playerStats(player).nuke;
-  const cost = nukeCost(nuke.radius);
 
-  if (player.energy < cost) return RejectReason.NotEnoughEnergy;
+  // Откат проверяется РАНЬШЕ энергии, и порядок здесь содержательный.
+  // Обе проверки отвечают «нельзя», но говорят разное: «не остыла»
+  // означает «подожди», «не хватает» — «копи». Игроку с полным
+  // кошельком и неостывшей установкой второй ответ был бы прямой ложью.
+  if (working.tick < player.nukeReadyAtTick) return RejectReason.NukeOnCooldown;
+
+  if (player.energy < nuke.cost) return RejectReason.NotEnoughEnergy;
 
   const centre = cellCentre(cell);
   const exclusion = nukeBaseExclusion(nuke.radius);
@@ -538,7 +550,12 @@ const launchNuke = (working: Working, player: WorkingPlayer, cell: number): Outc
     }
   }
 
-  player.energy -= cost;
+  player.energy -= nuke.cost;
+
+  // Откат взводится от ПУСКА, а не от взрыва. Три секунды полёта —
+  // свойство ракеты, откат — свойство установки; сложив их, мы наказали
+  // бы дважды за одно.
+  player.nukeReadyAtTick = asTickNumber(working.tick + nuke.cooldownTicks);
 
   working.nukes.push({
     id: asEntityId(working.nextEntityId),
