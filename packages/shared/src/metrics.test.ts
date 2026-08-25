@@ -1,4 +1,4 @@
-import { createHistogram } from '@td/shared';
+import { createHistogram } from './histogram.js';
 import { describe, expect, it } from 'vitest';
 import { createMetrics, mergeReport } from './metrics.js';
 

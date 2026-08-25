@@ -9,3 +9,4 @@ export * from './commands.js';
 export * from './matchlog.js';
 export * from './player.js';
 export * from './histogram.js';
+export * from './metrics.js';

@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { MS_PER_TICK } from '@td/shared';
-import type { MatchSide } from '@td/shared';
+import { MS_PER_TICK, createMetrics } from '@td/shared';
+import type { MatchSide, Metrics } from '@td/shared';
 import { createMatchRegistry } from './matches.js';
-import { createMetrics } from './metrics.js';
-import type { Metrics } from './metrics.js';
 import type { ConnectionId, GameTransport } from './transport.js';
 
 /**

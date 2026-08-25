@@ -4,7 +4,13 @@ import { PROTOCOL_VERSION } from '@td/protocol';
 import { startComputerService } from '@td/bot';
 import { ADAPTIVE_SWARM_PROFILE, BULWARK_PROFILE, STRATEGIST_PROFILE } from '@td/ai';
 import type { ComputerService } from '@td/bot';
-import { COUNT_BOUNDS, COUNT_BUDGET, JUMP_BOUNDS_CELLS } from '@td/shared';
+import {
+  COUNT_BOUNDS,
+  COUNT_BUDGET,
+  JUMP_BOUNDS_CELLS,
+  createMetrics,
+  mergeReport,
+} from '@td/shared';
 import type { Command } from '@td/shared';
 import {
   COMPUTER_SECRET,
@@ -18,7 +24,6 @@ import { createMatchRegistry } from './matches.js';
 import { createMatchRecorder } from './recording.js';
 import { registerLobbyRoutes } from './lobby-routes.js';
 import { createWsTransport } from './ws-transport.js';
-import { createMetrics, mergeReport } from './metrics.js';
 import { createComputerRegistry } from './computer-registry.js';
 import type { GameTransport } from './transport.js';
 

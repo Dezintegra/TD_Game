@@ -2,12 +2,11 @@ import { MS_PER_TICK, asPlayerId } from '@td/shared';
 import { applyClientMessage, createMatchHost } from '@td/netplay';
 import { encode } from '@td/protocol';
 import type { MatchHost } from '@td/netplay';
-import type { MatchSide } from '@td/shared';
+import type { MatchSide, Metrics } from '@td/shared';
 import type { ClientMessage } from '@td/protocol';
 import type { HostMeasure } from '@td/netplay';
 import type { ConnectionId, GameTransport } from './transport.js';
 import type { MatchRecorder, MatchRecording } from './recording.js';
-import type { Metrics } from './metrics.js';
 
 /**
  * Реестр матчей: кто сейчас играет и по какому соединению.
