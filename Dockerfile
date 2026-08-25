@@ -81,18 +81,23 @@ ENV VITE_API_URL=${VITE_API_URL} \
     VITE_WS_URL=${VITE_WS_URL}
 
 # Фильтр, а не `pnpm build`: арена — исследовательский инструмент,
-# в бою её нет. Зависимости обеих целей turbo подтянет сам.
-RUN pnpm exec turbo run build --filter=@td/server --filter=@td/client
+# в бою её нет. Зависимости целей turbo подтянет сам.
+RUN pnpm exec turbo run build --filter=@td/server --filter=@td/computer --filter=@td/client
 
 # ── Зависимости для боя ──────────────────────────────────────────────
 # Отдельная установка с `--prod`: в образ сервера не должны попасть
 # ни typescript, ни vite, ни vitest — это сотни мегабайт, которые
 # в бою не исполняются, но исправно расширяют поверхность атаки.
+#
+# Фильтра два: в образе живут ОБА приложения на Node — игровой сервер
+# и служба компьютерных дежурных. Образ один, команда запуска разная.
+# Так развёртывание не платит вторым деревом зависимостей за то, что
+# до недавнего времени было одним процессом.
 FROM manifests AS prod-deps
 
 RUN --mount=type=cache,id=td-pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile --prod --store-dir=/pnpm/store \
-    --filter @td/server...
+    --filter @td/server... --filter @td/computer...
 
 # ── Образ сервера ────────────────────────────────────────────────────
 FROM ${NODE_IMAGE} AS server
@@ -116,6 +121,7 @@ COPY --from=build --chown=node:node /app/packages/netplay/dist ./packages/netpla
 COPY --from=build --chown=node:node /app/packages/ai/dist ./packages/ai/dist
 COPY --from=build --chown=node:node /app/packages/bot/dist ./packages/bot/dist
 COPY --from=build --chown=node:node /app/apps/server/dist ./apps/server/dist
+COPY --from=build --chown=node:node /app/apps/computer/dist ./apps/computer/dist
 
 # Каталог записей создаётся здесь и с нужным владельцем: том, который
 # Docker подставит на его место, наследует права первого монтирования.
@@ -127,9 +133,15 @@ EXPOSE 3001
 
 # Проверка живости — тем самым /health, что уже есть у сервера.
 # wget взят из busybox: он в alpine есть всегда, curl пришлось бы ставить.
+#
+# Служба дежурных запускается из ЭТОГО ЖЕ образа другой командой,
+# и живость у неё своя. Объявлена она в docker-compose.yml рядом
+# с командой: здесь эти два запуска ещё не различить.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=15s --retries=3 \
     CMD wget --quiet --spider http://127.0.0.1:3001/health || exit 1
 
+# Умолчание — игровой сервер. Служба дежурных поднимается тем же образом
+# с другой командой (см. docker-compose.yml).
 CMD ["node", "apps/server/dist/main.js"]
 
 # ── Образ веба ───────────────────────────────────────────────────────
