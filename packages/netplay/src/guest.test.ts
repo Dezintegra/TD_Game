@@ -244,6 +244,36 @@ describe('сторона участника', () => {
     expect(checksum(table.guest.confirmed!)).toBe(checksum(truth));
   });
 
+  it('на каждом кадре догона подтверждённый мир уже свежий', () => {
+    // Довод обработчика — номер тика, но нужен ему мир целиком: и сумму
+    // сверки, и отказы он берёт из `guest.confirmed`. Значит договор
+    // должен быть один на оба пути, живой и догонный: к приходу
+    // обработчика мир уже шагнул, то есть стоит на `tick + 1`.
+    //
+    // Проверяется именно это, а не «догнали до сорока»: итог был верным
+    // и до починки, врали только показания по дороге.
+    const box: { guest?: MatchGuest } = {};
+    const seen: { tick: number; confirmed: number }[] = [];
+
+    box.guest = createMatchGuest({
+      send: () => {},
+      onFrame: (tick) => {
+        seen.push({ tick, confirmed: box.guest?.confirmed?.tick ?? -1 });
+      },
+    });
+
+    box.guest.receive(welcome(40));
+    box.guest.receive({
+      type: MessageType.History,
+      fromTick: 0,
+      throughTick: 39,
+      commands: [],
+    });
+
+    expect(seen).toHaveLength(40);
+    expect(seen.map((it) => it.confirmed)).toEqual(seen.map((it) => it.tick + 1));
+  });
+
   it('расхождение вызывает одну пересборку из истории', () => {
     const table = bench();
     table.feed(CHECKSUM_INTERVAL_TICKS);
