@@ -1,5 +1,8 @@
-import { TELEMETRY_GRACE_MS } from '@td/shared';
-import type { HistogramSnapshot, ReadingRows } from '@td/shared';
+import { appendFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { TELEMETRY_GRACE_MS, TELEMETRY_MAX_SNAPSHOTS } from '@td/shared';
+import type { HistogramSnapshot, ReadingRows, ReadingsRecord } from '@td/shared';
+import { runStamp, safeName } from './recording.js';
 
 /**
  * Приём показаний клиента: кто их прислал, что в них нового и куда их деть.
@@ -225,4 +228,125 @@ export const deltaOf = (previous: ReadingRows | undefined, next: ReadingRows): R
   }
 
   return delta;
+};
+
+/**
+ * Писатель показаний: строка на снимок, файл на сторону матча.
+ *
+ * ## Почему файл на сторону, а не на матч
+ *
+ * В партии двух людей отчётов два, приходят они вперемежку, и в одном
+ * файле две копилки перемешались бы. А сравнивать их между собой как
+ * раз и интересно: у одного канал рваный, у другого ровный, и видно
+ * это только порознь.
+ *
+ * ## Почему дописывание, а не поток
+ *
+ * Запись матча держит поток на матч, и правильно: там тридцать строк
+ * в секунду. Здесь их одна на пять секунд на игрока — то есть открытый
+ * поток простаивал бы всё время матча, а закрывать его пришлось бы
+ * позже конца матча: последний, самый нужный снимок приходит уже после
+ * исхода.
+ *
+ * Дописывание снимает вопрос о сроке жизни файла целиком. Плата —
+ * открытие файла на строку, и при 0,2 записи в секунду она не стоит
+ * обсуждения.
+ *
+ * Дописывания одного файла выстраиваются в очередь: два незавершённых
+ * `appendFile` в один файл перемешали бы строки. Очередь — обещание
+ * на файл, к которому цепляется следующее.
+ */
+export interface ReadingsWriter {
+  /** Положить строку. Ошибки записи наружу не выходят. */
+  append(record: ReadingsRecord): void;
+  /** Дождаться, пока всё дописано. Проверкам и закрытию службы. */
+  drain(): Promise<void>;
+}
+
+export interface ReadingsWriterOptions {
+  readonly dir: string;
+  /** Часы. Внедрены ради проверяемости имени файла. */
+  readonly now?: () => Date;
+  readonly maxSnapshots?: number;
+  readonly log?: (message: string) => void;
+}
+
+interface FileState {
+  readonly path: string;
+  lines: number;
+  stopped: boolean;
+  queue: Promise<void>;
+}
+
+export const createReadingsWriter = (options: ReadingsWriterOptions): ReadingsWriter => {
+  const now = options.now ?? (() => new Date());
+  const maxSnapshots = options.maxSnapshots ?? TELEMETRY_MAX_SNAPSHOTS;
+  const log = options.log ?? ((message: string) => console.info(`[readings] ${message}`));
+
+  // Отметка запуска берётся один раз, как у записи матчей: идентификатор
+  // матча — счётчик, обнуляемый при перезапуске, и `m1` завтрашнего
+  // запуска дописался бы в хвост сегодняшнего.
+  const stamp = runStamp(now());
+  const files = new Map<string, FileState>();
+
+  // Каталог заводится один раз и заранее: делать это на каждую строку
+  // значило бы платить обращением к диску за то, что меняется однажды.
+  const ready = mkdir(options.dir, { recursive: true }).then(
+    () => undefined,
+    (error: unknown) => {
+      log(`каталог ${options.dir} не завести: ${String(error)}`);
+    },
+  );
+
+  const fileOf = (matchId: string, side: number): FileState => {
+    const key = `${matchId}:${String(side)}`;
+    const known = files.get(key);
+    if (known !== undefined) return known;
+
+    const fresh: FileState = {
+      path: join(options.dir, `${stamp}-${safeName(matchId)}-${String(side)}.jsonl`),
+      lines: 0,
+      stopped: false,
+      queue: ready,
+    };
+
+    files.set(key, fresh);
+    return fresh;
+  };
+
+  return {
+    append(record) {
+      const file = fileOf(record.matchId, record.side);
+      if (file.stopped) return;
+
+      if (file.lines >= maxSnapshots) {
+        file.stopped = true;
+        // Молча обрывать нельзя: файл, кончившийся без объяснения,
+        // читается как поломка службы, и разбираться в нём будут
+        // дольше, чем он того стоит.
+        log(
+          `показания матча ${record.matchId} стороны ${String(record.side)} ` +
+            `дошли до предела в ${String(maxSnapshots)} снимков, дальше не пишутся`,
+        );
+        return;
+      }
+
+      file.lines += 1;
+
+      const line = `${JSON.stringify(record)}\n`;
+      file.queue = file.queue.then(
+        () => appendFile(file.path, line, 'utf8'),
+        () => appendFile(file.path, line, 'utf8'),
+      );
+      file.queue = file.queue.then(undefined, (error: unknown) => {
+        // Диагностика не имеет права ломать игру. Ни матч, ни ответ
+        // на запрос от неудачной записи не меняются.
+        log(`строка показаний не записана в ${file.path}: ${String(error)}`);
+      });
+    },
+
+    async drain() {
+      await Promise.all([...files.values()].map((file) => file.queue));
+    },
+  };
 };

@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { COUNT_BOUNDS, COUNT_BUDGET, createHistogram } from '@td/shared';
-import type { HistogramSnapshot, ReadingRows } from '@td/shared';
-import { createTicketBook, deltaOf } from './readings.js';
+import type { HistogramSnapshot, ReadingRows, ReadingsRecord } from '@td/shared';
+import { createReadingsWriter, createTicketBook, deltaOf } from './readings.js';
 
 /** Часы под управлением теста: отсрочку иначе не проверить. */
 const clock = (): { now: () => number; advance: (ms: number) => void } => {
@@ -202,5 +205,105 @@ describe('прошлый снимок живёт вместе с билетом'
     book.remember('ничей', { jump: filled([1]) });
 
     expect(book.lastOf('ничей')).toBeUndefined();
+  });
+});
+
+describe('писатель показаний', () => {
+  let dir = '';
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'td-readings-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const record = (matchId: string, side: number, seq: number): ReadingsRecord => ({
+    t: 'readings',
+    matchId,
+    side,
+    seq,
+    atMs: 1_000_000 + seq,
+    tick: seq * 150,
+    delayTicks: 2,
+    pending: 0,
+    jump: filled([1]),
+  });
+
+  const linesOf = (path: string): string[] =>
+    readFileSync(path, 'utf8').split('\n').filter(Boolean);
+
+  it('строки ложатся по одной и по порядку', async () => {
+    const writer = createReadingsWriter({ dir, now: () => new Date(2026, 7, 25, 12, 0, 0) });
+
+    writer.append(record('m1', 0, 1));
+    writer.append(record('m1', 0, 2));
+    writer.append(record('m1', 0, 3));
+    await writer.drain();
+
+    const files = readdirSync(dir);
+    expect(files).toEqual(['20260825-120000-m1-0.jsonl']);
+
+    const lines = linesOf(join(dir, files[0] ?? ''));
+    expect(lines).toHaveLength(3);
+    expect(lines.map((line) => (JSON.parse(line) as ReadingsRecord).seq)).toEqual([1, 2, 3]);
+  });
+
+  it('стороны одного матча пишутся порознь', async () => {
+    // В партии двух людей отчёты приходят вперемежку, и в одном файле
+    // две копилки перемешались бы. А сравнивать их как раз и интересно.
+    const writer = createReadingsWriter({ dir, now: () => new Date(2026, 7, 25, 12, 0, 0) });
+
+    writer.append(record('m1', 0, 1));
+    writer.append(record('m1', 1, 1));
+    await writer.drain();
+
+    expect(readdirSync(dir).sort()).toEqual([
+      '20260825-120000-m1-0.jsonl',
+      '20260825-120000-m1-1.jsonl',
+    ]);
+  });
+
+  it('на пределе запись останавливается и говорит об этом', async () => {
+    const said: string[] = [];
+    const writer = createReadingsWriter({
+      dir,
+      now: () => new Date(2026, 7, 25, 12, 0, 0),
+      maxSnapshots: 2,
+      log: (message) => said.push(message),
+    });
+
+    for (let seq = 1; seq <= 5; seq += 1) writer.append(record('m1', 0, seq));
+    await writer.drain();
+
+    expect(linesOf(join(dir, '20260825-120000-m1-0.jsonl'))).toHaveLength(2);
+    // Молчаливый обрыв читался бы как поломка службы.
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain('предела');
+  });
+
+  it('имя файла чистится от всего, кроме букв, цифр и дефиса', async () => {
+    // Идентификатор матча сервер выдаёт сам, и всё же он процеживается:
+    // путь не составляется из данных, гуляющих по программе.
+    const writer = createReadingsWriter({ dir, now: () => new Date(2026, 7, 25, 12, 0, 0) });
+
+    writer.append(record('../../побег', 0, 1));
+    await writer.drain();
+
+    expect(readdirSync(dir)).toEqual(['20260825-120000-match-0.jsonl']);
+  });
+
+  it('каталог заводится сам', async () => {
+    const nested = join(dir, 'нет', 'такого');
+    const writer = createReadingsWriter({
+      dir: nested,
+      now: () => new Date(2026, 7, 25, 12, 0, 0),
+    });
+
+    writer.append(record('m1', 0, 1));
+    await writer.drain();
+
+    expect(readdirSync(nested)).toHaveLength(1);
   });
 });
