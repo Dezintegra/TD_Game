@@ -17,7 +17,7 @@
 
 ## 2. Предел переноса
 
-- [ ] 2.1 `COMMAND_CARRY_LIMIT_TICKS` в
+- [x] 2.1 `COMMAND_CARRY_LIMIT_TICKS` в
       `packages/shared/src/constants.ts` с обоснованием обеих границ
       (см. `design.md`, раздел 4).
 
