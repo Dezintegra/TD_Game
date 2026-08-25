@@ -538,6 +538,18 @@ body {
   line-height: 1.2;
 }
 
+/* Обратный отсчёт на плитке — на месте цены и в её же размере.
+
+   Цвет предупреждающий, а не приглушённый: приглушена уже сама плитка,
+   и второе приглушение сделало бы число нечитаемым ровно тогда, когда
+   его и надо прочесть. */
+.td-tile-wait {
+  font-family: var(--td-font-mono);
+  color: var(--td-warning);
+  font-size: var(--td-text-xs);
+  line-height: 1.2;
+}
+
 .td-stat-line {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -594,6 +606,22 @@ body {
 .td-stat-buy[data-affordable='true'] {
   border-color: var(--td-accent);
   color: var(--td-accent);
+}
+
+/* Ветка на потолке: вместо кнопки — слово.
+
+   Занимает то же место, что и кнопка, чтобы столбец не перекашивало,
+   но кнопкой не является и нажатий не принимает: покупать нечего. */
+.td-stat-maxed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--td-stat-buy-min);
+  min-height: var(--td-hit-target-y);
+  color: var(--td-text-muted-4);
+  font-family: var(--td-font-mono);
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .td-stat-column {

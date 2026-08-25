@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  NUKE_COOLDOWN_MAX_LEVEL,
   PPM_ONE,
   TICKS_PER_SECOND,
   UPGRADE_BRANCHES,
@@ -9,7 +10,7 @@ import {
 } from '@td/shared';
 import { createWorld, playerStats, upgradeCosts } from '@td/sim';
 import type { PlayerState } from '@td/sim';
-import { statRowsOf } from './stat-rows.js';
+import { NUKE_STAT_GROUP, statRowsOf } from './stat-rows.js';
 
 /**
  * Столбец характеристик под плиткой отвечает на один вопрос: стоит ли
@@ -34,8 +35,11 @@ const withLevel = (player: PlayerState, branch: number, effectPpm: number): Play
   ),
 });
 
+const levelsOf = (player: PlayerState): readonly number[] =>
+  player.upgrades.map((entry) => entry.level);
+
 const rowsOf = (player: PlayerState, energy = 1_000_000) =>
-  statRowsOf(playerStats(player), upgradeCosts(player), energy);
+  statRowsOf(playerStats(player), upgradeCosts(player), energy, levelsOf(player));
 
 const valueOf = (player: PlayerState, target: UpgradeTarget, stat: UpgradeStat): number => {
   const branch = upgradeBranchIndex(target, stat);
@@ -109,6 +113,8 @@ describe('состав столбцов', () => {
   const rows = rowsOf(base);
 
   it('строк ровно столько, сколько у цели веток', () => {
+    // База сюда не входит: три её ядерные ветки показываются у плитки
+    // удара, и совпадение «группа равна цели» на ней как раз нарушено.
     for (const target of [
       UpgradeTarget.UnitAssault,
       UpgradeTarget.UnitSniper,
@@ -117,20 +123,35 @@ describe('состав столбцов', () => {
       UpgradeTarget.TowerSniper,
       UpgradeTarget.Wall,
       UpgradeTarget.General,
-      UpgradeTarget.Base,
     ]) {
       const branches = UPGRADE_BRANCHES.filter((branch) => branch.target === target).length;
       expect(rows[target]).toHaveLength(branches);
     }
   });
 
-  it('у стены одна строка, у базы три, у генерала пять', () => {
-    // У базы к добыче энергии добавились мощность заряда и радиус
-    // поражения: пусковая установка стоит на её площадке, и обе ветки
-    // ядерного удара принадлежат ей.
+  it('у стены одна строка, у базы одна, у ядерки три, у генерала пять', () => {
+    // Ядерные ветки принадлежат цели «база» — пусковая установка стоит
+    // на её площадке, — но показываются у плитки удара: игрок ищет
+    // прокачку ракеты у ракеты. На маленьком экране плитки базы нет
+    // вовсе, и у базы они были бы недоступны на телефоне.
     expect(rows[UpgradeTarget.Wall]).toHaveLength(1);
-    expect(rows[UpgradeTarget.Base]).toHaveLength(3);
+    expect(rows[UpgradeTarget.Base]).toHaveLength(1);
+    expect(rows[NUKE_STAT_GROUP]).toHaveLength(3);
     expect(rows[UpgradeTarget.General]).toHaveLength(5);
+  });
+
+  it('у базы осталась только добыча энергии', () => {
+    const income = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.Income);
+
+    expect(rows[UpgradeTarget.Base]?.map((row) => row.branch)).toEqual([income]);
+  });
+
+  it('в ядерной группе ровно три ветки цели «база»', () => {
+    expect(rows[NUKE_STAT_GROUP]?.map((row) => row.branch)).toEqual([
+      upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeDamage),
+      upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeRadius),
+      upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeCooldown),
+    ]);
   });
 
   it('ни одна ветка не осталась без места', () => {
@@ -142,10 +163,57 @@ describe('состав столбцов', () => {
   });
 });
 
+describe('ветка на потолке', () => {
+  const cooldown = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeCooldown);
+
+  const atLevel = (level: number): PlayerState => ({
+    ...base,
+    upgrades: base.upgrades.map((entry, index) =>
+      index === cooldown ? { ...entry, level } : entry,
+    ),
+  });
+
+  const rowFor = (player: PlayerState) =>
+    rowsOf(player)[NUKE_STAT_GROUP]?.find((row) => row.branch === cooldown);
+
+  it('откат показан секундами, а не тактами', () => {
+    const row = rowFor(base);
+
+    expect(row?.value).toBe(60);
+    expect(row?.fraction).toBe(0);
+  });
+
+  it('каждый уровень снимает по десять секунд', () => {
+    expect(rowFor(atLevel(1))?.value).toBe(50);
+    expect(rowFor(atLevel(NUKE_COOLDOWN_MAX_LEVEL))?.value).toBe(30);
+  });
+
+  it('до потолка ветка обычная, на потолке — закрытая', () => {
+    expect(rowFor(atLevel(NUKE_COOLDOWN_MAX_LEVEL - 1))?.maxed).toBe(false);
+    expect(rowFor(atLevel(NUKE_COOLDOWN_MAX_LEVEL))?.maxed).toBe(true);
+  });
+
+  it('на потолке покупка недоступна при любом кошельке', () => {
+    // Приглушённая стрелка означает «копи», а копить здесь не на что:
+    // ядро отклонит покупку при любой энергии.
+    const row = rowsOf(atLevel(NUKE_COOLDOWN_MAX_LEVEL), 1_000_000_000)[NUKE_STAT_GROUP]?.find(
+      (entry) => entry.branch === cooldown,
+    );
+
+    expect(row?.affordable).toBe(false);
+  });
+
+  it('строка на потолке из столбца НЕ пропадает', () => {
+    // Пропасть она не может: игрок должен видеть, что откат прокачан
+    // до предела, а не гадать, куда делась ветка.
+    expect(rowsOf(atLevel(NUKE_COOLDOWN_MAX_LEVEL))[NUKE_STAT_GROUP]).toHaveLength(3);
+  });
+});
+
 describe('доступность покупки', () => {
   it('при нехватке энергии строка помечена недоступной, но остаётся', () => {
-    const poor = statRowsOf(playerStats(base), upgradeCosts(base), 0);
-    const rich = statRowsOf(playerStats(base), upgradeCosts(base), 1_000_000);
+    const poor = statRowsOf(playerStats(base), upgradeCosts(base), 0, levelsOf(base));
+    const rich = statRowsOf(playerStats(base), upgradeCosts(base), 1_000_000, levelsOf(base));
 
     expect(poor[UpgradeTarget.UnitAssault]).toHaveLength(
       rich[UpgradeTarget.UnitAssault]?.length ?? 0,

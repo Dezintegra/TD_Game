@@ -38,7 +38,7 @@ import {
   structureMaxHealth,
   upgradeCosts,
 } from '@td/sim';
-import type { Occupancy, WorldState } from '@td/sim';
+import type { Occupancy, PlayerState, WorldState } from '@td/sim';
 import type { ServerMessage } from '@td/protocol';
 import { createMatchGuest } from '@td/netplay';
 import type { GuestStatus } from '@td/netplay';
@@ -626,6 +626,21 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     minimapCellAtScreen: (x, y) => scene.minimapCellAtScreen(x, y),
   });
 
+  /**
+   * Остыла ли пусковая установка прямо сейчас.
+   *
+   * Спрашивается у предсказанного мира, а не у снимка матча: снимок
+   * снимается раз в несколько тиков, и нажатие на границе отката
+   * получило бы ответ из прошлого.
+   */
+  const isNukeReady = (): boolean => {
+    const world = guest.predicted;
+    if (world === null) return true;
+
+    const player = world.players[localPlayer];
+    return player === undefined || world.tick >= player.nukeReadyAtTick;
+  };
+
   setMatchCommands({
     // Заказ панель прокачки НЕ закрывает: заказывают пачками, и закрытие
     // после каждого юнита превратило бы покупку в открывание панели.
@@ -640,6 +655,16 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
     },
     toggleNukeAim: () => {
       closeUpgradePanel();
+
+      // Прицелиться при неостывшей установке нельзя. Игрок, которому
+      // позволили навести удар, вправе ожидать, что выстрел состоится;
+      // включённый режим наведения, кончающийся отказом ядра, —
+      // это обещание, которого интерфейс не сдержит.
+      //
+      // Выключить наведение откат при этом не мешает: снять свой же
+      // режим игроку можно всегда.
+      if (!controls.state.aimingNuke && !isNukeReady()) return;
+
       controls.setAimingNuke(!controls.state.aimingNuke);
     },
     toggleTargetAim: () => {
@@ -795,6 +820,17 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
  * кругом предпросмотра и снимком HUD, — и оба обязаны получить одно
  * и то же число.
  */
+/**
+ * Сколько секунд игроку ждать до следующего пуска. Ноль — установка
+ * готова.
+ *
+ * Округление ВВЕРХ: «осталось 0 секунд» при неостывшей установке — это
+ * обещание, которого интерфейс не сдержит. Пусть лучше единица держится
+ * лишний кадр, чем ноль появится раньше готовности.
+ */
+const nukeWaitSecondsOf = (world: WorldState, player: PlayerState): number =>
+  Math.max(0, Math.ceil((player.nukeReadyAtTick - world.tick) / TICKS_PER_SECOND));
+
 const nukeRadiusCellsOf = (world: WorldState, playerId: PlayerId): number => {
   const player = world.players[playerId];
   if (player === undefined) return NUKE_RADIUS_CELLS;
@@ -814,11 +850,12 @@ const isHoverAllowed = (
   if (player === undefined) return false;
 
   if (state.aimingNuke) {
-    // И цена, и запретная зона выводятся из радиуса удара, а радиус
-    // прокачивается. Считаются они той же функцией, что и в ядре:
-    // расхождение подсветки с правилами хуже, чем отсутствие подсветки.
+    // Запретная зона выводится из радиуса удара, а радиус прокачивается.
+    // Считается она той же функцией, что и в ядре: расхождение подсветки
+    // с правилами хуже, чем отсутствие подсветки.
     const nuke = playerStats(player).nuke;
     if (player.energy < nuke.cost) return false;
+    if (world.tick < player.nukeReadyAtTick) return false;
 
     const exclusion = nukeBaseExclusion(nuke.radius);
     const centre = cellCentre(state.hoverCell);
@@ -949,6 +986,7 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
       structureCosts: [],
       nukeCost: energyToVisible(NUKE_COST),
       nukeRadiusCells: NUKE_RADIUS_CELLS,
+      nukeReadyInSeconds: 0,
       stats: [],
       targetLabel: '—',
       matchSeconds: 0,
@@ -983,10 +1021,17 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
     sides: sidesOf(world),
     unitCosts: [0, 1, 2].map((type) => energyToVisible(stats.units[type as UnitType].cost)),
     structureCosts,
-    // Цена и радиус — этого игрока: оба выводятся из прокачки радиуса.
+    // Цена, радиус и остаток отката — этого игрока: все трое выводятся
+    // из его прокачки и его же тика готовности.
     nukeCost: energyToVisible(stats.nuke.cost),
     nukeRadiusCells: unitsToCells(stats.nuke.radius),
-    stats: statRowsOf(stats, costs, player.energy),
+    nukeReadyInSeconds: nukeWaitSecondsOf(world, player),
+    stats: statRowsOf(
+      stats,
+      costs,
+      player.energy,
+      player.upgrades.map((upgrade) => upgrade.level),
+    ),
     targetLabel: target === undefined ? '—' : STRUCTURE_STATS[target.kind].label,
     matchSeconds: world.tick / TICKS_PER_SECOND,
     winner: world.winner,

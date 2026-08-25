@@ -354,6 +354,19 @@ test('прокачка живёт в тулбаре и поднимает сам
   // не помещается, полное живёт в подсказке при наведении.
   await expect(page.getByTestId('focus-base')).toContainText('добыча');
   await expect(page.getByTestId('focus-base')).toContainText('База');
+
+  // А прокачка ракеты — у ракеты, и это главное, ради чего плитку удара
+  // вообще снабдили столбцом. Раньше все три строки стояли у базы:
+  // ветки принадлежат цели «база», потому что пусковая установка стоит
+  // на её площадке. Игроку эта причина не видна и не нужна.
+  const nuke = page.getByTestId('aim-nuke');
+  await expect(nuke).toContainText('мощн.');
+  await expect(nuke).toContainText('радиус');
+  await expect(nuke).toContainText('откат');
+
+  // И ни одной из них не осталось у базы.
+  await expect(page.getByTestId('focus-base')).not.toContainText('мощн.');
+  await expect(page.getByTestId('focus-base')).not.toContainText('откат');
 });
 
 test('плитки генерала и базы переносят камеру, а не заказывают', async ({ page }) => {

@@ -10,6 +10,7 @@ import {
   UpgradeTarget,
 } from '@td/shared';
 import { BATCH_ORDER_COUNT } from '../game/controls.js';
+import { NUKE_STAT_GROUP } from '../game/stat-rows.js';
 import { matchCommands, useHudStore } from '../game/store.js';
 import type { StatRow } from '../game/store.js';
 import { BaseGlyph, GeneralGlyph, STRUCTURE_GLYPH, TargetGlyph, UNIT_GLYPH } from './icons.js';
@@ -62,11 +63,29 @@ interface TileProps {
   readonly hotkey: string;
   /** Цена заказа. Ноль означает, что плитка ничего не заказывает. */
   readonly cost: number;
+  /**
+   * Сколько секунд ждать, прежде чем действие снова доступно.
+   *
+   * Ноль или отсутствие означает «доступно сейчас». Пока идёт отсчёт,
+   * он занимает место цены: цена в этот момент не отвечает на вопрос,
+   * который у игрока есть, — а вопрос у него «когда».
+   *
+   * Есть только у ядерного удара; заведено полем, а не проверкой
+   * по имени плитки, чтобы следующий откат не завёл второго способа
+   * показывать то же самое.
+   */
+  readonly waitSeconds?: number | undefined;
   readonly affordable: boolean;
   readonly active?: boolean;
   readonly role: TileRole;
-  /** Цель прокачки, чьи характеристики показывать. Нет — столбца нет. */
-  readonly target?: UpgradeTarget | undefined;
+  /**
+   * Группа столбца характеристик, которую показывать. Нет — столбца нет.
+   *
+   * Группа, а не цель прокачки, и это не придирка к слову. У всех плиток,
+   * кроме ядерного удара, они совпадают; ядерные же ветки принадлежат
+   * цели «база», а показываются здесь — см. `NUKE_STAT_GROUP`.
+   */
+  readonly group?: number | undefined;
   readonly testId: string;
   readonly onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
 }
@@ -76,10 +95,11 @@ const Tile = ({
   label,
   hotkey,
   cost,
+  waitSeconds,
   affordable,
   active,
   role,
-  target,
+  group,
   testId,
   onSelect,
 }: TileProps) => {
@@ -110,17 +130,23 @@ const Tile = ({
         <span className="td-key-hint td-tile-hotkey">{hotkey}</span>
       </button>
 
-      {cost > 0 && (
-        <span className="td-tile-cost" data-testid={`${testId}-cost`}>
-          {/* Слово «цена» на телефоне прячется правилом CSS, число
-              остаётся. Плитке заказа отведено сорок четыре точки, и это
-              выбор между «40» и «цена 40 за краем экрана». */}
-          <span className="td-tile-cost-label">цена </span>
-          {cost}
+      {waitSeconds !== undefined && waitSeconds > 0 ? (
+        <span className="td-tile-wait" data-testid={`${testId}-wait`}>
+          {waitSeconds} с
         </span>
+      ) : (
+        cost > 0 && (
+          <span className="td-tile-cost" data-testid={`${testId}-cost`}>
+            {/* Слово «цена» на телефоне прячется правилом CSS, число
+                остаётся. Плитке заказа отведено сорок четыре точки, и это
+                выбор между «40» и «цена 40 за краем экрана». */}
+            <span className="td-tile-cost-label">цена </span>
+            {cost}
+          </span>
+        )
       )}
 
-      {statsOpen && target !== undefined && <StatColumn target={target} />}
+      {statsOpen && group !== undefined && <StatColumn group={group} />}
     </div>
   );
 };
@@ -133,15 +159,15 @@ const Tile = ({
  * на него означала бы перерисовку столбца пять раз в секунду просто так:
  * содержимое-то не менялось.
  */
-const StatColumn = ({ target }: { readonly target: UpgradeTarget }) => {
-  const count = useHudStore((state) => state.match.stats[target]?.length ?? 0);
+const StatColumn = ({ group }: { readonly group: number }) => {
+  const count = useHudStore((state) => state.match.stats[group]?.length ?? 0);
 
   if (count === 0) return null;
 
   return (
     <div className="td-stat-column">
       {Array.from({ length: count }, (_, index) => (
-        <StatLine key={index} target={target} index={index} />
+        <StatLine key={index} group={group} index={index} />
       ))}
     </div>
   );
@@ -157,26 +183,21 @@ const StatColumn = ({ target }: { readonly target: UpgradeTarget }) => {
  * только при покупке. Примитивы zustand сравнивает по значению, и лишней
  * перерисовки не происходит вовсе.
  */
-const StatLine = ({
-  target,
-  index,
-}: {
-  readonly target: UpgradeTarget;
-  readonly index: number;
-}) => {
+const StatLine = ({ group, index }: { readonly group: number; readonly index: number }) => {
   const at = (state: { readonly match: { readonly stats: readonly (readonly StatRow[])[] } }) =>
-    state.match.stats[target]?.[index];
+    state.match.stats[group]?.[index];
 
   const branch = useHudStore((state) => at(state)?.branch ?? -1);
   const value = useHudStore((state) => at(state)?.value ?? 0);
   const fraction = useHudStore((state) => at(state)?.fraction ?? 0);
   const cost = useHudStore((state) => at(state)?.cost ?? 0);
   const affordable = useHudStore((state) => at(state)?.affordable ?? false);
+  const maxed = useHudStore((state) => at(state)?.maxed ?? false);
 
   const description = UPGRADE_BRANCHES[branch];
   if (branch < 0 || description === undefined) return null;
 
-  const row = { branch, value, fraction, cost, affordable };
+  const row = { branch, value, fraction, cost, affordable, maxed };
 
   return (
     <div className="td-stat-line" data-testid={`stat-${String(branch)}`}>
@@ -191,17 +212,32 @@ const StatLine = ({
             названием строки — «дальн.» и «скор.» ни с чем не спутать. */}
         <span className="td-stat-unit">{UPGRADE_UNIT[description.stat]}</span>
       </span>
-      <button
-        type="button"
-        className="td-stat-buy"
-        data-testid={`upgrade-${String(branch)}`}
-        data-affordable={String(row.affordable)}
-        title={`Улучшить за ${String(row.cost)}`}
-        onClick={() => matchCommands().buyUpgrade(branch)}
-      >
-        <span aria-hidden>▲</span>
-        {row.cost}
-      </button>
+      {/* Предельная ветка кнопки не предлагает вовсе. Приглушённая
+          стрелка означает «копи» — это ответ на нехватку энергии,
+          а здесь копить не на что: покупка будет отклонена при любом
+          кошельке. Кнопка, которая гарантированно получит отказ, —
+          это обещание, которого интерфейс не сдержит. */}
+      {row.maxed ? (
+        <span
+          className="td-stat-maxed"
+          data-testid={`maxed-${String(branch)}`}
+          title="Предельный уровень"
+        >
+          макс.
+        </span>
+      ) : (
+        <button
+          type="button"
+          className="td-stat-buy"
+          data-testid={`upgrade-${String(branch)}`}
+          data-affordable={String(row.affordable)}
+          title={`Улучшить за ${String(row.cost)}`}
+          onClick={() => matchCommands().buyUpgrade(branch)}
+        >
+          <span aria-hidden>▲</span>
+          {row.cost}
+        </button>
+      )}
     </div>
   );
 };
@@ -277,7 +313,7 @@ export const ActionBar = () => {
                 hotkey={UNIT_HOTKEY[type]}
                 cost={cost}
                 affordable={match.energy >= cost}
-                target={UNIT_UPGRADE_TARGET[type]}
+                group={UNIT_UPGRADE_TARGET[type]}
                 // Ctrl или Shift — заказ пачки. Ядро проверит каждый заказ
                 // отдельно, поэтому «десять, когда хватает на четыре»
                 // превращается в четыре.
@@ -308,7 +344,7 @@ export const ActionBar = () => {
                 cost={cost}
                 affordable={match.energy >= cost}
                 active={match.buildKind === kind}
-                target={STRUCTURE_UPGRADE_TARGET[kind]}
+                group={STRUCTURE_UPGRADE_TARGET[kind]}
                 onSelect={() =>
                   matchCommands().setBuildKind(match.buildKind === kind ? null : kind)
                 }
@@ -317,15 +353,14 @@ export const ActionBar = () => {
           })}
         </div>
 
-        {/* Наведение стоит отдельной группой от построек, хотя раньше
-            лежало с ними вместе. Причина не в порядке, а в том, что этой
-            группе нечего показывать в панели прокачки: ни у удара,
-            ни у цели веток нет. Панель раскладывает группы рядами —
-            юниты, постройки, свои объекты, — и группа без единой ветки
-            в ряду выглядела бы пустой строкой.
+        {/* Наведение стоит отдельной группой от построек. Прежде причина
+            была в том, что группе нечего показывать в панели прокачки;
+            теперь она обратная: у ядерного удара свой столбец из трёх
+            веток, и стоять он обязан у плитки удара, а не у плитки базы,
+            где игрок его не ищет. У плитки цели веток по-прежнему нет.
 
-            Заодно это единственные две плитки, промах по которым
-            не стоит ничего: обе только включают режим. */}
+            Это единственные две плитки, промах по которым не стоит
+            ничего: обе только включают режим. */}
         <div className="td-tile-group" data-testid="aim-panel">
           <Tile
             testId="aim-nuke"
@@ -334,8 +369,13 @@ export const ActionBar = () => {
             label="Ядерка"
             hotkey="F"
             cost={match.nukeCost}
-            affordable={match.energy >= match.nukeCost}
+            waitSeconds={match.nukeReadyInSeconds}
+            // Приглушается и по цене, и по откату: оба означают
+            // «сейчас нельзя». Чем именно нельзя, говорит число рядом —
+            // цена или секунды.
+            affordable={match.energy >= match.nukeCost && match.nukeReadyInSeconds === 0}
             active={match.aimingNuke}
+            group={NUKE_STAT_GROUP}
             onSelect={() => matchCommands().toggleNukeAim()}
           />
 
@@ -367,7 +407,7 @@ export const ActionBar = () => {
             hotkey="Пробел"
             cost={0}
             affordable
-            target={UpgradeTarget.General}
+            group={UpgradeTarget.General}
             onSelect={() => matchCommands().focusOwn('general')}
           />
 
@@ -383,7 +423,7 @@ export const ActionBar = () => {
             hotkey=""
             cost={0}
             affordable
-            target={UpgradeTarget.Base}
+            group={UpgradeTarget.Base}
             onSelect={() => matchCommands().focusOwn('base')}
           />
         </div>
