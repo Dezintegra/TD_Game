@@ -12,6 +12,11 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import { dirname, join } from 'node:path';
+// Таймеры импортируются явно, а не берутся из глобальных. Глобальные
+// имена Node в обычном `.mjs` линт перечисляет вручную (`eslint.config.js`,
+// блок `scripts/**/*.mjs`), и растить тот список ради двух функций
+// незачем — импорт называет их источник прямо.
+import { clearInterval, setInterval } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 // Управляющий символ собран из кода, а не записан в исходник байтом:
@@ -113,26 +118,116 @@ export const currentHolder = () => {
   return { ...held, age };
 };
 
+/** Счётчики процессора с начала загрузки системы: всего и из них простоя. */
+const cpuTimes = () => {
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus()) {
+    const t = cpu.times;
+    idle += t.idle;
+    total += t.user + t.nice + t.sys + t.idle + t.irq;
+  }
+  return { idle, total };
+};
+
 /** Доля занятости процессора за окно в ms, от 0 до 1. */
 export const busyShare = async (ms) => {
-  const snapshot = () => {
-    let idle = 0;
-    let total = 0;
-    for (const cpu of cpus()) {
-      const t = cpu.times;
-      idle += t.idle;
-      total += t.user + t.nice + t.sys + t.idle + t.irq;
-    }
-    return { idle, total };
-  };
-
-  const before = snapshot();
+  const before = cpuTimes();
   await sleep(ms);
-  const after = snapshot();
+  const after = cpuTimes();
 
   const total = after.total - before.total;
   if (total <= 0) return 0;
   return 1 - (after.idle - before.idle) / total;
+};
+
+/**
+ * Доля процентами — или прямое «неизвестно».
+ *
+ * Отсутствующее поле называется отсутствующим, а не печатается нулём.
+ * `String(undefined)` даёт «undefined», а `Math.round(undefined * 100)`
+ * даёт `NaN`, и оба попали бы на экран как настоящие числа.
+ */
+export const percent = (share) =>
+  typeof share === 'number' && Number.isFinite(share)
+    ? `${Math.round(share * 100)}%`
+    : 'неизвестно';
+
+/** Медиана и максимум по набору проб, или null — пробовать было нечего. */
+export const summariseBusy = (seen) => {
+  if (seen.length === 0) return null;
+
+  const round = (value) => Math.round(value * 100) / 100;
+  const sorted = [...seen].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 === 0
+      ? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
+      : (sorted[middle] ?? 0);
+
+  return { median: round(median), max: round(sorted.at(-1) ?? 0), samples: seen.length };
+};
+
+/**
+ * Наблюдение за занятостью НА ПРОТЯЖЕНИИ прогона.
+ *
+ * Занятость, снятая до прогона, отвечает на вопрос «стоит ли начинать».
+ * Записанная как обстановка всего замера, она отвечает не на тот вопрос,
+ * на который её потом читают. В журнале есть запись с занятостью 24 %
+ * при пороге 35 % — то есть с тихим началом — и с результатом 50 и 25
+ * к/с. Объяснить её нечем, кроме нагрузки, пришедшей уже во время
+ * прогона, и проверить это сегодня нечем тоже.
+ *
+ * Медиана и максимум, а не одно число: максимум ловит пришедшую сборку,
+ * медиана говорит, была ли она случайным всплеском или всей обстановкой.
+ *
+ * Чтение счётчиков подставляется извне ради проверки: иначе «нагрузка
+ * пришла в середине» пришлось бы устраивать по-настоящему, занимая
+ * машину ровно тем, от чего замер и страхует.
+ */
+export const busySamples = (read = cpuTimes) => {
+  let previous = read();
+  const seen = [];
+
+  return {
+    /** Взять пробу за время, прошедшее с прошлой. */
+    take: () => {
+      const now = read();
+      const total = now.total - previous.total;
+      const idle = now.idle - previous.idle;
+      previous = now;
+      // Счётчики не сдвинулись — пробы не было. Ноль здесь читался бы
+      // как «машина простаивала», а это утверждение из воздуха.
+      if (total > 0) seen.push(1 - idle / total);
+    },
+    summary: () => summariseBusy(seen),
+  };
+};
+
+/**
+ * То же самое, но пробы берёт само, раз в секунду.
+ *
+ * Секунда выбрана против цены: проба — это две суммы по массиву ядер,
+ * то есть дешевле любой из измеряемых величин, а замер идёт около
+ * минуты, и шестидесяти проб хватает и на медиану, и на максимум.
+ */
+export const startBusySampling = ({ everyMs = 1000 } = {}) => {
+  const samples = busySamples();
+  const timer = setInterval(() => samples.take(), everyMs);
+  // Наблюдение не должно удерживать процесс живым: замер кончился —
+  // значит кончился, даже если очередная проба не подошла.
+  timer.unref();
+
+  return {
+    stop: () => {
+      clearInterval(timer);
+      // Последняя проба — за хвост между предпоследним срабатыванием
+      // таймера и концом прогона. Без неё нагрузка, пришедшая
+      // в последние секунды, в наблюдение не попадала бы вовсе.
+      samples.take();
+      return samples.summary();
+    },
+  };
 };
 
 /**
@@ -238,7 +333,16 @@ export const describeContext = (scene) => {
  * Пишется и провалившийся замер: провал порога — тоже число, и когда он
  * случится, важнее всего будет увидеть, каким был предыдущий прогон.
  */
-export const recordEntry = ({ kind, measurements, context, busy, passed, unit = '' }) => {
+export const recordEntry = ({
+  kind,
+  measurements,
+  context,
+  busy,
+  load,
+  forced = false,
+  passed,
+  unit = '',
+}) => {
   const previous = lastOfKind(kind);
 
   appendFileSync(
@@ -252,6 +356,10 @@ export const recordEntry = ({ kind, measurements, context, busy, passed, unit = 
       commit: gitOrNull('rev-parse', '--short', 'HEAD') ?? process.env['PERF_COMMIT'] ?? 'без git',
       branch: gitOrNull('rev-parse', '--abbrev-ref', 'HEAD') ?? '—',
       worktree: repoRoot,
+      // Занятость ДО прогона. Поле не переименовывается и смысла
+      // не меняет: сорок с лишним прежних записей означают этим именем
+      // именно её, и переназначить его задним числом значило бы
+      // переписать свидетельство.
       busy: Math.round(busy * 100) / 100,
       passed,
       measurements,
@@ -260,6 +368,17 @@ export const recordEntry = ({ kind, measurements, context, busy, passed, unit = 
       // не намеряли», а на деле означал бы «замер про обстановку
       // не знает» — как у стоимости тика, где матча не бывает.
       ...(context !== undefined && Object.keys(context).length > 0 ? { context } : {}),
+      // Занятость ЗА прогон — та, по которой замеры сравнивают
+      // между собой.
+      ...(load === undefined || load === null
+        ? {}
+        : { busyMedian: load.median, busyMax: load.max, busySamples: load.samples }),
+      // Ключ `--force` говорит о намерении меряющего, а не о том,
+      // что вышло: форсировать можно и на тихой машине, просто чтобы
+      // не ждать проверки. Решения по нему не принимаются — он стоит
+      // здесь затем, чтобы, читая журнал, не гадать, почему замер
+      // состоялся при занятости 86 %.
+      ...(forced ? { forced: true } : {}),
     })}\n`,
   );
 
@@ -274,6 +393,12 @@ export const recordEntry = ({ kind, measurements, context, busy, passed, unit = 
     }
     const scene = context?.[name];
     if (scene !== undefined) note(`   ${describeContext(scene)}`);
+  }
+  if (load !== undefined && load !== null) {
+    note(
+      `нагрузка за прогон: медиана ${percent(load.median)}, максимум ${percent(load.max)}` +
+        ` (${load.samples} проб; до прогона было ${percent(busy)})`,
+    );
   }
   note(`журнал: ${logPath}, вся история — ключ --history`);
 };

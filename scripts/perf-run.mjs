@@ -19,7 +19,7 @@
  * цифра рядом с прошлой и с пометкой, при какой загрузке она снята.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -33,6 +33,7 @@ import {
   recordEntry,
   repoRoot,
   requireQuietMachine,
+  startBusySampling,
   step,
   warn,
 } from './perf-common.mjs';
@@ -147,16 +148,32 @@ if (force && busy > BUSY_LIMIT) warn('машина занята, к цифре �
 mkdirSync(dirname(measurementsPath), { recursive: true });
 rmSync(measurementsPath, { force: true });
 
-const run = spawnSync(
-  'pnpm',
-  ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
-  {
-    stdio: 'inherit',
-    shell: true,
-    cwd: repoRoot,
-    env: { ...process.env, PERF_OUT: measurementsPath },
-  },
-);
+// Прогон запускается `spawn`, а не `spawnSync`, и это цена наблюдения
+// за нагрузкой: синхронный запуск не отдаёт управление до конца прогона,
+// то есть взять пробу посреди него было бы неоткуда. `stdio: 'inherit'`
+// сохранён — вывод Playwright нужен на экране по ходу дела, а не пачкой
+// в конце.
+const sampling = startBusySampling();
+
+const status = await new Promise((resolve) => {
+  const child = spawn(
+    'pnpm',
+    ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
+    {
+      stdio: 'inherit',
+      shell: true,
+      cwd: repoRoot,
+      env: { ...process.env, PERF_OUT: measurementsPath },
+    },
+  );
+
+  // Не запустился вовсе — это не «замер провалился», но и не успех.
+  // Ниже такой прогон отсеется по отсутствию чисел.
+  child.on('error', () => resolve(1));
+  child.on('close', (code) => resolve(code ?? 1));
+});
+
+const load = sampling.stop();
 
 // ── Журнал ───────────────────────────────────────────────────────────
 //
@@ -191,8 +208,10 @@ recordEntry({
   measurements,
   context,
   busy,
-  passed: run.status === 0,
+  load,
+  forced: force,
+  passed: status === 0,
   unit: ' к/с',
 });
 
-process.exit(run.status ?? 1);
+process.exit(status);
