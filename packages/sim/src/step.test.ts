@@ -36,7 +36,7 @@ import {
   nukeBaseExclusion,
   upgradeBranchIndex,
 } from '@td/shared';
-import type { Command, PlayerId } from '@td/shared';
+import type { Command, PlayerId, Vec2 } from '@td/shared';
 import { createWorld } from './world.js';
 import type { PlayerState, StructureState, WorldState } from './world.js';
 import { step } from './step.js';
@@ -1346,6 +1346,38 @@ describe('огонь на ходу', () => {
   const facingEachOther = (): WorldState =>
     withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
 
+  /** Обе стороны в «Бою»: оба юнита сцепляются и стоят. */
+  const bothEngage = (world: WorldState): WorldState => ({
+    ...world,
+    players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
+  });
+
+  /**
+   * В «Бою» только соперник: мой юнит идёт, чужой стои́т.
+   *
+   * Стоящая мишень нужна затем, чтобы отрезок сравнения был честным:
+   * уйди она сама, число выстрелов различалось бы из-за её перемещения,
+   * а не из-за моего.
+   */
+  const enemyEngages = (world: WorldState): WorldState =>
+    patchPlayer(world, 1, { stance: AttackStance.Engage });
+
+  /**
+   * Окно ровно на два выстрела: первый на первом тике, второй — как только
+   * истечёт перезарядка. Выражено через перезарядку, а не числом: правка
+   * скорострельности не должна молча превращать окно в один выстрел.
+   */
+  const TWO_SHOTS = ASSAULT.cooldownTicks + 1;
+
+  /** Куда пришёл мой юнит за окно и сколько урона он успел нанести. */
+  const outcome = (world: WorldState): { position: Vec2 | undefined; damage: number } => {
+    const after = run(world, TWO_SHOTS);
+    return {
+      position: unitOf(after, 900)?.position,
+      damage: TOUGH - (unitOf(after, 901)?.health ?? 0),
+    };
+  };
+
   it('юнит стреляет и смещается за один и тот же тик', () => {
     const after = step(facingEachOther(), []);
 
@@ -1354,6 +1386,26 @@ describe('огонь на ходу', () => {
     // задел по дороге.
     expect(unitOf(after, 900)?.position).not.toEqual(cellCentre(MINE));
     expect(unitOf(after, 901)?.health).toBe(TOUGH - ASSAULT.attack);
+  });
+
+  it('число выстрелов не зависит от того, идёт юнит или стоит', () => {
+    const standing = outcome(bothEngage(facingEachOther()));
+    const moving = outcome(enemyEngages(facingEachOther()));
+
+    // Контроль: миры и правда различаются тем, ради чего заведены, —
+    // один юнит стои́т, другой идёт. Без него тест сравнивал бы две
+    // одинаковые расстановки и проходил бы всегда.
+    expect(standing.position).toEqual(cellCentre(MINE));
+    expect(moving.position).not.toEqual(cellCentre(MINE));
+
+    expect(standing.damage / ASSAULT.attack).toBe(2);
+    expect(moving.damage / ASSAULT.attack).toBe(2);
+  });
+
+  it('урон на ходу равен урону с места', () => {
+    expect(outcome(enemyEngages(facingEachOther())).damage).toBe(
+      outcome(bothEngage(facingEachOther())).damage,
+    );
   });
 });
 
