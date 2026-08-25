@@ -7,6 +7,7 @@ import {
   WORLD_TICKS_PER_SECOND,
   busySamples,
   comparability,
+  historyLines,
   lastComparable,
   summariseBusy,
 } from './perf-common.mjs';
@@ -42,6 +43,7 @@ const calmScene = (over = {}) => ({
 /** Запись журнала нового образца. */
 const entry = (over = {}) => ({
   kind: 'кадры',
+  commit: '7969969',
   busy: 0.12,
   busyMedian: 0.14,
   busyMax: 0.3,
@@ -329,5 +331,73 @@ describe('выбор «было»', () => {
     // изменение и заводит наблюдение за нагрузкой ВО ВРЕМЯ прогона:
     // у записи нового образца такой лазейки уже нет.
     expect(basis.at).toBe('2026-08-25T11:20:29.899Z');
+  });
+});
+
+describe('история переживает пополнение журнала', () => {
+  it('запись старого образца печатается без undefined и NaN', () => {
+    // Сорок с лишним таких записей уже накоплено, и переписывать
+    // их некуда: обстановку тех прогонов никто не снимал, а любое
+    // проставленное задним числом значение было бы выдумкой,
+    // неотличимой от измерения.
+    const old = {
+      at: '2026-08-25T10:57:08.000Z',
+      kind: 'кадры',
+      commit: 'c24ae2c',
+      busy: 0.11,
+      passed: true,
+      measurements: { 'камера в движении': 60, 'войска на поле': 60 },
+    };
+
+    const printed = historyLines(old).join('\n');
+
+    expect(printed).not.toContain('undefined');
+    expect(printed).not.toContain('NaN');
+    expect(printed).toContain('занятость 11%');
+    // Ни про нагрузку за прогон, ни про негодность в такой записи
+    // сказать нечего — значит и не говорится.
+    expect(printed).not.toContain('за прогон');
+    expect(printed).not.toContain('НЕГОДЕН');
+  });
+
+  it('запись нового образца показывает обстановку и нагрузку за прогон', () => {
+    const printed = historyLines(entry({ at: '2026-08-25T13:43:26.000Z' })).join('\n');
+
+    expect(printed).not.toContain('undefined');
+    expect(printed).not.toContain('NaN');
+    expect(printed).toContain('за прогон 14%');
+    expect(printed).toContain('мир 30 тик/с');
+    expect(printed).toContain('связь 14 мс');
+  });
+
+  it('негодная запись показывается вместе с причиной', () => {
+    const printed = historyLines(
+      entry({
+        at: '2026-08-25T13:43:26.000Z',
+        context: { 'войска на поле': calmScene({ tickTo: 640, syncTo: 635 }) },
+      }),
+    ).join('\n');
+
+    expect(printed).toContain('НЕГОДЕН ДЛЯ СРАВНЕНИЯ');
+    expect(printed).toContain('догон');
+  });
+
+  it('принудительный прогон в истории видно', () => {
+    const printed = historyLines(entry({ at: '2026-08-25T13:43:26.000Z', forced: true })).join(
+      '\n',
+    );
+    expect(printed).toContain('--force');
+  });
+
+  it('полупустая обстановка не выдаёт прочерки за числа', () => {
+    // Строка не должна ломаться и на записи, где часть полей
+    // почему-то не дошла: прочерк честнее «undefined».
+    const printed = historyLines(
+      entry({ at: '2026-08-25T13:43:26.000Z', context: { 'камера в движении': { windowMs: 0 } } }),
+    ).join('\n');
+
+    expect(printed).not.toContain('undefined');
+    expect(printed).not.toContain('NaN');
+    expect(printed).toContain('ход мира неизвестен');
   });
 });

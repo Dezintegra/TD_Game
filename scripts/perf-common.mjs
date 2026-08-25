@@ -317,18 +317,28 @@ export const tickRate = (scene) => {
   return Math.round(((tickTo - tickFrom) / (windowMs / 1000)) * 10) / 10;
 };
 
-/** Обстановка одной сцены человеческой строкой. */
+/**
+ * Обстановка одной сцены человеческой строкой.
+ *
+ * Каждое число проходит через `figure`, и это не перестраховка ради
+ * красоты. `String(undefined)` даёт «undefined», и на экране это
+ * выглядит как настоящее показание — то есть ровно та беда, от которой
+ * изменение и заводится: величина, которой не мерили, выдаёт себя
+ * за измеренную.
+ */
 export const describeContext = (scene) => {
   if (scene === undefined || scene === null) return 'обстановка не снята';
 
+  const figure = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : '—');
   const rate = tickRate(scene);
-  const parts = [
+
+  return [
     rate === null ? 'ход мира неизвестен' : `мир ${rate} тик/с (норма ${WORLD_TICKS_PER_SECOND})`,
-    `сверка ${scene.syncFrom}→${scene.syncTo}, отстаёт на ${scene.syncBehind}`,
-    `связь ${scene.latencyMs} мс, ввод ${scene.inputDelayTicks} тик.`,
-    `длинных кадров ${scene.frameLong}, p95 ${scene.frameP95} мс, макс ${scene.frameMax} мс`,
-  ];
-  return parts.join('; ');
+    `сверка ${figure(scene.syncFrom)}→${figure(scene.syncTo)}, отстаёт на ${figure(scene.syncBehind)}`,
+    `связь ${figure(scene.latencyMs)} мс, ввод ${figure(scene.inputDelayTicks)} тик.`,
+    `длинных кадров ${figure(scene.frameLong)}, p95 ${figure(scene.frameP95)} мс,` +
+      ` макс ${figure(scene.frameMax)} мс`,
+  ].join('; ');
 };
 
 // Во сколько раз ход мира вправе разойтись с проектным, прежде чем
@@ -556,6 +566,48 @@ export const recordEntry = ({
   note(`журнал: ${logPath}, вся история — ключ --history`);
 };
 
+/**
+ * Строка истории для одной записи журнала.
+ *
+ * Отдельной функцией ради проверки: печать в консоль проверять нечем,
+ * а строку — можно. И проверять её надо: сорок с лишним записей
+ * старого образца новых полей не имеют вовсе, а `String(undefined)`
+ * и `Math.round(undefined * 100)` дают «undefined» и «NaN», которые
+ * на экране неотличимы от настоящих чисел.
+ */
+export const historyLines = (entry) => {
+  const when = new Date(entry.at).toLocaleString('ru-RU');
+  const numbers = Object.entries(entry.measurements ?? {})
+    .map(([name, value]) => `${name} ${value}`)
+    .join(', ');
+
+  // Занятость ДО прогона печаталась и раньше; занятость ЗА прогон
+  // приписывается только там, где она снималась.
+  const before = entry.busy === undefined ? '' : `  занятость ${percent(entry.busy)}`;
+  const during =
+    entry.busyMedian === undefined
+      ? ''
+      : ` (за прогон ${percent(entry.busyMedian)}, макс ${percent(entry.busyMax)})`;
+  const forced = entry.forced === true ? '  [--force]' : '';
+  const failed = entry.passed === false ? '  [ПОРОГ НЕ ВЗЯТ]' : '';
+
+  // `commit` и `kind` подстрахованы прочерком по той же причине, что
+  // и всё остальное: запись могла прийти из контейнера, где git
+  // недоступен, и «undefined» на месте ревизии читалось бы как имя.
+  const head = `  ${when}  ${entry.commit ?? '—'}  ${entry.kind ?? '?'}`;
+  const lines = [`${head}: ${numbers}${before}${during}${forced}${failed}`];
+
+  const verdict = comparability(entry);
+  if (verdict.state === INCOMPARABLE) {
+    lines.push(`      [НЕГОДЕН ДЛЯ СРАВНЕНИЯ] ${verdict.reason}`);
+  }
+  for (const [name, scene] of Object.entries(entry.context ?? {})) {
+    lines.push(`      ${name}: ${describeContext(scene)}`);
+  }
+
+  return lines;
+};
+
 /** Напечатать историю замеров. */
 export const printHistory = (limit = 20) => {
   const entries = readLog();
@@ -566,13 +618,7 @@ export const printHistory = (limit = 20) => {
 
   console.log(`\nЖурнал замеров — ${logPath}\n`);
   for (const entry of entries.slice(-limit)) {
-    const when = new Date(entry.at).toLocaleString('ru-RU');
-    const numbers = Object.entries(entry.measurements ?? {})
-      .map(([name, value]) => `${name} ${value}`)
-      .join(', ');
-    const load = entry.busy === undefined ? '' : `  занятость ${Math.round(entry.busy * 100)}%`;
-    const verdict = entry.passed === false ? '  [ПОРОГ НЕ ВЗЯТ]' : '';
-    console.log(`  ${when}  ${entry.commit}  ${entry.kind ?? '?'}: ${numbers}${load}${verdict}`);
+    for (const line of historyLines(entry)) console.log(line);
   }
   console.log('');
 };
