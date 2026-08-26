@@ -101,7 +101,9 @@ export const applyRuleTuning = (tuning: Partial<RuleTuning>): void => {
   for (const [key, value] of Object.entries(tuning)) {
     if (value === undefined) continue;
     if (!Number.isFinite(value) || value <= 0) {
-      throw new Error(`множитель «${key}» должен быть положительным числом, получено «${String(value)}»`);
+      throw new Error(
+        `множитель «${key}» должен быть положительным числом, получено «${String(value)}»`,
+      );
     }
   }
 

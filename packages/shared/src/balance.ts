@@ -343,7 +343,8 @@ export let UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = buildUnitStats();
  */
 const buildSeparationRadius = (): Readonly<Record<UnitType, number>> => {
   const { unitRadius } = ruleTuning();
-  const radius = (cells: number): number => Math.max(1, Math.round(cellsToUnits(cells) * unitRadius));
+  const radius = (cells: number): number =>
+    Math.max(1, Math.round(cellsToUnits(cells) * unitRadius));
 
   return {
     [UnitType.Assault]: radius(0.2),
