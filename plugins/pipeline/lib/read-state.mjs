@@ -15,10 +15,26 @@ import { loadSchema, validateTask } from './validate-task.mjs';
  * сделанная в полночь, останавливала бы всю очередь до утра.
  */
 
-/** Прочитать JSON, вернув `{ value, problem }` вместо исключения. */
+/**
+ * Прочитать JSON, вернув `{ value, problem }` вместо исключения.
+ *
+ * Метка порядка байтов в начале файла срезается. Её ставят редакторы
+ * и оболочки Windows — та же `Set-Content -Encoding utf8` пишет её всегда, —
+ * а разбор JSON на ней спотыкается с невнятной жалобой на «неожиданный
+ * символ». Задачу заводит человек, и отвергать его работу из-за невидимого
+ * знака в начале файла нельзя.
+ */
+/**
+ * Метка порядка байтов, записанная кодом, а не самим символом: в исходнике
+ * она невидима, и линт справедливо считает её случайным пробелом.
+ */
+const BOM = String.fromCharCode(0xfeff);
+
 function readJson(path) {
   try {
-    return { value: JSON.parse(readFileSync(path, 'utf8')), problem: null };
+    const raw = readFileSync(path, 'utf8');
+    const text = raw.startsWith(BOM) ? raw.slice(1) : raw;
+    return { value: JSON.parse(text), problem: null };
   } catch (error) {
     return { value: null, problem: error.message };
   }

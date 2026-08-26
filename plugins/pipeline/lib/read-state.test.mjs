@@ -84,6 +84,21 @@ describe('чтение задач', () => {
     expect(invalid[0].problems.join()).toContain('меньше 0');
   });
 
+  it('метка порядка байтов не отменяет задачу', () => {
+    // Оболочки и редакторы Windows ставят её в начало файла сами. Отвергать
+    // из-за невидимого знака работу человека нельзя — проверено на живом
+    // прогоне, где задача была отвергнута с жалобой на «неожиданный символ».
+    const task = { ...JSON.parse(readFileSync(realExample, 'utf8')), id: '0001-bom' };
+    const bom = String.fromCharCode(0xfeff);
+    writeFileSync(
+      join(root, 'backlog', 'tasks', '0001-bom.json'),
+      bom + JSON.stringify(task, null, 2),
+    );
+    const { tasks, invalid } = readTasks(root, config);
+    expect(invalid).toEqual([]);
+    expect(tasks[0].id).toBe('0001-bom');
+  });
+
   it('имя файла обязано совпадать с полем id', () => {
     putTask('0001-one', { id: '0009-other' });
     const { invalid } = readTasks(root, config);
