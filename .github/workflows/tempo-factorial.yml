@@ -1,0 +1,141 @@
+# Факторный замер темпа матча.
+#
+# 243 сочетания пяти величин по три уровня. Гоняется на чужом железе
+# и только на своей ветке: рабочая машина такой перебор считала бы часами,
+# а runner'ы GitHub для публичного репозитория бесплатны и параллельны.
+#
+# Запускается пушем в ветку замера — по изменению самих файлов замера.
+# `workflow_dispatch` тут не работает: GitHub запускает по кнопке только
+# то, что уже лежит в ветке по умолчанию, а этот замер туда не поедет.
+name: Факторный замер темпа
+
+on:
+  push:
+    branches: ['worktree-tempo-factorial']
+    paths:
+      - 'scripts/experiment/**'
+      - '.github/workflows/tempo-factorial.yml'
+
+# Прогон целиком занимает два десятка задач. Второй такой, запущенный
+# поверх первого, отобрал бы у него очередь, и оба шли бы вдвое дольше.
+concurrency:
+  group: tempo-factorial
+  cancel-in-progress: true
+
+jobs:
+  # Размер замера задаётся файлом плана, а не правкой этого прогона.
+  # Ради обкатки: прежде чем занимать двенадцать задач на полчаса, стенд
+  # проверяют одной ячейкой, и переключение стоит правки одного числа.
+  план:
+    name: план
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.читать.outputs.shards }}
+      of: ${{ steps.читать.outputs.of }}
+      matches: ${{ steps.читать.outputs.matches }}
+      jobs: ${{ steps.читать.outputs.jobs }}
+      only: ${{ steps.читать.outputs.only }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: читать
+        run: |
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            import { appendFileSync } from 'node:fs';
+            const plan = JSON.parse(readFileSync('scripts/experiment/plan.json', 'utf8'));
+            const of = Math.max(1, Number(plan.shards) || 1);
+            const out = [
+              ['shards', JSON.stringify(Array.from({ length: of }, (_, i) => i))],
+              ['of', String(of)],
+              ['matches', String(Number(plan.matches) || 5)],
+              ['jobs', String(Number(plan.jobs) || 3)],
+              ['only', String(plan.only ?? '')],
+            ];
+            for (const [key, value] of out) appendFileSync(process.env.GITHUB_OUTPUT, key + '=' + value + '\n');
+            console.log(Object.fromEntries(out));
+          "
+
+  замер:
+    name: доля ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: план
+
+    strategy:
+      # Одна упавшая доля не должна уносить остальные: неполная картина
+      # полезнее пустой.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.план.outputs.shards) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Сборка ОДНА на всю долю, а не на ячейку. Ради этого и затевался
+      # перевод правил в настройку запуска: прежде каждое сочетание
+      # требовало своей сборки, и перебор выходил дороже самого счёта.
+      - run: pnpm build
+
+      - name: Прогнать свои ячейки
+        env:
+          SHARD: ${{ matrix.shard }}
+          OF: ${{ needs.план.outputs.of }}
+          MATCHES: ${{ needs.план.outputs.matches }}
+          JOBS: ${{ needs.план.outputs.jobs }}
+          ONLY: ${{ needs.план.outputs.only }}
+        run: |
+          args=(--shard "$SHARD" --of "$OF" --matches "$MATCHES" --jobs "$JOBS" --out "shard-$SHARD.json")
+          if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
+          node --no-warnings scripts/experiment/tempo-factorial.mjs "${args[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tempo-shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.json
+          retention-days: 30
+
+  сводка:
+    name: сводка
+    runs-on: ubuntu-latest
+    needs: замер
+    # Именно always: доли могли упасть частями, и свести уцелевшее нужно
+    # тем более. Пустой итог отличается от отсутствующего.
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tempo-shard-*
+          path: shards
+          merge-multiple: true
+
+      - name: Свести доли
+        run: |
+          node --no-warnings scripts/experiment/summarize.mjs shards \
+            --out tempo-factorial.json --summary tempo-summary.md
+          cat tempo-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tempo-factorial
+          path: |
+            tempo-factorial.json
+            tempo-summary.md
+          retention-days: 90
