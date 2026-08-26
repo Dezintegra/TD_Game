@@ -75,6 +75,27 @@ describe('настройка правил', () => {
     expect(STRUCTURE_STATS[StructureKind.Base].health).toBe(base);
   });
 
+  it('прочность базы двигается отдельно от прочности башен', () => {
+    // Разделение и есть смысл этих двух множителей: прочность базы —
+    // регулятор длины матча, прочность башен — размен у обороны. Слитые
+    // в один, они дали бы замеру сумму двух правок вместо одной.
+    const tower = STRUCTURE_STATS[StructureKind.TowerBasic].health;
+    const wall = STRUCTURE_STATS[StructureKind.Wall].health;
+
+    applyRuleTuning({ baseHealth: 0.75 });
+
+    expect(STRUCTURE_STATS[StructureKind.Base].health).toBe(37500);
+    expect(STRUCTURE_STATS[StructureKind.TowerBasic].health).toBe(tower);
+    expect(STRUCTURE_STATS[StructureKind.Wall].health).toBe(wall);
+  });
+
+  it('прочность башен не трогает базу, даже если двигать обе', () => {
+    applyRuleTuning({ baseHealth: 0.5, towerHealth: 2 });
+
+    expect(STRUCTURE_STATS[StructureKind.Base].health).toBe(25000);
+    expect(STRUCTURE_STATS[StructureKind.TowerBasic].health).toBe(400);
+  });
+
   it('радиус машины тянет за собой зазор до стены', () => {
     // Зазор обязан оставаться больше любого радиуса: иначе корпус свесится
     // за край скалы, и мы померяем не плотность строя, а правило обхода.

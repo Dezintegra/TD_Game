@@ -614,22 +614,30 @@ const STRUCTURE_STATS_BY_DESIGN: Readonly<Record<StructureKind, StructureStats>>
 /**
  * Таблица построек с учётом настройки правил.
  *
- * Множитель `towerHealth` трогает ТОЛЬКО стреляющие постройки. Стена и база
- * остаются на месте намеренно: прочность базы — главный регулятор длины
- * матча (см. её собственное обоснование выше), и подвинув её заодно
- * с башнями, замер получил бы сумму двух правок вместо одной.
+ * Множитель `towerHealth` трогает ТОЛЬКО стреляющие постройки, `baseHealth` —
+ * только базу. Разделены они намеренно: прочность базы — главный регулятор
+ * длины матча (см. её собственное обоснование выше), а прочность башен
+ * отвечает за размен у обороны. Один множитель на двоих означал бы сумму
+ * двух правок там, где нужна одна.
+ *
+ * Стена не двигается ни тем, ни другим: она не стреляет и не выигрывает
+ * матч, её дело — покупать время.
  */
 const buildStructureStats = (): Readonly<Record<StructureKind, StructureStats>> => {
-  const { towerHealth } = ruleTuning();
-  if (towerHealth === 1) return STRUCTURE_STATS_BY_DESIGN;
+  const { towerHealth, baseHealth } = ruleTuning();
+  if (towerHealth === 1 && baseHealth === 1) return STRUCTURE_STATS_BY_DESIGN;
 
+  const scaled = (stats: StructureStats, factor: number): StructureStats =>
+    factor === 1 ? stats : { ...stats, health: Math.max(1, Math.round(stats.health * factor)) };
+
+  // Стреляющая постройка узнаётся по тому же признаку, что и в игре,
+  // а не перечислением видов: перечисление молча пропустило бы первую же
+  // новую башню, а признак — нет.
   const armoured = (stats: StructureStats): StructureStats =>
-    stats.attack > 0 && stats.range > 0
-      ? { ...stats, health: Math.max(1, Math.round(stats.health * towerHealth)) }
-      : stats;
+    stats.attack > 0 && stats.range > 0 ? scaled(stats, towerHealth) : stats;
 
   return {
-    [StructureKind.Base]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.Base]),
+    [StructureKind.Base]: scaled(STRUCTURE_STATS_BY_DESIGN[StructureKind.Base], baseHealth),
     [StructureKind.Wall]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.Wall]),
     [StructureKind.TowerBasic]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.TowerBasic]),
     [StructureKind.TowerSniper]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.TowerSniper]),

@@ -36,10 +36,10 @@ const FACTOR_LABELS = {
   income: 'доход',
   speed: 'скорость',
   towerHp: 'прочность башен',
+  baseHp: 'прочность базы',
   radius: 'радиус юнитов',
   map: 'размер карты',
 };
-const FACTORS = Object.keys(FACTOR_LABELS);
 
 // ── Сбор ─────────────────────────────────────────────────────────────
 
@@ -60,6 +60,14 @@ results.sort((left, right) => left.id.localeCompare(right.id));
 
 const good = results.filter((row) => row.error === undefined && row.matches > 0);
 const broken = results.filter((row) => row.error !== undefined || row.matches === 0);
+
+// Разбираются только те величины, что в прогоне действительно двигали.
+// Точечная развёртка трогает одну-две, и говорить об остальных значило бы
+// печатать таблицу из одной строки, выдавая её за вывод.
+const FACTORS = Object.keys(FACTOR_LABELS).filter((factor) => {
+  const levels = new Set(good.map((row) => row[factor]));
+  return !levels.has(undefined) && levels.size > 1;
+});
 
 // ── Величины ─────────────────────────────────────────────────────────
 
@@ -164,22 +172,43 @@ if (good.length > 0) {
     }
   }
 
-  summary.push('');
-  summary.push('### Взаимодействия');
-  summary.push('');
-  summary.push(
-    'Насколько действие одной величины зависит от уровня другой. ' +
-      'Число около нуля означает, что величины независимы и о них можно ' +
-      'говорить порознь; большое — что нельзя.',
-  );
-  summary.push('');
-  summary.push('| пара | размахи по уровням | расхождение |');
-  summary.push('|---|---|---|');
-
-  for (const pair of pairs) {
+  // Взаимодействия печатаются, только если двигали больше одной величины:
+  // иначе таблица вышла бы пустой, а пустая таблица читается как «проверили
+  // и не нашли», хотя проверять было нечего.
+  if (pairs.length > 0) {
+    summary.push('');
+    summary.push('### Взаимодействия');
+    summary.push('');
     summary.push(
-      `| ${FACTOR_LABELS[pair.first]} × ${FACTOR_LABELS[pair.second]} | ` +
-        `${pair.spans.map(asTime).join(' · ')} | ${asTime(pair.divergenceTicks)} |`,
+      'Насколько действие одной величины зависит от уровня другой. ' +
+        'Число около нуля означает, что величины независимы и о них можно ' +
+        'говорить порознь; большое — что нельзя.',
+    );
+    summary.push('');
+    summary.push('| пара | размахи по уровням | расхождение |');
+    summary.push('|---|---|---|');
+
+    for (const pair of pairs) {
+      summary.push(
+        `| ${FACTOR_LABELS[pair.first]} × ${FACTOR_LABELS[pair.second]} | ` +
+          `${pair.spans.map(asTime).join(' · ')} | ${asTime(pair.divergenceTicks)} |`,
+      );
+    }
+  }
+
+  // Каждая ячейка целиком: развёртку выбирают по конкретным числам,
+  // а не по усреднению, ради которого затевался полный перебор.
+  summary.push('');
+  summary.push('### Ячейки');
+  summary.push('');
+  summary.push('| ячейка | настройка | медиана | от десятой до девяностой | таймаутов |');
+  summary.push('|---|---|---|---|---|');
+  for (const row of [...good].sort((left, right) => response(left) - response(right))) {
+    const setup = FACTORS.map((f) => `${FACTOR_LABELS[f]} ×${String(row[f])}`).join(', ');
+    summary.push(
+      `| \`${row.id}\` | ${setup} | ${asTime(row.medianTicks)} | ` +
+        `${asTime(row.minTicks)}–${asTime(row.maxTicks)} | ` +
+        `${String(Math.round(row.timeoutShare * 100))}% |`,
     );
   }
 }
