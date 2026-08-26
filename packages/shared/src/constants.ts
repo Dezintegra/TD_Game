@@ -1,3 +1,5 @@
+import { onRuleTuningApplied, ruleTuning } from './rules.js';
+
 /**
  * Сколько внутренних целочисленных единиц приходится на одну клетку поля.
  * Подробнее о том, зачем это нужно, — в units.ts.
@@ -28,10 +30,26 @@ export const MS_PER_TICK = 1000 / TICKS_PER_SECOND;
  * Второе уменьшение — на 20 процентов по стороне и на 37 по площади —
  * доводит начатое: путь генерала от базы до базы был 35 клеток по
  * диагонали, стал 25. Довод тот же, он просто не был исчерпан.
+ *
+ * Задумано 38. Множитель `map` из `rules.ts` двигает сторону от этого
+ * числа и только на время замера; без настройки здесь ровно 38, как и было.
+ * Сторона округляется до чётной: половина стороны берётся в расчётах
+ * и в проверках, и нечётная сторона дала бы дробный индекс клетки.
  */
-export const MAP_WIDTH_CELLS = 38;
-export const MAP_HEIGHT_CELLS = 38;
-export const MAP_CELL_COUNT = MAP_WIDTH_CELLS * MAP_HEIGHT_CELLS;
+const MAP_BASE_SIDE_CELLS = 38;
+
+/** Наименьшая сторона, при которой две базы с их расчисткой ещё расходятся. */
+const MAP_MIN_SIDE_CELLS = 16;
+
+const scaledSide = (factor: number): number => {
+  const raw = Math.round(MAP_BASE_SIDE_CELLS * factor);
+  const even = raw % 2 === 0 ? raw : raw + 1;
+  return Math.max(MAP_MIN_SIDE_CELLS, even);
+};
+
+export let MAP_WIDTH_CELLS = MAP_BASE_SIDE_CELLS;
+export let MAP_HEIGHT_CELLS = MAP_BASE_SIDE_CELLS;
+export let MAP_CELL_COUNT = MAP_WIDTH_CELLS * MAP_HEIGHT_CELLS;
 
 /**
  * Целевая доля непроходимых клеток на карте, в процентах.
@@ -109,8 +127,41 @@ export const ROCK_ATTEMPT_LIMIT = 512;
  */
 export const BASE_CLEARANCE_CELLS = 4;
 
-/** Отступ базы от угла карты, в клетках. */
-export const BASE_INSET_CELLS = 6;
+/**
+ * Отступ базы от угла карты, в клетках.
+ *
+ * Едет вместе со стороной карты, а не остаётся на месте. Иначе «карта
+ * вполовину» означала бы заодно «базы вчетверо дальше от угла по доле
+ * поля», то есть два изменения вместо одного, и замер приписал бы размеру
+ * то, что на деле сделал отступ.
+ */
+export let BASE_INSET_CELLS = 6;
+
+const BASE_INSET_BASE_CELLS = 6;
+
+/**
+ * Пересчёт всего, что выведено из размера карты.
+ *
+ * Стоит здесь, а не в `rules.ts`: величины живут в этом модуле, и правка
+ * рядом с объявлением. Регистрация на загрузке — значит порядок пересчётов
+ * повторяет порядок импортов, и размер карты обновляется раньше, чем
+ * то, что от него считают в других модулях.
+ */
+onRuleTuningApplied(() => {
+  const { map } = ruleTuning();
+
+  MAP_WIDTH_CELLS = scaledSide(map);
+  MAP_HEIGHT_CELLS = MAP_WIDTH_CELLS;
+  MAP_CELL_COUNT = MAP_WIDTH_CELLS * MAP_HEIGHT_CELLS;
+
+  // Отступ считается от полученной стороны, а не от множителя: сторона уже
+  // округлена до чётной, и считать от неё — значит держать пропорцию той,
+  // какой она стала, а не какой заказывалась.
+  BASE_INSET_CELLS = Math.max(
+    2,
+    Math.round((BASE_INSET_BASE_CELLS * MAP_WIDTH_CELLS) / MAP_BASE_SIDE_CELLS),
+  );
+});
 
 /**
  * Параметры проекции поля.

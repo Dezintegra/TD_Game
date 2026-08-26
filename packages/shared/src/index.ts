@@ -1,5 +1,8 @@
 export * from './branded.js';
 export * from './units.js';
+// Настройка правил идёт раньше констант намеренно: пересчёты выполняются
+// в порядке заявления, а заявляются они на загрузке модуля.
+export * from './rules.js';
 export * from './constants.js';
 export * from './terrain.js';
 export * from './percent.js';
