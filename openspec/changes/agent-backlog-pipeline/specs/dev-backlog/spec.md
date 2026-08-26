@@ -91,7 +91,9 @@
 `new` → `design` → `audit` → `implement` → `benchmark` (если задача требует
 прогона) → `pr` → `review` → `deploy` → `cleanup` → `closed`.
 Аудит с замечаниями SHALL возвращать задачу в `design`, ревью с замечаниями —
-в `revise`, а `revise` SHALL вести обратно в `review`.
+в `revise`, а `revise` SHALL вести обратно в `pr`. Именно в `pr`, а не сразу
+в `review`: правка требует нового прогона проверок, а ревью на непроверенном
+коде запрещено.
 
 Задача типа `run` SHALL проходить коротким маршрутом
 `new` → `benchmark` → `closed`, без проработки, ветки и pull request.
