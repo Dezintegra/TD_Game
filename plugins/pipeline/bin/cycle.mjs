@@ -50,9 +50,15 @@ function findRoot() {
   return process.cwd();
 }
 
-/** Настройка проекта поверх умолчаний. */
+/**
+ * Настройка проекта поверх умолчаний.
+ *
+ * Ищется рядом с самим плагином, а не по пути от корня репозитория: плагин
+ * обязан работать из любого каталога, куда его скопируют, а `plugins/pipeline`
+ * — это привязка к нынешнему месту, а не к плагину.
+ */
 function loadConfig() {
-  const path = join(root, 'plugins', 'pipeline', 'pipeline.config.json');
+  const path = fileURLToPath(new URL('../pipeline.config.json', import.meta.url));
   const project = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
   const { config, missing } = resolveConfig(project);
   return { config: { ...config, slots: config.slots ?? DEFAULT_SLOTS }, missing };
