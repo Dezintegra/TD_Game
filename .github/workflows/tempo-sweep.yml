@@ -1,0 +1,83 @@
+# Точечная развёртка темпа: одна-две величины, длинная серия.
+#
+# Отличается от полного перебора назначением, а не устройством. Перебор
+# отвечает «что вообще влияет» и платит за широту короткими сериями
+# по пять матчей. Развёртка приходит следующей, когда вопрос уже сужен,
+# и платит за точность: величин две, матчей на ячейку вчетверо больше.
+#
+# Пятью матчами выбирать число нельзя. Медиана пяти при двадцатиминутном
+# потолке пляшет на минуты — это видно по самому перебору, где таблица
+# «по одной величине» вышла немонотонной от одного лишь шума.
+name: Развёртка темпа
+
+on:
+  workflow_dispatch:
+    inputs:
+      factors:
+        description: 'Величины и уровни, JSON. Например {"baseHp":[0.7,0.8,1]}'
+        type: string
+        default: '{"baseHp":[0.6,0.7,0.8,0.9,1]}'
+      matches:
+        description: 'Матчей на ячейку'
+        type: string
+        default: '20'
+      seed:
+        description: 'Зерно первого матча'
+        type: string
+        default: '9000'
+  # Пуш нужен ровно до слияния: кнопку GitHub показывает только у того,
+  # что уже лежит в ветке по умолчанию. После слияния этот триггер можно
+  # убрать — останется кнопка.
+  push:
+    branches: ['worktree-tempo-window']
+    paths:
+      - '.github/workflows/tempo-sweep.yml'
+
+concurrency:
+  group: tempo-sweep
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    name: развёртка
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: Прогнать развёртку
+        env:
+          FACTORS: ${{ inputs.factors || '{"baseHp":[0.6,0.7,0.8,0.9,1]}' }}
+          MATCHES: ${{ inputs.matches || '20' }}
+          SEED: ${{ inputs.seed || '9000' }}
+        run: |
+          node --no-warnings scripts/experiment/tempo-factorial.mjs \
+            --shard 0 --of 1 --matches "$MATCHES" --seed "$SEED" --jobs 3 \
+            --factors "$FACTORS" --out sweep.json
+
+      - name: Свести
+        run: |
+          mkdir -p shards && cp sweep.json shards/
+          node --no-warnings scripts/experiment/summarize.mjs shards \
+            --out tempo-sweep.json --summary tempo-sweep.md
+          cat tempo-sweep.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tempo-sweep
+          path: |
+            tempo-sweep.json
+            tempo-sweep.md
+          retention-days: 90
