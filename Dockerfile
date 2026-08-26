@@ -105,7 +105,8 @@ FROM ${NODE_IMAGE} AS server
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3001 \
-    MATCHLOG_DIR=/data/matchlog
+    MATCHLOG_DIR=/data/matchlog \
+    TELEMETRY_DIR=/data/telemetry
 
 WORKDIR /app
 
@@ -123,10 +124,19 @@ COPY --from=build --chown=node:node /app/packages/bot/dist ./packages/bot/dist
 COPY --from=build --chown=node:node /app/apps/server/dist ./apps/server/dist
 COPY --from=build --chown=node:node /app/apps/computer/dist ./apps/computer/dist
 
-# Каталог записей создаётся здесь и с нужным владельцем: том, который
-# Docker подставит на его место, наследует права первого монтирования.
+# Каталоги данных создаются здесь и с нужным владельцем: том, который
+# Docker подставит на место каталога, наследует права первого монтирования.
 # Создай его позже — и сервер под пользователем node упрётся в чужой root.
-RUN mkdir -p /data/matchlog && chown -R node:node /data
+#
+# Каталог показаний забыли завести здесь, когда добавляли под него том
+# в `docker-compose.yml`, и на боевой машине это выглядело работающим:
+# служба печатала «Показания игроков сохраняются», отвечала игроку 204 —
+# и не сохраняла ни строки, роняя EACCES в журнал на каждый снимок.
+# Каталога не было в образе, поэтому Docker завёл его сам, от root.
+#
+# ПЕРЕЧИСЛЯЙТЕ ЗДЕСЬ КАЖДЫЙ ТОМ из `docker-compose.yml`. Забытый том
+# ломается не при сборке и не при запуске, а при первой записи, и молча.
+RUN mkdir -p /data/matchlog /data/telemetry && chown -R node:node /data
 
 USER node
 EXPOSE 3001
