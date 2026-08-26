@@ -1,5 +1,6 @@
 import { TICKS_PER_SECOND } from './constants.js';
 import { PPM_ONE, applyPpm, combinePpm, compoundPpm } from './percent.js';
+import { onRuleTuningApplied, ruleTuning } from './rules.js';
 import { cellsToUnits } from './units.js';
 
 /**
@@ -38,8 +39,16 @@ export const energy = (visible: number): number => Math.round(visible * ENERGY_S
 /** Переводит внутренние единицы в «видимые». Только для интерфейса. */
 export const energyToVisible = (internal: number): number => Math.floor(internal / ENERGY_SCALE);
 
-/** Базовый доход: десять единиц в секунду, то есть десять внутренних за тик. */
-export const BASE_INCOME_PER_TICK = 10;
+/**
+ * Базовый доход: десять единиц в секунду, то есть десять внутренних за тик.
+ *
+ * Множитель `income` из `rules.ts` двигает это число на время замера.
+ * Округление до целого обязательно и не является упрощением: дробного
+ * дохода в мире быть не может — накопитель дробной части пришлось бы
+ * хранить в состоянии мира и откатывать вместе с ним (см. выше).
+ */
+const BASE_INCOME_PER_TICK_BY_DESIGN = 10;
+export let BASE_INCOME_PER_TICK = BASE_INCOME_PER_TICK_BY_DESIGN;
 
 /** Стартовый запас. Хватает на пару башен или на десяток штурмовиков. */
 export const STARTING_ENERGY = energy(300);
@@ -142,8 +151,13 @@ export const SNIPER_TOWER_RANGE_CELLS = TESLA_RANGE_CELLS + SNIPER_TOWER_OVERREA
  * 66,67 единицы за тик — дробное число, которого в мире быть не должно,
  * поэтому округляем до 67 и получаем 2,01 клетки в секунду. Расхождение
  * в полпроцента незаметно, зато арифметика остаётся целой.
+ *
+ * Множитель `speed` из `rules.ts` двигает это число на время замера,
+ * и вместе с ним едут Тесла и генерал: их скорости выведены отсюда,
+ * а не записаны своими числами.
  */
-export const BASE_SPEED_UNITS_PER_TICK = 67;
+const BASE_SPEED_BY_DESIGN = 67;
+export let BASE_SPEED_UNITS_PER_TICK = BASE_SPEED_BY_DESIGN;
 
 /** Базовая стоимость юнита. От неё считаются цена ядерного удара и награды. */
 export const BASE_UNIT_COST = energy(25);
@@ -235,7 +249,7 @@ export interface UnitStats {
  * это прямая расшифровка игрового замысла, и сверять её нужно с ним,
  * а не с этими числами.
  */
-export const UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = {
+const buildUnitStats = (): Readonly<Record<UnitType, UnitStats>> => ({
   [UnitType.Assault]: {
     label: 'Штурмовик',
     health: BASE_HEALTH, // ×1
@@ -301,7 +315,9 @@ export const UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = {
     structureDamagePercent: 100, // ×1
     cost: BASE_UNIT_COST * 10, // ×10
   },
-};
+});
+
+export let UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = buildUnitStats();
 
 // ─────────────────────────────────────────────────────────────────────────
 // Расталкивание
@@ -325,11 +341,19 @@ export const UNIT_STATS: Readonly<Record<UnitType, UnitStats>> = {
  * Радиус в состоянии мира не хранится: он выводится из типа юнита,
  * а смещение — из положений на начало прохода.
  */
-export const UNIT_SEPARATION_RADIUS: Readonly<Record<UnitType, number>> = {
-  [UnitType.Assault]: cellsToUnits(0.2),
-  [UnitType.Sniper]: cellsToUnits(0.19),
-  [UnitType.Tesla]: cellsToUnits(0.24),
+const buildSeparationRadius = (): Readonly<Record<UnitType, number>> => {
+  const { unitRadius } = ruleTuning();
+  const radius = (cells: number): number =>
+    Math.max(1, Math.round(cellsToUnits(cells) * unitRadius));
+
+  return {
+    [UnitType.Assault]: radius(0.2),
+    [UnitType.Sniper]: radius(0.19),
+    [UnitType.Tesla]: radius(0.24),
+  };
 };
+
+export let UNIT_SEPARATION_RADIUS: Readonly<Record<UnitType, number>> = buildSeparationRadius();
 
 /**
  * На сколько непроходимая клетка отодвигает машину от своего края.
@@ -343,8 +367,16 @@ export const UNIT_SEPARATION_RADIUS: Readonly<Record<UnitType, number>> = {
  * отдельная проверка точки назначения. Жёстким его делать нельзя, иначе
  * войско запрётся в диагональной щели между скалами, которую поле потока
  * считает проходимой.
+ *
+ * Едет вместе с личным радиусом: величина обязана оставаться больше любого
+ * из радиусов, иначе корпус свесится за край скалы. Оставить её на месте
+ * при раздутом радиусе значило бы менять не плотность строя, а правило
+ * обхода препятствий — то есть мерить не то, что заказано.
  */
-export const SEPARATION_WALL_CLEARANCE = cellsToUnits(0.26);
+const buildWallClearance = (): number =>
+  Math.max(1, Math.round(cellsToUnits(0.26) * ruleTuning().unitRadius));
+
+export let SEPARATION_WALL_CLEARANCE = buildWallClearance();
 
 /**
  * Какая доля посчитанного толчка применяется за тик, в процентах.
@@ -493,7 +525,7 @@ export interface StructureStats {
   readonly footprintRadius: number;
 }
 
-export const STRUCTURE_STATS: Readonly<Record<StructureKind, StructureStats>> = {
+const STRUCTURE_STATS_BY_DESIGN: Readonly<Record<StructureKind, StructureStats>> = {
   [StructureKind.Base]: {
     label: 'Командный центр',
     // Запас подобран под матч в 10–15 минут и является ГЛАВНЫМ регулятором
@@ -580,6 +612,34 @@ export const STRUCTURE_STATS: Readonly<Record<StructureKind, StructureStats>> = 
 };
 
 /**
+ * Таблица построек с учётом настройки правил.
+ *
+ * Множитель `towerHealth` трогает ТОЛЬКО стреляющие постройки. Стена и база
+ * остаются на месте намеренно: прочность базы — главный регулятор длины
+ * матча (см. её собственное обоснование выше), и подвинув её заодно
+ * с башнями, замер получил бы сумму двух правок вместо одной.
+ */
+const buildStructureStats = (): Readonly<Record<StructureKind, StructureStats>> => {
+  const { towerHealth } = ruleTuning();
+  if (towerHealth === 1) return STRUCTURE_STATS_BY_DESIGN;
+
+  const armoured = (stats: StructureStats): StructureStats =>
+    stats.attack > 0 && stats.range > 0
+      ? { ...stats, health: Math.max(1, Math.round(stats.health * towerHealth)) }
+      : stats;
+
+  return {
+    [StructureKind.Base]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.Base]),
+    [StructureKind.Wall]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.Wall]),
+    [StructureKind.TowerBasic]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.TowerBasic]),
+    [StructureKind.TowerSniper]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.TowerSniper]),
+  };
+};
+
+export let STRUCTURE_STATS: Readonly<Record<StructureKind, StructureStats>> =
+  STRUCTURE_STATS_BY_DESIGN;
+
+/**
  * Стреляет ли постройка этого вида.
  *
  * Признак нужен двум правилам сразу: юнит останавливается перед
@@ -635,7 +695,7 @@ export const BASE_BUILD_EXCLUSION = cellsToUnits(BASE_BUILD_EXCLUSION_CELLS);
 // Генерал
 // ─────────────────────────────────────────────────────────────────────────
 
-export const GENERAL_STATS = {
+const GENERAL_STATS_BY_DESIGN = {
   label: 'Генерал',
   health: BASE_HEALTH * 2, // ×2
   attack: BASE_ATTACK, // ×1
@@ -684,6 +744,18 @@ export const GENERAL_STATS = {
   /** Время возрождения: десять секунд по игровому замыслу. */
   respawnTicks: TICKS_PER_SECOND * 10,
 } as const;
+
+/**
+ * Характеристики генерала с учётом настройки правил.
+ *
+ * Скорость пересчитывается от базовой, а не хранится своим числом: связь
+ * «генерал в полтора раза быстрее машины» — часть замысла, и рвать её
+ * при замере нельзя, иначе ускорение войска означало бы заодно
+ * относительное замедление генерала.
+ */
+export let GENERAL_STATS: Omit<typeof GENERAL_STATS_BY_DESIGN, 'speed'> & {
+  readonly speed: number;
+} = GENERAL_STATS_BY_DESIGN;
 
 /** Ниже этого порога прокачка время возрождения не опускает. */
 export const MIN_RESPAWN_TICKS = TICKS_PER_SECOND;
@@ -1661,3 +1733,34 @@ export const BLAST_LIFETIME_TICKS: Readonly<Record<BlastKind, number>> = {
 
 /** Как часто противник под управлением компьютера принимает решения. */
 export const AI_DECISION_INTERVAL_TICKS = 15;
+
+// ─────────────────────────────────────────────────────────────────────────
+// Настройка правил
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Пересчёт всего, что зависит от множителей из `rules.ts`.
+ *
+ * Один список на весь файл, а не пересчёт при каждом обращении: числа
+ * читаются каждый тик и по многу раз, а меняются один раз за запуск.
+ *
+ * Порядок важен. Сперва обновляются корни (доход, базовая скорость),
+ * затем таблицы, которые от корней считаются. Иначе таблица собралась бы
+ * из прежней скорости, и войско поехало бы по-старому при заказанном
+ * ускорении — ровно та беда, которую в замере не видно.
+ */
+onRuleTuningApplied(() => {
+  const { income, speed } = ruleTuning();
+
+  BASE_INCOME_PER_TICK = Math.max(1, Math.round(BASE_INCOME_PER_TICK_BY_DESIGN * income));
+  BASE_SPEED_UNITS_PER_TICK = Math.max(1, Math.round(BASE_SPEED_BY_DESIGN * speed));
+
+  UNIT_STATS = buildUnitStats();
+  STRUCTURE_STATS = buildStructureStats();
+  UNIT_SEPARATION_RADIUS = buildSeparationRadius();
+  SEPARATION_WALL_CLEARANCE = buildWallClearance();
+  GENERAL_STATS = {
+    ...GENERAL_STATS_BY_DESIGN,
+    speed: Math.round(BASE_SPEED_UNITS_PER_TICK * 1.5),
+  };
+});

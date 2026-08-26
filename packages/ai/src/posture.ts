@@ -13,6 +13,7 @@ import {
   VETERAN_RANK_KILLS,
   cellsToUnits,
   distanceSquared,
+  onRuleTuningApplied,
   veteranStructurePpmOf,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
@@ -84,9 +85,19 @@ export const ENERGY_PER_LIVE_DAMAGE = BASE_UNIT_COST / BASE_HEALTH;
  * позиции у чужой базы не в том, что башня добьёт базу, а в том,
  * что она расстреливает выходящие войска в самой их гуще.
  */
-const ENERGY_PER_BASE_DAMAGE =
+let ENERGY_PER_BASE_DAMAGE =
   (BASE_INCOME_PER_TICK * TICKS_PER_SECOND * MATCH_TARGET_SECONDS) /
   STRUCTURE_STATS[StructureKind.Base].health;
+
+// Курс выведен из дохода, а доход подвижен настройкой правил. Оставленный
+// прежним, он заставил бы противника при удвоенном доходе оценивать урон
+// по базе вдвое дешевле, чем тот стои́т, — то есть замер поменял бы заодно
+// и манеру игры, а приписали бы это доходу.
+onRuleTuningApplied(() => {
+  ENERGY_PER_BASE_DAMAGE =
+    (BASE_INCOME_PER_TICK * TICKS_PER_SECOND * MATCH_TARGET_SECONDS) /
+    STRUCTURE_STATS[StructureKind.Base].health;
+});
 
 /**
  * Сколько тиков генерал проводит под огнём, прежде чем выйдет из-под него.

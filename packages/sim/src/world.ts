@@ -15,6 +15,8 @@
   asPlayerId,
   asTickNumber,
   directionTowards,
+  lockRuleTuning,
+  onRuleTuningApplied,
 } from '@td/shared';
 import type {
   BlastKind,
@@ -442,8 +444,13 @@ const freshUpgrades = (): readonly UpgradeState[] =>
     costPpm: PPM_ONE,
   }));
 
-const MAP_CENTRE_X = MAP_WIDTH_CELLS / 2;
-const MAP_CENTRE_Y = MAP_HEIGHT_CELLS / 2;
+let MAP_CENTRE_X = MAP_WIDTH_CELLS / 2;
+let MAP_CENTRE_Y = MAP_HEIGHT_CELLS / 2;
+
+onRuleTuningApplied(() => {
+  MAP_CENTRE_X = MAP_WIDTH_CELLS / 2;
+  MAP_CENTRE_Y = MAP_HEIGHT_CELLS / 2;
+});
 
 /**
  * Отступ точки появления генерала от центра базы.
@@ -472,6 +479,12 @@ export const generalSpawnCell = (baseCell: number): number => {
 };
 
 export const createWorld = (seed: number): WorldState => {
+  // Отсюда и до конца запуска правила неизменны. Запирание стои́т именно
+  // здесь, а не в приложении: мир — первое, что от правил зависит,
+  // и позже этой точки любая правка означала бы партию, начатую по одним
+  // правилам и продолженную по другим.
+  lockRuleTuning();
+
   const map = generateMap(seed);
 
   const structures: StructureState[] = map.baseCells.map((cell, index) => ({

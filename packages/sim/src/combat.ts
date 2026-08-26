@@ -20,6 +20,7 @@ import {
   asTickNumber,
   directionTowards,
   isArmedStructure,
+  onRuleTuningApplied,
   veteranRank,
 } from '@td/shared';
 import type { PlayerId, UnitType, Vec2 } from '@td/shared';
@@ -105,8 +106,16 @@ export type ShooterKind = (typeof ShooterKind)[keyof typeof ShooterKind];
  */
 const BUCKET_CELLS = 8;
 const BUCKET_UNITS = BUCKET_CELLS * FIXED_POINT_SCALE;
-const BUCKET_COLS = Math.ceil(MAP_WIDTH_CELLS / BUCKET_CELLS);
-const BUCKET_ROWS = Math.ceil(MAP_HEIGHT_CELLS / BUCKET_CELLS);
+// Размер корзины постоянен, а вот их число выведено из размера карты —
+// и потому пересчитывается вместе с ним. Оставленное прежним, оно дало бы
+// сетку меньше поля, и половина боя просто не нашла бы целей.
+let BUCKET_COLS = Math.ceil(MAP_WIDTH_CELLS / BUCKET_CELLS);
+let BUCKET_ROWS = Math.ceil(MAP_HEIGHT_CELLS / BUCKET_CELLS);
+
+onRuleTuningApplied(() => {
+  BUCKET_COLS = Math.ceil(MAP_WIDTH_CELLS / BUCKET_CELLS);
+  BUCKET_ROWS = Math.ceil(MAP_HEIGHT_CELLS / BUCKET_CELLS);
+});
 
 export interface SpatialIndex {
   readonly buckets: readonly number[][];
