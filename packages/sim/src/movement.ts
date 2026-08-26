@@ -8,6 +8,7 @@
   MAP_WIDTH_CELLS,
   STRUCTURE_STATS,
   directionTowards,
+  onRuleTuningApplied,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
 import { cellAt, cellCentre, cellIndex, squaredDistanceToFootprint } from './map.js';
@@ -37,8 +38,17 @@ import type { Working, WorkingGeneral, WorkingStructure, WorkingUnit } from './w
  * здесь не используется, хотя выглядел бы аккуратнее.
  */
 
-const MAP_MAX_X = MAP_WIDTH_CELLS * FIXED_POINT_SCALE - 1;
-const MAP_MAX_Y = MAP_HEIGHT_CELLS * FIXED_POINT_SCALE - 1;
+// Границы поля считаются один раз, а не при каждом обращении: они нужны
+// в самом горячем месте тика. Пересчёт заявлен настройке правил — размер
+// карты подвижен только до создания первого мира, и оставить здесь `const`
+// значило бы удерживать войско в границах ПРЕЖНЕЙ карты.
+let MAP_MAX_X = MAP_WIDTH_CELLS * FIXED_POINT_SCALE - 1;
+let MAP_MAX_Y = MAP_HEIGHT_CELLS * FIXED_POINT_SCALE - 1;
+
+onRuleTuningApplied(() => {
+  MAP_MAX_X = MAP_WIDTH_CELLS * FIXED_POINT_SCALE - 1;
+  MAP_MAX_Y = MAP_HEIGHT_CELLS * FIXED_POINT_SCALE - 1;
+});
 
 const clamp = (value: number, max: number): number => (value < 0 ? 0 : value > max ? max : value);
 
