@@ -55,20 +55,34 @@ const FLAG_OF = {
   income: '--income',
   speed: '--speed',
   towerHp: '--tower-hp',
+  baseHp: '--base-hp',
   radius: '--radius',
   map: '--map',
 };
 
-export const cells = () => {
+/**
+ * Ячейки перебора. Без набора величин берётся полная матрица.
+ *
+ * Свой набор нужен точечной развёртке: когда вопрос уже сужен до одной-двух
+ * величин, гнать все 243 сочетания незачем — ответ утонет в усреднении
+ * по тому, что спрашивать не собирались.
+ */
+export const cells = (factors = FACTORS) => {
+  for (const key of Object.keys(factors)) {
+    if (FLAG_OF[key] === undefined) {
+      throw new Error(`неизвестная величина «${key}»; есть: ${Object.keys(FLAG_OF).join(', ')}`);
+    }
+  }
+
   let out = [{}];
 
-  for (const [key, levels] of Object.entries(FACTORS)) {
+  for (const [key, levels] of Object.entries(factors)) {
     const next = [];
     for (const base of out) for (const level of levels) next.push({ ...base, [key]: level });
     out = next;
   }
 
-  return out.map((factors, index) => ({ id: `c${String(index).padStart(3, '0')}`, ...factors }));
+  return out.map((values, index) => ({ id: `c${String(index).padStart(3, '0')}`, ...values }));
 };
 
 /**
@@ -161,7 +175,12 @@ const runCell = (cell, { matches, seed, profiles, jobs }) => {
         profiles,
         '--jobs',
         String(jobs),
-        ...Object.entries(FLAG_OF).flatMap(([key, flagName]) => [flagName, String(cell[key])]),
+        // Перебираются только те величины, что есть в ячейке: остальные
+        // остаются задуманными, и передавать по ним «единицу» незачем —
+        // лишний ключ в строке запуска читался бы как «здесь тоже правили».
+        ...Object.keys(FLAG_OF)
+          .filter((key) => cell[key] !== undefined)
+          .flatMap((key) => [FLAG_OF[key], String(cell[key])]),
       ],
       dir,
     );
@@ -202,23 +221,25 @@ const jobs = numeric('jobs', 2);
 const profiles = flag('profiles', 'baseline-2026-08,baseline-2026-08');
 const out = flag('out', `experiment-shard-${String(shard)}.json`);
 const only = flag('only', '');
+const factorsRaw = flag('factors', '');
 
-const all = cells();
+const all = cells(factorsRaw === '' ? undefined : JSON.parse(factorsRaw));
 const mine = only === '' ? shardOf(all, shard, of) : all.filter((cell) => cell.id === only);
 
 process.stdout.write(
   `ячеек всего ${String(all.length)}, в этой задаче ${String(mine.length)} ` +
-    `(доля ${String(shard)} из ${String(of)}), матчей на ячейку ${String(matches)}\n`,
+    `(доля ${String(shard)} из ${String(of)}), матчей на ячейку ${String(matches)}\n` +
+    `величины: ${factorsRaw === '' ? 'полная матрица' : factorsRaw}\n`,
 );
 
 const results = [];
 for (const [index, cell] of mine.entries()) {
-  process.stdout.write(
-    `\n── ${cell.id} (${String(index + 1)}/${String(mine.length)}): ` +
-      `доход ×${String(cell.income)}, скорость ×${String(cell.speed)}, ` +
-      `башни ×${String(cell.towerHp)}, радиус ×${String(cell.radius)}, ` +
-      `карта ×${String(cell.map)}\n`,
-  );
+  const shown = Object.keys(FLAG_OF)
+    .filter((key) => cell[key] !== undefined)
+    .map((key) => `${key} ×${String(cell[key])}`)
+    .join(', ');
+
+  process.stdout.write(`\n── ${cell.id} (${String(index + 1)}/${String(mine.length)}): ${shown}\n`);
 
   results.push(runCell(cell, { matches, seed, profiles, jobs }));
   writeFileSync(out, JSON.stringify({ seed, matches, profiles, results }, null, 2), 'utf8');

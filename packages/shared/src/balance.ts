@@ -541,7 +541,31 @@ const STRUCTURE_STATS_BY_DESIGN: Readonly<Record<StructureKind, StructureStats>>
     // Первая версия ставила сюда шестьдесят базовых здоровий, и матч
     // заканчивался на третьей минуте: первая же волна доходила до базы
     // и сносила её, не встретив сопротивления, которое успело бы окупиться.
-    health: BASE_HEALTH * 500,
+    //
+    // Было 500, стало 400. Правится не длина матча, а его ИСХОД: медиана
+    // и при пятистах оставалась в вилке (13:42), а вот треть партий
+    // кончалась истечением времени вместо разрушения базы. Ничья
+    // по времени — это не долгий матч, это матч без ответа на вопрос,
+    // ради которого садились играть.
+    //
+    // Накопилось за одни сутки, из трёх правок сразу: войско стало
+    // останавливаться и снимать башни, у ядерного удара появился откат,
+    // место под башню стало оцениваться по живучести. Каждая обоснована,
+    // все три тянут темп в одну сторону. Регулируется их сумма — этим
+    // числом, потому что оно для того и заведено.
+    //
+    // Уровень выбран замером, а не на глаз: пятьсот матчей, пять уровней
+    // запаса, зеркальный `baseline-2026-08`. Четыреста дают 12:57
+    // и 19 процентов ничьих против 13:14 и 16,7 до сдвига — это
+    // восстановление прежнего состояния. Триста пятьдесят дали бы 12:16
+    // и 14 процентов, но это уже новая настройка темпа, а её заказывают
+    // отдельно.
+    //
+    // Двадцатью матчами на уровень выбрать было НЕЛЬЗЯ: длина матча
+    // распределена двугорбо (от десятой до девяностой доли 2:30–20:00),
+    // и медиана двадцати наблюдений пляшет на минуты. Первая развёртка
+    // на двадцати дала ряд, где ×0,6 медленнее ×0,7.
+    health: BASE_HEALTH * 400,
     attack: 0,
     cooldownTicks: 0,
     range: 0,
@@ -614,22 +638,30 @@ const STRUCTURE_STATS_BY_DESIGN: Readonly<Record<StructureKind, StructureStats>>
 /**
  * Таблица построек с учётом настройки правил.
  *
- * Множитель `towerHealth` трогает ТОЛЬКО стреляющие постройки. Стена и база
- * остаются на месте намеренно: прочность базы — главный регулятор длины
- * матча (см. её собственное обоснование выше), и подвинув её заодно
- * с башнями, замер получил бы сумму двух правок вместо одной.
+ * Множитель `towerHealth` трогает ТОЛЬКО стреляющие постройки, `baseHealth` —
+ * только базу. Разделены они намеренно: прочность базы — главный регулятор
+ * длины матча (см. её собственное обоснование выше), а прочность башен
+ * отвечает за размен у обороны. Один множитель на двоих означал бы сумму
+ * двух правок там, где нужна одна.
+ *
+ * Стена не двигается ни тем, ни другим: она не стреляет и не выигрывает
+ * матч, её дело — покупать время.
  */
 const buildStructureStats = (): Readonly<Record<StructureKind, StructureStats>> => {
-  const { towerHealth } = ruleTuning();
-  if (towerHealth === 1) return STRUCTURE_STATS_BY_DESIGN;
+  const { towerHealth, baseHealth } = ruleTuning();
+  if (towerHealth === 1 && baseHealth === 1) return STRUCTURE_STATS_BY_DESIGN;
 
+  const scaled = (stats: StructureStats, factor: number): StructureStats =>
+    factor === 1 ? stats : { ...stats, health: Math.max(1, Math.round(stats.health * factor)) };
+
+  // Стреляющая постройка узнаётся по тому же признаку, что и в игре,
+  // а не перечислением видов: перечисление молча пропустило бы первую же
+  // новую башню, а признак — нет.
   const armoured = (stats: StructureStats): StructureStats =>
-    stats.attack > 0 && stats.range > 0
-      ? { ...stats, health: Math.max(1, Math.round(stats.health * towerHealth)) }
-      : stats;
+    stats.attack > 0 && stats.range > 0 ? scaled(stats, towerHealth) : stats;
 
   return {
-    [StructureKind.Base]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.Base]),
+    [StructureKind.Base]: scaled(STRUCTURE_STATS_BY_DESIGN[StructureKind.Base], baseHealth),
     [StructureKind.Wall]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.Wall]),
     [StructureKind.TowerBasic]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.TowerBasic]),
     [StructureKind.TowerSniper]: armoured(STRUCTURE_STATS_BY_DESIGN[StructureKind.TowerSniper]),
