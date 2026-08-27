@@ -16,6 +16,8 @@ import {
   readTasks,
 } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
+import { createIo } from '../lib/io.mjs';
+import { execute } from '../lib/execute.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from '../lib/cycle.mjs';
 
@@ -64,15 +66,22 @@ function loadConfig() {
   return { config: { ...config, slots: config.slots ?? DEFAULT_SLOTS }, missing };
 }
 
-/** Запуск git с ответом вместо исключения. */
-function runGit(args) {
+/**
+ * Запуск внешней команды с ответом вместо исключения.
+ *
+ * Через `execFileSync`, а не через оболочку: доводы уходят как есть, и ни
+ * кавычки, ни русские буквы в сообщении коммита ничего не ломают.
+ */
+function runCommand(args, program = 'git') {
   try {
-    const stdout = execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' });
+    const stdout = execFileSync(program, args, { cwd: root, encoding: 'utf8', stdio: 'pipe' });
     return { code: 0, stdout, stderr: '' };
   } catch (error) {
     return { code: error.status ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
   }
 }
+
+const runGit = (args) => runCommand(args, 'git');
 
 /** Замок цикла лежит рядом с прочим местным хозяйством. */
 function lockPath(config) {
@@ -187,9 +196,34 @@ function main() {
   if (result.lock && work > 0) writeLock(config, result.lock);
   else releaseLock(config);
 
+  // Действия сканера ничего не знают о слотах: слоты — дело раскладки.
+  // Здесь они соединяются, чтобы исполнителю досталось всё разом.
+  const bySlot = new Map(result.assignments.map((item) => [item.assignment.taskId, item]));
+  const enriched = result.actions.map((action) => {
+    const placed = bySlot.get(action.taskId);
+    if (!placed) return action;
+    return {
+      ...action,
+      slot: placed.slot,
+      assignment: placed.assignment,
+      branch: placed.assignment.branch,
+      sessionTitle: placed.assignment.sessionTitle,
+    };
+  });
+
+  // Теневой режим по умолчанию: цикл печатает решение, но мира не трогает.
+  // Исполнение включается явным ключом — так задуман первый шаг ввода
+  // в строй, и так же удобно смотреть, что конвейер собирается делать.
+  let executed = null;
+  if (flags.includes('--execute')) {
+    const io = createIo({ root, config, git, now, machine, run: runCommand, elapsed });
+    executed = execute(enriched, io);
+  }
+
   noteCycle(config, [...problems, ...repair.notes, ...result.notes]);
 
   print({
+    executed,
     outcome: result.outcome,
     machine,
     seconds: Number(elapsed().toFixed(2)),
