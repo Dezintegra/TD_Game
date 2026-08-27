@@ -334,7 +334,7 @@ description: Проверяет проработанное предложени�
   проверенного изменения OpenSpec; прочие ссылки не появляются, потому
   что аудит ничего не создаёт;
 - `requests` — заявки на новые задачи, массивом объектов вида
-  `{ type, title, description, priority, run }`. `type` — один из
+  `{ type, title, description, priority }, где `type`—`feature`, `run`или`note`, а `priority`— целое число (меньшее берётся в работу раньше). Поле`run`добавляется ТОЛЬКО заявкам типа`run`и обязано быть объектом`{ kind, params, expectation }`; заявку типа `run`без`expectation` отвергают`. `type` — один из
   `feature`, `run`, `note`; `description` пишется самодостаточно, его
   прочитают без этого разговора; `priority` — целое, по умолчанию 50;
   `run` нужен только заявке типа `run` и обязан нести `expectation`.
