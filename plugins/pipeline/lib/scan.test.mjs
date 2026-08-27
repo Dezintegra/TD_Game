@@ -240,6 +240,19 @@ describe('уснувшие сессии', () => {
     expect(kinds(result)).toContain('transfer-report');
   });
 
+  it('без снимка сессий продолжателей не назначают', () => {
+    // Молчание не признак смерти. Продолжатель, порождённый по недоразумению,
+    // посадит на одно дерево две сессии, и они перепишут работу друг друга.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'design' })],
+      registry: { entries: [entry('0001-one')] },
+      sessions: [],
+      sessionsKnown: false,
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(result.notes.join()).toContain('снимок сессий не сделан');
+  });
+
   it('исчерпанные продолжения ведут к разбору человеком', () => {
     const result = run({
       tasks: [

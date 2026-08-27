@@ -94,6 +94,9 @@ export function scan(state) {
     now,
     config,
     paused = false,
+    // Известна ли живость сессий. По умолчанию да — так проверки задают
+    // картину явно, а живой цикл узнаёт правду из снимка.
+    sessionsKnown = true,
   } = state;
 
   const actions = [];
@@ -181,7 +184,17 @@ export function scan(state) {
   let machineBusy = tasks.some((task) => stateClass(task) === 'exclusive');
 
   // 6. Продолжатели за уснувшими и умершими сессиями.
-  for (const task of tasks) {
+  //
+  // Если о сессиях ничего не известно — снимок не сделан, — продолжателей
+  // не назначаем вовсе. Молчание не признак смерти: продолжатель,
+  // порождённый по недоразумению, посадит на одно дерево две сессии,
+  // и они перепишут работу друг друга.
+  if (!sessionsKnown) {
+    if (tasks.some((task) => ['resource', 'review', 'exclusive'].includes(stateClass(task)))) {
+      notes.push('снимок сессий не сделан: о живости исполнителей ничего не известно');
+    }
+  }
+  for (const task of sessionsKnown ? tasks : []) {
     if (!['resource', 'review', 'exclusive'].includes(stateClass(task))) continue;
     if (stuck.has(task.id) || hasReport(task.id)) continue;
 

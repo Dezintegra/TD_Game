@@ -131,6 +131,26 @@ export function readSlots(root, config, slotNames) {
   return occupancy;
 }
 
+/**
+ * Прочитать снимок сессий, положенный оркестратором.
+ *
+ * Сам сценарий сессий не видит: он обычная программа на Node, а список
+ * сессий отдаёт только сессия. Поэтому оркестратор перед прогоном
+ * складывает снимок в файл, а счётная часть работает с ним как с обычными
+ * входными данными — и остаётся проверяемой без всякой среды.
+ *
+ * Снимка нет — значит, о живости сессий ничего не известно. Это НЕ повод
+ * считать их мёртвыми: продолжатель, порождённый по недоразумению, посадит
+ * на одно дерево две сессии.
+ */
+export function readSessions(root, config) {
+  const path = join(root, config.paths.local, 'sessions.json');
+  if (!existsSync(path)) return { sessions: [], known: false };
+  const { value } = readJson(path);
+  if (!Array.isArray(value?.sessions)) return { sessions: [], known: false };
+  return { sessions: value.sessions, known: true };
+}
+
 /** Взведён ли рубильник паузы. */
 export const isPaused = (root, config) => existsSync(join(root, config.paths.local, 'pause'));
 

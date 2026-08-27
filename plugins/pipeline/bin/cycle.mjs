@@ -12,6 +12,7 @@ import {
   readAnswers,
   readRegistry,
   readReports,
+  readSessions,
   readSlots,
   readTasks,
 } from '../lib/read-state.mjs';
@@ -165,12 +166,18 @@ function main() {
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
   const repair = reconcile({ registry, worktrees, tasks, machine });
 
+  // Снимок сессий кладёт оркестратор перед прогоном: сам сценарий сессий
+  // не видит — их отдаёт только сессия. Нет снимка — о живости исполнителей
+  // ничего не известно, и продолжателей никто не назначает.
+  const snapshot = readSessions(root, config);
+
   const state = {
     tasks,
     invalid,
     registry,
     reports,
-    sessions: [],
+    sessions: snapshot.sessions,
+    sessionsKnown: snapshot.known,
     answers: readAnswers(root, config),
     occupancy: readSlots(
       root,
