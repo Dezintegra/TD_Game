@@ -4,6 +4,7 @@ import {
   lockedSlots,
   planAssignments,
   staleAssignments,
+  unclaimedSlots,
   whatToDo,
 } from './slots.mjs';
 
@@ -329,6 +330,43 @@ describe('продолжатель возвращается в свой слот
     expect(result.writes[0].slot).toBe('worker-1');
     expect(result.writes[0].assignment.startedAt).toBeUndefined();
     expect(result.writes[0].assignment.continuation).toBe(true);
+  });
+});
+
+describe('назначение, которого никто не берёт', () => {
+  const config = { cycleMinutes: 5, deadAfterMinutes: 30 };
+
+  const lying = (minutesAgo, over = {}) => ({
+    taskId: '0008-eight',
+    stage: 'benchmark',
+    assignedAt: new Date(Date.parse(NOW) - minutesAgo * 60000).toISOString(),
+    ...over,
+  });
+
+  it('свежее назначение поводом для тревоги не считается', () => {
+    // Исполнитель ходит раз в пять минут, и до первого пробуждения
+    // назначение лежит нетронутым совершенно законно.
+    expect(unclaimedSlots({ occupancy: { 'worker-2': lying(4) }, now: NOW, config })).toEqual([]);
+  });
+
+  it('пролежавшее несколько циклов называется вслух', () => {
+    // Так 27.08.2026 задача 0008 пролежала восемьдесят минут в слоте
+    // выключенного исполнителя, сожгла обе попытки на пустых продолжениях
+    // и была остановлена «за исчерпанием». Со стороны это выглядело
+    // как занятый слот, то есть как честная очередь.
+    const [found] = unclaimedSlots({ occupancy: { 'worker-2': lying(80) }, now: NOW, config });
+    expect(found.slot).toBe('worker-2');
+    expect(found.taskId).toBe('0008-eight');
+    expect(found.why).toContain('задача планировщика выключена');
+  });
+
+  it('взятое назначение не считается невзятым, сколько бы ни лежало', () => {
+    const occupancy = { 'worker-2': lying(80, { startedAt: NOW }) };
+    expect(unclaimedSlots({ occupancy, now: NOW, config })).toEqual([]);
+  });
+
+  it('пустой слот не считается', () => {
+    expect(unclaimedSlots({ occupancy: { 'worker-2': null }, now: NOW, config })).toEqual([]);
   });
 });
 
