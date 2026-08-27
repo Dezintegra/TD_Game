@@ -1,0 +1,44 @@
+<title>Конвейер: доска задач</title>
+<style>
+:root {
+  --fon: #f6f7f8; --karta: #ffffff; --tekst: #1a1c1e;
+  --tusklo: #6b7280; --ramka: #e2e5e9; --akcent: #00a01a; --trevoga: #b91c1c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fon: #16181c; --karta: #212429; --tekst: #e8eaed;
+    --tusklo: #9aa0a6; --ramka: #2f333a; --akcent: #00ff29; --trevoga: #f87171;
+  }
+}
+body { margin: 0; padding: 24px; background: var(--fon); color: var(--tekst);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.stamp { color: var(--tusklo); margin: 0 0 16px; }
+.alarm { color: var(--trevoga); font-weight: 600; margin: 0 0 16px; }
+.board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 8px; }
+.column { flex: 0 0 240px; background: var(--karta); border: 1px solid var(--ramka);
+  border-radius: 10px; padding: 10px; }
+.column h2 { font-size: 13px; margin: 0 0 8px; display: flex; justify-content: space-between; }
+.count { color: var(--tusklo); font-weight: 400; }
+.empty { color: var(--tusklo); font-size: 12px; margin: 4px 0; }
+.card { border: 1px solid var(--ramka); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.card.attention { border-color: var(--trevoga); box-shadow: 0 0 0 1px var(--trevoga); }
+.id { font-family: ui-monospace, monospace; font-size: 11px; color: var(--tusklo); }
+.title { margin: 2px 0 6px; }
+.meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--tusklo); }
+.type { color: var(--akcent); }
+.links { margin-top: 6px; font-size: 11px; color: var(--tusklo); }
+</style>
+<h1>Конвейер: доска задач</h1>
+<p class="stamp">Собрано 2026-08-27T09:14:08.583Z. Только на чтение: задачи правятся файлами в <code>backlog/tasks/</code>.</p>
+<div class="board">
+<section class="column"><h2>Очередь <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>В работе <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Прогон <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Проверки <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Ревью <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Выкладка <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Ждут вас <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Остановлены <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Закрыты <span class="count">0</span></h2><p class="empty">пусто</p></section>
+</div>
