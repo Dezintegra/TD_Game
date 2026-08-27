@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { joinJournalParts, splitJournalEntry, stripMarker } from './comments.mjs';
+import {
+  findAnswer,
+  isOurs,
+  joinJournalParts,
+  splitJournalEntry,
+  stripMarker,
+} from './comments.mjs';
 
 /**
  * Проверки журнала комментариями.
@@ -89,5 +95,56 @@ describe('склейка обратно', () => {
 
   it('чужой комментарий не трогает', () => {
     expect(stripMarker('ответ владельца', marker)).toBe('ответ владельца');
+  });
+});
+
+describe('чей комментарий', () => {
+  it('свой узнаётся по пометке, а не по автору', () => {
+    // Автор у обоих один и тот же: токен-то один.
+    expect(isOurs('🤖 вопрос', marker)).toBe(true);
+    expect(isOurs('Берите первый вариант.', marker)).toBe(false);
+  });
+});
+
+describe('ответ владельца продукта', () => {
+  const since = '2026-08-21T10:00:00.000Z';
+  const at = (minutes) => new Date(Date.parse(since) + minutes * 60000).toISOString();
+
+  it('находится среди комментариев конвейера', () => {
+    const answer = findAnswer(
+      [
+        { date: at(1), text: '🤖 (часть 1 из 2)\n\nвопрос' },
+        { date: at(2), text: '🤖 (часть 2 из 2)\n\nпродолжение вопроса' },
+        { date: at(30), text: 'Берите второй вариант.' },
+      ],
+      { marker, since },
+    );
+    expect(answer).toEqual({ text: 'Берите второй вариант.', at: at(30) });
+  });
+
+  it('конвейер не принимает свою запись за ответ', () => {
+    const only = [{ date: at(5), text: '🤖 design → awaiting-po' }];
+    expect(findAnswer(only, { marker, since })).toBeNull();
+  });
+
+  it('обсуждение до вопроса ответом не считается', () => {
+    const before = [{ date: at(-60), text: 'Давно написанное замечание.' }];
+    expect(findAnswer(before, { marker, since })).toBeNull();
+  });
+
+  it('берётся первый ответ, а не последний: главное сказано сразу', () => {
+    const answer = findAnswer(
+      [
+        { date: at(20), text: 'Второй вариант.' },
+        { date: at(25), text: 'И ещё: не трогайте баланс.' },
+      ],
+      { marker, since },
+    );
+    expect(answer.text).toBe('Второй вариант.');
+  });
+
+  it('пустой комментарий ответом не считается', () => {
+    const empty = [{ date: at(10), text: '   ' }];
+    expect(findAnswer(empty, { marker, since })).toBeNull();
   });
 });

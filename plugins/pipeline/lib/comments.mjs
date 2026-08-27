@@ -99,3 +99,41 @@ export function stripMarker(text, marker) {
 function escapeForRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+/**
+ * Написан ли комментарий конвейером.
+ *
+ * Различить по автору нельзя: конвейер и человек пишут под одним и тем же
+ * пользователем Trello — токен-то один. Отсюда и пометка. Без неё конвейер
+ * принял бы собственный вопрос за ответ на него же и вернул бы задачу
+ * в работу, ничего не спросив.
+ */
+export const isOurs = (text, marker) => String(text ?? '').startsWith(marker);
+
+/**
+ * Найти ответ владельца продукта.
+ *
+ * Ответом считается первый комментарий без пометки, появившийся после
+ * того, как задача ушла в ожидание. Первый, а не последний: владелец
+ * продукта мог ответить и дописать пояснение, и терять первую, главную
+ * часть ответа нельзя.
+ *
+ * Отметка `since` — это время перехода в ожидание. Комментарии, лежавшие
+ * на карточке раньше, ответом не считаются: обсуждение задачи могло идти
+ * и до вопроса.
+ *
+ * @param {Array} comments комментарии карточки: `{ date, text }`
+ * @param {object} params `{ marker, since }`
+ * @returns {{ text: string, at: string }|null}
+ */
+export function findAnswer(comments, { marker, since }) {
+  const after = Date.parse(since);
+  const answers = comments
+    .filter((comment) => !isOurs(comment.text, marker))
+    .filter((comment) => String(comment.text ?? '').trim() !== '')
+    .filter((comment) => !Number.isFinite(after) || Date.parse(comment.date) > after)
+    .sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+
+  const first = answers[0];
+  return first ? { text: first.text.trim(), at: first.date } : null;
+}
