@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { summariseChecks } from './io.mjs';
+import { createIo, summariseChecks } from './io.mjs';
+import { resolveConfig } from '../config/defaults.mjs';
 
 /**
  * Проверки сведения состояния проверок CI к одному ответу.
@@ -57,5 +58,73 @@ describe('состояние проверок', () => {
 
   it('пустой ответ не выдаётся за успех', () => {
     expect(summariseChecks('').state).toBe('pending');
+  });
+});
+
+describe('коммит конвейера', () => {
+  /** Переходник с подставным запускателем: настоящий git не зовётся ни разу. */
+  function fakeIo(over = {}) {
+    const calls = [];
+    const { config } = resolveConfig({
+      commands: { verify: 'x', deploy: 'x', perf: 'x' },
+      worktreeDir: '.claude/worktrees',
+      author: { name: 'Конвейер TD_Game', email: 'pipeline@localhost' },
+    });
+    const run = (args) => {
+      calls.push(args);
+      return over.result?.(args) ?? { code: 0, stdout: '', stderr: '' };
+    };
+    const io = createIo({
+      root: '/repo',
+      config,
+      git: { push: () => ({ ok: true, failure: null }) },
+      now: '2026-08-27T12:00:00+03:00',
+      machine: 'станция-1',
+      run,
+      elapsed: () => 0,
+    });
+    return { io, calls, config };
+  }
+
+  const commitCall = (calls) => calls.find((args) => args.includes('commit'));
+
+  it('подписывается именем конвейера, а не хозяина машины', () => {
+    // Досылка хвоста отправляет только свои коммиты и узнаёт их по автору.
+    // Пока конвейер подписывался хозяином, он объявлял чужим собственный
+    // хвост и переставал писать вовсе — до вмешательства человека.
+    const { io, calls } = fakeIo();
+    io.commitAndPush(['manage/tasks/0001-one.json'], 'chore(backlog): проба');
+
+    const commit = commitCall(calls);
+    expect(commit).toContain('user.name=Конвейер TD_Game');
+    expect(commit).toContain('user.email=pipeline@localhost');
+  });
+
+  it('коммитит только свои пути, а не весь индекс', () => {
+    // Без путей `commit` забирает и то, что успела выложить в индекс
+    // соседняя сессия: чужая работа уехала бы в главную ветку под нашим
+    // сообщением и без окна на замечание.
+    const { io, calls } = fakeIo();
+    io.commitAndPush(['manage/tasks/0001-one.json', 'manage/journal/0001-one.md'], 'проба');
+
+    const commit = commitCall(calls);
+    expect(commit).toContain('--');
+    expect(commit).toContain('manage/tasks/0001-one.json');
+    expect(commit).toContain('manage/journal/0001-one.md');
+  });
+
+  it('своя подпись входит в список своих авторов сама', () => {
+    // Разъедься эти два значения — и конвейер объявит чужим собственный
+    // хвост. Выводить второе из первого дешевле, чем сторожить согласие.
+    const { config } = fakeIo();
+    expect(config.ourAuthors).toContain('Конвейер TD_Game');
+  });
+
+  it('названные проектом авторы не теряются', () => {
+    const { config } = resolveConfig({
+      author: { name: 'Конвейер TD_Game' },
+      ourAuthors: ['Прежнее имя'],
+    });
+    expect(config.ourAuthors).toEqual(['Конвейер TD_Game', 'Прежнее имя']);
   });
 });

@@ -19,6 +19,7 @@ import {
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
 import { execute } from '../lib/execute.mjs';
+import { repairWorld } from '../lib/repair.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from '../lib/cycle.mjs';
 import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
@@ -334,7 +335,7 @@ async function main() {
     pid: process.pid,
     lock,
     isAlive,
-    ourAuthors: config.ourAuthors ?? ['Конвейер'],
+    ourAuthors: config.ourAuthors,
     elapsed,
   });
 
@@ -380,6 +381,7 @@ async function main() {
   // Исполнение включается явным ключом — так задуман первый шаг ввода
   // в строй, и так же удобно смотреть, что конвейер собирается делать.
   let executed = null;
+  let repaired = null;
   if (flags.includes('--execute')) {
     // Переходник собирается из общей части — деревья, слоты, отчёты, git —
     // и хранилища бэклога. Второе подменяется целиком: файлы или доска.
@@ -388,6 +390,13 @@ async function main() {
       ...createIo({ root, config, git, now, machine, run: runCommand, elapsed }),
       ...(backlog.store ?? {}),
     };
+
+    // Починки сверки идут ПЕРЕД действиями сканера. Сканер считал картину
+    // по тому, что лежало в бэклоге, а сверка знает, что часть этой картины
+    // неверна: дерево есть, а записи нет; запись есть, а дерева нет; задача
+    // захвачена, но дерева ей завести не успели. Доведённый до конца захват
+    // сразу становится видимым сканеру со следующего цикла.
+    repaired = repairWorld(repair.repairs, io);
     // Слоты освобождаются ПЕРЕД исполнением: раскладка уже посчитала их
     // свободными и могла выдать кому-то, а снятие после записи стёрло бы
     // свежее назначение.
@@ -415,7 +424,7 @@ async function main() {
     seconds: Number(elapsed().toFixed(2)),
     budgets: budgets.ok ? null : budgets.why,
     missingConfig: missing,
-    repairs: repair.repairs,
+    repairs: repaired ?? repair.repairs,
     actions: result.actions,
     assignments: result.assignments,
     releases,

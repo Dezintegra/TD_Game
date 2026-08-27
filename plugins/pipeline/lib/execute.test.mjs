@@ -37,6 +37,8 @@ function fakeIo(over = {}) {
   const tasks = new Map((over.tasks ?? [task()]).map((item) => [item.id, item]));
   const slots = new Map();
   const journals = new Map();
+  const restored = [];
+  const dropped = [];
 
   const io = {
     now: NOW,
@@ -45,6 +47,8 @@ function fakeIo(over = {}) {
     tasks,
     slots,
     journals,
+    restored,
+    dropped,
 
     readTask: (id) => tasks.get(id) ?? null,
     writeTask(next) {
@@ -72,16 +76,37 @@ function fakeIo(over = {}) {
       // Запись журнала собирается настоящей сборкой, а не заглушкой:
       // часть проверок читает журнал и ждёт там решений и причин отказа.
       const appendix = journalAppendix(next, this.readJournal(next.id), entry);
+      const paths = [this.taskPath(next.id), this.journalPath(next.id)];
       this.writeTask(next);
       this.appendJournal(next.id, appendix);
-      return this.commitAndPush([this.taskPath(next.id), this.journalPath(next.id)], message);
+      const push = this.commitAndPush(paths, message);
+      if (['add-failed', 'commit-failed'].includes(push.outcome)) this.restorePaths(paths);
+      return { ...push, paths };
     },
     createTask(next, message) {
+      const paths = [this.taskPath(next.id)];
       this.writeTask(next);
-      return this.commitAndPush([this.taskPath(next.id)], message);
+      return { ...this.commitAndPush(paths, message), paths };
     },
     releaseTask(next) {
       this.writeTask(next);
+    },
+
+    undoSave(save) {
+      this.dropCommit();
+      this.restorePaths(save.paths ?? []);
+    },
+
+    restorePaths(paths) {
+      steps.push(`пути возвращены к главной ветке: ${paths.length}`);
+      restored.push(...paths);
+      return true;
+    },
+
+    dropCommit() {
+      steps.push('свой коммит снят');
+      dropped.push(true);
+      return true;
     },
 
     addWorktree(taskId, branch) {
@@ -172,11 +197,42 @@ describe('взятие задачи в работу', () => {
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
   });
 
-  it('неудачная отправка снимает свой захват и дерева не заводит', async () => {
-    const io = fakeIo({ push: () => ({ ok: false, outcome: 'rejected' }) });
+  it('неудача ДО коммита возвращает файлы и не оставляет следа', async () => {
+    // Написанное никуда не поедет и остаётся голым изменением в общем
+    // дереве. Убрать за собой некому, а грязное дерево запрещает и
+    // подтягивание главной ветки, и перевыкладку: одна неудача
+    // останавливала бы конвейер целиком.
+    const io = fakeIo({ push: () => ({ ok: false, outcome: 'add-failed' }) });
     const [result] = await execute([startAction], io);
     expect(result.result).toBe('failed');
-    expect(io.tasks.get('0001-one').owner).toBeNull();
+    expect(io.restored).toContain('manage/tasks/0001-one.json');
+    expect(io.restored).toContain('manage/journal/0001-one.md');
+    expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
+  });
+
+  it('годный коммит без отправки захват НЕ снимает', async () => {
+    // Захват состоялся: работа заявлена коммитом, не хватает лишь публикации,
+    // и досылка хвоста сделает её ближайшим циклом. Прежде здесь переписывался
+    // файл со снятым владельцем — и это отменяло лишь половину захвата,
+    // оставляя задачу в этапе, из которого её не доставал уже никто.
+    const io = fakeIo({ push: () => ({ ok: false, outcome: 'offline' }) });
+    const [result] = await execute([startAction], io);
+    expect(result.result).toBe('failed');
+    expect(io.tasks.get('0001-one')).toMatchObject({ owner: 'станция-1', status: 'design' });
+    expect(io.dropped).toEqual([]);
+    expect(io.restored).toEqual([]);
+    expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
+  });
+
+  it('конфликт снимает свой коммит и возвращает файлы', async () => {
+    // Задачу занял кто-то другой. Наш коммит поверх чужого не ложится
+    // и остался бы хвостом, который не сольётся уже никогда, — а хвост
+    // главной ветки запирает записи всему конвейеру.
+    const io = fakeIo({ push: () => ({ ok: false, outcome: 'conflict' }) });
+    const [result] = await execute([startAction], io);
+    expect(result.result).toBe('raced');
+    expect(io.dropped).toEqual([true]);
+    expect(io.restored).toContain('manage/tasks/0001-one.json');
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
   });
 
@@ -314,6 +370,21 @@ describe('продолжение за уснувшей сессией', () => {
     expect(result.result).toBe('done');
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(1);
     expect(io.steps).toContain('назначение в слот worker-1');
+  });
+
+  it('без слота попытка не тратится и мир не трогается', async () => {
+    // Раскладка отказывает, когда прежнее назначение ещё не взято
+    // исполнителем. Списать за это попытку было бы вдвойне несправедливо:
+    // сессии не было, а счётчик вырос. Их всего две, и после второй задача
+    // встаёт и ждёт человека — так и сгорели 0005 и 0006.
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    const [result] = await execute(
+      [{ kind: 'continue-stage', taskId: '0001-one', stage: 'implement', reason: 'молчит' }],
+      io,
+    );
+    expect(result.result).toBe('skipped');
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
+    expect(io.steps).toEqual([]);
   });
 });
 

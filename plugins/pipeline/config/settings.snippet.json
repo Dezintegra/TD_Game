@@ -22,10 +22,15 @@
 
       "PowerShell(node plugins/pipeline/bin/cycle.mjs:*)",
       "PowerShell(node plugins/pipeline/bin/board.mjs:*)",
+      "PowerShell(node plugins/pipeline/bin/snapshot.mjs:*)",
       "Bash(node plugins/pipeline/bin/cycle.mjs:*)",
       "Bash(node plugins/pipeline/bin/board.mjs:*)",
+      "Bash(node plugins/pipeline/bin/snapshot.mjs:*)",
       "PowerShell(node .matchlog/:*)",
       "Bash(node .matchlog/:*)",
+      "PowerShell(Remove-Item -Recurse -Force .matchlog/:*)",
+      "PowerShell(Remove-Item -Force -Recurse .matchlog/:*)",
+      "Bash(rm -rf .matchlog/:*)",
 
       "Bash(git -C:*)",
       "Bash(git --no-pager:*)",
@@ -105,9 +110,15 @@
       "PowerShell(& \"C:\\Program Files\\GitHub CLI\\gh.exe\" repo delete:*)",
       "PowerShell(& 'C:\\Program Files\\GitHub CLI\\gh.exe' repo delete:*)",
       "PowerShell(gh repo delete:*)",
-      "Bash(gh repo delete:*)"
+      "Bash(gh repo delete:*)",
+      "PowerShell(Remove-Item -Recurse -Force .matchlog/*)",
+      "PowerShell(Remove-Item -Recurse -Force .matchlog)",
+      "Bash(rm -rf .matchlog)",
+      "Bash(rm -rf .matchlog/*)"
     ]
   },
+
+  "$cleanupNote": "Уборка в `.matchlog` разрешена только своим подкаталогом целиком названным путём, а маска и сам каталог запрещены отдельной строкой. Разница не формальная: базы арены весят по триста мегабайт, каждая сессия качает свои, и работают там несколько разом. Широкая уборка в `.matchlog` уже сносила чужую работу — запрет стоит затем, чтобы обход узкого правила упирался в отказ, а не в отсутствие правила.",
 
   "$prefixNote": "Правила сопоставляются с ПРИСТАВКОЙ команды, и любая форма, меняющая приставку, оставляет сессию без разрешения. Две такие формы поймали за один вечер 27.08.2026, и обе — не самодеятельность, а следование указаниям. `git -C <путь> log` не совпадает с `git log:*`, потому что ключ стоит впереди подкоманды, — а ходить через `-C` исполнителям предписано прямо, ведь склеивать `cd` с командой им запрещено. `& \"C:\\Program Files\\GitHub CLI\\gh.exe\" run watch` не совпадает с `gh run:*` — а полный путь много месяцев показывала памятка проекта, оставшаяся от времён, когда `gh` не было в PATH. Отсюда правила на обе формы и на обе разновидности кавычек: сверка идёт по тексту. Лечение первопричины — звать средства по имени, и в скиллах это теперь сказано прямо.",
 

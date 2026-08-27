@@ -16,6 +16,17 @@ import { journalAppendix } from './journal.mjs';
  * проверено пробой, вставшей на записи во временный каталог.
  */
 
+/**
+ * Исходы, при которых коммита не случилось вовсе.
+ *
+ * Отличать их от прочих обязательно. Всё, что дальше по пути, — отбитая
+ * отправка, конфликт, отсутствие сети — происходит уже ПОСЛЕ удавшегося
+ * коммита, и написанное там не потеряно: оно лежит в ветке хвостом.
+ * А вот когда не удались `add` или `commit`, написанное осталось голым
+ * изменением в общем дереве, и убрать его некому.
+ */
+const NOTHING_COMMITTED = ['add-failed', 'commit-failed'];
+
 /** Красиво и одинаково: две пробела, перевод строки в конце. */
 const asJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
 
@@ -72,15 +83,28 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
      */
     saveTask(task, entry, message) {
       const appendix = journalAppendix(task, this.readJournal(task.id), entry);
+      const paths = [taskPath(task.id), journalPath(task.id)];
+
       this.writeTask(task);
       this.appendJournal(task.id, appendix);
-      return this.commitAndPush([taskPath(task.id), journalPath(task.id)], message);
+
+      const push = this.commitAndPush(paths, message);
+      // Неудача ДО коммита прибирается сразу: иначе один сорвавшийся `add`
+      // оставил бы основное дерево грязным навсегда, а грязное дерево
+      // запрещает и подтягивание главной ветки, и перевыкладку — то есть
+      // одна неудача останавливала бы конвейер целиком.
+      if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
+
+      return { ...push, paths };
     },
 
     /** Завести новую задачу: запись плюс отправка своим коммитом. */
     createTask(task, message) {
+      const paths = [taskPath(task.id)];
       this.writeTask(task);
-      return this.commitAndPush([taskPath(task.id)], message);
+      const push = this.commitAndPush(paths, message);
+      if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
+      return { ...push, paths };
     },
 
     /**
@@ -92,6 +116,22 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
      */
     releaseTask(task) {
       this.writeTask(task);
+    },
+
+    /**
+     * Прибрать за сохранением, проигравшим гонку.
+     *
+     * Наш коммит поверх чужого не ложится и остался бы хвостом, который
+     * не сольётся уже никогда, — а хвост главной ветки запирает записи
+     * всему конвейеру. Поэтому снимаем его и возвращаем файлы: за
+     * проигравшим гонку не должно остаться ни следа.
+     *
+     * У доски этой заботы нет вовсе: там ничего не коммитится, и гонку
+     * решает тег захвата, а не запись.
+     */
+    undoSave(save) {
+      this.dropCommit();
+      this.restorePaths(save.paths ?? []);
     },
 
     /**
@@ -135,7 +175,32 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       const added = run(['add', '--', ...paths]);
       if (added.code !== 0) return { ok: false, outcome: 'add-failed', why: added.stderr };
 
-      const committed = run(['commit', '-m', message]);
+      // Коммит подписывается именем конвейера, а не хозяина машины.
+      // Досылка хвоста отправляет только свои коммиты и наотрез отказывается
+      // публиковать чужой черновик, а узнаёт их по имени автора. Пока
+      // конвейер подписывался хозяином, он объявлял чужим собственный хвост
+      // и переставал писать вовсе — до вмешательства человека. Проверено
+      // 27.08.2026 по журналу цикла: «в хвосте 1 коммит(ов), из них чужих».
+      //
+      // Ключи `-c` вместо настройки репозитория намеренно: основное дерево
+      // общее, и менять в нём подпись для всех было бы наглостью.
+      const committed = run([
+        '-c',
+        `user.name=${config.author.name}`,
+        '-c',
+        `user.email=${config.author.email}`,
+        'commit',
+        '-m',
+        message,
+        // Пути перечисляются и здесь, а не только в `add`. Без них `commit`
+        // забирает ВЕСЬ индекс — вместе с тем, что успела выложить туда
+        // соседняя сессия или человек. Правило «стейджить только свои пути»
+        // тогда не защищает ни от чего: чужое уедет в главную ветку под
+        // нашим сообщением и без окна на замечание. С путями `commit`
+        // берёт только их и чужой индекс не трогает.
+        '--',
+        ...paths,
+      ]);
       if (committed.code !== 0)
         return { ok: false, outcome: 'commit-failed', why: committed.stderr };
 
@@ -147,6 +212,12 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       });
       return { ok: push.outcome === 'pushed', outcome: push.outcome, notes: push.notes };
     },
+
+    /** Вернуть названные пути к состоянию главной ветки. */
+    restorePaths: (paths) => git.restorePaths(paths),
+
+    /** Снять свой последний коммит, оставив правки в индексе. */
+    dropCommit: () => git.dropLastCommit(),
 
     /**
      * Завести рабочее дерево от удалённой главной ветки.

@@ -1,4 +1,4 @@
-import { lockedSlots, planAssignments, staleAssignments } from './slots.mjs';
+import { lockedSlots, planAssignments, staleAssignments, unclaimedSlots } from './slots.mjs';
 import { catchUp, cycleMayFinish, handleTail } from './push-discipline.mjs';
 import { lockVerdict, newLock } from './lock.mjs';
 import { scan } from './scan.mjs';
@@ -120,6 +120,13 @@ export function runCycle({ git, state, config, now, pid, lock, isAlive, ourAutho
     config,
   });
   const stale = staleAssignments({ occupancy: state.occupancy ?? {}, tasks: tasksById, locked });
+
+  // Невзятое назначение чинить нечем — задачами планировщика конвейер
+  // не управляет намеренно, — но и молчать о нём нельзя: со стороны оно
+  // выглядит занятым слотом, то есть честной очередью.
+  for (const item of unclaimedSlots({ occupancy: state.occupancy ?? {}, now, config })) {
+    notes.push(`слот ${item.slot} держит ${item.taskId}: ${item.why}`);
+  }
 
   if (actions.length === 0) {
     for (const item of stale) {
