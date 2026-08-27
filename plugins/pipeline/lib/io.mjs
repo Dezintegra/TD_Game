@@ -109,6 +109,12 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       return { ok: push.outcome === 'pushed', outcome: push.outcome, notes: push.notes };
     },
 
+    /** Вернуть названные пути к состоянию главной ветки. */
+    restorePaths: (paths) => git.restorePaths(paths),
+
+    /** Снять свой последний коммит, оставив правки в индексе. */
+    dropCommit: () => git.dropLastCommit(),
+
     /**
      * Завести рабочее дерево от удалённой главной ветки.
      *
