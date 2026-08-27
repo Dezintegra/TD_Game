@@ -22,8 +22,10 @@
 
       "PowerShell(node plugins/pipeline/bin/cycle.mjs:*)",
       "PowerShell(node plugins/pipeline/bin/board.mjs:*)",
+      "PowerShell(node plugins/pipeline/bin/snapshot.mjs:*)",
       "Bash(node plugins/pipeline/bin/cycle.mjs:*)",
       "Bash(node plugins/pipeline/bin/board.mjs:*)",
+      "Bash(node plugins/pipeline/bin/snapshot.mjs:*)",
       "PowerShell(node .matchlog/:*)",
       "Bash(node .matchlog/:*)",
       "PowerShell(Remove-Item -Recurse -Force .matchlog/:*)",
