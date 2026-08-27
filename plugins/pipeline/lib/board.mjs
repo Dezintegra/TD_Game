@@ -106,7 +106,7 @@ export function renderBoard(tasks, { now }) {
     '<title>Конвейер: доска задач</title>',
     STYLE,
     '<h1>Конвейер: доска задач</h1>',
-    `<p class="stamp">Собрано ${escapeHtml(now)}. Только на чтение: задачи правятся файлами в <code>backlog/tasks/</code>.</p>`,
+    `<p class="stamp">Собрано ${escapeHtml(now)}. Только на чтение: задачи правятся файлами в <code>manage/tasks/</code>.</p>`,
     waiting.length
       ? `<p class="alarm">Вашего ответа ждут дольше суток: ${waiting
           .map((task) => escapeHtml(task.id))

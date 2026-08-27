@@ -24,18 +24,18 @@ const { config } = resolveConfig({
   worktreeDir: '.claude/worktrees',
 });
 
-const realSchema = fileURLToPath(new URL('../../../backlog/schema.json', import.meta.url));
+const realSchema = fileURLToPath(new URL('../../../manage/schema.json', import.meta.url));
 const realExample = fileURLToPath(
-  new URL('../../../backlog/examples/feature.json', import.meta.url),
+  new URL('../../../manage/examples/feature.json', import.meta.url),
 );
 
 let root;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'pipeline-state-'));
-  mkdirSync(join(root, 'backlog', 'tasks'), { recursive: true });
+  mkdirSync(join(root, 'manage', 'tasks'), { recursive: true });
   mkdirSync(join(root, '.pipeline', 'reports'), { recursive: true });
-  copyFileSync(realSchema, join(root, 'backlog', 'schema.json'));
+  copyFileSync(realSchema, join(root, 'manage', 'schema.json'));
 });
 
 afterEach(() => {
@@ -45,13 +45,13 @@ afterEach(() => {
 /**
  * Положить задачу в бэклог под указанным именем файла.
  *
- * Образец берётся настоящий, из `backlog/examples/`: так проверка
+ * Образец берётся настоящий, из `manage/examples/`: так проверка
  * не разойдётся с тем, что лежит в репозитории и что видит редактор.
  */
 function putTask(name, over = {}) {
   const base = JSON.parse(readFileSync(realExample, 'utf8'));
   const task = { ...base, id: name, ...over };
-  writeFileSync(join(root, 'backlog', 'tasks', `${name}.json`), JSON.stringify(task, null, 2));
+  writeFileSync(join(root, 'manage', 'tasks', `${name}.json`), JSON.stringify(task, null, 2));
   return task;
 }
 
@@ -70,7 +70,7 @@ describe('чтение задач', () => {
 
   it('испорченный файл откладывается с причиной, остальные читаются', () => {
     putTask('0001-one');
-    writeFileSync(join(root, 'backlog', 'tasks', '0002-broken.json'), '{ это не JSON');
+    writeFileSync(join(root, 'manage', 'tasks', '0002-broken.json'), '{ это не JSON');
     const { tasks, invalid } = readTasks(root, config);
     expect(tasks).toHaveLength(1);
     expect(invalid).toHaveLength(1);
@@ -91,7 +91,7 @@ describe('чтение задач', () => {
     const task = { ...JSON.parse(readFileSync(realExample, 'utf8')), id: '0001-bom' };
     const bom = String.fromCharCode(0xfeff);
     writeFileSync(
-      join(root, 'backlog', 'tasks', '0001-bom.json'),
+      join(root, 'manage', 'tasks', '0001-bom.json'),
       bom + JSON.stringify(task, null, 2),
     );
     const { tasks, invalid } = readTasks(root, config);
@@ -151,7 +151,7 @@ describe('рубильник паузы и ответы', () => {
 
   it('пустая пометка ответом не считается', () => {
     writeFileSync(
-      join(root, 'backlog', 'questions.md'),
+      join(root, 'manage', 'questions.md'),
       '### 0001-one\n\nСуть вопроса.\n\n**Ответ:**\n',
     );
     expect(readAnswers(root, config)).toEqual({});
@@ -159,7 +159,7 @@ describe('рубильник паузы и ответы', () => {
 
   it('написанный ответ распознаётся', () => {
     writeFileSync(
-      join(root, 'backlog', 'questions.md'),
+      join(root, 'manage', 'questions.md'),
       '### 0001-one\n\nСуть вопроса.\n\n**Ответ:** берём вариант А.\n',
     );
     expect(readAnswers(root, config)['0001-one']).toContain('вариант А');
@@ -167,7 +167,7 @@ describe('рубильник паузы и ответы', () => {
 
   it('ответ одной задаче не приписывается другой', () => {
     writeFileSync(
-      join(root, 'backlog', 'questions.md'),
+      join(root, 'manage', 'questions.md'),
       '### 0001-one\n\nПервый.\n\n**Ответ:** да.\n\n### 0002-two\n\nВторой.\n\n**Ответ:**\n',
     );
     const answers = readAnswers(root, config);

@@ -55,8 +55,8 @@ function fakeIo(over = {}) {
       steps.push(`дописан журнал ${id}`);
       journals.set(id, (journals.get(id) ?? '') + text);
     },
-    taskPath: (id) => `backlog/tasks/${id}.json`,
-    journalPath: (id) => `backlog/journal/${id}.md`,
+    taskPath: (id) => `manage/tasks/${id}.json`,
+    journalPath: (id) => `manage/journal/${id}.md`,
 
     commitAndPush(paths, message) {
       steps.push(`коммит и отправка: ${message} [${paths.length} путей]`);

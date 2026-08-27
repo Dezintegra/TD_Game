@@ -1,0 +1,34 @@
+{
+  "$schema": "../schema.json",
+  "id": "0002-compact-map-tempo",
+  "type": "run",
+  "title": "Темп матча на ужатой карте 38 × 38",
+  "description": "поле ужалось с 48 клеток по стороне до 38, дорога между базами короче на 29 процентов — не стал ли матч заметно короче проектной вилки\n\nЗамер заказан по изменению «compact-map-and-island-rocks».\nВ очереди стояла отметка «до 2026-11-01».\n\nПеренесено из очереди проверок баланса `balance/queue.json` при её упразднении:\nочередью теперь служит сам бэклог, а прогоны — задачи типа `run`.",
+  "status": "new",
+  "returnTo": null,
+  "priority": 30,
+  "createdAt": "2026-08-27T13:32:34+03:00",
+  "statusChangedAt": "2026-08-27T13:32:34+03:00",
+  "owner": null,
+  "history": [],
+  "links": {
+    "change": null,
+    "pr": null,
+    "run": null,
+    "related": []
+  },
+  "attempts": {
+    "continuations": 0,
+    "cycleFailures": 0
+  },
+  "run": {
+    "kind": "arena",
+    "params": {
+      "profiles": ["baseline-2026-08", "baseline-2026-08"],
+      "matches": 60,
+      "seed": 1,
+      "change": "compact-map-and-island-rocks"
+    },
+    "expectation": "медиана матча остаётся в вилке 10–15 минут; доли побед сторон около равных; доля матчей, упёршихся в предел времени, не растёт"
+  }
+}

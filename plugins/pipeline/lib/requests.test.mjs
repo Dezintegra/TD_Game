@@ -13,7 +13,7 @@ import { nextId, planRequests, taskFromRequest, translit } from './requests.mjs'
  */
 
 const NOW = '2026-08-27T12:00:00+03:00';
-const schema = loadSchema(fileURLToPath(new URL('../../../backlog/schema.json', import.meta.url)));
+const schema = loadSchema(fileURLToPath(new URL('../../../manage/schema.json', import.meta.url)));
 
 const request = (over = {}) => ({
   type: 'feature',

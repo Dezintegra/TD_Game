@@ -31,7 +31,7 @@ const { config } = resolveConfig(project);
 
 const { tasks, invalid } = readTasks(root, config);
 const html = renderBoard(tasks, { now: new Date().toISOString() });
-const out = join(root, 'backlog', 'board.html');
+const out = join(root, 'manage', 'board.html');
 writeFileSync(out, `${html}\n`);
 
 console.log(`Доска собрана: ${out}`);

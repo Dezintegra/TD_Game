@@ -6,18 +6,18 @@ import { loadSchema, validateTask } from './validate-task.mjs';
 /**
  * Проверки годности записи бэклога.
  *
- * Схема берётся настоящая, из `backlog/schema.json`: проверять
+ * Схема берётся настоящая, из `manage/schema.json`: проверять
  * самодельную копию значило бы проверять копию, а не то, чем пользуется
  * редактор и конвейер.
  */
 
 const repoRoot = new URL('../../../', import.meta.url);
-const schema = loadSchema(fileURLToPath(new URL('backlog/schema.json', repoRoot)));
+const schema = loadSchema(fileURLToPath(new URL('manage/schema.json', repoRoot)));
 
-/** Прочитать образец задачи из `backlog/examples/`. */
+/** Прочитать образец задачи из `manage/examples/`. */
 const example = (name) =>
   JSON.parse(
-    readFileSync(fileURLToPath(new URL(`backlog/examples/${name}.json`, repoRoot)), 'utf8'),
+    readFileSync(fileURLToPath(new URL(`manage/examples/${name}.json`, repoRoot)), 'utf8'),
   );
 
 /** Годная задача-доработка, от которой отталкиваются проверки поломок. */

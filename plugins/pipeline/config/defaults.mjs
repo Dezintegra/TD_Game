@@ -44,10 +44,10 @@ export const DEFAULTS = {
 
   /** Каталоги. Пути относительно корня репозитория. */
   paths: {
-    tasks: 'backlog/tasks',
-    journal: 'backlog/journal',
-    questions: 'backlog/questions.md',
-    schema: 'backlog/schema.json',
+    tasks: 'manage/tasks',
+    journal: 'manage/journal',
+    questions: 'manage/questions.md',
+    schema: 'manage/schema.json',
     local: '.pipeline',
   },
 

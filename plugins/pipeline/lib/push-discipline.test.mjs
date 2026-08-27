@@ -69,7 +69,7 @@ describe('разбор отказа отправки', () => {
   });
 
   it('конфликт перевыкладки распознаётся', () => {
-    expect(isRebaseConflict('CONFLICT (content): Merge conflict in backlog/questions.md')).toBe(
+    expect(isRebaseConflict('CONFLICT (content): Merge conflict in manage/questions.md')).toBe(
       true,
     );
     expect(isRebaseConflict('Successfully rebased')).toBe(false);
