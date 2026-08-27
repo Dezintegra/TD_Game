@@ -39,9 +39,11 @@ const task = (id, over = {}) => ({
   ...over,
 });
 
-/** Подставной git: по умолчанию хвоста нет и всё удаётся. */
+/** Подставной git: по умолчанию хвоста нет, отставания нет и всё удаётся. */
 const fakeGit = (over = {}) => ({
   tail: () => 0,
+  behind: () => 0,
+  fastForward: () => ({ ok: true }),
   tailAuthors: () => [],
   push: () => ({ ok: true, failure: null }),
   fetch: () => ({ ok: true, failure: null }),
@@ -176,6 +178,81 @@ describe('цикл', () => {
       slot: 'worker-1',
       assignment: { taskId: '0001-one', stage: 'design' },
     });
+  });
+});
+
+describe('отставшая главная ветка', () => {
+  it('отставание подтягивается, и работа идёт дальше', () => {
+    // Беда, найденная первым же живым прогоном: цикл делал fetch, но никогда
+    // не подтягивал отставший main, и основное дерево жило состоянием своего
+    // последнего ручного обновления — оркестратор не нашёл в нём даже
+    // собственного плагина.
+    const pulled = [];
+    const result = cycle({
+      git: {
+        behind: () => 3,
+        fastForward: () => {
+          pulled.push('подтянулись');
+          return { ok: true };
+        },
+      },
+      state: { tasks: [task('0001-one')] },
+    });
+    expect(pulled).toEqual(['подтянулись']);
+    expect(result.notes.join()).toContain('подтянулись на 3');
+    expect(result.outcome).toBe('worked');
+  });
+
+  it('свой хвост досылается раньше подтягивания', () => {
+    // Наоборот нельзя: ускоряющий перевод при своих неотправленных коммитах
+    // не удастся, и цикл встанет на ровном месте.
+    const steps = [];
+    cycle({
+      git: {
+        tail: () => 1,
+        tailAuthors: () => ['Конвейер'],
+        push: () => {
+          steps.push('дослали');
+          return { ok: true, failure: null };
+        },
+        behind: () => 2,
+        fastForward: () => {
+          steps.push('подтянулись');
+          return { ok: true };
+        },
+      },
+      state: { tasks: [task('0001-one')] },
+    });
+    expect(steps).toEqual(['дослали', 'подтянулись']);
+  });
+
+  it('при неотправленном хвосте не подтягиваются вовсе', () => {
+    const pulled = [];
+    cycle({
+      git: {
+        tail: () => 1,
+        tailAuthors: () => ['Ivanov Dm'],
+        fastForward: () => {
+          pulled.push('подтянулись');
+          return { ok: true };
+        },
+      },
+      state: { tasks: [task('0001-one')] },
+    });
+    expect(pulled).toEqual([]);
+  });
+
+  it('в грязном дереве не подтягиваются: чужую правку перевод унёс бы', () => {
+    const result = cycle({
+      git: {
+        behind: () => 2,
+        dirtyPaths: () => ['apps/client/src/main.ts'],
+        fastForward: () => ({ ok: true }),
+      },
+      state: { tasks: [task('0001-one')] },
+    });
+    expect(result.notes.join()).toContain('посторонние изменения');
+    expect(result.notes.join()).toContain('apps/client/src/main.ts');
   });
 });
 

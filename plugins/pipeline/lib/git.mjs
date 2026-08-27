@@ -138,6 +138,36 @@ export function createGit(run, { remote, mainBranch }) {
       return run(['rebase', '--abort']).code === 0;
     },
 
+    /**
+     * На сколько коммитов локальная ветка отстала от удалённой.
+     *
+     * Отставание — не хвост и не беда: конвейер сам вливает pull request,
+     * поэтому оно возникает штатно после каждого вливания.
+     */
+    behind(branch = mainBranch) {
+      const result = run(['rev-list', '--count', `${branch}..${remote}/${branch}`]);
+      if (result.code !== 0) return null;
+      return Number.parseInt(out(result), 10) || 0;
+    },
+
+    /**
+     * Подтянуть отставшую главную ветку ускоряющим переводом.
+     *
+     * Именно ускоряющим (`--ff-only`), а не слиянием: своих коммитов в этот
+     * момент нет — хвост досылается раньше, — и если ускорить не удалось,
+     * значит картина не та, какой её считали, и лезть дальше нельзя.
+     *
+     * Без этого шага основное дерево живёт на состоянии, которое было при
+     * его последнем ручном обновлении: влитая работа до него не доезжает,
+     * и конвейер запускает вчерашний код. Проверено на первом же живом
+     * прогоне — оркестратор не нашёл в дереве собственного плагина.
+     */
+    fastForward(branch = mainBranch) {
+      const result = run(['merge', '--ff-only', `${remote}/${branch}`]);
+      if (result.code === 0) return { ok: true };
+      return { ok: false, why: `${result.stderr}${result.stdout}`.trim() };
+    },
+
     /** Кто написал последние коммиты хвоста: свои или чужие. */
     tailAuthors(branch = mainBranch) {
       const result = run(['log', '--format=%an', `${remote}/${branch}..${branch}`]);

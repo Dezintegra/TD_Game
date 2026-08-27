@@ -1,5 +1,5 @@
 import { lockedSlots, planAssignments } from './slots.mjs';
-import { cycleMayFinish, handleTail } from './push-discipline.mjs';
+import { catchUp, cycleMayFinish, handleTail } from './push-discipline.mjs';
 import { lockVerdict, newLock } from './lock.mjs';
 import { scan } from './scan.mjs';
 
@@ -89,6 +89,13 @@ export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elaps
   if (!mayWrite) {
     notes.push(`записи в главную ветку отложены: ${tail.outcome}`);
   }
+
+  // 3б. Отставание. Подтягивается после досылки хвоста и только в чистом
+  //     дереве. Без этого шага основное дерево живёт состоянием своего
+  //     последнего ручного обновления, и конвейер запускает вчерашний код —
+  //     на первом же живом прогоне он не нашёл в дереве собственного плагина.
+  const caught = catchUp({ git, branch: config.mainBranch, hasTail: !mayWrite });
+  notes.push(...caught.notes);
 
   // 4–5. Что делать. Сканер работает и при запрете записей: опрос проверок,
   //      порождение продолжателей и чтение картины мира от этого не зависят.

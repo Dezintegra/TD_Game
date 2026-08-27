@@ -140,6 +140,41 @@ export function handleTail({ git, branch, ourAuthors, ...pushParams }) {
  * сам вливает pull request, поэтому отставание возникает штатно и лечится
  * подтягиванием на следующем пробуждении.
  */
+/**
+ * Подтянуть отставшую главную ветку в начале цикла.
+ *
+ * Порядок здесь единственно возможный: сперва досылается свой хвост, и только
+ * потом подтягивается чужое. Наоборот нельзя — ускоряющий перевод при своих
+ * неотправленных коммитах не удастся, и цикл встанет на ровном месте.
+ *
+ * Отставание бедой не считается: конвейер сам вливает pull request, поэтому
+ * оно возникает после каждого вливания. Бедой считается НЕ подтянуть его —
+ * тогда дерево живёт вчерашним кодом, и конвейер запускает не то, что влито.
+ */
+export function catchUp({ git, branch, hasTail }) {
+  if (hasTail) return { outcome: 'skipped', notes: ['сперва хвост, потом подтягивание'] };
+
+  const behind = git.behind(branch);
+  if (behind === null) return { outcome: 'failed', notes: ['не удалось посчитать отставание'] };
+  if (behind === 0) return { outcome: 'current', notes: [] };
+
+  const dirty = git.dirtyPaths();
+  if (dirty === null || dirty.length > 0) {
+    return {
+      outcome: 'dirty',
+      notes: [
+        `отстали на ${behind} коммит(ов), но в дереве посторонние изменения: ` +
+          `${(dirty ?? []).join(', ')}. Не подтягиваем — чужую правку такой перевод унёс бы`,
+      ],
+    };
+  }
+
+  const moved = git.fastForward(branch);
+  return moved.ok
+    ? { outcome: 'caught-up', notes: [`подтянулись на ${behind} коммит(ов)`] }
+    : { outcome: 'failed', notes: [`подтянуться не удалось: ${moved.why}`] };
+}
+
 export function cycleMayFinish(git, branch) {
   const fetched = git.fetch(branch);
   if (!fetched.ok) {
