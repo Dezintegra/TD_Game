@@ -1,0 +1,44 @@
+<title>Конвейер: доска задач</title>
+<style>
+:root {
+  --fon: #f6f7f8; --karta: #ffffff; --tekst: #1a1c1e;
+  --tusklo: #6b7280; --ramka: #e2e5e9; --akcent: #00a01a; --trevoga: #b91c1c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fon: #16181c; --karta: #212429; --tekst: #e8eaed;
+    --tusklo: #9aa0a6; --ramka: #2f333a; --akcent: #00ff29; --trevoga: #f87171;
+  }
+}
+body { margin: 0; padding: 24px; background: var(--fon); color: var(--tekst);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.stamp { color: var(--tusklo); margin: 0 0 16px; }
+.alarm { color: var(--trevoga); font-weight: 600; margin: 0 0 16px; }
+.board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 8px; }
+.column { flex: 0 0 240px; background: var(--karta); border: 1px solid var(--ramka);
+  border-radius: 10px; padding: 10px; }
+.column h2 { font-size: 13px; margin: 0 0 8px; display: flex; justify-content: space-between; }
+.count { color: var(--tusklo); font-weight: 400; }
+.empty { color: var(--tusklo); font-size: 12px; margin: 4px 0; }
+.card { border: 1px solid var(--ramka); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.card.attention { border-color: var(--trevoga); box-shadow: 0 0 0 1px var(--trevoga); }
+.id { font-family: ui-monospace, monospace; font-size: 11px; color: var(--tusklo); }
+.title { margin: 2px 0 6px; }
+.meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--tusklo); }
+.type { color: var(--akcent); }
+.links { margin-top: 6px; font-size: 11px; color: var(--tusklo); }
+</style>
+<h1>Конвейер: доска задач</h1>
+<p class="stamp">Собрано 2026-08-27T10:51:02.547Z. Только на чтение: задачи правятся файлами в <code>manage/tasks/</code>.</p>
+<div class="board">
+<section class="column"><h2>Очередь <span class="count">16</span></h2><article class="card"><div class="id">0001-tune-the-nuke-tempo</div><div class="title">Темп матча после отката и удешевления ядерного удара</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0002-compact-map-tempo</div><div class="title">Темп матча на ужатой карте 38 × 38</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0003-compact-map-island-rocks-strength</div><div class="title">Сила осадного профиля на тесной карте</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0004-nuke-upgrade-strategist-strength</div><div class="title">Сила Стратега после правки урона и радиуса ракеты</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0005-attack-stances-tempo</div><div class="title">Темп матча после смены поведения по умолчанию на Прорыв</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0006-fix-ai-spending-strategist-strength</div><div class="title">Осталась ли манера Стратега после отмены запаса</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0007-fortify-approaches-strength</div><div class="title">Сила осадного профиля после правки размещения башен</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0008-unit-range-upgrade</div><div class="title">Работает ли прокачка дальности снайпера и Теслы</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0015-return-match-to-window-tempo</div><div class="title">Вернулась ли длина матча в вилку после уменьшения запаса базы</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0016-return-match-to-window-strength</div><div class="title">Кому помог уменьшенный запас базы: наступающему или обороняющемуся</div><div class="meta"><span class="type type-run">run</span><span class="prio">приоритет 30</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0009-lobby-only-entry</div><div class="title">Вход в игру только через лобби, готовые лобби с компьютером убрать</div><div class="meta"><span class="type type-feature">feature</span><span class="prio">приоритет 40</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0010-lobby-password</div><div class="title">Пароль на лобби, чтобы не зашёл кто попало</div><div class="meta"><span class="type type-feature">feature</span><span class="prio">приоритет 40</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0012-energy-for-kills</div><div class="title">Экономика: энергия за убийства башнями и генералами</div><div class="meta"><span class="type type-feature">feature</span><span class="prio">приоритет 40</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0013-unit-radius-plus-25</div><div class="title">Радиус машин больше на четверть ради разрежённости</div><div class="meta"><span class="type type-feature">feature</span><span class="prio">приоритет 40</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0014-structures-tougher-nuke-sharper</div><div class="title">Прочность построек вдвое, а ядерный удар по строениям вдвое сильнее</div><div class="meta"><span class="type type-feature">feature</span><span class="prio">приоритет 40</span><span class="age">меньше часа</span></div></article><article class="card"><div class="id">0011-post-match-statistics</div><div class="title">Послематчевая статистика с графиками по ходу матча</div><div class="meta"><span class="type type-feature">feature</span><span class="prio">приоритет 50</span><span class="age">меньше часа</span></div></article></section>
+<section class="column"><h2>В работе <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Прогон <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Проверки <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Ревью <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Выкладка <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Ждут вас <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Остановлены <span class="count">0</span></h2><p class="empty">пусто</p></section>
+<section class="column"><h2>Закрыты <span class="count">0</span></h2><p class="empty">пусто</p></section>
+</div>

@@ -319,11 +319,12 @@ export default tseslint.config(
   // Node приходится назвать вручную. Отдельный пакет `globals` ради
   // двух имён в зависимости не тянем.
   {
-    files: ['scripts/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'plugins/**/*.mjs'],
     languageOptions: {
       globals: {
         process: 'readonly',
         console: 'readonly',
+        URL: 'readonly',
       },
     },
   },

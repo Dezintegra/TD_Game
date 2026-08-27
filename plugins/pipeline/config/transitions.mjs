@@ -1,0 +1,202 @@
+/**
+ * Автомат состояний задачи: что за чем идёт и чего это стоит машине.
+ *
+ * Таблица здесь — данные, а не код с ветвлениями. Так её читают и сканер,
+ * решающий, что запускать, и запись статуса, решающая, вправе ли переход
+ * состояться вообще. Переход, не объявленный в таблице, не выполняется:
+ * иначе через полгода никто не скажет, каким путём задача попала туда,
+ * где её нашли.
+ */
+
+/** Все состояния, в которых задача может находиться. */
+export const STATES = [
+  'new',
+  'triage',
+  'design',
+  'audit',
+  'implement',
+  'benchmark',
+  'pr',
+  'review',
+  'revise',
+  'deploy',
+  'cleanup',
+  'closed',
+  'failed',
+  'awaiting-po',
+];
+
+/** Состояния, из которых задача больше сама не двинется. */
+export const TERMINAL = ['closed', 'failed'];
+
+/** Сквозные состояния: достижимы из любого рабочего и хранят состояние возврата. */
+export const CROSSCUT = ['failed', 'awaiting-po'];
+
+/**
+ * Маршруты по типам задач.
+ *
+ * `feature` идёт полным путём через OpenSpec; мелких правок в обход
+ * проработки не бывает намеренно. `run` не заводит ни ветки, ни дерева:
+ * мерить нечего, кроме уже выложенного. `note` только разбирается
+ * на заявки — сами задачи по ним заводит оркестратор.
+ */
+export const ROUTES = {
+  feature: {
+    new: ['design'],
+    design: ['audit'],
+    // Аудит с замечаниями возвращает в проработку — это не ошибка, а рабочий ход.
+    audit: ['implement', 'design'],
+    implement: ['benchmark', 'pr'],
+    benchmark: ['pr'],
+    // Красный CI отправляет в доработку, зелёный — в ревью.
+    pr: ['review', 'revise'],
+    // Ревью с замечаниями отправляет в доработку, чистое — в выкладку.
+    review: ['deploy', 'revise'],
+    // Доработка ведёт обратно в ожидание проверок, а НЕ сразу в ревью:
+    // ревью на непроверенном коде запрещено, а правка требует нового прогона CI.
+    revise: ['pr'],
+    deploy: ['cleanup'],
+    cleanup: ['closed'],
+  },
+  run: {
+    new: ['benchmark'],
+    benchmark: ['closed'],
+  },
+  note: {
+    new: ['triage'],
+    triage: ['closed'],
+  },
+};
+
+/**
+ * Чего состояние стоит рабочей станции.
+ *
+ * - `queue` — задача ждёт своей очереди и ничего не занимает;
+ * - `resource` — идёт сессия, считается в общую квоту;
+ * - `review` — тоже сессия, но своя квота: ревью за раз только одно;
+ * - `waiting` — ждём чужое железо или человека, машина свободна;
+ * - `exclusive` — требует тишины на машине целиком;
+ * - `housekeeping` — уборка, дешёвая и не требующая сессии;
+ * - `terminal` — задача больше не движется.
+ */
+export const STATE_CLASS = {
+  new: 'queue',
+  triage: 'resource',
+  design: 'resource',
+  audit: 'resource',
+  implement: 'resource',
+  revise: 'resource',
+  review: 'review',
+  pr: 'waiting',
+  'awaiting-po': 'waiting',
+  deploy: 'exclusive',
+  cleanup: 'housekeeping',
+  closed: 'terminal',
+  failed: 'terminal',
+  // benchmark разбирается отдельно: цена зависит от вида прогона.
+};
+
+/**
+ * Виды прогона, которые считаются на чужом железе. Рабочая станция при них
+ * свободна, поэтому в квоту они не идут.
+ */
+const FOREIGN_HARDWARE_RUNS = ['arena', 'bench-tick'];
+
+/**
+ * Чего стоит состояние конкретной задачи.
+ *
+ * Прогон — единственное состояние, чья цена зависит от содержимого задачи:
+ * арену считает GitHub, а кадры мерить можно только здесь и только в тишине.
+ * Цифра, снятая под нагрузкой, говорит о нагрузке, а не о коде.
+ */
+export function stateClass(task) {
+  if (task.status !== 'benchmark') return STATE_CLASS[task.status];
+  const kind = task.run?.kind;
+  return FOREIGN_HARDWARE_RUNS.includes(kind) ? 'waiting' : 'exclusive';
+}
+
+/** Занимает ли задача место в общей квоте ресурсных работ. */
+export const isResource = (task) => stateClass(task) === 'resource';
+
+/** Требует ли задача тишины на машине целиком. */
+export const isExclusive = (task) => stateClass(task) === 'exclusive';
+
+/** Ждёт ли задача чужого железа или человека. */
+export const isWaiting = (task) => stateClass(task) === 'waiting';
+
+/**
+ * Состояния, которым нужно собственное рабочее дерево.
+ *
+ * Прогон в этот перечень не входит: он либо считается на чужом железе,
+ * либо мерит уже выложенное. Уборка входит — ей дерево нужно, чтобы его
+ * же и снести.
+ */
+export const NEEDS_WORKTREE = ['design', 'audit', 'implement', 'revise', 'review', 'deploy'];
+
+/** Нужна ли состоянию сессия-исполнитель. */
+export const NEEDS_SESSION = [
+  'triage',
+  'design',
+  'audit',
+  'implement',
+  'benchmark',
+  'review',
+  'revise',
+  'deploy',
+];
+
+/**
+ * Вправе ли задача перейти в указанное состояние.
+ *
+ * Возвращает `{ ok, reason }`, а не бросает исключение: отказ здесь —
+ * обычное дело, и вызывающему нужно записать причину в журнал, а не ловить
+ * ошибку.
+ */
+export function canTransition(task, to) {
+  const from = task.status;
+
+  if (!STATES.includes(to)) {
+    return { ok: false, reason: `состояния «${to}» не существует` };
+  }
+  if (from === to) {
+    return { ok: false, reason: 'задача уже в этом состоянии' };
+  }
+  if (TERMINAL.includes(from) && to !== 'closed') {
+    // Из ошибки задачу поднимает человек, а не конвейер: причина требует разбора.
+    if (from === 'failed' && to === task.returnTo) {
+      return { ok: true, reason: 'возврат из ошибки в сохранённое состояние' };
+    }
+    return { ok: false, reason: `из «${from}» задача сама не двигается` };
+  }
+
+  // Сквозные состояния достижимы отовсюду, кроме конечных.
+  if (CROSSCUT.includes(to)) {
+    return { ok: true, reason: 'сквозное состояние достижимо из любого рабочего' };
+  }
+
+  // Возврат из ожидания ответа ведёт ровно туда, откуда задача ушла.
+  if (from === 'awaiting-po') {
+    if (to === task.returnTo) {
+      return { ok: true, reason: 'возврат в сохранённое состояние' };
+    }
+    return {
+      ok: false,
+      reason: `из ожидания ответа возвращаются в «${task.returnTo}», а не в «${to}»`,
+    };
+  }
+
+  const route = ROUTES[task.type];
+  if (!route) {
+    return { ok: false, reason: `для типа «${task.type}» маршрут не объявлен` };
+  }
+  const allowed = route[from] ?? [];
+  if (!allowed.includes(to)) {
+    return {
+      ok: false,
+      reason: allowed.length
+        ? `из «${from}» задача типа «${task.type}» идёт в ${allowed.map((s) => `«${s}»`).join(' или ')}`
+        : `из «${from}» задача типа «${task.type}» никуда не идёт`,
+    };
+  }
+  return { ok: true, reason: 'переход объявлен маршрутом' };
+}

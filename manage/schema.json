@@ -1,0 +1,211 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Dezintegra/TD_Game/manage/schema.json",
+  "title": "Задача бэклога",
+  "description": "Одна задача конвейера агентской разработки. Один файл на задачу: единый список стал бы вечной точкой конфликтов между машинами.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "id",
+    "type",
+    "title",
+    "description",
+    "status",
+    "priority",
+    "createdAt",
+    "statusChangedAt",
+    "owner",
+    "history",
+    "links",
+    "attempts"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Путь к этой схеме. Нужен, чтобы редактор подсказывал состав полей без внешнего каталога.",
+      "const": "../schema.json"
+    },
+    "id": {
+      "type": "string",
+      "description": "Устойчивый идентификатор вида <число>-<короткое-имя>. Он же имя ветки, дерева и журнала. После закрытия не переиспользуется.",
+      "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "type": {
+      "type": "string",
+      "description": "Тип задачи. От него зависит маршрут по состояниям.",
+      "enum": ["feature", "run", "note"]
+    },
+    "title": {
+      "type": "string",
+      "description": "Короткий заголовок в одну строку.",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "description": {
+      "type": "string",
+      "description": "Что и зачем нужно сделать. Пишется так, чтобы сессия поняла задачу без этого разговора.",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "description": "Текущее состояние. Переходы объявлены таблицей переходов плагина и проверяются программно.",
+      "enum": [
+        "new",
+        "triage",
+        "design",
+        "audit",
+        "implement",
+        "benchmark",
+        "pr",
+        "review",
+        "revise",
+        "deploy",
+        "cleanup",
+        "closed",
+        "failed",
+        "awaiting-po"
+      ]
+    },
+    "returnTo": {
+      "description": "Состояние, из которого задача ушла в ошибку или в ожидание ответа. Возврат ведёт сюда.",
+      "type": ["string", "null"],
+      "enum": [
+        "triage",
+        "design",
+        "audit",
+        "implement",
+        "benchmark",
+        "pr",
+        "review",
+        "revise",
+        "deploy",
+        "cleanup",
+        null
+      ]
+    },
+    "priority": {
+      "type": "integer",
+      "description": "Меньшее значение берётся в работу раньше. При равенстве раньше берётся задача с более ранним createdAt.",
+      "minimum": 0,
+      "maximum": 999
+    },
+    "createdAt": {
+      "type": "string",
+      "description": "Когда задача заведена. Полная отметка времени со смещением часового пояса.",
+      "format": "date-time"
+    },
+    "statusChangedAt": {
+      "type": "string",
+      "description": "Когда состояние сменилось в последний раз. По ней считается время в состоянии и распознаётся застревание.",
+      "format": "date-time"
+    },
+    "owner": {
+      "description": "Имя рабочей станции, занявшей задачу. Записывается в главную ветку до начала работы: успешная отправка этой записи и есть захват.",
+      "type": ["string", "null"]
+    },
+    "history": {
+      "type": "array",
+      "description": "История смен состояния. Дозаписывается, не переписывается.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "from", "to"],
+        "properties": {
+          "at": { "type": "string", "format": "date-time" },
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "note": { "type": "string", "description": "Одна строка о причине перехода." }
+        }
+      }
+    },
+    "links": {
+      "type": "object",
+      "description": "Ссылки на порождённые артефакты.",
+      "additionalProperties": false,
+      "required": ["change", "pr", "run", "related"],
+      "properties": {
+        "change": {
+          "description": "Имя изменения OpenSpec.",
+          "type": ["string", "null"]
+        },
+        "pr": {
+          "description": "Номер pull request.",
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "run": {
+          "description": "Идентификатор прогона: номер запуска в Actions либо имя местного замера.",
+          "type": ["string", "null"]
+        },
+        "related": {
+          "type": "array",
+          "description": "Идентификаторы связанных задач: породившей и порождённых.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "attempts": {
+      "type": "object",
+      "description": "Счётчики, по которым конвейер решает, не пора ли остановиться.",
+      "additionalProperties": false,
+      "required": ["continuations", "cycleFailures"],
+      "properties": {
+        "continuations": {
+          "type": "integer",
+          "description": "Сколько раз этап продолжали после уснувшей или умершей сессии.",
+          "minimum": 0
+        },
+        "cycleFailures": {
+          "type": "integer",
+          "description": "Сколько циклов подряд действие по задаче не удалось.",
+          "minimum": 0
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "description": "Заказ на прогон. Обязателен для задач типа run.",
+      "additionalProperties": false,
+      "required": ["kind", "expectation"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "Вид прогона. arena и bench-tick считаются на чужом железе, perf — только на своей машине при исключительном доступе.",
+          "enum": ["arena", "perf", "bench-tick"]
+        },
+        "params": {
+          "type": "object",
+          "description": "Параметры прогона: кого с кем мерить, сколько матчей, на какой ветке.",
+          "additionalProperties": true
+        },
+        "expectation": {
+          "type": "string",
+          "description": "Чего ждут от прогона. Без ожидаемого результата прогон нечем истолковать, поэтому поле обязательно.",
+          "minLength": 1
+        }
+      }
+    },
+    "question": {
+      "type": "object",
+      "description": "Заданный владельцу продукта вопрос. Заполняется, когда задача уходит в awaiting-po.",
+      "additionalProperties": false,
+      "required": ["askedAt", "summary"],
+      "properties": {
+        "askedAt": { "type": "string", "format": "date-time" },
+        "summary": { "type": "string", "minLength": 1 },
+        "answeredAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "run" } }, "required": ["type"] },
+      "then": { "required": ["run"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "awaiting-po" } }, "required": ["status"] },
+      "then": { "required": ["question", "returnTo"] }
+    }
+  ]
+}
