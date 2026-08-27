@@ -1,0 +1,33 @@
+{
+  "$comment": "Настройка конвейера под этот проект. Всё, что зависит от репозитория, названо здесь; в скриптах плагина зашитых путей и команд нет — иначе он перестал бы переноситься копированием каталога.",
+
+  "remote": "origin",
+  "mainBranch": "main",
+  "worktreeDir": ".claude/worktrees",
+
+  "commands": {
+    "verify": "pnpm verify",
+    "verifyAll": "pnpm verify:all",
+    "deploy": "node scripts/deploy.mjs",
+    "perf": "pnpm e2e:perf",
+    "perfCheck": "pnpm e2e:perf -- --check-only",
+    "benchTick": "pnpm bench:tick"
+  },
+
+  "ci": {
+    "$comment": "Имена задач CI, по которым опрашивается состояние pull request.",
+    "jobs": [
+      "формат и линт",
+      "типы",
+      "сборка",
+      "быстрые тесты",
+      "матчевые тесты",
+      "сквозные проверки"
+    ],
+    "arenaWorkflow": "arena.yml"
+  },
+
+  "ourAuthors": ["Конвейер TD_Game"],
+
+  "$note": "Пределы и сроки берутся из умолчаний плагина: цикл 5 минут, две ресурсные задачи, одно ревью, смерть сессии через 30 минут молчания, два продолжения этапа. Менять их здесь же."
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "../schema.json",
+  "id": "0000-example-feature",
+  "type": "feature",
+  "title": "Образец: доработка, идущая полным маршрутом",
+  "description": "Что и зачем нужно сделать. Пишется так, чтобы сессия поняла задачу без разговора, в котором она была заведена: какое поведение сейчас, какое должно быть, по каким признакам считать сделанным.",
+  "status": "new",
+  "returnTo": null,
+  "priority": 50,
+  "createdAt": "2026-08-26T12:00:00+03:00",
+  "statusChangedAt": "2026-08-26T12:00:00+03:00",
+  "owner": null,
+  "history": [],
+  "links": { "change": null, "pr": null, "run": null, "related": [] },
+  "attempts": { "continuations": 0, "cycleFailures": 0 }
+}

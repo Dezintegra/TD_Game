@@ -1,0 +1,16 @@
+{
+  "$schema": "../schema.json",
+  "id": "0000-example-note",
+  "type": "note",
+  "title": "Образец: замечание владельца продукта, требующее разбора",
+  "description": "Вольный текст: наблюдение, пожелание, задумка. Разбирающая сессия сама решит, во что это превратить, и перечислит заявки на задачи в отчёте — заводит их оркестратор.",
+  "status": "new",
+  "returnTo": null,
+  "priority": 40,
+  "createdAt": "2026-08-26T12:00:00+03:00",
+  "statusChangedAt": "2026-08-26T12:00:00+03:00",
+  "owner": null,
+  "history": [],
+  "links": { "change": null, "pr": null, "run": null, "related": [] },
+  "attempts": { "continuations": 0, "cycleFailures": 0 }
+}

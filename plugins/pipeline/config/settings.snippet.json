@@ -1,0 +1,82 @@
+{
+  "$comment": "Разрешения, без которых конвейер встаёт. Слейте это в .claude/settings.local.json проекта — тот файл игнорируется гитом и живёт только на этой машине. Почему это обязательно: любой неотвеченный запрос подтверждения в автономной сессии не просто её тормозит, а запирает её задачу планировщика насмерть — незавершённый прогон не даёт начать следующий, и слот молчит навсегда.",
+
+  "$note": "Инструменты с жёсткой пометкой (создание задач планировщика) правилами НЕ открываются — они спрашивают при каждом вызове. Поэтому конвейер их и не вызывает: пул исполнителей заводится один раз руками.",
+
+  "$writeNote": "Запись файла в обычном режиме спрашивает подтверждение ВСЕГДА, а конвейер пишет много и в предсказуемые места. Без правил ниже оркестратор встаёт на первом же снимке сессий — проверено на первом живом запуске. Правила названы каталогами, а не «разрешить всё»: за пределы репозитория конвейер не пишет, и незачем ему это позволять.",
+
+  "permissions": {
+    "allow": [
+      "Write(.pipeline/**)",
+      "Edit(.pipeline/**)",
+      "Write(manage/**)",
+      "Edit(manage/**)",
+      "Write(.claude/worktrees/**)",
+      "Edit(.claude/worktrees/**)",
+      "Write(openspec/**)",
+      "Edit(openspec/**)",
+
+      "PowerShell(node plugins/pipeline/bin/cycle.mjs:*)",
+      "PowerShell(node plugins/pipeline/bin/board.mjs:*)",
+      "Bash(node plugins/pipeline/bin/cycle.mjs:*)",
+      "Bash(node plugins/pipeline/bin/board.mjs:*)",
+
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git worktree:*)",
+      "Bash(git branch:*)",
+      "Bash(git switch:*)",
+
+      "PowerShell(git status:*)",
+      "PowerShell(git log:*)",
+      "PowerShell(git diff:*)",
+      "PowerShell(git add:*)",
+      "PowerShell(git commit:*)",
+      "PowerShell(git push:*)",
+      "PowerShell(git fetch:*)",
+      "PowerShell(git rev-list:*)",
+      "PowerShell(git rev-parse:*)",
+      "PowerShell(git worktree:*)",
+      "PowerShell(git branch:*)",
+
+      "Bash(gh pr:*)",
+      "Bash(gh run:*)",
+      "Bash(gh workflow:*)",
+      "PowerShell(gh pr:*)",
+      "PowerShell(gh run:*)",
+      "PowerShell(gh workflow:*)",
+
+      "Bash(npx eslint:*)",
+      "Bash(npx prettier:*)",
+      "Bash(npx vitest:*)",
+      "Bash(openspec:*)",
+      "PowerShell(npx eslint:*)",
+      "PowerShell(npx prettier:*)",
+      "PowerShell(npx vitest:*)",
+      "PowerShell(openspec:*)",
+
+      "mcp__ccd_session_mgmt__set_session_title",
+      "mcp__ccd_session_mgmt__list_sessions",
+      "mcp__ccd_session_mgmt__list_events",
+      "mcp__scheduled-tasks__list_scheduled_tasks"
+    ],
+
+    "deny": [
+      "Bash(git push --force:*)",
+      "PowerShell(git push --force:*)",
+      "Bash(git reset --hard:*)",
+      "PowerShell(git reset --hard:*)",
+      "Bash(git stash:*)",
+      "PowerShell(git stash:*)"
+    ]
+  },
+
+  "$denyNote": "Запреты не формальность. Принудительная отправка переписывает общую историю и уносит чужую работу молча. Сброс и прятание трогают чужие незакоммиченные правки в основном дереве, которое общее для всех сессий. Конвейер этих команд не вызывает — запрет стоит на случай, если сессия решит проявить смекалку."
+}

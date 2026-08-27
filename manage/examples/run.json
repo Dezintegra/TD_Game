@@ -1,0 +1,21 @@
+{
+  "$schema": "../schema.json",
+  "id": "0000-example-run",
+  "type": "run",
+  "title": "Образец: прогон арены после правки цен",
+  "description": "Ради какой задачи заказан прогон и что именно проверяется. Ссылку на породившую задачу класть в links.related.",
+  "status": "new",
+  "returnTo": null,
+  "priority": 30,
+  "createdAt": "2026-08-26T12:00:00+03:00",
+  "statusChangedAt": "2026-08-26T12:00:00+03:00",
+  "owner": null,
+  "history": [],
+  "links": { "change": null, "pr": null, "run": null, "related": [] },
+  "attempts": { "continuations": 0, "cycleFailures": 0 },
+  "run": {
+    "kind": "arena",
+    "params": { "matches": 60, "branch": "main" },
+    "expectation": "Доля побед сторон остаётся в пределах 45–55 процентов, длина матча не выходит из вилки 10–15 минут."
+  }
+}
