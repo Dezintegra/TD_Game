@@ -1,0 +1,185 @@
+# Факторный замер темпа матча.
+#
+# 243 сочетания пяти величин по три уровня. Гоняется на чужом железе
+# и только на своей ветке: рабочая машина такой перебор считала бы часами,
+# а runner'ы GitHub для публичного репозитория бесплатны и параллельны.
+#
+# Запускается кнопкой на вкладке Actions, с любой ветки. Пока замер жил
+# на своей ветке, кнопки не было и запускать приходилось пушем: GitHub
+# показывает `workflow_dispatch` только у того, что лежит в ветке
+# по умолчанию. Замер туда переехал — значит кнопка появилась, и пуш
+# как способ запуска больше не нужен. Он и вреден: править файлы замера,
+# не запуская его, было нельзя.
+#
+# Ключи запуска перекрывают `plan.json`. Сам файл остаётся умолчанием
+# и памятью о последнем прогоне: пустой ключ означает «как записано».
+#
+# Идентификаторы задач латиницей, а имена русские, и это не стилистика:
+# кириллический идентификатор GitHub не принимает — файл отвергается
+# целиком, прогон заводится с нулём задач и без внятного объяснения.
+name: Факторный замер темпа
+
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: 'На сколько задач разложить перебор (пусто — из plan.json)'
+        type: string
+        default: ''
+      matches:
+        description: 'Матчей на ячейку (пусто — из plan.json)'
+        type: string
+        default: ''
+      jobs:
+        description: 'Процессов на задачу (пусто — из plan.json)'
+        type: string
+        default: ''
+      only:
+        description: 'Одна ячейка по её номеру, например c031 (пусто — все 243)'
+        type: string
+        default: ''
+
+# Прогон целиком занимает дюжину задач. Второй такой, запущенный поверх
+# первого, отобрал бы у него очередь, и оба шли бы вдвое дольше.
+concurrency:
+  group: tempo-factorial
+  cancel-in-progress: true
+
+jobs:
+  # Размер замера задаётся файлом плана, а не правкой этого прогона.
+  # Ради обкатки: прежде чем занимать дюжину задач на полчаса, стенд
+  # проверяют одной ячейкой, и переключение стоит правки одного числа.
+  plan:
+    name: план
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.read.outputs.shards }}
+      of: ${{ steps.read.outputs.of }}
+      matches: ${{ steps.read.outputs.matches }}
+      jobs: ${{ steps.read.outputs.jobs }}
+      only: ${{ steps.read.outputs.only }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: read
+        name: Прочитать план
+        # Ключи запуска приходят средой, а не подстановкой в текст: значение,
+        # вписанное человеком в поле формы, попадает в скрипт как данные
+        # и не может стать его частью.
+        env:
+          IN_SHARDS: ${{ inputs.shards }}
+          IN_MATCHES: ${{ inputs.matches }}
+          IN_JOBS: ${{ inputs.jobs }}
+          IN_ONLY: ${{ inputs.only }}
+        run: |
+          node --input-type=module -e "
+            import { appendFileSync, readFileSync } from 'node:fs';
+            const plan = JSON.parse(readFileSync('scripts/experiment/plan.json', 'utf8'));
+
+            // Ключ запуска перекрывает план; пустой ключ означает «как записано».
+            const pick = (key, fallback) => {
+              const raw = process.env[key];
+              const value = Number(raw);
+              return raw !== undefined && raw !== '' && Number.isFinite(value) && value > 0
+                ? value
+                : fallback;
+            };
+
+            const of = Math.max(1, pick('IN_SHARDS', Number(plan.shards) || 1));
+            const only = process.env.IN_ONLY || String(plan.only ?? '');
+            const out = [
+              ['shards', JSON.stringify(Array.from({ length: of }, (_unused, i) => i))],
+              ['of', String(of)],
+              ['matches', String(pick('IN_MATCHES', Number(plan.matches) || 5))],
+              ['jobs', String(pick('IN_JOBS', Number(plan.jobs) || 3))],
+              ['only', only],
+            ];
+            for (const [key, value] of out) {
+              appendFileSync(process.env.GITHUB_OUTPUT, key + '=' + value + '\n');
+            }
+            console.log(Object.fromEntries(out));
+          "
+
+  measure:
+    name: доля ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    needs: plan
+
+    strategy:
+      # Одна упавшая доля не должна уносить остальные: неполная картина
+      # полезнее пустой.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Сборка ОДНА на всю долю, а не на ячейку. Ради этого и затевался
+      # перевод правил в настройку запуска: прежде каждое сочетание
+      # требовало своей сборки, и перебор выходил дороже самого счёта.
+      - run: pnpm build
+
+      - name: Прогнать свои ячейки
+        env:
+          SHARD: ${{ matrix.shard }}
+          OF: ${{ needs.plan.outputs.of }}
+          MATCHES: ${{ needs.plan.outputs.matches }}
+          JOBS: ${{ needs.plan.outputs.jobs }}
+          ONLY: ${{ needs.plan.outputs.only }}
+        run: |
+          args=(--shard "$SHARD" --of "$OF" --matches "$MATCHES" --jobs "$JOBS" --out "shard-$SHARD.json")
+          if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
+          node --no-warnings scripts/experiment/tempo-factorial.mjs "${args[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tempo-shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.json
+          retention-days: 30
+
+  summary:
+    name: сводка
+    runs-on: ubuntu-latest
+    needs: measure
+    # Именно always: доли могли упасть частями, и свести уцелевшее нужно
+    # тем более. Пустой итог отличается от отсутствующего.
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tempo-shard-*
+          path: shards
+          merge-multiple: true
+
+      - name: Свести доли
+        run: |
+          node --no-warnings scripts/experiment/summarize.mjs shards \
+            --out tempo-factorial.json --summary tempo-summary.md
+          cat tempo-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tempo-factorial
+          path: |
+            tempo-factorial.json
+            tempo-summary.md
+          retention-days: 90

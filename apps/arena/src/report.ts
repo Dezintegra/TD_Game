@@ -67,10 +67,15 @@ const BUCKETS = 10;
  * Берутся базовые характеристики: у сторон прокачка разная, а горизонт
  * сводки один на всю пачку.
  */
-const ESCAPE_TICKS = Math.round(
-  AI_DECISION_INTERVAL_TICKS +
-    STRUCTURE_STATS[StructureKind.TowerBasic].range / Math.max(1, GENERAL_STATS.speed),
-);
+// Считается при обращении, а не на загрузке модуля: скорость генерала
+// подвижна настройкой правил, а сводка строится уже после прогона. Взятое
+// на загрузке значение отвечало бы про задуманные правила, каким бы ни был
+// прогон, — и разошлось бы со своей же формулой из `posture.ts`.
+const escapeTicks = (): number =>
+  Math.round(
+    AI_DECISION_INTERVAL_TICKS +
+      STRUCTURE_STATS[StructureKind.TowerBasic].range / Math.max(1, GENERAL_STATS.speed),
+  );
 
 /**
  * Через сколько тиков после команды удара смотреть последствия.
@@ -750,7 +755,7 @@ export const reportBatch = (db: DatabaseSync): string => {
             sum(case when exists (
                   select 1 from sample s
                    where s.match_id = p.match_id and s.player = p.player
-                     and s.tick > p.tick and s.tick <= p.tick + ${String(ESCAPE_TICKS)}
+                     and s.tick > p.tick and s.tick <= p.tick + ${String(escapeTicks())}
                      and s.general_alive = 0
                 ) then 1 else 0 end) as died
        from picked p
@@ -765,7 +770,7 @@ export const reportBatch = (db: DatabaseSync): string => {
 
     out.push('');
     out.push(
-      `  предсказание против исхода (горизонт отхода ${String(ESCAPE_TICKS)} тиков, ` +
+      `  предсказание против исхода (горизонт отхода ${String(escapeTicks())} тиков, ` +
         `решений ${String(picked)}):`,
     );
     out.push('    обещано     решений   в среднем   погиб на деле');

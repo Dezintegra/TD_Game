@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { availableParallelism } from 'node:os';
-import { TICKS_PER_SECOND } from '@td/shared';
+import { TICKS_PER_SECOND, applyRuleTuning, ruleTuning, ruleTuningIsNeutral } from '@td/shared';
+import type { RuleTuning } from '@td/shared';
 import { DEFAULT_PROFILE_ID } from '@td/ai';
 import { createLogWriter } from './log.js';
 import { runMatch } from './match.js';
@@ -25,8 +26,22 @@ const USAGE = `
 арена — безголовые матчи и разбор поведения противника
 
   arena run [--matches N] [--seed N] [--profiles A,B] [--jobs N] [--seconds N]
+            [--income K] [--speed K] [--tower-hp K] [--base-hp K]
+            [--radius K] [--map K]
       Прогнать N матчей компьютер-против-компьютера. Матчи независимы
       и считаются параллельно по числу ядер.
+
+      Шесть последних ключей — множители правил на время прогона: базовый
+      доход, скорость машин, прочность стреляющих построек, прочность базы,
+      личный радиус машины и сторона карты. Единица означает «как задумано».
+      Пересборки они не требуют, но и в игру не попадают: это инструмент
+      замера.
+
+      Прочность базы — главный регулятор длины матча, и стои́т она
+      отдельным ключом от прочности башен именно поэтому.
+
+      Имя файла лога множители НЕ содержит. Разные настройки на одном seed
+      перезапишут один файл — разводите прогоны каталогами через ARENA_DIR.
 
   arena replay <файл>
       Воспроизвести записанный матч и создать подробный лог: решения
@@ -115,6 +130,51 @@ const numberFlag = (flags: ReadonlyMap<string, string>, name: string, fallback: 
 };
 
 // ─────────────────────────────────────────────────────────────────────────
+// Настройка правил
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Ключи, которыми правила двигают снаружи.
+ *
+ * Имя ключа человеческое, поле — из `RuleTuning`. Читает их приложение,
+ * а не `packages/shared`: чтение среды и разбор командной строки — дело
+ * приложения, библиотека остаётся изоморфной.
+ */
+const TUNING_FLAGS: Readonly<Record<string, keyof RuleTuning>> = {
+  income: 'income',
+  speed: 'speed',
+  'tower-hp': 'towerHealth',
+  'base-hp': 'baseHealth',
+  radius: 'unitRadius',
+  map: 'map',
+};
+
+/** Собрать множители из ключей. Пустой ответ означает «правила как задуманы». */
+const tuningOf = (flags: ReadonlyMap<string, string>): Partial<RuleTuning> => {
+  const tuning: Partial<RuleTuning> = {};
+
+  for (const [flag, field] of Object.entries(TUNING_FLAGS)) {
+    if (!flags.has(flag)) continue;
+    tuning[field] = numberFlag(flags, flag, 1);
+  }
+
+  return tuning;
+};
+
+/**
+ * Те же ключи обратно в командную строку — для дочерних процессов.
+ *
+ * Без этого дочерние процессы считали бы матчи по ЗАДУМАННЫМ правилам,
+ * а родительский — по заказанным. Пачка вышла бы смесью двух разных игр,
+ * и заметить это по сводке невозможно: она усредняет и то, и другое.
+ */
+const tuningArgs = (tuning: Partial<RuleTuning>): readonly string[] =>
+  Object.entries(TUNING_FLAGS).flatMap(([flag, field]) => {
+    const value = tuning[field];
+    return value === undefined ? [] : [`--${flag}`, String(value)];
+  });
+
+// ─────────────────────────────────────────────────────────────────────────
 // run
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -177,12 +237,24 @@ const runBatch = async (flags: ReadonlyMap<string, string>): Promise<void> => {
   );
   const jobs = Math.max(1, numberFlag(flags, 'jobs', Math.max(1, availableParallelism() - 1)));
 
+  const tuning = tuningOf(flags);
+  applyRuleTuning(tuning);
+
   mkdirSync(LOG_DIR, { recursive: true });
 
   const seeds = Array.from({ length: matches }, (_unused, index) => firstSeed + index);
   process.stdout.write(
     `прогон ${String(matches)} матчей, ${String(jobs)} процессов, ` +
       `профили ${profiles.join(' против ')}\n`,
+  );
+
+  // Настройка называется вслух и тогда, когда её нет. Молчание в этом месте
+  // читалось бы как «правила задуманные», а перепутать прогон с настройкой
+  // и без неё — значит сравнить несравнимое и не узнать об этом.
+  process.stdout.write(
+    ruleTuningIsNeutral()
+      ? 'правила: как задуманы\n'
+      : `правила: ${JSON.stringify(ruleTuning())}\n`,
   );
 
   const started = Date.now();
@@ -204,6 +276,7 @@ const runBatch = async (flags: ReadonlyMap<string, string>): Promise<void> => {
           '--profiles',
           profiles.join(','),
           ...(seconds === undefined ? [] : ['--seconds', String(seconds)]),
+          ...tuningArgs(tuning),
         ]),
       ),
     );
@@ -269,6 +342,10 @@ const main = async (): Promise<void> => {
       const seeds = (flags.get('seeds') ?? '').split(',').map(Number).filter(Number.isFinite);
       const profiles = (flags.get('profiles') ?? DEFAULT_PROFILE_ID).split(',');
       const seconds = flags.has('seconds') ? numberFlag(flags, 'seconds', 0) : undefined;
+
+      // Множители применяются и здесь: дочерний процесс — отдельная память
+      // со своими копиями всех таблиц, и правила родителя ему не наследуются.
+      applyRuleTuning(tuningOf(flags));
 
       for (const seed of seeds) runOne(seed, profiles, seconds);
       return;

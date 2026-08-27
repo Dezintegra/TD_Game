@@ -7,6 +7,7 @@ import {
   SEPARATION_PUSH_SPEED_PERCENT,
   SEPARATION_WALL_CLEARANCE,
   UNIT_SEPARATION_RADIUS,
+  onRuleTuningApplied,
 } from '@td/shared';
 import { cellIndex } from './map.js';
 import { statsOf } from './stats.js';
@@ -34,8 +35,8 @@ import type { Working, WorkingUnit } from './working.js';
  * остаются целые числа.
  */
 
-const MAP_MAX_X = MAP_WIDTH_CELLS * FIXED_POINT_SCALE - 1;
-const MAP_MAX_Y = MAP_HEIGHT_CELLS * FIXED_POINT_SCALE - 1;
+let MAP_MAX_X = MAP_WIDTH_CELLS * FIXED_POINT_SCALE - 1;
+let MAP_MAX_Y = MAP_HEIGHT_CELLS * FIXED_POINT_SCALE - 1;
 
 /**
  * Центр карты во внутренних единицах.
@@ -44,8 +45,18 @@ const MAP_MAX_Y = MAP_HEIGHT_CELLS * FIXED_POINT_SCALE - 1;
  * с центром поворота из `rotatedCell`: сумма координат клетки и её
  * повёрнутой пары равна ширине карты, значит центр — ровно половина.
  */
-const CENTRE_X = (MAP_WIDTH_CELLS * FIXED_POINT_SCALE) / 2;
-const CENTRE_Y = (MAP_HEIGHT_CELLS * FIXED_POINT_SCALE) / 2;
+let CENTRE_X = (MAP_WIDTH_CELLS * FIXED_POINT_SCALE) / 2;
+let CENTRE_Y = (MAP_HEIGHT_CELLS * FIXED_POINT_SCALE) / 2;
+
+// Обе пары величин выведены из размера карты, а он подвижен до создания
+// первого мира. Пересчёт заявлен настройке правил: иначе разведение
+// совпавших машин тянуло бы их к центру ПРЕЖНЕЙ карты, то есть в сторону.
+onRuleTuningApplied(() => {
+  MAP_MAX_X = MAP_WIDTH_CELLS * FIXED_POINT_SCALE - 1;
+  MAP_MAX_Y = MAP_HEIGHT_CELLS * FIXED_POINT_SCALE - 1;
+  CENTRE_X = (MAP_WIDTH_CELLS * FIXED_POINT_SCALE) / 2;
+  CENTRE_Y = (MAP_HEIGHT_CELLS * FIXED_POINT_SCALE) / 2;
+});
 
 const clamp = (value: number, max: number): number => (value < 0 ? 0 : value > max ? max : value);
 
