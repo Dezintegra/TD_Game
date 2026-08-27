@@ -84,6 +84,53 @@ export function lockedSlots({ occupancy = {}, sessions = [], now, config, sessio
 }
 
 /**
+ * Найти назначения, разошедшиеся с бэклогом.
+ *
+ * Слот освобождает тот, кто перенёс отчёт, — и только он. Дорог к выходу
+ * из этапа, однако, больше: задачу закрывает опрос внешнего состояния,
+ * возвращает в работу ответ владельца продукта, закрывает уборка, а
+ * перенос отчёта может и вовсе оборваться посреди дела. Ни один из этих
+ * путей слота не трогал, и назначение оставалось висеть на задаче, которой
+ * давно нет дела до этого этапа.
+ *
+ * Стоило это дорого: слот `worker-1` завис на закрытой задаче `0001`, и
+ * конвейер три часа отвечал «свободного слота нет» при пустом пуле. Отсюда
+ * сверка не по одному пути, а по признаку: назначение годно, пока задача
+ * стоит ровно в том состоянии, на которое оно выдано.
+ *
+ * Запертые слоты не трогаются намеренно. Там сессия числится идущей: снять
+ * назначение значило бы выдать слот второй сессии, которая всё равно
+ * не запустится — незавершённый прогон не даёт начать следующий.
+ */
+export function staleAssignments({ occupancy = {}, tasks = {}, locked = [] }) {
+  const lockedNames = new Set(locked.map((item) => item.slot));
+  const stale = [];
+
+  for (const [name, assignment] of Object.entries(occupancy)) {
+    if (!assignment || lockedNames.has(name)) continue;
+
+    const task = tasks[assignment.taskId];
+    if (!task) {
+      stale.push({
+        slot: name,
+        taskId: assignment.taskId,
+        why: 'задачи нет в бэклоге',
+      });
+      continue;
+    }
+    if (task.status !== assignment.stage) {
+      stale.push({
+        slot: name,
+        taskId: assignment.taskId,
+        why: `назначение на этап «${assignment.stage}», а задача уже в «${task.status}»`,
+      });
+    }
+  }
+
+  return stale;
+}
+
+/**
  * Разложить действия сканера по слотам.
  *
  * Принимает только то, что требует сессии-исполнителя: начать этап или
@@ -96,6 +143,8 @@ export function lockedSlots({ occupancy = {}, sessions = [], now, config, sessio
  * @param {object}   params.occupancy занятость слотов: `{ имяСлота: назначение }`
  * @param {object[]} params.slots     состав пула
  * @param {string}   params.now       отметка времени
+ * @param {object[]} params.locked    запертые слоты: заняты, пока не вмешается человек
+ * @param {object[]} params.stale     назначения, разошедшиеся с бэклогом
  * @returns {{ writes: object[], waiting: object[], notes: string[] }}
  */
 export function planAssignments({
@@ -105,11 +154,19 @@ export function planAssignments({
   slots = DEFAULT_SLOTS,
   now,
   locked = [],
+  stale = [],
 }) {
   const writes = [];
   const waiting = [];
   const notes = [];
   const taken = { ...occupancy };
+
+  // Разошедшееся назначение считается снятым уже здесь, а не со следующего
+  // цикла: иначе освобождённый слот простоял бы пять минут впустую.
+  for (const item of stale) {
+    delete taken[item.slot];
+    notes.push(`слот ${item.slot} освобождён от ${item.taskId}: ${item.why}`);
+  }
 
   // Запертый слот занят навсегда, пока человек не вмешается. Считаем его
   // занятым и называем вслух — иначе конвейер будет молча недоумевать,

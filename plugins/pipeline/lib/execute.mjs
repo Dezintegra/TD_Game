@@ -76,11 +76,32 @@ function transferReport(action, io) {
     now: io.now,
     sourceId: task.id,
   });
-  for (const born of plan.planned) next = relate(next, born.id);
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
     plan.notes = [...(plan.notes ?? []), `заявка отклонена: ${bad.problems.join('; ')}`];
+  }
+
+  // Задачи по заявкам заводятся ПЕРЕД сменой состояния породившей, и порядок
+  // этот выстрадан. Пока было наоборот, неудача на заявках оставляла отчёт
+  // непринятым при уже применённом переходе — а повторить перенос было
+  // нельзя: отчёт говорил об этапе, из которого задача уже вышла, и второй
+  // заход отправил бы её в ошибку. Заявки при этом пропадали насовсем.
+  //
+  // Теперь неудача на заявках не оставляет следов: состояние не тронуто,
+  // отчёт цел, и следующий цикл начнёт заново. Каждая задача уезжает своим
+  // коммитом: правило «коммит на смысловую правку» не делает исключения
+  // для порождённых.
+  const created = [];
+  for (const born of plan.planned) {
+    io.writeTask(born);
+    const pushed = io.commitAndPush(
+      [io.taskPath(born.id)],
+      `chore(backlog): ${born.id} заведена по разбору ${action.taskId}`,
+    );
+    if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
+    created.push(born.id);
+    next = relate(next, born.id);
   }
 
   const push = commitTaskChange(
@@ -97,21 +118,7 @@ function transferReport(action, io) {
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
   );
-  if (!push.ok) return { result: 'failed', why: push.outcome };
-
-  // Заявки на новые задачи заводятся после того, как состояние породившей
-  // уехало. Каждая — своим коммитом: правило «коммит на смысловую правку»
-  // не делает исключения для порождённых задач.
-  const created = [];
-  for (const task of plan.planned) {
-    io.writeTask(task);
-    const born = io.commitAndPush(
-      [io.taskPath(task.id)],
-      `chore(backlog): ${task.id} заведена по разбору ${action.taskId}`,
-    );
-    if (!born.ok) return { result: 'failed', why: born.outcome, created };
-    created.push(task.id);
-  }
+  if (!push.ok) return { result: 'failed', why: push.outcome, created };
 
   // Отчёт и слот освобождаются только после удавшейся отправки: иначе
   // при неудаче этап пришлось бы проходить заново, потеряв уже сделанное.
