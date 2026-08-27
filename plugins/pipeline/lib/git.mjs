@@ -47,6 +47,35 @@ export function isRebaseConflict(text = '') {
 }
 
 /**
+ * Чем кончилась попытка захвата.
+ *
+ * Успехом считается СОЗДАНИЕ ссылки, а не код возврата. Разница
+ * принципиальная: git отвечает успехом и тогда, когда делать было нечего,
+ * — и такой ответ означает, что ссылку создал кто-то другой.
+ *
+ * Проверено пробой. Две машины ответвляются от одного `origin/main`,
+ * то есть стоят на одном коммите. Отправка ветки или простого тега у второй
+ * машины отвечает «Everything up-to-date» с кодом ноль: ссылка уже
+ * указывает куда надо. Обе машины сочли бы задачу своей, завели бы
+ * по рабочему дереву и открыли бы по pull request.
+ *
+ * Спасает аннотированный тег: в него входят имя создателя и время, поэтому
+ * объекты у машин разные, и второй отвергается с «already exists».
+ */
+export function classifyClaim({ code, stdout = '', stderr = '' }) {
+  const text = `${stdout}\n${stderr}`;
+  const lower = text.toLowerCase();
+
+  if (lower.includes('already exists')) return 'taken';
+  if (lower.includes('everything up-to-date')) return 'taken';
+
+  if (code === 0 && lower.includes('[new tag]')) return 'ours';
+  if (code === 0) return 'unclear';
+
+  return classifyPushFailure(text) === 'offline' ? 'offline' : 'failed';
+}
+
+/**
  * Собрать набор команд поверх исполнителя.
  *
  * @param {(args: string[]) => {code:number, stdout:string, stderr:string}} run
@@ -178,6 +207,89 @@ export function createGit(run, { remote, mainBranch }) {
     /** Снять свой последний коммит, не трогая рабочее дерево. */
     dropLastCommit() {
       return run(['reset', '--soft', 'HEAD~1']).code === 0;
+    },
+
+    /**
+     * Захватить задачу: создать удалённый аннотированный тег `claim-<id>`.
+     *
+     * Это единственная надёжная операция «сравни-и-запиши» в распоряжении
+     * конвейера. Trello её не даёт вовсе: `PUT` перезаписывает поле
+     * владельца молча, и обе машины получили бы `200 OK`.
+     *
+     * Тег ставится на вершину удалённой главной ветки, а не на местный
+     * `HEAD`: местный мог отстать, и захват встал бы на вчерашнем коммите.
+     *
+     * Возвращает `{ ok, outcome }`, где исход — `ours`, `taken`, `offline`
+     * или `failed`. Толкует их вызывающий: занятая задача не беда,
+     * а обычный ход работы.
+     */
+    claim(id, { machine, now }) {
+      const tag = `claim-${id}`;
+
+      // Локальный тег мог остаться от прошлой неудачной попытки. Тогда
+      // `git tag -a` откажется его пересоздать, и захват провалился бы там,
+      // где на самом деле всё свободно.
+      run(['tag', '-d', tag]);
+
+      const created = run([
+        'tag',
+        '-a',
+        tag,
+        '-m',
+        `задача взята машиной ${machine} ${now}`,
+        `${remote}/${mainBranch}`,
+      ]);
+      if (created.code !== 0) {
+        return { ok: false, outcome: 'failed', why: created.stderr?.trim() };
+      }
+
+      const pushed = run(['push', remote, `refs/tags/${tag}`]);
+      const outcome = classifyClaim(pushed);
+
+      // За собой прибирается и победитель, и проигравший: местный тег
+      // больше не нужен ни тому, ни другому, а оставшись, он помешает
+      // следующей попытке.
+      run(['tag', '-d', tag]);
+
+      return { ok: outcome === 'ours', outcome, why: pushed.stderr?.trim() };
+    },
+
+    /**
+     * Отпустить захват: удалить удалённый тег.
+     *
+     * Нужно при уборке за закрытой задачей и при откате незавершённого
+     * взятия в работу. Отсутствие тега бедой не считается: цель достигнута.
+     */
+    releaseClaim(id) {
+      const result = run(['push', remote, '--delete', `refs/tags/claim-${id}`]);
+      if (result.code === 0) return { ok: true };
+      const lower = `${result.stdout}${result.stderr}`.toLowerCase();
+      if (lower.includes('does not exist') || lower.includes('remote ref does not exist')) {
+        return { ok: true };
+      }
+      return { ok: false, why: result.stderr?.trim() };
+    },
+
+    /**
+     * Кем захвачена задача — по описанию удалённого тега.
+     *
+     * Отвечает на вопрос «чей это захват» без доверия к полю владельца
+     * на карточке: карточку правит и человек, а тег создаёт только машина.
+     */
+    claimedIds() {
+      const result = run(['ls-remote', '--tags', remote, 'refs/tags/claim-*']);
+      if (result.code !== 0) return null;
+      return (
+        out(result)
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => line.split('refs/tags/claim-')[1])
+          // `^{}` помечает объект, на который указывает аннотированный тег:
+          // та же задача, вторая строка вывода.
+          .map((name) => (name ?? '').replace(/\^\{\}$/, ''))
+          .filter(Boolean)
+          .filter((name, index, all) => all.indexOf(name) === index)
+      );
     },
   };
 }
