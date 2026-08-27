@@ -79,6 +79,21 @@ function fakeIo(over = {}) {
       slots.delete(slot);
     },
 
+    registryEntry: () =>
+      over.entry ?? {
+        taskId: '0001-one',
+        branch: 'worktree-0001-one',
+        path: '.claude/worktrees/0001-one',
+      },
+    dropRegistry(id) {
+      steps.push(`запись реестра ${id} снята`);
+    },
+    readPr: () => over.pr ?? { state: 'merged' },
+    unpushed: () => over.unpushed ?? 0,
+    removeWorktree: () => over.worktreeRemoval ?? { ok: true },
+    deleteBranch: () => ({ ok: true }),
+    deleteRemoteBranch: () => ({ ok: true }),
+
     readReport: (id, stage) => over.report ?? { taskId: id, stage, outcome: 'done' },
     removeReport(id, stage) {
       steps.push(`отчёт ${id}:${stage} убран`);
@@ -267,6 +282,39 @@ describe('ответ владельца продукта', () => {
     const io = fakeIo({ tasks: [task({ status: 'awaiting-po', returnTo: null })] });
     const [result] = execute([{ kind: 'answer-question', taskId: '0001-one' }], io);
     expect(result.result).toBe('failed');
+  });
+});
+
+describe('уборка', () => {
+  const sweep = { kind: 'cleanup', taskId: '0001-one' };
+  const inCleanup = () =>
+    task({ status: 'cleanup', links: { change: null, pr: 50, run: null, related: [] } });
+
+  it('влитый pull request даёт убрать и закрыть задачу', () => {
+    const io = fakeIo({ tasks: [inCleanup()], pr: { state: 'merged' } });
+    const [result] = execute([sweep], io);
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('closed');
+    expect(io.steps).toContain('запись реестра 0001-one снята');
+  });
+
+  it('невлитый pull request останавливает задачу, ничего не удаляя', () => {
+    const io = fakeIo({ tasks: [inCleanup()], pr: { state: 'open' } });
+    const [result] = execute([sweep], io);
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('failed');
+    expect(io.steps).not.toContain('запись реестра 0001-one снята');
+  });
+
+  it('занятый каталог оставляет задачу в уборке до следующего цикла', () => {
+    const io = fakeIo({
+      tasks: [inCleanup()],
+      pr: { state: 'merged' },
+      worktreeRemoval: { ok: false, why: 'каталог занят' },
+    });
+    const [result] = execute([sweep], io);
+    expect(result.result).toBe('skipped');
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
   });
 });
 

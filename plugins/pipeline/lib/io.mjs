@@ -116,6 +116,9 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       writeFileSync(registryPath(), asJson({ entries: [...entries, entry] }));
     },
 
+    registryEntry: (taskId) =>
+      (readJson(registryPath())?.entries ?? []).find((item) => item.taskId === taskId) ?? null,
+
     dropRegistry(taskId) {
       const registry = readJson(registryPath());
       if (!registry) return;
@@ -169,7 +172,63 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       return { state: parsed.conclusion === 'success' ? 'success' : 'failure' };
     },
 
-    readAnswer: (id) => id,
+    /** Состояние pull request. Им доказывается влитость — не хешами коммитов. */
+    readPr(number) {
+      if (!number) return { state: 'unknown' };
+      const result = run(['pr', 'view', String(number), '--json', 'state'], 'gh');
+      if (result.code !== 0) return { state: 'unknown' };
+      try {
+        const state = JSON.parse(result.stdout || '{}').state ?? '';
+        return { state: state.toLowerCase() };
+      } catch {
+        return { state: 'unknown' };
+      }
+    },
+
+    /** Сколько коммитов ветки нет в её удалённом двойнике. */
+    unpushed(branch) {
+      const result = run(['rev-list', '--count', `${config.remote}/${branch}..${branch}`]);
+      if (result.code !== 0) return null;
+      return Number.parseInt(result.stdout.trim(), 10) || 0;
+    },
+
+    removeWorktree(path) {
+      const result = run(['worktree', 'remove', path, '--force']);
+      if (result.code === 0) return { ok: true };
+      // Каталога может уже не быть — тогда убирать нечего, и это не беда.
+      if (/not a working tree|no such file|is not a valid/i.test(result.stderr))
+        return { ok: true };
+      return { ok: false, why: result.stderr.trim() };
+    },
+
+    deleteBranch(branch) {
+      const result = run(['branch', '-D', branch]);
+      if (result.code === 0) return { ok: true };
+      if (/not found/i.test(result.stderr)) return { ok: true };
+      return { ok: false, why: result.stderr.trim() };
+    },
+
+    deleteRemoteBranch(branch) {
+      const result = run(['push', config.remote, '--delete', branch]);
+      if (result.code === 0) return { ok: true };
+      if (/remote ref does not exist/i.test(result.stderr)) return { ok: true };
+      return { ok: false, why: result.stderr.trim() };
+    },
+
+    /** Ответ владельца продукта из файла вопросов. */
+    readAnswer(id) {
+      const path = join(root, config.paths.questions);
+      if (!existsSync(path)) return null;
+      const sections = readFileSync(path, 'utf8').split(/^### /m).slice(1);
+      for (const section of sections) {
+        if (section.slice(0, section.indexOf('\n')).trim() !== id) continue;
+        const marker = section.indexOf('**Ответ:**');
+        if (marker === -1) return null;
+        const answer = section.slice(marker + '**Ответ:**'.length).trim();
+        return answer.length > 0 ? answer : null;
+      }
+      return null;
+    },
   };
 }
 

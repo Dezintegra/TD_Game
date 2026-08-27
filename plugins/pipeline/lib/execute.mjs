@@ -6,6 +6,7 @@ import {
   releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
+import { cleanup, mayCleanup } from './cleanup.mjs';
 import { journalAppendix } from './journal.mjs';
 
 /**
@@ -220,7 +221,61 @@ function failStage(action, io) {
   return push.ok ? { result: 'done', status: 'failed' } : { result: 'failed', why: push.outcome };
 }
 
+/**
+ * Прибрать за завершённой задачей.
+ *
+ * Удаление — единственное необратимое, что делает конвейер, поэтому решение
+ * принимается не здесь, а в отдельном разборе, и только по доказанной
+ * влитости pull request.
+ */
+function cleanupTask(action, io) {
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+
+  const entry = io.registryEntry(action.taskId);
+  const verdict = mayCleanup({
+    task,
+    entry,
+    pr: io.readPr(task.links?.pr),
+    unpushed: entry ? io.unpushed(entry.branch) : 0,
+  });
+
+  if (verdict.verdict === 'wait') return { result: 'skipped', why: verdict.why };
+
+  if (verdict.verdict === 'fail') {
+    const moved = applyTransition(task, { status: 'failed', note: verdict.why, now: io.now });
+    if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+    const push = commitTaskChange(
+      io,
+      moved.task,
+      { at: io.now, from: task.status, to: 'failed', problem: verdict.why },
+      `chore(backlog): ${task.id} уборка отменена, нужен разбор`,
+    );
+    return push.ok ? { result: 'done', status: 'failed' } : { result: 'failed', why: push.outcome };
+  }
+
+  if (verdict.verdict === 'proceed') {
+    const swept = cleanup({ task, entry, io });
+    if (!swept.finished) {
+      // Недоделанная уборка — не беда: следующий цикл дочистит. Задача
+      // остаётся в уборке, и запись реестра при этом не теряется.
+      return { result: 'skipped', why: swept.left.join('; ') };
+    }
+  }
+
+  const moved = applyTransition(task, { status: 'closed', note: verdict.why, now: io.now });
+  if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+  const push = commitTaskChange(
+    io,
+    moved.task,
+    { at: io.now, from: task.status, to: 'closed', what: `Убрано: ${verdict.why}.` },
+    `chore(backlog): ${task.id} закрыта`,
+  );
+  return push.ok ? { result: 'done', status: 'closed' } : { result: 'failed', why: push.outcome };
+}
+
 const HANDLERS = {
+  cleanup: cleanupTask,
   'transfer-report': transferReport,
   'start-stage': startStage,
   'continue-stage': continueStage,
