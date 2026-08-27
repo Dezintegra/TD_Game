@@ -1,4 +1,5 @@
 import { canTransition, stateClass } from '../config/transitions.mjs';
+import { missingForStage } from '../config/defaults.mjs';
 
 /**
  * Сканер: что конвейеру делать прямо сейчас.
@@ -226,6 +227,15 @@ export function scan(state) {
     const verdict = canTransition(task, stage);
     if (!verdict.ok) {
       notes.push(`задача ${task.id}: ${verdict.reason}`);
+      continue;
+    }
+
+    // Этап, который нечем закончить, не начинают. Иначе сессия проснётся,
+    // дойдёт до последнего шага и встанет, оставив задачу в состоянии,
+    // из которого её будет доставать человек.
+    const missing = missingForStage(config, stage, task);
+    if (missing.length > 0) {
+      notes.push(`задача ${task.id} не берётся: в настройке нет ${missing.join(', ')}`);
       continue;
     }
 

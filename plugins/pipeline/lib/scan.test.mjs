@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { hasWork, scan } from './scan.mjs';
+// resolveConfig уже импортирован выше — здесь он нужен и проверкам настройки.
 
 /**
  * Проверки сканера.
@@ -66,6 +67,63 @@ describe('пустая картина', () => {
     });
     expect(result.actions).toEqual([]);
     expect(result.notes.join()).toContain('0009-bad');
+  });
+});
+
+describe('неполная настройка', () => {
+  it('этап, который нечем закончить, не начинают', () => {
+    // Без каталога рабочих деревьев проработку начинать нельзя: сессия
+    // проснётся, дойдёт до заведения дерева и встанет.
+    const { config: bare } = resolveConfig({ commands: {} });
+    const result = scan({ now: NOW, config: bare, tasks: [task()] });
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('worktreeDir');
+  });
+
+  it('нехватка команды выкладки не мешает проработке', () => {
+    const { config: noDeploy } = resolveConfig({
+      commands: { verify: 'x', perf: 'x' },
+      worktreeDir: '.claude/worktrees',
+    });
+    const result = scan({ now: NOW, config: noDeploy, tasks: [task()] });
+    expect(result.actions).toContainEqual({
+      kind: 'start-stage',
+      taskId: '0001-one',
+      stage: 'design',
+    });
+  });
+
+  it('арене местная команда замера не нужна', () => {
+    const { config: noPerf } = resolveConfig({
+      commands: { verify: 'x', deploy: 'x' },
+      worktreeDir: '.claude/worktrees',
+    });
+    const arena = task({
+      id: '0001-run',
+      type: 'run',
+      run: { kind: 'arena', expectation: 'ровно' },
+    });
+    const result = scan({ now: NOW, config: noPerf, tasks: [arena] });
+    expect(result.actions).toContainEqual({
+      kind: 'start-stage',
+      taskId: '0001-run',
+      stage: 'benchmark',
+    });
+  });
+
+  it('а замеру кадров — нужна', () => {
+    const { config: noPerf } = resolveConfig({
+      commands: { verify: 'x', deploy: 'x' },
+      worktreeDir: '.claude/worktrees',
+    });
+    const perf = task({
+      id: '0001-perf',
+      type: 'run',
+      run: { kind: 'perf', expectation: 'не ниже порога' },
+    });
+    const result = scan({ now: NOW, config: noPerf, tasks: [perf] });
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('commands.perf');
   });
 });
 

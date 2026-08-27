@@ -67,6 +67,39 @@ export function pick(config, path) {
 }
 
 /**
+ * Что нужно каждому этапу.
+ *
+ * Нехватка настройки не останавливает конвейер целиком: без команды выкладки
+ * он прекрасно работает, пока ни одна задача до выкладки не дошла. А вот
+ * начинать этап, которого нельзя закончить, нельзя — сессия проснётся,
+ * дойдёт до последнего шага и встанет, оставив задачу в состоянии, из
+ * которого её будет доставать человек.
+ */
+export const STAGE_NEEDS = {
+  design: ['worktreeDir'],
+  audit: ['worktreeDir'],
+  implement: ['worktreeDir'],
+  revise: ['worktreeDir'],
+  review: ['worktreeDir'],
+  deploy: ['worktreeDir', 'commands.deploy', 'commands.perf'],
+  benchmark: [],
+  triage: [],
+};
+
+/**
+ * Чего не хватает, чтобы начать этап.
+ *
+ * Прогон разбирается отдельно: арену считает чужое железо, а замер кадров
+ * требует местной команды. Требовать её у задачи, которая идёт в Actions,
+ * значило бы запретить прогон там, где он и так возможен.
+ */
+export function missingForStage(config, stage, task) {
+  const needs = [...(STAGE_NEEDS[stage] ?? [])];
+  if (stage === 'benchmark' && task?.run?.kind === 'perf') needs.push('commands.perf');
+  return needs.filter((path) => pick(config, path) === undefined);
+}
+
+/**
  * Слить умолчания с настройкой проекта и убедиться, что обязательное названо.
  *
  * Возвращает `{ config, missing }`. Разбираться с нехваткой — дело
