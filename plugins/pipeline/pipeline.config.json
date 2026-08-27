@@ -5,6 +5,8 @@
   "mainBranch": "main",
   "worktreeDir": ".claude/worktrees",
 
+  "backlog": "trello",
+
   "trello": {
     "$comment": "Доска «TD», на которой живёт бэклог: https://trello.com/b/96MUi1Q2/td. Названы только идентификатор доски — имена колонок и меток берутся из умолчаний плагина. Ключ и токен приходят из окружения станции, см. .env.example.",
     "board": "6a9084b276c945372833816f"
