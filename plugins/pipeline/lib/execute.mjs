@@ -274,7 +274,28 @@ function cleanupTask(action, io) {
   return push.ok ? { result: 'done', status: 'closed' } : { result: 'failed', why: push.outcome };
 }
 
+/**
+ * Дослать хвост ветки задачи.
+ *
+ * Хвост главной ветки досылает цикл ещё до всякого исполнения — там это
+ * условие работы. Здесь речь о ветках задач: их досылают из собственного
+ * дерева и только ускоряющей отправкой. Неудача не беда: она задерживает
+ * действия по одной задаче, а не по всем.
+ */
+function pushTail(action, io) {
+  if (action.scope !== 'branch') return { result: 'skipped', why: 'хвост главной ветки не здесь' };
+
+  const entry = io.registryEntry(action.taskId);
+  if (!entry) return { result: 'skipped', why: 'дерева задачи нет в реестре' };
+
+  const push = io.pushBranchTail(action.branch, entry.path);
+  return push.ok
+    ? { result: 'done', why: `дослано ${action.commits} коммит(ов)` }
+    : { result: 'failed', why: push.why };
+}
+
 const HANDLERS = {
+  'push-tail': pushTail,
   cleanup: cleanupTask,
   'transfer-report': transferReport,
   'start-stage': startStage,

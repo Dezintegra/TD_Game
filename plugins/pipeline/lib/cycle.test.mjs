@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SLOTS } from './slots.mjs';
-import { budgetsAgree, lockVerdict, newLock, refreshLock } from './lock.mjs';
+import {
+  budgetsAgree,
+  countFailure,
+  lockVerdict,
+  newLock,
+  refreshLock,
+  shouldPause,
+} from './lock.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from './cycle.mjs';
 
@@ -101,6 +108,28 @@ describe('замок', () => {
   it('мёртвый процесс освобождает замок', () => {
     const held = { pid: 999, takenAt: NOW, refreshedAt: NOW };
     expect(lockVerdict(held, NOW, 30, () => false).take).toBe(true);
+  });
+});
+
+describe('самозащита от бесконечных неудач', () => {
+  it('одна неудача паузы не заслуживает', () => {
+    expect(shouldPause(1, config).pause).toBe(false);
+  });
+
+  it('несколько подряд взводят паузу с объяснением', () => {
+    const verdict = shouldPause(config.pauseAfterFailedCycles, config);
+    expect(verdict.pause).toBe(true);
+    expect(verdict.why).toContain('удалите файл паузы');
+  });
+
+  it('удачный цикл сбрасывает счётчик', () => {
+    expect(countFailure(5, 'worked')).toBe(0);
+    expect(countFailure(5, 'idle')).toBe(0);
+  });
+
+  it('считаются именно подряд идущие неудачи', () => {
+    expect(countFailure(2, 'conflict')).toBe(3);
+    expect(countFailure(2, 'dirty')).toBe(3);
   });
 });
 

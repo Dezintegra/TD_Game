@@ -58,6 +58,37 @@ export const newLock = (pid, now) => ({ pid, takenAt: now, refreshedAt: now });
 export const refreshLock = (lock, now) => ({ ...lock, refreshedAt: now });
 
 /**
+ * Пора ли взводить паузу.
+ *
+ * Планировщик перезапустит оркестратор через пять минут независимо от того,
+ * чем кончился прошлый цикл. Значит, застрявший конвейер будет молча падать
+ * сутками, и заметить это будет некому. Несколько неудач подряд — повод
+ * остановиться и позвать человека.
+ *
+ * Считаются именно ПОДРЯД идущие неудачи: одна отбитая отправка или
+ * пропавшая на минуту сеть паузы не заслуживают.
+ */
+export function shouldPause(failuresInARow, config) {
+  if (failuresInARow < config.pauseAfterFailedCycles) {
+    return { pause: false, why: `неудач подряд: ${failuresInARow}` };
+  }
+  return {
+    pause: true,
+    why:
+      `${failuresInARow} неуспешных циклов подряд при пределе ` +
+      `${config.pauseAfterFailedCycles}. Конвейер остановлен: причина требует человека. ` +
+      'Разобравшись, удалите файл паузы.',
+  };
+}
+
+/** Исходы цикла, которые считаются неудачей. Прочие сбрасывают счётчик. */
+export const FAILED_OUTCOMES = ['blocked', 'conflict', 'dirty', 'busy', 'exhausted', 'failed'];
+
+/** Новое значение счётчика неудач подряд. */
+export const countFailure = (previous, outcome) =>
+  FAILED_OUTCOMES.includes(outcome) ? previous + 1 : 0;
+
+/**
  * Согласованы ли сроки в настройке.
  *
  * Нарушение этого порядка означает, что живой цикл будет выглядеть брошенным

@@ -5,7 +5,7 @@ import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_SLOTS } from '../lib/slots.mjs';
-import { budgetsAgree, lockVerdict } from '../lib/lock.mjs';
+import { budgetsAgree, countFailure, lockVerdict, shouldPause } from '../lib/lock.mjs';
 import { createGit } from '../lib/git.mjs';
 import {
   isPaused,
@@ -123,6 +123,25 @@ function releaseLock(config) {
   if (existsSync(path)) rmSync(path);
 }
 
+/** Сколько циклов подряд закончились неудачей. Счётчик местный. */
+function readFailures(config) {
+  const path = join(root, config.paths.local, 'failures.json');
+  if (!existsSync(path)) return 0;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')).inARow ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeFailures(config, inARow) {
+  mkdirSync(join(root, config.paths.local), { recursive: true });
+  writeFileSync(
+    join(root, config.paths.local, 'failures.json'),
+    JSON.stringify({ inARow }, null, 2),
+  );
+}
+
 /** Дозапись в журнал цикла. Он местный и в репозиторий не едет. */
 function noteCycle(config, lines) {
   if (lines.length === 0) return;
@@ -225,6 +244,17 @@ function main() {
   if (flags.includes('--execute')) {
     const io = createIo({ root, config, git, now, machine, run: runCommand, elapsed });
     executed = execute(enriched, io);
+  }
+
+  // Планировщик перезапустит оркестратор через пять минут независимо
+  // от исхода. Значит, застрявший конвейер будет молча падать сутками,
+  // и заметить это будет некому: несколько неудач подряд взводят паузу сами.
+  const failures = countFailure(readFailures(config), result.outcome);
+  writeFailures(config, failures);
+  const pause = shouldPause(failures, config);
+  if (pause.pause) {
+    writeFileSync(join(root, config.paths.local, 'pause'), `${pause.why}\n`);
+    result.notes.push(pause.why);
   }
 
   noteCycle(config, [...problems, ...repair.notes, ...result.notes]);

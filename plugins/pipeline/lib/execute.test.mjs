@@ -88,6 +88,10 @@ function fakeIo(over = {}) {
     dropRegistry(id) {
       steps.push(`запись реестра ${id} снята`);
     },
+    pushBranchTail(branch, path) {
+      steps.push(`дослан хвост ${branch} из ${path}`);
+      return over.branchPush ?? { ok: true };
+    },
     readPr: () => over.pr ?? { state: 'merged' },
     unpushed: () => over.unpushed ?? 0,
     removeWorktree: () => over.worktreeRemoval ?? { ok: true },
@@ -315,6 +319,36 @@ describe('уборка', () => {
     const [result] = execute([sweep], io);
     expect(result.result).toBe('skipped');
     expect(io.tasks.get('0001-one').status).toBe('cleanup');
+  });
+});
+
+describe('досылка хвоста ветки задачи', () => {
+  const tail = {
+    kind: 'push-tail',
+    scope: 'branch',
+    branch: 'worktree-0001-one',
+    taskId: '0001-one',
+    commits: 2,
+  };
+
+  it('досылается из собственного дерева задачи', () => {
+    const io = fakeIo();
+    const [result] = execute([tail], io);
+    expect(result.result).toBe('done');
+    expect(io.steps).toContain('дослан хвост worktree-0001-one из .claude/worktrees/0001-one');
+  });
+
+  it('хвост главной ветки здесь не обрабатывают', () => {
+    const io = fakeIo();
+    const [result] = execute([{ kind: 'push-tail', scope: 'main', commits: 1 }], io);
+    expect(result.result).toBe('skipped');
+  });
+
+  it('неудача досылки не выдаётся за успех', () => {
+    const io = fakeIo({ branchPush: { ok: false, why: 'ветка ушла вперёд' } });
+    const [result] = execute([tail], io);
+    expect(result.result).toBe('failed');
+    expect(result.why).toContain('ушла вперёд');
   });
 });
 

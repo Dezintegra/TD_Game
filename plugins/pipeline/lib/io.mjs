@@ -185,6 +185,20 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       }
     },
 
+    /**
+     * Дослать хвост ветки задачи.
+     *
+     * Только ускоряющей отправкой и только из её собственного дерева
+     * (`git -C`). Перевыкладывать чужую ветку из основного дерева нельзя:
+     * git этого и не даст, а попытка оставила бы дерево в незавершённой
+     * операции — то самое общее дерево, где работают все сессии.
+     */
+    pushBranchTail(branch, path) {
+      const result = run(['-C', path, 'push', config.remote, branch]);
+      if (result.code === 0) return { ok: true };
+      return { ok: false, why: result.stderr.trim() };
+    },
+
     /** Сколько коммитов ветки нет в её удалённом двойнике. */
     unpushed(branch) {
       const result = run(['rev-list', '--count', `${config.remote}/${branch}..${branch}`]);
