@@ -150,21 +150,25 @@ async function main() {
   // Уже перенесённое не переносится второй раз. Скрипт зовут повторно,
   // когда первый заход оборвался на середине, и дубли карточек были бы
   // худшим из возможных исходов: две карточки одной задачи неразличимы.
-  const already = new Set(
-    board.cards.map((card) => card.desc?.match(/"id":"([^"]+)"/)?.[1]).filter(Boolean),
+  const already = new Map(
+    board.cards.map((card) => [card.desc?.match(/"id":"([^"]+)"/)?.[1], card]).filter(([id]) => id),
   );
 
   const plan = tasks.map((task) => ({
     task,
     entries: readJournalEntries(task.id),
-    skip: already.has(task.id),
+    existing: already.get(task.id) ?? null,
   }));
 
   console.log(`задач в файловом бэклоге: ${tasks.length}`);
   for (const item of plan) {
     const marks = [item.task.type, item.task.run?.kind].filter(Boolean).join(', ');
     const where = item.task.status === 'closed' ? 'архив' : config.trello.lists[item.task.status];
-    const note = item.skip ? ' — УЖЕ ПЕРЕНЕСЕНА, пропуск' : '';
+    const note = item.existing
+      ? stale(item, listIdByState)
+        ? ' — УЖЕ ЕСТЬ, состояние разошлось: подвинем'
+        : ' — уже перенесена, пропуск'
+      : '';
     console.log(
       `  · ${item.task.id} → ${where} [${marks}], записей журнала: ${item.entries.length}${note}`,
     );
@@ -176,8 +180,30 @@ async function main() {
   }
 
   let moved = 0;
-  for (const { task, entries, skip } of plan) {
-    if (skip) continue;
+  let synced = 0;
+  for (const { task, entries, existing } of plan) {
+    // Перенесённая задача не переносится заново, но может успеть уйти
+    // вперёд: конвейер продолжает работать от файлов, пока переезд идёт.
+    // Тогда карточку надо подвинуть — иначе доска соврёт в первый же день.
+    if (existing) {
+      if (!stale({ task, existing }, listIdByState)) continue;
+
+      const target =
+        task.status === 'closed' ? listIdByState.get('closed') : listIdByState.get(task.status);
+      const updated = await trello.put(`cards/${existing.id}`, {
+        idList: target,
+        desc: describeTask(task),
+        closed: task.status === 'closed',
+      });
+      if (!updated.ok) {
+        console.error(`не подвинулась карточка ${task.id}: ${updated.why}`);
+        process.exitCode = 1;
+        continue;
+      }
+      synced += 1;
+      console.log(`подвинута ${task.id} → ${task.status}`);
+      continue;
+    }
 
     // Закрытая задача заводится в своей колонке и тут же уходит в архив:
     // Trello не умеет создавать карточку сразу закрытой.
@@ -224,7 +250,21 @@ async function main() {
     console.log(`перенесена ${task.id} (${entries.length} записей журнала)`);
   }
 
-  console.log(`\nперенесено задач: ${moved}`);
+  console.log(`\nперенесено задач: ${moved}, подвинуто: ${synced}`);
+}
+
+/**
+ * Ушла ли задача вперёд с тех пор, как её перенесли.
+ *
+ * Сравнивается колонка: состояние задачи хранится ею и ничем иным, поэтому
+ * расхождение колонки и есть расхождение состояния. Архивность проверяется
+ * отдельно — закрытая задача обязана лежать в архиве.
+ */
+function stale({ task, existing }, listIdByState) {
+  if (!existing) return false;
+  const target = listIdByState.get(task.status);
+  if (task.status === 'closed') return !existing.closed;
+  return existing.idList !== target || existing.closed;
 }
 
 /** Подтянуть переменные из `.env`: токен доски иначе не доедет. */

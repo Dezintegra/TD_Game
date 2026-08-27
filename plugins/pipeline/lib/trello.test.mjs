@@ -122,6 +122,17 @@ describe('чтение картины мира', () => {
     expect(new URL(lists).searchParams.get('filter')).toBe('all');
   });
 
+  it('читает карточки вместе с архивными: их номера по-прежнему заняты', async () => {
+    // Без этого Trello отдаёт только открытые карточки, и номер закрытой
+    // задачи достаётся следующей — вместе с её именем ветки. Поймано
+    // переносом: он счёл две закрытые задачи неперенесёнными и завёл
+    // им двойники.
+    const { doFetch, calls } = board();
+    await readBoard(client(doFetch), 'b');
+    const cards = calls.find((url) => url.includes('/cards'));
+    expect(new URL(cards).searchParams.get('filter')).toBe('all');
+  });
+
   it('приводит комментарии к виду, пригодному для разбора', async () => {
     const { doFetch } = board({
       actions: [

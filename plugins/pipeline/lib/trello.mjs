@@ -122,8 +122,14 @@ export async function readBoard(trello, board) {
   const [lists, labels, cards, comments] = await Promise.all([
     trello.get(`boards/${board}/lists`, { filter: 'all', fields: 'name,closed' }),
     trello.get(`boards/${board}/labels`, { fields: 'name,color', limit: 50 }),
+    // `filter: all` — вместе с архивными. Без него Trello отдаёт только
+    // открытые карточки, и номера закрытых задач перестают считаться
+    // занятыми: следующая задача получит номер давно закрытой, а с ним
+    // и её имя ветки. Обнаружено переносом — он счёл две закрытые задачи
+    // неперенесёнными и завёл им двойники.
     trello.get(`boards/${board}/cards`, {
       fields: 'name,desc,idList,idLabels,pos,closed',
+      filter: 'all',
       limit: 1000,
     }),
     // Комментарии всей доски разом, а не по карточке: карточек десятки,
