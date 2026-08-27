@@ -275,6 +275,41 @@ describe('продолжатель возвращается в свой слот
     expect(result.waiting).toEqual([]);
   });
 
+  it('невзятое назначение вторым не перебивают', () => {
+    // Пока `startedAt` нет, работа просто не дошла до своего пробуждения.
+    // Выдать поверх второе назначение значит сжечь попытку продолжения
+    // впустую — а их две. Так и сгорели 0005 и 0006: два продолжения
+    // подряд, ни одного взявшего их исполнителя, задача остановлена
+    // «за исчерпанием продолжений», которых на деле не было ни одного.
+    const notTaken = {
+      taskId: '0002-two',
+      stage: 'design',
+      sessionTitle: 'pipeline:0002-two:design',
+      assignedAt: NOW,
+    };
+    const result = planAssignments({
+      actions: [{ kind: 'continue-stage', taskId: '0002-two', stage: 'design' }],
+      tasks: { '0002-two': task('0002-two', { status: 'design' }) },
+      occupancy: { 'worker-1': notTaken },
+      slots: DEFAULT_SLOTS,
+      now: NOW,
+    });
+    expect(result.writes).toEqual([]);
+    expect(result.waiting[0].reason).toContain('ещё не взято');
+  });
+
+  it('взятое назначение продолжателем перебить можно', () => {
+    // Здесь сессия была и кончилась — перезапись назначения и есть починка.
+    const result = planAssignments({
+      actions: [{ kind: 'continue-stage', taskId: '0002-two', stage: 'design' }],
+      tasks: { '0002-two': task('0002-two', { status: 'design' }) },
+      occupancy: { 'worker-1': held('0002-two', 'design') },
+      slots: DEFAULT_SLOTS,
+      now: NOW,
+    });
+    expect(result.writes[0].slot).toBe('worker-1');
+  });
+
   it('новое назначение не несёт отметки о взятии — в этом и починка', () => {
     // Исполнитель пропускает назначение с `startedAt`; перезапись снимает
     // отметку, и ближайшее пробуждение берёт работу как новую.

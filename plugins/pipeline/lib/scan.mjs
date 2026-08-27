@@ -109,11 +109,20 @@ function sessionLife({ entry, session, task, config, now }) {
     if (waitingFor !== null && waitingFor < config.deadAfterMinutes) return 'жива';
     return 'сессии нет';
   }
+  // Срок молчания один на все случаи, и завершившаяся сессия не исключение.
+  //
+  // Прежде признак «не идёт» убивал сессию немедленно, без всякого срока.
+  // На коротком промежутке он ненадёжен: снимок ловит сессию между ходами,
+  // и только что закончившая ход неотличима в нём от закончившей насовсем.
+  //
+  // Стоило это двух задач за вечер. Сессия по 0005 запустила арену в 19:20
+  // и закончила ход; оркестратор объявил её завершившейся без отчёта
+  // в 19:22:13 — за двадцать пять секунд ДО её же последней активности.
+  // Прогон тем временем спокойно досчитался, а задача успела сгореть.
   const silentFor = minutesBetween(now, session.lastActivityAt ?? entry?.lastSeenAt);
-  if (silentFor !== null && silentFor >= config.deadAfterMinutes)
-    return 'молчит дольше отпущенного';
-  if (!session.isRunning) return 'сессия завершилась без отчёта';
-  return 'жива';
+  if (silentFor === null || silentFor < config.deadAfterMinutes) return 'жива';
+
+  return session.isRunning ? 'молчит дольше отпущенного' : 'сессия завершилась без отчёта';
 }
 
 /**
