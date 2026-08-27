@@ -4,9 +4,15 @@
 # и только на своей ветке: рабочая машина такой перебор считала бы часами,
 # а runner'ы GitHub для публичного репозитория бесплатны и параллельны.
 #
-# Запускается пушем в ветку замера — по изменению самих файлов замера.
-# `workflow_dispatch` тут не работает: GitHub запускает по кнопке только
-# то, что уже лежит в ветке по умолчанию, а этот замер туда не поедет.
+# Запускается кнопкой на вкладке Actions, с любой ветки. Пока замер жил
+# на своей ветке, кнопки не было и запускать приходилось пушем: GitHub
+# показывает `workflow_dispatch` только у того, что лежит в ветке
+# по умолчанию. Замер туда переехал — значит кнопка появилась, и пуш
+# как способ запуска больше не нужен. Он и вреден: править файлы замера,
+# не запуская его, было нельзя.
+#
+# Ключи запуска перекрывают `plan.json`. Сам файл остаётся умолчанием
+# и памятью о последнем прогоне: пустой ключ означает «как записано».
 #
 # Идентификаторы задач латиницей, а имена русские, и это не стилистика:
 # кириллический идентификатор GitHub не принимает — файл отвергается
@@ -14,11 +20,24 @@
 name: Факторный замер темпа
 
 on:
-  push:
-    branches: ['worktree-tempo-factorial']
-    paths:
-      - 'scripts/experiment/**'
-      - '.github/workflows/tempo-factorial.yml'
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: 'На сколько задач разложить перебор (пусто — из plan.json)'
+        type: string
+        default: ''
+      matches:
+        description: 'Матчей на ячейку (пусто — из plan.json)'
+        type: string
+        default: ''
+      jobs:
+        description: 'Процессов на задачу (пусто — из plan.json)'
+        type: string
+        default: ''
+      only:
+        description: 'Одна ячейка по её номеру, например c031 (пусто — все 243)'
+        type: string
+        default: ''
 
 # Прогон целиком занимает дюжину задач. Второй такой, запущенный поверх
 # первого, отобрал бы у него очередь, и оба шли бы вдвое дольше.
@@ -45,17 +64,36 @@ jobs:
 
       - id: read
         name: Прочитать план
+        # Ключи запуска приходят средой, а не подстановкой в текст: значение,
+        # вписанное человеком в поле формы, попадает в скрипт как данные
+        # и не может стать его частью.
+        env:
+          IN_SHARDS: ${{ inputs.shards }}
+          IN_MATCHES: ${{ inputs.matches }}
+          IN_JOBS: ${{ inputs.jobs }}
+          IN_ONLY: ${{ inputs.only }}
         run: |
           node --input-type=module -e "
             import { appendFileSync, readFileSync } from 'node:fs';
             const plan = JSON.parse(readFileSync('scripts/experiment/plan.json', 'utf8'));
-            const of = Math.max(1, Number(plan.shards) || 1);
+
+            // Ключ запуска перекрывает план; пустой ключ означает «как записано».
+            const pick = (key, fallback) => {
+              const raw = process.env[key];
+              const value = Number(raw);
+              return raw !== undefined && raw !== '' && Number.isFinite(value) && value > 0
+                ? value
+                : fallback;
+            };
+
+            const of = Math.max(1, pick('IN_SHARDS', Number(plan.shards) || 1));
+            const only = process.env.IN_ONLY || String(plan.only ?? '');
             const out = [
               ['shards', JSON.stringify(Array.from({ length: of }, (_unused, i) => i))],
               ['of', String(of)],
-              ['matches', String(Number(plan.matches) || 5)],
-              ['jobs', String(Number(plan.jobs) || 3)],
-              ['only', String(plan.only ?? '')],
+              ['matches', String(pick('IN_MATCHES', Number(plan.matches) || 5))],
+              ['jobs', String(pick('IN_JOBS', Number(plan.jobs) || 3))],
+              ['only', only],
             ];
             for (const [key, value] of out) {
               appendFileSync(process.env.GITHUB_OUTPUT, key + '=' + value + '\n');
