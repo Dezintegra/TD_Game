@@ -229,6 +229,80 @@ describe('ответ владельца продукта', () => {
   });
 });
 
+describe('карточки, заведённые человеком', () => {
+  /** Карточка без служебного блока: заголовок, метка — и всё. */
+  const orphan = (over = {}) => ({
+    id: 'card-new',
+    name: 'Починить свист ядерного удара',
+    desc: 'Свистит не вовремя.',
+    idList: 'list-new',
+    idLabels: ['label-feature'],
+    pos: 100,
+    closed: false,
+    ...over,
+  });
+
+  it('получают номер и префикс в названии', async () => {
+    const trello = fakeTrello();
+    const store = backlog({ cards: [card(), orphan()] }, trello);
+
+    const { adopted } = await store.adoptOrphans();
+    expect(adopted).toEqual(['0032-pochinit-svist-yadernogo-udara']);
+
+    const put = trello.calls.find((call) => call.method === 'PUT');
+    expect(put.body.name).toBe(
+      '0032-pochinit-svist-yadernogo-udara · Починить свист ядерного удара',
+    );
+    expect(put.body.desc).toContain('"id":"0032-pochinit-svist-yadernogo-udara"');
+  });
+
+  it('заголовок остаётся человеческим текстом описания', async () => {
+    const trello = fakeTrello();
+    const store = backlog({ cards: [orphan()] }, trello);
+    await store.adoptOrphans();
+
+    const put = trello.calls.find((call) => call.method === 'PUT');
+    expect(put.body.desc.startsWith('Свистит не вовремя.')).toBe(true);
+  });
+
+  it('становятся видны тем же циклом, не дожидаясь следующего чтения', async () => {
+    const store = backlog({ cards: [orphan()] }, fakeTrello());
+    const { adopted } = await store.adoptOrphans();
+    expect(store.readTask(adopted[0])).toMatchObject({ type: 'feature', status: 'new' });
+  });
+
+  it('две карточки разом получают разные номера', async () => {
+    const store = backlog(
+      { cards: [orphan(), orphan({ id: 'card-two', name: 'Вторая задача' })] },
+      fakeTrello(),
+    );
+    const { adopted } = await store.adoptOrphans();
+    expect(adopted).toEqual(['0001-pochinit-svist-yadernogo-udara', '0002-vtoraya-zadacha']);
+  });
+
+  it('неудача с одной карточкой не отменяет остальных', async () => {
+    const trello = fakeTrello({
+      'cards/card-new': { ok: false, kind: 'refused', why: 'нет прав' },
+    });
+    const store = backlog(
+      { cards: [orphan(), orphan({ id: 'card-two', name: 'Вторая задача' })] },
+      trello,
+    );
+
+    const { adopted, problems } = await store.adoptOrphans();
+    // Номер достаётся второй карточке, а не пропадает: неудавшаяся запись
+    // ничего не заняла, и расходовать на неё номер незачем.
+    expect(adopted).toEqual(['0001-vtoraya-zadacha']);
+    expect(problems[0]).toContain('Починить свист');
+  });
+
+  it('номера архивных карточек считаются занятыми', async () => {
+    const store = backlog({ cards: [card({ closed: true }), orphan()] }, fakeTrello());
+    const { adopted } = await store.adoptOrphans();
+    expect(adopted[0].startsWith('0032-')).toBe(true);
+  });
+});
+
 describe('снятие захвата', () => {
   it('стирает владельца, не двигая карточку', async () => {
     const trello = fakeTrello();

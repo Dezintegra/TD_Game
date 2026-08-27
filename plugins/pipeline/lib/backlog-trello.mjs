@@ -8,6 +8,7 @@ import {
 } from './card.mjs';
 import { findAnswer, joinJournalParts, splitJournalEntry } from './comments.mjs';
 import { journalBody } from './journal.mjs';
+import { nextId } from './requests.mjs';
 
 /**
  * Бэклог, живущий карточками доски Trello.
@@ -228,6 +229,50 @@ export function createTrelloBacklog({ trello, config, snapshot, marker }) {
 
     /** Разобранные карточки — для сканера и для проверки при чтении. */
     parsedCards: () => parsed,
+
+    /**
+     * Дать номера карточкам, заведённым человеком.
+     *
+     * Владелец продукта заводит карточку одним заголовком — в этом весь
+     * смысл переезда, — а идентификатор нужен конвейеру: он служит именем
+     * ветки, дерева и захвата. Значит выдать его должен конвейер, и первым
+     * же циклом, пока задача ещё никуда не двинулась.
+     *
+     * Номер берётся на единицу больше самого большого занятого, включая
+     * архивные карточки. Возвращает перечень принятых задач и беды, если
+     * какие-то принять не удалось: одна неудача не отменяет остальных.
+     */
+    async adoptOrphans() {
+      const orphans = parsed.filter((item) => !item.task.id);
+      if (orphans.length === 0) return { adopted: [], problems: [] };
+
+      const taken = cards.map((card) => splitDescription(card.desc ?? '').meta?.id).filter(Boolean);
+      const adopted = [];
+      const problems = [];
+
+      for (const item of orphans) {
+        const id = nextId([...taken, ...adopted], item.task.title);
+        const task = { ...item.task, id };
+
+        const written = await trello.put(`cards/${item.card.id}`, {
+          name: nameWithId(id, item.task.title),
+          desc: joinDescription(item.card.human, metaOf(task)),
+        });
+        if (!written.ok) {
+          problems.push(`карточке «${item.task.title}» не выдан номер: ${written.why}`);
+          continue;
+        }
+
+        // Снимок правится в памяти вместе с доской: этим же циклом задачу
+        // уже можно брать в работу, не дожидаясь следующего чтения.
+        item.task.id = id;
+        item.card.name = nameWithId(id, item.task.title);
+        byId.set(id, item);
+        adopted.push(id);
+      }
+
+      return { adopted, problems };
+    },
 
     /** Идентификатор колонки по состоянию: нужен возврату карточек. */
     listIdOf: (state) => listIdByState.get(state) ?? null,

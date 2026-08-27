@@ -21,6 +21,9 @@ import { createIo } from '../lib/io.mjs';
 import { execute } from '../lib/execute.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from '../lib/cycle.mjs';
+import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
+import { createTrelloBacklog } from '../lib/backlog-trello.mjs';
+import { checkCard } from '../lib/validate-card.mjs';
 
 /**
  * Один прогон оркестратора.
@@ -178,6 +181,87 @@ function noteCycle(config, lines) {
   writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + text);
 }
 
+/**
+ * Подтянуть переменные из `.env`.
+ *
+ * Планировщик запускает Node без окружения разработчика, и токен доски
+ * иначе до цикла не доедет вовсе. Уже заданные переменные встроенный
+ * загрузчик не трогает.
+ */
+function loadEnv() {
+  const path = join(root, '.env');
+  if (!existsSync(path)) return;
+  try {
+    process.loadEnvFile(path);
+  } catch {
+    // Испорченный `.env` — не повод падать: может статься, доска и не нужна.
+  }
+}
+
+/**
+ * Открыть бэклог — файловый или на доске.
+ *
+ * Возвращает задачи в том же виде, в каком их всегда получала счётная
+ * часть: годные отдельно, негодные отдельно с причинами. Откуда они
+ * взялись, сканеру знать незачем.
+ *
+ * Ни один из двух отказов доски не считается неудачей цикла. Обрыв связи
+ * лечится ожиданием, ненастроенный доступ — токеном; пауза же снимается
+ * руками и в обоих случаях только мешала бы.
+ */
+async function openBacklog(config) {
+  if (config.backlog !== 'trello') {
+    return { ok: true, ...readTasks(root, config), notes: [] };
+  }
+
+  loadEnv();
+  const access = { key: process.env.TRELLO_KEY, token: process.env.TRELLO_TOKEN };
+  const missingAccess_ = missingAccess({ ...access, board: config.trello.board });
+  if (missingAccess_.length > 0) {
+    return {
+      ok: false,
+      outcome: 'misconfigured',
+      why: `для работы с доской не хватает: ${missingAccess_.join(', ')}`,
+    };
+  }
+
+  const trello = createTrello(access);
+  const board = await readBoard(trello, config.trello.board);
+  if (!board.ok) {
+    return {
+      ok: false,
+      outcome: 'unreachable',
+      why: `доска недоступна (${board.what}): ${board.why ?? board.kind}`,
+    };
+  }
+
+  const store = createTrelloBacklog({ trello, config, snapshot: board });
+
+  // Карточки, заведённые человеком, получают номера прежде всего прочего:
+  // без идентификатора задача не имеет ни имени ветки, ни имени захвата,
+  // то есть не может быть взята в работу вовсе.
+  const adopted = await store.adoptOrphans();
+
+  const tasks = [];
+  const invalid = [];
+  for (const item of store.parsedCards()) {
+    const problems = checkCard(item);
+    if (problems.length > 0) invalid.push({ id: item.task.id ?? item.card.name, problems });
+    else tasks.push(item.task);
+  }
+
+  return {
+    ok: true,
+    tasks,
+    invalid,
+    store,
+    notes: [
+      ...adopted.problems,
+      ...(adopted.adopted.length > 0 ? [`выданы номера: ${adopted.adopted.join(', ')}`] : []),
+    ],
+  };
+}
+
 async function main() {
   const { config, missing } = loadConfig();
 
@@ -204,7 +288,17 @@ async function main() {
     return;
   }
 
-  const { tasks, invalid } = readTasks(root, config);
+  const backlog = await openBacklog(config);
+  if (!backlog.ok) {
+    print({ outcome: backlog.outcome, why: backlog.why, actions: [], assignments: [] });
+    releaseLock(config);
+    // Счётчик неудач не трогаем: ни обрыв связи, ни ненастроенный доступ
+    // паузы не заслуживают. Первое лечится ожиданием, второе — токеном,
+    // и пауза добавила бы к починке лишний шаг.
+    return;
+  }
+  const { tasks, invalid, notes: backlogNotes } = backlog;
+
   const registry = readRegistry(root, config);
   const { reports, problems } = readReports(root, config);
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
@@ -287,7 +381,13 @@ async function main() {
   // в строй, и так же удобно смотреть, что конвейер собирается делать.
   let executed = null;
   if (flags.includes('--execute')) {
-    const io = createIo({ root, config, git, now, machine, run: runCommand, elapsed });
+    // Переходник собирается из общей части — деревья, слоты, отчёты, git —
+    // и хранилища бэклога. Второе подменяется целиком: файлы или доска.
+    // Всё, что выше по течению, о выборе не знает.
+    const io = {
+      ...createIo({ root, config, git, now, machine, run: runCommand, elapsed }),
+      ...(backlog.store ?? {}),
+    };
     // Слоты освобождаются ПЕРЕД исполнением: раскладка уже посчитала их
     // свободными и могла выдать кому-то, а снятие после записи стёрло бы
     // свежее назначение.
@@ -306,7 +406,7 @@ async function main() {
     result.notes.push(pause.why);
   }
 
-  noteCycle(config, [...problems, ...repair.notes, ...result.notes]);
+  noteCycle(config, [...backlogNotes, ...problems, ...repair.notes, ...result.notes]);
 
   print({
     executed,
