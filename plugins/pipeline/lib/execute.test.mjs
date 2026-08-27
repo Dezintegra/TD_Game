@@ -159,6 +159,27 @@ describe('взятие задачи в работу', () => {
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
   });
 
+  it('без слота задачу не берут вовсе', () => {
+    // Беда первого живого прогона: сканер выдал восемь действий, слотов было
+    // два, а исполнение прошло по всем восьми — потому что действия сканера
+    // и раскладку по слотам никто не связывал. Захвачены были все восемь.
+    const io = fakeIo();
+    const { slot, assignment, ...withoutSlot } = startAction;
+    const [result] = execute([withoutSlot], io);
+    expect(result.result).toBe('skipped');
+    expect(result.why).toContain('слота нет');
+    expect(io.steps).toEqual([]);
+    void assignment;
+    void slot;
+  });
+
+  it('прогону дерево не заводится: арену считает чужое железо', () => {
+    const io = fakeIo({ tasks: [task({ type: 'run', status: 'new' })] });
+    execute([{ ...startAction, stage: 'benchmark' }], io);
+    expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
+    expect(io.steps).toContain('назначение в слот worker-1');
+  });
+
   it('неудача заведения дерева не выдаётся за успех', () => {
     const io = fakeIo({ worktree: { ok: false, why: 'каталог занят' } });
     const [result] = execute([startAction], io);
