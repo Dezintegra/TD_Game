@@ -53,9 +53,20 @@
       "Bash(gh pr:*)",
       "Bash(gh run:*)",
       "Bash(gh workflow:*)",
+      "Bash(gh api:*)",
       "PowerShell(gh pr:*)",
       "PowerShell(gh run:*)",
       "PowerShell(gh workflow:*)",
+      "PowerShell(gh api:*)",
+
+      "PowerShell(& \"C:\\Program Files\\GitHub CLI\\gh.exe\" pr:*)",
+      "PowerShell(& \"C:\\Program Files\\GitHub CLI\\gh.exe\" run:*)",
+      "PowerShell(& \"C:\\Program Files\\GitHub CLI\\gh.exe\" workflow:*)",
+      "PowerShell(& \"C:\\Program Files\\GitHub CLI\\gh.exe\" api:*)",
+      "PowerShell(& 'C:\\Program Files\\GitHub CLI\\gh.exe' pr:*)",
+      "PowerShell(& 'C:\\Program Files\\GitHub CLI\\gh.exe' run:*)",
+      "PowerShell(& 'C:\\Program Files\\GitHub CLI\\gh.exe' workflow:*)",
+      "PowerShell(& 'C:\\Program Files\\GitHub CLI\\gh.exe' api:*)",
 
       "Bash(npx eslint:*)",
       "Bash(npx prettier:*)",
@@ -84,11 +95,15 @@
       "Bash(git -C * reset --hard:*)",
       "PowerShell(git -C * reset --hard:*)",
       "Bash(git -C * stash:*)",
-      "PowerShell(git -C * stash:*)"
+      "PowerShell(git -C * stash:*)",
+      "PowerShell(& \"C:\\Program Files\\GitHub CLI\\gh.exe\" repo delete:*)",
+      "PowerShell(& 'C:\\Program Files\\GitHub CLI\\gh.exe' repo delete:*)",
+      "PowerShell(gh repo delete:*)",
+      "Bash(gh repo delete:*)"
     ]
   },
 
-  "$dashCNote": "Правила сопоставляются с ПРИСТАВКОЙ команды, поэтому `git -C <путь> log` не совпадает ни с одним правилом вида `git log:*`: ключ `-C` стоит впереди подкоманды. А ходить через `-C` исполнителям предписано прямо — склеивать `cd` с командой им запрещено, потому что составную команду нельзя разрешить заранее никаким правилом. Без строк `git -C:*` каждое обращение к чужому каталогу спрашивает подтверждения и запирает сессию. Обнаружено 27.08.2026, когда исполнитель встал на `git -C ... log --grep`.",
+  "$prefixNote": "Правила сопоставляются с ПРИСТАВКОЙ команды, и любая форма, меняющая приставку, оставляет сессию без разрешения. Две такие формы поймали за один вечер 27.08.2026, и обе — не самодеятельность, а следование указаниям. `git -C <путь> log` не совпадает с `git log:*`, потому что ключ стоит впереди подкоманды, — а ходить через `-C` исполнителям предписано прямо, ведь склеивать `cd` с командой им запрещено. `& \"C:\\Program Files\\GitHub CLI\\gh.exe\" run watch` не совпадает с `gh run:*` — а полный путь много месяцев показывала памятка проекта, оставшаяся от времён, когда `gh` не было в PATH. Отсюда правила на обе формы и на обе разновидности кавычек: сверка идёт по тексту. Лечение первопричины — звать средства по имени, и в скиллах это теперь сказано прямо.",
 
   "$denyNote": "Запреты не формальность. Принудительная отправка переписывает общую историю и уносит чужую работу молча. Сброс и прятание трогают чужие незакоммиченные правки в основном дереве, которое общее для всех сессий. Конвейер этих команд не вызывает — запрет стоит на случай, если сессия решит проявить смекалку. Опасные подкоманды перечислены и в форме с `-C`: разрешение `git -C:*` иначе открыло бы их обходным путём."
 }
