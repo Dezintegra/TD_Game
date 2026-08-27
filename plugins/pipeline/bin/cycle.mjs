@@ -253,9 +253,26 @@ function main() {
   // Действия сканера ничего не знают о слотах: слоты — дело раскладки.
   // Здесь они соединяются, чтобы исполнителю досталось всё разом.
   const bySlot = new Map(result.assignments.map((item) => [item.assignment.taskId, item]));
+
+  // Слот, который задача занимает УЖЕ. Нужен действиям, которые этап
+  // не начинают, а заканчивают: перенос отчёта и остановка задачи умеют
+  // освобождать слот, но раньше никогда этого не делали — им передавались
+  // только НОВЫЕ назначения, а у заканчивающего действия его нет и быть
+  // не может. Слот в итоге оставался за уехавшей задачей до следующего
+  // цикла, и разгребала это сверка назначений с бэклогом. Сверка остаётся
+  // сторожем, но чинить каждый раз одно и то же ей незачем.
+  const occupiedBy = new Map(
+    Object.entries(state.occupancy ?? {})
+      .filter(([, assignment]) => assignment)
+      .map(([name, assignment]) => [assignment.taskId, name]),
+  );
+
   const enriched = result.actions.map((action) => {
     const placed = bySlot.get(action.taskId);
-    if (!placed) return action;
+    if (!placed) {
+      const held = occupiedBy.get(action.taskId);
+      return held ? { ...action, slot: held } : action;
+    }
     return {
       ...action,
       slot: placed.slot,

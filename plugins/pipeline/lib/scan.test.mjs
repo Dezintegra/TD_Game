@@ -337,6 +337,68 @@ describe('уснувшие сессии', () => {
     expect(result.notes.join()).toContain('снимок сессий не сделан');
   });
 
+  it('умершая сессия ПРОГОНА тоже получает продолжателя', () => {
+    // Прогон на чужом железе — класс «ожидательный», и раньше он в отбор
+    // не попадал вовсе: перечислялись ресурсные, ревью и исключительные.
+    // Умершая сессия прогона не подхватывалась никогда, задача стояла
+    // в этапе, а слот был занят ею навсегда. 27.08.2026 задача 0002
+    // простояла так почти шесть часов, и заметить это удалось только глазами.
+    const result = run({
+      tasks: [
+        task({
+          id: '0002-run',
+          type: 'run',
+          status: 'benchmark',
+          statusChangedAt: '2026-08-26T09:00:00+03:00',
+          run: { kind: 'arena', expectation: 'доли побед около равных' },
+        }),
+      ],
+      registry: { entries: [] },
+      sessions: [{ title: 'pipeline:0002-run:benchmark', isRunning: false, lastActivityAt: NOW }],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+  });
+
+  it('прогон без дерева и без записи в реестре подхватывается', () => {
+    // Дерева у задачи типа run нет по устройству маршрута, и требовать
+    // запись реестра значило бы снова не подхватывать её никогда.
+    const result = run({
+      tasks: [
+        task({
+          id: '0002-run',
+          type: 'run',
+          status: 'benchmark',
+          statusChangedAt: '2026-08-26T09:00:00+03:00',
+          run: { kind: 'arena', expectation: 'доли побед около равных' },
+        }),
+      ],
+      registry: { entries: [] },
+      sessions: [],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+  });
+
+  it('только что взятая задача продолжателя не получает', () => {
+    // Исполнитель и оркестратор ходят по расписанию независимо, и между
+    // взятием задачи и первым пробуждением исполнителя проходит до целого
+    // интервала. Продолжатель, порождённый в эту щель, ничего не чинит,
+    // зато тратит попытку — а их всего две.
+    const result = run({
+      tasks: [
+        task({
+          id: '0002-run',
+          type: 'run',
+          status: 'benchmark',
+          statusChangedAt: '2026-08-26T11:58:00+03:00',
+          run: { kind: 'arena', expectation: 'доли побед около равных' },
+        }),
+      ],
+      registry: { entries: [] },
+      sessions: [],
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+  });
+
   it('исчерпанные продолжения ведут к разбору человеком', () => {
     const result = run({
       tasks: [

@@ -248,6 +248,55 @@ describe('запертый слот', () => {
   });
 });
 
+describe('продолжатель возвращается в свой слот', () => {
+  const held = (taskId, stage) => ({
+    taskId,
+    stage,
+    sessionTitle: `pipeline:${taskId}:${stage}`,
+    assignedAt: NOW,
+    startedAt: NOW,
+  });
+
+  it('задача, занимающая слот, получает его же, а не ждёт свободного', () => {
+    // Иначе продолжатель не находил слота никогда: единственный подходящий
+    // занят самой этой задачей, и она ждала бы освобождения от самой себя.
+    const result = planAssignments({
+      actions: [{ kind: 'continue-stage', taskId: '0002-two', stage: 'design' }],
+      tasks: { '0002-two': task('0002-two', { status: 'design' }) },
+      occupancy: {
+        'worker-1': held('0001-one', 'design'),
+        'worker-2': held('0002-two', 'design'),
+      },
+      slots: DEFAULT_SLOTS,
+      now: NOW,
+    });
+    expect(result.writes).toHaveLength(1);
+    expect(result.writes[0].slot).toBe('worker-2');
+    expect(result.waiting).toEqual([]);
+  });
+
+  it('новое назначение не несёт отметки о взятии — в этом и починка', () => {
+    // Исполнитель пропускает назначение с `startedAt`; перезапись снимает
+    // отметку, и ближайшее пробуждение берёт работу как новую.
+    const result = planAssignments({
+      actions: [{ kind: 'continue-stage', taskId: '0002-two', stage: 'benchmark' }],
+      tasks: {
+        '0002-two': task('0002-two', {
+          type: 'run',
+          status: 'benchmark',
+          run: { kind: 'arena', expectation: 'ждём равенства' },
+        }),
+      },
+      occupancy: { 'worker-1': held('0002-two', 'benchmark') },
+      slots: DEFAULT_SLOTS,
+      now: NOW,
+    });
+    expect(result.writes[0].slot).toBe('worker-1');
+    expect(result.writes[0].assignment.startedAt).toBeUndefined();
+    expect(result.writes[0].assignment.continuation).toBe(true);
+  });
+});
+
 describe('назначение, разошедшееся с бэклогом', () => {
   const held = (taskId, stage) => ({
     taskId,
