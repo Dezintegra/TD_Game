@@ -1,4 +1,9 @@
-import { canTransition, stateClass } from '../config/transitions.mjs';
+import {
+  NEEDS_SESSION,
+  NEEDS_WORKTREE,
+  canTransition,
+  stateClass,
+} from '../config/transitions.mjs';
 import { missingForStage } from '../config/defaults.mjs';
 
 /**
@@ -91,9 +96,20 @@ function firstStage(task) {
  * и другая лечится продолжателем, потому что разбудить сессию планировщика
  * сообщением нельзя.
  */
-function sessionLife(entry, session, config, now) {
-  if (!session) return 'сессии нет';
-  const silentFor = minutesBetween(now, session.lastActivityAt ?? entry.lastSeenAt);
+function sessionLife({ entry, session, task, config, now }) {
+  if (!session) {
+    // Сессии может не быть просто потому, что исполнитель ещё не проснулся.
+    // Он и оркестратор ходят по расписанию независимо, и порядок между ними
+    // не задан: между взятием задачи и первым пробуждением исполнителя
+    // проходит до целого интервала. Продолжатель, порождённый в эту щель,
+    // ничего не чинит, зато тратит попытку, — а их всего две, и после второй
+    // задача встаёт и ждёт человека.
+    const since = entry?.lastSeenAt ?? task.statusChangedAt;
+    const waitingFor = minutesBetween(now, since);
+    if (waitingFor !== null && waitingFor < config.deadAfterMinutes) return 'жива';
+    return 'сессии нет';
+  }
+  const silentFor = minutesBetween(now, session.lastActivityAt ?? entry?.lastSeenAt);
   if (silentFor !== null && silentFor >= config.deadAfterMinutes)
     return 'молчит дольше отпущенного';
   if (!session.isRunning) return 'сессия завершилась без отчёта';
@@ -226,18 +242,32 @@ export function scan(state) {
   // порождённый по недоразумению, посадит на одно дерево две сессии,
   // и они перепишут работу друг друга.
   if (!sessionsKnown) {
-    if (tasks.some((task) => ['resource', 'review', 'exclusive'].includes(stateClass(task)))) {
+    if (tasks.some((task) => NEEDS_SESSION.includes(task.status))) {
       notes.push('снимок сессий не сделан: о живости исполнителей ничего не известно');
     }
   }
   for (const task of sessionsKnown ? tasks : []) {
-    if (!['resource', 'review', 'exclusive'].includes(stateClass(task))) continue;
+    // Отбор идёт по признаку «этапу нужна сессия», а не по цене этапа.
+    // Раньше здесь стоял перечень классов, и прогон на чужом железе в него
+    // не попадал: класс у него «ожидательный». Из-за этого умершая сессия
+    // прогона не подхватывалась никогда — задача стояла в этапе, слот был
+    // занят ею навсегда, и заметить это можно было только глазами.
+    // Проверено 27.08.2026: 0002 простояла так почти шесть часов.
+    if (!NEEDS_SESSION.includes(task.status)) continue;
     if (stuck.has(task.id) || hasReport(task.id)) continue;
 
+    // Запись реестра требуется только там, где есть дерево. У прогона
+    // и разбора его нет вовсе, и требовать запись значило бы снова
+    // никогда их не подхватывать.
     const entry = entryOf(task.id);
-    if (!entry) continue; // задача в работе без записи — чинит сверка, не сканер
+    if (NEEDS_WORKTREE.includes(task.status) && !entry) continue;
 
-    const life = sessionLife(entry, sessionOf(entry), config, now);
+    // Заголовок сессии складывается по правилу, а не берётся из реестра:
+    // у бездревесных этапов реестра нет, а заголовок всё равно определён.
+    const title = entry?.sessionTitle ?? `pipeline:${task.id}:${task.status}`;
+    const session = sessions.find((item) => item.title === title);
+
+    const life = sessionLife({ entry, session, task, config, now });
     if (life === 'жива') continue;
 
     if ((task.attempts?.continuations ?? 0) >= config.maxContinuations) {

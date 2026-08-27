@@ -202,7 +202,16 @@ export function planAssignments({
       continue;
     }
 
-    const slot = slots.find((item) => item.accepts.includes(kind) && isFree(item, taken));
+    // Задача, уже занимающая слот, возвращается в НЕГО ЖЕ, а не ищет
+    // свободный. Иначе продолжатель за умершей сессией не находил слота
+    // никогда: единственный подходящий занят самой этой задачей, и она
+    // ждала бы освобождения от самой себя. Так и заклинило 0002 —
+    // назначение помечено взятым, сессии давно нет, подхватить нечем.
+    //
+    // Перезапись назначения и есть починка: у нового нет отметки о взятии,
+    // и ближайшее пробуждение исполнителя возьмёт его как новое.
+    const own = slots.find((item) => taken[item.name]?.taskId === task.id);
+    const slot = own ?? slots.find((item) => item.accepts.includes(kind) && isFree(item, taken));
     if (!slot) {
       waiting.push({ ...action, reason: `свободного слота для «${kind}» нет` });
       continue;
