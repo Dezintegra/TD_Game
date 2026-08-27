@@ -341,6 +341,21 @@ describe('продолжение за уснувшей сессией', () => {
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(1);
     expect(io.steps).toContain('назначение в слот worker-1');
   });
+
+  it('без слота попытка не тратится и мир не трогается', () => {
+    // Раскладка отказывает, когда прежнее назначение ещё не взято
+    // исполнителем. Списать за это попытку было бы вдвойне несправедливо:
+    // сессии не было, а счётчик вырос. Их всего две, и после второй задача
+    // встаёт и ждёт человека — так и сгорели 0005 и 0006.
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    const [result] = execute(
+      [{ kind: 'continue-stage', taskId: '0001-one', stage: 'implement', reason: 'молчит' }],
+      io,
+    );
+    expect(result.result).toBe('skipped');
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
+    expect(io.steps).toEqual([]);
+  });
 });
 
 describe('внешнее состояние', () => {

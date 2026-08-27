@@ -304,13 +304,32 @@ describe('уснувшие сессии', () => {
     });
   });
 
-  it('сессия, завершившаяся без отчёта, тоже получает продолжателя', () => {
+  it('давно завершившаяся сессия получает продолжателя', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'design' })],
+      registry: { entries: [entry('0001-one')] },
+      sessions: [
+        {
+          title: 'pipeline:0001-one:design',
+          isRunning: false,
+          lastActivityAt: '2026-08-26T11:00:00+03:00',
+        },
+      ],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+  });
+
+  it('только что закончившая ход сессия продолжателя НЕ получает', () => {
+    // Признак «не идёт» ненадёжен на коротком промежутке: снимок ловит
+    // сессию между ходами. 27.08.2026 оркестратор объявил сессию по 0005
+    // завершившейся за двадцать пять секунд ДО её же последней активности —
+    // прогон арены при этом спокойно досчитался, а задача успела сгореть.
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' })],
       registry: { entries: [entry('0001-one')] },
       sessions: [{ title: 'pipeline:0001-one:design', isRunning: false, lastActivityAt: NOW }],
     });
-    expect(kinds(result)).toContain('continue-stage');
+    expect(kinds(result)).not.toContain('continue-stage');
   });
 
   it('при готовом отчёте продолжателя не назначают', () => {
@@ -354,7 +373,13 @@ describe('уснувшие сессии', () => {
         }),
       ],
       registry: { entries: [] },
-      sessions: [{ title: 'pipeline:0002-run:benchmark', isRunning: false, lastActivityAt: NOW }],
+      sessions: [
+        {
+          title: 'pipeline:0002-run:benchmark',
+          isRunning: false,
+          lastActivityAt: '2026-08-26T11:00:00+03:00',
+        },
+      ],
     });
     expect(kinds(result)).toContain('continue-stage');
   });
