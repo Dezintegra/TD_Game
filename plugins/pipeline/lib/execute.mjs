@@ -44,7 +44,7 @@ export const RESULT = {
 };
 
 /** Перенести отчёт сессии в бэклог. */
-function transferReport(action, io) {
+async function transferReport(action, io) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
@@ -91,7 +91,7 @@ function transferReport(action, io) {
   // для порождённых.
   const created = [];
   for (const born of plan.planned) {
-    const pushed = io.createTask(
+    const pushed = await io.createTask(
       born,
       `chore(backlog): ${born.id} заведена по разбору ${action.taskId}`,
     );
@@ -100,7 +100,7 @@ function transferReport(action, io) {
     next = relate(next, born.id);
   }
 
-  const push = io.saveTask(
+  const push = await io.saveTask(
     next,
     {
       at: io.now,
@@ -123,7 +123,7 @@ function transferReport(action, io) {
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, слот. */
-function startStage(action, io) {
+async function startStage(action, io) {
   // Без слота задачу не берут. Сканер называет всё, что созрело, а раскладка
   // решает, что из этого поместится: слотов может быть меньше, чем работы.
   // Первый живой прогон захватил все восемь прогонов при двух слотах — потому
@@ -138,7 +138,7 @@ function startStage(action, io) {
   const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
 
-  const push = io.saveTask(
+  const push = await io.saveTask(
     claimed.task,
     {
       at: io.now,
@@ -182,12 +182,12 @@ function startStage(action, io) {
 }
 
 /** Подхватить этап за уснувшей сессией. */
-function continueStage(action, io) {
+async function continueStage(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
   const counted = countContinuation(task);
-  const push = io.saveTask(
+  const push = await io.saveTask(
     counted,
     {
       at: io.now,
@@ -204,7 +204,7 @@ function continueStage(action, io) {
 }
 
 /** Разобрать ответ владельца продукта и вернуть задачу в работу. */
-function answerQuestion(action, io) {
+async function answerQuestion(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
   if (!task.returnTo)
@@ -217,7 +217,7 @@ function answerQuestion(action, io) {
   });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  const push = io.saveTask(
+  const push = await io.saveTask(
     moved.task,
     {
       at: io.now,
@@ -234,7 +234,7 @@ function answerQuestion(action, io) {
 }
 
 /** Применить внешнее состояние: проверки CI или прогон на чужом железе. */
-function pollExternal(action, io) {
+async function pollExternal(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
@@ -245,7 +245,7 @@ function pollExternal(action, io) {
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  const push = io.saveTask(
+  const push = await io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: verdict.status, what: verdict.note },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
@@ -256,14 +256,14 @@ function pollExternal(action, io) {
 }
 
 /** Остановить задачу: продолжения исчерпаны, дальше нужен человек. */
-function failStage(action, io) {
+async function failStage(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
   const moved = applyTransition(task, { status: 'failed', note: action.reason, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  const push = io.saveTask(
+  const push = await io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: 'failed', problem: action.reason },
     `chore(backlog): ${task.id} остановлена, нужен разбор`,
@@ -279,7 +279,7 @@ function failStage(action, io) {
  * принимается не здесь, а в отдельном разборе, и только по доказанной
  * влитости pull request.
  */
-function cleanupTask(action, io) {
+async function cleanupTask(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
@@ -296,7 +296,7 @@ function cleanupTask(action, io) {
   if (verdict.verdict === 'fail') {
     const moved = applyTransition(task, { status: 'failed', note: verdict.why, now: io.now });
     if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-    const push = io.saveTask(
+    const push = await io.saveTask(
       moved.task,
       { at: io.now, from: task.status, to: 'failed', problem: verdict.why },
       `chore(backlog): ${task.id} уборка отменена, нужен разбор`,
@@ -315,7 +315,7 @@ function cleanupTask(action, io) {
 
   const moved = applyTransition(task, { status: 'closed', note: verdict.why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-  const push = io.saveTask(
+  const push = await io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: 'closed', what: `Убрано: ${verdict.why}.` },
     `chore(backlog): ${task.id} закрыта`,
@@ -331,7 +331,7 @@ function cleanupTask(action, io) {
  * дерева и только ускоряющей отправкой. Неудача не беда: она задерживает
  * действия по одной задаче, а не по всем.
  */
-function pushTail(action, io) {
+async function pushTail(action, io) {
   if (action.scope !== 'branch') return { result: 'skipped', why: 'хвост главной ветки не здесь' };
 
   const entry = io.registryEntry(action.taskId);
@@ -361,7 +361,7 @@ const HANDLERS = {
  * продолжают. Исключение — неудача отправки: она означает, что записи
  * в главную ветку больше невозможны, и продолжать бессмысленно.
  */
-export function execute(actions, io) {
+export async function execute(actions, io) {
   const results = [];
 
   for (const action of actions) {
@@ -375,7 +375,7 @@ export function execute(actions, io) {
       continue;
     }
 
-    const outcome = handler(action, io);
+    const outcome = await handler(action, io);
     results.push({ action, ...outcome });
 
     if (outcome.result === 'failed' && String(outcome.why ?? '').includes('offline')) {

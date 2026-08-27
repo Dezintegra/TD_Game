@@ -178,7 +178,7 @@ function noteCycle(config, lines) {
   writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + text);
 }
 
-function main() {
+async function main() {
   const { config, missing } = loadConfig();
 
   // Сессия, доделавшая работу, отпускает замок этим же сценарием.
@@ -292,7 +292,7 @@ function main() {
     // свободными и могла выдать кому-то, а снятие после записи стёрло бы
     // свежее назначение.
     for (const item of releases) io.clearSlot(item.slot);
-    executed = execute(enriched, io);
+    executed = await execute(enriched, io);
   }
 
   // Планировщик перезапустит оркестратор через пять минут независимо
@@ -342,4 +342,4 @@ function print(result) {
   console.log(JSON.stringify(result, null, 2));
 }
 
-main();
+await main();
