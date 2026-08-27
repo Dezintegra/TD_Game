@@ -9,6 +9,7 @@ import {
   resetAttempts,
 } from './task-file.mjs';
 import { planRequests } from './requests.mjs';
+import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { journalAppendix } from './journal.mjs';
 
@@ -121,6 +122,14 @@ function transferReport(action, io) {
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, слот. */
 function startStage(action, io) {
+  // Без слота задачу не берут. Сканер называет всё, что созрело, а раскладка
+  // решает, что из этого поместится: слотов может быть меньше, чем работы.
+  // Первый живой прогон захватил все восемь прогонов при двух слотах — потому
+  // что исполнение шло по действиям сканера, минуя раскладку.
+  if (!action.slot) {
+    return { result: 'skipped', why: 'свободного слота нет, задача ждёт своей очереди' };
+  }
+
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
@@ -147,9 +156,14 @@ function startStage(action, io) {
     return { result: push.outcome === 'raced' ? 'raced' : 'failed', why: push.outcome };
   }
 
-  // И только теперь дерево. Порядок обратный сломал бы восстановление:
-  // дерево без захвата следующий цикл принял бы за брошенную работу.
-  if (action.needsWorktree !== false) {
+  // И только теперь дерево — и только тем этапам, которым оно нужно.
+  // Порядок обратный сломал бы восстановление: дерево без захвата следующий
+  // цикл принял бы за брошенную работу.
+  //
+  // Прогон дерева не требует: арену считает чужое железо, а замер мерит уже
+  // выложенное. Первый живой прогон завёл три дерева под прогоны — пустые
+  // копии репозитория, которые потом пришлось бы убирать.
+  if (NEEDS_WORKTREE.includes(action.stage)) {
     const tree = io.addWorktree(action.taskId, action.branch);
     if (!tree.ok) return { result: 'failed', why: `дерево не завелось: ${tree.why}` };
     io.upsertRegistry({
