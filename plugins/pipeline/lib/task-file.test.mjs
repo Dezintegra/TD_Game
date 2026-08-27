@@ -175,6 +175,13 @@ describe('журнал', () => {
     expect(text).toContain('**Не удалось:** сборка упала');
   });
 
+  it('шапка отделена от первой записи пустой строкой', () => {
+    // Иначе заголовок журнала слипается с первой записью, и разметка
+    // разъезжается ровно в том файле, который читают глазами.
+    const text = journalAppendix(task(), '', { at: NOW, from: 'new', to: 'design' });
+    expect(text).toContain('\n\n## ');
+  });
+
   it('первая запись заводит заголовок, следующая — нет', () => {
     const entry = { at: NOW, from: 'new', to: 'design' };
     const first = journalAppendix(task(), '', entry);
