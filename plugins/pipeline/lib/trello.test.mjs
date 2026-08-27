@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTrello, missingAccess } from './trello.mjs';
+import { createTrello, missingAccess, readBoard } from './trello.mjs';
 
 /**
  * Проверки обращения к Trello.
@@ -92,6 +92,69 @@ describe('составление запроса', () => {
     const { doFetch } = stub(answer(200, ''));
     const result = await client(doFetch).delete('cards/x');
     expect(result).toEqual({ ok: true, data: null });
+  });
+});
+
+describe('чтение картины мира', () => {
+  /** Подставной `fetch`, отвечающий по пути запроса. Считает обращения. */
+  function board(bodies = {}) {
+    const calls = [];
+    const doFetch = async (url) => {
+      calls.push(url);
+      const path = new URL(url).pathname;
+      const key = ['lists', 'labels', 'cards', 'actions'].find((name) => path.endsWith(name));
+      return answer(200, JSON.stringify(bodies[key] ?? []));
+    };
+    return { doFetch, calls };
+  }
+
+  it('обходится четырьмя запросами, а не запросом на карточку', async () => {
+    const { doFetch, calls } = board();
+    const result = await readBoard(client(doFetch), 'b');
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(4);
+  });
+
+  it('читает колонки вместе с закрытыми: их имена по-прежнему заняты', async () => {
+    const { doFetch, calls } = board();
+    await readBoard(client(doFetch), 'b');
+    const lists = calls.find((url) => url.includes('/lists'));
+    expect(new URL(lists).searchParams.get('filter')).toBe('all');
+  });
+
+  it('приводит комментарии к виду, пригодному для разбора', async () => {
+    const { doFetch } = board({
+      actions: [
+        {
+          id: 'a1',
+          date: '2026-08-21T10:00:00.000Z',
+          data: { text: 'ответ владельца', card: { id: 'c1' } },
+        },
+      ],
+    });
+    const result = await readBoard(client(doFetch), 'b');
+    expect(result.comments).toEqual([
+      { id: 'a1', cardId: 'c1', date: '2026-08-21T10:00:00.000Z', text: 'ответ владельца' },
+    ]);
+  });
+
+  it('отказ на любом из четырёх называет, что именно не прочиталось', async () => {
+    const doFetch = async (url) =>
+      url.includes('/labels') ? answer(401, 'invalid token') : answer(200, '[]');
+    const result = await readBoard(client(doFetch), 'b');
+    expect(result.ok).toBe(false);
+    expect(result.what).toBe('метки');
+    expect(result.kind).toBe('refused');
+  });
+
+  it('обрыв связи остаётся обрывом, а не превращается в отказ', async () => {
+    const doFetch = async (url) => {
+      if (url.includes('/cards')) throw new Error('ECONNRESET');
+      return answer(200, '[]');
+    };
+    const result = await readBoard(client(doFetch), 'b');
+    expect(result.kind).toBe('offline');
+    expect(result.what).toBe('карточки');
   });
 });
 
