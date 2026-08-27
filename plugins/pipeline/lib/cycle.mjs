@@ -1,4 +1,4 @@
-import { lockedSlots, planAssignments } from './slots.mjs';
+import { lockedSlots, planAssignments, staleAssignments } from './slots.mjs';
 import { catchUp, cycleMayFinish, handleTail } from './push-discipline.mjs';
 import { lockVerdict, newLock } from './lock.mjs';
 import { scan } from './scan.mjs';
@@ -43,23 +43,25 @@ export const CYCLE = {
  * @param {string} deps.now        отметка времени начала цикла
  * @param {number} deps.pid        номер процесса — для замка
  * @param {object|null} deps.lock  содержимое замка, если он есть
+ * @param {(pid:number)=>boolean} [deps.isAlive] жив ли процесс, взявший замок
  * @param {string[]} deps.ourAuthors чьи коммиты конвейер считает своими
  * @param {() => number} deps.elapsed сколько секунд идёт цикл
  * @returns {{ outcome, actions, assignments, waiting, notes, lock }}
  */
-export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elapsed }) {
+export function runCycle({ git, state, config, now, pid, lock, isAlive, ourAuthors, elapsed }) {
   const notes = [];
-  const nothing = (outcome) => ({
+  const nothing = (outcome, releases = []) => ({
     outcome,
     actions: [],
     assignments: [],
     waiting: [],
+    releases,
     notes,
     lock: null,
   });
 
   // 1. Замок.
-  const verdict = lockVerdict(lock, now, config.lockStaleMinutes);
+  const verdict = lockVerdict(lock, now, config.lockStaleMinutes, isAlive);
   if (!verdict.take) {
     notes.push(verdict.why);
     return nothing('locked');
@@ -106,12 +108,9 @@ export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elaps
     ? decision.actions
     : decision.actions.filter((action) => !WRITES_TO_MAIN.includes(action.kind));
 
-  if (actions.length === 0) {
-    return { ...nothing(mayWrite ? 'idle' : 'blocked'), lock: held };
-  }
-
-  // 6. Раскладка по слотам. Слотов столько, сколько работ идёт разом:
-  //    квота — это число слотов, а не число в настройке.
+  // 5б. Сверка слотов с бэклогом. Считается ДО проверки на пустоту действий:
+  //     повисшее назначение — это работа само по себе, и цикл, объявивший
+  //     «нечего делать», оставил бы слот занятым навсегда.
   const tasksById = Object.fromEntries(state.tasks.map((task) => [task.id, task]));
   const locked = lockedSlots({
     occupancy: state.occupancy ?? {},
@@ -120,6 +119,17 @@ export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elaps
     now,
     config,
   });
+  const stale = staleAssignments({ occupancy: state.occupancy ?? {}, tasks: tasksById, locked });
+
+  if (actions.length === 0) {
+    for (const item of stale) {
+      notes.push(`слот ${item.slot} освобождён от ${item.taskId}: ${item.why}`);
+    }
+    return { ...nothing(mayWrite ? 'idle' : 'blocked', stale), locked, lock: held };
+  }
+
+  // 6. Раскладка по слотам. Слотов столько, сколько работ идёт разом:
+  //    квота — это число слотов, а не число в настройке.
   const plan = planAssignments({
     actions,
     tasks: tasksById,
@@ -127,6 +137,7 @@ export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elaps
     slots: config.slots,
     now,
     locked,
+    stale,
   });
   notes.push(...plan.notes);
   for (const item of plan.waiting) {
@@ -138,6 +149,7 @@ export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elaps
     actions,
     assignments: plan.writes,
     waiting: plan.waiting,
+    releases: stale,
     locked,
     notes,
     lock: held,

@@ -438,6 +438,47 @@ describe('заявки на новые задачи', () => {
     expect(io.journals.get('0001-one')).toContain('заявка отклонена');
   });
 
+  it('задачи по заявкам заводятся РАНЬШЕ смены состояния породившей', () => {
+    // Порядок выстрадан. Пока было наоборот, неудача на заявках оставляла
+    // отчёт непринятым при уже применённом переходе, и повторить перенос
+    // было нельзя: отчёт говорил об этапе, из которого задача уже вышла.
+    // Заявки при этом пропадали насовсем — так и потерялись две находки
+    // первого живого прогона.
+    const io = fakeIo({
+      tasks: [note()],
+      report: {
+        taskId: '0001-one',
+        stage: 'triage',
+        outcome: 'done',
+        requests: [{ type: 'feature', title: 'Порождённая', description: 'Есть описание.' }],
+      },
+    });
+    execute([triage], io);
+
+    const born = io.steps.findIndex((step) => step.includes('заведена по разбору'));
+    const moved = io.steps.findIndex((step) => step.includes('triage → closed'));
+    expect(born).toBeGreaterThanOrEqual(0);
+    expect(moved).toBeGreaterThan(born);
+  });
+
+  it('неудача на заявках не трогает состояния породившей', () => {
+    const io = fakeIo({
+      tasks: [note()],
+      report: {
+        taskId: '0001-one',
+        stage: 'triage',
+        outcome: 'done',
+        requests: [{ type: 'feature', title: 'Порождённая', description: 'Есть описание.' }],
+      },
+      push: () => ({ ok: false, outcome: 'dirty' }),
+    });
+    const [result] = execute([triage], io);
+    expect(result.result).toBe('failed');
+    // Состояние не тронуто: следующий цикл начнёт заново, и отчёт цел.
+    expect(io.tasks.get('0001-one').status).toBe('triage');
+    expect(io.steps.filter((step) => step.includes('отчёт'))).toEqual([]);
+  });
+
   it('без заявок ничего лишнего не заводится', () => {
     const io = fakeIo({ tasks: [note()] });
     const [result] = execute([triage], io);

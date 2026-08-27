@@ -69,6 +69,7 @@ const cycle = (over = {}) =>
     now: NOW,
     pid: 1234,
     lock: over.lock ?? null,
+    isAlive: over.isAlive,
     ourAuthors: ['Конвейер'],
     elapsed: () => 0,
   });
@@ -157,6 +158,18 @@ describe('цикл', () => {
     });
     expect(result.outcome).toBe('locked');
     expect(result.assignments).toEqual([]);
+  });
+
+  it('замок мёртвого процесса цикл не останавливает', () => {
+    // Проверка живости дошла до цикла не сразу, и стоило это получаса
+    // простоя: сценарий отработал, сессия не позвала `--release`, и шесть
+    // пробуждений подряд отвечали «замок держит процесс», которого нет.
+    const result = cycle({
+      lock: { pid: 999, takenAt: NOW, refreshedAt: NOW },
+      state: { tasks: [task('0001-one')] },
+      isAlive: () => false,
+    });
+    expect(result.outcome).toBe('worked');
   });
 
   it('пауза останавливает цикл, но замок берётся', () => {

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_SLOTS, lockedSlots, planAssignments, whatToDo } from './slots.mjs';
+import {
+  DEFAULT_SLOTS,
+  lockedSlots,
+  planAssignments,
+  staleAssignments,
+  whatToDo,
+} from './slots.mjs';
 
 /**
  * Проверки раскладки работ по слотам.
@@ -239,6 +245,77 @@ describe('запертый слот', () => {
     });
     expect(result.writes[0].slot).toBe('worker-2');
     expect(result.notes.join()).toContain('слот worker-1 заперт');
+  });
+});
+
+describe('назначение, разошедшееся с бэклогом', () => {
+  const held = (taskId, stage) => ({
+    taskId,
+    stage,
+    sessionTitle: `pipeline:${taskId}:${stage}`,
+    assignedAt: NOW,
+  });
+
+  it('задача ушла с этапа — слот освобождается', () => {
+    // Так и завис worker-1 на закрытой 0001: перенос отчёта оборвался
+    // на заведении задач по заявкам, слота не снял, и пул простоял три часа.
+    const stale = staleAssignments({
+      occupancy: { 'worker-1': held('0001-one', 'benchmark') },
+      tasks: { '0001-one': task('0001-one', { status: 'closed' }) },
+    });
+    expect(stale).toHaveLength(1);
+    expect(stale[0].slot).toBe('worker-1');
+    expect(stale[0].why).toContain('closed');
+  });
+
+  it('задача стоит на своём этапе — назначение годно', () => {
+    const stale = staleAssignments({
+      occupancy: { 'worker-1': held('0001-one', 'benchmark') },
+      tasks: { '0001-one': task('0001-one', { status: 'benchmark' }) },
+    });
+    expect(stale).toEqual([]);
+  });
+
+  it('задачи вовсе нет в бэклоге — слот освобождается', () => {
+    const stale = staleAssignments({
+      occupancy: { 'worker-1': held('0009-gone', 'design') },
+      tasks: {},
+    });
+    expect(stale).toHaveLength(1);
+    expect(stale[0].why).toContain('нет в бэклоге');
+  });
+
+  it('пустой слот разошедшимся не считается', () => {
+    expect(staleAssignments({ occupancy: { 'worker-1': null }, tasks: {} })).toEqual([]);
+  });
+
+  it('запертый слот не освобождается: там сессия числится идущей', () => {
+    // Снять назначение значило бы выдать слот второй сессии, которая всё
+    // равно не запустится — незавершённый прогон не даёт начать следующий.
+    const stale = staleAssignments({
+      occupancy: { 'worker-1': held('0001-one', 'design') },
+      tasks: { '0001-one': task('0001-one', { status: 'closed' }) },
+      locked: [{ slot: 'worker-1', taskId: '0001-one', why: 'сессия молчит' }],
+    });
+    expect(stale).toEqual([]);
+  });
+
+  it('освобождённый слот достаётся работе в том же цикле', () => {
+    // Иначе слот простоял бы до следующего пробуждения — пять минут впустую.
+    const result = planAssignments({
+      actions: [{ kind: 'start-stage', taskId: '0002-two', stage: 'design' }],
+      tasks: { '0002-two': task('0002-two') },
+      occupancy: {
+        'worker-1': held('0001-one', 'benchmark'),
+        'worker-2': held('0003-three', 'design'),
+      },
+      slots: DEFAULT_SLOTS,
+      now: NOW,
+      stale: [{ slot: 'worker-1', taskId: '0001-one', why: 'задача уже в «closed»' }],
+    });
+    expect(result.writes).toHaveLength(1);
+    expect(result.writes[0].slot).toBe('worker-1');
+    expect(result.notes.join()).toContain('слот worker-1 освобождён');
   });
 });
 
