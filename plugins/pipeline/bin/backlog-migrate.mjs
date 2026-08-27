@@ -83,6 +83,24 @@ function readJournalEntries(id) {
     .filter(Boolean);
 }
 
+/**
+ * Опубликовать одну запись журнала комментарием.
+ *
+ * Запись, не влезающая в предел Trello, разбивается на пронумерованные
+ * части: усечь её значило бы потерять ровно тот кусок лога, ради которого
+ * запись и делалась.
+ */
+async function postEntry(trello, config, cardId, entry) {
+  const parts = splitJournalEntry(entry, {
+    marker: config.trello.marker,
+    limit: config.trello.maxTextLength,
+  });
+  for (const part of parts) {
+    const posted = await trello.post(`cards/${cardId}/actions/comments`, { text: part });
+    if (!posted.ok) console.error(`запись журнала не легла: ${posted.why}`);
+  }
+}
+
 /** Порядок, в котором задачи брал бы сканер: приоритет, затем время заведения. */
 function inScannerOrder(tasks) {
   return [...tasks].sort((a, b) =>
@@ -154,6 +172,14 @@ async function main() {
     board.cards.map((card) => [card.desc?.match(/"id":"([^"]+)"/)?.[1], card]).filter(([id]) => id),
   );
 
+  // Сколько записей журнала уже лежит на карточке. Считаются только свои
+  // комментарии: реплики человека журналом не являются.
+  const ourComments = new Map();
+  for (const comment of board.comments) {
+    if (!String(comment.text ?? '').startsWith(config.trello.marker)) continue;
+    ourComments.set(comment.cardId, (ourComments.get(comment.cardId) ?? 0) + 1);
+  }
+
   const plan = tasks.map((task) => ({
     task,
     entries: readJournalEntries(task.id),
@@ -186,7 +212,13 @@ async function main() {
     // вперёд: конвейер продолжает работать от файлов, пока переезд идёт.
     // Тогда карточку надо подвинуть — иначе доска соврёт в первый же день.
     if (existing) {
-      if (!stale({ task, existing }, listIdByState)) continue;
+      // Журнал мог вырасти, даже если состояние не менялось: конвейер
+      // дописывает запись на каждый переход, а переходы бывают и внутри
+      // одного состояния — продолжение этапа, например.
+      const posted = ourComments.get(existing.id) ?? 0;
+      const behind = entries.slice(posted);
+
+      if (!stale({ task, existing }, listIdByState) && behind.length === 0) continue;
 
       const target =
         task.status === 'closed' ? listIdByState.get('closed') : listIdByState.get(task.status);
@@ -200,8 +232,17 @@ async function main() {
         process.exitCode = 1;
         continue;
       }
+
+      // Дописываются только недостающие записи, а не журнал целиком:
+      // комментарий дозаписывается, и переписать его нечем — задвоенная
+      // история читалась бы как две попытки одного этапа.
+      for (const entry of behind) await postEntry(trello, config, existing.id, entry);
+
       synced += 1;
-      console.log(`подвинута ${task.id} → ${task.status}`);
+      console.log(
+        `подвинута ${task.id} → ${task.status}` +
+          (behind.length > 0 ? `, дописано записей журнала: ${behind.length}` : ''),
+      );
       continue;
     }
 
@@ -228,26 +269,39 @@ async function main() {
       continue;
     }
 
-    for (const entry of entries) {
-      const parts = splitJournalEntry(entry, {
-        marker: config.trello.marker,
-        limit: config.trello.maxTextLength,
-      });
-      for (const part of parts) {
-        const posted = await trello.post(`cards/${created.data.id}/actions/comments`, {
-          text: part,
-        });
-        if (!posted.ok) console.error(`запись журнала ${task.id} не легла: ${posted.why}`);
-      }
-    }
+    for (const entry of entries) await postEntry(trello, config, created.data.id, entry);
 
     if (state === 'closed') {
       const archived = await trello.put(`cards/${created.data.id}`, { closed: true });
       if (!archived.ok) console.error(`карточка ${task.id} не убралась в архив: ${archived.why}`);
     }
 
+    // Созданная карточка сразу попадает в карту: иначе выравнивание
+    // порядка её не найдёт и оставит в хвосте очереди — ровно там, куда
+    // новую задачу класть и не следует, если приоритет у неё высокий.
+    already.set(task.id, created.data);
     moved += 1;
     console.log(`перенесена ${task.id} (${entries.length} записей журнала)`);
+  }
+
+  // Выравнивание порядка очереди — по явному ключу, и вот почему. Порядок
+  // на доске задаёт человек мышью, и после переезда он главнее файлового
+  // приоритета. Выравнивать его каждый раз значило бы затирать чужую
+  // работу; а вот при переезде и при досинхронизации новых задач — надо,
+  // иначе задача с приоритетом 20 останется в хвосте очереди только потому,
+  // что заведена позже.
+  if (flags.includes('--reorder')) {
+    const inQueue = tasks.filter((task) => task.status === 'new');
+    let placed = 0;
+
+    for (const [index, task] of inQueue.entries()) {
+      const card = already.get(task.id);
+      if (!card) continue;
+      const at = await trello.put(`cards/${card.id}`, { pos: (index + 1) * 65536 });
+      if (at.ok) placed += 1;
+      else console.error(`не встала на место ${task.id}: ${at.why}`);
+    }
+    console.log(`порядок очереди выровнен по приоритету: карточек ${placed}`);
   }
 
   console.log(`\nперенесено задач: ${moved}, подвинуто: ${synced}`);
