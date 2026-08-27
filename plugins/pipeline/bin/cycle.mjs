@@ -241,7 +241,7 @@ function main() {
     pid: process.pid,
     lock,
     isAlive,
-    ourAuthors: config.ourAuthors ?? ['Конвейер'],
+    ourAuthors: config.ourAuthors,
     elapsed,
   });
 
