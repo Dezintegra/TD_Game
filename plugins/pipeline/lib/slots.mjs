@@ -42,6 +42,48 @@ const BUSY_FOR_EXCLUSIVE = ['resource', 'review'];
 const isFree = (slot, occupancy) => !occupancy[slot.name];
 
 /**
+ * Найти запертые слоты.
+ *
+ * Слот считается запертым, если назначение висит в нём дольше нескольких
+ * циклов, а сессия исполнителя числится идущей и молчит. Так выглядит
+ * неотвеченный запрос подтверждения: сессия жива, но ничего не делает
+ * и не завершится никогда, а её задача планировщика при этом не запустится
+ * снова — незавершённый прогон не даёт начать следующий.
+ *
+ * Прекратить такую сессию конвейер не может: это вправе только человек.
+ * Поэтому запертый слот не получает работы и называется вслух.
+ */
+export function lockedSlots({ occupancy = {}, sessions = [], now, config, sessionsKnown = true }) {
+  if (!sessionsKnown) return [];
+
+  const stuckAfter = config.cycleMinutes * 3;
+  const locked = [];
+
+  for (const [name, assignment] of Object.entries(occupancy)) {
+    if (!assignment) continue;
+    const waiting = (Date.parse(now) - Date.parse(assignment.assignedAt)) / 60000;
+    if (Number.isNaN(waiting) || waiting < stuckAfter) continue;
+
+    const session = sessions.find((item) => item.title === assignment.sessionTitle);
+    if (!session?.isRunning) continue;
+
+    const silent = (Date.parse(now) - Date.parse(session.lastActivityAt)) / 60000;
+    if (Number.isNaN(silent) || silent < config.deadAfterMinutes) continue;
+
+    locked.push({
+      slot: name,
+      taskId: assignment.taskId,
+      why:
+        `назначение висит ${Math.round(waiting)} мин, сессия числится идущей и молчит ` +
+        `${Math.round(silent)} мин. Похоже на неотвеченный запрос подтверждения: ` +
+        'прекратить сессию может только человек',
+    });
+  }
+
+  return locked;
+}
+
+/**
  * Разложить действия сканера по слотам.
  *
  * Принимает только то, что требует сессии-исполнителя: начать этап или
@@ -56,11 +98,26 @@ const isFree = (slot, occupancy) => !occupancy[slot.name];
  * @param {string}   params.now       отметка времени
  * @returns {{ writes: object[], waiting: object[], notes: string[] }}
  */
-export function planAssignments({ actions, tasks, occupancy = {}, slots = DEFAULT_SLOTS, now }) {
+export function planAssignments({
+  actions,
+  tasks,
+  occupancy = {},
+  slots = DEFAULT_SLOTS,
+  now,
+  locked = [],
+}) {
   const writes = [];
   const waiting = [];
   const notes = [];
   const taken = { ...occupancy };
+
+  // Запертый слот занят навсегда, пока человек не вмешается. Считаем его
+  // занятым и называем вслух — иначе конвейер будет молча недоумевать,
+  // почему работа не двигается.
+  for (const item of locked) {
+    taken[item.slot] = taken[item.slot] ?? { taskId: item.taskId };
+    notes.push(`слот ${item.slot} заперт: ${item.why}`);
+  }
 
   const needsSession = actions.filter((action) =>
     ['start-stage', 'continue-stage'].includes(action.kind),

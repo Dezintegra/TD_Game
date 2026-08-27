@@ -1,4 +1,4 @@
-import { planAssignments } from './slots.mjs';
+import { lockedSlots, planAssignments } from './slots.mjs';
 import { cycleMayFinish, handleTail } from './push-discipline.mjs';
 import { lockVerdict, newLock } from './lock.mjs';
 import { scan } from './scan.mjs';
@@ -106,12 +106,20 @@ export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elaps
   // 6. Раскладка по слотам. Слотов столько, сколько работ идёт разом:
   //    квота — это число слотов, а не число в настройке.
   const tasksById = Object.fromEntries(state.tasks.map((task) => [task.id, task]));
+  const locked = lockedSlots({
+    occupancy: state.occupancy ?? {},
+    sessions: state.sessions ?? [],
+    sessionsKnown: state.sessionsKnown ?? true,
+    now,
+    config,
+  });
   const plan = planAssignments({
     actions,
     tasks: tasksById,
     occupancy: state.occupancy ?? {},
     slots: config.slots,
     now,
+    locked,
   });
   notes.push(...plan.notes);
   for (const item of plan.waiting) {
@@ -123,6 +131,7 @@ export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elaps
     actions,
     assignments: plan.writes,
     waiting: plan.waiting,
+    locked,
     notes,
     lock: held,
   };

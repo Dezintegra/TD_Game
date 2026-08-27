@@ -240,6 +240,7 @@ function main() {
     actions: result.actions,
     assignments: result.assignments,
     waiting: result.waiting,
+    locked: result.locked ?? [],
     notes: result.notes,
   });
 }

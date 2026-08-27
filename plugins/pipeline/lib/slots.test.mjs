@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_SLOTS, planAssignments, whatToDo } from './slots.mjs';
+import { DEFAULT_SLOTS, lockedSlots, planAssignments, whatToDo } from './slots.mjs';
 
 /**
  * Проверки раскладки работ по слотам.
@@ -155,6 +155,90 @@ describe('подхват за уснувшей сессией', () => {
       reason: 'молчит дольше отпущенного',
       stage: 'implement',
     });
+  });
+});
+
+describe('запертый слот', () => {
+  const config = { cycleMinutes: 5, deadAfterMinutes: 30 };
+
+  /** Назначение, висящее указанное число минут. */
+  const assigned = (minutesAgo) => ({
+    taskId: '0001-one',
+    sessionTitle: 'pipeline:0001-one:design',
+    assignedAt: new Date(Date.parse(NOW) - minutesAgo * 60000).toISOString(),
+  });
+
+  const session = (silentMinutes, isRunning = true) => ({
+    title: 'pipeline:0001-one:design',
+    isRunning,
+    lastActivityAt: new Date(Date.parse(NOW) - silentMinutes * 60000).toISOString(),
+  });
+
+  it('живая работающая сессия слот не запирает', () => {
+    const locked = lockedSlots({
+      occupancy: { 'worker-1': assigned(60) },
+      sessions: [session(1)],
+      now: NOW,
+      config,
+    });
+    expect(locked).toEqual([]);
+  });
+
+  it('свежее назначение не считается запертым, даже если сессия молчит', () => {
+    const locked = lockedSlots({
+      occupancy: { 'worker-1': assigned(5) },
+      sessions: [session(60)],
+      now: NOW,
+      config,
+    });
+    expect(locked).toEqual([]);
+  });
+
+  it('идущая, но молчащая сессия на старом назначении запирает слот', () => {
+    // Так выглядит неотвеченный запрос подтверждения: сессия жива, ничего
+    // не делает и не завершится никогда.
+    const locked = lockedSlots({
+      occupancy: { 'worker-1': assigned(90) },
+      sessions: [session(60)],
+      now: NOW,
+      config,
+    });
+    expect(locked).toHaveLength(1);
+    expect(locked[0].why).toContain('запрос подтверждения');
+  });
+
+  it('завершившаяся сессия слот не запирает: это работа продолжателя', () => {
+    const locked = lockedSlots({
+      occupancy: { 'worker-1': assigned(90) },
+      sessions: [session(60, false)],
+      now: NOW,
+      config,
+    });
+    expect(locked).toEqual([]);
+  });
+
+  it('без снимка сессий слоты запертыми не объявляются', () => {
+    const locked = lockedSlots({
+      occupancy: { 'worker-1': assigned(90) },
+      sessions: [],
+      now: NOW,
+      config,
+      sessionsKnown: false,
+    });
+    expect(locked).toEqual([]);
+  });
+
+  it('в запертый слот работа не назначается, но соседний работает', () => {
+    const result = planAssignments({
+      actions: [{ kind: 'start-stage', taskId: '0002-two', stage: 'design' }],
+      tasks: { '0002-two': task('0002-two') },
+      occupancy: {},
+      slots: DEFAULT_SLOTS,
+      now: NOW,
+      locked: [{ slot: 'worker-1', taskId: '0001-one', why: 'сессия молчит' }],
+    });
+    expect(result.writes[0].slot).toBe('worker-2');
+    expect(result.notes.join()).toContain('слот worker-1 заперт');
   });
 });
 
