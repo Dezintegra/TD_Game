@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { NEEDS_SESSION } from '../config/transitions.mjs';
 import { applyExternal, applyReport } from './apply-report.mjs';
 
 /**
@@ -32,6 +33,29 @@ describe('успешный этап двигает задачу по маршр�
     const verdict = applyReport(task({ status: from }), report({ stage: from }));
     expect(verdict.status).toBe(to);
     expect(verdict.problems).toEqual([]);
+  });
+
+  it('закрытая доработка возвращает задачу к проверкам, а не в ошибку', () => {
+    // Дыра, найденная сверкой скиллов: маршрут revise → pr был объявлен
+    // в таблице переходов и в скилле, но разбор отчёта о нём не знал —
+    // и каждая успешная доработка гарантированно падала в failed.
+    const verdict = applyReport(task({ status: 'revise' }), report({ stage: 'revise' }));
+    expect(verdict.status).toBe('pr');
+    expect(verdict.problems).toEqual([]);
+  });
+
+  it('у каждого этапа с сессией есть исход при успехе', () => {
+    // Сторож против той же беды в будущем: состояние, требующее сессии,
+    // обязано знать, куда двигаться при удачном исходе.
+    for (const status of NEEDS_SESSION) {
+      const source = task({
+        status,
+        type: status === 'triage' ? 'note' : 'feature',
+        run: status === 'benchmark' ? { kind: 'arena', expectation: 'ровно' } : undefined,
+      });
+      const verdict = applyReport(source, report({ stage: status }));
+      expect(verdict.status, `этап ${status}`).not.toBe('failed');
+    }
   });
 
   it('разбор замечания закрывает задачу', () => {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
 
@@ -54,6 +54,20 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
     journalPath,
 
     readTask: (id) => readJson(join(root, taskPath(id))),
+
+    /**
+     * Все занятые идентификаторы, включая закрытые задачи.
+     *
+     * Нужны, чтобы выдать новый: номер после закрытия не переиспользуется,
+     * иначе имя ветки однажды совпадёт с именем давно убранной.
+     */
+    allTaskIds() {
+      const dir = join(root, config.paths.tasks);
+      if (!existsSync(dir)) return [];
+      return readdirSync(dir)
+        .filter((name) => name.endsWith('.json'))
+        .map((name) => name.replace(/\.json$/, ''));
+    },
 
     writeTask(task) {
       ensure(join(root, config.paths.tasks));

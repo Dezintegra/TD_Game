@@ -98,6 +98,7 @@ function fakeIo(over = {}) {
     deleteBranch: () => ({ ok: true }),
     deleteRemoteBranch: () => ({ ok: true }),
 
+    allTaskIds: () => [...tasks.keys()],
     readReport: (id, stage) => over.report ?? { taskId: id, stage, outcome: 'done' },
     removeReport(id, stage) {
       steps.push(`отчёт ${id}:${stage} убран`);
@@ -214,6 +215,34 @@ describe('перенос отчёта', () => {
     expect(io.tasks.get('0001-one')).toMatchObject({ status: 'awaiting-po', returnTo: 'design' });
   });
 
+  it('номер pull request из отчёта попадает в саму задачу', () => {
+    // Дыра, найденная сверкой скиллов: ссылки уезжали только в журнал,
+    // а опрос проверок читает их из задачи — и она висела бы в ожидании
+    // вечно, потому что опрашивать было бы нечего.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      report: {
+        taskId: '0001-one',
+        stage: 'implement',
+        outcome: 'done',
+        links: { pr: 51, change: 'моё-изменение' },
+      },
+    });
+    execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'implement' }], io);
+    expect(io.tasks.get('0001-one').links).toMatchObject({ pr: 51, change: 'моё-изменение' });
+  });
+
+  it('пустые ссылки отчёта не затирают уже известные', () => {
+    const io = fakeIo({
+      tasks: [
+        task({ status: 'design', links: { change: 'старое', pr: 7, run: null, related: [] } }),
+      ],
+      report: { taskId: '0001-one', stage: 'design', outcome: 'done', links: { pr: null } },
+    });
+    execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'design' }], io);
+    expect(io.tasks.get('0001-one').links.pr).toBe(7);
+  });
+
   it('неуспех не обнуляет счётчиков', () => {
     const io = fakeIo({
       tasks: [task({ status: 'design', attempts: { continuations: 2, cycleFailures: 0 } })],
@@ -319,6 +348,80 @@ describe('уборка', () => {
     const [result] = execute([sweep], io);
     expect(result.result).toBe('skipped');
     expect(io.tasks.get('0001-one').status).toBe('cleanup');
+  });
+});
+
+describe('заявки на новые задачи', () => {
+  const triage = { kind: 'transfer-report', taskId: '0001-one', stage: 'triage' };
+  const note = () => task({ type: 'note', status: 'triage' });
+
+  it('заявка превращается в задачу, связанную с породившей', () => {
+    // Дыра, найденная сверкой: скиллы обещали, что оркестратор заведёт
+    // задачи по заявкам, а в коде этого не было — этап разбора работал
+    // вхолостую.
+    const io = fakeIo({
+      tasks: [note()],
+      report: {
+        taskId: '0001-one',
+        stage: 'triage',
+        outcome: 'done',
+        requests: [
+          { type: 'feature', title: 'Починить цену Теслы', description: 'Цена мешает ремонту.' },
+        ],
+      },
+    });
+    const [result] = execute([triage], io);
+    expect(result.result).toBe('done');
+    expect(result.created).toHaveLength(1);
+
+    const born = io.tasks.get(result.created[0]);
+    expect(born.type).toBe('feature');
+    expect(born.status).toBe('new');
+    expect(born.links.related).toContain('0001-one');
+    expect(io.tasks.get('0001-one').links.related).toContain(born.id);
+  });
+
+  it('каждая порождённая задача уезжает своим коммитом', () => {
+    const io = fakeIo({
+      tasks: [note()],
+      report: {
+        taskId: '0001-one',
+        stage: 'triage',
+        outcome: 'done',
+        requests: [
+          { type: 'feature', title: 'Первая', description: 'Раз.' },
+          { type: 'feature', title: 'Вторая', description: 'Два.' },
+        ],
+      },
+    });
+    execute([triage], io);
+    const commits = io.steps.filter((step) => step.startsWith('коммит и отправка'));
+    expect(commits).toHaveLength(3); // состояние породившей плюс две задачи
+  });
+
+  it('негодная заявка отклоняется, годная заводится', () => {
+    const io = fakeIo({
+      tasks: [note()],
+      report: {
+        taskId: '0001-one',
+        stage: 'triage',
+        outcome: 'done',
+        requests: [
+          { type: 'feature', title: 'Годная', description: 'Есть описание.' },
+          { type: 'run', title: 'Прогон без ожидания', description: 'Есть.' },
+        ],
+      },
+    });
+    const [result] = execute([triage], io);
+    expect(result.created).toHaveLength(1);
+    expect(io.journals.get('0001-one')).toContain('заявка отклонена');
+  });
+
+  it('без заявок ничего лишнего не заводится', () => {
+    const io = fakeIo({ tasks: [note()] });
+    const [result] = execute([triage], io);
+    expect(result.created).toEqual([]);
+    expect(io.tasks.size).toBe(1);
   });
 });
 

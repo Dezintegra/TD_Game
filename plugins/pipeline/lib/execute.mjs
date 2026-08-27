@@ -3,9 +3,12 @@ import {
   applyTransition,
   claimTask,
   countContinuation,
+  linkArtifact,
+  relate,
   releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
+import { planRequests } from './requests.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { journalAppendix } from './journal.mjs';
 
@@ -54,7 +57,30 @@ function transferReport(action, io) {
 
   // Дошедший до конца этап обнуляет счётчики: прошлые заминки больше не в счёт,
   // иначе задача упрётся в предел там, где всё было хорошо.
-  const next = verdict.status === 'failed' ? moved.task : resetAttempts(moved.task);
+  let next = verdict.status === 'failed' ? moved.task : resetAttempts(moved.task);
+
+  // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
+  // По ним конвейер потом опрашивает проверки и доказывает влитость: без
+  // номера pull request задача висела бы в ожидании проверок вечно, потому
+  // что опрашивать было бы нечего. Дыра найдена сверкой скиллов с кодом.
+  for (const key of ['change', 'pr', 'run']) {
+    const value = report.links?.[key];
+    if (value != null && value !== '') next = linkArtifact(next, key, value);
+  }
+
+  // Заявки разбираются до записи: идентификаторы нужны, чтобы связать
+  // порождённые задачи с породившей одним коммитом, а не двумя.
+  const plan = planRequests(report.requests, {
+    existingIds: io.allTaskIds(),
+    now: io.now,
+    sourceId: task.id,
+  });
+  for (const born of plan.planned) next = relate(next, born.id);
+  for (const bad of plan.rejected) {
+    // Негодная заявка не отменяет остального: остальные заводятся, а эта
+    // остаётся в журнале с причиной, по которой её не приняли.
+    plan.notes = [...(plan.notes ?? []), `заявка отклонена: ${bad.problems.join('; ')}`];
+  }
 
   const push = commitTaskChange(
     io,
@@ -64,19 +90,33 @@ function transferReport(action, io) {
       from: task.status,
       to: verdict.status,
       what: report.summary,
-      decisions: report.decisions ?? [],
       links: report.links ?? {},
+      decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: verdict.status === 'failed' ? verdict.note : undefined,
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
   );
   if (!push.ok) return { result: 'failed', why: push.outcome };
 
+  // Заявки на новые задачи заводятся после того, как состояние породившей
+  // уехало. Каждая — своим коммитом: правило «коммит на смысловую правку»
+  // не делает исключения для порождённых задач.
+  const created = [];
+  for (const task of plan.planned) {
+    io.writeTask(task);
+    const born = io.commitAndPush(
+      [io.taskPath(task.id)],
+      `chore(backlog): ${task.id} заведена по разбору ${action.taskId}`,
+    );
+    if (!born.ok) return { result: 'failed', why: born.outcome, created };
+    created.push(task.id);
+  }
+
   // Отчёт и слот освобождаются только после удавшейся отправки: иначе
   // при неудаче этап пришлось бы проходить заново, потеряв уже сделанное.
   io.removeReport(action.taskId, action.stage);
   if (action.slot) io.clearSlot(action.slot);
-  return { result: 'done', status: verdict.status };
+  return { result: 'done', status: verdict.status, created, rejected: plan.rejected };
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, слот. */

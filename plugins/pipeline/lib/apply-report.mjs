@@ -34,6 +34,10 @@ function afterDone(task) {
       return task.run ? 'benchmark' : 'pr';
     case 'benchmark':
       return task.type === 'run' ? 'closed' : 'pr';
+    // Доработка ведёт обратно в ожидание проверок, а не в ревью: правка
+    // требует нового прогона CI, а ревью на непроверенном коде запрещено.
+    case 'revise':
+      return 'pr';
     case 'review':
       return 'deploy'; // вливание уже случилось: три условия сошлись
     case 'deploy':
