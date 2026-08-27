@@ -218,7 +218,9 @@ function main() {
     elapsed,
   });
 
-  const work = result.actions.length + repair.repairs.length + result.assignments.length;
+  const releases = result.releases ?? [];
+  const work =
+    result.actions.length + repair.repairs.length + result.assignments.length + releases.length;
   if (result.lock && work > 0) writeLock(config, result.lock);
   else releaseLock(config);
 
@@ -243,6 +245,10 @@ function main() {
   let executed = null;
   if (flags.includes('--execute')) {
     const io = createIo({ root, config, git, now, machine, run: runCommand, elapsed });
+    // Слоты освобождаются ПЕРЕД исполнением: раскладка уже посчитала их
+    // свободными и могла выдать кому-то, а снятие после записи стёрло бы
+    // свежее назначение.
+    for (const item of releases) io.clearSlot(item.slot);
     executed = execute(enriched, io);
   }
 
@@ -269,6 +275,7 @@ function main() {
     repairs: repair.repairs,
     actions: result.actions,
     assignments: result.assignments,
+    releases,
     waiting: result.waiting,
     locked: result.locked ?? [],
     notes: result.notes,
@@ -286,7 +293,8 @@ function print(result) {
   const work =
     (result.actions?.length ?? 0) +
     (result.repairs?.length ?? 0) +
-    (result.assignments?.length ?? 0);
+    (result.assignments?.length ?? 0) +
+    (result.releases?.length ?? 0);
   console.log(work > 0 ? 'РАБОТА ЕСТЬ' : 'НЕЧЕГО ДЕЛАТЬ');
   console.log(JSON.stringify(result, null, 2));
 }
