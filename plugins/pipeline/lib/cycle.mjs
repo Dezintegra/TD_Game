@@ -43,11 +43,12 @@ export const CYCLE = {
  * @param {string} deps.now        отметка времени начала цикла
  * @param {number} deps.pid        номер процесса — для замка
  * @param {object|null} deps.lock  содержимое замка, если он есть
+ * @param {(pid:number)=>boolean} [deps.isAlive] жив ли процесс, взявший замок
  * @param {string[]} deps.ourAuthors чьи коммиты конвейер считает своими
  * @param {() => number} deps.elapsed сколько секунд идёт цикл
  * @returns {{ outcome, actions, assignments, waiting, notes, lock }}
  */
-export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elapsed }) {
+export function runCycle({ git, state, config, now, pid, lock, isAlive, ourAuthors, elapsed }) {
   const notes = [];
   const nothing = (outcome, releases = []) => ({
     outcome,
@@ -60,7 +61,7 @@ export function runCycle({ git, state, config, now, pid, lock, ourAuthors, elaps
   });
 
   // 1. Замок.
-  const verdict = lockVerdict(lock, now, config.lockStaleMinutes);
+  const verdict = lockVerdict(lock, now, config.lockStaleMinutes, isAlive);
   if (!verdict.take) {
     notes.push(verdict.why);
     return nothing('locked');

@@ -106,6 +106,31 @@ function writeLock(config, lock) {
 }
 
 /**
+ * Жив ли процесс с таким номером.
+ *
+ * Сигнал ноль ничего не посылает, а лишь спрашивает, есть ли такой процесс.
+ * Отказ по правам значит, что процесс есть, но чужой, — то есть жив.
+ *
+ * Без этой проверки замок переживал взявший его процесс и держал конвейер
+ * до истечения получаса. Так и вышло 27.08.2026: сценарий отработал, сессия
+ * оркестратора почему-то не позвала `--release`, и следующие шесть
+ * пробуждений отвечали «замок держит процесс 24020» — которого давно нет.
+ * Тридцать минут простоя за один незакрытый файл.
+ *
+ * Замку и не нужно жить дольше процесса: с ключом `--execute` вся работа
+ * с бэклогом делается внутри него, а сессия оркестратора после этого лишь
+ * пересказывает вывод человеку. Стеречь ей нечего.
+ */
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+/**
  * Освободить замок.
  *
  * Освобождается он не всегда. Когда работа выдана, замок остаётся за сессией,
@@ -173,7 +198,7 @@ function main() {
   const now = new Date().toISOString();
   const machine = hostname();
 
-  const verdict = lockVerdict(lock, now, config.lockStaleMinutes);
+  const verdict = lockVerdict(lock, now, config.lockStaleMinutes, isAlive);
   if (!verdict.take) {
     print({ outcome: 'locked', why: verdict.why, actions: [], assignments: [] });
     return;
@@ -214,6 +239,7 @@ function main() {
     now,
     pid: process.pid,
     lock,
+    isAlive,
     ourAuthors: config.ourAuthors ?? ['Конвейер'],
     elapsed,
   });
