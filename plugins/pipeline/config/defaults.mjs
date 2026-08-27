@@ -42,6 +42,23 @@ export const DEFAULTS = {
   remote: 'origin',
   mainBranch: 'main',
 
+  /**
+   * Кем конвейер подписывает свои коммиты.
+   *
+   * Своё имя ему нужно не для красоты. Досылка хвоста отправляет только
+   * свои коммиты и наотрез отказывается публиковать чужой черновик; узнаёт
+   * она их по имени автора, сверяя со списком `ourAuthors`. Пока конвейер
+   * коммитил под именем хозяина машины, он объявлял чужим собственный хвост
+   * и переставал писать вовсе — до вмешательства человека.
+   *
+   * Почта выдуманная нарочно: это подпись машины, а не человека, и
+   * привязывать её к чьему-то живому ящику незачем.
+   */
+  author: {
+    name: 'Конвейер',
+    email: 'pipeline@localhost',
+  },
+
   /** Каталоги. Пути относительно корня репозитория. */
   paths: {
     tasks: 'manage/tasks',
@@ -107,10 +124,18 @@ export function missingForStage(config, stage, task) {
  * задача до выкладки не дошла.
  */
 export function resolveConfig(projectConfig = {}) {
+  const author = { ...DEFAULTS.author, ...(projectConfig.author ?? {}) };
   const config = {
     ...DEFAULTS,
     ...projectConfig,
+    author,
     paths: { ...DEFAULTS.paths, ...(projectConfig.paths ?? {}) },
+    // Список своих авторов выводится из подписи, а не задаётся отдельно.
+    // Разъедься эти два значения — и конвейер объявит чужим собственный
+    // хвост, после чего перестанет писать до вмешательства человека.
+    // Проект вправе дописать имена, под которыми конвейер коммитил раньше,
+    // но своя подпись входит в список всегда.
+    ourAuthors: [...new Set([author.name, ...(projectConfig.ourAuthors ?? [])])],
   };
   const missing = REQUIRED.filter((path) => pick(config, path) === undefined);
   return { config, missing };
