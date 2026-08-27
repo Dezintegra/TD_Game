@@ -36,8 +36,18 @@ export const journalHeader = (task) =>
  * @param {object} [entry.links]   ссылки на артефакты
  * @param {string} [entry.problem] причина, если этап не удался
  */
-export function journalEntry({ at, from, to, what, decisions = [], links = {}, problem }) {
-  const lines = [`## ${at} · ${from} → ${to}`, ''];
+export function journalEntry(entry) {
+  return [`## ${entry.at} · ${entry.from} → ${entry.to}`, '', journalBody(entry)].join('\n');
+}
+
+/**
+ * Тело записи без заголовка со временем.
+ *
+ * Нужно доске: комментарий Trello датируется сам, и вторая отметка времени
+ * в его первой строке только мешала бы читать.
+ */
+export function journalBody({ what, decisions = [], links = {}, problem }) {
+  const lines = [];
 
   if (what) lines.push(what, '');
 
