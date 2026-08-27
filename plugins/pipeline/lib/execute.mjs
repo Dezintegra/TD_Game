@@ -11,15 +11,20 @@ import {
 import { planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
-import { journalAppendix } from './journal.mjs';
 
 /**
  * Исполнение решений сканера.
  *
  * Всё, что трогает мир, собрано здесь и делается через доводом переданный
- * набор действий: чтение и запись задачи, дозапись журнала, коммит с
- * немедленной отправкой, заведение дерева, запись в слот. Поэтому порядок
- * шагов проверяется без единого настоящего коммита.
+ * набор действий: чтение и сохранение задачи, заведение дерева, запись
+ * в слот. Поэтому порядок шагов проверяется без единого настоящего коммита.
+ *
+ * Сохранение задачи вместе с записью журнала — ОДНА операция хранилища,
+ * а не пара «записать» и «отправить». Хранилищ у бэклога два, и устроены
+ * они по-разному: файловое пишет две записи и коммитит их, а доска Trello
+ * двигает карточку и дописывает комментарий, безо всяких коммитов.
+ * Разделять здесь то, что разделяется только у одного из них, значило бы
+ * заставить исполнение знать, с чем оно работает.
  *
  * Порядок и есть главное, что здесь написано. Две вещи в нём неслучайны:
  *
@@ -37,14 +42,6 @@ export const RESULT = {
   failed: 'не удалось',
   raced: 'задачу занял кто-то другой',
 };
-
-/** Записать задачу и журнал одним коммитом и сразу отправить. */
-function commitTaskChange(io, task, entry, message) {
-  const appendix = journalAppendix(task, io.readJournal(task.id), entry);
-  io.writeTask(task);
-  io.appendJournal(task.id, appendix);
-  return io.commitAndPush([io.taskPath(task.id), io.journalPath(task.id)], message);
-}
 
 /** Перенести отчёт сессии в бэклог. */
 function transferReport(action, io) {
@@ -94,9 +91,8 @@ function transferReport(action, io) {
   // для порождённых.
   const created = [];
   for (const born of plan.planned) {
-    io.writeTask(born);
-    const pushed = io.commitAndPush(
-      [io.taskPath(born.id)],
+    const pushed = io.createTask(
+      born,
       `chore(backlog): ${born.id} заведена по разбору ${action.taskId}`,
     );
     if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
@@ -104,8 +100,7 @@ function transferReport(action, io) {
     next = relate(next, born.id);
   }
 
-  const push = commitTaskChange(
-    io,
+  const push = io.saveTask(
     next,
     {
       at: io.now,
@@ -143,8 +138,7 @@ function startStage(action, io) {
   const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
 
-  const push = commitTaskChange(
-    io,
+  const push = io.saveTask(
     claimed.task,
     {
       at: io.now,
@@ -159,7 +153,7 @@ function startStage(action, io) {
     // Отказ мог случиться и из-за гонки за задачу. Кто занял её — видно
     // только после перечитывания, и делает это вызывающий: здесь мы лишь
     // снимаем свой захват, чтобы не оставить чужую задачу помеченной собой.
-    io.writeTask(releaseClaim(claimed.task));
+    io.releaseTask(releaseClaim(claimed.task));
     return { result: push.outcome === 'raced' ? 'raced' : 'failed', why: push.outcome };
   }
 
@@ -193,8 +187,7 @@ function continueStage(action, io) {
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
   const counted = countContinuation(task);
-  const push = commitTaskChange(
-    io,
+  const push = io.saveTask(
     counted,
     {
       at: io.now,
@@ -224,8 +217,7 @@ function answerQuestion(action, io) {
   });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  const push = commitTaskChange(
-    io,
+  const push = io.saveTask(
     moved.task,
     {
       at: io.now,
@@ -253,8 +245,7 @@ function pollExternal(action, io) {
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  const push = commitTaskChange(
-    io,
+  const push = io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: verdict.status, what: verdict.note },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
@@ -272,8 +263,7 @@ function failStage(action, io) {
   const moved = applyTransition(task, { status: 'failed', note: action.reason, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  const push = commitTaskChange(
-    io,
+  const push = io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: 'failed', problem: action.reason },
     `chore(backlog): ${task.id} остановлена, нужен разбор`,
@@ -306,8 +296,7 @@ function cleanupTask(action, io) {
   if (verdict.verdict === 'fail') {
     const moved = applyTransition(task, { status: 'failed', note: verdict.why, now: io.now });
     if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-    const push = commitTaskChange(
-      io,
+    const push = io.saveTask(
       moved.task,
       { at: io.now, from: task.status, to: 'failed', problem: verdict.why },
       `chore(backlog): ${task.id} уборка отменена, нужен разбор`,
@@ -326,8 +315,7 @@ function cleanupTask(action, io) {
 
   const moved = applyTransition(task, { status: 'closed', note: verdict.why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-  const push = commitTaskChange(
-    io,
+  const push = io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: 'closed', what: `Убрано: ${verdict.why}.` },
     `chore(backlog): ${task.id} закрыта`,

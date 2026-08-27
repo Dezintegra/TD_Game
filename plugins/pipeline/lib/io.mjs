@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
+import { journalAppendix } from './journal.mjs';
 
 /**
  * Переходник к настоящему миру: файлы, git, слоты.
@@ -54,6 +55,44 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
     journalPath,
 
     readTask: (id) => readJson(join(root, taskPath(id))),
+
+    /**
+     * Сохранить изменённую задачу вместе с записью журнала.
+     *
+     * Здесь эта пара действий становится одной операцией не для красоты.
+     * Хранилищ у бэклога два — файлы и доска Trello, — и устроены они
+     * по-разному: файловое пишет две записи и коммитит их, а доска двигает
+     * карточку и дописывает комментарий, безо всяких коммитов. Разделение
+     * на «записать» и «отправить» имеет смысл только у первого, и вынести
+     * его наружу значило бы заставить исполнение знать, с чем оно работает.
+     *
+     * @param {object} task  задача в новом состоянии
+     * @param {object} entry запись журнала об этом переходе
+     * @param {string} message сообщение коммита — доске оно не нужно
+     */
+    saveTask(task, entry, message) {
+      const appendix = journalAppendix(task, this.readJournal(task.id), entry);
+      this.writeTask(task);
+      this.appendJournal(task.id, appendix);
+      return this.commitAndPush([taskPath(task.id), journalPath(task.id)], message);
+    },
+
+    /** Завести новую задачу: запись плюс отправка своим коммитом. */
+    createTask(task, message) {
+      this.writeTask(task);
+      return this.commitAndPush([taskPath(task.id)], message);
+    },
+
+    /**
+     * Снять свой захват, не коммитя.
+     *
+     * Зовётся, когда отправка захвата не удалась: помеченной собой чужую
+     * задачу оставлять нельзя. Коммита тут нет намеренно — коммитить нечего,
+     * запись и так не уехала.
+     */
+    releaseTask(task) {
+      this.writeTask(task);
+    },
 
     /**
      * Все занятые идентификаторы, включая закрытые задачи.

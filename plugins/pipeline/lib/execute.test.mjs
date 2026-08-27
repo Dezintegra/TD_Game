@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execute } from './execute.mjs';
+import { journalAppendix } from './journal.mjs';
 
 /**
  * Проверки исполнения решений.
@@ -61,6 +62,26 @@ function fakeIo(over = {}) {
     commitAndPush(paths, message) {
       steps.push(`коммит и отправка: ${message} [${paths.length} путей]`);
       return over.push ? over.push(steps) : { ok: true, outcome: 'pushed' };
+    },
+
+    // Хранилище бэклога за интерфейсом: файловое пишет задачу, журнал
+    // и коммитит их, доска Trello двигает карточку и дописывает
+    // комментарий. Подставное имитирует файловое — так проверки порядка
+    // шагов остаются про то же, про что и были.
+    saveTask(next, entry, message) {
+      // Запись журнала собирается настоящей сборкой, а не заглушкой:
+      // часть проверок читает журнал и ждёт там решений и причин отказа.
+      const appendix = journalAppendix(next, this.readJournal(next.id), entry);
+      this.writeTask(next);
+      this.appendJournal(next.id, appendix);
+      return this.commitAndPush([this.taskPath(next.id), this.journalPath(next.id)], message);
+    },
+    createTask(next, message) {
+      this.writeTask(next);
+      return this.commitAndPush([this.taskPath(next.id)], message);
+    },
+    releaseTask(next) {
+      this.writeTask(next);
     },
 
     addWorktree(taskId, branch) {
