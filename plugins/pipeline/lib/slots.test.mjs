@@ -228,10 +228,7 @@ describe('продолжатель возвращается в свой слот
     const result = planAssignments({
       actions: [{ kind: 'continue-stage', taskId: '0002-two', stage: 'design' }],
       tasks: { '0002-two': task('0002-two', { status: 'design' }) },
-      occupancy: {
-        worker: held('0001-one', 'design'),
-        worker: held('0002-two', 'design'),
-      },
+      occupancy: { worker: held('0002-two', 'design') },
       slots: DEFAULT_SLOTS,
       now: NOW,
     });
@@ -391,10 +388,7 @@ describe('назначение, разошедшееся с бэклогом', (
     const result = planAssignments({
       actions: [{ kind: 'start-stage', taskId: '0002-two', stage: 'design' }],
       tasks: { '0002-two': task('0002-two') },
-      occupancy: {
-        worker: held('0001-one', 'benchmark'),
-        worker: held('0003-three', 'design'),
-      },
+      occupancy: { worker: held('0001-one', 'benchmark') },
       slots: DEFAULT_SLOTS,
       now: NOW,
       stale: [{ slot: 'worker', taskId: '0001-one', why: 'задача уже в «closed»' }],
