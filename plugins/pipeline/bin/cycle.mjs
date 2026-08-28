@@ -210,7 +210,7 @@ function loadEnv() {
  * лечится ожиданием, ненастроенный доступ — токеном; пауза же снимается
  * руками и в обоих случаях только мешала бы.
  */
-async function openBacklog(config) {
+async function openBacklog(config, { mayWrite }) {
   if (config.backlog !== 'trello') {
     return { ok: true, ...readTasks(root, config), notes: [] };
   }
@@ -241,7 +241,18 @@ async function openBacklog(config) {
   // Карточки, заведённые человеком, получают номера прежде всего прочего:
   // без идентификатора задача не имеет ни имени ветки, ни имени захвата,
   // то есть не может быть взята в работу вовсе.
-  const adopted = await store.adoptOrphans();
+  //
+  // Но выдача номера — это ПРАВКА доски, а правки бывают запрещены двумя
+  // способами сразу. Взведённый рубильник паузы означает «ничего не трогай»;
+  // теневой режим означает «покажи решение, но мира не касайся». Ни то,
+  // ни другое эта строка прежде не спрашивала: пауза стояла, а карточка,
+  // заведённая человеком в это самое время, всё равно переименовывалась.
+  //
+  // Чтение доски при этом остаётся: по нему печатается картина, и стоит оно
+  // одного запроса.
+  const adopted = mayWrite
+    ? await store.adoptOrphans()
+    : { adopted: [], problems: [], skipped: true };
 
   const tasks = [];
   const invalid = [];
@@ -259,6 +270,7 @@ async function openBacklog(config) {
     notes: [
       ...adopted.problems,
       ...(adopted.adopted.length > 0 ? [`выданы номера: ${adopted.adopted.join(', ')}`] : []),
+      ...(adopted.skipped ? ['номера карточкам не выдавались: правки доски запрещены'] : []),
     ],
   };
 }
@@ -289,7 +301,14 @@ async function main() {
     return;
   }
 
-  const backlog = await openBacklog(config);
+  // Вправе ли этот прогон вообще что-либо менять. Спрашивается ДО открытия
+  // бэклога, потому что уже открытие его правит: карточкам, заведённым
+  // человеком, раздаются номера. Два запрета здесь разные и оба настоящие —
+  // взведённый рубильник паузы и теневой режим без ключа `--execute`.
+  const paused = isPaused(root, config);
+  const mayWrite = flags.includes('--execute') && !paused;
+
+  const backlog = await openBacklog(config, { mayWrite });
   if (!backlog.ok) {
     print({ outcome: backlog.outcome, why: backlog.why, actions: [], assignments: [] });
     releaseLock(config);
@@ -323,7 +342,10 @@ async function main() {
       config,
       config.slots.map((slot) => slot.name),
     ),
-    paused: isPaused(root, config),
+    // Тот же ответ, что и выше: рубильник читается один раз за прогон.
+    // Прочитанный дважды, он однажды ответит по-разному — человек взводит
+    // его руками ровно в ту минуту, когда конвейер что-то делает.
+    paused,
     tails: { main: git.tail() ?? 0, branches: {} },
   };
 
