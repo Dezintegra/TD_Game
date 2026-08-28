@@ -86,13 +86,11 @@ test('клиент поднимается, рисует поле и общает
   await expect(diagnostics).toHaveAttribute('data-jump-max-cells', /[\d.]+/);
 });
 
-test('панели не перекрывают игровое поле', async ({ page }) => {
+test('поле занимает окно, а панели стоят по углам', async ({ page }) => {
   await bootGame(page);
 
-  // Окно задаётся явно, и это не придирка. Требование «тулбар умещается
-  // без прокрутки» записано для 1920 x 1080, и мерить его в другом окне
-  // значит мерить не ту величину: в узком окне тулбар из десяти плиток
-  // намеренно едет вбок, и это задуманное поведение, а не поломка.
+  // Окно задаётся явно: требования раскладки записаны для 1920 × 1080,
+  // и мерить их в другом окне значит мерить не ту величину.
   await page.setViewportSize({ width: 1920, height: 1080 });
 
   // Кнопка прокачки есть и на мониторе, и это не удобство, а видимость:
@@ -113,54 +111,49 @@ test('панели не перекрывают игровое поле', async (
   await expect(page.getByTestId('menu-open')).toBeHidden();
   expect(await coveredButtons(page)).toBe(0);
 
-  // Главное свойство раскладки, и проверять его глазами нельзя: панель,
-  // наехавшая на поле, закрывает собой клетки, на которых идёт бой,
-  // и заметно это становится только в бою.
+  // Главное свойство раскладки: поле получает окно ЦЕЛИКОМ.
+  //
+  // Прежде тут проверялось обратное — что панели не наезжают на поле,
+  // и что поле начинается под верхней полосой. Полос больше нет: они
+  // стоили полю 340 точек из 1080, и интерфейс переехал в углы поверх
+  // поля, как это давно сделано на телефоне.
   const canvas = await page.locator('#scene canvas').boundingBox();
-  const top = await page.locator('#hud-top').boundingBox();
-  const bottom = await page.locator('#hud-bottom').boundingBox();
-
   expect(canvas).not.toBeNull();
-  expect(top).not.toBeNull();
-  expect(bottom).not.toBeNull();
+  if (canvas === null) return;
 
-  if (canvas === null || top === null || bottom === null) return;
+  const viewport = page.viewportSize();
+  expect(viewport).not.toBeNull();
+  if (viewport === null) return;
 
-  // Поле начинается не выше нижнего края верхней полосы...
-  expect(canvas.y).toBeGreaterThanOrEqual(top.y + top.height - 1);
-  // ...и кончается не ниже верхнего края тулбара.
-  expect(canvas.y + canvas.height).toBeLessThanOrEqual(bottom.y + 1);
-  // И при этом поле осталось основной частью экрана, а не полоской
-  // между двумя панелями.
-  expect(canvas.height).toBeGreaterThan(top.height + bottom.height);
+  // Точка допуска на округление плотности экрана, и только она.
+  expect(Math.abs(canvas.width - viewport.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(canvas.height - viewport.height)).toBeLessThanOrEqual(1);
 
-  // Полосы обрезают содержимое по своей высоте — иначе они наехали бы
-  // на поле. Обрезка эта молчаливая: не влезшая строка просто исчезает,
-  // и заметить это можно только глазами и только если знать, что искать.
-  // Поэтому переполнение проверяется здесь.
-  const overflow = await page.evaluate(() =>
-    ['#hud-top', '#hud-bottom'].map((selector) => {
-      const el = document.querySelector(selector);
-      if (el === null) return null;
-      return {
-        selector,
-        высота: el.scrollHeight > el.clientHeight,
-        ширина: el.scrollWidth > el.clientWidth,
-      };
-    }),
-  );
+  // Середина экрана свободна от постоянных панелей. Это вторая половина
+  // сделки: панели поднялись поверх поля и обязаны за это освободить
+  // то место, ради которого поднимались.
+  const middle = await page.evaluate(() => {
+    const x = window.innerWidth / 2;
+    const y = window.innerHeight / 2;
+    const found = document.elementFromPoint(x, y);
+    // `#hud` и `#hud-field` — прозрачные слои без содержимого; попасть
+    // в них нажатием нельзя, они `pointer-events: none`. Тут интересно
+    // другое: не оказалось ли в середине панели.
+    return found?.closest('[data-testid]')?.getAttribute('data-testid') ?? null;
+  });
 
-  expect(overflow).toEqual([
-    { selector: '#hud-top', высота: false, ширина: false },
-    { selector: '#hud-bottom', высота: false, ширина: false },
-  ]);
+  expect(middle).toBeNull();
 
   // Смена высоты полосы БЕЗ изменения окна доходит до сцены.
   //
   // Это единственный путь, который обработчик у окна не покрывает: окно
-  // не менялось, события resize не будет. Ради него и заведён наблюдатель
-  // за контейнером, и без проверки он однажды тихо перестанет работать —
-  // а поле останется прежнего размера под полосой другого.
+  // не менялось, события resize не будет. Ради него заведён наблюдатель
+  // за контейнером, и без проверки он однажды тихо перестанет работать.
+  //
+  // Переменная нулевая и меняться в игре больше не должна — тем важнее
+  // проверить сам наблюдатель: он остаётся единственной связью между
+  // вёрсткой и сценой, и молчаливо сломавшись, отдаст полю неверный
+  // размер при первой же правке раскладки.
   await page.evaluate(() => {
     document.documentElement.style.setProperty('--td-hud-bottom', '300px');
   });
@@ -402,42 +395,42 @@ test('режим строительства включается, а Esc сна�
   await expect(page.getByTestId('match-menu')).toBeHidden();
 });
 
-test('прокачка живёт в тулбаре и поднимает саму характеристику', async ({ page }) => {
+test('окно прокачки поднимает саму характеристику', async ({ page }) => {
   await bootGame(page);
 
   // Ветка 0 — атака штурмовика. Показывается ДЕЙСТВУЮЩЕЕ значение,
-  // и главное свойство изменения в том, что после покупки растёт именно
-  // оно, а не номер уровня.
+  // и главное свойство в том, что после покупки растёт именно оно,
+  // а не номер уровня.
   const value = page.getByTestId('stat-value-0');
   await expect(value).toBeVisible();
 
   const before = await number(page, 'stat-value-0');
   expect(before).toBeGreaterThan(0);
 
+  // Рядом стоит значение ПОСЛЕ покупки, и оно больше действующего:
+  // цена сама по себе не отвечает на вопрос «стоит ли», на него отвечает
+  // то, что за неё дадут.
+  const promised = await number(page, 'stat-next-0');
+  expect(promised).toBeGreaterThan(before);
+
   await page.getByTestId('upgrade-0').click();
 
-  await expect
-    .poll(async () => number(page, 'stat-value-0'), { timeout: 8000 })
-    .toBeGreaterThan(before);
+  // И полученное совпадает с обещанным, а не просто «выросло».
+  await expect.poll(async () => number(page, 'stat-value-0'), { timeout: 8000 }).toBe(promised);
 
-  // Добыча энергии переехала на плитку базы: группы без объекта на поле
-  // больше нет. Подпись короткая — в столбец под плиткой полное название
-  // не помещается, полное живёт в подсказке при наведении.
-  await expect(page.getByTestId('focus-base')).toContainText('добыча');
-  await expect(page.getByTestId('focus-base')).toContainText('База');
+  // Добыча энергии стоит в строке базы: строки без объекта на поле
+  // в окне нет.
+  await expect(page.getByTestId('upgrade-row-base')).toContainText('добыча');
 
-  // А прокачка ракеты — у ракеты, и это главное, ради чего плитку удара
-  // вообще снабдили столбцом. Раньше все три строки стояли у базы:
-  // ветки принадлежат цели «база», потому что пусковая установка стоит
-  // на её площадке. Игроку эта причина не видна и не нужна.
-  const nuke = page.getByTestId('aim-nuke');
-  await expect(nuke).toContainText('мощн.');
-  await expect(nuke).toContainText('радиус');
+  // А прокачка ракеты — в строке ракеты, и это главное, ради чего у неё
+  // своя строка. Ветки принадлежат цели «база», потому что пусковая
+  // установка стоит на её площадке; игроку эта причина не видна
+  // и не нужна.
+  const nuke = page.getByTestId('upgrade-row-nuke');
   await expect(nuke).toContainText('откат');
 
-  // И ни одной из них не осталось у базы.
-  await expect(page.getByTestId('focus-base')).not.toContainText('мощн.');
-  await expect(page.getByTestId('focus-base')).not.toContainText('откат');
+  // И ни одной ядерной ветки не осталось у базы.
+  await expect(page.getByTestId('upgrade-row-base')).not.toContainText('откат');
 });
 
 test('плитки генерала и базы переносят камеру, а не заказывают', async ({ page }) => {
@@ -504,28 +497,28 @@ test('заказ постройки снимает выделение', async ({
   await expect(page.getByTestId('structure-info')).toBeHidden();
 });
 
-test('R сворачивает характеристики, оставляя плитки, и поле растёт', async ({ page }) => {
+test('R закрывает окно прокачки, оставляя плитки, и поле не меняет размер', async ({ page }) => {
   await bootGame(page);
 
-  await expect(page.getByTestId('stat-value-0')).toBeVisible();
+  await expect(page.getByTestId('upgrade-window')).toBeVisible();
   const fieldBefore = (await page.locator('#scene canvas').boundingBox())?.height ?? 0;
 
   await page.keyboard.press('KeyR');
 
-  // Столбцы ушли, плитки остались: сворачивают подробности, а не действия.
-  await expect(page.getByTestId('stat-value-0')).toBeHidden();
+  // Окно ушло, плитки остались: закрывают подробности, а не действия.
+  await expect(page.getByTestId('upgrade-window')).toBeHidden();
   await expect(page.getByTestId('train-0')).toBeVisible();
   await expect(page.getByTestId('build-1')).toBeVisible();
 
-  // Полоса стала ниже, значит поле выросло — и сцена об этом узнала.
-  await expect
-    .poll(async () => (await page.locator('#scene canvas').boundingBox())?.height ?? 0, {
-      timeout: 5000,
-    })
-    .toBeGreaterThan(fieldBefore);
+  // Размер поля при этом НЕ изменился, и это главное свойство переезда.
+  // Прежде открытие прокачки растило нижнюю полосу со 76 до 178, то есть
+  // меняло размер контейнера сцены — будило камеру и миникарту посреди
+  // боя, ради показа таблицы цен. Окно поверх поля сцену не трогает.
+  await page.waitForTimeout(500);
+  expect((await page.locator('#scene canvas').boundingBox())?.height ?? 0).toBe(fieldBefore);
 
   await page.keyboard.press('KeyR');
-  await expect(page.getByTestId('stat-value-0')).toBeVisible();
+  await expect(page.getByTestId('upgrade-window')).toBeVisible();
 });
 
 // Замеры частоты кадров переехали в `framerate.perf.spec.ts`: это измерение,
@@ -548,20 +541,37 @@ test('R сворачивает характеристики, оставляя п
  * мышиной, и размеры выходят не те, что на устройстве.
  */
 
-/** Ширина содержимого верхней полосы сверх её собственной. */
-const barOverflow = async (page: Page): Promise<number> =>
+/**
+ * Насколько содержимое углового слоя вылезает за края экрана.
+ *
+ * Прежде мерилось переполнение полос — у них были свои границы, и всё,
+ * что в них не влезало, молча исчезало. Полос нет, и мерить надо другое:
+ * панель, уехавшую за край окна. Уезжает она так же молча.
+ */
+const outsideWindow = async (page: Page): Promise<number> =>
   page.evaluate(() => {
-    const el = document.querySelector('#hud-top');
-    if (el === null) return -1;
-    return el.scrollWidth - el.clientWidth;
-  });
+    let outside = 0;
+    const panels = [
+      'side-own',
+      'match-opponent',
+      'toolbar',
+      'stats-toggle',
+      'own-panel',
+      'production-panel',
+      'build-panel',
+    ];
 
-/** Переполнение нижней полосы: по ширине и по высоте. */
-const bottomOverflow = async (page: Page): Promise<{ x: number; y: number }> =>
-  page.evaluate(() => {
-    const el = document.querySelector('#hud-bottom');
-    if (el === null) return { x: -1, y: -1 };
-    return { x: el.scrollWidth - el.clientWidth, y: el.scrollHeight - el.clientHeight };
+    for (const id of panels) {
+      const node = document.querySelector(`[data-testid="${id}"]`);
+      if (node === null) continue;
+      const box = node.getBoundingClientRect();
+      if (box.width === 0 && box.height === 0) continue;
+      if (box.x < -1 || box.y < -1) outside += 1;
+      if (box.x + box.width > window.innerWidth + 1) outside += 1;
+      if (box.y + box.height > window.innerHeight + 1) outside += 1;
+    }
+
+    return outside;
   });
 
 /**
@@ -686,9 +696,21 @@ const visibleRows = async (page: Page): Promise<number> => {
   return Number((box.height / (cellHeight * scale)).toFixed(2));
 };
 
-/** Все ветки прокачки, показанные на экране. */
+/**
+ * Все кнопки покупки, показанные на экране.
+ *
+ * Метка кнопки — `upgrade-<номер ветки>`, и отбирать по одной приставке
+ * нельзя: рядом живут `upgrade-window`, `upgrade-close` и девять
+ * `upgrade-row-*`. Отбор идёт по ЦИФРАМ после приставки, иначе счёт
+ * молча вырастет на всё, что в окне названо тем же словом.
+ */
 const branchCount = async (page: Page): Promise<number> =>
-  page.locator('[data-testid^="upgrade-"]').count();
+  page.evaluate(
+    () =>
+      Array.from(document.querySelectorAll('[data-testid]')).filter((node) =>
+        /^upgrade-\d+$/u.test(node.getAttribute('data-testid') ?? ''),
+      ).length,
+  );
 
 /**
  * Открыть прокачку и убедиться, что она открылась. Кнопкой, а не `R`:
@@ -714,14 +736,9 @@ test.describe('телефон в портрете', () => {
     await bootGame(page);
     await closeUpgrades(page);
 
-    // Верхняя полоса умещается в ширину и не режет сводки.
-    expect(await barOverflow(page)).toBeLessThanOrEqual(0);
+    // Ни одна панель не вылезла за край экрана.
+    expect(await outsideWindow(page)).toBe(0);
     await sidesVisible(page);
-
-    // Нижняя не прокручивается вбок ВООБЩЕ. Прокрутка здесь не спасение,
-    // а лишний жест перед каждым заказом — и делается он второй рукой,
-    // потому что первая держит телефон.
-    expect((await bottomOverflow(page)).x).toBeLessThanOrEqual(0);
     expect(await coveredButtons(page)).toBe(0);
 
     // Весь заказ на экране столбцом у правого края, под большой палец.
@@ -730,17 +747,11 @@ test.describe('телефон в портрете', () => {
     expect(order.rightGap).toBeLessThanOrEqual(12);
     // Юниты НИЖЕ построек: заказ юнита — одно нажатие, постановка
     // постройки — два, и лучшее место в столбце достаётся частому
-    // действию. Раньше это же требование читалось «правее»: заказ был
-    // строкой в полосе.
+    // действию.
     expect(order.unitsTop).toBeGreaterThanOrEqual(order.buildBottom);
 
     // Цена видна и без подписи «цена»: число остаётся.
     await expect(page.getByTestId('train-0-cost')).toBeVisible();
-
-    // Плитки базы в полосе нет — к базе переносит прочность сверху.
-    // Проверяется именно НАЖИМАЕМОСТЬ: иначе на телефоне к базе
-    // не добраться вовсе, а число рядом выглядело бы обычным текстом.
-    await expect(page.getByTestId('focus-base')).toBeHidden();
 
     const ownHealth = page.getByTestId('base-health-own');
     await expect(ownHealth).toBeVisible();
@@ -754,10 +765,8 @@ test.describe('телефон в портрете', () => {
     // другое действие, и вешать его на похожее с виду число нельзя.
     expect(await page.getByTestId('base-health-enemy').evaluate((el) => el.tagName)).toBe('DIV');
 
-    // Полосы внизу больше нет вовсе, и полю достаётся почти весь экран:
-    // 812 минус 114 верхней сводки — это 86 %. Прежний порог был 70,
-    // и держался он на полосе в 84 точки.
-    expect(await fieldShare(page)).toBeGreaterThanOrEqual(85);
+    // Полос нет ни сверху, ни снизу: поле получает экран целиком.
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(99);
 
     // Главное число этого изменения. Портрет и раньше давал одиннадцать
     // клеток, но проверялось это ничем: пропади они — заметил бы игрок,
@@ -765,12 +774,12 @@ test.describe('телефон в портрете', () => {
     expect(await visibleRows(page)).toBeGreaterThanOrEqual(10);
   });
 
-  test('панель прокачки в портрете', async ({ page }) => {
+  test('окно прокачки в портрете', async ({ page }) => {
     await bootGame(page);
     await closeUpgrades(page);
 
-    // Сцена не должна пересчитываться от открытия панели: высота полосы
-    // входит в отступы её контейнера, и раньше каждое переключение
+    // Сцена не должна пересчитываться от открытия окна: прежде высота
+    // полосы входила в отступы её контейнера, и каждое переключение
     // будило наблюдателя за размером — камера пересчитывала границы,
     // миникарта переезжала в угол. Посреди боя, ради таблицы цен.
     const before = await canvasSize(page);
@@ -781,8 +790,7 @@ test.describe('телефон в портрете', () => {
     expect(await canvasSize(page)).toEqual(before);
     expect(await fieldShare(page)).toBeCloseTo(share, 1);
 
-    // Панель показывает все восемь целей прокачки со всеми ветками,
-    // и ничего не приходится доставать прокруткой.
+    // Окно показывает все девять строк и все ветки.
     //
     // Веток тридцать две — столько же, сколько в `UPGRADE_BRANCHES`.
     // Число здесь стоит числом намеренно: оно ловит ровно то, ради чего
@@ -794,19 +802,17 @@ test.describe('телефон в портрете', () => {
     // в потолок уровня, кнопки нет вовсе (вместо неё стоит «макс.»),
     // и в матче, где такая ветка прокачана до предела, число будет
     // меньше. В начале матча предельных веток нет.
-    await expect(page.getByTestId('focus-base')).toBeVisible();
+    await expect(page.getByTestId('upgrade-window')).toBeVisible();
+    await expect(page.getByTestId('upgrade-row-base')).toBeVisible();
     expect(await branchCount(page)).toBe(32);
-    const overflow = await bottomOverflow(page);
-    expect(overflow.x).toBeLessThanOrEqual(0);
-    expect(overflow.y).toBeLessThanOrEqual(0);
-    expect(await coveredButtons(page)).toBe(0);
+    expect(await outsideWindow(page)).toBe(0);
 
-    // Верхнюю полосу панель не закрывает: игрок торгуется, и энергия —
-    // то самое число, ради которого он решает, покупать или копить.
+    // Энергия видна и при открытом окне: игрок торгуется, и это то самое
+    // число, ради которого он решает, покупать или копить. Своя стоит
+    // в шапке окна, общая — вверху экрана.
     await expect(page.getByTestId('energy')).toBeInViewport();
 
-    // Нажатие мимо панели закрывает её. Целимся в полоску поля НАД
-    // панелью: середина слоя лежит под самой панелью.
+    // Нажатие мимо окна закрывает его. Целимся в полоску поля НАД окном.
     await page.getByTestId('panel-backdrop').click({ position: { x: 100, y: 20 } });
     await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
   });
@@ -819,9 +825,8 @@ test.describe('телефон в ландшафте', () => {
     await bootGame(page);
     await closeUpgrades(page);
 
-    expect(await barOverflow(page)).toBeLessThanOrEqual(0);
+    expect(await outsideWindow(page)).toBe(0);
     await sidesVisible(page);
-    expect((await bottomOverflow(page)).x).toBeLessThanOrEqual(0);
     expect(await coveredButtons(page)).toBe(0);
 
     const order = await orderPlacement(page);
@@ -829,10 +834,10 @@ test.describe('телефон в ландшафте', () => {
     expect(order.rightGap).toBeLessThanOrEqual(12);
     expect(order.unitsTop).toBeGreaterThanOrEqual(order.buildBottom);
 
-    // 375 минус 64 верхней сводки — это 83 %. Прежний порог был 54,
+    // Полос нет: поле получает экран целиком. Прежний порог был 54,
     // и держался он на полосе в 64 точки, то есть на пятой части
     // всего экрана.
-    expect(await fieldShare(page)).toBeGreaterThanOrEqual(82);
+    expect(await fieldShare(page)).toBeGreaterThanOrEqual(99);
 
     // Ради этой строки всё и затевалось: было 4,3 клетки — меньше
     // дальности выстрела, — и игрок физически не мог увидеть стрелка
@@ -850,7 +855,7 @@ test.describe('телефон в ландшафте', () => {
     await expect(page.getByTestId('match-menu')).toBeHidden();
   });
 
-  test('панель прокачки в ландшафте', async ({ page }) => {
+  test('окно прокачки в ландшафте', async ({ page }) => {
     await bootGame(page);
     await closeUpgrades(page);
 
@@ -859,24 +864,24 @@ test.describe('телефон в ландшафте', () => {
 
     expect(await canvasSize(page)).toEqual(before);
 
-    // Все тридцать две ветки видны и здесь: три ряда в 375 точек
-    // высоты не помещаются, поэтому группы встают рядом. Прокрутка
-    // не годится по той же причине, по какой не годилась в полосе —
-    // она не сообщает о себе, и пятая ветка для игрока исчезает.
+    // Все тридцать две ветки есть и здесь. Девять строк в 375 точек
+    // высоты не помещаются, поэтому матрица прокручивается ВНУТРИ окна:
+    // это единственное место, где прокрутка допустима, и она о себе
+    // сообщает — шапка с энергией остаётся на месте, а строки уезжают
+    // под неё.
     expect(await branchCount(page)).toBe(32);
-    const overflow = await bottomOverflow(page);
-    expect(overflow.x).toBeLessThanOrEqual(0);
-    expect(overflow.y).toBeLessThanOrEqual(0);
-    expect(await coveredButtons(page)).toBe(0);
+    await expect(page.getByTestId('upgrade-window')).toBeVisible();
+    expect(await outsideWindow(page)).toBe(0);
 
     await expect(page.getByTestId('energy')).toBeInViewport();
 
-    // Заказ панель не закрывает: заказывают пачками.
-    await page.getByTestId('train-0-select').click();
-    await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'open');
-
-    // А наведение — закрывает: целиться в поле, которого не видно, нельзя.
-    await page.getByTestId('aim-nuke-select').click();
+    // Окно закрывается кнопкой, и после этого заказ снова доступен.
+    // Заказывать при открытом окне на телефоне нельзя намеренно: рейка
+    // легла бы поверх матрицы и закрыла собой те самые числа, ради
+    // которых окно и открыли. Цена — одно лишнее касание.
+    await page.getByTestId('upgrade-close').click();
     await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
+    await page.getByTestId('train-0-select').click();
+    await expect(page.getByTestId('notices')).toHaveCount(0);
   });
 });
