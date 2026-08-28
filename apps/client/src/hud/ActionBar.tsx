@@ -13,7 +13,7 @@ import { BATCH_ORDER_COUNT } from '../game/controls.js';
 import { NUKE_STAT_GROUP } from '../game/stat-rows.js';
 import { matchCommands, useHudStore } from '../game/store.js';
 import type { StatRow } from '../game/store.js';
-import { BaseGlyph, GeneralGlyph, STRUCTURE_GLYPH, TargetGlyph, UNIT_GLYPH } from './icons.js';
+import { BaseGlyph, GeneralIcon, StructureIcon, TargetGlyph, UnitIcon } from './icons.js';
 import { STRUCTURE_SHORT, UNIT_SHORT, UPGRADE_STAT_SHORT, UPGRADE_UNIT } from './labels.js';
 
 /**
@@ -300,7 +300,6 @@ export const ActionBar = () => {
       <div className="td-toolbar" data-testid="toolbar">
         <div className="td-tile-group" data-testid="production-panel">
           {UNIT_TYPES.map((type) => {
-            const Icon = UNIT_GLYPH[type];
             const cost = match.unitCosts[type] ?? 0;
 
             return (
@@ -308,7 +307,7 @@ export const ActionBar = () => {
                 key={`unit-${String(type)}`}
                 testId={`train-${String(type)}`}
                 role="order"
-                icon={<Icon />}
+                icon={<UnitIcon type={type} />}
                 label={UNIT_SHORT[type]}
                 hotkey={UNIT_HOTKEY[type]}
                 cost={cost}
@@ -330,7 +329,6 @@ export const ActionBar = () => {
 
         <div className="td-tile-group" data-testid="build-panel">
           {BUILDABLE_KINDS.map((kind) => {
-            const Icon = STRUCTURE_GLYPH[kind];
             const cost = match.structureCosts[kind] ?? 0;
 
             return (
@@ -338,7 +336,7 @@ export const ActionBar = () => {
                 key={`structure-${String(kind)}`}
                 testId={`build-${String(kind)}`}
                 role="order"
-                icon={<Icon />}
+                icon={<StructureIcon kind={kind} />}
                 label={STRUCTURE_SHORT[kind]}
                 hotkey={STRUCTURE_HOTKEY[kind]}
                 cost={cost}
@@ -406,7 +404,7 @@ export const ActionBar = () => {
           <Tile
             testId="focus-general"
             role="service"
-            icon={<GeneralGlyph />}
+            icon={<GeneralIcon />}
             label="Генерал"
             hotkey="Пробел"
             cost={0}

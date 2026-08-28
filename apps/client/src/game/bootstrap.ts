@@ -503,7 +503,23 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
       scene.setMap(known.map, localPlayer);
 
       const bakeStartedAt = performance.now();
-      scene.bakeTerrain(FRAME_WORK_BUDGET_MS);
+      const terrainLeft = scene.bakeTerrain(FRAME_WORK_BUDGET_MS);
+
+      // Иконки интерфейса печатаются ТРЕТЬИМИ и только после рельефа.
+      //
+      // Порядок здесь тот же, что между рельефом и догоном, и по той же
+      // причине: рельеф конечен и кончается навсегда, а до его конца
+      // игрок смотрит на недорисованную карту. Иконка же нужна не сразу:
+      // пока её нет, плитка показывает прежний контурный значок,
+      // и ждать её игроку не приходится ни секунды.
+      //
+      // По одной за кадр: запекание идёт в главном потоке, и семь штук
+      // подряд съели бы кадр целиком.
+      if (!terrainLeft) {
+        const icons = scene.bakeIcons();
+        if (icons !== null) hudActions.setIcons(icons);
+      }
+
       const leftMs = Math.max(FRAME_WORK_BUDGET_MS - (performance.now() - bakeStartedAt), 0);
 
       // Часы показа спрашиваются ДО чтения мира, а не после, и порядок

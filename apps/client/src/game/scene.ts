@@ -11,6 +11,8 @@ import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
 import { drawEntities } from './entities.js';
+import { createIconBaker } from './icon-sprites.js';
+import type { IconBaker, IconMap } from './icon-sprites.js';
 import { createMachineSprites } from './machine-sprites.js';
 import { createStructureSprites } from './structure-sprites.js';
 import type { StructureSpriteColors, StructureSprites } from './structure-sprites.js';
@@ -102,6 +104,18 @@ export interface Scene {
    * и разбор кадров матча, которые всё это время копятся в сокете.
    */
   bakeTerrain(budgetMs: number): boolean;
+  /**
+   * Запечь очередную иконку интерфейса.
+   *
+   * Возвращает пополненную карту, пока работа есть, и `null`, когда всё
+   * запечено. Вызывать положено из кадра и ПОСЛЕ того, как допечён
+   * рельеф: одну работу в кадре мы уже держим, и вторая рядом с ней
+   * означала бы съеденный кадр вместо отложенного запекания.
+   *
+   * Иконки отдаются наружу, а не ставятся сценой на место: рисует их
+   * React, а сцена о нём не знает и знать не должна.
+   */
+  bakeIcons(): IconMap | null;
   /** Рисует текущее состояние мира и подсказки. */
   render(world: WorldState, localPlayer: PlayerId, intent: OverlayIntent): void;
   /** Сдвигает камеру на заданное число экранных пикселей и снимает слежение. */
@@ -587,6 +601,20 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     app.renderer.resolution,
   );
 
+  /**
+   * Запекатель иконок интерфейса.
+   *
+   * Заводится здесь, потому что здесь живут и отрисовщик, и прочитанные
+   * из CSS цвета сторон, — но НЕ работает, пока его не позовут. Зовут
+   * из кадра и только после того, как допечён рельеф: старт матча уже
+   * держит его запекание, и складывать одно с другим нельзя.
+   */
+  const iconBaker: IconBaker = createIconBaker(
+    app.renderer,
+    readMachineColors(),
+    readStructureColors(),
+  );
+
   const blastColors = readBlastColors();
   const overlayColors = readOverlayColors();
   const minimapColors = readMinimapColors();
@@ -832,6 +860,8 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       baking = undefined;
       return false;
     },
+
+    bakeIcons: () => iconBaker.step(),
 
     render(world, localPlayer, intent) {
       clearEntityLayers();

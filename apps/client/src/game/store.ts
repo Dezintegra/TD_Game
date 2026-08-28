@@ -1,8 +1,19 @@
 ﻿import { AttackStance } from '@td/shared';
 import { create } from 'zustand';
 import type { Notice } from './rejections.js';
+import type { IconMap } from './icon-sprites.js';
 import { DEFAULT_SOUND_SETTINGS } from '../audio/settings.js';
 import type { SoundSettings } from '../audio/settings.js';
+
+/**
+ * Пустая карта иконок — общая для всех, а не новый объект на каждый
+ * начальный снимок.
+ *
+ * Селектор zustand сравнивает по ссылке, и новый пустой объект на каждое
+ * начальное состояние означал бы «иконки изменились» при каждом создании
+ * store.
+ */
+const EMPTY_ICONS: IconMap = {};
 
 /**
  * Store — единственный канал связи между игровым циклом и React.
@@ -434,6 +445,18 @@ interface HudState {
    */
   readonly statsOpen: boolean;
   /**
+   * Иконки объектов, отрисованные тем же кодом, что и спрайты поля.
+   *
+   * Ключ — вид объекта, значение — готовая картинка строкой `data:`.
+   * Пустая карта означает «ещё не отрисованы»: печь их начинают после
+   * первого показанного кадра, чтобы не удлинять старт матча, и до этого
+   * момента плитки показывают прежние контурные значки.
+   *
+   * Состояние интерфейса, а не мира: по сети не ходит, в предсказании
+   * не участвует, при разрыве связи не меняется.
+   */
+  readonly icons: IconMap;
+  /**
    * Громкости и выключатель звука.
    *
    * Состояние интерфейса того же рода, что `selection`: мира оно
@@ -458,6 +481,7 @@ interface HudState {
   setSelection(selection: SelectionView | null): void;
   setMenuOpen(open: boolean): void;
   toggleStats(): void;
+  setIcons(icons: IconMap): void;
   setSound(sound: SoundSettings): void;
 }
 
@@ -523,6 +547,7 @@ export const useHudStore = create<HudState>((set) => ({
   selection: null,
   menuOpen: false,
   statsOpen: readStatsOpen(),
+  icons: EMPTY_ICONS,
   sound: DEFAULT_SOUND_SETTINGS,
 
   setStatus: (status) => set({ status }),
@@ -578,6 +603,7 @@ export const useHudStore = create<HudState>((set) => ({
       writeStatsOpen(statsOpen);
       return { statsOpen };
     }),
+  setIcons: (icons) => set({ icons }),
   setSound: (sound) => set({ sound }),
 }));
 
@@ -603,6 +629,7 @@ export const hudActions = {
   setSelection: (selection: SelectionView | null) => useHudStore.getState().setSelection(selection),
   setMenuOpen: (open: boolean) => useHudStore.getState().setMenuOpen(open),
   toggleStats: () => useHudStore.getState().toggleStats(),
+  setIcons: (icons: IconMap) => useHudStore.getState().setIcons(icons),
   setSound: (sound: SoundSettings) => useHudStore.getState().setSound(sound),
 };
 

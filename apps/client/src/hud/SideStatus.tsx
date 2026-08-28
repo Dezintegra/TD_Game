@@ -3,7 +3,8 @@ import { BUILDABLE_KINDS, UNIT_TYPES } from '@td/shared';
 import type { StructureKind, UnitType } from '@td/shared';
 import { matchCommands } from '../game/store.js';
 import type { SideView } from '../game/store.js';
-import { STRUCTURE_GLYPH, UNIT_GLYPH } from './icons.js';
+import { SIDE_ENEMY, SIDE_SELF } from '../game/icon-sprites.js';
+import { StructureIcon, UnitIcon } from './icons.js';
 import { STRUCTURE_SHORT, UNIT_SHORT } from './labels.js';
 
 /**
@@ -234,6 +235,11 @@ export const SideStatus = ({
   localSide,
 }: SideStatusProps) => {
   const units = side.unitCounts.reduce((sum, value) => sum + value, 0);
+  // Значок берётся в цветах ТОЙ стороны, о которой сводка. Машина
+  // покрашена в графит, и принадлежность на ней несут маркеры
+  // да подсветка по краю; свой значок в чужой сводке пометил бы восемь
+  // чужих Тесл своим цветом.
+  const iconSide = own ? SIDE_SELF : SIDE_ENEMY;
 
   return (
     <div
@@ -273,11 +279,10 @@ export const SideStatus = ({
 
       <div style={rowStyle}>
         {UNIT_TYPES.map((type: UnitType) => {
-          const Icon = UNIT_GLYPH[type];
           return (
             <Tally
               key={`unit-${String(type)}`}
-              glyph={<Icon />}
+              glyph={<UnitIcon type={type} side={iconSide} />}
               value={side.unitCounts[type] ?? 0}
               title={UNIT_SHORT[type]}
               testId={`${own ? 'own' : 'enemy'}-unit-${String(type)}`}
@@ -297,11 +302,10 @@ export const SideStatus = ({
         />
 
         {BUILDABLE_KINDS.map((kind: StructureKind) => {
-          const Icon = STRUCTURE_GLYPH[kind];
           return (
             <Tally
               key={`structure-${String(kind)}`}
-              glyph={<Icon />}
+              glyph={<StructureIcon kind={kind} side={iconSide} />}
               value={side.structureCounts[kind] ?? 0}
               title={STRUCTURE_SHORT[kind]}
               testId={`${own ? 'own' : 'enemy'}-structure-${String(kind)}`}
