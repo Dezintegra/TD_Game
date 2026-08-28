@@ -35,10 +35,10 @@
 
 ## 5. Этап `interpret` в маршруте прогона
 
-- [ ] `ROUTES.run`: `new` → `benchmark` → `interpret` → `closed`
-- [ ] `interpret` — класс `resource`, входит в `NEEDS_SESSION`, не входит
+- [x] `ROUTES.run`: `new` → `benchmark` → `interpret` → `closed`
+- [x] `interpret` — класс `resource`, входит в `NEEDS_SESSION`, не входит
       в `NEEDS_WORKTREE`
-- [ ] Проверки: замер с исходом `done` ведёт в `interpret`, а не в `closed`;
+- [x] Проверки: замер с исходом `done` ведёт в `interpret`, а не в `closed`;
       под `interpret` дерево не заводится
 
 ## 6. Скилл толкования

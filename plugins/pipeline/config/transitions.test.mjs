@@ -49,6 +49,24 @@ describe('маршруты', () => {
     expect(canTransition(task({ type: 'run', status: 'new' }), 'benchmark').ok).toBe(true);
   });
 
+  it('замер отдаёт прогон толкованию, а закрыть его сам не вправе', () => {
+    const measured = task({ type: 'run', status: 'benchmark' });
+    expect(canTransition(measured, 'interpret').ok).toBe(true);
+    expect(canTransition(measured, 'closed').ok).toBe(false);
+  });
+
+  it('толкование закрывает прогон', () => {
+    expect(canTransition(task({ type: 'run', status: 'interpret' }), 'closed').ok).toBe(true);
+  });
+
+  it('доработка толкования не знает: её замер ведёт к проверкам', () => {
+    // Толкование объявлено только на маршруте прогона. У доработки замер —
+    // одна из проверок перед ревью, и читает её ревьюер.
+    const measured = task({ type: 'feature', status: 'benchmark' });
+    expect(canTransition(measured, 'interpret').ok).toBe(false);
+    expect(canTransition(measured, 'pr').ok).toBe(true);
+  });
+
   it('замечание разбирается и закрывается', () => {
     expect(canTransition(task({ type: 'note', status: 'new' }), 'triage').ok).toBe(true);
     expect(canTransition(task({ type: 'note', status: 'triage' }), 'closed').ok).toBe(true);

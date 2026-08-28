@@ -47,11 +47,19 @@ describe('успешный этап двигает задачу по маршр�
   it('у каждого этапа с сессией есть исход при успехе', () => {
     // Сторож против той же беды в будущем: состояние, требующее сессии,
     // обязано знать, куда двигаться при удачном исходе.
+    // Тип берётся по этапу, а не один на всех: этап живёт лишь на том
+    // маршруте, где объявлен. Толкование бывает только у задачи-прогона,
+    // и подсунув ему `feature`, сторож поймал бы не дыру, а свою ошибку.
+    const typeFor = { triage: 'note', interpret: 'run' };
     for (const status of NEEDS_SESSION) {
+      const type = typeFor[status] ?? 'feature';
       const source = task({
         status,
-        type: status === 'triage' ? 'note' : 'feature',
-        run: status === 'benchmark' ? { kind: 'arena', expectation: 'ровно' } : undefined,
+        type,
+        run:
+          status === 'benchmark' || type === 'run'
+            ? { kind: 'arena', expectation: 'ровно' }
+            : undefined,
       });
       const verdict = applyReport(source, report({ stage: status }));
       expect(verdict.status, `этап ${status}`).not.toBe('failed');
@@ -66,12 +74,24 @@ describe('успешный этап двигает задачу по маршр�
     expect(verdict.status).toBe('closed');
   });
 
-  it('прогон закрывает задачу-прогон', () => {
+  it('замер отдаёт задачу-прогон толкованию, а не закрывает', () => {
+    // Прежде замер закрывал задачу сам: одна сессия считала, толковала
+    // и закрывала. Толкование — работа суждения, и делать её походя, в том
+    // же отчёте, где перечислены цифры, значит прятать её за ними.
     const verdict = applyReport(
       task({ type: 'run', status: 'benchmark', run: { kind: 'arena', expectation: 'ровно' } }),
       report({ stage: 'benchmark' }),
     );
+    expect(verdict.status).toBe('interpret');
+  });
+
+  it('толкование закрывает задачу-прогон', () => {
+    const verdict = applyReport(
+      task({ type: 'run', status: 'interpret', run: { kind: 'arena', expectation: 'ровно' } }),
+      report({ stage: 'interpret' }),
+    );
     expect(verdict.status).toBe('closed');
+    expect(verdict.problems).toEqual([]);
   });
 
   it('прогон внутри доработки ведёт к pull request', () => {
@@ -173,11 +193,13 @@ describe('опрос внешнего состояния', () => {
     expect(verdict.note).toContain('матчевые тесты');
   });
 
-  it('удавшийся прогон закрывает задачу-прогон', () => {
+  it('удавшийся прогон отдаёт задачу-прогон толкованию', () => {
+    // Опрос узнаёт только «посчиталось или нет». Что означают полученные
+    // числа, он не знает и знать не должен — на то есть отдельный этап.
     const verdict = applyExternal(task({ type: 'run', status: 'benchmark' }), {
       state: 'success',
     });
-    expect(verdict.status).toBe('closed');
+    expect(verdict.status).toBe('interpret');
   });
 
   it('неудавшийся прогон уводит в ошибку', () => {

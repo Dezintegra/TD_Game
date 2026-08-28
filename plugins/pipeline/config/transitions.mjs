@@ -16,6 +16,7 @@ export const STATES = [
   'audit',
   'implement',
   'benchmark',
+  'interpret',
   'pr',
   'review',
   'revise',
@@ -60,7 +61,13 @@ export const ROUTES = {
   },
   run: {
     new: ['benchmark'],
-    benchmark: ['closed'],
+    // Замер и толкование замера — разные работы, и делают их разные сессии.
+    // Пока этап был один, сессия гоняла арену, читала цифры, выносила вердикт
+    // и закрывала задачу — четыре дела и один переход состояния на всё.
+    // Счёт держится на командах, толкование счёта — на суждении, и мешать
+    // их в одном отчёте значит прятать второе за первым.
+    benchmark: ['interpret'],
+    interpret: ['closed'],
   },
   note: {
     new: ['triage'],
@@ -85,6 +92,9 @@ export const STATE_CLASS = {
   design: 'resource',
   audit: 'resource',
   implement: 'resource',
+  // Толкование только читает: числа из отчёта замера и заказанное ожидание.
+  // Ни арены, ни браузера, ни тишины на машине ему не нужно.
+  interpret: 'resource',
   revise: 'resource',
   review: 'review',
   pr: 'waiting',
@@ -140,6 +150,7 @@ export const NEEDS_SESSION = [
   'audit',
   'implement',
   'benchmark',
+  'interpret',
   'review',
   'revise',
   'deploy',
