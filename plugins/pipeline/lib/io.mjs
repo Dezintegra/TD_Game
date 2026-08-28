@@ -322,9 +322,46 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       writeFileSync(local('slots', `${slot}.json`), asJson(assignment));
     },
 
+    /**
+     * Выписка задачи рядом со слотом: сама задача и её журнал.
+     *
+     * Нужна затем, чтобы исполнителю НЕ приходилось открывать бэклог.
+     * Пока выписки не было, скиллы посылали его прямо в файлы `manage/`,
+     * а после переезда на доску те остались лежать устаревшими — и сессия
+     * читала позавчерашнюю картину молча, потому что файл на месте.
+     * Проверено 28.08.2026: задача 0012 в файле помечена `failed`,
+     * на доске стояла в аудите.
+     *
+     * Выписка снимается оркестратором в тот же миг, что и выдаётся слот,
+     * поэтому расходиться с бэклогом ей негде: она живёт ровно столько,
+     * сколько назначение, и умирает вместе с ним.
+     */
+    writeBrief(slot, { task, journal, board = [] }) {
+      ensure(local('slots'));
+      writeFileSync(local('slots', `${slot}.task.json`), asJson(task));
+      // Пустой журнал — это пустой файл, а не отсутствие файла: иначе
+      // исполнитель не отличит «журнала нет» от «выписку не сняли»
+      // и полезет искать правду сам.
+      writeFileSync(local('slots', `${slot}.journal.md`), journal ?? '');
+      // Опись доски нужна сверкам, которым мало своей задачи: аудит ищет
+      // конфликты с задачами в работе, разбор — дубликаты. Без неё эти
+      // проверки пришлось бы выбросить, а они ловят настоящее.
+      writeFileSync(local('slots', `${slot}.board.json`), asJson(board));
+    },
+
     clearSlot(slot) {
-      const path = local('slots', `${slot}.json`);
-      if (existsSync(path)) rmSync(path);
+      // Выписка убирается вместе со слотом, и это не уборка ради порядка.
+      // Осиротев, она становится вторым источником правды — тем самым,
+      // из-за которого всё и затевалось.
+      for (const name of [
+        `${slot}.json`,
+        `${slot}.task.json`,
+        `${slot}.journal.md`,
+        `${slot}.board.json`,
+      ]) {
+        const path = local('slots', name);
+        if (existsSync(path)) rmSync(path);
+      }
     },
 
     readReport: (id, stage) => readJson(local('reports', `${id}-${stage}.json`)),

@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createIo, summariseChecks } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 
@@ -58,6 +61,76 @@ describe('состояние проверок', () => {
 
   it('пустой ответ не выдаётся за успех', () => {
     expect(summariseChecks('').state).toBe('pending');
+  });
+});
+
+describe('выписка задачи рядом со слотом', () => {
+  // Тут в кои-то веки важна именно запись файлов: выписка существует затем,
+  // чтобы исполнителю НЕ приходилось открывать бэклог. Осиротев, она станет
+  // вторым источником правды — тем самым, из-за которого всё и затевалось.
+  let root;
+  const { config } = resolveConfig({
+    commands: { verify: 'x', deploy: 'x', perf: 'x' },
+    worktreeDir: '.claude/worktrees',
+  });
+
+  const io = () => createIo({ root, config, now: '2026-08-28T12:00:00+03:00' });
+  const at = (name) => join(root, config.paths.local, 'slots', name);
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'pipeline-brief-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('несёт задачу и журнал', () => {
+    io().writeBrief('worker', {
+      task: { id: '0001-one', status: 'design' },
+      journal: '## было и стало',
+      board: [{ id: '0002-two', status: 'review' }],
+    });
+
+    expect(JSON.parse(readFileSync(at('worker.task.json'), 'utf8'))).toMatchObject({
+      id: '0001-one',
+      status: 'design',
+    });
+    expect(readFileSync(at('worker.journal.md'), 'utf8')).toBe('## было и стало');
+    expect(JSON.parse(readFileSync(at('worker.board.json'), 'utf8'))).toEqual([
+      { id: '0002-two', status: 'review' },
+    ]);
+  });
+
+  it('пустой журнал — это пустой файл, а не отсутствие файла', () => {
+    // Иначе исполнитель не отличит «журнала нет» от «выписку не сняли»
+    // и полезет искать правду сам.
+    io().writeBrief('worker', { task: { id: '0001-one' } });
+    expect(existsSync(at('worker.journal.md'))).toBe(true);
+    expect(readFileSync(at('worker.journal.md'), 'utf8')).toBe('');
+  });
+
+  it('умирает вместе со слотом', () => {
+    const world = io();
+    world.writeBrief('worker', { task: { id: '0001-one' }, journal: 'журнал' });
+    world.writeSlot('worker', { taskId: '0001-one', stage: 'design' });
+
+    world.clearSlot('worker');
+
+    expect(existsSync(at('worker.json'))).toBe(false);
+    expect(existsSync(at('worker.task.json'))).toBe(false);
+    expect(existsSync(at('worker.journal.md'))).toBe(false);
+    expect(existsSync(at('worker.board.json'))).toBe(false);
+  });
+
+  it('чужой слот освобождением не задевается', () => {
+    const world = io();
+    world.writeBrief('worker', { task: { id: '0001-one' } });
+    world.writeBrief('solo', { task: { id: '0002-two' } });
+
+    world.clearSlot('worker');
+
+    expect(existsSync(at('solo.task.json'))).toBe(true);
   });
 });
 
