@@ -101,6 +101,19 @@ export function createTrelloBacklog({ trello, config, snapshot, marker }) {
     why: result.why,
   });
 
+  /**
+   * Кем назначаться. Читается один раз и запоминается: участник доски
+   * за время цикла не меняется, а лишний запрос стоит четверти секунды.
+   */
+  let meId = null;
+  async function whoAmI() {
+    if (meId) return { ok: true, id: meId };
+    const me = await trello.get('members/me', { fields: 'id' });
+    if (!me.ok) return failure(me);
+    meId = me.data.id;
+    return { ok: true, id: meId };
+  }
+
   return {
     // Всё, что ниже, повторяет поверхность файлового хранилища. Разница
     // только в том, что записи возвращают обещание: доска отвечает по сети.
@@ -198,6 +211,63 @@ export function createTrelloBacklog({ trello, config, snapshot, marker }) {
       if (!created.ok) return failure(created);
 
       return { ok: true, outcome: 'saved' };
+    },
+
+    /**
+     * Захватить задачу назначением исполнителя в карточке.
+     *
+     * Это операция «сравни-и-запиши», и в этом весь смысл. Проверено
+     * пробой: `POST /cards/{id}/idMembers` при повторном назначении того же
+     * участника отвечает `400 member is already on the card`. Значит первая
+     * станция получает успех, вторая — внятный отказ, и обе не могут
+     * считать задачу своей.
+     *
+     * Обычная правка карточки такого свойства НЕ даёт: `PUT` с полем
+     * `idMembers` молча перезаписывает и отвечает успехом обеим — проверено
+     * там же.
+     *
+     * Захват при этом виден человеку прямо на доске, без заглядывания
+     * в служебные отметки, — ради этого доска и заводилась.
+     *
+     * Чего назначение НЕ даёт: различить рабочие станции. Участник доски
+     * один на все машины, потому что токен один. Имя станции пишется
+     * в служебный блок следующим действием, и обрыв между ними оставит
+     * карточку занятой неизвестно кем; разбирает это сверка — хозяином
+     * считается та станция, у которой есть рабочее дерево задачи.
+     */
+    async acquire(task) {
+      const card = cardOf(task.id);
+      if (!card) return { ok: false, outcome: 'failed', why: `карточки задачи ${task.id} нет` };
+
+      const me = await whoAmI();
+      if (!me.ok) return me;
+
+      const taken = await trello.post(`cards/${card.id}/idMembers`, { value: me.id });
+      if (taken.ok) return { ok: true, outcome: 'ours' };
+
+      // Единственный отказ, который бедой не является: задачу уже заняли.
+      if (/already on the card/i.test(taken.why ?? '')) {
+        return { ok: false, outcome: 'taken', why: 'задача уже назначена исполнителю' };
+      }
+      return failure(taken);
+    },
+
+    /**
+     * Отпустить захват: снять назначение.
+     *
+     * Зовётся при уборке за закрытой задачей и при откате незавершённого
+     * взятия в работу. Отсутствие назначения бедой не считается: цель
+     * достигнута.
+     */
+    async release(task) {
+      const card = cardOf(task.id);
+      if (!card) return { ok: true, outcome: 'released' };
+
+      const me = await whoAmI();
+      if (!me.ok) return me;
+
+      const freed = await trello.delete(`cards/${card.id}/idMembers/${me.id}`);
+      return freed.ok ? { ok: true, outcome: 'released' } : failure(freed);
     },
 
     /**

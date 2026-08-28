@@ -229,6 +229,80 @@ describe('ответ владельца продукта', () => {
   });
 });
 
+describe('захват задачи назначением исполнителя', () => {
+  const task = { id: '0031-proba', title: 'Проба пера' };
+
+  /** Клиент, отвечающий на вопрос «кто я» и на назначение. */
+  const withMe = (assign) =>
+    fakeTrello({
+      'members/me': { ok: true, data: { id: 'me-1' } },
+      'cards/card-1/idMembers': assign,
+    });
+
+  it('назначает исполнителя карточке', async () => {
+    const trello = withMe({ ok: true, data: [] });
+    const store = backlog({ cards: [card()] }, trello);
+
+    expect(await store.acquire(task)).toMatchObject({ ok: true, outcome: 'ours' });
+    const posted = trello.calls.find((c) => c.path === 'cards/card-1/idMembers');
+    expect(posted.method).toBe('POST');
+    expect(posted.body.value).toBe('me-1');
+  });
+
+  it('повторное назначение — это «задачу заняли», а не поломка', async () => {
+    // Ровно то свойство, ради которого захват и переехал на назначение:
+    // Trello отвергает повторное назначение того же участника, и значит
+    // операция годится как «сравни-и-запиши». Проверено на живой доске.
+    const trello = withMe({
+      ok: false,
+      kind: 'refused',
+      status: 400,
+      why: 'member is already on the card',
+    });
+    const store = backlog({ cards: [card()] }, trello);
+
+    expect(await store.acquire(task)).toMatchObject({ ok: false, outcome: 'taken' });
+  });
+
+  it('прочий отказ занятостью не выдаётся', async () => {
+    const trello = withMe({ ok: false, kind: 'refused', status: 401, why: 'invalid token' });
+    const store = backlog({ cards: [card()] }, trello);
+
+    const result = await store.acquire(task);
+    expect(result.outcome).toBe('refused');
+  });
+
+  it('обрыв связи остаётся обрывом: цикл его переживёт', async () => {
+    const trello = withMe({ ok: false, kind: 'offline', why: 'ECONNRESET' });
+    const store = backlog({ cards: [card()] }, trello);
+
+    expect(await store.acquire(task)).toMatchObject({ ok: false, outcome: 'offline' });
+  });
+
+  it('участник спрашивается один раз на все захваты', async () => {
+    const trello = withMe({ ok: true, data: [] });
+    const store = backlog({ cards: [card()] }, trello);
+
+    await store.acquire(task);
+    await store.acquire(task);
+    expect(trello.calls.filter((c) => c.path === 'members/me')).toHaveLength(1);
+  });
+
+  it('отпускание снимает назначение', async () => {
+    const trello = withMe({ ok: true, data: [] });
+    const store = backlog({ cards: [card()] }, trello);
+
+    expect(await store.release(task)).toMatchObject({ ok: true });
+    const dropped = trello.calls.find((c) => c.method === 'DELETE');
+    expect(dropped.path).toBe('cards/card-1/idMembers/me-1');
+  });
+
+  it('отпускание несуществующей карточки бедой не считается', async () => {
+    const store = backlog({}, withMe({ ok: true, data: [] }));
+    expect(await store.release({ id: 'нет-такой' })).toMatchObject({ ok: true });
+  });
+});
+
 describe('карточки, заведённые человеком', () => {
   /** Карточка без служебного блока: заголовок, метка — и всё. */
   const orphan = (over = {}) => ({
