@@ -39,7 +39,7 @@
     ]
   },
   "attempts": {
-    "continuations": 0,
+    "continuations": 1,
     "cycleFailures": 0
   }
 }
