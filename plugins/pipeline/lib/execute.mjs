@@ -291,7 +291,16 @@ function boardDigest(io) {
   for (const id of io.allTaskIds()) {
     const task = io.readTask(id);
     if (!task) continue;
-    digest.push({ id: task.id, title: task.title, type: task.type, status: task.status });
+    digest.push({
+      id: task.id,
+      title: task.title,
+      type: task.type,
+      status: task.status,
+      // Ссылки на артефакты нужны аудиту: он сопоставляет изменения OpenSpec
+      // чужих задач со своим и так ловит пересечения. Без них проверка
+      // выродилась бы в угадывание по именам веток.
+      links: task.links ?? {},
+    });
   }
   return digest;
 }
