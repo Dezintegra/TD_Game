@@ -8,6 +8,7 @@ import {
   resetAttempts,
 } from './task-file.mjs';
 import { planRequests } from './requests.mjs';
+import { appendQuestion, recordAnswer, renderQuestion } from './questions.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { journalAppendix } from './journal.mjs';
@@ -57,9 +58,9 @@ const NOTHING_COMMITTED = ['add-failed', 'commit-failed'];
  * то есть одна неудача останавливала конвейер целиком, и разобраться
  * с этим мог только человек, догадавшийся посмотреть `git status`.
  */
-function commitTaskChange(io, task, entry, message) {
+function commitTaskChange(io, task, entry, message, extraPaths = []) {
   const appendix = journalAppendix(task, io.readJournal(task.id), entry);
-  const paths = [io.taskPath(task.id), io.journalPath(task.id)];
+  const paths = [io.taskPath(task.id), io.journalPath(task.id), ...extraPaths];
 
   io.writeTask(task);
   io.appendJournal(task.id, appendix);
@@ -68,6 +69,33 @@ function commitTaskChange(io, task, entry, message) {
   if (NOTHING_COMMITTED.includes(push.outcome)) io.restorePaths(paths);
 
   return { ...push, paths };
+}
+
+/**
+ * Записать вопрос владельцу продукта.
+ *
+ * Раньше этого шага не было вовсе, и `awaiting-po` был тупиком: задача
+ * уходила туда ждать ответа в разделе файла, который никто не создавал.
+ * Выход из ожидания ровно один — непустой ответ в этом разделе, — так что
+ * задача застревала навсегда, а владелец продукта видел пустой файл
+ * и не знал, что его ждут.
+ *
+ * Возвращает путь файла вопросов, чтобы он уехал тем же коммитом, что
+ * и сама задача: разъехавшись, они дали бы задачу в ожидании без вопроса
+ * либо вопрос без задачи.
+ */
+function askOwner(io, task, report) {
+  const before = io.readQuestions();
+  const block = renderQuestion({
+    taskId: task.id,
+    askedAt: io.now,
+    returnTo: task.returnTo,
+    summary: report.summary,
+    decisions: report.decisions ?? [],
+  });
+
+  io.writeQuestions(appendQuestion(before, block));
+  return io.questionsPath();
 }
 
 /** Перенести отчёт сессии в бэклог. */
@@ -128,6 +156,26 @@ function transferReport(action, io) {
     next = relate(next, born.id);
   }
 
+  // Вопрос записывается ТЕМ ЖЕ коммитом, что и переход в ожидание.
+  // Схема задачи требует поля `question` при этом состоянии, а без записи
+  // в файле вопросов у ожидания нет выхода вовсе.
+  const asks = verdict.status === 'awaiting-po';
+  if (asks) {
+    next = {
+      ...next,
+      question: { askedAt: io.now, summary: report.summary ?? verdict.note, answeredAt: null },
+    };
+  }
+
+  // Ответ, собранный спрашивающей сессией, тоже уезжает сюда — и тем же
+  // коммитом. Не записав его в файл вопросов, конвейер оставил бы раздел
+  // без ответа: следующая спрашивающая сессия задала бы тот же вопрос
+  // заново, а летопись говорила бы, что владелец продукта так и не ответил.
+  const answering = action.stage === 'awaiting-po';
+  if (answering && task.question) {
+    next = { ...next, question: { ...task.question, answeredAt: io.now } };
+  }
+
   const push = commitTaskChange(
     io,
     next,
@@ -141,6 +189,10 @@ function transferReport(action, io) {
       problem: verdict.status === 'failed' ? verdict.note : undefined,
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
+    [
+      asks ? askOwner(io, next, report) : null,
+      answering ? writeAnswer(action, io, report) : null,
+    ].filter(Boolean),
   );
   if (!push.ok) return { result: 'failed', why: push.outcome, created };
 
@@ -281,21 +333,54 @@ function answerQuestion(action, io) {
   });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
+  // Вопрос гасится отметкой времени ответа. Без неё следующий вопрос
+  // по той же задаче «отвечался» бы старым текстом сам собой: разбор
+  // ищет непустой ответ в разделе, а раздел остаётся в файле навсегда.
+  const answer = action.answer ?? io.readAnswer(action.taskId);
+  const next = {
+    ...moved.task,
+    question: task.question
+      ? { ...task.question, answeredAt: io.now }
+      : {
+          askedAt: task.statusChangedAt,
+          summary: 'вопрос задан до появления записи',
+          answeredAt: io.now,
+        },
+  };
+
   const push = commitTaskChange(
     io,
-    moved.task,
+    next,
     {
       at: io.now,
       from: task.status,
       to: task.returnTo,
       what: 'Ответ владельца продукта:',
-      decisions: [action.answer ?? io.readAnswer(action.taskId)],
+      decisions: [answer],
     },
     `chore(backlog): ${task.id} получен ответ, возврат в ${task.returnTo}`,
   );
   return push.ok
     ? { result: 'done', status: task.returnTo }
     : { result: 'failed', why: push.outcome };
+}
+
+/**
+ * Записать в файл вопросов ответ, собранный сессией у человека.
+ *
+ * Сама сессия этот файл не трогает: писатель у бэклога один. Она кладёт
+ * ответ в отчёт, а сюда он попадает уже рукой оркестратора — тем же
+ * порядком, каким в бэклог попадает всё остальное.
+ */
+function writeAnswer(action, io, report) {
+  const answer = report?.decisions?.[0];
+  if (!answer) return null;
+
+  const filled = recordAnswer(io.readQuestions(), action.taskId, answer);
+  if (!filled) return null;
+
+  io.writeQuestions(filled);
+  return io.questionsPath();
 }
 
 /** Применить внешнее состояние: проверки CI или прогон на чужом железе. */
