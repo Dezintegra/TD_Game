@@ -59,7 +59,21 @@ try {
   process.exit(1);
 }
 
-const { snapshot, problem } = buildSnapshot(raw);
+// Прошлый снимок нужен, чтобы копить «сколько сессия уже не идёт».
+// Нет его или он нечитаем — не беда: счёт начнётся с этого мига.
+const snapshotPath = join(root, config.paths.local, 'sessions.json');
+let previous = null;
+try {
+  if (existsSync(snapshotPath)) {
+    // `trim` срезает и метку порядка байтов: она считается пробельным
+    // знаком. Так обходимся без невидимого знака в исходнике.
+    previous = JSON.parse(readFileSync(snapshotPath, 'utf8').trim());
+  }
+} catch {
+  previous = null;
+}
+
+const { snapshot, problem } = buildSnapshot(raw, { previous, now: new Date().toISOString() });
 
 if (!snapshot) {
   // Не пишем ничего. Прошлый снимок при этом остаётся на месте и постареет
