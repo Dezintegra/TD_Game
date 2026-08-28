@@ -72,6 +72,26 @@ function minutesBetween(later, earlier) {
   return (Date.parse(later) - Date.parse(earlier)) / 60000;
 }
 
+/**
+ * Позднейшая из отметок времени; `null`, если ни одной годной нет.
+ *
+ * Нечитаемая отметка отбрасывается наравне с отсутствующей: считать её
+ * нулём значило бы объявить событие случившимся в 1970 году, а всё, что
+ * от него отмеряют, — просроченным.
+ */
+function latest(...stamps) {
+  let best = null;
+  let bestMs = -Infinity;
+  for (const stamp of stamps) {
+    if (!stamp) continue;
+    const ms = Date.parse(stamp);
+    if (Number.isNaN(ms) || ms <= bestMs) continue;
+    best = stamp;
+    bestMs = ms;
+  }
+  return best;
+}
+
 /** Раньше берётся меньший приоритет, при равенстве — более ранняя задача. */
 function byPriorityThenAge(a, b) {
   return a.priority !== b.priority
@@ -104,7 +124,17 @@ function sessionLife({ entry, session, task, config, now }) {
     // проходит до целого интервала. Продолжатель, порождённый в эту щель,
     // ничего не чинит, зато тратит попытку, — а их всего две, и после второй
     // задача встаёт и ждёт человека.
-    const since = entry?.lastSeenAt ?? task.statusChangedAt;
+    // Отсчёт ведётся от ПОЗДНЕЙШЕЙ из двух отметок. Отметка реестра
+    // принадлежит сессии, работавшей над задачей прежде: сменив этап,
+    // задача получает новую сессию, а запись реестра остаётся со старым
+    // временем. Взяв её, сканер отмерял бы молчание нового этапа от чужого,
+    // давно прошедшего, — и хоронил сессию, которой не было ни секунды.
+    //
+    // Поймано 28.08.2026 в первый же живой прогон по доске: задача переехала
+    // в аудит в 12:05, отметка реестра осталась от проработки, 05:06. Семь
+    // часов больше получаса, и этап, начавшийся четыре минуты назад, объявили
+    // мёртвым. Так выходило бы на КАЖДОМ переходе между этапами.
+    const since = latest(entry?.lastSeenAt, task.statusChangedAt);
     const waitingFor = minutesBetween(now, since);
     if (waitingFor !== null && waitingFor < config.deadAfterMinutes) return 'жива';
     return 'сессии нет';
@@ -280,9 +310,13 @@ export function scan(state) {
     const entry = entryOf(task.id);
     if (NEEDS_WORKTREE.includes(task.status) && !entry) continue;
 
-    // Заголовок сессии складывается по правилу, а не берётся из реестра:
-    // у бездревесных этапов реестра нет, а заголовок всё равно определён.
-    const title = entry?.sessionTitle ?? `pipeline:${task.id}:${task.status}`;
+    // Заголовок сессии складывается по правилу, а не берётся из реестра —
+    // и теперь ВСЕГДА, а не только когда записи нет. Правило одно на весь
+    // конвейер (`slots.mjs`, `repair.mjs`), поэтому копия в реестре ничего
+    // не добавляет, зато устаревает: она пишется при заведении дерева и при
+    // смене этапа не обновляется. Сканер искал сессию нынешнего этапа
+    // по заголовку прошлого, не находил и хоронил её.
+    const title = `pipeline:${task.id}:${task.status}`;
     const session = sessions.find((item) => item.title === title);
 
     const life = sessionLife({ entry, session, task, config, now });

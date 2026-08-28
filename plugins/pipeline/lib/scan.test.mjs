@@ -356,6 +356,59 @@ describe('уснувшие сессии', () => {
     expect(result.notes.join()).toContain('снимок сессий не сделан');
   });
 
+  describe('запись реестра осталась от прошлого этапа', () => {
+    // Запись заводится вместе с деревом и при смене этапа НЕ обновляется:
+    // и заголовок сессии, и отметка `lastSeenAt` остаются от прежнего этапа.
+    // Поймано 28.08.2026 в первый живой прогон по доске — задача переехала
+    // в аудит в 12:05, а отметка осталась от проработки, 05:06.
+    const stale = (taskId) =>
+      entry(taskId, {
+        sessionTitle: `pipeline:${taskId}:design`,
+        lastSeenAt: '2026-08-26T05:00:00+03:00',
+      });
+
+    const justMoved = (over = {}) =>
+      task({
+        id: '0001-one',
+        status: 'audit',
+        statusChangedAt: '2026-08-26T11:56:00+03:00',
+        ...over,
+      });
+
+    it('только что начавшийся этап мёртвым не считают', () => {
+      const result = run({
+        tasks: [justMoved()],
+        registry: { entries: [stale('0001-one')] },
+        sessions: [],
+      });
+      expect(kinds(result)).not.toContain('continue-stage');
+    });
+
+    it('живую сессию нового этапа находят, хотя в реестре заголовок старый', () => {
+      const result = run({
+        tasks: [justMoved()],
+        registry: { entries: [stale('0001-one')] },
+        sessions: [alive('pipeline:0001-one:audit')],
+      });
+      expect(kinds(result)).not.toContain('continue-stage');
+    });
+
+    it('но по-настоящему брошенный этап продолжателя всё же получает', () => {
+      // Иначе починка не чинила бы, а просто выключала бы механизм целиком.
+      const result = run({
+        tasks: [justMoved({ statusChangedAt: '2026-08-26T09:00:00+03:00' })],
+        registry: { entries: [stale('0001-one')] },
+        sessions: [],
+      });
+      expect(result.actions).toContainEqual({
+        kind: 'continue-stage',
+        taskId: '0001-one',
+        stage: 'audit',
+        reason: 'сессии нет',
+      });
+    });
+  });
+
   it('умершая сессия ПРОГОНА тоже получает продолжателя', () => {
     // Прогон на чужом железе — класс «ожидательный», и раньше он в отбор
     // не попадал вовсе: перечислялись ресурсные, ревью и исключительные.
