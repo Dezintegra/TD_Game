@@ -44,6 +44,26 @@ describe('маршруты', () => {
     }
   });
 
+  it('кандидат одобряется переходом в очередь', () => {
+    // Переход объявлен, хотя выполняет его человек мышью. Не объяви его —
+    // карточка, перетащенная в «Заведено», вернулась бы обратно: конвейер
+    // возвращает всё, чего нет в таблице. Шлюз не просто не работал бы,
+    // а отменял бы одобрение.
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'new').ok).toBe(true);
+    expect(canTransition(task({ type: 'note', status: 'candidate' }), 'new').ok).toBe(true);
+  });
+
+  it('кандидата нельзя протащить мимо очереди', () => {
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'design').ok).toBe(false);
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'implement').ok).toBe(
+      false,
+    );
+  });
+
+  it('прогон кандидатом не бывает', () => {
+    expect(canTransition(task({ type: 'run', status: 'candidate' }), 'new').ok).toBe(false);
+  });
+
   it('прогон не заходит в проработку', () => {
     expect(canTransition(task({ type: 'run', status: 'new' }), 'design').ok).toBe(false);
     expect(canTransition(task({ type: 'run', status: 'new' }), 'benchmark').ok).toBe(true);

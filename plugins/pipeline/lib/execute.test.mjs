@@ -656,9 +656,31 @@ describe('заявки на новые задачи', () => {
 
     const born = io.tasks.get(result.created[0]);
     expect(born.type).toBe('feature');
-    expect(born.status).toBe('new');
+    // Заведена кандидатом: заявка агента — предложение, а не решение.
+    expect(born.status).toBe('candidate');
     expect(born.links.related).toContain('0001-one');
     expect(io.tasks.get('0001-one').links.related).toContain(born.id);
+  });
+
+  it('заявка на прогон заводится сразу в работу, минуя шлюз', async () => {
+    const io = fakeIo({
+      tasks: [note()],
+      report: {
+        taskId: '0001-one',
+        stage: 'triage',
+        outcome: 'done',
+        requests: [
+          {
+            type: 'run',
+            title: 'Проверить длину матча после правки',
+            description: 'Замер заказан по изменению.',
+            run: { kind: 'arena', expectation: 'медиана в вилке 10–15 минут' },
+          },
+        ],
+      },
+    });
+    const [result] = await execute([triage], io);
+    expect(io.tasks.get(result.created[0]).status).toBe('new');
   });
 
   it('каждая порождённая задача уезжает своим коммитом', async () => {
