@@ -660,7 +660,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   let layout: MinimapLayout = minimapLayout(
     app.screen.width,
     app.screen.height,
-    sizeToken('--td-field-inset-right', 0),
+    sizeToken('--td-field-inset-top', 0),
   );
   let frame = 0;
 
@@ -725,14 +725,14 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   };
 
   const relayoutMinimap = (): void => {
-    // Отступ справа читается из токена при каждой перекладке, а не один
-    // раз при создании сцены: на телефоне он ненулевой, на мониторе ноль,
-    // и меняется он поворотом экрана — то есть ровно тогда, когда
-    // миникарта и перекладывается.
+    // Отступ сверху читается из токена при каждой перекладке, а не один
+    // раз при создании сцены: он равен высоте своей сводки, а она
+    // меняется поворотом экрана — то есть ровно тогда, когда миникарта
+    // и перекладывается.
     layout = minimapLayout(
       app.screen.width,
       app.screen.height,
-      sizeToken('--td-field-inset-right', 0),
+      sizeToken('--td-field-inset-top', 0),
     );
     if (currentMap !== undefined) {
       drawMinimapTerrain(minimapTerrain, currentMap, layout, minimapColors);

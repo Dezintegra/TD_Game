@@ -9,11 +9,13 @@ import {
   UpgradeStat,
   UpgradeTarget,
   energyToVisible,
+  growPpm,
   isUpgradeMaxed,
   unitsToCells,
 } from '@td/shared';
 import type { UnitType, UpgradeBranch } from '@td/shared';
-import type { PlayerStats } from '@td/sim';
+import { playerStats } from '@td/sim';
+import type { PlayerState, PlayerStats } from '@td/sim';
 import type { StatRow } from './store.js';
 
 /**
@@ -192,20 +194,56 @@ const readingOf = (branch: UpgradeBranch, stats: PlayerStats): Reading | undefin
 };
 
 /**
+ * Игрок с купленным уровнем одной ветки.
+ *
+ * Ровно то же, что делает ядро при покупке (`apply.ts`), и теми же
+ * средствами: `growPpm` с тем же процентом. Своей арифметики здесь нет
+ * и быть не должно — иначе показанное «станет 11» разошлось бы
+ * с тем, что игрок получит на самом деле, и разошлось бы молча.
+ */
+const withBranchBought = (player: PlayerState, index: number): PlayerState => {
+  const branch = UPGRADE_BRANCHES[index];
+  const current = player.upgrades[index];
+  if (branch === undefined || current === undefined) return player;
+
+  return {
+    ...player,
+    upgrades: player.upgrades.map((entry, at) =>
+      at === index
+        ? {
+            ...entry,
+            level: entry.level + 1,
+            effectPpm: growPpm(entry.effectPpm, branch.effectPercent),
+          }
+        : entry,
+    ),
+  };
+};
+
+/**
  * Строки по каждой группе столбцов.
  *
  * Строк ровно столько, сколько у группы веток. Характеристики без ветки
- * не показываются: столбец отвечает на вопрос «что можно улучшить»,
+ * не показываются: окно отвечает на вопрос «что можно улучшить»,
  * и строка без ответа занимает место зря.
  *
- * Уровни нужны здесь ради потолка: цена у предельной ветки смысла
- * не имеет, и вместо неё показывается «макс.».
+ * На вход идёт игрок целиком, а не одни только его характеристики,
+ * и это не про удобство. Строка обязана показывать не только «сколько
+ * сейчас», но и «сколько станет», — а второе выводится ТОЛЬКО прогоном
+ * той же функции баланса по игроку с купленным уровнем. Правило прироста
+ * живёт в балансе, и повторить его в интерфейсе значило бы завести вторую
+ * копию, которая однажды разойдётся с первой.
+ *
+ * Цена этому — по одному `playerStats` на ветку, то есть тридцать два
+ * прогона на снимок. Снимок снимается пять раз в секунду, а прогон — это
+ * восемь наборов из горстки умножений; на фоне тика, обходящего сотни
+ * машин тридцать раз в секунду, это шум.
  */
 export const statRowsOf = (
+  player: PlayerState,
   stats: PlayerStats,
   costs: readonly number[],
   energy: number,
-  levels: readonly number[],
 ): readonly (readonly StatRow[])[] => {
   const rows: StatRow[][] = Array.from({ length: STAT_GROUP_COUNT }, () => []);
 
@@ -217,14 +255,21 @@ export const statRowsOf = (
     const row = rows[groupOf(branch)];
     if (row === undefined) return;
 
-    const maxed = isUpgradeMaxed(branch, levels[index] ?? 0);
+    const maxed = isUpgradeMaxed(branch, player.upgrades[index]?.level ?? 0);
+
+    // У предельной ветки «станет» не существует: покупки не будет.
+    // Показывать там прежнее число значило бы обещать, что оно вырастет.
+    const next = maxed
+      ? undefined
+      : readingOf(branch, playerStats(withBranchBought(player, index)));
 
     row.push({
       branch: index,
       value: reading.value,
       fraction: reading.fraction,
+      ...(next === undefined ? {} : { next: next.value }),
       cost: energyToVisible(cost),
-      // Предельная ветка не «дорогая», а закрытая: приглушённая стрелка
+      // Предельная ветка не «дорогая», а закрытая: приглушённая кнопка
       // означала бы «копи», а копить тут не на что.
       affordable: !maxed && energy >= cost,
       maxed,

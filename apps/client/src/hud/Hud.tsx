@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties } from 'react';
 import { Button, Panel } from '@td/ui';
 import { ATTACK_STANCES, ATTACK_STANCE_LABEL, MS_PER_TICK, RejectReason } from '@td/shared';
 import { OutcomeReason } from '@td/protocol';
@@ -12,6 +12,7 @@ import { NoticeStack, Nudge } from './Notices.js';
 import { SideStatus } from './SideStatus.js';
 import { StructureInfo } from './StructureInfo.js';
 import { SoundPanel } from './SoundPanel.js';
+import { UpgradeWindow } from './UpgradeWindow.js';
 import { HOTKEYS } from './labels.js';
 
 const statusLabel: Record<ConnectionStatus, string> = {
@@ -88,11 +89,13 @@ export const Hud = () => {
         <FieldMessages />
         <StructureInfo />
         <UpgradeBackdrop />
+        <UpgradeWindow />
         <MatchMenu />
         <ResultOverlay />
       </div>
 
       <div id="hud-bottom">
+        <TargetBlock />
         <ActionBar />
       </div>
     </div>
@@ -100,18 +103,16 @@ export const Hud = () => {
 };
 
 /**
- * Слой, ловящий нажатие мимо панели прокачки.
+ * Слой, ловящий нажатие мимо окна прокачки.
  *
- * Рисуется ВСЕГДА, а показывается правилом CSS при совпадении двух
- * условий: маленький экран и открытая прокачка. Оба условия выразимы
- * в CSS — второе классом `td-stats-closed` на корне документа, — и React
- * благодаря этому по-прежнему не знает ни размера экрана, ни того, панель
- * перед ним или столбцы под плитками.
+ * Рисуется ВСЕГДА, а показывается правилом CSS при открытой прокачке —
+ * по классу `td-stats-closed` на корне документа. React благодаря этому
+ * по-прежнему не знает ни размера экрана, ни того, открыто окно или нет.
  *
- * Нужен затем, что панель занимает поле не целиком: в портрете над ней
- * остаётся полоска карты, и нажатие туда обязано закрывать панель. Игрок,
- * не нашедший выхода из панели, теряет матч, а не удобство, — поэтому
- * способов закрыть её четыре: эта кнопка, нажатие мимо, `Esc` и `R`.
+ * Нужен затем, что окно занимает поле не целиком: вокруг него остаётся
+ * поле, и нажатие туда обязано закрывать окно. Игрок, не нашедший выхода,
+ * теряет матч, а не удобство, — поэтому способов закрыть окно четыре:
+ * кнопка прокачки, крестик, нажатие мимо, `Esc` и `R`.
  */
 const UpgradeBackdrop = () => (
   <div
@@ -294,44 +295,72 @@ const TopBar = () => {
 };
 
 /**
- * Середина полосы: то, что относится к матчу, а не к стороне.
+ * Середина верха: энергия, доход и время матча.
  *
- * Цель атаки здесь обязательна. Это единственный приказ, отдаваемый всему
- * войску сразу, и не видеть его — значит не знать, куда идёт своя армия.
+ * Только то, что относится к матчу и читается ЧАСТО. Энергия — число,
+ * по которому принимается каждое решение матча, и место посередине
+ * верхнего края у неё поэтому не случайно: туда взгляд возвращается
+ * из любого угла экрана.
  *
- * Режим атаки стоит рядом с целью, а не в нижнем тулбаре, где был раньше.
- * Оба — приказ всему войску сразу, отдаются вместе и читаются вместе;
- * тулбар же отвечает на другой вопрос — что заказать и что улучшить.
+ * Цели атаки и режима здесь больше нет — они уехали в левый нижний угол
+ * (`TargetBlock`). Оба меняются раз в несколько минут, а место занимали
+ * рядом с величиной, которую читают несколько раз в минуту.
  */
 const CentreBlock = () => {
   const energy = useHudStore((state) => state.match.energy);
   const income = useHudStore((state) => state.match.incomePerSecond);
-  const targetLabel = useHudStore((state) => state.match.targetLabel);
   const seconds = useHudStore((state) => state.match.matchSeconds);
 
   const minutes = Math.floor(seconds / 60);
   const rest = Math.floor(seconds % 60);
 
   return (
-    <div
-      className="td-match-centre"
-      style={{ display: 'flex', gap: 'var(--td-hud-centre-gap)', alignItems: 'baseline' }}
-    >
-      <Metric
-        label="Энергия"
-        value={
-          // Энергия вздрагивает на любой отказ по бедности — неважно,
-          // за юнита, постройку или улучшение не хватило.
-          <Nudge reason={RejectReason.NotEnoughEnergy}>
-            <span data-testid="energy">{energy}</span>
-          </Nudge>
-        }
-        hint={`+${String(income)} / с`}
-        accent
-      />
-      <Metric label="Цель" value={<span data-testid="target">{targetLabel}</span>} />
-      <Metric label="Режим" value={<StanceSwitch />} />
-      <Metric label="Время" value={`${String(minutes)}:${String(rest).padStart(2, '0')}`} />
+    <div className="td-match-centre">
+      <span className="td-centre-energy">
+        {/* Энергия вздрагивает на любой отказ по бедности — неважно,
+            за юнита, постройку или улучшение не хватило. */}
+        <Nudge reason={RejectReason.NotEnoughEnergy}>
+          <span data-testid="energy">{energy}</span>
+        </Nudge>
+      </span>
+
+      <span className="td-centre-income">
+        <span className="td-centre-income-value">+{income}/с</span>
+        <span className="td-centre-income-label">энергия</span>
+      </span>
+
+      <span className="td-centre-divider" />
+
+      <span className="td-centre-clock">
+        {minutes}:{String(rest).padStart(2, '0')}
+      </span>
+    </div>
+  );
+};
+
+/**
+ * Левый нижний угол: цель атаки и режим войска.
+ *
+ * Оба — приказ ВСЕМУ войску сразу, отдаются вместе и читаются вместе,
+ * поэтому стоят одним блоком. Прежде они жили в середине верхней полосы,
+ * рядом с энергией; переезд освободил середину экрана, которая теперь
+ * отдана окну прокачки, и увёл редко меняющееся из места, куда взгляд
+ * возвращается постоянно.
+ *
+ * Цель обязательна на экране. Это единственный приказ всему войску,
+ * и не видеть его — значит не знать, куда идёт своя армия.
+ */
+const TargetBlock = () => {
+  const targetLabel = useHudStore((state) => state.match.targetLabel);
+
+  return (
+    <div className="td-target-block">
+      <span className="td-target-label">цель</span>
+      <span className="td-target-name" data-testid="target">
+        {targetLabel}
+      </span>
+      <span className="td-target-divider" />
+      <StanceSwitch />
     </div>
   );
 };
@@ -346,75 +375,23 @@ const StanceSwitch = () => {
   const stance = useHudStore((state) => state.match.stance);
 
   return (
-    <span style={{ display: 'flex', gap: 'var(--td-space-1)' }}>
-      {ATTACK_STANCES.map((option) => {
-        const active = stance === option;
-
-        return (
-          <button
-            key={option}
-            type="button"
-            data-testid={`stance-${String(option)}`}
-            onClick={() => matchCommands().setStance(option)}
-            style={{
-              padding: '1px var(--td-space-2)',
-              border: `1px solid ${active ? 'var(--td-accent)' : 'var(--td-border-control)'}`,
-              borderRadius: 'var(--td-radius-control)',
-              background: 'transparent',
-              color: active ? 'var(--td-accent)' : 'var(--td-text-muted-3)',
-              fontFamily: 'var(--td-font-ui)',
-              fontSize: 'var(--td-text-sm)',
-              cursor: 'pointer',
-            }}
-          >
-            {ATTACK_STANCE_LABEL[option]}
-          </button>
-        );
-      })}
+    <span className="td-stance-switch">
+      {ATTACK_STANCES.map((option) => (
+        <button
+          key={option}
+          type="button"
+          className="td-stance-button"
+          data-testid={`stance-${String(option)}`}
+          // Состояние, а не раскладка, — поэтому атрибутом, а не размером.
+          data-active={String(stance === option)}
+          onClick={() => matchCommands().setStance(option)}
+        >
+          {ATTACK_STANCE_LABEL[option]}
+        </button>
+      ))}
     </span>
   );
 };
-
-interface MetricProps {
-  readonly label: string;
-  readonly value: ReactNode;
-  readonly hint?: string | undefined;
-  readonly accent?: boolean;
-}
-
-const Metric = ({ label, value, hint, accent }: MetricProps) => (
-  <div
-    style={{
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 1,
-      minWidth: 'var(--td-metric-min)',
-    }}
-  >
-    <span
-      style={{
-        color: 'var(--td-text-muted-3)',
-        fontSize: 'var(--td-text-xs)',
-        textTransform: 'uppercase',
-        letterSpacing: 'var(--td-ls-label)',
-      }}
-    >
-      {label}
-    </span>
-    <span
-      style={{
-        fontFamily: 'var(--td-font-mono)',
-        fontSize: 'var(--td-metric-value-size)',
-        color: accent === true ? 'var(--td-accent)' : 'var(--td-text-primary)',
-      }}
-    >
-      {value}
-    </span>
-    {hint !== undefined && (
-      <span style={{ color: 'var(--td-text-muted-4)', fontSize: 'var(--td-text-xs)' }}>{hint}</span>
-    )}
-  </div>
-);
 
 /**
  * Диагностические величины — в атрибутах, а не на экране.

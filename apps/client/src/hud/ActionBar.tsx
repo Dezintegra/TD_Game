@@ -1,40 +1,29 @@
 import type { MouseEvent, ReactNode } from 'react';
-import {
-  BUILDABLE_KINDS,
-  STRUCTURE_UPGRADE_TARGET,
-  StructureKind,
-  UNIT_TYPES,
-  UNIT_UPGRADE_TARGET,
-  UPGRADE_BRANCHES,
-  UnitType,
-  UpgradeTarget,
-} from '@td/shared';
+import { BUILDABLE_KINDS, StructureKind, UNIT_TYPES, UnitType } from '@td/shared';
 import { BATCH_ORDER_COUNT } from '../game/controls.js';
-import { NUKE_STAT_GROUP } from '../game/stat-rows.js';
 import { matchCommands, useHudStore } from '../game/store.js';
-import type { StatRow } from '../game/store.js';
 import { BaseGlyph, GeneralIcon, StructureIcon, TargetGlyph, UnitIcon } from './icons.js';
-import { STRUCTURE_SHORT, UNIT_SHORT, UPGRADE_STAT_SHORT, UPGRADE_UNIT } from './labels.js';
+import { STRUCTURE_SHORT, UNIT_SHORT } from './labels.js';
 
 /**
- * Нижний тулбар: всё, чем игрок распоряжается, и вся прокачка.
+ * Плитки заказа: всё, чем игрок распоряжается.
  *
- * Прокачка живёт при плитках, а не отдельным списком, и это главное
- * решение. Прежняя панель перечисляла двадцать девять веток строкой
- * «Атака — ур. 7 — 96» в другом углу экрана. Ни на один вопрос игрока она
- * не отвечала: что такое седьмой уровень атаки, он не знает, а решение
- * «докупить Тесле дальность» принимается там, где видно саму Теслу.
+ * Прокачки здесь больше нет. Прежде у каждой плитки был свой столбец
+ * характеристик, и показывался он по-разному: на мониторе под плиткой
+ * в полосе, на телефоне — панелью поверх поля с другой группировкой.
+ * Две картинки одного и того же, и игрок, научившийся одному, второму
+ * учился заново. Теперь прокачка живёт одним окном (`UpgradeWindow`),
+ * одинаковым на любом размере экрана.
  *
- * Поэтому у каждой плитки есть столбец с ДЕЙСТВУЮЩИМИ значениями,
- * и стрелка покупки — прямо у той характеристики, которую она поднимает.
+ * Плитка при этом сохранила ровно то, что отвечает на вопрос «заказывать
+ * ли сейчас»: значок, название, цену и горячую клавишу. Цена осталась
+ * именно здесь, а не уехала в окно: прокачка вида удорожает покупку
+ * этого же вида, и без цены у плитки рост стоимости юнита выглядел бы
+ * поломкой интерфейса.
  *
- * Показывается этот столбец по-разному, и решает это CSS, а не React.
- * На мониторе — под плиткой в полосе, как прежде. На маленьком экране
- * полоса поднимается панелью поверх поля и раскладывается в три ряда:
- * юниты, постройки, генерал с базой. Разметка при этом ОДНА, и это
- * не экономия строк: две разметки означали бы две плитки `train-0`
- * в документе, два набора подписок на store и переименование половины
- * сквозных проверок.
+ * Разметка ОДНА на все размеры экрана, и это не экономия строк: две
+ * разметки означали бы две плитки `train-0` в документе, два набора
+ * подписок на store и переименование половины сквозных проверок.
  *
  * Отсюда же требование к стилям: размеры задаются классами, а не
  * встроенным стилем. Встроенный стиль медиазапросом не переопределить,
@@ -78,14 +67,6 @@ interface TileProps {
   readonly affordable: boolean;
   readonly active?: boolean;
   readonly role: TileRole;
-  /**
-   * Группа столбца характеристик, которую показывать. Нет — столбца нет.
-   *
-   * Группа, а не цель прокачки, и это не придирка к слову. У всех плиток,
-   * кроме ядерного удара, они совпадают; ядерные же ветки принадлежат
-   * цели «база», а показываются здесь — см. `NUKE_STAT_GROUP`.
-   */
-  readonly group?: number | undefined;
   readonly testId: string;
   readonly onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
 }
@@ -99,12 +80,9 @@ const Tile = ({
   affordable,
   active,
   role,
-  group,
   testId,
   onSelect,
 }: TileProps) => {
-  const statsOpen = useHudStore((state) => state.statsOpen);
-
   return (
     <div
       className="td-tile"
@@ -144,99 +122,6 @@ const Tile = ({
             {cost}
           </span>
         )
-      )}
-
-      {statsOpen && group !== undefined && <StatColumn group={group} />}
-    </div>
-  );
-};
-
-/**
- * Столбец характеристик одной цели прокачки.
- *
- * Подписан на ЧИСЛО строк, а не на сам список. Список пересобирается
- * при каждом снимке матча — то есть пять раз в секунду, — и подписка
- * на него означала бы перерисовку столбца пять раз в секунду просто так:
- * содержимое-то не менялось.
- */
-const StatColumn = ({ group }: { readonly group: number }) => {
-  const count = useHudStore((state) => state.match.stats[group]?.length ?? 0);
-
-  if (count === 0) return null;
-
-  return (
-    <div className="td-stat-column">
-      {Array.from({ length: count }, (_, index) => (
-        <StatLine key={index} group={group} index={index} />
-      ))}
-    </div>
-  );
-};
-
-/**
- * Одна характеристика: название, действующее значение и стрелка покупки.
- *
- * Подписки здесь на ЧИСЛА и признаки, а не на строку целиком, и это
- * не педантизм. Снимок матча пересобирается пять раз в секунду, и объект
- * строки каждый раз новый; подписка на него означала бы, что все тридцать
- * строк тулбара перерисовываются пять раз в секунду, хотя меняются они
- * только при покупке. Примитивы zustand сравнивает по значению, и лишней
- * перерисовки не происходит вовсе.
- */
-const StatLine = ({ group, index }: { readonly group: number; readonly index: number }) => {
-  const at = (state: { readonly match: { readonly stats: readonly (readonly StatRow[])[] } }) =>
-    state.match.stats[group]?.[index];
-
-  const branch = useHudStore((state) => at(state)?.branch ?? -1);
-  const value = useHudStore((state) => at(state)?.value ?? 0);
-  const fraction = useHudStore((state) => at(state)?.fraction ?? 0);
-  const cost = useHudStore((state) => at(state)?.cost ?? 0);
-  const affordable = useHudStore((state) => at(state)?.affordable ?? false);
-  const maxed = useHudStore((state) => at(state)?.maxed ?? false);
-
-  const description = UPGRADE_BRANCHES[branch];
-  if (branch < 0 || description === undefined) return null;
-
-  const row = { branch, value, fraction, cost, affordable, maxed };
-
-  return (
-    <div className="td-stat-line" data-testid={`stat-${String(branch)}`}>
-      <span className="td-stat-name" title={description.label}>
-        {UPGRADE_STAT_SHORT[description.stat]}
-      </span>
-      <span className="td-stat-value" data-testid={`stat-value-${String(branch)}`}>
-        {row.value.toFixed(row.fraction)}
-        {/* Единица измерения отдельным элементом: в панели телефона
-            она прячется правилом CSS. Восемь плиток в ширину ландшафта
-            помещаются только так, а размерность в этот момент уже сказана
-            названием строки — «дальн.» и «скор.» ни с чем не спутать. */}
-        <span className="td-stat-unit">{UPGRADE_UNIT[description.stat]}</span>
-      </span>
-      {/* Предельная ветка кнопки не предлагает вовсе. Приглушённая
-          стрелка означает «копи» — это ответ на нехватку энергии,
-          а здесь копить не на что: покупка будет отклонена при любом
-          кошельке. Кнопка, которая гарантированно получит отказ, —
-          это обещание, которого интерфейс не сдержит. */}
-      {row.maxed ? (
-        <span
-          className="td-stat-maxed"
-          data-testid={`maxed-${String(branch)}`}
-          title="Предельный уровень"
-        >
-          макс.
-        </span>
-      ) : (
-        <button
-          type="button"
-          className="td-stat-buy"
-          data-testid={`upgrade-${String(branch)}`}
-          data-affordable={String(row.affordable)}
-          title={`Улучшить за ${String(row.cost)}`}
-          onClick={() => matchCommands().buyUpgrade(branch)}
-        >
-          <span aria-hidden>▲</span>
-          {row.cost}
-        </button>
       )}
     </div>
   );
@@ -294,10 +179,12 @@ export const ActionBar = () => {
   const match = useHudStore((state) => state.match);
 
   return (
-    <>
-      <UpgradesToggle />
-
-      <div className="td-toolbar" data-testid="toolbar">
+    <div className="td-toolbar" data-testid="toolbar">
+      {/* Рейка заказа. Обёртка нужна раскладке: на мониторе рейка стоит
+          двумя столбцами — юниты с ударом слева, постройки с целью
+          справа, — и выразить это областями сетки экрана нельзя, там
+          у рейки одна область на всё. */}
+      <div className="td-order-rail">
         <div className="td-tile-group" data-testid="production-panel">
           {UNIT_TYPES.map((type) => {
             const cost = match.unitCosts[type] ?? 0;
@@ -312,7 +199,6 @@ export const ActionBar = () => {
                 hotkey={UNIT_HOTKEY[type]}
                 cost={cost}
                 affordable={match.energy >= cost}
-                group={UNIT_UPGRADE_TARGET[type]}
                 // Ctrl или Shift — заказ пачки. Ядро проверит каждый заказ
                 // отдельно, поэтому «десять, когда хватает на четыре»
                 // превращается в четыре.
@@ -342,7 +228,6 @@ export const ActionBar = () => {
                 cost={cost}
                 affordable={match.energy >= cost}
                 active={match.buildKind === kind}
-                group={STRUCTURE_UPGRADE_TARGET[kind]}
                 onSelect={() =>
                   matchCommands().setBuildKind(match.buildKind === kind ? null : kind)
                 }
@@ -354,13 +239,12 @@ export const ActionBar = () => {
         {/* Ядерный удар и цель атаки стоят РАЗНЫМИ группами, хотя обе
             только включают режим и промах по обеим не стоит ничего.
 
-            Разделило их то, что у удара появился столбец из трёх ядерных
-            веток, а у цели веток нет и не будет. В одной группе плитки
-            делят ширину поровну, и на телефоне цель отнимала у удара
-            половину ряда ни за что: подписи «мощн.» и «радиус»
-            обрезались до одной буквы. Разными группами раскладка панели
-            ставит их порознь — удару ширину, цели место рядом с кнопкой
-            прокачки. */}
+            Прежде их разделяли ветки прокачки: у удара был свой столбец
+            из трёх, у цели нет и не будет. Столбцов при плитках больше
+            нет, а разделение осталось, и уже по другой причине: удар
+            стоит энергии и показывает цену с откатом, а цель не стоит
+            ничего. В одной группе они делили бы ширину поровну, и цена
+            удара обрезалась бы ради плитки, которой показывать нечего. */}
         <div className="td-tile-group" data-testid="nuke-panel">
           <Tile
             testId="aim-nuke"
@@ -375,7 +259,6 @@ export const ActionBar = () => {
             // цена или секунды.
             affordable={match.energy >= match.nukeCost && match.nukeReadyInSeconds === 0}
             active={match.aimingNuke}
-            group={NUKE_STAT_GROUP}
             onSelect={() => matchCommands().toggleNukeAim()}
           />
         </div>
@@ -397,8 +280,18 @@ export const ActionBar = () => {
             onSelect={() => matchCommands().toggleTargetAim()}
           />
         </div>
+      </div>
 
-        <span className="td-toolbar-divider" data-testid="toolbar-divider" />
+      <span className="td-toolbar-divider" data-testid="toolbar-divider" />
+
+      {/* Служебный ряд под рейкой: прокачка и переходы камерой.
+
+          Отделён от заказа не украшения ради. Нажатие здесь ничего
+          не заказывает и энергии не тратит — оно переносит камеру либо
+          открывает окно, — и без видимого различия это читается
+          поломкой: игрок жмёт «База», ожидая покупки. */}
+      <div className="td-service-row">
+        <UpgradesToggle />
 
         <div className="td-tile-group" data-testid="own-panel">
           <Tile
@@ -409,14 +302,13 @@ export const ActionBar = () => {
             hotkey="Пробел"
             cost={0}
             affordable
-            group={UpgradeTarget.General}
             onSelect={() => matchCommands().focusOwn('general')}
           />
 
-          {/* Плитка базы на маленьком экране прячется правилом CSS,
-              а её место занимает прочность базы в верхней полосе: число
-              уже там и уже про базу. В панели прокачки плитка снова
-              появляется — там она нужна ради добычи энергии. */}
+          {/* Плитка базы переносит камеру, и только. Прокачка добычи
+              энергии уехала в строку базы окна прокачки, поэтому прятать
+              плитку на маленьком экране больше не нужно: спрятанная,
+              она ничего с собой не уносила бы. */}
           <Tile
             testId="focus-base"
             role="service"
@@ -425,11 +317,10 @@ export const ActionBar = () => {
             hotkey=""
             cost={0}
             affordable
-            group={UpgradeTarget.Base}
             onSelect={() => matchCommands().focusOwn('base')}
           />
         </div>
       </div>
-    </>
+    </div>
   );
 };

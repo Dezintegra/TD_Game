@@ -40,18 +40,20 @@ interface SideStatusProps {
 }
 
 /**
- * Содержимое прижимается к середине экрана: своё — вправо, чужое — влево.
+ * Содержимое прижимается к КРАЮ экрана: своё влево, чужое вправо.
  *
- * Так две сводки оказываются рядом, и сравнение «у него на восемь Тесл
- * больше» делается глазом. Прижми их к краям — и то же сравнение стоило бы
- * прохода взглядом через весь монитор, то есть не делалось бы вовсе.
+ * Прежде обе сводки жались к середине — так сравнение «у него на восемь
+ * Тесл больше» делалось одним взглядом. Теперь они разведены по углам,
+ * и это осознанный размен: середина экрана обязана остаться свободной,
+ * там открывается окно прокачки. Сравнение при этом не пропадает — обе
+ * сводки по-прежнему в одной строке экрана и читаются, не опуская глаз.
  */
 const blockStyle = (own: boolean): CSSProperties => ({
   display: 'flex',
   flexDirection: 'column',
-  alignItems: own ? 'flex-end' : 'flex-start',
+  alignItems: own ? 'flex-start' : 'flex-end',
   gap: 'var(--td-side-row-gap)',
-  justifySelf: own ? 'end' : 'start',
+  justifySelf: own ? 'start' : 'end',
   color: own ? 'var(--td-player-self)' : 'var(--td-player-enemy)',
   minWidth: 0,
 });
@@ -248,7 +250,10 @@ export const SideStatus = ({
       data-side={localSide === undefined ? undefined : String(localSide)}
       data-computer={localSide === undefined ? undefined : String(computer)}
     >
-      <div style={rowStyle}>
+      {/* Первая плита: кто играет, жив ли генерал и цела ли база.
+          Всё это меняется редко и читается редко — но обязано быть
+          на виду постоянно: разрушение базы есть условие победы. */}
+      <div style={rowStyle} className="td-side-plate" data-own={String(own)}>
         <span style={nameStyle}>{name}</span>
         {computer && (
           <span style={mutedStyle} data-testid="side-computer">
@@ -277,7 +282,13 @@ export const SideStatus = ({
 
       <BaseHealth side={side} own={own} />
 
-      <div style={rowStyle}>
+      {/* Вторая плита: состав войск и построек.
+
+          Отдельной полосой, а не строкой первой плиты: числа здесь
+          меняются каждые несколько секунд, и держать их в одной рамке
+          с именем игрока значило бы заставлять взгляд каждый раз
+          проходить мимо имени. */}
+      <div style={rowStyle} className="td-side-tally" data-own={String(own)}>
         {UNIT_TYPES.map((type: UnitType) => {
           return (
             <Tally

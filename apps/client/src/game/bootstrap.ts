@@ -1056,12 +1056,7 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
     nukeCost: energyToVisible(stats.nuke.cost),
     nukeRadiusCells: unitsToCells(stats.nuke.radius),
     nukeReadyInSeconds: nukeWaitSeconds(world, player),
-    stats: statRowsOf(
-      stats,
-      costs,
-      player.energy,
-      player.upgrades.map((upgrade) => upgrade.level),
-    ),
+    stats: statRowsOf(player, stats, costs, player.energy),
     targetLabel: target === undefined ? '—' : STRUCTURE_STATS[target.kind].label,
     matchSeconds: world.tick / TICKS_PER_SECOND,
     winner: world.winner,
