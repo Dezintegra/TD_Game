@@ -1,5 +1,8 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  NEEDS_SESSION,
   NEEDS_WORKTREE,
   ROUTES,
   STATES,
@@ -171,6 +174,19 @@ describe('цена состояния', () => {
 
   it('выкладка требует тишины на машине', () => {
     expect(isExclusive(task({ status: 'deploy' }))).toBe(true);
+  });
+});
+
+describe('этапы и скиллы', () => {
+  it('у каждого этапа с сессией есть скилл', () => {
+    // Сессия-исполнитель читает указания своего этапа из
+    // `skills/<этап>.md` и без них не знает, что делать. Расхождение
+    // скиллов с кодом — самая частая беда этого конвейера: этап,
+    // объявленный в таблице, но не описанный, обнаружится только тогда,
+    // когда задача до него дойдёт, — то есть в проде и молча.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const missing = NEEDS_SESSION.filter((stage) => !existsSync(`${dir}${stage}.md`));
+    expect(missing).toEqual([]);
   });
 });
 
