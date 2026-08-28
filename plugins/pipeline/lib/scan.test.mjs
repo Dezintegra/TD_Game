@@ -356,11 +356,12 @@ describe('уснувшие сессии', () => {
     expect(result.notes.join()).toContain('снимок сессий не сделан');
   });
 
-  describe('запись реестра осталась от прошлого этапа', () => {
-    // Запись заводится вместе с деревом и при смене этапа НЕ обновляется:
-    // и заголовок сессии, и отметка `lastSeenAt` остаются от прежнего этапа.
-    // Поймано 28.08.2026 в первый живой прогон по доске — задача переехала
-    // в аудит в 12:05, а отметка осталась от проработки, 05:06.
+  describe('этап без сессии: слот отличает начало от смерти', () => {
+    // Запись реестра заводится вместе с деревом и при смене этапа
+    // НЕ обновляется: и заголовок сессии, и отметка `lastSeenAt` остаются
+    // от прежнего этапа. Поймано 28.08.2026 в первый живой прогон по доске —
+    // задача переехала в аудит в 12:05, а отметка осталась от проработки,
+    // 05:06. Верить ей нельзя ни в одном из случаев ниже.
     const stale = (taskId) =>
       entry(taskId, {
         sessionTitle: `pipeline:${taskId}:design`,
@@ -375,28 +376,22 @@ describe('уснувшие сессии', () => {
         ...over,
       });
 
-    it('только что начавшийся этап мёртвым не считают', () => {
-      const result = run({
-        tasks: [justMoved()],
-        registry: { entries: [stale('0001-one')] },
-        sessions: [],
-      });
-      expect(kinds(result)).not.toContain('continue-stage');
+    /** Слот, выданный под нынешний этап минуты назад. */
+    const slot = (over = {}) => ({
+      worker: {
+        taskId: '0001-one',
+        stage: 'audit',
+        assignedAt: '2026-08-26T11:58:00+03:00',
+        ...over,
+      },
     });
 
-    it('живую сессию нового этапа находят, хотя в реестре заголовок старый', () => {
+    it('слота нет — этап начинают немедленно, не выжидая получаса', () => {
+      // Первую сессию нового этапа выдаёт этот же путь: `start-stage` бывает
+      // только у задач из очереди. Пока выдержка отмерялась от смены
+      // состояния, каждый этап после первого начинался на полчаса позже.
       const result = run({
         tasks: [justMoved()],
-        registry: { entries: [stale('0001-one')] },
-        sessions: [alive('pipeline:0001-one:audit')],
-      });
-      expect(kinds(result)).not.toContain('continue-stage');
-    });
-
-    it('но по-настоящему брошенный этап продолжателя всё же получает', () => {
-      // Иначе починка не чинила бы, а просто выключала бы механизм целиком.
-      const result = run({
-        tasks: [justMoved({ statusChangedAt: '2026-08-26T09:00:00+03:00' })],
         registry: { entries: [stale('0001-one')] },
         sessions: [],
       });
@@ -406,6 +401,59 @@ describe('уснувшие сессии', () => {
         stage: 'audit',
         reason: 'сессии нет',
       });
+    });
+
+    it('слот выдан, исполнитель ещё не проснулся — второго не шлют', () => {
+      const result = run({
+        tasks: [justMoved()],
+        registry: { entries: [stale('0001-one')] },
+        sessions: [],
+        occupancy: slot(),
+      });
+      expect(kinds(result)).not.toContain('continue-stage');
+    });
+
+    it('слот выдан давно, а сессии так и нет — продолжателя шлют', () => {
+      const result = run({
+        tasks: [justMoved()],
+        registry: { entries: [stale('0001-one')] },
+        sessions: [],
+        occupancy: slot({ assignedAt: '2026-08-26T09:00:00+03:00' }),
+      });
+      expect(kinds(result)).toContain('continue-stage');
+    });
+
+    it('отметка проснувшегося исполнителя важнее выдачи слота', () => {
+      // Слот выдан давно, но исполнитель взялся за работу только что.
+      const result = run({
+        tasks: [justMoved()],
+        registry: { entries: [stale('0001-one')] },
+        sessions: [],
+        occupancy: slot({
+          assignedAt: '2026-08-26T09:00:00+03:00',
+          startedAt: '2026-08-26T11:58:00+03:00',
+        }),
+      });
+      expect(kinds(result)).not.toContain('continue-stage');
+    });
+
+    it('слот от ПРОШЛОГО этапа за начатую работу не считают', () => {
+      const result = run({
+        tasks: [justMoved()],
+        registry: { entries: [stale('0001-one')] },
+        sessions: [],
+        occupancy: slot({ stage: 'design' }),
+      });
+      expect(kinds(result)).toContain('continue-stage');
+    });
+
+    it('живую сессию нового этапа находят, хотя в реестре заголовок старый', () => {
+      const result = run({
+        tasks: [justMoved()],
+        registry: { entries: [stale('0001-one')] },
+        sessions: [alive('pipeline:0001-one:audit')],
+      });
+      expect(kinds(result)).not.toContain('continue-stage');
     });
   });
 
@@ -461,6 +509,12 @@ describe('уснувшие сессии', () => {
     // взятием задачи и первым пробуждением исполнителя проходит до целого
     // интервала. Продолжатель, порождённый в эту щель, ничего не чинит,
     // зато тратит попытку — а их всего две.
+    //
+    // «Взята» — значит слот ей уже выдан, и обстановка обязана это отражать.
+    // Прежде слот здесь не задавался: сканер его не видел вовсе и отмерял
+    // выдержку от смены состояния. Из-за этого та же обстановка описывала
+    // разом два несовместимых случая — взятую задачу и только начавшийся
+    // этап, которого никто не берёт, — и второй молча ждал полчаса.
     const result = run({
       tasks: [
         task({
@@ -473,6 +527,13 @@ describe('уснувшие сессии', () => {
       ],
       registry: { entries: [] },
       sessions: [],
+      occupancy: {
+        worker: {
+          taskId: '0002-run',
+          stage: 'benchmark',
+          assignedAt: '2026-08-26T11:58:00+03:00',
+        },
+      },
     });
     expect(kinds(result)).not.toContain('continue-stage');
   });
