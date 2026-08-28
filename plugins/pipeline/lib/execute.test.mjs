@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execute } from './execute.mjs';
 import { journalAppendix } from './journal.mjs';
+import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 
 /**
  * Проверки исполнения решений.
@@ -39,6 +40,7 @@ function fakeIo(over = {}) {
   const journals = new Map();
   const restored = [];
   const dropped = [];
+  const questions = { text: over.questions ?? '# Вопросы\n\n## Открытые вопросы\n' };
 
   const io = {
     now: NOW,
@@ -49,6 +51,7 @@ function fakeIo(over = {}) {
     journals,
     restored,
     dropped,
+    questions,
 
     readTask: (id) => tasks.get(id) ?? null,
     writeTask(next) {
@@ -63,6 +66,13 @@ function fakeIo(over = {}) {
     taskPath: (id) => `manage/tasks/${id}.json`,
     journalPath: (id) => `manage/journal/${id}.md`,
 
+    questionsPath: () => 'manage/questions.md',
+    readQuestions: () => questions.text,
+    writeQuestions(text) {
+      steps.push('файл вопросов переписан');
+      questions.text = text;
+    },
+
     commitAndPush(paths, message) {
       steps.push(`коммит и отправка: ${message} [${paths.length} путей]`);
       return over.push ? over.push(steps) : { ok: true, outcome: 'pushed' };
@@ -72,11 +82,11 @@ function fakeIo(over = {}) {
     // и коммитит их, доска Trello двигает карточку и дописывает
     // комментарий. Подставное имитирует файловое — так проверки порядка
     // шагов остаются про то же, про что и были.
-    saveTask(next, entry, message) {
+    saveTask(next, entry, message, extraPaths = []) {
       // Запись журнала собирается настоящей сборкой, а не заглушкой:
       // часть проверок читает журнал и ждёт там решений и причин отказа.
       const appendix = journalAppendix(next, this.readJournal(next.id), entry);
-      const paths = [this.taskPath(next.id), this.journalPath(next.id)];
+      const paths = [this.taskPath(next.id), this.journalPath(next.id), ...extraPaths];
       this.writeTask(next);
       this.appendJournal(next.id, appendix);
       const push = this.commitAndPush(paths, message);
@@ -90,6 +100,29 @@ function fakeIo(over = {}) {
     },
     releaseTask(next) {
       this.writeTask(next);
+    },
+
+    // Вопрос владельцу продукта тоже дело хранилища: файловое пишет его
+    // в `manage/questions.md` и просит увезти файл тем же коммитом, доска
+    // пишет комментарий к карточке и увозить ничего не просит.
+    askOwner(next, report) {
+      const block = renderQuestion({
+        taskId: next.id,
+        askedAt: this.now,
+        returnTo: next.returnTo,
+        summary: report.summary,
+        decisions: report.decisions ?? [],
+      });
+      this.writeQuestions(appendQuestion(this.readQuestions(), block));
+      return this.questionsPath();
+    },
+    recordAnswer(next, action, report) {
+      const answer = report?.decisions?.[0];
+      if (!answer) return null;
+      const filled = recordAnswerIn(this.readQuestions(), action.taskId, answer);
+      if (!filled) return null;
+      this.writeQuestions(filled);
+      return this.questionsPath();
     },
 
     undoSave(save) {
@@ -348,6 +381,110 @@ describe('перенос отчёта', () => {
     });
     await execute([transfer], io);
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(2);
+  });
+});
+
+describe('вопрос владельцу продукта', () => {
+  const asking = { kind: 'transfer-report', taskId: '0001-one', stage: 'design', slot: 'worker-1' };
+
+  const askingIo = (over = {}) =>
+    fakeIo({
+      tasks: [task({ status: 'design' })],
+      report: {
+        taskId: '0001-one',
+        stage: 'design',
+        outcome: 'question',
+        summary: 'Цена Теслы влияет и на покупку, и на прокачку.',
+        decisions: ['**Вариант А.** Удешевить покупку.', '**Вариант Б.** Удешевить и прокачку.'],
+      },
+      ...over,
+    });
+
+  it('вопрос попадает в файл, а не только в состояние задачи', async () => {
+    // Прежде этого шага не было вовсе: задача уходила ждать ответа
+    // в разделе файла, который никто не создавал, и застревала навсегда.
+    const io = askingIo();
+    await execute([asking], io);
+    expect(io.questions.text).toContain('### 0001-one');
+    expect(io.questions.text).toContain('**Вариант Б.** Удешевить и прокачку.');
+  });
+
+  it('файл вопросов уезжает ТЕМ ЖЕ коммитом, что и задача', async () => {
+    // Разъехавшись, они дали бы либо задачу в ожидании без вопроса,
+    // либо вопрос без задачи.
+    const io = askingIo();
+    await execute([asking], io);
+    expect(io.steps).toContain(
+      'коммит и отправка: chore(backlog): 0001-one design → awaiting-po [3 путей]',
+    );
+  });
+
+  it('в задаче появляется поле вопроса, которого требует схема', async () => {
+    const io = askingIo();
+    await execute([asking], io);
+    const saved = io.tasks.get('0001-one');
+    expect(saved.status).toBe('awaiting-po');
+    expect(saved.question).toMatchObject({ askedAt: NOW, answeredAt: null });
+    expect(saved.returnTo).toBe('design');
+  });
+
+  it('ответ сессии возвращает задачу туда, откуда она ушла', async () => {
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'awaiting-po',
+          returnTo: 'design',
+          question: {
+            askedAt: '2026-08-25T10:00:00+03:00',
+            summary: 'что делаем',
+            answeredAt: null,
+          },
+        }),
+      ],
+      questions: '## Открытые вопросы\n\n### 0001-one\n\nсуть\n\n**Ответ:**\n',
+      report: {
+        taskId: '0001-one',
+        stage: 'awaiting-po',
+        outcome: 'done',
+        summary: 'владелец продукта ответил',
+        decisions: ['Вариант А: удешевить только покупку.'],
+      },
+    });
+    const [result] = await execute(
+      [{ kind: 'transfer-report', taskId: '0001-one', stage: 'awaiting-po' }],
+      io,
+    );
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('design');
+  });
+
+  it('ответ дописывается в файл вопросов и гасит вопрос', async () => {
+    // Не записав ответ, конвейер оставил бы раздел пустым: следующая
+    // спрашивающая сессия задала бы тот же вопрос заново, а летопись
+    // говорила бы, что владелец продукта так и не ответил.
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'awaiting-po',
+          returnTo: 'design',
+          question: {
+            askedAt: '2026-08-25T10:00:00+03:00',
+            summary: 'что делаем',
+            answeredAt: null,
+          },
+        }),
+      ],
+      questions: '## Открытые вопросы\n\n### 0001-one\n\nсуть\n\n**Ответ:**\n',
+      report: {
+        taskId: '0001-one',
+        stage: 'awaiting-po',
+        outcome: 'done',
+        decisions: ['Вариант А: удешевить только покупку.'],
+      },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'awaiting-po' }], io);
+    expect(io.questions.text).toContain('**Ответ:** Вариант А: удешевить только покупку.');
+    expect(io.tasks.get('0001-one').question.answeredAt).toBe(NOW);
   });
 });
 

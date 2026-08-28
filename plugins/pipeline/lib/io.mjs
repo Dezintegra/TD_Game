@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
 import { journalAppendix } from './journal.mjs';
+import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 
 /**
  * Переходник к настоящему миру: файлы, git, слоты.
@@ -81,9 +82,12 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
      * @param {object} entry запись журнала об этом переходе
      * @param {string} message сообщение коммита — доске оно не нужно
      */
-    saveTask(task, entry, message) {
+    saveTask(task, entry, message, extraPaths = []) {
       const appendix = journalAppendix(task, this.readJournal(task.id), entry);
-      const paths = [taskPath(task.id), journalPath(task.id)];
+      // Попутные пути — файл вопросов, например. Они обязаны уехать ТЕМ ЖЕ
+      // коммитом: разъехавшись, задача в ожидании осталась бы без вопроса
+      // либо вопрос без задачи.
+      const paths = [taskPath(task.id), journalPath(task.id), ...extraPaths];
 
       this.writeTask(task);
       this.appendJournal(task.id, appendix);
@@ -119,6 +123,48 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
     },
 
     /**
+     * Записать вопрос владельцу продукта в файл вопросов.
+     *
+     * Возвращает путь файла, чтобы он уехал ТЕМ ЖЕ коммитом, что и сама
+     * задача: разъехавшись, они дали бы задачу в ожидании без вопроса
+     * либо вопрос без задачи.
+     *
+     * Раньше этого шага не было вовсе, и `awaiting-po` был тупиком: задача
+     * уходила туда ждать ответа в разделе, который никто не создавал.
+     * Выход из ожидания ровно один — непустой ответ, — так что задача
+     * застревала навсегда, а владелец продукта видел пустой файл и не знал,
+     * что его ждут.
+     */
+    askOwner(task, report) {
+      const block = renderQuestion({
+        taskId: task.id,
+        askedAt: now,
+        returnTo: task.returnTo,
+        summary: report.summary,
+        decisions: report.decisions ?? [],
+      });
+      this.writeQuestions(appendQuestion(this.readQuestions(), block));
+      return this.questionsPath();
+    },
+
+    /**
+     * Записать ответ, собранный спрашивающей сессией у человека.
+     *
+     * Сама сессия файла вопросов не трогает: писатель у бэклога один. Она
+     * кладёт ответ в отчёт, а сюда он попадает уже рукой оркестратора.
+     */
+    recordAnswer(task, action, report) {
+      const answer = report?.decisions?.[0];
+      if (!answer) return null;
+
+      const filled = recordAnswerIn(this.readQuestions(), action.taskId, answer);
+      if (!filled) return null;
+
+      this.writeQuestions(filled);
+      return this.questionsPath();
+    },
+
+    /**
      * Прибрать за сохранением, проигравшим гонку.
      *
      * Наш коммит поверх чужого не ложится и остался бы хвостом, который
@@ -126,8 +172,8 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
      * всему конвейеру. Поэтому снимаем его и возвращаем файлы: за
      * проигравшим гонку не должно остаться ни следа.
      *
-     * У доски этой заботы нет вовсе: там ничего не коммитится, и гонку
-     * решает тег захвата, а не запись.
+     * У доски этой заботы нет вовсе: там ничего не коммитится, а гонку
+     * решает назначение исполнителя, а не запись состояния.
      */
     undoSave(save) {
       this.dropCommit();
@@ -211,6 +257,27 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
         budgetSeconds: config.pushBudgetSeconds,
       });
       return { ok: push.outcome === 'pushed', outcome: push.outcome, notes: push.notes };
+    },
+
+    /**
+     * Файл вопросов владельцу продукта.
+     *
+     * Единственный файл бэклога, в который пишет не только конвейер:
+     * ответы туда вписывает человек. Поэтому читается он всегда целиком
+     * и перезаписывается тоже целиком — дозапись вслепую однажды легла бы
+     * поверх ответа, набранного в ту же минуту.
+     */
+    questionsPath: () => config.paths.questions,
+
+    readQuestions() {
+      const path = join(root, config.paths.questions);
+      return existsSync(path) ? readFileSync(path, 'utf8').replace(/^\uFEFF/, '') : '';
+    },
+
+    writeQuestions(text) {
+      const path = join(root, config.paths.questions);
+      ensure(dirname(path));
+      writeFileSync(path, text, 'utf8');
     },
 
     /** Вернуть названные пути к состоянию главной ветки. */

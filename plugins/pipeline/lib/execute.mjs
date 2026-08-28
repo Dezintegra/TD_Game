@@ -100,6 +100,32 @@ async function transferReport(action, io) {
     next = relate(next, born.id);
   }
 
+  // Вопрос записывается ТЕМ ЖЕ действием, что и переход в ожидание.
+  // Схема задачи требует поля `question` при этом состоянии, а без записи
+  // вопроса у ожидания нет выхода вовсе.
+  const asks = verdict.status === 'awaiting-po';
+  if (asks) {
+    next = {
+      ...next,
+      question: { askedAt: io.now, summary: report.summary ?? verdict.note, answeredAt: null },
+    };
+  }
+
+  // Ответ, собранный спрашивающей сессией, уезжает туда же. Не записав его,
+  // конвейер оставил бы вопрос без ответа: следующая спрашивающая сессия
+  // задала бы тот же вопрос заново, а летопись говорила бы, что владелец
+  // продукта так и не ответил.
+  const answering = action.stage === 'awaiting-po';
+  if (answering && task.question) {
+    next = { ...next, question: { ...task.question, answeredAt: io.now } };
+  }
+
+  // Куда именно ложится вопрос — дело хранилища. Файловый бэклог пишет
+  // его в `manage/questions.md` и просит увезти файл тем же коммитом;
+  // доска пишет комментарий к карточке, и увозить ей нечего.
+  const asked = asks ? await io.askOwner(next, report) : null;
+  const answered = answering ? await io.recordAnswer(next, action, report) : null;
+
   const push = await io.saveTask(
     next,
     {
@@ -112,6 +138,7 @@ async function transferReport(action, io) {
       problem: verdict.status === 'failed' ? verdict.note : undefined,
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
+    [asked, answered].filter(Boolean),
   );
   if (!push.ok) return { result: 'failed', why: push.outcome, created };
 
@@ -267,14 +294,30 @@ async function answerQuestion(action, io) {
   });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
+  // Вопрос гасится отметкой времени ответа. Без неё следующий вопрос
+  // по той же задаче «отвечался» бы старым текстом сам собой: разбор
+  // ищет непустой ответ, а прежний ответ никуда не девается — ни
+  // из раздела файла, ни из комментариев карточки.
+  const answer = action.answer ?? io.readAnswer(action.taskId);
+  const next = {
+    ...moved.task,
+    question: task.question
+      ? { ...task.question, answeredAt: io.now }
+      : {
+          askedAt: task.statusChangedAt,
+          summary: 'вопрос задан до появления записи',
+          answeredAt: io.now,
+        },
+  };
+
   const push = await io.saveTask(
-    moved.task,
+    next,
     {
       at: io.now,
       from: task.status,
       to: task.returnTo,
       what: 'Ответ владельца продукта:',
-      decisions: [action.answer ?? io.readAnswer(action.taskId)],
+      decisions: [answer],
     },
     `chore(backlog): ${task.id} получен ответ, возврат в ${task.returnTo}`,
   );

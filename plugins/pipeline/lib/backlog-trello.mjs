@@ -286,6 +286,54 @@ export function createTrelloBacklog({ trello, config, snapshot, marker }) {
       return cleared.ok ? { ok: true, outcome: 'saved' } : failure(cleared);
     },
 
+    /**
+     * Задать вопрос владельцу продукта — комментарием к карточке.
+     *
+     * Возвращает `null`: увозить коммитом нечего. У файлового бэклога этот
+     * метод отдаёт путь файла вопросов, чтобы тот уехал тем же коммитом,
+     * что и задача; доске такая связка не нужна — вопрос ложится прямо
+     * на карточку, и разъехаться им негде.
+     *
+     * Отдельного файла вопросов больше нет намеренно: вопрос живёт там же,
+     * где задача, и владелец продукта отвечает оттуда же, откуда читает.
+     */
+    async askOwner(task, report) {
+      const card = cardOf(task.id);
+      if (!card) return null;
+
+      const lines = ['**Вопрос владельцу продукта**', '', report.summary ?? ''];
+      const options = report.decisions ?? [];
+      if (options.length > 0) {
+        lines.push('', '**Варианты:**', '');
+        for (const option of options) lines.push(`- ${option}`);
+      } else {
+        // Вопрос без вариантов задавать не велено, но и молчать о нём
+        // нельзя: пусть владелец продукта видит, что выбирать ему
+        // предлагают из пустоты, и спросит с конвейера.
+        lines.push('', '_Сессия не назвала вариантов — это её недоработка._');
+      }
+      lines.push('', 'Чтобы ответить, напишите комментарий к этой карточке.');
+
+      await comment(card.id, lines.join('\n'));
+      return null;
+    },
+
+    /**
+     * Отметить полученный ответ.
+     *
+     * Записывать сам ответ никуда не надо: он уже лежит комментарием
+     * владельца продукта. Конвейер лишь подтверждает, что услышал, — иначе
+     * по карточке нельзя отличить отвеченный вопрос от незамеченного.
+     */
+    async recordAnswer(task, action, report) {
+      const card = cardOf(task.id);
+      const answer = report?.decisions?.[0];
+      if (!card || !answer) return null;
+
+      await comment(card.id, `**Ответ принят**\n\n${answer}`);
+      return null;
+    },
+
     /** Ответ владельца продукта — первый комментарий без пометки после вопроса. */
     readAnswer(id) {
       const item = byId.get(id);
