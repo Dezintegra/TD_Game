@@ -26,7 +26,9 @@ const answer = (status, text) => ({
   text: async () => text,
 });
 
-const client = (doFetch) => createTrello({ key: 'k', token: 't', fetch: doFetch });
+/** Сон подставной: настоящие паузы в проверках стоили бы секунд на пустом месте. */
+const client = (doFetch) =>
+  createTrello({ key: 'k', token: 't', fetch: doFetch, sleep: async () => {} });
 
 describe('виды отказа', () => {
   it('обрыв связи — это offline, а не отказ сервиса', async () => {
@@ -37,6 +39,63 @@ describe('виды отказа', () => {
     expect(result.ok).toBe(false);
     expect(result.kind).toBe('offline');
     expect(result.why).toContain('ENOTFOUND');
+  });
+
+  it('обрыв повторяется трижды, и после третьего сдаёмся', async () => {
+    // Замер 28.08.2026: из шести обращений подряд три оборвались
+    // по `UND_ERR_CONNECT_TIMEOUT`, и каждый повтор проходил с первого раза.
+    // Без повтора цикл на таком обрыве заканчивался, ничего не сделав.
+    const { doFetch, calls } = stub(() => {
+      throw new Error('fetch failed');
+    });
+    const result = await client(doFetch).get('boards/x');
+    expect(calls).toHaveLength(3);
+    expect(result.kind).toBe('offline');
+    expect(result.why).toContain('попыток 3');
+  });
+
+  it('удавшийся повтор возвращает ответ, а не отказ', async () => {
+    let seen = 0;
+    const { doFetch, calls } = stub(() => {
+      seen += 1;
+      if (seen === 1) throw new Error('fetch failed');
+      return answer(200, '{"ok":1}');
+    });
+    const result = await client(doFetch).get('boards/x');
+    expect(calls).toHaveLength(2);
+    expect(result).toEqual({ ok: true, data: { ok: 1 } });
+  });
+
+  it('создающий запрос не повторяется вовсе', async () => {
+    // POST у Trello заводит карточку, комментарий, метку. Повтори мы его
+    // после потерянного ответа — на доске оказались бы два одинаковых
+    // вопроса владельцу продукта, причём второй уже без причины.
+    const { doFetch, calls } = stub(() => {
+      throw new Error('fetch failed');
+    });
+    const result = await client(doFetch).post('cards', { name: 'проба' });
+    expect(calls).toHaveLength(1);
+    expect(result.why).toContain('запрос создающий');
+  });
+
+  it('правка и удаление повторяются: они ничего не заводят', async () => {
+    const { doFetch, calls } = stub(() => {
+      throw new Error('fetch failed');
+    });
+    await client(doFetch).put('cards/x', { name: 'проба' });
+    expect(calls).toHaveLength(3);
+
+    const { doFetch: second, calls: deletions } = stub(() => {
+      throw new Error('fetch failed');
+    });
+    await client(second).delete('cards/x');
+    expect(deletions).toHaveLength(3);
+  });
+
+  it('отказ сервиса не повторяется: он от повтора не пройдёт', async () => {
+    const { doFetch, calls } = stub(answer(401, 'invalid token'));
+    await client(doFetch).get('boards/x');
+    expect(calls).toHaveLength(1);
   });
 
   it('предел обращений назван своим именем', async () => {

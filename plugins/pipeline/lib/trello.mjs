@@ -1,3 +1,5 @@
+import { setTimeout as wait } from 'node:timers/promises';
+
 /**
  * Обращение к Trello.
  *
@@ -24,6 +26,29 @@
 export const MAX_TEXT = 16384;
 
 /**
+ * Сколько раз пробовать запрос, оборвавшийся на сети.
+ *
+ * Три, и число это взято не с потолка. Замер 28.08.2026 на этой станции:
+ * из шести обращений подряд три оборвались по `UND_ERR_CONNECT_TIMEOUT` —
+ * соединение не устанавливалось вовсе, — и каждый повтор проходил с первого
+ * раза. Похоже на медленное первое соединение из свежего процесса.
+ *
+ * Без повтора цикл на таком обрыве печатал «доска недоступна» и заканчивался,
+ * ничего не сделав. Смертельным это не было — через пять минут он приходил
+ * снова, — но примерно половина циклов уходила впустую.
+ */
+const ATTEMPTS = 3;
+
+/**
+ * Пауза перед повтором, миллисекунды.
+ *
+ * Растёт, чтобы не долбиться в закрытую дверь: если Trello правда лежит,
+ * три запроса подряд ему не помогут, а вот медленному соединению лишние
+ * триста миллисекунд как раз хватает.
+ */
+const BACKOFF = [300, 900];
+
+/**
  * Собрать клиента.
  *
  * `fetch` принимается доводом, а не берётся из окружения: тесты подставляют
@@ -34,7 +59,12 @@ export const MAX_TEXT = 16384;
  * @param {string} params.token токен пользователя
  * @param {typeof globalThis.fetch} [params.fetch] исполнитель запросов
  */
-export function createTrello({ key, token, fetch: doFetch = globalThis.fetch }) {
+export function createTrello({
+  key,
+  token,
+  fetch: doFetch = globalThis.fetch,
+  sleep = (ms) => wait(ms),
+}) {
   /**
    * Один запрос.
    *
@@ -51,15 +81,46 @@ export function createTrello({ key, token, fetch: doFetch = globalThis.fetch }) 
       if (value !== undefined && value !== null) url.searchParams.append(name, String(value));
     }
 
-    let response;
-    try {
-      response = await doFetch(url.toString(), {
-        method,
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
-        body: body ? JSON.stringify(body) : undefined,
-      });
-    } catch (error) {
-      return { ok: false, kind: 'offline', why: error?.message ?? String(error) };
+    // Повторяется только то, что можно повторить без последствий.
+    //
+    // Обрыв на сети двусмыслен: запрос мог не уйти вовсе, а мог уйти
+    // и потерять ответ. Для чтения и правки разницы нет — второе такое же
+    // чтение вернёт то же, а повторная запись того же значения ничего
+    // не меняет. А вот POST у Trello заводит: карточку, комментарий, метку.
+    // Повтори мы его после потерянного ответа — и на доске окажутся два
+    // одинаковых вопроса владельцу продукта, причём второй уже без причины.
+    //
+    // Наблюдаемая беда — обрыв на ПЕРВОМ обращении цикла, а первое
+    // обращение всегда чтение доски. Так что запрет на повтор создающих
+    // запросов ничего не стоит и снимает весь риск.
+    const mayRetry = method !== 'POST';
+    const attempts = mayRetry ? ATTEMPTS : 1;
+
+    let response = null;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        response = await doFetch(url.toString(), {
+          method,
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts) await sleep(BACKOFF[attempt - 1] ?? BACKOFF.at(-1));
+      }
+    }
+
+    if (lastError) {
+      const tried = attempts > 1 ? `, попыток ${attempts}` : ', без повтора: запрос создающий';
+      return {
+        ok: false,
+        kind: 'offline',
+        why: `${lastError?.message ?? String(lastError)}${tried}`,
+      };
     }
 
     const text = await response.text().catch(() => '');
