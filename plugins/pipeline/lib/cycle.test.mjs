@@ -188,7 +188,7 @@ describe('цикл', () => {
     expect(result.outcome).toBe('worked');
     expect(result.assignments).toHaveLength(1);
     expect(result.assignments[0]).toMatchObject({
-      slot: 'worker-1',
+      slot: 'worker',
       assignment: { taskId: '0001-one', stage: 'design' },
     });
   });

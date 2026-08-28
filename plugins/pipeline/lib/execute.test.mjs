@@ -195,7 +195,7 @@ const startAction = {
   stage: 'design',
   branch: 'worktree-0001-one',
   sessionTitle: 'pipeline:0001-one:design',
-  slot: 'worker-1',
+  slot: 'worker',
   assignment: { taskId: '0001-one', stage: 'design' },
 };
 
@@ -220,7 +220,7 @@ describe('взятие задачи в работу', () => {
   it('назначение попадает в слот последним', async () => {
     const io = fakeIo();
     await execute([startAction], io);
-    expect(io.steps.at(-1)).toBe('назначение в слот worker-1');
+    expect(io.steps.at(-1)).toBe('назначение в слот worker');
   });
 
   it('занятая чужой машиной задача не берётся и мир не трогается', async () => {
@@ -287,7 +287,7 @@ describe('взятие задачи в работу', () => {
     const io = fakeIo({ tasks: [task({ type: 'run', status: 'new' })] });
     await execute([{ ...startAction, stage: 'benchmark' }], io);
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
-    expect(io.steps).toContain('назначение в слот worker-1');
+    expect(io.steps).toContain('назначение в слот worker');
   });
 
   it('неудача заведения дерева не выдаётся за успех', async () => {
@@ -303,7 +303,7 @@ describe('перенос отчёта', () => {
     kind: 'transfer-report',
     taskId: '0001-one',
     stage: 'design',
-    slot: 'worker-1',
+    slot: 'worker',
   };
 
   it('успешный этап двигает задачу и освобождает слот', async () => {
@@ -311,7 +311,7 @@ describe('перенос отчёта', () => {
     const [result] = await execute([transfer], io);
     expect(result.result).toBe('done');
     expect(io.tasks.get('0001-one').status).toBe('audit');
-    expect(io.steps).toContain('слот worker-1 освобождён');
+    expect(io.steps).toContain('слот worker освобождён');
   });
 
   it('отчёт убирается только после удавшейся отправки', async () => {
@@ -385,7 +385,7 @@ describe('перенос отчёта', () => {
 });
 
 describe('вопрос владельцу продукта', () => {
-  const asking = { kind: 'transfer-report', taskId: '0001-one', stage: 'design', slot: 'worker-1' };
+  const asking = { kind: 'transfer-report', taskId: '0001-one', stage: 'design', slot: 'worker' };
 
   const askingIo = (over = {}) =>
     fakeIo({
@@ -498,7 +498,7 @@ describe('продолжение за уснувшей сессией', () => {
           taskId: '0001-one',
           stage: 'implement',
           reason: 'молчит дольше отпущенного',
-          slot: 'worker-1',
+          slot: 'worker',
           assignment: {},
         },
       ],
@@ -506,7 +506,7 @@ describe('продолжение за уснувшей сессией', () => {
     );
     expect(result.result).toBe('done');
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(1);
-    expect(io.steps).toContain('назначение в слот worker-1');
+    expect(io.steps).toContain('назначение в слот worker');
   });
 
   it('без слота попытка не тратится и мир не трогается', async () => {

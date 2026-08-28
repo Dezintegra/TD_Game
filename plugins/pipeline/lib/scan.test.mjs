@@ -83,11 +83,11 @@ describe('совпавшие номера задач', () => {
     expect(result.notes.join()).toContain('0022-first, 0022-second');
   });
 
-  it('обе задачи всё же берутся в работу: это замечание, а не отказ', () => {
+  it('задача с повторяющимся номером всё же берётся: это замечание, а не отказ', () => {
     const result = run({
       tasks: [task({ id: '0022-first' }), task({ id: '0022-second' })],
     });
-    expect(kinds(result)).toEqual(['start-stage', 'start-stage']);
+    expect(kinds(result)).toEqual(['start-stage']);
   });
 
   it('разные номера замечания не вызывают', () => {
@@ -153,26 +153,22 @@ describe('неполная настройка', () => {
   });
 });
 
-describe('квоты', () => {
-  it('две задачи в работе — третью не берём', () => {
+describe('исполнитель один', () => {
+  it('пока задача в работе, новых не берут', () => {
     const result = run({
-      tasks: [
-        task({ id: '0001-one', status: 'design' }),
-        task({ id: '0002-two', status: 'implement' }),
-        task({ id: '0003-three', status: 'new' }),
-      ],
-      registry: { entries: [entry('0001-one'), entry('0002-two')] },
-      sessions: [alive('pipeline:0001-one:design'), alive('pipeline:0002-two:design')],
-    });
-    expect(kinds(result)).not.toContain('start-stage');
-    expect(result.notes.join()).toContain('занято 2 из 2');
-  });
-
-  it('одна в работе — вторую берём', () => {
-    const result = run({
-      tasks: [task({ id: '0001-one', status: 'design' }), task({ id: '0002-two' })],
+      tasks: [task({ id: '0001-one', status: 'design' }), task({ id: '0002-two', status: 'new' })],
       registry: { entries: [entry('0001-one')] },
       sessions: [alive('pipeline:0001-one:design')],
+    });
+    expect(kinds(result)).not.toContain('start-stage');
+    expect(result.notes.join()).toContain('исполнитель занят');
+  });
+
+  it('ожидание проверок исполнителя не занимает', () => {
+    // Задача в `pr` ждёт чужого железа, сессии ей не нужно, и держать
+    // за неё исполнителя значило бы простаивать всё время прогона CI.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'pr' }), task({ id: '0002-two' })],
     });
     expect(result.actions).toContainEqual({
       kind: 'start-stage',
@@ -181,28 +177,26 @@ describe('квоты', () => {
     });
   });
 
-  it('ожидание проверок квоту не занимает', () => {
+  it('ожидание ответа владельца продукта тоже не занимает', () => {
     const result = run({
       tasks: [
-        task({ id: '0001-one', status: 'pr' }),
-        task({ id: '0002-two', status: 'design' }),
-        task({ id: '0003-three' }),
+        task({ id: '0001-one', status: 'awaiting-po', returnTo: 'design' }),
+        task({ id: '0002-two' }),
       ],
-      registry: { entries: [entry('0002-two')] },
-      sessions: [alive('pipeline:0002-two:design')],
     });
-    expect(result.actions).toContainEqual({
-      kind: 'start-stage',
-      taskId: '0003-three',
-      stage: 'design',
-    });
+    expect(kinds(result)).toContain('start-stage');
   });
 
-  it('за раз берётся не больше, чем позволяет квота', () => {
+  it('за раз берётся ровно одна задача', () => {
+    // Прежде бралось столько, сколько позволяли квоты, а ожидательные
+    // этапы не занимали ни одной — и сканер запускал прогоны пачками при
+    // одном слоте. Лишние вставали в этапе без сессии и через полчаса
+    // объявлялись мёртвыми: за ночь 27–28.08.2026 так сгорело семнадцать
+    // задач.
     const result = run({
       tasks: [task({ id: '0001-one' }), task({ id: '0002-two' }), task({ id: '0003-three' })],
     });
-    expect(kinds(result).filter((kind) => kind === 'start-stage')).toHaveLength(2);
+    expect(kinds(result).filter((kind) => kind === 'start-stage')).toHaveLength(1);
   });
 });
 
@@ -224,14 +218,20 @@ describe('преимущество прогонов', () => {
     });
   });
 
-  it('арена считается на чужом железе и квоту не занимает', () => {
+  it('прогоны арены идут по одному, а не пачкой', () => {
+    // Это и есть цена одного исполнителя, названная вслух. Прежде все три
+    // уходили в работу разом — потому что арена считается на чужом железе
+    // и квоты не занимала, — а слот был один, и двум из трёх сессии
+    // не доставалось вовсе.
     const result = run({
       tasks: [arena('0001-run'), arena('0002-run'), arena('0003-run')],
     });
-    expect(kinds(result).filter((kind) => kind === 'start-stage')).toHaveLength(3);
+    expect(kinds(result).filter((kind) => kind === 'start-stage')).toHaveLength(1);
   });
 
-  it('замер кадров требует тишины на машине', () => {
+  it('замер кадров при занятом исполнителе просто ждёт', () => {
+    // Тишина на машине больше не правило, а свойство устройства: рядом
+    // с замером просто некому шуметь.
     const perf = task({
       id: '0001-perf',
       type: 'run',
@@ -243,7 +243,7 @@ describe('преимущество прогонов', () => {
       sessions: [alive('pipeline:0002-two:design')],
     });
     expect(kinds(result)).not.toContain('start-stage');
-    expect(result.notes.join()).toContain('тишины');
+    expect(result.notes.join()).toContain('исполнитель занят');
   });
 
   it('на свободной машине замер берётся', () => {
@@ -514,7 +514,7 @@ describe('ожидание и уборка', () => {
 });
 
 describe('порядок действий', () => {
-  it('хвост идёт раньше переноса отчёта, а взятие задачи — последним', () => {
+  it('хвост идёт раньше переноса отчёта', () => {
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' }), task({ id: '0002-two' })],
       registry: { entries: [entry('0001-one')] },
@@ -522,6 +522,16 @@ describe('порядок действий', () => {
       reports: [{ taskId: '0001-one', stage: 'design', outcome: 'done' }],
       tails: { main: 1, branches: {} },
     });
-    expect(kinds(result)).toEqual(['push-tail', 'transfer-report', 'start-stage']);
+    // Взятия новой задачи здесь нет и быть не должно: исполнитель занят
+    // задачей 0001, и освободится он не раньше, чем её отчёт перенесут.
+    expect(kinds(result)).toEqual(['push-tail', 'transfer-report']);
+  });
+
+  it('взятие задачи идёт последним', () => {
+    const result = run({
+      tasks: [task({ id: '0002-two' })],
+      tails: { main: 1, branches: {} },
+    });
+    expect(kinds(result)).toEqual(['push-tail', 'start-stage']);
   });
 });

@@ -34,13 +34,13 @@ const perfTask = (id) =>
 const plan = (actions, tasks, occupancy = {}) =>
   planAssignments({ actions, tasks, occupancy, slots: DEFAULT_SLOTS, now: NOW });
 
-describe('раскладка по слотам', () => {
-  it('проработка уходит в свободный рабочий слот', () => {
+describe('раскладка по единственному слоту', () => {
+  it('работа уходит в исполнителя', () => {
     const result = plan([{ kind: 'start-stage', taskId: '0001-one', stage: 'design' }], {
       '0001-one': task('0001-one'),
     });
     expect(result.writes).toHaveLength(1);
-    expect(result.writes[0].slot).toBe('worker-1');
+    expect(result.writes[0].slot).toBe('worker');
     expect(result.writes[0].assignment).toMatchObject({
       taskId: '0001-one',
       stage: 'design',
@@ -50,7 +50,7 @@ describe('раскладка по слотам', () => {
     });
   });
 
-  it('две работы занимают оба рабочих слота', () => {
+  it('вторая работа ждёт: исполнитель один', () => {
     const result = plan(
       [
         { kind: 'start-stage', taskId: '0001-one', stage: 'design' },
@@ -58,25 +58,9 @@ describe('раскладка по слотам', () => {
       ],
       { '0001-one': task('0001-one'), '0002-two': task('0002-two') },
     );
-    expect(result.writes.map((write) => write.slot)).toEqual(['worker-1', 'worker-2']);
-  });
-
-  it('третья работа ждёт: слотов больше нет', () => {
-    const result = plan(
-      [
-        { kind: 'start-stage', taskId: '0001-one', stage: 'design' },
-        { kind: 'start-stage', taskId: '0002-two', stage: 'design' },
-        { kind: 'start-stage', taskId: '0003-three', stage: 'design' },
-      ],
-      {
-        '0001-one': task('0001-one'),
-        '0002-two': task('0002-two'),
-        '0003-three': task('0003-three'),
-      },
-    );
-    expect(result.writes).toHaveLength(2);
+    expect(result.writes.map((write) => write.slot)).toEqual(['worker']);
     expect(result.waiting).toHaveLength(1);
-    expect(result.waiting[0].taskId).toBe('0003-three');
+    expect(result.waiting[0].taskId).toBe('0002-two');
     expect(result.waiting[0].reason).toContain('свободного слота');
   });
 
@@ -84,63 +68,38 @@ describe('раскладка по слотам', () => {
     const result = plan(
       [{ kind: 'start-stage', taskId: '0002-two', stage: 'design' }],
       { '0002-two': task('0002-two') },
-      { 'worker-1': { taskId: '0001-one', stage: 'implement' } },
+      { worker: { taskId: '0001-one', stage: 'implement' } },
     );
-    expect(result.writes[0].slot).toBe('worker-2');
-  });
-});
-
-describe('свои слоты для ревью и одиночки', () => {
-  it('ревью идёт в свой слот, не занимая рабочих', () => {
-    const result = plan(
-      [
-        { kind: 'start-stage', taskId: '0001-one', stage: 'design' },
-        { kind: 'start-stage', taskId: '0002-two', stage: 'review' },
-      ],
-      { '0001-one': task('0001-one'), '0002-two': task('0002-two', { status: 'pr' }) },
-    );
-    expect(result.writes.map((write) => write.slot)).toEqual(['worker-1', 'review']);
-  });
-
-  it('второе ревью ждёт', () => {
-    const result = plan(
-      [
-        { kind: 'start-stage', taskId: '0001-one', stage: 'review' },
-        { kind: 'start-stage', taskId: '0002-two', stage: 'review' },
-      ],
-      {
-        '0001-one': task('0001-one', { status: 'pr' }),
-        '0002-two': task('0002-two', { status: 'pr' }),
-      },
-    );
-    expect(result.writes).toHaveLength(1);
+    expect(result.writes).toHaveLength(0);
     expect(result.waiting).toHaveLength(1);
   });
 
-  it('замер кадров ждёт тишины во всём пуле', () => {
-    const result = plan(
-      [{ kind: 'start-stage', taskId: '0001-perf', stage: 'benchmark' }],
-      { '0001-perf': perfTask('0001-perf') },
-      { 'worker-1': { taskId: '0002-two', stage: 'design' } },
-    );
-    expect(result.writes).toHaveLength(0);
-    expect(result.waiting[0].reason).toContain('тишины');
+  it('ревью идёт к тому же исполнителю', () => {
+    // Своего слота у ревью больше нет: он был нужен, чтобы замечания к чужому
+    // коду не делили место с работой. Делить теперь не с кем.
+    const result = plan([{ kind: 'start-stage', taskId: '0002-two', stage: 'review' }], {
+      '0002-two': task('0002-two', { status: 'pr' }),
+    });
+    expect(result.writes[0].slot).toBe('worker');
   });
 
-  it('на пустом пуле замер берётся в слот одиночки', () => {
+  it('замер кадров идёт туда же и тишины не ждёт', () => {
+    // Правила «исключительный этап ждёт тишины во всём пуле» больше нет:
+    // исполнитель один, и тишина при нём — свойство устройства.
     const result = plan([{ kind: 'start-stage', taskId: '0001-perf', stage: 'benchmark' }], {
       '0001-perf': perfTask('0001-perf'),
     });
-    expect(result.writes[0].slot).toBe('solo');
+    expect(result.writes[0].slot).toBe('worker');
   });
 
-  it('занятый слот ревью тоже мешает замеру', () => {
+  it('замер кадров при занятом исполнителе просто ждёт', () => {
     const result = plan(
       [{ kind: 'start-stage', taskId: '0001-perf', stage: 'benchmark' }],
       { '0001-perf': perfTask('0001-perf') },
-      { review: { taskId: '0002-two', stage: 'review' } },
+      { worker: { taskId: '0002-two', stage: 'design' } },
     );
     expect(result.writes).toHaveLength(0);
+    expect(result.waiting).toHaveLength(1);
   });
 });
 
@@ -183,7 +142,7 @@ describe('запертый слот', () => {
 
   it('живая работающая сессия слот не запирает', () => {
     const locked = lockedSlots({
-      occupancy: { 'worker-1': assigned(60) },
+      occupancy: { worker: assigned(60) },
       sessions: [session(1)],
       now: NOW,
       config,
@@ -193,7 +152,7 @@ describe('запертый слот', () => {
 
   it('свежее назначение не считается запертым, даже если сессия молчит', () => {
     const locked = lockedSlots({
-      occupancy: { 'worker-1': assigned(5) },
+      occupancy: { worker: assigned(5) },
       sessions: [session(60)],
       now: NOW,
       config,
@@ -205,7 +164,7 @@ describe('запертый слот', () => {
     // Так выглядит неотвеченный запрос подтверждения: сессия жива, ничего
     // не делает и не завершится никогда.
     const locked = lockedSlots({
-      occupancy: { 'worker-1': assigned(90) },
+      occupancy: { worker: assigned(90) },
       sessions: [session(60)],
       now: NOW,
       config,
@@ -216,7 +175,7 @@ describe('запертый слот', () => {
 
   it('завершившаяся сессия слот не запирает: это работа продолжателя', () => {
     const locked = lockedSlots({
-      occupancy: { 'worker-1': assigned(90) },
+      occupancy: { worker: assigned(90) },
       sessions: [session(60, false)],
       now: NOW,
       config,
@@ -226,7 +185,7 @@ describe('запертый слот', () => {
 
   it('без снимка сессий слоты запертыми не объявляются', () => {
     const locked = lockedSlots({
-      occupancy: { 'worker-1': assigned(90) },
+      occupancy: { worker: assigned(90) },
       sessions: [],
       now: NOW,
       config,
@@ -235,17 +194,22 @@ describe('запертый слот', () => {
     expect(locked).toEqual([]);
   });
 
-  it('в запертый слот работа не назначается, но соседний работает', () => {
+  it('в запертый слот работа не назначается, и соседнего больше нет', () => {
+    // Прежде тут проверялось, что работа уходит в соседний слот. Соседа
+    // не стало вместе с параллельностью, и запертый слот теперь означает
+    // остановку конвейера до вмешательства человека — потому он и назван
+    // вслух, а не просто пропущен.
     const result = planAssignments({
       actions: [{ kind: 'start-stage', taskId: '0002-two', stage: 'design' }],
       tasks: { '0002-two': task('0002-two') },
       occupancy: {},
       slots: DEFAULT_SLOTS,
       now: NOW,
-      locked: [{ slot: 'worker-1', taskId: '0001-one', why: 'сессия молчит' }],
+      locked: [{ slot: 'worker', taskId: '0001-one', why: 'сессия молчит' }],
     });
-    expect(result.writes[0].slot).toBe('worker-2');
-    expect(result.notes.join()).toContain('слот worker-1 заперт');
+    expect(result.writes).toEqual([]);
+    expect(result.waiting).toHaveLength(1);
+    expect(result.notes.join()).toContain('слот worker заперт');
   });
 });
 
@@ -264,15 +228,12 @@ describe('продолжатель возвращается в свой слот
     const result = planAssignments({
       actions: [{ kind: 'continue-stage', taskId: '0002-two', stage: 'design' }],
       tasks: { '0002-two': task('0002-two', { status: 'design' }) },
-      occupancy: {
-        'worker-1': held('0001-one', 'design'),
-        'worker-2': held('0002-two', 'design'),
-      },
+      occupancy: { worker: held('0002-two', 'design') },
       slots: DEFAULT_SLOTS,
       now: NOW,
     });
     expect(result.writes).toHaveLength(1);
-    expect(result.writes[0].slot).toBe('worker-2');
+    expect(result.writes[0].slot).toBe('worker');
     expect(result.waiting).toEqual([]);
   });
 
@@ -291,7 +252,7 @@ describe('продолжатель возвращается в свой слот
     const result = planAssignments({
       actions: [{ kind: 'continue-stage', taskId: '0002-two', stage: 'design' }],
       tasks: { '0002-two': task('0002-two', { status: 'design' }) },
-      occupancy: { 'worker-1': notTaken },
+      occupancy: { worker: notTaken },
       slots: DEFAULT_SLOTS,
       now: NOW,
     });
@@ -304,11 +265,11 @@ describe('продолжатель возвращается в свой слот
     const result = planAssignments({
       actions: [{ kind: 'continue-stage', taskId: '0002-two', stage: 'design' }],
       tasks: { '0002-two': task('0002-two', { status: 'design' }) },
-      occupancy: { 'worker-1': held('0002-two', 'design') },
+      occupancy: { worker: held('0002-two', 'design') },
       slots: DEFAULT_SLOTS,
       now: NOW,
     });
-    expect(result.writes[0].slot).toBe('worker-1');
+    expect(result.writes[0].slot).toBe('worker');
   });
 
   it('новое назначение не несёт отметки о взятии — в этом и починка', () => {
@@ -323,11 +284,11 @@ describe('продолжатель возвращается в свой слот
           run: { kind: 'arena', expectation: 'ждём равенства' },
         }),
       },
-      occupancy: { 'worker-1': held('0002-two', 'benchmark') },
+      occupancy: { worker: held('0002-two', 'benchmark') },
       slots: DEFAULT_SLOTS,
       now: NOW,
     });
-    expect(result.writes[0].slot).toBe('worker-1');
+    expect(result.writes[0].slot).toBe('worker');
     expect(result.writes[0].assignment.startedAt).toBeUndefined();
     expect(result.writes[0].assignment.continuation).toBe(true);
   });
@@ -346,7 +307,7 @@ describe('назначение, которого никто не берёт', ()
   it('свежее назначение поводом для тревоги не считается', () => {
     // Исполнитель ходит раз в пять минут, и до первого пробуждения
     // назначение лежит нетронутым совершенно законно.
-    expect(unclaimedSlots({ occupancy: { 'worker-2': lying(4) }, now: NOW, config })).toEqual([]);
+    expect(unclaimedSlots({ occupancy: { worker: lying(4) }, now: NOW, config })).toEqual([]);
   });
 
   it('пролежавшее несколько циклов называется вслух', () => {
@@ -354,19 +315,19 @@ describe('назначение, которого никто не берёт', ()
     // выключенного исполнителя, сожгла обе попытки на пустых продолжениях
     // и была остановлена «за исчерпанием». Со стороны это выглядело
     // как занятый слот, то есть как честная очередь.
-    const [found] = unclaimedSlots({ occupancy: { 'worker-2': lying(80) }, now: NOW, config });
-    expect(found.slot).toBe('worker-2');
+    const [found] = unclaimedSlots({ occupancy: { worker: lying(80) }, now: NOW, config });
+    expect(found.slot).toBe('worker');
     expect(found.taskId).toBe('0008-eight');
     expect(found.why).toContain('задача планировщика выключена');
   });
 
   it('взятое назначение не считается невзятым, сколько бы ни лежало', () => {
-    const occupancy = { 'worker-2': lying(80, { startedAt: NOW }) };
+    const occupancy = { worker: lying(80, { startedAt: NOW }) };
     expect(unclaimedSlots({ occupancy, now: NOW, config })).toEqual([]);
   });
 
   it('пустой слот не считается', () => {
-    expect(unclaimedSlots({ occupancy: { 'worker-2': null }, now: NOW, config })).toEqual([]);
+    expect(unclaimedSlots({ occupancy: { worker: null }, now: NOW, config })).toEqual([]);
   });
 });
 
@@ -379,20 +340,20 @@ describe('назначение, разошедшееся с бэклогом', (
   });
 
   it('задача ушла с этапа — слот освобождается', () => {
-    // Так и завис worker-1 на закрытой 0001: перенос отчёта оборвался
+    // Так и завис worker на закрытой 0001: перенос отчёта оборвался
     // на заведении задач по заявкам, слота не снял, и пул простоял три часа.
     const stale = staleAssignments({
-      occupancy: { 'worker-1': held('0001-one', 'benchmark') },
+      occupancy: { worker: held('0001-one', 'benchmark') },
       tasks: { '0001-one': task('0001-one', { status: 'closed' }) },
     });
     expect(stale).toHaveLength(1);
-    expect(stale[0].slot).toBe('worker-1');
+    expect(stale[0].slot).toBe('worker');
     expect(stale[0].why).toContain('closed');
   });
 
   it('задача стоит на своём этапе — назначение годно', () => {
     const stale = staleAssignments({
-      occupancy: { 'worker-1': held('0001-one', 'benchmark') },
+      occupancy: { worker: held('0001-one', 'benchmark') },
       tasks: { '0001-one': task('0001-one', { status: 'benchmark' }) },
     });
     expect(stale).toEqual([]);
@@ -400,7 +361,7 @@ describe('назначение, разошедшееся с бэклогом', (
 
   it('задачи вовсе нет в бэклоге — слот освобождается', () => {
     const stale = staleAssignments({
-      occupancy: { 'worker-1': held('0009-gone', 'design') },
+      occupancy: { worker: held('0009-gone', 'design') },
       tasks: {},
     });
     expect(stale).toHaveLength(1);
@@ -408,16 +369,16 @@ describe('назначение, разошедшееся с бэклогом', (
   });
 
   it('пустой слот разошедшимся не считается', () => {
-    expect(staleAssignments({ occupancy: { 'worker-1': null }, tasks: {} })).toEqual([]);
+    expect(staleAssignments({ occupancy: { worker: null }, tasks: {} })).toEqual([]);
   });
 
   it('запертый слот не освобождается: там сессия числится идущей', () => {
     // Снять назначение значило бы выдать слот второй сессии, которая всё
     // равно не запустится — незавершённый прогон не даёт начать следующий.
     const stale = staleAssignments({
-      occupancy: { 'worker-1': held('0001-one', 'design') },
+      occupancy: { worker: held('0001-one', 'design') },
       tasks: { '0001-one': task('0001-one', { status: 'closed' }) },
-      locked: [{ slot: 'worker-1', taskId: '0001-one', why: 'сессия молчит' }],
+      locked: [{ slot: 'worker', taskId: '0001-one', why: 'сессия молчит' }],
     });
     expect(stale).toEqual([]);
   });
@@ -427,17 +388,14 @@ describe('назначение, разошедшееся с бэклогом', (
     const result = planAssignments({
       actions: [{ kind: 'start-stage', taskId: '0002-two', stage: 'design' }],
       tasks: { '0002-two': task('0002-two') },
-      occupancy: {
-        'worker-1': held('0001-one', 'benchmark'),
-        'worker-2': held('0003-three', 'design'),
-      },
+      occupancy: { worker: held('0001-one', 'benchmark') },
       slots: DEFAULT_SLOTS,
       now: NOW,
-      stale: [{ slot: 'worker-1', taskId: '0001-one', why: 'задача уже в «closed»' }],
+      stale: [{ slot: 'worker', taskId: '0001-one', why: 'задача уже в «closed»' }],
     });
     expect(result.writes).toHaveLength(1);
-    expect(result.writes[0].slot).toBe('worker-1');
-    expect(result.notes.join()).toContain('слот worker-1 освобождён');
+    expect(result.writes[0].slot).toBe('worker');
+    expect(result.notes.join()).toContain('слот worker освобождён');
   });
 });
 
