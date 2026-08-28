@@ -106,12 +106,14 @@ export const DEFAULTS = {
      * потому что два хранилища одного значения расходятся молча.
      */
     lists: {
+      candidate: 'Кандидаты',
       new: 'Заведено',
       triage: 'Разбор',
       design: 'Проработка',
       audit: 'Аудит',
       implement: 'Имплементация',
       benchmark: 'Прогон',
+      interpret: 'Толкование',
       pr: 'Проверки CI',
       review: 'Ревью',
       revise: 'Доработка',
@@ -190,6 +192,9 @@ export const STAGE_NEEDS = {
   review: ['worktreeDir'],
   deploy: ['worktreeDir', 'commands.deploy', 'commands.perf'],
   benchmark: [],
+  // Толкование только читает: числа уже сняты, снимать их заново нечем
+  // и незачем. Ни дерева, ни команд ему не нужно.
+  interpret: [],
   triage: [],
 };
 

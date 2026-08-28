@@ -33,7 +33,12 @@ function afterDone(task) {
       // Прогон перед pull request нужен, только если задача его заказывала.
       return task.run ? 'benchmark' : 'pr';
     case 'benchmark':
-      return task.type === 'run' ? 'closed' : 'pr';
+      // Задача-прогон после замера идёт толковать полученные числа, а не
+      // закрываться. Задача-доработка — сразу в pull request: у неё замер
+      // лишь одна из проверок перед ревью, и толковать его будет ревьюер.
+      return task.type === 'run' ? 'interpret' : 'pr';
+    case 'interpret':
+      return 'closed';
     // Доработка ведёт обратно в ожидание проверок, а не в ревью: правка
     // требует нового прогона CI, а ревью на непроверенном коде запрещено.
     case 'revise':
@@ -158,9 +163,9 @@ export function applyExternal(task, external) {
       return { status: 'benchmark', returnTo: null, note: 'прогон идёт' };
     if (external.state === 'success') {
       return {
-        status: task.type === 'run' ? 'closed' : 'pr',
+        status: task.type === 'run' ? 'interpret' : 'pr',
         returnTo: null,
-        note: 'прогон закончен, результат в журнале',
+        note: 'прогон закончен, числа в журнале — вывод делает толкование',
       };
     }
     return { status: 'failed', returnTo: 'benchmark', note: 'прогон не удался' };

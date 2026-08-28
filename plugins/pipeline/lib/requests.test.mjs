@@ -78,9 +78,32 @@ describe('задача из заявки', () => {
     expect(task.links.related).toEqual(['0001-one']);
   });
 
-  it('новая задача начинается в очереди и ничьей', () => {
+  it('заявка агента ждёт человека в кандидатах, а не идёт в очередь', () => {
+    // Прежде задача заводилась сразу в `new`: агент заводил себе работу
+    // сам, а владелец продукта узнавал об этом, когда она уже шла
+    // по маршруту.
     const { task } = taskFromRequest(request(), { id: '0005-tesla', now: NOW });
-    expect(task).toMatchObject({ status: 'new', owner: null, history: [] });
+    expect(task).toMatchObject({ status: 'candidate', owner: null, history: [] });
+  });
+
+  it('прогон шлюз минует и заводится сразу в работу', () => {
+    // Прогон — обязательство по правилу вливания, а не гипотеза агента.
+    // Задержись он в кандидатах и не попадись на глаза — правка баланса
+    // уедет в главную ветку без заказанного замера.
+    const { task } = taskFromRequest(
+      request({ type: 'run', run: { kind: 'arena', expectation: 'доли побед около равных' } }),
+      { id: '0006-run', now: NOW },
+    );
+    expect(task.status).toBe('new');
+  });
+
+  it('связь с породившей проставляется и у кандидата', () => {
+    const { task } = taskFromRequest(request(), {
+      id: '0005-tesla',
+      now: NOW,
+      sourceId: '0001-one',
+    });
+    expect(task).toMatchObject({ status: 'candidate', links: { related: ['0001-one'] } });
   });
 });
 

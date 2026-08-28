@@ -1,5 +1,8 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  NEEDS_SESSION,
   NEEDS_WORKTREE,
   ROUTES,
   STATES,
@@ -44,9 +47,47 @@ describe('маршруты', () => {
     }
   });
 
+  it('кандидат одобряется переходом в очередь', () => {
+    // Переход объявлен, хотя выполняет его человек мышью. Не объяви его —
+    // карточка, перетащенная в «Заведено», вернулась бы обратно: конвейер
+    // возвращает всё, чего нет в таблице. Шлюз не просто не работал бы,
+    // а отменял бы одобрение.
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'new').ok).toBe(true);
+    expect(canTransition(task({ type: 'note', status: 'candidate' }), 'new').ok).toBe(true);
+  });
+
+  it('кандидата нельзя протащить мимо очереди', () => {
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'design').ok).toBe(false);
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'implement').ok).toBe(
+      false,
+    );
+  });
+
+  it('прогон кандидатом не бывает', () => {
+    expect(canTransition(task({ type: 'run', status: 'candidate' }), 'new').ok).toBe(false);
+  });
+
   it('прогон не заходит в проработку', () => {
     expect(canTransition(task({ type: 'run', status: 'new' }), 'design').ok).toBe(false);
     expect(canTransition(task({ type: 'run', status: 'new' }), 'benchmark').ok).toBe(true);
+  });
+
+  it('замер отдаёт прогон толкованию, а закрыть его сам не вправе', () => {
+    const measured = task({ type: 'run', status: 'benchmark' });
+    expect(canTransition(measured, 'interpret').ok).toBe(true);
+    expect(canTransition(measured, 'closed').ok).toBe(false);
+  });
+
+  it('толкование закрывает прогон', () => {
+    expect(canTransition(task({ type: 'run', status: 'interpret' }), 'closed').ok).toBe(true);
+  });
+
+  it('доработка толкования не знает: её замер ведёт к проверкам', () => {
+    // Толкование объявлено только на маршруте прогона. У доработки замер —
+    // одна из проверок перед ревью, и читает её ревьюер.
+    const measured = task({ type: 'feature', status: 'benchmark' });
+    expect(canTransition(measured, 'interpret').ok).toBe(false);
+    expect(canTransition(measured, 'pr').ok).toBe(true);
   });
 
   it('замечание разбирается и закрывается', () => {
@@ -133,6 +174,19 @@ describe('цена состояния', () => {
 
   it('выкладка требует тишины на машине', () => {
     expect(isExclusive(task({ status: 'deploy' }))).toBe(true);
+  });
+});
+
+describe('этапы и скиллы', () => {
+  it('у каждого этапа с сессией есть скилл', () => {
+    // Сессия-исполнитель читает указания своего этапа из
+    // `skills/<этап>.md` и без них не знает, что делать. Расхождение
+    // скиллов с кодом — самая частая беда этого конвейера: этап,
+    // объявленный в таблице, но не описанный, обнаружится только тогда,
+    // когда задача до него дойдёт, — то есть в проде и молча.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const missing = NEEDS_SESSION.filter((stage) => !existsSync(`${dir}${stage}.md`));
+    expect(missing).toEqual([]);
   });
 });
 
