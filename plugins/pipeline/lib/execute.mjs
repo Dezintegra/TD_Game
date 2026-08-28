@@ -5,21 +5,26 @@ import {
   countContinuation,
   linkArtifact,
   relate,
+  releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
 import { planRequests } from './requests.mjs';
-import { appendQuestion, recordAnswer, renderQuestion } from './questions.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
-import { journalAppendix } from './journal.mjs';
 
 /**
  * Исполнение решений сканера.
  *
  * Всё, что трогает мир, собрано здесь и делается через доводом переданный
- * набор действий: чтение и запись задачи, дозапись журнала, коммит с
- * немедленной отправкой, заведение дерева, запись в слот. Поэтому порядок
- * шагов проверяется без единого настоящего коммита.
+ * набор действий: чтение и сохранение задачи, заведение дерева, запись
+ * в слот. Поэтому порядок шагов проверяется без единого настоящего коммита.
+ *
+ * Сохранение задачи вместе с записью журнала — ОДНА операция хранилища,
+ * а не пара «записать» и «отправить». Хранилищ у бэклога два, и устроены
+ * они по-разному: файловое пишет две записи и коммитит их, а доска Trello
+ * двигает карточку и дописывает комментарий, безо всяких коммитов.
+ * Разделять здесь то, что разделяется только у одного из них, значило бы
+ * заставить исполнение знать, с чем оно работает.
  *
  * Порядок и есть главное, что здесь написано. Две вещи в нём неслучайны:
  *
@@ -38,68 +43,8 @@ export const RESULT = {
   raced: 'задачу занял кто-то другой',
 };
 
-/**
- * Исходы, при которых коммита не случилось вовсе.
- *
- * Отличать их от прочих обязательно. Всё, что дальше по пути, — отбитая
- * отправка, конфликт, отсутствие сети — происходит уже ПОСЛЕ удавшегося
- * коммита, и написанное там не потеряно: оно лежит в ветке хвостом.
- * А вот когда не удались `add` или `commit`, написанное осталось голым
- * изменением в общем дереве, и убрать его некому.
- */
-const NOTHING_COMMITTED = ['add-failed', 'commit-failed'];
-
-/**
- * Записать задачу и журнал одним коммитом и сразу отправить.
- *
- * Неудачу до коммита прибирает за собой сама: иначе один сорвавшийся `add`
- * оставлял бы основное дерево грязным навсегда. Грязное дерево запрещает
- * и подтягивание главной ветки, и перевыкладку при отбитой отправке —
- * то есть одна неудача останавливала конвейер целиком, и разобраться
- * с этим мог только человек, догадавшийся посмотреть `git status`.
- */
-function commitTaskChange(io, task, entry, message, extraPaths = []) {
-  const appendix = journalAppendix(task, io.readJournal(task.id), entry);
-  const paths = [io.taskPath(task.id), io.journalPath(task.id), ...extraPaths];
-
-  io.writeTask(task);
-  io.appendJournal(task.id, appendix);
-
-  const push = io.commitAndPush(paths, message);
-  if (NOTHING_COMMITTED.includes(push.outcome)) io.restorePaths(paths);
-
-  return { ...push, paths };
-}
-
-/**
- * Записать вопрос владельцу продукта.
- *
- * Раньше этого шага не было вовсе, и `awaiting-po` был тупиком: задача
- * уходила туда ждать ответа в разделе файла, который никто не создавал.
- * Выход из ожидания ровно один — непустой ответ в этом разделе, — так что
- * задача застревала навсегда, а владелец продукта видел пустой файл
- * и не знал, что его ждут.
- *
- * Возвращает путь файла вопросов, чтобы он уехал тем же коммитом, что
- * и сама задача: разъехавшись, они дали бы задачу в ожидании без вопроса
- * либо вопрос без задачи.
- */
-function askOwner(io, task, report) {
-  const before = io.readQuestions();
-  const block = renderQuestion({
-    taskId: task.id,
-    askedAt: io.now,
-    returnTo: task.returnTo,
-    summary: report.summary,
-    decisions: report.decisions ?? [],
-  });
-
-  io.writeQuestions(appendQuestion(before, block));
-  return io.questionsPath();
-}
-
 /** Перенести отчёт сессии в бэклог. */
-function transferReport(action, io) {
+async function transferReport(action, io) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
@@ -146,9 +91,8 @@ function transferReport(action, io) {
   // для порождённых.
   const created = [];
   for (const born of plan.planned) {
-    io.writeTask(born);
-    const pushed = io.commitAndPush(
-      [io.taskPath(born.id)],
+    const pushed = await io.createTask(
+      born,
       `chore(backlog): ${born.id} заведена по разбору ${action.taskId}`,
     );
     if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
@@ -156,9 +100,9 @@ function transferReport(action, io) {
     next = relate(next, born.id);
   }
 
-  // Вопрос записывается ТЕМ ЖЕ коммитом, что и переход в ожидание.
+  // Вопрос записывается ТЕМ ЖЕ действием, что и переход в ожидание.
   // Схема задачи требует поля `question` при этом состоянии, а без записи
-  // в файле вопросов у ожидания нет выхода вовсе.
+  // вопроса у ожидания нет выхода вовсе.
   const asks = verdict.status === 'awaiting-po';
   if (asks) {
     next = {
@@ -167,17 +111,22 @@ function transferReport(action, io) {
     };
   }
 
-  // Ответ, собранный спрашивающей сессией, тоже уезжает сюда — и тем же
-  // коммитом. Не записав его в файл вопросов, конвейер оставил бы раздел
-  // без ответа: следующая спрашивающая сессия задала бы тот же вопрос
-  // заново, а летопись говорила бы, что владелец продукта так и не ответил.
+  // Ответ, собранный спрашивающей сессией, уезжает туда же. Не записав его,
+  // конвейер оставил бы вопрос без ответа: следующая спрашивающая сессия
+  // задала бы тот же вопрос заново, а летопись говорила бы, что владелец
+  // продукта так и не ответил.
   const answering = action.stage === 'awaiting-po';
   if (answering && task.question) {
     next = { ...next, question: { ...task.question, answeredAt: io.now } };
   }
 
-  const push = commitTaskChange(
-    io,
+  // Куда именно ложится вопрос — дело хранилища. Файловый бэклог пишет
+  // его в `manage/questions.md` и просит увезти файл тем же коммитом;
+  // доска пишет комментарий к карточке, и увозить ей нечего.
+  const asked = asks ? await io.askOwner(next, report) : null;
+  const answered = answering ? await io.recordAnswer(next, action, report) : null;
+
+  const push = await io.saveTask(
     next,
     {
       at: io.now,
@@ -189,10 +138,7 @@ function transferReport(action, io) {
       problem: verdict.status === 'failed' ? verdict.note : undefined,
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
-    [
-      asks ? askOwner(io, next, report) : null,
-      answering ? writeAnswer(action, io, report) : null,
-    ].filter(Boolean),
+    [asked, answered].filter(Boolean),
   );
   if (!push.ok) return { result: 'failed', why: push.outcome, created };
 
@@ -204,7 +150,7 @@ function transferReport(action, io) {
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, слот. */
-function startStage(action, io) {
+async function startStage(action, io) {
   // Без слота задачу не берут. Сканер называет всё, что созрело, а раскладка
   // решает, что из этого поместится: слотов может быть меньше, чем работы.
   // Первый живой прогон захватил все восемь прогонов при двух слотах — потому
@@ -219,8 +165,22 @@ function startStage(action, io) {
   const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
 
-  const push = commitTaskChange(
-    io,
+  // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
+  // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
+  // на доске, ни рабочего дерева, — и убирать ей нечего.
+  //
+  // Хранилище захватывает по-своему. Доска назначает исполнителя карточке:
+  // повторное назначение того же участника Trello отвергает, и это
+  // единственная в её распоряжении операция «сравни-и-запиши». Файловому
+  // бэклогу отдельный захват не нужен — его роль исполняет отправка записи
+  // владельца, которая либо проходит, либо отбивается.
+  const held = io.acquire ? await io.acquire(claimed.task) : { ok: true };
+  if (!held.ok) {
+    if (held.outcome === 'taken') return { result: 'raced', why: held.why };
+    return { result: 'failed', why: held.why ?? held.outcome };
+  }
+
+  const push = await io.saveTask(
     claimed.task,
     {
       at: io.now,
@@ -235,31 +195,33 @@ function startStage(action, io) {
     // Что делать дальше, решает не сам факт неудачи, а то, что осталось
     // в мире. Случаев три, и путать их дорого.
     //
-    // Прежде здесь на любую неудачу переписывался файл задачи со снятым
-    // владельцем — и это было хуже бездействия. Снятие владельца отменяло
-    // только половину захвата: состояние оставалось этапным, и задача
-    // выпадала из конвейера вся целиком. Очередь берёт лишь `new`;
-    // продолжателя порождают по записи реестра, а её нет — дерево заводится
-    // строкой ниже; сверка довела бы захват до конца, но узнаёт свои задачи
-    // как раз по владельцу, которого мы только что стёрли. На доске такая
-    // задача выглядит идущим этапом, которого никто не делает.
-    //
-    // Вдобавок переписанный файл никто не коммитил, и общее дерево
-    // оставалось грязным навсегда.
+    // Прежде здесь на любую неудачу снимался владелец задачи — и это было
+    // хуже бездействия. Снятие владельца отменяло только половину захвата:
+    // состояние оставалось этапным, и задача выпадала из конвейера вся
+    // целиком. Очередь берёт лишь `new`; продолжателя порождают по записи
+    // реестра, а её нет — дерево заводится строкой ниже; сверка довела бы
+    // захват до конца, но узнаёт свои задачи как раз по владельцу, которого
+    // мы только что стёрли. На доске такая задача выглядит идущим этапом,
+    // которого никто не делает.
     if (push.outcome === 'conflict') {
-      // Задачу занял кто-то другой: наш коммит поверх чужого не ложится
-      // и остался бы хвостом, который не сольётся уже никогда, — а хвост
-      // главной ветки запирает записи всему конвейеру. Снимаем его и
-      // возвращаем файлы: за проигравшим гонку не должно остаться следа.
-      io.dropCommit();
-      io.restorePaths(push.paths);
+      // Задачу занял кто-то другой. Что за собой прибрать, знает хранилище:
+      // файловому надо снять неотправленный коммит и вернуть файлы — иначе
+      // хвост главной ветки запрёт записи всему конвейеру.
+      io.undoSave?.(push, releaseClaim(claimed.task));
+      await io.release?.(claimed.task);
       return { result: 'raced', why: 'задачу занял кто-то другой' };
     }
 
-    // Остальное — это либо неудача до коммита, которую `commitTaskChange`
-    // уже прибрала, либо годный коммит без отправки. Годный коммит и есть
-    // захват: работа заявлена, не хватает лишь публикации, и досылка хвоста
-    // сделает её ближайшим циклом. Трогать его нельзя.
+    // Захват состоялся, а запись — нет. У доски это нужно отменить: иначе
+    // карточка останется назначенной, но не начатой, и следующий цикл её
+    // не возьмёт — назначение он честно сочтёт чужим захватом, и задача
+    // повиснет до вмешательства человека.
+    //
+    // У файлового бэклога наоборот: годный коммит без отправки И ЕСТЬ
+    // захват. Работа заявлена, не хватает лишь публикации, и досылка хвоста
+    // сделает её ближайшим циклом — трогать его нельзя. Поэтому отпускание
+    // спрашивается у хранилища, а не решается здесь.
+    await io.release?.(claimed.task);
     return { result: 'failed', why: push.outcome };
   }
 
@@ -288,7 +250,7 @@ function startStage(action, io) {
 }
 
 /** Подхватить этап за уснувшей сессией. */
-function continueStage(action, io) {
+async function continueStage(action, io) {
   // Без слота продолжателя не порождают — ровно как и не берут задачу
   // в работу. Раскладка отказывает, когда прежнее назначение ещё не взято
   // исполнителем, и списать за это попытку было бы вдвойне несправедливо:
@@ -302,8 +264,7 @@ function continueStage(action, io) {
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
   const counted = countContinuation(task);
-  const push = commitTaskChange(
-    io,
+  const push = await io.saveTask(
     counted,
     {
       at: io.now,
@@ -320,7 +281,7 @@ function continueStage(action, io) {
 }
 
 /** Разобрать ответ владельца продукта и вернуть задачу в работу. */
-function answerQuestion(action, io) {
+async function answerQuestion(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
   if (!task.returnTo)
@@ -335,7 +296,8 @@ function answerQuestion(action, io) {
 
   // Вопрос гасится отметкой времени ответа. Без неё следующий вопрос
   // по той же задаче «отвечался» бы старым текстом сам собой: разбор
-  // ищет непустой ответ в разделе, а раздел остаётся в файле навсегда.
+  // ищет непустой ответ, а прежний ответ никуда не девается — ни
+  // из раздела файла, ни из комментариев карточки.
   const answer = action.answer ?? io.readAnswer(action.taskId);
   const next = {
     ...moved.task,
@@ -348,8 +310,7 @@ function answerQuestion(action, io) {
         },
   };
 
-  const push = commitTaskChange(
-    io,
+  const push = await io.saveTask(
     next,
     {
       at: io.now,
@@ -365,26 +326,8 @@ function answerQuestion(action, io) {
     : { result: 'failed', why: push.outcome };
 }
 
-/**
- * Записать в файл вопросов ответ, собранный сессией у человека.
- *
- * Сама сессия этот файл не трогает: писатель у бэклога один. Она кладёт
- * ответ в отчёт, а сюда он попадает уже рукой оркестратора — тем же
- * порядком, каким в бэклог попадает всё остальное.
- */
-function writeAnswer(action, io, report) {
-  const answer = report?.decisions?.[0];
-  if (!answer) return null;
-
-  const filled = recordAnswer(io.readQuestions(), action.taskId, answer);
-  if (!filled) return null;
-
-  io.writeQuestions(filled);
-  return io.questionsPath();
-}
-
 /** Применить внешнее состояние: проверки CI или прогон на чужом железе. */
-function pollExternal(action, io) {
+async function pollExternal(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
@@ -395,8 +338,7 @@ function pollExternal(action, io) {
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  const push = commitTaskChange(
-    io,
+  const push = await io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: verdict.status, what: verdict.note },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
@@ -407,15 +349,14 @@ function pollExternal(action, io) {
 }
 
 /** Остановить задачу: продолжения исчерпаны, дальше нужен человек. */
-function failStage(action, io) {
+async function failStage(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
   const moved = applyTransition(task, { status: 'failed', note: action.reason, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  const push = commitTaskChange(
-    io,
+  const push = await io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: 'failed', problem: action.reason },
     `chore(backlog): ${task.id} остановлена, нужен разбор`,
@@ -431,7 +372,7 @@ function failStage(action, io) {
  * принимается не здесь, а в отдельном разборе, и только по доказанной
  * влитости pull request.
  */
-function cleanupTask(action, io) {
+async function cleanupTask(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
@@ -448,8 +389,7 @@ function cleanupTask(action, io) {
   if (verdict.verdict === 'fail') {
     const moved = applyTransition(task, { status: 'failed', note: verdict.why, now: io.now });
     if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-    const push = commitTaskChange(
-      io,
+    const push = await io.saveTask(
       moved.task,
       { at: io.now, from: task.status, to: 'failed', problem: verdict.why },
       `chore(backlog): ${task.id} уборка отменена, нужен разбор`,
@@ -468,8 +408,7 @@ function cleanupTask(action, io) {
 
   const moved = applyTransition(task, { status: 'closed', note: verdict.why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-  const push = commitTaskChange(
-    io,
+  const push = await io.saveTask(
     moved.task,
     { at: io.now, from: task.status, to: 'closed', what: `Убрано: ${verdict.why}.` },
     `chore(backlog): ${task.id} закрыта`,
@@ -485,7 +424,7 @@ function cleanupTask(action, io) {
  * дерева и только ускоряющей отправкой. Неудача не беда: она задерживает
  * действия по одной задаче, а не по всем.
  */
-function pushTail(action, io) {
+async function pushTail(action, io) {
   if (action.scope !== 'branch') return { result: 'skipped', why: 'хвост главной ветки не здесь' };
 
   const entry = io.registryEntry(action.taskId);
@@ -515,7 +454,7 @@ const HANDLERS = {
  * продолжают. Исключение — неудача отправки: она означает, что записи
  * в главную ветку больше невозможны, и продолжать бессмысленно.
  */
-export function execute(actions, io) {
+export async function execute(actions, io) {
   const results = [];
 
   for (const action of actions) {
@@ -529,7 +468,7 @@ export function execute(actions, io) {
       continue;
     }
 
-    const outcome = handler(action, io);
+    const outcome = await handler(action, io);
     results.push({ action, ...outcome });
 
     if (outcome.result === 'failed' && String(outcome.why ?? '').includes('offline')) {

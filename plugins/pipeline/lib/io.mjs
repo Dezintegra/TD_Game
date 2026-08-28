@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
+import { journalAppendix } from './journal.mjs';
+import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 
 /**
  * Переходник к настоящему миру: файлы, git, слоты.
@@ -14,6 +16,17 @@ import { pushMain } from './push-discipline.mjs';
  * требует подтверждения человека и запирает автономную сессию насмерть —
  * проверено пробой, вставшей на записи во временный каталог.
  */
+
+/**
+ * Исходы, при которых коммита не случилось вовсе.
+ *
+ * Отличать их от прочих обязательно. Всё, что дальше по пути, — отбитая
+ * отправка, конфликт, отсутствие сети — происходит уже ПОСЛЕ удавшегося
+ * коммита, и написанное там не потеряно: оно лежит в ветке хвостом.
+ * А вот когда не удались `add` или `commit`, написанное осталось голым
+ * изменением в общем дереве, и убрать его некому.
+ */
+const NOTHING_COMMITTED = ['add-failed', 'commit-failed'];
 
 /** Красиво и одинаково: две пробела, перевод строки в конце. */
 const asJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
@@ -54,6 +67,118 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
     journalPath,
 
     readTask: (id) => readJson(join(root, taskPath(id))),
+
+    /**
+     * Сохранить изменённую задачу вместе с записью журнала.
+     *
+     * Здесь эта пара действий становится одной операцией не для красоты.
+     * Хранилищ у бэклога два — файлы и доска Trello, — и устроены они
+     * по-разному: файловое пишет две записи и коммитит их, а доска двигает
+     * карточку и дописывает комментарий, безо всяких коммитов. Разделение
+     * на «записать» и «отправить» имеет смысл только у первого, и вынести
+     * его наружу значило бы заставить исполнение знать, с чем оно работает.
+     *
+     * @param {object} task  задача в новом состоянии
+     * @param {object} entry запись журнала об этом переходе
+     * @param {string} message сообщение коммита — доске оно не нужно
+     */
+    saveTask(task, entry, message, extraPaths = []) {
+      const appendix = journalAppendix(task, this.readJournal(task.id), entry);
+      // Попутные пути — файл вопросов, например. Они обязаны уехать ТЕМ ЖЕ
+      // коммитом: разъехавшись, задача в ожидании осталась бы без вопроса
+      // либо вопрос без задачи.
+      const paths = [taskPath(task.id), journalPath(task.id), ...extraPaths];
+
+      this.writeTask(task);
+      this.appendJournal(task.id, appendix);
+
+      const push = this.commitAndPush(paths, message);
+      // Неудача ДО коммита прибирается сразу: иначе один сорвавшийся `add`
+      // оставил бы основное дерево грязным навсегда, а грязное дерево
+      // запрещает и подтягивание главной ветки, и перевыкладку — то есть
+      // одна неудача останавливала бы конвейер целиком.
+      if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
+
+      return { ...push, paths };
+    },
+
+    /** Завести новую задачу: запись плюс отправка своим коммитом. */
+    createTask(task, message) {
+      const paths = [taskPath(task.id)];
+      this.writeTask(task);
+      const push = this.commitAndPush(paths, message);
+      if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
+      return { ...push, paths };
+    },
+
+    /**
+     * Снять свой захват, не коммитя.
+     *
+     * Зовётся, когда отправка захвата не удалась: помеченной собой чужую
+     * задачу оставлять нельзя. Коммита тут нет намеренно — коммитить нечего,
+     * запись и так не уехала.
+     */
+    releaseTask(task) {
+      this.writeTask(task);
+    },
+
+    /**
+     * Записать вопрос владельцу продукта в файл вопросов.
+     *
+     * Возвращает путь файла, чтобы он уехал ТЕМ ЖЕ коммитом, что и сама
+     * задача: разъехавшись, они дали бы задачу в ожидании без вопроса
+     * либо вопрос без задачи.
+     *
+     * Раньше этого шага не было вовсе, и `awaiting-po` был тупиком: задача
+     * уходила туда ждать ответа в разделе, который никто не создавал.
+     * Выход из ожидания ровно один — непустой ответ, — так что задача
+     * застревала навсегда, а владелец продукта видел пустой файл и не знал,
+     * что его ждут.
+     */
+    askOwner(task, report) {
+      const block = renderQuestion({
+        taskId: task.id,
+        askedAt: now,
+        returnTo: task.returnTo,
+        summary: report.summary,
+        decisions: report.decisions ?? [],
+      });
+      this.writeQuestions(appendQuestion(this.readQuestions(), block));
+      return this.questionsPath();
+    },
+
+    /**
+     * Записать ответ, собранный спрашивающей сессией у человека.
+     *
+     * Сама сессия файла вопросов не трогает: писатель у бэклога один. Она
+     * кладёт ответ в отчёт, а сюда он попадает уже рукой оркестратора.
+     */
+    recordAnswer(task, action, report) {
+      const answer = report?.decisions?.[0];
+      if (!answer) return null;
+
+      const filled = recordAnswerIn(this.readQuestions(), action.taskId, answer);
+      if (!filled) return null;
+
+      this.writeQuestions(filled);
+      return this.questionsPath();
+    },
+
+    /**
+     * Прибрать за сохранением, проигравшим гонку.
+     *
+     * Наш коммит поверх чужого не ложится и остался бы хвостом, который
+     * не сольётся уже никогда, — а хвост главной ветки запирает записи
+     * всему конвейеру. Поэтому снимаем его и возвращаем файлы: за
+     * проигравшим гонку не должно остаться ни следа.
+     *
+     * У доски этой заботы нет вовсе: там ничего не коммитится, а гонку
+     * решает назначение исполнителя, а не запись состояния.
+     */
+    undoSave(save) {
+      this.dropCommit();
+      this.restorePaths(save.paths ?? []);
+    },
 
     /**
      * Все занятые идентификаторы, включая закрытые задачи.
