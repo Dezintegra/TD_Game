@@ -240,9 +240,18 @@ export function scan(state) {
 
   // Занятость машины считается по тому, что уже идёт. Продолжатель места
   // не удваивает: задача уже стоит в своём состоянии и уже посчитана.
-  const busyResource = tasks.filter((task) => stateClass(task) === 'resource');
-  const busyReview = tasks.filter((task) => stateClass(task) === 'review');
-  let machineBusy = tasks.some((task) => stateClass(task) === 'exclusive');
+  // Занятость исполнителя. Он один, поэтому и правило одно: пока хоть одна
+  // задача стоит в этапе, которому нужна сессия, новых в работу не берут.
+  //
+  // Прежде здесь считались три квоты — ресурсная, ревьюшная и «машина занята
+  // исключительным этапом», — и ожидательные этапы не занимали ни одной.
+  // Из-за этого сканер запускал прогоны арены пачками, а слот был один:
+  // лишние вставали в этапе, сессии им не доставалось, и через полчаса
+  // конвейер объявлял их мёртвыми. За ночь 27–28.08.2026 так сгорело
+  // семнадцать задач — парами, в одну и ту же секунду.
+  //
+  // Плата за простоту названа честно: прогоны арены идут по очереди.
+  let busy = tasks.some((task) => NEEDS_SESSION.includes(task.status));
 
   // 6. Продолжатели за уснувшими и умершими сессиями.
   //
@@ -313,41 +322,14 @@ export function scan(state) {
       continue;
     }
 
-    const kind = stateClass({ ...task, status: stage });
-
-    if (machineBusy) {
-      notes.push(`задача ${task.id} ждёт: машина занята исключительным этапом`);
-      continue;
-    }
-    if (kind === 'exclusive') {
-      if (busyResource.length || busyReview.length) {
-        notes.push(`задача ${task.id} ждёт тишины на машине`);
-        continue;
-      }
-      actions.push({ kind: 'start-stage', taskId: task.id, stage });
-      machineBusy = true;
+    if (busy) {
+      notes.push(`задача ${task.id} ждёт: исполнитель занят`);
       continue;
     }
     if (runWaiting && task.type !== 'run') continue;
-    if (kind === 'resource') {
-      if (busyResource.length >= config.maxResource) {
-        notes.push(
-          `задача ${task.id} ждёт: занято ${busyResource.length} из ${config.maxResource}`,
-        );
-        continue;
-      }
-      actions.push({ kind: 'start-stage', taskId: task.id, stage });
-      busyResource.push(task);
-      continue;
-    }
-    if (kind === 'review') {
-      if (busyReview.length >= config.maxReview) continue;
-      actions.push({ kind: 'start-stage', taskId: task.id, stage });
-      busyReview.push(task);
-      continue;
-    }
-    // Ожидательный этап квоты не занимает: прогон считает чужое железо.
+
     actions.push({ kind: 'start-stage', taskId: task.id, stage });
+    busy = true;
   }
 
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
