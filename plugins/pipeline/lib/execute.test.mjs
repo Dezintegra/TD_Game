@@ -37,6 +37,7 @@ function fakeIo(over = {}) {
   const steps = [];
   const tasks = new Map((over.tasks ?? [task()]).map((item) => [item.id, item]));
   const slots = new Map();
+  const briefs = new Map();
   const journals = new Map();
   const restored = [];
   const dropped = [];
@@ -48,6 +49,7 @@ function fakeIo(over = {}) {
     steps,
     tasks,
     slots,
+    briefs,
     journals,
     restored,
     dropped,
@@ -153,9 +155,14 @@ function fakeIo(over = {}) {
       steps.push(`назначение в слот ${slot}`);
       slots.set(slot, true);
     },
+    writeBrief(slot, brief) {
+      steps.push(`выписка в слот ${slot}: ${brief.task?.id} ${brief.task?.status}`);
+      briefs.set(slot, brief);
+    },
     clearSlot(slot) {
       steps.push(`слот ${slot} освобождён`);
       slots.delete(slot);
+      briefs.delete(slot);
     },
 
     registryEntry: () =>
@@ -217,10 +224,33 @@ describe('взятие задачи в работу', () => {
     expect(io.tasks.get('0001-one')).toMatchObject({ owner: 'станция-1', status: 'design' });
   });
 
-  it('назначение попадает в слот последним', async () => {
+  it('назначение попадает в слот последним, выписка — прямо перед ним', async () => {
+    // Слот и есть сигнал к работе: исполнитель просыпается по нему. Поэтому
+    // он пишется, когда мир уже готов — захват отправлен, дерево заведено, —
+    // а выписка, на которую он указывает, ложится ещё раньше.
     const io = fakeIo();
     await execute([startAction], io);
-    expect(io.steps.at(-1)).toBe('назначение в слот worker');
+    expect(io.steps.slice(-2)).toEqual([
+      'выписка в слот worker: 0001-one design',
+      'назначение в слот worker',
+    ]);
+  });
+
+  it('выписка несёт задачу, её журнал и опись доски', async () => {
+    // Ради этого всё и затевалось: исполнителю больше незачем открывать
+    // бэклог, а значит нечему и разойтись с ним.
+    const io = fakeIo({
+      tasks: [task(), task({ id: '0002-two', status: 'review', title: 'вторая' })],
+    });
+    io.appendJournal('0001-one', '## что решили прежде');
+    await execute([startAction], io);
+
+    const brief = io.briefs.get('worker');
+    expect(brief.task).toMatchObject({ id: '0001-one', status: 'design' });
+    expect(brief.journal).toContain('## что решили прежде');
+    expect(brief.board).toContainEqual(
+      expect.objectContaining({ id: '0002-two', status: 'review' }),
+    );
   });
 
   it('занятая чужой машиной задача не берётся и мир не трогается', async () => {
