@@ -44,6 +44,12 @@ function afterDone(task) {
       return 'cleanup';
     case 'cleanup':
       return 'closed';
+    // Ответ владельца продукта возвращает задачу туда, откуда она ушла.
+    // Без этой ветки отчёт спрашивающей сессии было бы некуда применить,
+    // и единственным выходом из ожидания остался бы ответ, вписанный
+    // в файл вопросов руками.
+    case 'awaiting-po':
+      return task.returnTo;
     default:
       return null;
   }

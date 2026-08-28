@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
 
 /**
@@ -132,6 +132,27 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
         budgetSeconds: config.pushBudgetSeconds,
       });
       return { ok: push.outcome === 'pushed', outcome: push.outcome, notes: push.notes };
+    },
+
+    /**
+     * Файл вопросов владельцу продукта.
+     *
+     * Единственный файл бэклога, в который пишет не только конвейер:
+     * ответы туда вписывает человек. Поэтому читается он всегда целиком
+     * и перезаписывается тоже целиком — дозапись вслепую однажды легла бы
+     * поверх ответа, набранного в ту же минуту.
+     */
+    questionsPath: () => config.paths.questions,
+
+    readQuestions() {
+      const path = join(root, config.paths.questions);
+      return existsSync(path) ? readFileSync(path, 'utf8').replace(/^\uFEFF/, '') : '';
+    },
+
+    writeQuestions(text) {
+      const path = join(root, config.paths.questions);
+      ensure(dirname(path));
+      writeFileSync(path, text, 'utf8');
     },
 
     /** Вернуть названные пути к состоянию главной ветки. */

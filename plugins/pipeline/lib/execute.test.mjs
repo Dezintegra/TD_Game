@@ -38,6 +38,7 @@ function fakeIo(over = {}) {
   const journals = new Map();
   const restored = [];
   const dropped = [];
+  const questions = { text: over.questions ?? '# Вопросы\n\n## Открытые вопросы\n' };
 
   const io = {
     now: NOW,
@@ -48,6 +49,7 @@ function fakeIo(over = {}) {
     journals,
     restored,
     dropped,
+    questions,
 
     readTask: (id) => tasks.get(id) ?? null,
     writeTask(next) {
@@ -61,6 +63,13 @@ function fakeIo(over = {}) {
     },
     taskPath: (id) => `manage/tasks/${id}.json`,
     journalPath: (id) => `manage/journal/${id}.md`,
+
+    questionsPath: () => 'manage/questions.md',
+    readQuestions: () => questions.text,
+    writeQuestions(text) {
+      steps.push('файл вопросов переписан');
+      questions.text = text;
+    },
 
     commitAndPush(paths, message) {
       steps.push(`коммит и отправка: ${message} [${paths.length} путей]`);
@@ -318,6 +327,110 @@ describe('перенос отчёта', () => {
     });
     execute([transfer], io);
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(2);
+  });
+});
+
+describe('вопрос владельцу продукта', () => {
+  const asking = { kind: 'transfer-report', taskId: '0001-one', stage: 'design', slot: 'worker-1' };
+
+  const askingIo = (over = {}) =>
+    fakeIo({
+      tasks: [task({ status: 'design' })],
+      report: {
+        taskId: '0001-one',
+        stage: 'design',
+        outcome: 'question',
+        summary: 'Цена Теслы влияет и на покупку, и на прокачку.',
+        decisions: ['**Вариант А.** Удешевить покупку.', '**Вариант Б.** Удешевить и прокачку.'],
+      },
+      ...over,
+    });
+
+  it('вопрос попадает в файл, а не только в состояние задачи', () => {
+    // Прежде этого шага не было вовсе: задача уходила ждать ответа
+    // в разделе файла, который никто не создавал, и застревала навсегда.
+    const io = askingIo();
+    execute([asking], io);
+    expect(io.questions.text).toContain('### 0001-one');
+    expect(io.questions.text).toContain('**Вариант Б.** Удешевить и прокачку.');
+  });
+
+  it('файл вопросов уезжает ТЕМ ЖЕ коммитом, что и задача', () => {
+    // Разъехавшись, они дали бы либо задачу в ожидании без вопроса,
+    // либо вопрос без задачи.
+    const io = askingIo();
+    execute([asking], io);
+    expect(io.steps).toContain(
+      'коммит и отправка: chore(backlog): 0001-one design → awaiting-po [3 путей]',
+    );
+  });
+
+  it('в задаче появляется поле вопроса, которого требует схема', () => {
+    const io = askingIo();
+    execute([asking], io);
+    const saved = io.tasks.get('0001-one');
+    expect(saved.status).toBe('awaiting-po');
+    expect(saved.question).toMatchObject({ askedAt: NOW, answeredAt: null });
+    expect(saved.returnTo).toBe('design');
+  });
+
+  it('ответ сессии возвращает задачу туда, откуда она ушла', () => {
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'awaiting-po',
+          returnTo: 'design',
+          question: {
+            askedAt: '2026-08-25T10:00:00+03:00',
+            summary: 'что делаем',
+            answeredAt: null,
+          },
+        }),
+      ],
+      questions: '## Открытые вопросы\n\n### 0001-one\n\nсуть\n\n**Ответ:**\n',
+      report: {
+        taskId: '0001-one',
+        stage: 'awaiting-po',
+        outcome: 'done',
+        summary: 'владелец продукта ответил',
+        decisions: ['Вариант А: удешевить только покупку.'],
+      },
+    });
+    const [result] = execute(
+      [{ kind: 'transfer-report', taskId: '0001-one', stage: 'awaiting-po' }],
+      io,
+    );
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('design');
+  });
+
+  it('ответ дописывается в файл вопросов и гасит вопрос', () => {
+    // Не записав ответ, конвейер оставил бы раздел пустым: следующая
+    // спрашивающая сессия задала бы тот же вопрос заново, а летопись
+    // говорила бы, что владелец продукта так и не ответил.
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'awaiting-po',
+          returnTo: 'design',
+          question: {
+            askedAt: '2026-08-25T10:00:00+03:00',
+            summary: 'что делаем',
+            answeredAt: null,
+          },
+        }),
+      ],
+      questions: '## Открытые вопросы\n\n### 0001-one\n\nсуть\n\n**Ответ:**\n',
+      report: {
+        taskId: '0001-one',
+        stage: 'awaiting-po',
+        outcome: 'done',
+        decisions: ['Вариант А: удешевить только покупку.'],
+      },
+    });
+    execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'awaiting-po' }], io);
+    expect(io.questions.text).toContain('**Ответ:** Вариант А: удешевить только покупку.');
+    expect(io.tasks.get('0001-one').question.answeredAt).toBe(NOW);
   });
 });
 
