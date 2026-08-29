@@ -355,6 +355,63 @@ describe('уснувшие сессии', () => {
     expect(kinds(result)).not.toContain('continue-stage');
   });
 
+  describe('закончившаяся сессия опознаётся раньше смертного срока', () => {
+    /** Сессия, числящаяся незапущенной с указанного мига. */
+    const ended = (title, notRunningSince) => ({
+      title,
+      isRunning: false,
+      // Отметка активности свежая: по одному лишь сроку молчания такую
+      // сессию сочли бы живой. Значит срабатывает именно новое правило.
+      lastActivityAt: '2026-08-26T11:59:00+03:00',
+      notRunningSince,
+    });
+
+    const inDesign = () => task({ id: '0001-one', status: 'design' });
+
+    it('не идёт дольше отпущенного — продолжатель', () => {
+      const result = run({
+        tasks: [inDesign()],
+        registry: { entries: [entry('0001-one')] },
+        sessions: [ended('pipeline:0001-one:design', '2026-08-26T11:40:00+03:00')],
+      });
+      expect(result.actions).toContainEqual({
+        kind: 'continue-stage',
+        taskId: '0001-one',
+        stage: 'design',
+        reason: 'сессия завершилась без отчёта',
+      });
+    });
+
+    it('только что переставшая идти продолжателя НЕ получает', () => {
+      // Сторож против возврата прежней беды: признак «не идёт» на коротком
+      // промежутке ловит сессию между ходами. Однажды по нему похоронили
+      // живую сессию за двадцать пять секунд до её же активности.
+      const result = run({
+        tasks: [inDesign()],
+        registry: { entries: [entry('0001-one')] },
+        sessions: [ended('pipeline:0001-one:design', '2026-08-26T11:57:00+03:00')],
+      });
+      expect(kinds(result)).not.toContain('continue-stage');
+    });
+
+    it('идущая, но молчащая по-прежнему ждёт полного срока', () => {
+      // Новое правило судит по признаку «не идёт». Идущей сессии оно
+      // не касается вовсе: она может как раз считать что-то долгое.
+      const stillGoing = {
+        title: 'pipeline:0001-one:design',
+        isRunning: true,
+        lastActivityAt: '2026-08-26T11:45:00+03:00',
+        notRunningSince: null,
+      };
+      const result = run({
+        tasks: [inDesign()],
+        registry: { entries: [entry('0001-one')] },
+        sessions: [stillGoing],
+      });
+      expect(kinds(result)).not.toContain('continue-stage');
+    });
+  });
+
   it('при готовом отчёте продолжателя не назначают', () => {
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' })],
