@@ -1,8 +1,8 @@
-import { Geometry, GlProgram, Mesh, RenderTexture, Shader, Sprite, Texture } from 'pixi.js';
-import type { Container, Renderer } from 'pixi.js';
+import { Geometry, GlProgram, Mesh, Shader, Sprite, Texture } from 'pixi.js';
+import type { Container, Renderer, RenderTexture } from 'pixi.js';
 import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
 import type { GameMap } from '@td/sim';
-import { finishBakedTexture } from './baked-texture.js';
+import { createBakedTexture, finishBakedTexture } from './baked-texture.js';
 import { GRAIN_SLOPE_SCALE, GRAIN_TILE_PIXELS, buildGrainTile } from './grain.js';
 import { ELEVATION_PX_PER_CELL, screenToWorld, worldToScreen } from './iso.js';
 import { diagonalCells } from './prism.js';
@@ -639,12 +639,7 @@ export const mountRockDiagonal = (
     if (!isRockCell(map, x, y)) continue;
 
     const cell = buildCellMesh(map, x, y, colors);
-    const texture = RenderTexture.create({
-      width: cell.width,
-      height: cell.height,
-      resolution: density,
-      antialias: true,
-    });
+    const texture = createBakedTexture(cell.width, cell.height, density, true);
 
     bakeCell(renderer, texture, cell);
     finishBakedTexture(texture);

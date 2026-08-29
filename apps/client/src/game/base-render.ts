@@ -4,13 +4,12 @@ import {
   GlProgram,
   Graphics,
   Mesh,
-  RenderTexture,
   Shader,
   Sprite,
   Texture,
 } from 'pixi.js';
 import type { Renderer } from 'pixi.js';
-import { finishBakedTexture } from './baked-texture.js';
+import { createBakedTexture, finishBakedTexture } from './baked-texture.js';
 import {
   CONCRETE_SLOPE_SCALE,
   CONCRETE_TILE_CELLS,
@@ -946,12 +945,7 @@ export const bakeBase = (renderer: Renderer, colors: BaseColors, density: number
   stage.addChild(mesh, struts);
   stage.position.set(-bounds.minX, -bounds.minY);
 
-  const texture = RenderTexture.create({
-    width: bounds.width,
-    height: bounds.height,
-    resolution: density,
-    antialias: true,
-  });
+  const texture = createBakedTexture(bounds.width, bounds.height, density, true);
 
   renderer.render({ container: stage, target: texture, clear: true });
   finishBakedTexture(texture);

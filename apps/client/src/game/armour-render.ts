@@ -1,6 +1,6 @@
 import { Geometry, GlProgram, Mesh, RenderTexture, Shader, State } from 'pixi.js';
 import type { Renderer, Texture } from 'pixi.js';
-import { finishBakedTexture } from './baked-texture.js';
+import { createBakedTexture, finishBakedTexture } from './baked-texture.js';
 import { VIEW_DIRECTION_3D } from './iso.js';
 import { MIRROR_KEEP } from './models.js';
 import {
@@ -534,12 +534,7 @@ export const bakeArmour = (
   renderer.render({ container: model, target: draft, clear: true });
   model.destroy(true);
 
-  const texture = RenderTexture.create({
-    width: mesh.width,
-    height: mesh.height,
-    resolution,
-    antialias: false,
-  });
+  const texture = createBakedTexture(mesh.width, mesh.height, resolution, false);
 
   const resolveShader = new Shader({
     glProgram: GlProgram.from({ vertex: RESOLVE_VERTEX, fragment: RESOLVE_FRAGMENT }),

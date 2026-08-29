@@ -1,6 +1,6 @@
-import { Container, Graphics, RenderTexture, Sprite } from 'pixi.js';
+import { Container, Graphics, Sprite } from 'pixi.js';
 import type { Renderer, Texture } from 'pixi.js';
-import { finishBakedTexture } from './baked-texture.js';
+import { createBakedTexture, finishBakedTexture } from './baked-texture.js';
 import type { Point } from './iso.js';
 import {
   ARC_TILE_H,
@@ -106,7 +106,7 @@ const paint = (
   // в пунктир при повороте; общая плотность сцены ниже двух не бывает,
   // так что оговорка соблюдается сама собой, а запас на приближение
   // молния получает наравне со всем прочим.
-  const texture = RenderTexture.create({ width, height, resolution: density, antialias: true });
+  const texture = createBakedTexture(width, height, density, true);
   renderer.render({ container: graphics, target: texture, clear: true });
   finishBakedTexture(texture);
   graphics.destroy();
