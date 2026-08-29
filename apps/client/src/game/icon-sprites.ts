@@ -2,6 +2,7 @@ import { DIRECTION_SOUTH, StructureKind, UNIT_TYPES } from '@td/shared';
 import type { UnitType } from '@td/shared';
 import type { Renderer } from 'pixi.js';
 import { DEFAULT_TUNING, bakeArmour } from './armour-render.js';
+import { ARMOUR_DRAFT_OVERSAMPLE } from './bake-density.js';
 import type { ArmourTuning } from './armour-render.js';
 import { generalSolids, machinePalette, unitSolids } from './machines.js';
 import {
@@ -83,6 +84,17 @@ export type IconMap = Readonly<Record<IconKey, string>>;
  * а разницы на экране уже не видно.
  */
 const ICON_RESOLUTION = 4;
+
+/**
+ * Во сколько раз черновик иконки плотнее её самой.
+ *
+ * Броня печётся в черновик и уменьшается вторым проходом — так получается
+ * сглаживание, не спорящее с затенением в стыках. Число берётся общее
+ * с полем (`ARMOUR_DRAFT_OVERSAMPLE`), но не через `armourSupersample`:
+ * та выводит запас из плотности экрана и плотности запекания сцены,
+ * а у иконки своя плотность, назначенная выше и от экрана не зависящая.
+ */
+const ICON_SUPERSAMPLE = ARMOUR_DRAFT_OVERSAMPLE;
 
 /**
  * Ступени прокачки у иконки нулевые.
@@ -224,6 +236,7 @@ export const createIconBaker = (
             machineArmour(side),
             false,
             ICON_RESOLUTION,
+            ICON_SUPERSAMPLE,
           ),
       ]),
       [
@@ -236,6 +249,7 @@ export const createIconBaker = (
             machineArmour(side),
             false,
             ICON_RESOLUTION,
+            ICON_SUPERSAMPLE,
           ),
       ] as [IconKey, () => ReturnType<typeof bakeArmour>],
       ...ICON_STRUCTURES.map((kind): [IconKey, () => ReturnType<typeof bakeArmour>] => [
@@ -255,6 +269,7 @@ export const createIconBaker = (
             structureArmour(side),
             false,
             ICON_RESOLUTION,
+            ICON_SUPERSAMPLE,
             STRUCTURE_TUNING,
           ),
       ]),
