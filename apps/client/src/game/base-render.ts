@@ -929,8 +929,12 @@ export const baseScreenBounds = (): BaseBounds => {
  * Считается один раз на базу при загрузке карты. Меш и линии рисуются
  * в одну текстуру одним проходом, после чего меш уничтожается: всё,
  * что он умел, лежит в текстуре.
+ *
+ * Плотность приходит снаружи, из общего расчёта (`bake-density.ts`).
+ * Раньше здесь стояла единица, и база мылила на плотном экране так же,
+ * как и скалы, — при том что стоящие рядом постройки не мылили.
  */
-export const bakeBase = (renderer: Renderer, colors: BaseColors): Sprite => {
+export const bakeBase = (renderer: Renderer, colors: BaseColors, density: number): Sprite => {
   const bounds = baseScreenBounds();
   const mesh = buildMesh(buildFaces(colors), colors);
 
@@ -944,7 +948,7 @@ export const bakeBase = (renderer: Renderer, colors: BaseColors): Sprite => {
   const texture = RenderTexture.create({
     width: bounds.width,
     height: bounds.height,
-    resolution: 1,
+    resolution: density,
     antialias: true,
   });
 
@@ -971,8 +975,9 @@ export const mountBase = (
   centreX: number,
   centreY: number,
   colors: BaseColors,
+  density: number,
 ): void => {
-  const sprite = bakeBase(renderer, colors);
+  const sprite = bakeBase(renderer, colors, density);
   const anchor = worldToScreen(centreX, centreY);
 
   sprite.position.set(sprite.position.x + anchor.x, sprite.position.y + anchor.y);

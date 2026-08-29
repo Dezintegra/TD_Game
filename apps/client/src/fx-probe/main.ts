@@ -19,7 +19,8 @@ import type { ShotColors, ShotLayers } from '../game/shots.js';
 import { createArcSprites } from '../game/arc-render.js';
 import { drawBlasts } from '../game/blasts.js';
 import type { BlastColors, BlastLayers } from '../game/blasts.js';
-import { mountRockDiagonal } from '../game/relief-render.js';
+import { countRockCells, mountRockDiagonal } from '../game/relief-render.js';
+import { rockBakeDensity, sceneBakeDensity } from '../game/bake-density.js';
 
 /**
  * Проба облика выстрелов, взрывов и зеркала поля.
@@ -263,7 +264,16 @@ const start = async (): Promise<void> => {
   for (let diagonal = 0; diagonal < MAP_WIDTH_CELLS + MAP_HEIGHT_CELLS - 1; diagonal += 1) {
     const band = new Container();
     field.addChild(band);
-    mountRockDiagonal(band, app.renderer, map, diagonal, { rock: 0x6e6a63, sky: 0x5c7ea8 });
+    // Плотность считается тем же расчётом, что и в игре: проба нужна,
+    // чтобы смотреть на скалы такими, какими их увидит игрок.
+    mountRockDiagonal(
+      band,
+      app.renderer,
+      map,
+      diagonal,
+      { rock: 0x6e6a63, sky: 0x5c7ea8 },
+      rockBakeDensity(sceneBakeDensity(app.renderer.resolution), countRockCells(map)),
+    );
   }
 
   // Ищем самую густую гряду: панель обязана показывать горы, а не пустое

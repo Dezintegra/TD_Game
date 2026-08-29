@@ -576,6 +576,26 @@ export const bakeCell = (renderer: Renderer, target: RenderTexture, cell: CellMe
 };
 
 /**
+ * Сколько на карте скальных клеток.
+ *
+ * Нужно затем, что слой скал укладывается в бюджет видеопамяти, а число
+ * клеток — единственная его составляющая, известная до запекания.
+ * Обход дешёвый: полторы тысячи проверок против шестисот вершин
+ * на каждую скальную клетку при самом запекании.
+ */
+export const countRockCells = (map: GameMap): number => {
+  let cells = 0;
+
+  for (let y = 0; y < MAP_HEIGHT_CELLS; y += 1) {
+    for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
+      if (isRockCell(map, x, y)) cells += 1;
+    }
+  }
+
+  return cells;
+};
+
+/**
  * Снять слой скал и освободить его текстуры.
  *
  * Уничтожать обязательно, и это не педантизм: текстура клетки живёт
@@ -597,6 +617,12 @@ export const clearRockLayer = (layer: Container): void => {
  * сцена вклинивает подвижные объекты, иначе юнит за скалой рисовался бы
  * поверх неё. Клетки внутри диагонали друг друга не перекрывают, поэтому
  * порядок между ними безразличен.
+ *
+ * Плотность приходит снаружи и не выбирается здесь. Раньше на её месте
+ * стояла единица, и оттого рельеф на экране с плотными пикселями мылил
+ * вдвое сильнее машин, которые на нём стоят: машины плотность экрана
+ * учитывали, а скалы — нет. Кто и как её считает, разобрано
+ * в `bake-density.ts`.
  */
 export const mountRockDiagonal = (
   layer: Container,
@@ -604,6 +630,7 @@ export const mountRockDiagonal = (
   map: GameMap,
   diagonal: number,
   colors: ReliefColors,
+  density: number,
 ): void => {
   clearRockLayer(layer);
 
@@ -614,7 +641,7 @@ export const mountRockDiagonal = (
     const texture = RenderTexture.create({
       width: cell.width,
       height: cell.height,
-      resolution: 1,
+      resolution: density,
       antialias: true,
     });
 
