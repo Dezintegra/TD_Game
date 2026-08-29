@@ -78,15 +78,40 @@ const ensureRenderer = (): Promise<RendererHost> => {
  * начинается, недостающее допечётся по надобности. Прогрев здесь
  * ускорение, а не условие.
  */
+let warming = false;
+
 const startWarming = (renderer: RendererHost): void => {
+  // Два цикла прогрева разом печь одно и то же не должны: очередь у них
+  // общая, и второй просто съедал бы кадры.
+  if (warming) return;
+  warming = true;
+
   const step = (): void => {
     // Матч идёт — пропускаем кадр целиком и ждём следующего.
     const left = activeKey === null ? renderer.warm(FRAME_WORK_BUDGET_MS) : true;
 
     if (left) requestAnimationFrame(step);
+    else warming = false;
   };
 
   requestAnimationFrame(step);
+};
+
+/**
+ * Игрок вышел в меню: сбросить накопленное и прогреться заново.
+ *
+ * Сброс именно здесь, а не при каждом окончании матча: между матчами
+ * подряд сочетания те же, и сбрасывать их значило бы начинать следующий
+ * матч холодным. А вот выход в меню — и повод (следующий матч может
+ * оказаться другим), и время.
+ */
+const rewarmInMenu = (): void => {
+  void rendererHost?.then((renderer) => {
+    if (activeKey !== null) return;
+
+    renderer.reset();
+    startWarming(renderer);
+  });
 };
 
 /**
@@ -132,7 +157,12 @@ const syncMatch = (state: SessionState): void => {
   const mine = generation;
 
   teardown();
-  if (desired === null) return;
+
+  if (desired === null) {
+    rewarmInMenu();
+
+    return;
+  }
 
   const start = async (): Promise<void> => {
     const renderer = await ensureRenderer();

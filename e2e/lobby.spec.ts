@@ -222,7 +222,12 @@ test('двое сходятся в комнате, и обоюдная гото�
     );
 
     // Пока готов один — матч не начинается.
-    await expect(anya.locator('#scene canvas')).toBeHidden();
+    //
+    // Признак — отсутствие HUD, а НЕ отсутствие холста. Холст живёт
+    // столько же, сколько страница: отрисовщик поднимается в меню
+    // и греет там кеш спрайтов, поэтому «нет холста» больше не значит
+    // «нет матча». HUD же рисуется только на экране матча.
+    await expect(anya.getByTestId('diagnostics')).toHaveCount(0);
 
     await borya.getByTestId('room-ready').click();
 
@@ -422,7 +427,9 @@ test('двое сходятся в комнате, и обоюдная гото�
     await anya.getByTestId('leave-confirm').click();
 
     await expect(anya.getByTestId('menu')).toBeVisible();
-    await expect(anya.locator('#scene canvas')).toHaveCount(0);
+    // Матч снят — HUD исчез. Холст остаётся: он принадлежит отрисовщику,
+    // живущему дольше матча.
+    await expect(anya.getByTestId('diagnostics')).toHaveCount(0);
 
     // Соперник узнаёт, что матч кончился, а не ждёт вечно.
     await expect(borya.getByTestId('result-overlay')).toBeVisible({ timeout: 15_000 });
@@ -461,7 +468,9 @@ test('готовность недоступна в одиночестве и с�
     await borya.getByTestId('room-leave').click();
     await expect(anya.getByTestId('room-slot')).toHaveCount(1);
     await expect(anya.getByTestId('room-ready')).toHaveAttribute('data-ready', 'no');
-    await expect(anya.locator('#scene canvas')).toHaveCount(0);
+    // Матч так и не начался — HUD не появился. Холст к этому отношения
+    // не имеет: он живёт столько же, сколько страница.
+    await expect(anya.getByTestId('diagnostics')).toHaveCount(0);
   } finally {
     await firstContext.close();
     await secondContext.close();
