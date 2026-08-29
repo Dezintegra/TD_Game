@@ -750,6 +750,7 @@ export const createScene = (renderer: RendererHost): Scene => {
     app.renderer,
     readMachineColors(),
     readStructureColors(),
+    readBaseColors,
   );
 
   const blastColors = readBlastColors();

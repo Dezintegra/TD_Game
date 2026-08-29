@@ -6,6 +6,7 @@ import {
   ICON_KEYS,
   SIDE_ENEMY,
   SIDE_SELF,
+  baseIconKey,
   generalIconKey,
   structureIconKey,
   unitIconKey,
@@ -34,9 +35,23 @@ describe('набор иконок', () => {
     }
   });
 
-  it('не содержит базы: её тело печёт другой запекатель', () => {
+  it('содержит базу — её печёт другой запекатель, но иконка нужна та же', () => {
+    // Прежде базы в наборе не было: её тело собрано не из тех же
+    // примитивов, и печёт его `bakeBase`. Отсутствие иконки при этом
+    // видел игрок — в окне прокачки строка базы одна оставалась
+    // с контурным значком.
     for (const side of [SIDE_SELF, SIDE_ENEMY]) {
-      expect(ICON_KEYS).not.toContain(structureIconKey(StructureKind.Base, side));
+      expect(ICON_KEYS).toContain(baseIconKey(side));
+      expect(baseIconKey(side)).toBe(structureIconKey(StructureKind.Base, side));
+    }
+  });
+
+  it('база идёт последней в своей стороне', () => {
+    // Её тело самое дорогое в запекании — подиум четыре на четыре клетки
+    // с антенной, — и стоять впереди дешёвых значило бы задержать их все.
+    for (const side of [SIDE_SELF, SIDE_ENEMY]) {
+      const mine = ICON_KEYS.filter((key) => key.endsWith(`-${String(side)}`));
+      expect(mine[mine.length - 1]).toBe(baseIconKey(side));
     }
   });
 
