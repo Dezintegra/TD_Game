@@ -17,10 +17,18 @@ import { matchCommands, useHudStore } from '../game/store.js';
  * уничтожен» — подожди.
  */
 
+/**
+ * Окно стоит в ЛЕВОМ нижнем углу, над строкой цели атаки.
+ *
+ * Прежде было в правом. Там теперь рейка заказа, и окно легло бы прямо
+ * на неё: сведения о выделенной постройке закрыли бы собой самые частые
+ * нажатия матча. Слева же под ним только строка цели, и высота её
+ * известна — на неё окно и отступает.
+ */
 const panelStyle: CSSProperties = {
   position: 'absolute',
-  right: 'var(--td-space-4)',
-  bottom: 'var(--td-space-4)',
+  left: 'var(--td-hud-pad-x)',
+  bottom: 'calc(var(--td-hud-pad-y) + 48px)',
   width: 240,
   padding: 'var(--td-space-3)',
   border: '1px solid var(--td-border)',
