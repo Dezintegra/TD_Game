@@ -657,7 +657,14 @@
     --td-centre-energy-size: 17px;
     --td-centre-clock-size: 13px;
     --td-hud-centre-gap: var(--td-space-2);
-    --td-hud-pad-x: var(--td-space-2);
+    /* Панели приклеены к краям экрана: полей у слоя нет вовсе.
+
+       На телефоне каждая точка поля на счету, а поля слоя отнимали
+       по восемь с каждой стороны — и отнимали дважды, сверху и снизу.
+       Врезка безопасной зоны при этом остаётся: она не украшение,
+       а вырез и полоса «домой». */
+    --td-hud-pad-y: 0px;
+    --td-hud-pad-x: 0px;
 
     --td-tile-min: 44px;
 
@@ -729,8 +736,8 @@
     --td-centre-energy-size: 17px;
     --td-centre-clock-size: 13px;
     --td-hud-centre-gap: var(--td-space-3);
-    --td-hud-pad-y: var(--td-space-1);
-    --td-hud-pad-x: var(--td-space-2);
+    --td-hud-pad-y: 0px;
+    --td-hud-pad-x: 0px;
 
     --td-tile-min: 44px;
 

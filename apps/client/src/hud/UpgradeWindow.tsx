@@ -11,7 +11,7 @@ import {
 import { NUKE_STAT_GROUP } from '../game/stat-rows.js';
 import { matchCommands, useHudStore } from '../game/store.js';
 import type { StatRow } from '../game/store.js';
-import { BaseGlyph, GeneralIcon, StructureIcon, UnitIcon } from './icons.js';
+import { BaseIcon, GeneralIcon, StructureIcon, UnitIcon } from './icons.js';
 import { STRUCTURE_SHORT, UNIT_SHORT, UPGRADE_STAT_SHORT, UPGRADE_UNIT } from './labels.js';
 
 /**
@@ -145,7 +145,7 @@ const ROWS: readonly Row[] = [
     // и печёт целиком — подиум четыре на четыре клетки с антенной.
     // В строку на тридцать точек оно сворачивается в пятно.
     label: STRUCTURE_SHORT[StructureKind.Base],
-    icon: <BaseGlyph />,
+    icon: <BaseIcon />,
     tone: 'own',
     testId: 'upgrade-row-base',
   },

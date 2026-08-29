@@ -1,6 +1,12 @@
 import type { ReactNode } from 'react';
 import { StructureKind, UnitType } from '@td/shared';
-import { SIDE_SELF, generalIconKey, structureIconKey, unitIconKey } from '../game/icon-sprites.js';
+import {
+  SIDE_SELF,
+  baseIconKey,
+  generalIconKey,
+  structureIconKey,
+  unitIconKey,
+} from '../game/icon-sprites.js';
 import { useHudStore } from '../game/store.js';
 
 /**
@@ -244,6 +250,18 @@ export const StructureIcon = ({
   readonly kind: StructureKind;
   readonly side?: number;
 }) => <ObjectIcon iconKey={structureIconKey(kind, side)} fallback={STRUCTURE_GLYPH[kind]} />;
+
+/**
+ * База — та же постройка, только печёт её другой запекатель.
+ *
+ * Отдельным компонентом, а не `StructureIcon` с видом «база», потому что
+ * подложка у неё своя: в таблице `STRUCTURE_GLYPH` базе досталась
+ * пиктограмма стены — там она никогда не показывалась и заполняла
+ * запись лишь ради полноты.
+ */
+export const BaseIcon = ({ side = SIDE_SELF }: { readonly side?: number }) => (
+  <ObjectIcon iconKey={baseIconKey(side)} fallback={BaseGlyph} />
+);
 
 export const GeneralIcon = ({ side = SIDE_SELF }: { readonly side?: number }) => (
   <ObjectIcon iconKey={generalIconKey(side)} fallback={GeneralGlyph} />
