@@ -1,5 +1,6 @@
 import { Geometry, GlProgram, Mesh, RenderTexture, Shader, State } from 'pixi.js';
 import type { Renderer, Texture } from 'pixi.js';
+import { finishBakedTexture } from './baked-texture.js';
 import { VIEW_DIRECTION_3D } from './iso.js';
 import { MIRROR_KEEP } from './models.js';
 import {
@@ -530,6 +531,7 @@ export const bakeArmour = (
 
   const resolve = new Mesh({ geometry: buildQuad(mesh.width, mesh.height), shader: resolveShader });
   renderer.render({ container: resolve, target: texture, clear: true });
+  finishBakedTexture(texture);
   resolve.destroy(true);
   draft.destroy(true);
 

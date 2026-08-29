@@ -10,6 +10,7 @@ import {
   Texture,
 } from 'pixi.js';
 import type { Renderer } from 'pixi.js';
+import { finishBakedTexture } from './baked-texture.js';
 import {
   CONCRETE_SLOPE_SCALE,
   CONCRETE_TILE_CELLS,
@@ -953,6 +954,7 @@ export const bakeBase = (renderer: Renderer, colors: BaseColors, density: number
   });
 
   renderer.render({ container: stage, target: texture, clear: true });
+  finishBakedTexture(texture);
   mesh.destroy(true);
   struts.destroy(true);
 

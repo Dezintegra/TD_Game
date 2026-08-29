@@ -1,5 +1,6 @@
 import { Container, Graphics, RenderTexture, Sprite } from 'pixi.js';
 import type { Renderer, Texture } from 'pixi.js';
+import { finishBakedTexture } from './baked-texture.js';
 import type { Point } from './iso.js';
 import {
   ARC_TILE_H,
@@ -98,6 +99,7 @@ const paint = (renderer: Renderer, graphics: Graphics, width: number, height: nu
   // ядро в полтора пикселя рассыпается в пунктир при повороте.
   const texture = RenderTexture.create({ width, height, resolution: 2, antialias: true });
   renderer.render({ container: graphics, target: texture, clear: true });
+  finishBakedTexture(texture);
   graphics.destroy();
   return texture;
 };

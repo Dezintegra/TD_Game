@@ -2,6 +2,7 @@ import { Geometry, GlProgram, Mesh, RenderTexture, Shader, Sprite, Texture } fro
 import type { Container, Renderer } from 'pixi.js';
 import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
 import type { GameMap } from '@td/sim';
+import { finishBakedTexture } from './baked-texture.js';
 import { GRAIN_SLOPE_SCALE, GRAIN_TILE_PIXELS, buildGrainTile } from './grain.js';
 import { ELEVATION_PX_PER_CELL, screenToWorld, worldToScreen } from './iso.js';
 import { diagonalCells } from './prism.js';
@@ -646,6 +647,7 @@ export const mountRockDiagonal = (
     });
 
     bakeCell(renderer, texture, cell);
+    finishBakedTexture(texture);
     // Сетки больше не нужны: всё, что они умели, лежит в текстуре.
     cell.mesh.destroy(true);
     cell.mirror.destroy(true);
