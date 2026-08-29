@@ -837,8 +837,15 @@ test.describe('телефон в портрете', () => {
     // в шапке окна, общая — вверху экрана.
     await expect(page.getByTestId('energy')).toBeInViewport();
 
-    // Нажатие мимо окна закрывает его. Целимся в полоску поля НАД окном.
-    await page.getByTestId('panel-backdrop').click({ position: { x: 100, y: 20 } });
+    // Нажатие мимо окна закрывает его.
+    //
+    // Целимся в правый нижний угол, а НЕ в полоску над окном: панели
+    // на телефоне прижаты к самым краям экрана, и верх занят сводкой
+    // своей стороны — нажатие туда достаётся ей, а не подложке.
+    // В правом же нижнем при открытом окне пусто: рейка заказа спрятана,
+    // а служебный ряд стоит слева.
+    const { width, height } = page.viewportSize() ?? { width: 0, height: 0 };
+    await page.mouse.click(width - 20, height - 20);
     await expect(page.getByTestId('hud')).toHaveAttribute('data-stats', 'closed');
   });
 });
