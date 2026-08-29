@@ -1,4 +1,5 @@
 import { test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { bootGame } from './helpers.js';
 
 /**
@@ -29,7 +30,7 @@ const PANELS = [
   'upgrade-window',
 ] as const;
 
-const measure = async (page: import('@playwright/test').Page): Promise<string> =>
+const measure = async (page: Page): Promise<string> =>
   page.evaluate((ids) => {
     const box = (id: string): string => {
       const node = document.querySelector(`[data-testid="${id}"]`);
