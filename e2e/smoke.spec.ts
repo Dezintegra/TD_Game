@@ -100,12 +100,15 @@ test('поле занимает окно, а панели стоят по угл
   const upgrades = page.getByTestId('stats-toggle');
   await expect(upgrades).toBeVisible();
 
+  // Матч начинается с ЗАКРЫТОЙ прокачкой: окно модальное, и открытым
+  // по умолчанию оно означало бы, что первое нажатие игрока по полю
+  // уходит в подложку.
   const hud = page.getByTestId('hud');
-  await expect(hud).toHaveAttribute('data-stats', 'open');
-  await upgrades.click();
   await expect(hud).toHaveAttribute('data-stats', 'closed');
-  await page.keyboard.press('KeyR');
+  await upgrades.click();
   await expect(hud).toHaveAttribute('data-stats', 'open');
+  await page.keyboard.press('KeyR');
+  await expect(hud).toHaveAttribute('data-stats', 'closed');
 
   // А кнопки меню на мониторе по-прежнему нет: там меню открывает Esc.
   await expect(page.getByTestId('menu-open')).toBeHidden();
@@ -225,11 +228,19 @@ test('карта показывается и матч начинается за�
   // Обе границы важны. Карта целиком на экран помещаться не должна, иначе
   // перемещение взгляда перестаёт быть частью игры; но и щель между
   // панелями полем не считается.
+  //
+  // Верхняя граница поднята с 55 до 70 процентов вместе с переездом
+  // интерфейса в углы. Полос больше нет, поле получило окно целиком,
+  // и доля выросла с сорока семи процентов до шестидесяти трёх.
+  // Это не расползание, а возврат к тому, что записано в замысле:
+  // «за раз видно около двух третей карты — примерно 30 × 30 клеток
+  // из 38 × 38» (`docs/game-design.md`, 6.1), то есть 62 процента.
+  // Прежние 55 были числом эпохи полос.
   await expect
     .poll(async () => diagnosticNumber(page, 'visible-percent'), { timeout: 10_000 })
     .toBeGreaterThanOrEqual(25);
 
-  expect(await diagnosticNumber(page, 'visible-percent')).toBeLessThan(55);
+  expect(await diagnosticNumber(page, 'visible-percent')).toBeLessThan(70);
 
   // «Новый матч» переехал в меню матча: раз за партию он не стоит
   // постоянной кнопки на экране.
@@ -397,6 +408,7 @@ test('режим строительства включается, а Esc сна�
 
 test('окно прокачки поднимает саму характеристику', async ({ page }) => {
   await bootGame(page);
+  await page.getByTestId('stats-toggle').click();
 
   // Ветка 0 — атака штурмовика. Показывается ДЕЙСТВУЮЩЕЕ значение,
   // и главное свойство в том, что после покупки растёт именно оно,
@@ -497,16 +509,16 @@ test('заказ постройки снимает выделение', async ({
   await expect(page.getByTestId('structure-info')).toBeHidden();
 });
 
-test('R закрывает окно прокачки, оставляя плитки, и поле не меняет размер', async ({ page }) => {
+test('R открывает окно прокачки, оставляя плитки, и поле не меняет размер', async ({ page }) => {
   await bootGame(page);
 
-  await expect(page.getByTestId('upgrade-window')).toBeVisible();
+  await expect(page.getByTestId('upgrade-window')).toBeHidden();
   const fieldBefore = (await page.locator('#scene canvas').boundingBox())?.height ?? 0;
 
   await page.keyboard.press('KeyR');
 
-  // Окно ушло, плитки остались: закрывают подробности, а не действия.
-  await expect(page.getByTestId('upgrade-window')).toBeHidden();
+  // Окно появилось, плитки остались: заказ никуда не девается.
+  await expect(page.getByTestId('upgrade-window')).toBeVisible();
   await expect(page.getByTestId('train-0')).toBeVisible();
   await expect(page.getByTestId('build-1')).toBeVisible();
 
@@ -518,7 +530,7 @@ test('R закрывает окно прокачки, оставляя плит�
   expect((await page.locator('#scene canvas').boundingBox())?.height ?? 0).toBe(fieldBefore);
 
   await page.keyboard.press('KeyR');
-  await expect(page.getByTestId('upgrade-window')).toBeVisible();
+  await expect(page.getByTestId('upgrade-window')).toBeHidden();
 });
 
 // Замеры частоты кадров переехали в `framerate.perf.spec.ts`: это измерение,
