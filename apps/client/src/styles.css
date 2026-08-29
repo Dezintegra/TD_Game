@@ -284,8 +284,7 @@ body {
 #hud-top .td-side-tally,
 #hud-top .td-base-jump,
 #hud-top .td-match-centre,
-#hud-top .td-menu-button,
-#hud-top [data-testid='connection-status'] {
+#hud-top .td-menu-button {
   pointer-events: auto;
 }
 
@@ -831,9 +830,15 @@ body {
   pointer-events: auto;
 }
 
+/* Строка связи нажатий НЕ ловит, и это не оплошность: она текст, а
+   не орган управления. Ловящая нажатия, она перехватывала бы всё,
+   над чем лежит, — а лежит она высоко, выше меню матча, и в ландшафте
+   дотягивается до верхней плитки рейки заказа. Замерено на прогоне
+   29.08.2026: плитка стены была видна целиком и не нажималась. */
 .td-hud-headline > [data-testid='connection-status'] {
   min-width: 0;
   text-shadow: var(--td-shadow-field-text);
+  pointer-events: none;
 }
 
 /* Сводки идут ПЕРВЫМИ, строка связи под ними. В разметке порядок
@@ -1061,6 +1066,13 @@ body {
      точек не помещаются, а место стоит поля. */
   .td-stats-toggle > span:last-child {
     display: none;
+  }
+
+  /* Строка связи не доходит до правого края: там стоит рейка заказа,
+     и текст ложился поверх её верхней плитки. Отступ равен ширине
+     рейки с её полем. */
+  .td-hud-headline {
+    padding-right: calc(var(--td-tile-order-min) + var(--td-space-2));
   }
 
   /* При открытом окне рейка заказа прячется, и только на телефоне.
