@@ -2,7 +2,7 @@ import type { MouseEvent, ReactNode } from 'react';
 import { BUILDABLE_KINDS, StructureKind, UNIT_TYPES, UnitType } from '@td/shared';
 import { BATCH_ORDER_COUNT } from '../game/controls.js';
 import { matchCommands, useHudStore } from '../game/store.js';
-import { BaseGlyph, GeneralIcon, StructureIcon, TargetGlyph, UnitIcon } from './icons.js';
+import { BaseIcon, GeneralIcon, StructureIcon, TargetGlyph, UnitIcon } from './icons.js';
 import { STRUCTURE_SHORT, UNIT_SHORT } from './labels.js';
 
 /**
@@ -312,7 +312,7 @@ export const ActionBar = () => {
           <Tile
             testId="focus-base"
             role="service"
-            icon={<BaseGlyph />}
+            icon={<BaseIcon />}
             label="База"
             hotkey=""
             cost={0}

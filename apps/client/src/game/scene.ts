@@ -625,6 +625,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     app.renderer,
     readMachineColors(),
     readStructureColors(),
+    readBaseColors,
   );
 
   const blastColors = readBlastColors();

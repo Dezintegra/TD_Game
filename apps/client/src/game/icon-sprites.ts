@@ -1,7 +1,9 @@
 import { DIRECTION_SOUTH, StructureKind, UNIT_TYPES } from '@td/shared';
 import type { UnitType } from '@td/shared';
-import type { Renderer } from 'pixi.js';
+import type { Renderer, Texture } from 'pixi.js';
 import { DEFAULT_TUNING, bakeArmour } from './armour-render.js';
+import { bakeBase } from './base-render.js';
+import type { BaseColors } from './base-render.js';
 import { ARMOUR_DRAFT_OVERSAMPLE } from './bake-density.js';
 import type { ArmourTuning } from './armour-render.js';
 import { generalSolids, machinePalette, unitSolids } from './machines.js';
@@ -70,6 +72,13 @@ export const structureIconKey = (kind: StructureKind, side: number): IconKey =>
   `structure-${String(kind)}-${String(side)}`;
 export const generalIconKey = (side: number): IconKey => `general-${String(side)}`;
 
+/**
+ * У базы ключ тот же, что у прочих построек, — она `StructureKind.Base`.
+ * Отдельным он не заводится: снаружи база ничем не отличается от стены
+ * или башни, отличается только тем, чем её печь.
+ */
+export const baseIconKey = (side: number): IconKey => structureIconKey(StructureKind.Base, side);
+
 export type IconMap = Readonly<Record<IconKey, string>>;
 
 /**
@@ -131,13 +140,15 @@ const STRUCTURE_TUNING: ArmourTuning = {
 };
 
 /**
- * Постройки, у которых есть своё тело.
+ * Постройки, которые печёт запекатель брони.
  *
- * Базы здесь нет намеренно: тело у неё есть, но печёт его отдельный
- * запекатель и печёт целиком — подиум четыре на четыре клетки
- * с антенной. В иконку на тридцать точек такое тело не сворачивается,
- * выходит пятно. Ядерного удара нет по другой причине: у него тела
- * нет вовсе, это событие, а не предмет на поле.
+ * Базы здесь нет не потому, что у неё нет тела, а потому, что тело
+ * у неё собрано иначе: не из `Solid`, а из своих осепараллельных тел
+ * с декалями и огнями, и печёт его `bakeBase`. Она идёт отдельной
+ * веткой ниже.
+ *
+ * Ядерного удара нет по другой причине: у него тела нет вовсе, это
+ * событие, а не предмет на поле.
  */
 const ICON_STRUCTURES: readonly StructureKind[] = [
   StructureKind.Wall,
@@ -158,6 +169,10 @@ export const ICON_KEYS: readonly IconKey[] = [SIDE_SELF, SIDE_ENEMY].flatMap((si
   ...UNIT_TYPES.map((unitType) => unitIconKey(unitType, side)),
   generalIconKey(side),
   ...ICON_STRUCTURES.map((kind) => structureIconKey(kind, side)),
+  // База идёт последней в своей стороне: её тело самое дорогое
+  // в запекании — подиум четыре на четыре клетки с антенной, — и стоять
+  // впереди дешёвых значило бы задержать их все.
+  baseIconKey(side),
 ]);
 
 export interface IconBaker {
@@ -171,6 +186,20 @@ export interface IconBaker {
 }
 
 /**
+ * Запечённая иконка до превращения в строку.
+ *
+ * Тип общий на оба запекателя, и это не обобщение впрок. Броня отдаёт
+ * `BakedArmour` с текстурой и смещениями, база — готовый `Sprite`;
+ * общего у них ровно текстура и обязанность её освободить, а всё
+ * прочее иконке безразлично — она берёт картинку целиком.
+ */
+interface BakedIcon {
+  readonly texture: Texture;
+  /** Освободить видеопамять. Владельцы у текстуры разные, отсюда и вызов. */
+  dispose(): void;
+}
+
+/**
  * Запекатель иконок.
  *
  * Ничего не делает, пока его не позовут: вызывать `step` положено
@@ -181,6 +210,7 @@ export const createIconBaker = (
   renderer: Renderer,
   machineColors: MachineSpriteColors,
   structureColors: StructureSpriteColors,
+  baseColors: (accent: number) => BaseColors,
 ): IconBaker => {
   // Цвет стороны — единственное, чем набор чужих иконок отличается
   // от своего. Броня, стекло, бетон и небо у обеих сторон одни: стороны
@@ -220,59 +250,96 @@ export const createIconBaker = (
     };
   };
 
-  const bakers: Readonly<Record<IconKey, () => ReturnType<typeof bakeArmour>>> = Object.fromEntries(
+  /** Запечённая броня в общем виде: текстура плюс способ её освободить. */
+  const armour = (baked: ReturnType<typeof bakeArmour>): BakedIcon => ({
+    texture: baked.texture,
+    dispose: () => {
+      baked.texture.destroy(true);
+    },
+  });
+
+  const bakers: Readonly<Record<IconKey, () => BakedIcon>> = Object.fromEntries(
     [SIDE_SELF, SIDE_ENEMY].flatMap((side) => [
-      ...UNIT_TYPES.map((unitType): [IconKey, () => ReturnType<typeof bakeArmour>] => [
+      ...UNIT_TYPES.map((unitType): [IconKey, () => BakedIcon] => [
         unitIconKey(unitType, side),
         () =>
-          bakeArmour(
-            renderer,
-            unitSolids(unitType, BASE_TIER, BASE_TIER, BASE_TIER),
-            // Юг — и это не «примерно влево вниз», а ровно оно: проекция
-            // переводит мировой юг в экранный сдвиг влево и вниз. Та же
-            // причина стоит за тем, что юг выбран направлением
-            // по умолчанию для всего, что обязано куда-то смотреть.
-            DIRECTION_SOUTH,
-            machineArmour(side),
-            false,
-            ICON_RESOLUTION,
-            ICON_SUPERSAMPLE,
+          armour(
+            bakeArmour(
+              renderer,
+              unitSolids(unitType, BASE_TIER, BASE_TIER, BASE_TIER),
+              // Юг — и это не «примерно влево вниз», а ровно оно: проекция
+              // переводит мировой юг в экранный сдвиг влево и вниз. Та же
+              // причина стоит за тем, что юг выбран направлением
+              // по умолчанию для всего, что обязано куда-то смотреть.
+              DIRECTION_SOUTH,
+              machineArmour(side),
+              false,
+              ICON_RESOLUTION,
+              ICON_SUPERSAMPLE,
+            ),
           ),
       ]),
       [
         generalIconKey(side),
         () =>
-          bakeArmour(
-            renderer,
-            generalSolids(),
-            DIRECTION_SOUTH,
-            machineArmour(side),
-            false,
-            ICON_RESOLUTION,
-            ICON_SUPERSAMPLE,
+          armour(
+            bakeArmour(
+              renderer,
+              generalSolids(),
+              DIRECTION_SOUTH,
+              machineArmour(side),
+              false,
+              ICON_RESOLUTION,
+              ICON_SUPERSAMPLE,
+            ),
           ),
-      ] as [IconKey, () => ReturnType<typeof bakeArmour>],
-      ...ICON_STRUCTURES.map((kind): [IconKey, () => ReturnType<typeof bakeArmour>] => [
+      ] as [IconKey, () => BakedIcon],
+      ...ICON_STRUCTURES.map((kind): [IconKey, () => BakedIcon] => [
         structureIconKey(kind, side),
         () =>
-          bakeArmour(
-            renderer,
-            structureSolids(
-              kind,
-              kind === StructureKind.Wall ? WALL_ICON_LOOK : DIRECTION_SOUTH,
-              true,
-              1,
+          armour(
+            bakeArmour(
+              renderer,
+              structureSolids(
+                kind,
+                kind === StructureKind.Wall ? WALL_ICON_LOOK : DIRECTION_SOUTH,
+                true,
+                1,
+              ),
+              // Постройка всегда печётся на юг: разворот турели и разворот
+              // стены сделаны поворотом местных координат, а не запеканием.
+              DIRECTION_SOUTH,
+              structureArmour(side),
+              false,
+              ICON_RESOLUTION,
+              ICON_SUPERSAMPLE,
+              STRUCTURE_TUNING,
             ),
-            // Постройка всегда печётся на юг: разворот турели и разворот
-            // стены сделаны поворотом местных координат, а не запеканием.
-            DIRECTION_SOUTH,
-            structureArmour(side),
-            false,
-            ICON_RESOLUTION,
-            ICON_SUPERSAMPLE,
-            STRUCTURE_TUNING,
           ),
       ]),
+      [
+        baseIconKey(side),
+        () => {
+          // База печётся своим запекателем: тело у неё собрано не из
+          // тех же примитивов, а из осепараллельных с декалями и огнями.
+          // Отдаёт он спрайт, а не запечённую броню, — иконке нужна
+          // из него только текстура.
+          const sprite = bakeBase(
+            renderer,
+            baseColors(side === SIDE_SELF ? structureColors.self : structureColors.enemy),
+            ICON_RESOLUTION,
+          );
+
+          return {
+            texture: sprite.texture,
+            dispose: () => {
+              // Спрайт уничтожается ВМЕСТЕ с текстурой: он её владелец,
+              // и уничтожив только текстуру, мы оставили бы висеть его.
+              sprite.destroy(true);
+            },
+          };
+        },
+      ] as [IconKey, () => BakedIcon],
     ]),
   );
 
@@ -301,7 +368,11 @@ export const createIconBaker = (
         // Освобождать обязательно: текстура живёт в видеопамяти,
         // а сборщик мусора о видеопамяти не знает. Здесь она нужна
         // ровно на один вызов — дальше живёт строка, а не текстура.
-        baked.texture.destroy(true);
+        //
+        // Через `dispose`, а не прямым `destroy`: у брони владелец
+        // текстуры сама текстура, у базы — спрайт, и уничтожив только
+        // текстуру, мы оставили бы спрайт висеть.
+        baked.dispose();
       }
 
       return icons;
