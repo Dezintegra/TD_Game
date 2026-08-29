@@ -7,7 +7,7 @@ import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } fro
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
 import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
-import { armourSupersample, rockBakeDensity, sceneBakeDensity } from './bake-density.js';
+import { ARMOUR_SUPERSAMPLE, armourBakeDensity, rockBakeDensity } from './bake-density.js';
 import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
@@ -367,11 +367,11 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   host.appendChild(app.canvas);
 
   /**
-   * Плотность запекания на всю сцену. Считается один раз: плотность
-   * экрана в течение сессии не меняется, а зум на неё не влияет —
-   * запас заложен постоянный, см. `bake-density.ts`.
+   * Плотность запекания брони. Считается один раз: плотность экрана
+   * в течение сессии не меняется, а зум на неё не влияет — она и так
+   * покрывает весь его диапазон, см. `bake-density.ts`.
    */
-  const bakeDensity = sceneBakeDensity(app.renderer.resolution);
+  const bakeDensity = armourBakeDensity(app.renderer.resolution);
 
   // Мировой контейнер несёт камеру, внешний — только тряску. Разделение
   // не косметическое: положение мирового контейнера читает наведение,
@@ -586,17 +586,17 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   /**
    * Кеш запечённых машин.
    *
-   * Разрешение — общая плотность сцены: на экране с плотными пикселями
-   * машина обязана быть подробнее, а не крупнее, и вдобавок ей нужен
-   * запас на приближение. Кратность сглаживания идёт следом и выведена
-   * так, чтобы черновой буфер — а он и есть цена запекания — от этого
-   * запаса не вырос.
+   * Разрешение покрывает предельное приближение целиком: на экране
+   * с плотными пикселями машина обязана быть подробнее, а не крупнее,
+   * и вдобавок она обязана пережить четырёхкратный зум без растяжения.
+   * Кратность сглаживания при этом постоянна — почему именно так,
+   * разобрано у самой величины.
    */
   const machines: MachineSprites = createMachineSprites(
     app.renderer,
     readMachineColors(),
     bakeDensity,
-    armourSupersample(app.renderer.resolution),
+    ARMOUR_SUPERSAMPLE,
   );
 
   /**
@@ -610,7 +610,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     app.renderer,
     readStructureColors(),
     bakeDensity,
-    armourSupersample(app.renderer.resolution),
+    ARMOUR_SUPERSAMPLE,
   );
 
   /**

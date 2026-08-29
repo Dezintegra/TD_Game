@@ -1,57 +1,65 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_ZOOM } from './camera.js';
 import {
-  ARMOUR_DRAFT_OVERSAMPLE,
-  MAX_BAKE_DENSITY,
+  ARMOUR_SUPERSAMPLE,
+  MAX_ARMOUR_BAKE_DENSITY,
   ROCK_BAKE_BUDGET_MB,
   ROCK_CELL_AREA_PX,
-  ZOOM_OVERSAMPLE,
-  armourSupersample,
+  armourBakeDensity,
   rockBakeDensity,
-  sceneBakeDensity,
 } from './bake-density.js';
 
 /** Во что обходится слой скал при такой плотности, в мегабайтах. */
 const rockLayerMb = (cells: number, density: number): number =>
   (cells * ROCK_CELL_AREA_PX * density * density * 4 * (4 / 3)) / (1024 * 1024);
 
-describe('плотность запекания сцены', () => {
-  it('даёт запас на приближение при обычном экране', () => {
-    expect(sceneBakeDensity(1)).toBe(ZOOM_OVERSAMPLE);
+describe('плотность запекания брони', () => {
+  it('покрывает предельное приближение на обычном экране', () => {
+    // Главное свойство: плотность равна наибольшему возможному масштабу
+    // показа, а не подобранному числу. Растяжения не остаётся.
+    expect(armourBakeDensity(1)).toBe(MAX_ZOOM);
+  });
+
+  it('следует за пределом приближения, а не за собственной константой', () => {
+    // Если предел зума однажды поменяют, плотность обязана поехать
+    // вместе с ним. Разъедься они — мыло вернулось бы молча, без единой
+    // ошибки в логах.
+    expect(armourBakeDensity(1)).toBeLessThanOrEqual(MAX_ARMOUR_BAKE_DENSITY);
+    expect(armourBakeDensity(1)).toBe(Math.min(MAX_ZOOM, MAX_ARMOUR_BAKE_DENSITY));
+  });
+
+  it('учитывает плотность экрана множителем', () => {
+    // На подробном экране запечённое обязано быть подробнее, а не крупнее:
+    // масштаб считается в точках CSS, а рисуется в пикселях устройства.
+    expect(armourBakeDensity(1.5)).toBeGreaterThan(armourBakeDensity(1));
   });
 
   it('не превышает потолка на плотном экране', () => {
-    expect(sceneBakeDensity(2)).toBe(MAX_BAKE_DENSITY);
-    expect(sceneBakeDensity(3)).toBe(MAX_BAKE_DENSITY);
+    expect(armourBakeDensity(2)).toBe(MAX_ARMOUR_BAKE_DENSITY);
+    expect(armourBakeDensity(3)).toBe(MAX_ARMOUR_BAKE_DENSITY);
   });
 
-  it('не опускается ниже единицы при плотности экрана меньше единицы', () => {
-    // Такое бывает: браузер отдаёт дробную плотность при масштабировании
-    // системы. Запекать реже показа нельзя ни при каких обстоятельствах.
-    expect(sceneBakeDensity(0.75)).toBeGreaterThanOrEqual(1);
-    expect(sceneBakeDensity(0.5)).toBe(ZOOM_OVERSAMPLE);
+  it('не опускается ниже единицы при дробной плотности экрана', () => {
+    // Браузер отдаёт дробную плотность при масштабировании системы.
+    // Запекать реже показа нельзя ни при каких обстоятельствах.
+    expect(armourBakeDensity(0.75)).toBeGreaterThanOrEqual(1);
   });
 });
 
-describe('суперсэмплинг брони', () => {
-  // Главное свойство размена: запас плотности берётся из кратности
-  // сглаживания, а не сверх неё. Черновик — это цена запекания, и она
-  // остаётся прежней.
-  it.each([1, 1.5, 2, 3])('не меняет плотность черновика при экране %s', (screen) => {
-    const draft = sceneBakeDensity(screen) * armourSupersample(screen);
-
-    expect(draft).toBeCloseTo(screen * ARMOUR_DRAFT_OVERSAMPLE, 10);
+describe('кратность чернового буфера', () => {
+  it('больше единицы: иначе сведение станет растягиванием', () => {
+    // Это ровно то, что сломается при следующей правке плотности,
+    // и сломается тихо: черновик реже готовой текстуры добавит мыла,
+    // а не уберёт его. Прежняя формула, выводившая кратность делением,
+    // при нынешней плотности дала бы 0,75.
+    expect(ARMOUR_SUPERSAMPLE).toBeGreaterThan(1);
   });
 
-  it('на обычном экране отдаёт половину кратности под разрешение', () => {
-    // Было: готовое ×1, черновик ×3. Стало: готовое ×2, черновик тот же.
-    expect(sceneBakeDensity(1)).toBe(2);
-    expect(armourSupersample(1)).toBeCloseTo(1.5, 10);
-  });
-
-  it('остаётся кратностью больше единицы: сглаживание не пропадает', () => {
-    for (const screen of [1, 1.5, 2, 3]) {
-      expect(armourSupersample(screen)).toBeGreaterThan(1);
-    }
+  it('оставляет решётку проб шейдера целой', () => {
+    // Шейдер сведения берёт две пробы на сторону с шагом
+    // «кратность / 2». Шаг обязан оставаться меньше точки черновика,
+    // иначе пробы разъедутся и усреднять станет нечего.
+    expect(ARMOUR_SUPERSAMPLE / 2).toBeLessThanOrEqual(1);
   });
 });
 
@@ -62,34 +70,43 @@ describe('плотность запекания скал', () => {
   const largeMapCells = 512;
 
   it('укладывается в бюджет на карте для двоих', () => {
-    const density = rockBakeDensity(sceneBakeDensity(1), smallMapCells);
+    const density = rockBakeDensity(armourBakeDensity(1), smallMapCells);
 
     expect(rockLayerMb(smallMapCells, density)).toBeLessThanOrEqual(ROCK_BAKE_BUDGET_MB);
   });
 
   it('снижает плотность на карте вдвое большей и остаётся в бюджете', () => {
-    const scene = sceneBakeDensity(1);
-    const small = rockBakeDensity(scene, smallMapCells);
-    const large = rockBakeDensity(scene, largeMapCells);
+    const ceiling = armourBakeDensity(1);
+    const small = rockBakeDensity(ceiling, smallMapCells);
+    const large = rockBakeDensity(ceiling, largeMapCells);
 
     expect(large).toBeLessThan(small);
     expect(rockLayerMb(largeMapCells, large)).toBeLessThanOrEqual(ROCK_BAKE_BUDGET_MB);
   });
 
-  it('не поднимается выше плотности сцены, когда бюджет позволяет больше', () => {
-    const scene = sceneBakeDensity(1);
+  it('остаётся ниже брони: полное покрытие зума скалам не по карману', () => {
+    // Не украшение, а суть решения: слой скал единственный, чья сумма
+    // растёт со стороной карты. При плотности брони он занял бы
+    // 150–200 МБ на карте для двоих.
+    const ceiling = armourBakeDensity(1);
 
-    expect(rockBakeDensity(scene, 4)).toBe(scene);
+    expect(rockBakeDensity(ceiling, smallMapCells)).toBeLessThan(ceiling);
+  });
+
+  it('не поднимается выше потолка, когда бюджет позволяет больше', () => {
+    const ceiling = armourBakeDensity(1);
+
+    expect(rockBakeDensity(ceiling, 4)).toBe(ceiling);
   });
 
   it('не опускается ниже единицы даже на карте, не влезающей в бюджет', () => {
-    expect(rockBakeDensity(sceneBakeDensity(1), 100_000)).toBe(1);
+    expect(rockBakeDensity(armourBakeDensity(1), 100_000)).toBe(1);
   });
 
-  it('на карте без скал возвращает плотность сцены, а не бесконечность', () => {
-    const scene = sceneBakeDensity(1);
+  it('на карте без скал возвращает потолок, а не бесконечность', () => {
+    const ceiling = armourBakeDensity(1);
 
-    expect(rockBakeDensity(scene, 0)).toBe(scene);
-    expect(Number.isFinite(rockBakeDensity(scene, 0))).toBe(true);
+    expect(rockBakeDensity(ceiling, 0)).toBe(ceiling);
+    expect(Number.isFinite(rockBakeDensity(ceiling, 0))).toBe(true);
   });
 });

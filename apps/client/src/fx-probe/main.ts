@@ -20,7 +20,7 @@ import { createArcSprites } from '../game/arc-render.js';
 import { drawBlasts } from '../game/blasts.js';
 import type { BlastColors, BlastLayers } from '../game/blasts.js';
 import { countRockCells, mountRockDiagonal } from '../game/relief-render.js';
-import { rockBakeDensity, sceneBakeDensity } from '../game/bake-density.js';
+import { armourBakeDensity, rockBakeDensity } from '../game/bake-density.js';
 
 /**
  * Проба облика выстрелов, взрывов и зеркала поля.
@@ -153,7 +153,7 @@ const start = async (): Promise<void> => {
     const arcs = createArcSprites(
       app.renderer,
       { arc: COLORS.arc },
-      sceneBakeDensity(app.renderer.resolution),
+      armourBakeDensity(app.renderer.resolution),
     );
     arcs.begin();
 
@@ -276,7 +276,7 @@ const start = async (): Promise<void> => {
       map,
       diagonal,
       { rock: 0x6e6a63, sky: 0x5c7ea8 },
-      rockBakeDensity(sceneBakeDensity(app.renderer.resolution), countRockCells(map)),
+      rockBakeDensity(armourBakeDensity(app.renderer.resolution), countRockCells(map)),
     );
   }
 
