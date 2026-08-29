@@ -1,13 +1,4 @@
-import {
-  Container,
-  Geometry,
-  GlProgram,
-  Graphics,
-  Mesh,
-  Shader,
-  Sprite,
-  Texture,
-} from 'pixi.js';
+import { Container, Geometry, GlProgram, Graphics, Mesh, Shader, Sprite, Texture } from 'pixi.js';
 import type { Renderer } from 'pixi.js';
 import { createBakedTexture, finishBakedTexture } from './baked-texture.js';
 import {
