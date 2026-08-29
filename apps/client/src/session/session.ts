@@ -80,21 +80,51 @@ const ensureRenderer = (): Promise<RendererHost> => {
  */
 let warming = false;
 
+/**
+ * Отложить шаг прогрева до простоя.
+ *
+ * `requestIdleCallback`, а не `requestAnimationFrame`, и это не мелочь.
+ * Одно запекание неделимо и стоит больше кадрового бюджета, поэтому
+ * покадровый прогрев занимал КАЖДЫЙ кадр целиком: на машине с видеокартой
+ * это незаметно, а на слабой отнимало у меню всё, что у него было.
+ * Поймалось сквозной проверкой на два браузера: она держится
+ * в стодвадцати секундах, а с покадровым прогревом перестала.
+ *
+ * Простой — ровно то условие, при котором прогрев уместен: он ускорение,
+ * а не обязанность, и уступить дорогу вводу, раскладке и сети обязан
+ * без разговоров. Срока (`timeout`) намеренно нет: с ним браузер запустил
+ * бы работу и на занятой странице, то есть вернул бы ту же беду.
+ *
+ * Запасной путь на кадр — для тех, кто `requestIdleCallback` не знает.
+ */
+const whenIdle = (run: (deadline?: IdleDeadline) => void): void => {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(run);
+  else requestAnimationFrame(() => run());
+};
+
 const startWarming = (renderer: RendererHost): void => {
   // Два цикла прогрева разом печь одно и то же не должны: очередь у них
-  // общая, и второй просто съедал бы кадры.
+  // общая, и второй просто съедал бы простой.
   if (warming) return;
   warming = true;
 
-  const step = (): void => {
-    // Матч идёт — пропускаем кадр целиком и ждём следующего.
-    const left = activeKey === null ? renderer.warm(FRAME_WORK_BUDGET_MS) : true;
+  const step = (deadline?: IdleDeadline): void => {
+    // Матч идёт — не трогаем ничего и ждём следующего простоя.
+    if (activeKey !== null) {
+      whenIdle(step);
 
-    if (left) requestAnimationFrame(step);
+      return;
+    }
+
+    // Браузер сам говорит, сколько времени у него есть. Запасной путь
+    // такого не знает, и ему остаётся кадровый бюджет.
+    const budget = deadline === undefined ? FRAME_WORK_BUDGET_MS : deadline.timeRemaining();
+
+    if (renderer.warm(budget)) whenIdle(step);
     else warming = false;
   };
 
-  requestAnimationFrame(step);
+  whenIdle(step);
 };
 
 /**
