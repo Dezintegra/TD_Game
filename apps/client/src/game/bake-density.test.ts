@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ARMOUR_DRAFT_OVERSAMPLE,
   MAX_BAKE_DENSITY,
   ROCK_BAKE_BUDGET_MB,
   ROCK_CELL_AREA_PX,
   ZOOM_OVERSAMPLE,
+  armourSupersample,
   rockBakeDensity,
   sceneBakeDensity,
 } from './bake-density.js';
@@ -27,6 +29,29 @@ describe('плотность запекания сцены', () => {
     // системы. Запекать реже показа нельзя ни при каких обстоятельствах.
     expect(sceneBakeDensity(0.75)).toBeGreaterThanOrEqual(1);
     expect(sceneBakeDensity(0.5)).toBe(ZOOM_OVERSAMPLE);
+  });
+});
+
+describe('суперсэмплинг брони', () => {
+  // Главное свойство размена: запас плотности берётся из кратности
+  // сглаживания, а не сверх неё. Черновик — это цена запекания, и она
+  // остаётся прежней.
+  it.each([1, 1.5, 2, 3])('не меняет плотность черновика при экране %s', (screen) => {
+    const draft = sceneBakeDensity(screen) * armourSupersample(screen);
+
+    expect(draft).toBeCloseTo(screen * ARMOUR_DRAFT_OVERSAMPLE, 10);
+  });
+
+  it('на обычном экране отдаёт половину кратности под разрешение', () => {
+    // Было: готовое ×1, черновик ×3. Стало: готовое ×2, черновик тот же.
+    expect(sceneBakeDensity(1)).toBe(2);
+    expect(armourSupersample(1)).toBeCloseTo(1.5, 10);
+  });
+
+  it('остаётся кратностью больше единицы: сглаживание не пропадает', () => {
+    for (const screen of [1, 1.5, 2, 3]) {
+      expect(armourSupersample(screen)).toBeGreaterThan(1);
+    }
   });
 });
 

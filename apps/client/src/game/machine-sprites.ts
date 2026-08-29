@@ -83,6 +83,7 @@ export const createMachineSprites = (
   renderer: Renderer,
   colors: MachineSpriteColors,
   resolution: number,
+  supersample: number,
 ): MachineSprites => {
   const unitCacheSize =
     UNIT_TYPES.length *
@@ -157,6 +158,7 @@ export const createMachineSprites = (
       armourColors(side),
       mirror,
       resolution,
+      supersample,
     );
 
     units[index] = baked;
@@ -177,6 +179,7 @@ export const createMachineSprites = (
       armourColors(side),
       mirror,
       resolution,
+      supersample,
     );
 
     generals[index] = baked;

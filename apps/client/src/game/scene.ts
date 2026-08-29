@@ -7,7 +7,7 @@ import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } fro
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
 import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
-import { rockBakeDensity, sceneBakeDensity } from './bake-density.js';
+import { armourSupersample, rockBakeDensity, sceneBakeDensity } from './bake-density.js';
 import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
@@ -440,7 +440,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
    * между светом выстрелов и светом взрывов — разряд ярче очереди
    * штурмовика, но тише гибели.
    */
-  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc });
+  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc }, bakeDensity);
 
   const flashGraphics = new Graphics();
   flashGraphics.blendMode = 'add';
@@ -572,14 +572,17 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   /**
    * Кеш запечённых машин.
    *
-   * Разрешение берётся то же, с которым работает приложение: спрайт
-   * рисуется один к одному, и на экране с плотными пикселями машина
-   * обязана быть подробнее, а не крупнее.
+   * Разрешение — общая плотность сцены: на экране с плотными пикселями
+   * машина обязана быть подробнее, а не крупнее, и вдобавок ей нужен
+   * запас на приближение. Кратность сглаживания идёт следом и выведена
+   * так, чтобы черновой буфер — а он и есть цена запекания — от этого
+   * запаса не вырос.
    */
   const machines: MachineSprites = createMachineSprites(
     app.renderer,
     readMachineColors(),
-    app.renderer.resolution,
+    bakeDensity,
+    armourSupersample(app.renderer.resolution),
   );
 
   /**
@@ -592,7 +595,8 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const structures: StructureSprites = createStructureSprites(
     app.renderer,
     readStructureColors(),
-    app.renderer.resolution,
+    bakeDensity,
+    armourSupersample(app.renderer.resolution),
   );
 
   const blastColors = readBlastColors();

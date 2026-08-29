@@ -150,7 +150,11 @@ const start = async (): Promise<void> => {
 
     // Своя раскладка разрядов на панель: контейнер живёт у одного
     // родителя, а панелей на листе много.
-    const arcs = createArcSprites(app.renderer, { arc: COLORS.arc });
+    const arcs = createArcSprites(
+      app.renderer,
+      { arc: COLORS.arc },
+      sceneBakeDensity(app.renderer.resolution),
+    );
     arcs.begin();
 
     box.addChild(debris, trails, shotGlow, arcs.layer, blastGlow);
