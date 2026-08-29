@@ -1,5 +1,6 @@
 import { Geometry, GlProgram, Mesh, RenderTexture, Shader, State } from 'pixi.js';
 import type { Renderer, Texture } from 'pixi.js';
+import { createBakedTexture, finishBakedTexture } from './baked-texture.js';
 import { VIEW_DIRECTION_3D } from './iso.js';
 import { MIRROR_KEEP } from './models.js';
 import {
@@ -37,8 +38,20 @@ import type { ArmourMesh, BevelTuning, Solid } from './armour.js';
  * значения удалённости и выдало бы стык там, где просто край детали.
  */
 
-/** Во сколько раз промежуточный буфер крупнее готового спрайта. */
-const SUPERSAMPLE = 3;
+// Кратность промежуточного буфера постоянной больше не является:
+// она приходит снаружи, вместе с разрешением готового спрайта. Раньше
+// здесь стояла тройка при готовом спрайте в плотности экрана; теперь
+// готовый вдвое плотнее, а кратность во столько же меньше — так, чтобы
+// плотность ЧЕРНОВИКА, то есть цена запекания, осталась прежней.
+// Считает её `bake-density.ts`.
+
+/**
+ * Проб на сторону при усреднении черновика.
+ *
+ * Живёт и в исходнике шейдера, и в расчёте шага между пробами, поэтому
+ * объявлено здесь, а не числом в двух местах.
+ */
+const RESOLVE_TAPS = 2;
 
 /**
  * Освещение то же, что у всего остального на поле (`prism.ts`).
@@ -299,10 +312,26 @@ uniform vec2 uTexel;
 uniform float uAoStrength;
 uniform float uAoRadius;
 uniform float uAoBias;
+uniform float uSampleStep;
 
 out vec4 fragColor;
 
-const int SUPER = ${SUPERSAMPLE};
+/**
+ * Проб на сторону при усреднении.
+ *
+ * Раньше здесь стояла кратность черновика, и решётка проб совпадала
+ * с решёткой его точек. Совпадать они больше не обязаны: кратность стала
+ * дробной (черновик втрое плотнее экрана, готовое вдвое — значит,
+ * полтора), а дробной решётки не бывает.
+ *
+ * Поэтому число проб отвязано от кратности, а расстояние между ними
+ * приходит в uSampleStep: пробы обязаны покрыть след точки готовой
+ * текстуры на черновике, каким бы дробным он ни был. Двойка выбрана
+ * потому, что след при нынешних числах равен полутора точкам черновика:
+ * девять проб на полторы точки — это не сглаживание, а размазывание,
+ * и стоят они вчетверо дороже четырёх.
+ */
+const int TAPS = ${RESOLVE_TAPS};
 
 const vec2 RING[8] = vec2[8](
   vec2(1.0, 0.0), vec2(0.7071, 0.7071), vec2(0.0, 1.0), vec2(-0.7071, 0.7071),
@@ -334,11 +363,13 @@ float occlusion(vec2 uv, float depth) {
 void main() {
   vec3 colour = vec3(0.0);
   float coverage = 0.0;
-  float total = float(SUPER * SUPER);
+  float total = float(TAPS * TAPS);
 
-  for (int row = 0; row < SUPER; row += 1) {
-    for (int column = 0; column < SUPER; column += 1) {
-      vec2 uv = vUv + (vec2(float(column), float(row)) + 0.5 - float(SUPER) * 0.5) * uTexel;
+  for (int row = 0; row < TAPS; row += 1) {
+    for (int column = 0; column < TAPS; column += 1) {
+      vec2 uv =
+        vUv +
+        (vec2(float(column), float(row)) + 0.5 - float(TAPS) * 0.5) * uTexel * uSampleStep;
       vec4 probe = texture(uSource, uv);
       if (probe.a <= 0.0) continue;
 
@@ -434,6 +465,7 @@ export const bakeArmour = (
   colors: ArmourColors,
   mirror: boolean,
   resolution: number,
+  supersample: number,
   tuning: ArmourTuning = DEFAULT_TUNING,
   bevel: BevelTuning = DEFAULT_BEVEL,
 ): BakedArmour => {
@@ -442,7 +474,7 @@ export const bakeArmour = (
   const draft = RenderTexture.create({
     width: mesh.width,
     height: mesh.height,
-    resolution: resolution * SUPERSAMPLE,
+    resolution: resolution * supersample,
     antialias: false,
   });
   // Буфер глубины у текстуры по умолчанию не заводится: слоям с плоской
@@ -502,12 +534,7 @@ export const bakeArmour = (
   renderer.render({ container: model, target: draft, clear: true });
   model.destroy(true);
 
-  const texture = RenderTexture.create({
-    width: mesh.width,
-    height: mesh.height,
-    resolution,
-    antialias: false,
-  });
+  const texture = createBakedTexture(mesh.width, mesh.height, resolution, false);
 
   const resolveShader = new Shader({
     glProgram: GlProgram.from({ vertex: RESOLVE_VERTEX, fragment: RESOLVE_FRAGMENT }),
@@ -516,13 +543,16 @@ export const bakeArmour = (
       resolveUniforms: {
         uTexel: {
           value: new Float32Array([
-            1 / (mesh.width * resolution * SUPERSAMPLE),
-            1 / (mesh.height * resolution * SUPERSAMPLE),
+            1 / (mesh.width * resolution * supersample),
+            1 / (mesh.height * resolution * supersample),
           ]),
           type: 'vec2<f32>',
         },
+        // Шаг между пробами: след точки готовой текстуры на черновике
+        // равен кратности, и его надо покрыть числом проб `TAPS`.
+        uSampleStep: { value: supersample / RESOLVE_TAPS, type: 'f32' },
         uAoStrength: { value: tuning.aoStrength, type: 'f32' },
-        uAoRadius: { value: tuning.aoRadius * SUPERSAMPLE * resolution, type: 'f32' },
+        uAoRadius: { value: tuning.aoRadius * supersample * resolution, type: 'f32' },
         uAoBias: { value: tuning.aoBias, type: 'f32' },
       },
     },
@@ -530,6 +560,7 @@ export const bakeArmour = (
 
   const resolve = new Mesh({ geometry: buildQuad(mesh.width, mesh.height), shader: resolveShader });
   renderer.render({ container: resolve, target: texture, clear: true });
+  finishBakedTexture(texture);
   resolve.destroy(true);
   draft.destroy(true);
 

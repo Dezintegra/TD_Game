@@ -125,6 +125,7 @@ export const createStructureSprites = (
   renderer: Renderer,
   colors: StructureSpriteColors,
   resolution: number,
+  supersample: number,
 ): StructureSprites => {
   const cache = new Array<StructureSprite | undefined>(
     KIND_COUNT * STRUCTURE_LOOK_COUNT * READINESS_STEPS * SIDE_COUNT,
@@ -174,6 +175,7 @@ export const createStructureSprites = (
       armourColors(side),
       false,
       resolution,
+      supersample,
       STRUCTURE_TUNING,
     );
 

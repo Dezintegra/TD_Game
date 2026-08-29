@@ -17,6 +17,95 @@ const session = (over = {}) => ({
   ...over,
 });
 
+describe('память о том, сколько сессия уже не идёт', () => {
+  const NOW = '2026-08-27T12:30:00+03:00';
+  const build = (list, previous) =>
+    buildSnapshot(list, { previous, now: NOW }).snapshot.sessions[0];
+
+  it('незапущенная и невиданная прежде — счёт с этого мига', () => {
+    expect(build([session({ isRunning: false })]).notRunningSince).toBe(NOW);
+  });
+
+  it('незапущенная и та же — счёт продолжается с прежнего мига', () => {
+    // Ради этого всё и затевалось: признак надёжен, когда держится через
+    // снимки, а сколько он держится — видно только по накопленному сроку.
+    const previous = {
+      sessions: [
+        {
+          title: 'pipeline:0001-one:design',
+          isRunning: false,
+          lastActivityAt: '2026-08-27T12:00:00+03:00',
+          notRunningSince: '2026-08-27T12:05:00+03:00',
+        },
+      ],
+    };
+    expect(build([session({ isRunning: false })], previous).notRunningSince).toBe(
+      '2026-08-27T12:05:00+03:00',
+    );
+  });
+
+  it('идущая отметку не носит вовсе', () => {
+    expect(build([session({ isRunning: true })]).notRunningSince).toBeNull();
+  });
+
+  it('сдвинувшая отметку активности начинает счёт заново', () => {
+    // Сессия, сделавшая ход, — живая, даже если снимок поймал её
+    // между ходами. Ключ опознания включает отметку активности именно
+    // затем: сдвинулась — считаем сначала.
+    const previous = {
+      sessions: [
+        {
+          title: 'pipeline:0001-one:design',
+          isRunning: false,
+          lastActivityAt: '2026-08-27T11:00:00+03:00',
+          notRunningSince: '2026-08-27T11:05:00+03:00',
+        },
+      ],
+    };
+    expect(build([session({ isRunning: false })], previous).notRunningSince).toBe(NOW);
+  });
+
+  it('без времени снимок остаётся годным и без отметки', () => {
+    // Тогда сканер судит по одному лишь сроку молчания, как раньше.
+    const { snapshot } = buildSnapshot([session({ isRunning: false })]);
+    expect(snapshot.sessions[0]).not.toHaveProperty('notRunningSince');
+  });
+
+  it('одинаковые заголовки не путаются между собой', () => {
+    // У оркестратора их десятки с одним именем, и различает их только
+    // отметка активности.
+    const previous = {
+      sessions: [
+        {
+          title: 'pipeline:orchestrator',
+          isRunning: false,
+          lastActivityAt: '2026-08-27T10:00:00+03:00',
+          notRunningSince: '2026-08-27T10:00:00+03:00',
+        },
+      ],
+    };
+    const { snapshot } = buildSnapshot(
+      [
+        {
+          title: 'pipeline:orchestrator',
+          isRunning: false,
+          lastActivityAt: '2026-08-27T10:00:00+03:00',
+        },
+        {
+          title: 'pipeline:orchestrator',
+          isRunning: false,
+          lastActivityAt: '2026-08-27T12:20:00+03:00',
+        },
+      ],
+      { previous, now: NOW },
+    );
+    expect(snapshot.sessions.map((item) => item.notRunningSince)).toEqual([
+      '2026-08-27T10:00:00+03:00',
+      NOW,
+    ]);
+  });
+});
+
 describe('форма ответа', () => {
   it('голый массив', () => {
     expect(extractSessions([session()])).toHaveLength(1);

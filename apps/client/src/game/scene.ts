@@ -6,7 +6,8 @@ import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } from './camera.js';
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
-import { clearRockLayer, mountRockDiagonal } from './relief-render.js';
+import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
+import { armourSupersample, rockBakeDensity, sceneBakeDensity } from './bake-density.js';
 import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
@@ -365,6 +366,13 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
   host.appendChild(app.canvas);
 
+  /**
+   * Плотность запекания на всю сцену. Считается один раз: плотность
+   * экрана в течение сессии не меняется, а зум на неё не влияет —
+   * запас заложен постоянный, см. `bake-density.ts`.
+   */
+  const bakeDensity = sceneBakeDensity(app.renderer.resolution);
+
   // Мировой контейнер несёт камеру, внешний — только тряску. Разделение
   // не косметическое: положение мирового контейнера читает наведение,
   // и подмешивать в него дрожание нельзя. Подробности у `applyShake`.
@@ -446,7 +454,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
    * между светом выстрелов и светом взрывов — разряд ярче очереди
    * штурмовика, но тише гибели.
    */
-  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc });
+  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc }, bakeDensity);
 
   const flashGraphics = new Graphics();
   flashGraphics.blendMode = 'add';
@@ -578,14 +586,17 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   /**
    * Кеш запечённых машин.
    *
-   * Разрешение берётся то же, с которым работает приложение: спрайт
-   * рисуется один к одному, и на экране с плотными пикселями машина
-   * обязана быть подробнее, а не крупнее.
+   * Разрешение — общая плотность сцены: на экране с плотными пикселями
+   * машина обязана быть подробнее, а не крупнее, и вдобавок ей нужен
+   * запас на приближение. Кратность сглаживания идёт следом и выведена
+   * так, чтобы черновой буфер — а он и есть цена запекания — от этого
+   * запаса не вырос.
    */
   const machines: MachineSprites = createMachineSprites(
     app.renderer,
     readMachineColors(),
-    app.renderer.resolution,
+    bakeDensity,
+    armourSupersample(app.renderer.resolution),
   );
 
   /**
@@ -598,7 +609,8 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const structures: StructureSprites = createStructureSprites(
     app.renderer,
     readStructureColors(),
-    app.renderer.resolution,
+    bakeDensity,
+    armourSupersample(app.renderer.resolution),
   );
 
   /**
@@ -652,6 +664,15 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
         readonly localPlayer: PlayerId;
         /** Диагонали в порядке запекания, а не по возрастанию номера. */
         readonly order: readonly number[];
+        /**
+         * Плотность запекания скал этой карты.
+         *
+         * Считается на карту, а не на сцену: она выведена из бюджета
+         * видеопамяти, а расход зависит от числа скальных клеток. Лежит
+         * в задании, чтобы смена карты посреди запекания не смешала
+         * клетки двух карт, запечённые с разной плотностью.
+         */
+        readonly rockDensity: number;
         at: number;
       }
     | undefined;
@@ -801,6 +822,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
         map,
         localPlayer,
         order: bakeOrderOf(map, localPlayer, terrainBands.length),
+        rockDensity: rockBakeDensity(bakeDensity, countRockCells(map)),
         at: 0,
       };
     },
@@ -820,10 +842,14 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
         const diagonal = job.order[job.at] ?? 0;
         const layer = terrainBands[diagonal];
         if (layer !== undefined) {
-          mountRockDiagonal(layer, app.renderer, job.map, diagonal, {
-            rock: terrainColors.rock,
-            sky: terrainColors.rockSky,
-          });
+          mountRockDiagonal(
+            layer,
+            app.renderer,
+            job.map,
+            diagonal,
+            { rock: terrainColors.rock, sky: terrainColors.rockSky },
+            job.rockDensity,
+          );
 
           // База ставится ПОСЛЕ скал своей диагонали: `mountRockDiagonal`
           // чистит слой целиком, и база, положенная раньше, была бы
@@ -848,6 +874,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
               x,
               y,
               index === job.localPlayer ? baseSelfColors : baseEnemyColors,
+              bakeDensity,
             );
           });
         }
