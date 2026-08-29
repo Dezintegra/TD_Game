@@ -69,6 +69,20 @@ export interface MachineSprites {
   general(side: number, facing: number, mirror: boolean): MachineSprite;
   /** Высота модели юнита в клетках. Нужна полосе здоровья. */
   unitHeight(unitType: UnitType, attackTier: number, fireTier: number, rangeTier: number): number;
+  /**
+   * Базовый набор: по одному запеканию на шаг.
+   *
+   * Нужен прогреву. Печь ВЕСЬ кеш нельзя — комбинаций в нём под две
+   * с половиной тысячи (типы × румбы × три ветки прокачки × стороны ×
+   * отражение), и при нынешней цене запекания это больше получаса.
+   *
+   * В базовый набор входит то, что игрок увидит в первую минуту:
+   * нулевые ступени прокачки во всех румбах для обеих сторон плюс
+   * генералы. Прокачанные варианты допекаются по надобности — до первой
+   * прокачки матч успевает пройти минуту, и одиночное запекание к тому
+   * времени уже не встречается с залпом из четырёх соседей.
+   */
+  warmSteps(): readonly (() => void)[];
   /** Освободить видеопамять. Обязательно при смене матча. */
   dispose(): void;
 }
@@ -191,6 +205,26 @@ export const createMachineSprites = (
     general,
     unitHeight: (unitType, attackTier, fireTier, rangeTier) =>
       unit(0, unitType, DIRECTION_SOUTH, attackTier, fireTier, rangeTier, false).modelHeight,
+    warmSteps() {
+      const steps: (() => void)[] = [];
+
+      // Румб нумеруется с единицы: нулевого направления нет, и
+      // `normaliseFacing` подменил бы его югом, то есть один и тот же
+      // спрайт пёкся бы дважды, а один румб не пёкся бы вовсе.
+      for (let facing = 1; facing < DIRECTION_COUNT; facing += 1) {
+        for (let side = 0; side < SIDE_COUNT; side += 1) {
+          for (const mirror of [false, true]) {
+            steps.push(() => general(side, facing, mirror));
+
+            for (const unitType of UNIT_TYPES) {
+              steps.push(() => unit(side, unitType, facing, 0, 0, 0, mirror));
+            }
+          }
+        }
+      }
+
+      return steps;
+    },
     dispose() {
       // Уничтожать обязательно, и это не педантизм: текстура живёт
       // в видеопамяти, а сборщик мусора о видеопамяти не знает. Кеш

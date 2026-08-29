@@ -199,6 +199,8 @@ const FAKE_MACHINES: MachineSprites = {
   unit: (_side, _unitType, _facing, _attack, _fire, _range, mirror) => fakeSprite(mirror),
   general: (_side, _facing, mirror) => fakeSprite(mirror),
   unitHeight: () => MODEL_HEIGHT,
+  // Прогрев заглушке не нужен: она проверяет отрисовку, а не запекание.
+  warmSteps: () => [],
   dispose: () => undefined,
 };
 
@@ -234,6 +236,8 @@ const FAKE_STRUCTURES: StructureSprites = {
       modelHeight: STRUCTURE_HEIGHT,
     };
   },
+  // Прогрев заглушке не нужен: она проверяет отрисовку, а не запекание.
+  warmSteps: () => [],
   dispose: () => undefined,
 };
 

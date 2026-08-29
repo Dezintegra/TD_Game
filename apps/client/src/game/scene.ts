@@ -377,6 +377,17 @@ export interface RendererHost {
    * и так покрывает весь его диапазон.
    */
   readonly density: number;
+  /**
+   * Запечь базовый набор спрайтов, потратив не больше отпущенного.
+   *
+   * Возвращает `true`, если работа осталась, — как `bakeTerrain`,
+   * и по той же причине: полтора десятка тысяч точек на комбинацию
+   * нельзя запечь одним циклом, не заморозив страницу.
+   *
+   * Одна комбинация печётся всегда, даже при нулевом бюджете: иначе
+   * на медленной машине прогрев не сдвинулся бы вовсе.
+   */
+  warm(budgetMs: number): boolean;
   destroy(): void;
 }
 
@@ -446,12 +457,37 @@ export const createRendererHost = async (): Promise<RendererHost> => {
     ARMOUR_SUPERSAMPLE,
   );
 
+  /**
+   * Очередь прогрева и место в ней.
+   *
+   * Собирается лениво, при первом же шаге: перечни строят замыкания
+   * на каждую комбинацию, и делать эту работу тем, кто прогревом
+   * не пользуется, незачем.
+   */
+  let warmQueue: readonly (() => void)[] | undefined;
+  let warmAt = 0;
+
   return {
     app,
     element,
     machines,
     structures,
     density: bakeDensity,
+    warm(budgetMs: number): boolean {
+      warmQueue ??= [...machines.warmSteps(), ...structures.warmSteps()];
+
+      const started = performance.now();
+
+      do {
+        const step = warmQueue[warmAt];
+        if (step === undefined) return false;
+
+        step();
+        warmAt += 1;
+      } while (warmAt < warmQueue.length && performance.now() - started < budgetMs);
+
+      return warmAt < warmQueue.length;
+    },
     destroy() {
       machines.dispose();
       structures.dispose();
