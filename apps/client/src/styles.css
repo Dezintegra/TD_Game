@@ -1140,7 +1140,18 @@ body {
   flex-direction: column;
 
   width: min(var(--td-upgrade-width), calc(100vw - 2 * var(--td-hud-pad-x)));
-  max-height: calc(100% - var(--td-field-inset-top) - 2 * var(--td-space-2));
+
+  /* Снизу окно не доходит до нижних углов: там стоят цель атаки
+     и служебный ряд, и они лежат ПОВЕРХ окна — слой нижнего угла
+     идёт в разметке после слоя поля. Замерено в ландшафте: подпись
+     под матрицей оказывалась накрыта кнопками.
+
+     Высота вычитается не числом, а составом угла: служебная плитка
+     с полями слоя. Так она поедет сама, если плитка сменит размер. */
+  max-height: calc(
+    100% - var(--td-field-inset-top) - var(--td-space-2) - var(--td-tile-service-min) - 2 *
+      var(--td-hud-pad-y)
+  );
 
   border: 1px solid var(--td-player-self-dim);
   background: var(--td-bg-panel);
