@@ -140,6 +140,46 @@ describe('чтение отчётов', () => {
     expect(reports).toEqual([]);
     expect(problems.join()).toContain('неполон');
   });
+
+  describe('отчёт из рабочего дерева', () => {
+    // Сессия с деревом положить отчёт в основное НЕ МОЖЕТ: запись
+    // за пределы своего каталога либо спрашивает подтверждения, либо
+    // отвергается сразу. Пока отчёт требовался в основном дереве, весь
+    // маршрут с деревьями упирался в это на последнем шаге.
+    const treePath = '.claude/worktrees/0001-one';
+    const registry = { entries: [{ taskId: '0001-one', path: treePath }] };
+
+    const putInTree = (name, body) => {
+      const dir = join(root, treePath, '.pipeline', 'reports');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${name}.json`), JSON.stringify(body));
+    };
+
+    it('находится по записи реестра', () => {
+      putInTree('0001-design', { taskId: '0001-one', stage: 'design', outcome: 'done' });
+      const { reports, problems } = readReports(root, config, registry);
+      expect(reports).toHaveLength(1);
+      expect(reports[0].taskId).toBe('0001-one');
+      expect(problems).toEqual([]);
+    });
+
+    it('без реестра не находится — искать негде', () => {
+      putInTree('0001-design', { taskId: '0001-one', stage: 'design', outcome: 'done' });
+      expect(readReports(root, config).reports).toEqual([]);
+    });
+
+    it('двойник не удваивает задачу и назван вслух', () => {
+      // Остаток прежнего порядка: тот же отчёт в обоих местах. Молча
+      // выбранный из двух однажды окажется не тем.
+      const body = { taskId: '0001-one', stage: 'design', outcome: 'done' };
+      putReport('0001-design', body);
+      putInTree('0001-design', body);
+
+      const { reports, problems } = readReports(root, config, registry);
+      expect(reports).toHaveLength(1);
+      expect(problems.join()).toContain('двойник');
+    });
+  });
 });
 
 describe('рубильник паузы и ответы', () => {

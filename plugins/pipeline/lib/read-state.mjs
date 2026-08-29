@@ -94,15 +94,37 @@ export function readRegistry(root, config) {
 /**
  * Прочитать отчёты сессий, ожидающие переноса в бэклог.
  *
+ * Смотрим не только в основное дерево, но и в каждое рабочее из реестра.
+ * Причина не в удобстве: сессия с деревом ФИЗИЧЕСКИ не может положить
+ * отчёт в основное. Запись за пределы своего каталога либо спрашивает
+ * подтверждения, либо отвергается сразу — проверено опытом 29.08.2026,
+ * сессия в дереве получила «edit the worktree copy of this file instead
+ * of the shared-checkout path».
+ *
+ * Пока отчёт требовался в основном дереве, весь маршрут с деревьями —
+ * проработка, аудит, имплементация, доработка, ревью, выкладка — упирался
+ * в это на последнем шаге, уже сделав работу. Работали только этапы
+ * без дерева: прогон и разбор, они и живут в основном.
+ *
  * Отчёт без обязательных полей пропускается с причиной: применить его
  * вслепую значило бы двинуть задачу неизвестно куда.
  */
-export function readReports(root, config) {
-  const dir = join(root, config.paths.local, 'reports');
+export function readReports(root, config, registry = { entries: [] }) {
+  const dirs = [
+    join(root, config.paths.local, 'reports'),
+    // Порядок важен: основное дерево первым. Отчёт, оказавшийся в обоих
+    // местах, — это остаток прежнего порядка, и верить надо тому, который
+    // оркестратор уже видел.
+    ...(registry.entries ?? []).map((entry) =>
+      join(root, entry.path, config.paths.local, 'reports'),
+    ),
+  ];
+
   const reports = [];
   const problems = [];
+  const seen = new Set();
 
-  for (const path of listFiles(dir, '.json')) {
+  for (const path of dirs.flatMap((dir) => listFiles(dir, '.json'))) {
     const { value, problem } = readJson(path);
     if (problem) {
       problems.push(`отчёт ${path} не разобрался: ${problem}`);
@@ -112,6 +134,17 @@ export function readReports(root, config) {
       problems.push(`отчёт ${path} неполон: нужны taskId, stage и outcome`);
       continue;
     }
+
+    // Один отчёт на пару «задача и этап». Двойник означает остаток
+    // прежнего порядка — берём первый найденный и говорим о втором вслух,
+    // потому что молча выбранный из двух однажды окажется не тем.
+    const id = `${value.taskId} ${value.stage}`;
+    if (seen.has(id)) {
+      problems.push(`отчёт ${path} — двойник уже найденного по ${id}, пропущен`);
+      continue;
+    }
+    seen.add(id);
+
     reports.push({ ...value, path });
   }
 

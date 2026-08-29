@@ -320,7 +320,9 @@ async function main() {
   const { tasks, invalid, notes: backlogNotes } = backlog;
 
   const registry = readRegistry(root, config);
-  const { reports, problems } = readReports(root, config);
+  // Реестр нужен чтению отчётов: сессия с деревом кладёт отчёт у себя,
+  // потому что записать в основное дерево она не вправе.
+  const { reports, problems } = readReports(root, config, registry);
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
   const repair = reconcile({ registry, worktrees, tasks, machine });
 
