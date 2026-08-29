@@ -635,8 +635,12 @@
     --td-side-row-gap: 2px;
     --td-side-gap: 3px;
 
-    --td-tally-width: 19px;
-    --td-tally-height: 18px;
+    /* Сводки двух сторон сходятся в портрете вплотную: каждой отведена
+       половина от 375, а ряду значков нужно шесть штук плюс счётчик.
+       Замерено на снимке с CI 29.08.2026: «0/200» обрезалось соседней
+       сводкой. */
+    --td-tally-width: 16px;
+    --td-tally-height: 16px;
 
     --td-centre-energy-size: 17px;
     --td-centre-clock-size: 13px;
@@ -699,8 +703,12 @@
     --td-side-row-gap: 2px;
     --td-side-gap: 3px;
 
-    --td-tally-width: 19px;
-    --td-tally-height: 18px;
+    /* Сводки двух сторон сходятся в портрете вплотную: каждой отведена
+       половина от 375, а ряду значков нужно шесть штук плюс счётчик.
+       Замерено на снимке с CI 29.08.2026: «0/200» обрезалось соседней
+       сводкой. */
+    --td-tally-width: 16px;
+    --td-tally-height: 16px;
 
     --td-centre-energy-size: 17px;
     --td-centre-clock-size: 13px;
