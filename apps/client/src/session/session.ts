@@ -1,7 +1,9 @@
-import { checkName } from '@td/shared';
+import { FRAME_WORK_BUDGET_MS, checkName } from '@td/shared';
 import type { NameError } from '@td/shared';
 import { startGame } from '../game/bootstrap.js';
 import type { Game } from '../game/bootstrap.js';
+import { createRendererHost } from '../game/scene.js';
+import type { RendererHost } from '../game/scene.js';
 import { createLobbyClient } from './lobby-client.js';
 import type { ActionError } from './lobby-client.js';
 import { clearProfile, createProfileId, readProfile, writeProfile } from './profile.js';
@@ -34,8 +36,113 @@ const lobby = createLobbyClient({
   },
 });
 
-let sceneHost: HTMLElement | undefined;
 let game: Game | undefined;
+
+/**
+ * Отрисовщик, живущий дольше матча.
+ *
+ * Поднимается один раз и лениво — при первом же обращении, то есть ещё
+ * из меню. Хранится обещанием, а не значением: подъём асинхронный
+ * (`app.init` ждёт контекста WebGL), а обратиться к нему могут раньше,
+ * чем он готов, — например, если игрок нажал «играть» сразу.
+ *
+ * Живёт он затем, что кеши спрайтов принадлежат контексту WebGL и гибнут
+ * вместе с ним. Пока приложение создавалось на каждый матч, никакой
+ * прогрев не имел смысла: прогретое умирало бы вместе с прошлой партией.
+ */
+let rendererHost: Promise<RendererHost> | undefined;
+
+const ensureRenderer = (): Promise<RendererHost> => {
+  rendererHost ??= createRendererHost();
+
+  return rendererHost;
+};
+
+/**
+ * Прогрев кеша спрайтов, пока игрок в меню.
+ *
+ * Зачем. Спрайт машины печётся под предельное приближение, и одно
+ * запекание стоит около тринадцати миллисекунд. Посреди боя это
+ * пропущенный кадр, тем более что постановка стены перекрашивает
+ * до четырёх соседей разом. В меню те же миллисекунды не стоят ничего:
+ * игрок там читает список комнат.
+ *
+ * Почему по кадрам, а не одним циклом. Базовый набор — под две сотни
+ * комбинаций, то есть пара секунд работы. Одним циклом это была бы
+ * пара секунд замершего меню, а отзывчивость интерфейса — главное
+ * требование проекта. Прогрев, ради которого подвисает список комнат,
+ * хуже мыла, которое он лечит.
+ *
+ * Пока идёт матч, прогрев молчит: кадр нужен бою, а не заготовкам.
+ * Дошло дело до матча раньше, чем кончился прогрев, — матч всё равно
+ * начинается, недостающее допечётся по надобности. Прогрев здесь
+ * ускорение, а не условие.
+ */
+let warming = false;
+
+/**
+ * Отложить шаг прогрева до простоя.
+ *
+ * `requestIdleCallback`, а не `requestAnimationFrame`, и это не мелочь.
+ * Одно запекание неделимо и стоит больше кадрового бюджета, поэтому
+ * покадровый прогрев занимал КАЖДЫЙ кадр целиком: на машине с видеокартой
+ * это незаметно, а на слабой отнимало у меню всё, что у него было.
+ * Поймалось сквозной проверкой на два браузера: она держится
+ * в стодвадцати секундах, а с покадровым прогревом перестала.
+ *
+ * Простой — ровно то условие, при котором прогрев уместен: он ускорение,
+ * а не обязанность, и уступить дорогу вводу, раскладке и сети обязан
+ * без разговоров. Срока (`timeout`) намеренно нет: с ним браузер запустил
+ * бы работу и на занятой странице, то есть вернул бы ту же беду.
+ *
+ * Запасной путь на кадр — для тех, кто `requestIdleCallback` не знает.
+ */
+const whenIdle = (run: (deadline?: IdleDeadline) => void): void => {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(run);
+  else requestAnimationFrame(() => run());
+};
+
+const startWarming = (renderer: RendererHost): void => {
+  // Два цикла прогрева разом печь одно и то же не должны: очередь у них
+  // общая, и второй просто съедал бы простой.
+  if (warming) return;
+  warming = true;
+
+  const step = (deadline?: IdleDeadline): void => {
+    // Матч идёт — не трогаем ничего и ждём следующего простоя.
+    if (activeKey !== null) {
+      whenIdle(step);
+
+      return;
+    }
+
+    // Браузер сам говорит, сколько времени у него есть. Запасной путь
+    // такого не знает, и ему остаётся кадровый бюджет.
+    const budget = deadline === undefined ? FRAME_WORK_BUDGET_MS : deadline.timeRemaining();
+
+    if (renderer.warm(budget)) whenIdle(step);
+    else warming = false;
+  };
+
+  whenIdle(step);
+};
+
+/**
+ * Игрок вышел в меню: сбросить накопленное и прогреться заново.
+ *
+ * Сброс именно здесь, а не при каждом окончании матча: между матчами
+ * подряд сочетания те же, и сбрасывать их значило бы начинать следующий
+ * матч холодным. А вот выход в меню — и повод (следующий матч может
+ * оказаться другим), и время.
+ */
+const rewarmInMenu = (): void => {
+  void rendererHost?.then((renderer) => {
+    if (activeKey !== null) return;
+
+    renderer.reset();
+    startWarming(renderer);
+  });
+};
 
 /**
  * Манера, выбранная игроком в последний раз, — чтобы «Новый матч» вёл
@@ -65,8 +172,9 @@ let generation = 0;
 const teardown = (): void => {
   game?.stop();
   game = undefined;
-  sceneHost?.remove();
-  sceneHost = undefined;
+  // Элемент `#scene` и приложение PixiJS здесь НЕ трогаются: они живут
+  // дольше матча и уносят с собой прогретые спрайты. Матчевое снимает
+  // `scene.destroy()` внутри `game.stop()`.
 };
 
 const syncMatch = (state: SessionState): void => {
@@ -79,40 +187,52 @@ const syncMatch = (state: SessionState): void => {
   const mine = generation;
 
   teardown();
-  if (desired === null) return;
 
-  const host = document.createElement('div');
-  host.id = 'scene';
-  document.body.appendChild(host);
-  sceneHost = host;
+  if (desired === null) {
+    rewarmInMenu();
 
-  void startGame(host, {
-    seed: desired.seed,
-    localPlayer: desired.side,
-    ticket: desired.ticket,
-    // «Начать заново» осмысленно только против компьютера: уйти с общей
-    // карты в общем матче нельзя, а начать новый матч с тем же соперником
-    // без его согласия — тем более.
-    // Манера передаётся, чтобы «начать заново» вело к тому же сопернику,
-    // с которым игрок только что играл. Без неё матч начинался бы
-    // с кем придётся, и кнопка «Новый матч» тихо меняла бы противника
-    // посреди знакомства с ним.
-    onRestart: desired.computer
-      ? () => void sessionActions.playAgainstComputer(lastManner)
-      : undefined,
-    onRejected: (code) => {
-      console.warn(`Сервер отклонил соединение, код ${String(code)}`);
-    },
-  }).then((started) => {
+    return;
+  }
+
+  const start = async (): Promise<void> => {
+    const renderer = await ensureRenderer();
+
+    // Подъём отрисовщика асинхронный, и за это время матч мог смениться
+    // или кончиться. Проверка здесь, до `startGame`, а не только после:
+    // иначе мы подняли бы партию, которую тут же пришлось бы гасить.
+    if (mine !== generation) return;
+
+    const started = await startGame(renderer, {
+      seed: desired.seed,
+      localPlayer: desired.side,
+      ticket: desired.ticket,
+      // «Начать заново» осмысленно только против компьютера: уйти с общей
+      // карты в общем матче нельзя, а начать новый матч с тем же соперником
+      // без его согласия — тем более.
+      // Манера передаётся, чтобы «начать заново» вело к тому же сопернику,
+      // с которым игрок только что играл. Без неё матч начинался бы
+      // с кем придётся, и кнопка «Новый матч» тихо меняла бы противника
+      // посреди знакомства с ним.
+      onRestart: desired.computer
+        ? () => void sessionActions.playAgainstComputer(lastManner)
+        : undefined,
+      onRejected: (code) => {
+        console.warn(`Сервер отклонил соединение, код ${String(code)}`);
+      },
+    });
+
     if (mine !== generation) {
       // Пока сцена поднималась, матч успел смениться или закончиться.
       // Гасим то, что подняли, и уходим: актуальным занят другой вызов.
+      // Элемент `#scene` при этом остаётся — он не наш, а отрисовщика.
       started.stop();
-      host.remove();
       return;
     }
+
     game = started;
-  });
+  };
+
+  void start();
 };
 
 const unsubscribe = store.subscribe(syncMatch);
@@ -126,6 +246,13 @@ export const sessionActions = {
    * Вызывается один раз при загрузке страницы.
    */
   start(): void {
+    // Отрисовщик поднимается и греется СРАЗУ, до проверки профиля.
+    // Экран представления — такое же меню, как и список комнат: игрок
+    // там читает и печатает, а машина в это время свободна. Ждать
+    // профиля значило бы подарить прогреву меньше времени ровно у тех,
+    // кто заходит впервые.
+    void ensureRenderer().then(startWarming);
+
     const profile = readProfile();
     if (profile === null) return;
 

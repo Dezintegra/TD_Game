@@ -4,7 +4,7 @@ import type { Renderer, Texture } from 'pixi.js';
 import { DEFAULT_TUNING, bakeArmour } from './armour-render.js';
 import { bakeBase } from './base-render.js';
 import type { BaseColors } from './base-render.js';
-import { ARMOUR_DRAFT_OVERSAMPLE } from './bake-density.js';
+import { ARMOUR_SUPERSAMPLE } from './bake-density.js';
 import type { ArmourTuning } from './armour-render.js';
 import { generalSolids, machinePalette, unitSolids } from './machines.js';
 import {
@@ -98,12 +98,16 @@ const ICON_RESOLUTION = 4;
  * Во сколько раз черновик иконки плотнее её самой.
  *
  * Броня печётся в черновик и уменьшается вторым проходом — так получается
- * сглаживание, не спорящее с затенением в стыках. Число берётся общее
- * с полем (`ARMOUR_DRAFT_OVERSAMPLE`), но не через `armourSupersample`:
- * та выводит запас из плотности экрана и плотности запекания сцены,
- * а у иконки своя плотность, назначенная выше и от экрана не зависящая.
+ * сглаживание, не спорящее с затенением в стыках. Кратность берётся общая
+ * с полем: у иконки своя плотность, назначенная выше и от экрана
+ * не зависящая, а вот отношение черновика к готовому — та же величина
+ * и того же смысла.
+ *
+ * Прежде здесь стояла тройка, потому что столько было у поля. Полтора
+ * иконке хватает с избытком: она печётся вчетверо плотнее показа
+ * и уменьшается браузером, а уменьшение сглаживает само.
  */
-const ICON_SUPERSAMPLE = ARMOUR_DRAFT_OVERSAMPLE;
+const ICON_SUPERSAMPLE = ARMOUR_SUPERSAMPLE;
 
 /**
  * Плотность запекания базы — единица, а не общая четвёрка.
