@@ -107,6 +107,7 @@ export const placeBase = (
   centreX: number,
   centreY: number,
   colors: BaseColors,
+  density: number,
 ): void => {
-  mountBase(layer, renderer, centreX, centreY, colors);
+  mountBase(layer, renderer, centreX, centreY, colors, density);
 };

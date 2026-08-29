@@ -1,5 +1,6 @@
-import { Container, Graphics, RenderTexture, Sprite } from 'pixi.js';
+import { Container, Graphics, Sprite } from 'pixi.js';
 import type { Renderer, Texture } from 'pixi.js';
+import { createBakedTexture, finishBakedTexture } from './baked-texture.js';
 import type { Point } from './iso.js';
 import {
   ARC_TILE_H,
@@ -93,11 +94,21 @@ const LETHAL_SCALE = 1.3;
 const POOL_SCALE = 0.85;
 const POOL_ALPHA = 0.4;
 
-const paint = (renderer: Renderer, graphics: Graphics, width: number, height: number): Texture => {
-  // Плотность вдвое: молния — тонкая штриховка, и на единичной плотности
-  // ядро в полтора пикселя рассыпается в пунктир при повороте.
-  const texture = RenderTexture.create({ width, height, resolution: 2, antialias: true });
+const paint = (
+  renderer: Renderer,
+  graphics: Graphics,
+  width: number,
+  height: number,
+  density: number,
+): Texture => {
+  // Плотность приходит снаружи. Раньше здесь стояла двойка с оговоркой,
+  // что на единичной плотности ядро в полтора пикселя рассыпается
+  // в пунктир при повороте; общая плотность сцены ниже двух не бывает,
+  // так что оговорка соблюдается сама собой, а запас на приближение
+  // молния получает наравне со всем прочим.
+  const texture = createBakedTexture(width, height, density, true);
   renderer.render({ container: graphics, target: texture, clear: true });
+  finishBakedTexture(texture);
   graphics.destroy();
   return texture;
 };
@@ -114,7 +125,7 @@ const traceStrand = (graphics: Graphics, nodes: readonly Point[]): void => {
 };
 
 /** Плитка ядра: пучок жил и раскалённая нить в главной. */
-const bakeTile = (renderer: Renderer, variant: number): Texture => {
+const bakeTile = (renderer: Renderer, variant: number, density: number): Texture => {
   const graphics = new Graphics();
   const [main, ...sides] = arcStrands(variant);
 
@@ -128,7 +139,7 @@ const bakeTile = (renderer: Renderer, variant: number): Texture => {
     graphics.stroke({ width: 1.4, color: 0xffffff, alpha: 1, cap: 'round' });
   }
 
-  return paint(renderer, graphics, ARC_TILE_PX, ARC_TILE_H);
+  return paint(renderer, graphics, ARC_TILE_PX, ARC_TILE_H, density);
 };
 
 /**
@@ -137,7 +148,7 @@ const bakeTile = (renderer: Renderer, variant: number): Texture => {
  * Строится вложенными обводками с закруглёнными концами. Печётся один
  * раз за запуск, поэтому «дорого» здесь не бывает.
  */
-const bakeBar = (renderer: Renderer): Texture => {
+const bakeBar = (renderer: Renderer, density: number): Texture => {
   const graphics = new Graphics();
   const mid = BAR_H / 2;
 
@@ -151,11 +162,11 @@ const bakeBar = (renderer: Renderer): Texture => {
     graphics.stroke({ width, color: 0xffffff, alpha, cap: 'round' });
   }
 
-  return paint(renderer, graphics, BAR_PX, BAR_H);
+  return paint(renderer, graphics, BAR_PX, BAR_H, density);
 };
 
 /** Голова волны: мягкий круг без единой подробности. */
-const bakeHead = (renderer: Renderer): Texture => {
+const bakeHead = (renderer: Renderer, density: number): Texture => {
   const graphics = new Graphics();
   const mid = HEAD_PX / 2;
 
@@ -170,16 +181,20 @@ const bakeHead = (renderer: Renderer): Texture => {
     graphics.fill({ color: 0xffffff, alpha });
   }
 
-  return paint(renderer, graphics, HEAD_PX, HEAD_PX);
+  return paint(renderer, graphics, HEAD_PX, HEAD_PX, density);
 };
 
-export const createArcSprites = (renderer: Renderer, colors: ArcColors): ArcSprites => {
+export const createArcSprites = (
+  renderer: Renderer,
+  colors: ArcColors,
+  density: number,
+): ArcSprites => {
   const tiles: Texture[] = [];
   for (let variant = 0; variant < ARC_VARIANTS; variant += 1) {
-    tiles.push(bakeTile(renderer, variant));
+    tiles.push(bakeTile(renderer, variant, density));
   }
-  const bar = bakeBar(renderer);
-  const head = bakeHead(renderer);
+  const bar = bakeBar(renderer, density);
+  const head = bakeHead(renderer, density);
 
   const layer = new Container();
   // Свет складывается, а не закрашивает: два разряда, пересёкшиеся
