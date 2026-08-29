@@ -47,6 +47,7 @@ import { createRenderLoop } from './loop.js';
 import { createNetClient } from './net.js';
 import type { NetClient } from './net.js';
 import { createScene } from './scene.js';
+import type { RendererHost } from './scene.js';
 import { visibleMapPercent } from './iso.js';
 import {
   EMPTY_SIDE,
@@ -137,7 +138,12 @@ const PHASES: Readonly<Record<GuestStatus, MatchPhaseView>> = {
   finished: 'finished',
 };
 
-export const startGame = async (host: HTMLElement, options: GameOptions): Promise<Game> => {
+export const startGame = async (renderer: RendererHost, options: GameOptions): Promise<Game> => {
+  // Элемент живёт дольше матча — он принадлежит хозяину отрисовщика,
+  // а не этой партии. Управление и наблюдатель размера цепляются к нему
+  // и снимаются в `stop`.
+  const host = renderer.element;
+
   // Состояние матча сбрасывается ДО подключения: иначе показания прошлой
   // партии дожили бы до первых кадров этой.
   hudActions.setPhase('connecting');
@@ -173,7 +179,7 @@ export const startGame = async (host: HTMLElement, options: GameOptions): Promis
 
   let scene;
   try {
-    scene = await createScene(host);
+    scene = createScene(renderer);
   } catch (error) {
     // Сцена не поднялась — сокет закрываем сами. Иначе он остался бы
     // открытым и переподключался бы вечно: погасить его через `stop`

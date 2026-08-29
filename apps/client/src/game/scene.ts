@@ -352,7 +352,49 @@ const readMinimapColors = (): MinimapColors => ({
  */
 const MINIMAP_EVERY_FRAMES = 6;
 
-export const createScene = async (host: HTMLElement): Promise<Scene> => {
+/**
+ * Отрисовщик и кеши спрайтов, живущие ДОЛЬШЕ матча.
+ *
+ * Заведено ради прогрева. Текстура принадлежит контексту WebGL,
+ * в котором запечена, и отдать её другому контексту нельзя ни при каких
+ * условиях. Пока приложение создавалось внутри `createScene` — то есть
+ * при старте матча, — подготовить спрайты заранее было НЕЧЕМ: греть
+ * попросту не на чем.
+ *
+ * Отсюда и всё остальное устройство: элемент `#scene` заводится один раз
+ * и не удаляется, приложение живёт с загрузки страницы, а матч приходит
+ * и уходит поверх них.
+ */
+export interface RendererHost {
+  readonly app: Application;
+  /** Элемент, в котором лежит канвас. Живёт столько же, сколько страница. */
+  readonly element: HTMLElement;
+  readonly machines: MachineSprites;
+  readonly structures: StructureSprites;
+  /**
+   * Плотность запекания брони. Считается один раз на страницу: плотность
+   * экрана в течение сессии не меняется, а зум на неё не влияет — она
+   * и так покрывает весь его диапазон.
+   */
+  readonly density: number;
+  destroy(): void;
+}
+
+/**
+ * Поднять отрисовщик и кеши спрайтов.
+ *
+ * Зовётся один раз за жизнь страницы, ДО первого матча — из меню.
+ *
+ * Тикер сразу останавливается: пока матча нет, рисовать нечего, а тикер
+ * PixiJS по умолчанию перерисовывает сцену каждый кадр. Пустая сцена
+ * стоит немного, но жечь кадры в меню незачем — там и без нас работает
+ * выпечка звука.
+ */
+export const createRendererHost = async (): Promise<RendererHost> => {
+  const element = document.createElement('div');
+  element.id = 'scene';
+  document.body.appendChild(element);
+
   const app = new Application();
 
   await app.init({
@@ -361,10 +403,11 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     // Учитываем плотность пикселей монитора, иначе на ретине картинка мылит.
     resolution: window.devicePixelRatio,
     autoDensity: true,
-    resizeTo: host,
+    resizeTo: element,
   });
 
-  host.appendChild(app.canvas);
+  element.appendChild(app.canvas);
+  app.ticker.stop();
 
   /**
    * Плотность запекания брони. Считается один раз: плотность экрана
@@ -372,6 +415,58 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
    * покрывает весь его диапазон, см. `bake-density.ts`.
    */
   const bakeDensity = armourBakeDensity(app.renderer.resolution);
+
+  /**
+   * Кеш запечённых машин.
+   *
+   * Разрешение покрывает предельное приближение целиком: на экране
+   * с плотными пикселями машина обязана быть подробнее, а не крупнее,
+   * и вдобавок она обязана пережить четырёхкратный зум без растяжения.
+   * Кратность сглаживания при этом постоянна — почему именно так,
+   * разобрано у самой величины.
+   */
+  const machines: MachineSprites = createMachineSprites(
+    app.renderer,
+    readMachineColors(),
+    bakeDensity,
+    ARMOUR_SUPERSAMPLE,
+  );
+
+  /**
+   * Кеш запечённых построек.
+   *
+   * Отдельный от машинного, хотя приём тот же: у постройки другой ключ
+   * (облик вместо ступеней прокачки), другая палитра и другая фактура,
+   * а общего осталось бы одно только слово «спрайт».
+   */
+  const structures: StructureSprites = createStructureSprites(
+    app.renderer,
+    readStructureColors(),
+    bakeDensity,
+    ARMOUR_SUPERSAMPLE,
+  );
+
+  return {
+    app,
+    element,
+    machines,
+    structures,
+    density: bakeDensity,
+    destroy() {
+      machines.dispose();
+      structures.dispose();
+      app.destroy(true, { children: true });
+      element.remove();
+    },
+  };
+};
+
+export const createScene = (renderer: RendererHost): Scene => {
+  const { app, machines, structures, density: bakeDensity } = renderer;
+
+  // Тикер PixiJS и есть отрисовка: игровой цикл считает кадр, а рисует
+  // сцену тикер. В меню он остановлен, здесь — пускается.
+  app.ticker.start();
 
   // Мировой контейнер несёт камеру, внешний — только тряску. Разделение
   // не косметическое: положение мирового контейнера читает наведение,
@@ -583,35 +678,6 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const baseSelfColors = readBaseColors(token('--td-accent', 0x00ff29));
   const baseEnemyColors = readBaseColors(token('--td-player-enemy', 0xd264ff));
   const entityColors = readEntityColors();
-  /**
-   * Кеш запечённых машин.
-   *
-   * Разрешение покрывает предельное приближение целиком: на экране
-   * с плотными пикселями машина обязана быть подробнее, а не крупнее,
-   * и вдобавок она обязана пережить четырёхкратный зум без растяжения.
-   * Кратность сглаживания при этом постоянна — почему именно так,
-   * разобрано у самой величины.
-   */
-  const machines: MachineSprites = createMachineSprites(
-    app.renderer,
-    readMachineColors(),
-    bakeDensity,
-    ARMOUR_SUPERSAMPLE,
-  );
-
-  /**
-   * Кеш запечённых построек.
-   *
-   * Отдельный от машинного, хотя приём тот же: у постройки другой ключ
-   * (облик вместо ступеней прокачки), другая палитра и другая фактура,
-   * а общего осталось бы одно только слово «спрайт».
-   */
-  const structures: StructureSprites = createStructureSprites(
-    app.renderer,
-    readStructureColors(),
-    bakeDensity,
-    ARMOUR_SUPERSAMPLE,
-  );
 
   /**
    * Запекатель иконок интерфейса.
@@ -1052,12 +1118,21 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
     destroy() {
       // Текстуры живут в видеопамяти, и сборщик мусора о ней не знает:
-      // без уборки утечка копилась бы матч за матчем. И разряды,
-      // и машины — до самого приложения.
+      // без уборки утечка копилась бы матч за матчем.
       arcs.destroy();
-      machines.dispose();
-      structures.dispose();
-      app.destroy(true, { children: true });
+
+      // Тикер останавливается вместе с матчем: в меню рисовать нечего.
+      app.ticker.stop();
+
+      // Снимается ТОЛЬКО матчевое. Приложение и кеши спрайтов
+      // принадлежат хозяину отрисовщика и переживают смену матча —
+      // на этом и держится прогрев, ради которого всё затевалось.
+      //
+      // `texture` в параметрах уничтожения не ставится намеренно:
+      // спрайты машин ссылаются на текстуры кеша, и уничтожь мы их
+      // заодно — прогрев обнулялся бы каждым матчем, а второй матч
+      // рисовал бы пустоту.
+      for (const child of app.stage.removeChildren()) child.destroy({ children: true });
     },
 
     get terrainRebuildCount() {

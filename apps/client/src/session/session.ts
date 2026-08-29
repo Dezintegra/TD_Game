@@ -2,6 +2,8 @@ import { checkName } from '@td/shared';
 import type { NameError } from '@td/shared';
 import { startGame } from '../game/bootstrap.js';
 import type { Game } from '../game/bootstrap.js';
+import { createRendererHost } from '../game/scene.js';
+import type { RendererHost } from '../game/scene.js';
 import { createLobbyClient } from './lobby-client.js';
 import type { ActionError } from './lobby-client.js';
 import { clearProfile, createProfileId, readProfile, writeProfile } from './profile.js';
@@ -34,8 +36,27 @@ const lobby = createLobbyClient({
   },
 });
 
-let sceneHost: HTMLElement | undefined;
 let game: Game | undefined;
+
+/**
+ * Отрисовщик, живущий дольше матча.
+ *
+ * Поднимается один раз и лениво — при первом же обращении, то есть ещё
+ * из меню. Хранится обещанием, а не значением: подъём асинхронный
+ * (`app.init` ждёт контекста WebGL), а обратиться к нему могут раньше,
+ * чем он готов, — например, если игрок нажал «играть» сразу.
+ *
+ * Живёт он затем, что кеши спрайтов принадлежат контексту WebGL и гибнут
+ * вместе с ним. Пока приложение создавалось на каждый матч, никакой
+ * прогрев не имел смысла: прогретое умирало бы вместе с прошлой партией.
+ */
+let rendererHost: Promise<RendererHost> | undefined;
+
+const ensureRenderer = (): Promise<RendererHost> => {
+  rendererHost ??= createRendererHost();
+
+  return rendererHost;
+};
 
 /**
  * Манера, выбранная игроком в последний раз, — чтобы «Новый матч» вёл
@@ -65,8 +86,9 @@ let generation = 0;
 const teardown = (): void => {
   game?.stop();
   game = undefined;
-  sceneHost?.remove();
-  sceneHost = undefined;
+  // Элемент `#scene` и приложение PixiJS здесь НЕ трогаются: они живут
+  // дольше матча и уносят с собой прогретые спрайты. Матчевое снимает
+  // `scene.destroy()` внутри `game.stop()`.
 };
 
 const syncMatch = (state: SessionState): void => {
@@ -81,38 +103,45 @@ const syncMatch = (state: SessionState): void => {
   teardown();
   if (desired === null) return;
 
-  const host = document.createElement('div');
-  host.id = 'scene';
-  document.body.appendChild(host);
-  sceneHost = host;
+  const start = async (): Promise<void> => {
+    const renderer = await ensureRenderer();
 
-  void startGame(host, {
-    seed: desired.seed,
-    localPlayer: desired.side,
-    ticket: desired.ticket,
-    // «Начать заново» осмысленно только против компьютера: уйти с общей
-    // карты в общем матче нельзя, а начать новый матч с тем же соперником
-    // без его согласия — тем более.
-    // Манера передаётся, чтобы «начать заново» вело к тому же сопернику,
-    // с которым игрок только что играл. Без неё матч начинался бы
-    // с кем придётся, и кнопка «Новый матч» тихо меняла бы противника
-    // посреди знакомства с ним.
-    onRestart: desired.computer
-      ? () => void sessionActions.playAgainstComputer(lastManner)
-      : undefined,
-    onRejected: (code) => {
-      console.warn(`Сервер отклонил соединение, код ${String(code)}`);
-    },
-  }).then((started) => {
+    // Подъём отрисовщика асинхронный, и за это время матч мог смениться
+    // или кончиться. Проверка здесь, до `startGame`, а не только после:
+    // иначе мы подняли бы партию, которую тут же пришлось бы гасить.
+    if (mine !== generation) return;
+
+    const started = await startGame(renderer, {
+      seed: desired.seed,
+      localPlayer: desired.side,
+      ticket: desired.ticket,
+      // «Начать заново» осмысленно только против компьютера: уйти с общей
+      // карты в общем матче нельзя, а начать новый матч с тем же соперником
+      // без его согласия — тем более.
+      // Манера передаётся, чтобы «начать заново» вело к тому же сопернику,
+      // с которым игрок только что играл. Без неё матч начинался бы
+      // с кем придётся, и кнопка «Новый матч» тихо меняла бы противника
+      // посреди знакомства с ним.
+      onRestart: desired.computer
+        ? () => void sessionActions.playAgainstComputer(lastManner)
+        : undefined,
+      onRejected: (code) => {
+        console.warn(`Сервер отклонил соединение, код ${String(code)}`);
+      },
+    });
+
     if (mine !== generation) {
       // Пока сцена поднималась, матч успел смениться или закончиться.
       // Гасим то, что подняли, и уходим: актуальным занят другой вызов.
+      // Элемент `#scene` при этом остаётся — он не наш, а отрисовщика.
       started.stop();
-      host.remove();
       return;
     }
+
     game = started;
-  });
+  };
+
+  void start();
 };
 
 const unsubscribe = store.subscribe(syncMatch);
