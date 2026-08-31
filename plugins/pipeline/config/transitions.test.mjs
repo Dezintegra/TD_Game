@@ -206,6 +206,36 @@ describe('этапы и скиллы', () => {
     }
     expect(guilty).toEqual([]);
   });
+
+  it('ни один скилл не показывает коммит многострочной строкой', () => {
+    // Переводы строк внутри команды разбор разрешений видит как несколько
+    // команд: приставке `git commit` отвечает только первая, остальные —
+    // строки самого сообщения — отказываются. Отказ же отменяет весь отчёт
+    // этапа, каким бы удачным ни был его труд.
+    //
+    // Пример в скилле здесь опаснее умолчания: 31.08.2026 задача 0011
+    // дважды сделала работу и дважды лишилась отчёта, набирая тело коммита
+    // через `@'` … `'@` — форму, которую предписывают общие указания
+    // по PowerShell. Скилл этапа обязан её перебить.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const guilty = [];
+    for (const stage of NEEDS_SESSION) {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      if (/git\s[^\n]*commit[^\n]*-m\s+@'/.test(text)) guilty.push(`${stage}.md`);
+    }
+    expect(guilty).toEqual([]);
+  });
+
+  it('этапы, которые коммитят, называют повторный -m прямо', () => {
+    // Запрет без замены не работает: тело коммита требуется правилами
+    // проекта, и, лишившись одного способа, сессия придумает свой.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const silent = ['design', 'implement', 'revise'].filter((stage) => {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      return !text.includes('повторными `-m`');
+    });
+    expect(silent).toEqual([]);
+  });
 });
 
 describe('связность таблицы', () => {
