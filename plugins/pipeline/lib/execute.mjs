@@ -3,6 +3,7 @@ import {
   applyTransition,
   claimTask,
   countContinuation,
+  countRejection,
   linkArtifact,
   relate,
   releaseClaim,
@@ -50,13 +51,29 @@ async function transferReport(action, io) {
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
 
-  const verdict = applyReport(task, report);
+  const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
   // Дошедший до конца этап обнуляет счётчики: прошлые заминки больше не в счёт,
   // иначе задача упрётся в предел там, где всё было хорошо.
-  let next = verdict.status === 'failed' ? moved.task : resetAttempts(moved.task);
+  //
+  // Возврат — случай особый: обнулить счёт здесь значило бы никогда до предела
+  // и не дойти. Поэтому возврат счёт наращивает, а гасит его успех проверки.
+  let next =
+    verdict.status === 'failed'
+      ? moved.task
+      : report.outcome === 'rejected'
+        ? countRejection(moved.task)
+        : resetAttempts(moved.task);
+
+  // Возврат отправляет задачу на этап, где сессия уже была, и возобновлять её
+  // нельзя: возобновлённая отвечает из своей памяти — «всё сделано» — и вершина
+  // между кругами не меняется вовсе. Забытая сессия начинается заново и читает
+  // свежее замечание журналом, как и всякий новый исполнитель.
+  if (report.outcome === 'rejected' && verdict.status !== 'failed') {
+    io.forgetSession?.(action.taskId, verdict.status);
+  }
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без

@@ -3,6 +3,7 @@ import {
   applyTransition,
   claimTask,
   countContinuation,
+  countRejection,
   linkArtifact,
   relate,
   releaseClaim,
@@ -128,8 +129,25 @@ describe('счётчики', () => {
   });
 
   it('дошедший до конца этап сбрасывает счётчики', () => {
-    const tired = task({ attempts: { continuations: 2, cycleFailures: 1 } });
-    expect(resetAttempts(tired).attempts).toEqual({ continuations: 0, cycleFailures: 0 });
+    const tired = task({ attempts: { continuations: 2, cycleFailures: 1, rejections: 2 } });
+    expect(resetAttempts(tired).attempts).toEqual({
+      continuations: 0,
+      cycleFailures: 0,
+      rejections: 0,
+    });
+  });
+
+  it('возврат проверяющего этапа считается', () => {
+    expect(countRejection(task()).attempts.rejections).toBe(1);
+    const again = countRejection(countRejection(task()));
+    expect(again.attempts.rejections).toBe(2);
+  });
+
+  it('счёт возвратов не трогает счёт продолжений', () => {
+    // Заминки разной природы: уснувшая сессия и несходящийся спор лечатся
+    // по-разному, и общий счётчик путал бы их пределы.
+    const counted = countRejection(task({ attempts: { continuations: 1, cycleFailures: 0 } }));
+    expect(counted.attempts.continuations).toBe(1);
   });
 });
 

@@ -142,6 +142,60 @@ describe('замечания — рабочий ход, а не ошибка', (
   });
 });
 
+describe('спор, который не сходится', () => {
+  const rejection = report({
+    stage: 'audit',
+    outcome: 'rejected',
+    summary: 'шаг 3.4 меряет не то',
+  });
+
+  it('первые возвраты остаются рабочим ходом', () => {
+    const first = applyReport(task({ status: 'audit' }), rejection, { maxRejections: 3 });
+    expect(first.status).toBe('design');
+
+    const second = applyReport(
+      task({ status: 'audit', attempts: { continuations: 0, cycleFailures: 0, rejections: 1 } }),
+      rejection,
+      { maxRejections: 3 },
+    );
+    expect(second.status).toBe('design');
+  });
+
+  it('возврат за пределом отдаёт задачу человеку, а не крутит ещё круг', () => {
+    // 31.08.2026 задача 0011 прошла четыре круга подряд на неизменной вершине:
+    // проработка отвечала «всё закрыто», аудит честно отклонял снова. Круг
+    // стоил около доллара и десяти минут, а остановиться было нечему.
+    const verdict = applyReport(
+      task({ status: 'audit', attempts: { continuations: 0, cycleFailures: 0, rejections: 2 } }),
+      rejection,
+      { maxRejections: 3 },
+    );
+    expect(verdict.status).toBe('failed');
+    expect(verdict.note).toContain('нужен разбор человеком');
+    // Человеку важно не «предел исчерпан», а из-за чего спорили.
+    expect(verdict.note).toContain('шаг 3.4 меряет не то');
+  });
+
+  it('без названного предела счёт не ведётся вовсе', () => {
+    // Предел приходит доводом от супервизора. Проект, не назвавший его,
+    // получает прежнее поведение, а не молчаливую тройку.
+    const verdict = applyReport(
+      task({ status: 'audit', attempts: { continuations: 0, cycleFailures: 0, rejections: 9 } }),
+      rejection,
+    );
+    expect(verdict.status).toBe('design');
+  });
+
+  it('успех проверки гасит счёт возвратов', () => {
+    const done = applyReport(
+      task({ status: 'audit', attempts: { continuations: 0, cycleFailures: 0, rejections: 2 } }),
+      report({ stage: 'audit', outcome: 'done' }),
+      { maxRejections: 3 },
+    );
+    expect(done.status).toBe('implement');
+  });
+});
+
 describe('несчастливые исходы', () => {
   it('неуспех сохраняет состояние возврата', () => {
     const verdict = applyReport(

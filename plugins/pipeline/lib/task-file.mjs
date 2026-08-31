@@ -71,13 +71,25 @@ export function countContinuation(task) {
 }
 
 /**
+ * Отметить, что проверяющий этап вернул работу.
+ *
+ * Счёт ведётся ПОДРЯД идущим возвратам и обнуляется, как только проверка
+ * пройдена: задача, однажды поспорившая с аудитом, не должна тащить этот
+ * счёт через ревью и упереться в предел там, где всё было хорошо.
+ */
+export function countRejection(task) {
+  const attempts = task.attempts ?? { continuations: 0, cycleFailures: 0 };
+  return { ...task, attempts: { ...attempts, rejections: (attempts.rejections ?? 0) + 1 } };
+}
+
+/**
  * Сбросить счётчики: этап дошёл до конца, и прошлые заминки больше не в счёт.
  *
  * Без сброса задача, однажды пережившая уснувшую сессию, тащила бы этот счёт
  * через все оставшиеся этапы и упёрлась бы в предел там, где всё было хорошо.
  */
 export function resetAttempts(task) {
-  return { ...task, attempts: { continuations: 0, cycleFailures: 0 } };
+  return { ...task, attempts: { continuations: 0, cycleFailures: 0, rejections: 0 } };
 }
 
 /** Записать ссылку на порождённый артефакт, не трогая остальных. */

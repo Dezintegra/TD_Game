@@ -155,6 +155,11 @@ function fakeIo(over = {}) {
       return over.spawn ?? { ok: true, sessionId: 'сессия-1', pid: 4242 };
     },
     lastSession: () => over.lastSession ?? null,
+    forgetSession(taskId, stage) {
+      steps.push(`забыта сессия ${taskId}:${stage}`);
+      return true;
+    },
+    maxRejections: over.maxRejections,
     boardDigest: () => [...tasks.values()].map((item) => ({ id: item.id, status: item.status })),
 
     // Записи может не быть вовсе, и `null` здесь — не «умолчание сойдёт»,
@@ -357,6 +362,47 @@ describe('перенос отчёта', () => {
     });
     await execute([transfer], io);
     expect(io.tasks.get('0001-one')).toMatchObject({ status: 'awaiting-po', returnTo: 'design' });
+  });
+
+  it('возврат забывает сессию того этапа, куда задача едет', async () => {
+    // Возобновлённая сессия отвечает из своей памяти — «всё сделано» — и
+    // вершина между кругами не меняется вовсе. 31.08.2026 так вышло четыре
+    // круга подряд по десять минут каждый.
+    const io = fakeIo({
+      tasks: [task({ status: 'audit' })],
+      report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', summary: 'не то меряет' },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
+    expect(io.tasks.get('0001-one').status).toBe('design');
+    expect(io.steps).toContain('забыта сессия 0001-one:design');
+  });
+
+  it('успешный этап сессию не забывает', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'design' })] });
+    await execute([transfer], io);
+    expect(io.steps.filter((step) => step.startsWith('забыта сессия'))).toEqual([]);
+  });
+
+  it('возврат наращивает счёт, а не обнуляет его', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'audit', attempts: { continuations: 0, cycleFailures: 0 } })],
+      report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', summary: 'мимо' },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
+    expect(io.tasks.get('0001-one').attempts.rejections).toBe(1);
+  });
+
+  it('возврат за пределом отдаёт задачу человеку и сессию не трогает', async () => {
+    const io = fakeIo({
+      maxRejections: 3,
+      tasks: [
+        task({ status: 'audit', attempts: { continuations: 0, cycleFailures: 0, rejections: 2 } }),
+      ],
+      report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', summary: 'мимо' },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
+    expect(io.tasks.get('0001-one').status).toBe('failed');
+    expect(io.steps.filter((step) => step.startsWith('забыта сессия'))).toEqual([]);
   });
 
   it('номер pull request из отчёта попадает в саму задачу', async () => {
