@@ -292,11 +292,28 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      *
      * Именно от удалённой, а не от локальной: расхождение здесь уже стоило
      * проекту потерянных коммитов, и правило записано в CLAUDE.md кровью.
+     *
+     * Но ветка задачи живёт дольше своего дерева. Дерево сносят — руками,
+     * уборкой, переустановкой машины, — а ветку оставляют: в ней работа,
+     * ещё не влитая в главную. Тогда `-b` падает «branch already exists»,
+     * и задача застревает навсегда: починка `finish-claim` зовёт это место
+     * каждый оборот и каждый оборот получает тот же отказ. Замечено
+     * 31.08.2026 на задаче 0017 — конвейер простоял так двое суток.
+     *
+     * Поэтому уже существующая ветка — не беда, а продолжение работы:
+     * дерево заводится НА неё, без нового ответвления. Удалённую ветку
+     * без локальной git заведёт сам, с отслеживанием, — и это ровно то,
+     * что нужно после потери дерева вместе с локальной веткой.
      */
     addWorktree(taskId, branch) {
       const path = join(config.worktreeDir, taskId);
       const base = `${config.remote}/${config.mainBranch}`;
-      const result = run(['worktree', 'add', path, '-b', branch, base]);
+      const known = (ref) => run(['rev-parse', '--verify', '--quiet', ref]).code === 0;
+      const existing =
+        known(`refs/heads/${branch}`) || known(`refs/remotes/${config.remote}/${branch}`);
+      const result = existing
+        ? run(['worktree', 'add', path, branch])
+        : run(['worktree', 'add', path, '-b', branch, base]);
       if (result.code !== 0) return { ok: false, why: result.stderr.trim() };
       return { ok: true, path };
     },

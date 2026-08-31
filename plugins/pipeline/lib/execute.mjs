@@ -281,6 +281,17 @@ async function continueStage(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
+  // Этапу, работающему в своём дереве, без дерева работать негде. Прежде
+  // это выяснялось внутри сборки запуска, где путь склеивался с `null`
+  // и бросал TypeError, — а падение внутри исполнения уносило весь оборот
+  // вместе с решениями по всем остальным задачам (31.08.2026).
+  //
+  // Отказ здесь ничего не теряет: дерево заводит сверка, и следующий же
+  // оборот выдаст сессию как ни в чём не бывало.
+  if (NEEDS_WORKTREE.includes(task.status) && !io.registryEntry(action.taskId)?.path) {
+    return { result: 'failed', why: `дерева у задачи нет: этапу «${task.status}» работать негде` };
+  }
+
   const counted = countContinuation(task);
   const push = await io.saveTask(
     counted,

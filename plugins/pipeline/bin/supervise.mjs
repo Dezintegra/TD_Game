@@ -312,7 +312,15 @@ async function turn() {
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
     };
 
-    repairWorld(repair.repairs, io);
+    // Неудача починки печатается наравне с неудачей действия. Пока
+    // возвращаемое здесь выбрасывалось, провалившаяся `finish-claim`
+    // молчала: в журнале каждый оборот стояло «доводим взятие до конца»,
+    // и ни разу — «не довели». Так и вышли двое суток простоя 31.08.2026.
+    for (const item of repairWorld(repair.repairs, io)) {
+      if (item.result === 'done') continue;
+      note(`починка ${item.kind} ${item.taskId ?? ''}: ${item.why}`);
+    }
+
     const executed = await execute(result.actions, io);
     for (const item of executed) {
       if (item.result === 'done') continue;

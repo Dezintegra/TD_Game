@@ -71,7 +71,15 @@ export function stageCommand({ assignment, prompt, config, root }) {
     // Рабочий каталог — дерево задачи, а у этапов без дерева основное.
     // Прогон и толкование дерева не имеют вовсе: арену считает чужое железо,
     // а толкование только читает уже снятые числа.
-    cwd: NEEDS_WORKTREE.includes(assignment.stage) ? join(root, assignment.path) : root,
+    //
+    // Путь спрашивается вместе с самим этапом: назначение без пути отдаёт
+    // сюда `null`, и `join` бросает TypeError посреди исполнения. Решает,
+    // выдавать ли работу безместной задаче, не этот чистый счёт, а тот,
+    // кто её выдаёт; здесь остаётся не уронить оборот на склейке пути.
+    cwd:
+      NEEDS_WORKTREE.includes(assignment.stage) && assignment.path
+        ? join(root, assignment.path)
+        : root,
   };
 }
 
