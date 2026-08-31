@@ -9,7 +9,6 @@ import type { ActionError } from './lobby-client.js';
 import { clearProfile, createProfileId, readProfile, writeProfile } from './profile.js';
 import { activeMatchOf, useSessionStore } from './session-store.js';
 import type { SessionState } from './session-store.js';
-import { startWarmPacer } from './warm-pacer.js';
 
 /**
  * Контроллер сессии: связывает профиль, комнаты и запуск матча.
@@ -103,22 +102,56 @@ const whenIdle = (run: (deadline?: IdleDeadline) => void): void => {
   else requestAnimationFrame(() => run());
 };
 
+/**
+ * Прогрев выключен: `VITE_E2E_CHEAP_TEXTURES=1`.
+ *
+ * Заведено ради сквозных проверок, и польза тут односторонняя: прогрев
+ * им только вредит. Смысл его — разложить запекание по простою МЕНЮ,
+ * чтобы в бою не было пропущенных кадров; проверка же смотрит не на
+ * плавность, а на разметку и на сходимость миров, и лишнюю плавность
+ * ей зачесть некуда. Зато цену она платит полностью.
+ *
+ * Цена измерена 31.08.2026, прогон настоящих проверок лобби в режиме
+ * runner'а (программная отрисовка, два работника) на своей машине:
+ *
+ * | проверка | с прогревом | без прогрева |
+ * | -------- | ----------- | ------------ |
+ * | `lobby:96` | 17,5 с | 2,5 с |
+ * | `lobby:121` | 32,2 с | 2,8 с |
+ * | `lobby:159` | 2,0 мин, упала | 1,1 мин |
+ *
+ * Отрисовщик при этом поднимается как обычно: замер отдельной версией
+ * показал, что сам по себе он не стоит ничего — 2,5 с против 2,6 с,
+ * когда его в меню нет вовсе. Виновато именно запекание впрок.
+ *
+ * Флаг снимает ЗАГОТОВКИ, а не отрисовку. Всё, что проверке нужно
+ * увидеть на экране, печётся по надобности ровно как у игрока.
+ */
+const WARM_DISABLED = import.meta.env['VITE_E2E_CHEAP_TEXTURES'] === '1';
+
 const startWarming = (renderer: RendererHost): void => {
   // Два цикла прогрева разом печь одно и то же не должны: очередь у них
   // общая, и второй просто съедал бы простой.
-  if (warming) return;
+  if (WARM_DISABLED || warming) return;
   warming = true;
 
-  startWarmPacer({
-    warm: (budgetMs) => renderer.warm(budgetMs),
-    whenIdle,
-    now: () => performance.now(),
-    matchRunning: () => activeKey !== null,
-    frameBudgetMs: FRAME_WORK_BUDGET_MS,
-    onDone: () => {
-      warming = false;
-    },
-  });
+  const step = (deadline?: IdleDeadline): void => {
+    // Матч идёт — не трогаем ничего и ждём следующего простоя.
+    if (activeKey !== null) {
+      whenIdle(step);
+
+      return;
+    }
+
+    // Браузер сам говорит, сколько времени у него есть. Запасной путь
+    // такого не знает, и ему остаётся кадровый бюджет.
+    const budget = deadline === undefined ? FRAME_WORK_BUDGET_MS : deadline.timeRemaining();
+
+    if (renderer.warm(budget)) whenIdle(step);
+    else warming = false;
+  };
+
+  whenIdle(step);
 };
 
 /**
