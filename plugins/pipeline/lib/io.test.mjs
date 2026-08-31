@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -131,6 +131,55 @@ describe('выписка задачи рядом со слотом', () => {
     world.clearSlot('worker');
 
     expect(existsSync(at('solo.task.json'))).toBe(true);
+  });
+});
+
+describe('отчёт, положенный в рабочем дереве', () => {
+  // Прочитать мало — принятый отчёт надо ещё и убрать, причём оттуда же,
+  // откуда взяли. Не убранный лёг бы вторым переносом на следующем цикле,
+  // а задача к тому времени уже ушла бы с этапа: перенос отчёта о чужом
+  // этапе роняет её в ошибку.
+  let root;
+  const { config } = resolveConfig({
+    commands: { verify: 'x', deploy: 'x', perf: 'x' },
+    worktreeDir: '.claude/worktrees',
+  });
+
+  const TREE = '.claude/worktrees/0001-one';
+  const io = () => createIo({ root, config, now: '2026-08-29T12:00:00+03:00' });
+  const reportIn = (dir) => join(root, dir, '.pipeline', 'reports', '0001-one-design.json');
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'pipeline-report-'));
+    const dir = join(root, TREE, '.pipeline', 'reports');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, '0001-one-design.json'),
+      JSON.stringify({ taskId: '0001-one', stage: 'design', outcome: 'done' }),
+    );
+    mkdirSync(join(root, '.pipeline'), { recursive: true });
+    writeFileSync(
+      join(root, '.pipeline', 'registry.json'),
+      JSON.stringify({ entries: [{ taskId: '0001-one', path: TREE }] }),
+    );
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('читается по записи реестра', () => {
+    expect(io().readReport('0001-one', 'design')).toMatchObject({ outcome: 'done' });
+  });
+
+  it('убирается оттуда же, где лежал', () => {
+    io().removeReport('0001-one', 'design');
+    expect(existsSync(reportIn(TREE))).toBe(false);
+  });
+
+  it('без записи реестра остаётся ненайденным', () => {
+    writeFileSync(join(root, '.pipeline', 'registry.json'), JSON.stringify({ entries: [] }));
+    expect(io().readReport('0001-one', 'design')).toBeNull();
   });
 });
 

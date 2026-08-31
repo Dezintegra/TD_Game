@@ -364,10 +364,32 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       }
     },
 
-    readReport: (id, stage) => readJson(local('reports', `${id}-${stage}.json`)),
+    /**
+     * Где лежит отчёт: в основном дереве либо в рабочем дереве задачи.
+     *
+     * Сессия с деревом положить отчёт в основное не может — запись
+     * за пределы своего каталога либо спрашивает подтверждения, либо
+     * отвергается сразу. Поэтому смотрим в оба места, а вернувшийся путь
+     * запоминаем: удалять принятый отчёт надо оттуда же, откуда взяли.
+     */
+    reportPath(id, stage) {
+      const name = `${id}-${stage}.json`;
+      const own = local('reports', name);
+      if (existsSync(own)) return own;
+
+      const entry = this.registryEntry(id);
+      if (!entry?.path) return own;
+
+      const inTree = join(root, entry.path, config.paths.local, 'reports', name);
+      return existsSync(inTree) ? inTree : own;
+    },
+
+    readReport(id, stage) {
+      return readJson(this.reportPath(id, stage));
+    },
 
     removeReport(id, stage) {
-      const path = local('reports', `${id}-${stage}.json`);
+      const path = this.reportPath(id, stage);
       if (existsSync(path)) rmSync(path);
     },
 
