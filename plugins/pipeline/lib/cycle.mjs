@@ -1,4 +1,3 @@
-import { lockedSlots, planAssignments, staleAssignments, unclaimedSlots } from './slots.mjs';
 import { catchUp, cycleMayFinish, handleTail } from './push-discipline.mjs';
 import { lockVerdict, newLock } from './lock.mjs';
 import { scan } from './scan.mjs';
@@ -15,9 +14,13 @@ import { scan } from './scan.mjs';
  *    их поверх неотправленного значит заводить без последних коммитов;
  * 4. картина мира с диска;
  * 5. сканер — детерминированный счёт, что делать;
- * 6. раскладка по слотам;
- * 7. исполнение;
- * 8. сторож завершения — в главной ветке не осталось неотправленного.
+ * 6. исполнение;
+ * 7. сторож завершения — в главной ветке не осталось неотправленного.
+ *
+ * Раскладки по слотам здесь больше нет. Слоты существовали потому, что
+ * решал один, а работал другой: передать назначение иначе как через диск
+ * они не могли. Теперь порождает тот же, кто решает, — и квота вырождается
+ * в счёт живых дочерних процессов.
  *
  * Сам цикл ничего не исполняет: он решает и отдаёт список. Исполнитель
  * приходит доводом, поэтому весь порядок проверяется без единого настоящего
@@ -46,19 +49,11 @@ export const CYCLE = {
  * @param {(pid:number)=>boolean} [deps.isAlive] жив ли процесс, взявший замок
  * @param {string[]} deps.ourAuthors чьи коммиты конвейер считает своими
  * @param {() => number} deps.elapsed сколько секунд идёт цикл
- * @returns {{ outcome, actions, assignments, waiting, notes, lock }}
+ * @returns {{ outcome, actions, notes, lock }}
  */
 export function runCycle({ git, state, config, now, pid, lock, isAlive, ourAuthors, elapsed }) {
   const notes = [];
-  const nothing = (outcome, releases = []) => ({
-    outcome,
-    actions: [],
-    assignments: [],
-    waiting: [],
-    releases,
-    notes,
-    lock: null,
-  });
+  const nothing = (outcome) => ({ outcome, actions: [], notes, lock: null });
 
   // 1. Замок.
   const verdict = lockVerdict(lock, now, config.lockStaleMinutes, isAlive);
@@ -108,59 +103,11 @@ export function runCycle({ git, state, config, now, pid, lock, isAlive, ourAutho
     ? decision.actions
     : decision.actions.filter((action) => !WRITES_TO_MAIN.includes(action.kind));
 
-  // 5б. Сверка слотов с бэклогом. Считается ДО проверки на пустоту действий:
-  //     повисшее назначение — это работа само по себе, и цикл, объявивший
-  //     «нечего делать», оставил бы слот занятым навсегда.
-  const tasksById = Object.fromEntries(state.tasks.map((task) => [task.id, task]));
-  const locked = lockedSlots({
-    occupancy: state.occupancy ?? {},
-    sessions: state.sessions ?? [],
-    sessionsKnown: state.sessionsKnown ?? true,
-    now,
-    config,
-  });
-  const stale = staleAssignments({ occupancy: state.occupancy ?? {}, tasks: tasksById, locked });
-
-  // Невзятое назначение чинить нечем — задачами планировщика конвейер
-  // не управляет намеренно, — но и молчать о нём нельзя: со стороны оно
-  // выглядит занятым слотом, то есть честной очередью.
-  for (const item of unclaimedSlots({ occupancy: state.occupancy ?? {}, now, config })) {
-    notes.push(`слот ${item.slot} держит ${item.taskId}: ${item.why}`);
-  }
-
   if (actions.length === 0) {
-    for (const item of stale) {
-      notes.push(`слот ${item.slot} освобождён от ${item.taskId}: ${item.why}`);
-    }
-    return { ...nothing(mayWrite ? 'idle' : 'blocked', stale), locked, lock: held };
+    return { ...nothing(mayWrite ? 'idle' : 'blocked'), lock: held };
   }
 
-  // 6. Раскладка по слотам. Слотов столько, сколько работ идёт разом:
-  //    квота — это число слотов, а не число в настройке.
-  const plan = planAssignments({
-    actions,
-    tasks: tasksById,
-    occupancy: state.occupancy ?? {},
-    slots: config.slots,
-    now,
-    locked,
-    stale,
-  });
-  notes.push(...plan.notes);
-  for (const item of plan.waiting) {
-    notes.push(`задача ${item.taskId} ждёт: ${item.reason}`);
-  }
-
-  return {
-    outcome: 'worked',
-    actions,
-    assignments: plan.writes,
-    waiting: plan.waiting,
-    releases: stale,
-    locked,
-    notes,
-    lock: held,
-  };
+  return { outcome: 'worked', actions, notes, lock: held };
 }
 
 /**

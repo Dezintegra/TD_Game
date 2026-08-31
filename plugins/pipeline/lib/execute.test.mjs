@@ -36,8 +36,7 @@ const task = (over = {}) => ({
 function fakeIo(over = {}) {
   const steps = [];
   const tasks = new Map((over.tasks ?? [task()]).map((item) => [item.id, item]));
-  const slots = new Map();
-  const briefs = new Map();
+  const spawned = [];
   const journals = new Map();
   const restored = [];
   const dropped = [];
@@ -48,8 +47,7 @@ function fakeIo(over = {}) {
     machine: 'станция-1',
     steps,
     tasks,
-    slots,
-    briefs,
+    spawned,
     journals,
     restored,
     dropped,
@@ -151,19 +149,13 @@ function fakeIo(over = {}) {
     upsertRegistry(entry) {
       steps.push(`запись в реестре ${entry.taskId}`);
     },
-    writeSlot(slot) {
-      steps.push(`назначение в слот ${slot}`);
-      slots.set(slot, true);
+    spawnStage(assignment) {
+      steps.push(`запущен этап ${assignment.taskId}:${assignment.stage}`);
+      spawned.push(assignment);
+      return over.spawn ?? { ok: true, sessionId: 'сессия-1', pid: 4242 };
     },
-    writeBrief(slot, brief) {
-      steps.push(`выписка в слот ${slot}: ${brief.task?.id} ${brief.task?.status}`);
-      briefs.set(slot, brief);
-    },
-    clearSlot(slot) {
-      steps.push(`слот ${slot} освобождён`);
-      slots.delete(slot);
-      briefs.delete(slot);
-    },
+    lastSession: () => over.lastSession ?? null,
+    boardDigest: () => [...tasks.values()].map((item) => ({ id: item.id, status: item.status })),
 
     registryEntry: () =>
       over.entry ?? {
@@ -196,15 +188,7 @@ function fakeIo(over = {}) {
   return io;
 }
 
-const startAction = {
-  kind: 'start-stage',
-  taskId: '0001-one',
-  stage: 'design',
-  branch: 'worktree-0001-one',
-  sessionTitle: 'pipeline:0001-one:design',
-  slot: 'worker',
-  assignment: { taskId: '0001-one', stage: 'design' },
-};
+const startAction = { kind: 'start-stage', taskId: '0001-one', stage: 'design' };
 
 describe('взятие задачи в работу', () => {
   it('захват отправляется раньше заведения дерева', async () => {
@@ -224,19 +208,16 @@ describe('взятие задачи в работу', () => {
     expect(io.tasks.get('0001-one')).toMatchObject({ owner: 'станция-1', status: 'design' });
   });
 
-  it('назначение попадает в слот последним, выписка — прямо перед ним', async () => {
-    // Слот и есть сигнал к работе: исполнитель просыпается по нему. Поэтому
-    // он пишется, когда мир уже готов — захват отправлен, дерево заведено, —
-    // а выписка, на которую он указывает, ложится ещё раньше.
+  it('этап запускается последним, когда мир уже готов', async () => {
+    // Порядок тот же, что был у слота, и по той же причине: сессия
+    // начинает работать сразу, а не по расписанию, поэтому и захват,
+    // и дерево обязаны существовать раньше неё.
     const io = fakeIo();
     await execute([startAction], io);
-    expect(io.steps.slice(-2)).toEqual([
-      'выписка в слот worker: 0001-one design',
-      'назначение в слот worker',
-    ]);
+    expect(io.steps.at(-1)).toBe('запущен этап 0001-one:design');
   });
 
-  it('выписка несёт задачу, её журнал и опись доски', async () => {
+  it('назначение несёт задачу, её журнал и опись доски', async () => {
     // Ради этого всё и затевалось: исполнителю больше незачем открывать
     // бэклог, а значит нечему и разойтись с ним.
     const io = fakeIo({
@@ -245,12 +226,20 @@ describe('взятие задачи в работу', () => {
     io.appendJournal('0001-one', '## что решили прежде');
     await execute([startAction], io);
 
-    const brief = io.briefs.get('worker');
-    expect(brief.task).toMatchObject({ id: '0001-one', status: 'design' });
-    expect(brief.journal).toContain('## что решили прежде');
-    expect(brief.board).toContainEqual(
+    const [assignment] = io.spawned;
+    expect(assignment.task).toMatchObject({ id: '0001-one', status: 'design' });
+    expect(assignment.journal).toContain('## что решили прежде');
+    expect(assignment.board).toContainEqual(
       expect.objectContaining({ id: '0002-two', status: 'review' }),
     );
+    expect(assignment.branch).toBe('worktree-0001-one');
+  });
+
+  it('первый заход на этап начинает сессию, а не возобновляет', async () => {
+    const io = fakeIo();
+    await execute([startAction], io);
+    expect(io.spawned[0].continuation).toBe(false);
+    expect(io.spawned[0].sessionId).toBe(null);
   });
 
   it('занятая чужой машиной задача не берётся и мир не трогается', async () => {
@@ -299,25 +288,21 @@ describe('взятие задачи в работу', () => {
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
   });
 
-  it('без слота задачу не берут вовсе', async () => {
-    // Беда первого живого прогона: сканер выдал восемь действий, слотов было
-    // два, а исполнение прошло по всем восьми — потому что действия сканера
-    // и раскладку по слотам никто не связывал. Захвачены были все восемь.
-    const io = fakeIo();
-    const { slot, assignment, ...withoutSlot } = startAction;
-    const [result] = await execute([withoutSlot], io);
-    expect(result.result).toBe('skipped');
-    expect(result.why).toContain('слота нет');
-    expect(io.steps).toEqual([]);
-    void assignment;
-    void slot;
+  it('этап, который не запустился, за успех не выдаётся', async () => {
+    // Несостоявшееся порождение — это отказ настройки, а не работа сессии.
+    // Выдав его за успех, конвейер оставил бы задачу в этапе, которого
+    // никто не делает.
+    const io = fakeIo({ spawn: { ok: false, why: 'все места заняты' } });
+    const [result] = await execute([startAction], io);
+    expect(result.result).toBe('failed');
+    expect(result.why).toContain('все места заняты');
   });
 
   it('прогону дерево не заводится: арену считает чужое железо', async () => {
     const io = fakeIo({ tasks: [task({ type: 'run', status: 'new' })] });
     await execute([{ ...startAction, stage: 'benchmark' }], io);
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
-    expect(io.steps).toContain('назначение в слот worker');
+    expect(io.steps).toContain('запущен этап 0001-one:benchmark');
   });
 
   it('неудача заведения дерева не выдаётся за успех', async () => {
@@ -329,19 +314,14 @@ describe('взятие задачи в работу', () => {
 });
 
 describe('перенос отчёта', () => {
-  const transfer = {
-    kind: 'transfer-report',
-    taskId: '0001-one',
-    stage: 'design',
-    slot: 'worker',
-  };
+  const transfer = { kind: 'transfer-report', taskId: '0001-one', stage: 'design' };
 
-  it('успешный этап двигает задачу и освобождает слот', async () => {
+  it('успешный этап двигает задачу и снимает отчёт с очереди', async () => {
     const io = fakeIo({ tasks: [task({ status: 'design' })] });
     const [result] = await execute([transfer], io);
     expect(result.result).toBe('done');
     expect(io.tasks.get('0001-one').status).toBe('audit');
-    expect(io.steps).toContain('слот worker освобождён');
+    expect(io.steps).toContain('отчёт 0001-one:design убран');
   });
 
   it('отчёт убирается только после удавшейся отправки', async () => {
@@ -351,7 +331,6 @@ describe('перенос отчёта', () => {
     });
     await execute([transfer], io);
     expect(io.steps.filter((step) => step.includes('отчёт'))).toEqual([]);
-    expect(io.steps.filter((step) => step.includes('освобождён'))).toEqual([]);
   });
 
   it('дошедший до конца этап обнуляет счётчик продолжений', async () => {
@@ -415,7 +394,7 @@ describe('перенос отчёта', () => {
 });
 
 describe('вопрос владельцу продукта', () => {
-  const asking = { kind: 'transfer-report', taskId: '0001-one', stage: 'design', slot: 'worker' };
+  const asking = { kind: 'transfer-report', taskId: '0001-one', stage: 'design' };
 
   const askingIo = (over = {}) =>
     fakeIo({
@@ -518,40 +497,44 @@ describe('вопрос владельцу продукта', () => {
   });
 });
 
-describe('продолжение за уснувшей сессией', () => {
-  it('счётчик продолжений растёт, назначение уходит в слот', async () => {
+describe('сессия на идущий этап', () => {
+  const carryOn = {
+    kind: 'continue-stage',
+    taskId: '0001-one',
+    stage: 'implement',
+    reason: 'этапу нужна сессия, живого процесса нет',
+  };
+
+  it('счётчик продолжений растёт, этап запускается', async () => {
     const io = fakeIo({ tasks: [task({ status: 'implement' })] });
-    const [result] = await execute(
-      [
-        {
-          kind: 'continue-stage',
-          taskId: '0001-one',
-          stage: 'implement',
-          reason: 'молчит дольше отпущенного',
-          slot: 'worker',
-          assignment: {},
-        },
-      ],
-      io,
-    );
+    const [result] = await execute([carryOn], io);
     expect(result.result).toBe('done');
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(1);
-    expect(io.steps).toContain('назначение в слот worker');
+    expect(io.steps).toContain('запущен этап 0001-one:implement');
   });
 
-  it('без слота попытка не тратится и мир не трогается', async () => {
-    // Раскладка отказывает, когда прежнее назначение ещё не взято
-    // исполнителем. Списать за это попытку было бы вдвойне несправедливо:
-    // сессии не было, а счётчик вырос. Их всего две, и после второй задача
-    // встаёт и ждёт человека — так и сгорели 0005 и 0006.
+  it('назначение видит израсходованные попытки, а не прежнее их число', async () => {
     const io = fakeIo({ tasks: [task({ status: 'implement' })] });
-    const [result] = await execute(
-      [{ kind: 'continue-stage', taskId: '0001-one', stage: 'implement', reason: 'молчит' }],
-      io,
-    );
-    expect(result.result).toBe('skipped');
-    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
-    expect(io.steps).toEqual([]);
+    await execute([carryOn], io);
+    expect(io.spawned[0].task.attempts.continuations).toBe(1);
+  });
+
+  it('известная сессия возобновляется, а не начинается заново', async () => {
+    // Ради этого и держится память о сессиях: возобновлённая помнит свой ход
+    // мысли. Прежде продолжатель выяснял сделанное тремя командами `git log`
+    // и иногда понимал неверно.
+    const io = fakeIo({ tasks: [task({ status: 'implement' })], lastSession: 'сессия-прежняя' });
+    await execute([carryOn], io);
+    expect(io.spawned[0]).toMatchObject({ continuation: true, sessionId: 'сессия-прежняя' });
+  });
+
+  it('незапустившийся этап не выдаётся за успех', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      spawn: { ok: false, why: 'по этой задаче уже идёт этап' },
+    });
+    const [result] = await execute([carryOn], io);
+    expect(result.result).toBe('failed');
   });
 });
 
