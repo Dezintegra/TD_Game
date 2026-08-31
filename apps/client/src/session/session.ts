@@ -9,6 +9,7 @@ import type { ActionError } from './lobby-client.js';
 import { clearProfile, createProfileId, readProfile, writeProfile } from './profile.js';
 import { activeMatchOf, useSessionStore } from './session-store.js';
 import type { SessionState } from './session-store.js';
+import { createWarmPace } from './warm-pace.js';
 
 /**
  * Контроллер сессии: связывает профиль, комнаты и запуск матча.
@@ -77,6 +78,12 @@ const ensureRenderer = (): Promise<RendererHost> => {
  * Дошло дело до матча раньше, чем кончился прогрев, — матч всё равно
  * начинается, недостающее допечётся по надобности. Прогрев здесь
  * ускорение, а не условие.
+ *
+ * И ровно поэтому он умеет отступать. Тринадцать миллисекунд —
+ * это ПРОЕКТНАЯ цена запекания; там, где рисует процессор, она впятеро
+ * выше, и двести восемь заготовок превращаются в десятки секунд
+ * дёргающегося меню. Настоящую цену считает `warm-pace.ts`, и если
+ * по ней очередь не укладывается в срок, прогрев прекращается совсем.
  */
 let warming = false;
 
@@ -129,13 +136,74 @@ const whenIdle = (run: (deadline?: IdleDeadline) => void): void => {
  */
 const WARM_DISABLED = import.meta.env['VITE_E2E_CHEAP_TEXTURES'] === '1';
 
+/**
+ * Прогрев прекращён: машина его не тянет.
+ *
+ * Отступ липнет к сессии, а не к заходу в меню, и это осознанно. Машина
+ * между матчами быстрее не становится, а попытка «а вдруг теперь» стоила
+ * бы игроку ровно того же дёрганого меню, ради которого прогрев
+ * и отменён.
+ */
+let warmGaveUp = false;
+
+/** Мерка на всю сессию: наблюдение продолжается и после матча. */
+const pace = createWarmPace();
+
+/** Сколько заготовок оставалось в очереди. Только ради сообщения в консоль. */
+let warmRest = 0;
+
+/**
+ * Кадровые часы прогрева.
+ *
+ * Крутятся ровно столько, сколько идёт прогрев, и только затем, чтобы
+ * заметить дёрганое меню. Считать кадры без нужды не за чем: пустой
+ * `requestAnimationFrame` дёшев, но не бесплатен, а после прогрева
+ * наблюдать уже нечего.
+ */
+const watchFrames = (): void => {
+  const tick = (timestamp: number): void => {
+    if (!warming) return;
+
+    // Матч идёт — кадры принадлежат бою. Прогрев в это время молчит,
+    // и судить его по чужим кадрам не за что.
+    if (activeKey !== null) {
+      pace.pause();
+      requestAnimationFrame(tick);
+
+      return;
+    }
+
+    if (pace.frame(timestamp)) {
+      requestAnimationFrame(tick);
+
+      return;
+    }
+
+    warming = false;
+    warmGaveUp = true;
+
+    const frameMs = Math.round(pace.frameMs() ?? 0);
+    console.warn(
+      `Прогрев кеша спрайтов прекращён: с ним меню отдаёт кадр за ${String(frameMs)} мс, ` +
+        `а в очереди оставалось ${String(warmRest)} заготовок. ` +
+        'Спрайты будут печься по надобности.',
+    );
+  };
+
+  requestAnimationFrame(tick);
+};
+
 const startWarming = (renderer: RendererHost): void => {
   // Два цикла прогрева разом печь одно и то же не должны: очередь у них
   // общая, и второй просто съедал бы простой.
-  if (WARM_DISABLED || warming) return;
+  if (WARM_DISABLED || warmGaveUp || warming) return;
   warming = true;
+  watchFrames();
 
   const step = (deadline?: IdleDeadline): void => {
+    // Прогрев прекращён кадровыми часами: меню дороже заготовок.
+    if (!warming) return;
+
     // Матч идёт — не трогаем ничего и ждём следующего простоя.
     if (activeKey !== null) {
       whenIdle(step);
@@ -147,8 +215,19 @@ const startWarming = (renderer: RendererHost): void => {
     // такого не знает, и ему остаётся кадровый бюджет.
     const budget = deadline === undefined ? FRAME_WORK_BUDGET_MS : deadline.timeRemaining();
 
-    if (renderer.warm(budget)) whenIdle(step);
-    else warming = false;
+    warmRest = renderer.warm(budget).rest;
+
+    if (warmRest > 0) {
+      whenIdle(step);
+
+      return;
+    }
+
+    warming = false;
+    // Пара к сообщению об отступе. Без него в консоли видно только беду,
+    // и «прогрев прошёл целиком» отличить от «прогрев не начинался»
+    // нечем — а это разные вещи и лечатся по-разному.
+    console.info('Прогрев кеша спрайтов закончен.');
   };
 
   whenIdle(step);

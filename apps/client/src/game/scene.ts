@@ -365,6 +365,23 @@ const MINIMAP_EVERY_FRAMES = 6;
  * и не удаляется, приложение живёт с загрузки страницы, а матч приходит
  * и уходит поверх них.
  */
+/**
+ * Отчёт порции прогрева.
+ *
+ * Считает штуки, а не время, и это принципиально. Времени внутри вызова
+ * у запекания нет: заказ уходит в текстуру и продолжается вне часов
+ * JavaScript, поэтому `performance.now()` вокруг `warm` показывает
+ * оформление заказа, а не работу (проверено 31.08.2026). Настоящую цену
+ * снимает наблюдатель снаружи — ему и нужен счёт сделанного, чтобы
+ * поделить на него прошедшее время.
+ */
+export interface WarmProgress {
+  /** Сколько комбинаций запечено этой порцией. Не меньше одной. */
+  readonly baked: number;
+  /** Сколько комбинаций в очереди ещё не тронуто. */
+  readonly rest: number;
+}
+
 export interface RendererHost {
   readonly app: Application;
   /** Элемент, в котором лежит канвас. Живёт столько же, сколько страница. */
@@ -380,14 +397,14 @@ export interface RendererHost {
   /**
    * Запечь базовый набор спрайтов, потратив не больше отпущенного.
    *
-   * Возвращает `true`, если работа осталась, — как `bakeTerrain`,
-   * и по той же причине: полтора десятка тысяч точек на комбинацию
-   * нельзя запечь одним циклом, не заморозив страницу.
+   * Работа режется на порции — как у `bakeTerrain`, и по той же причине:
+   * полтора десятка тысяч точек на комбинацию нельзя запечь одним циклом,
+   * не заморозив страницу.
    *
    * Одна комбинация печётся всегда, даже при нулевом бюджете: иначе
    * на медленной машине прогрев не сдвинулся бы вовсе.
    */
-  warm(budgetMs: number): boolean;
+  warm(budgetMs: number): WarmProgress;
   /**
    * Сбросить кеши и начать прогрев заново.
    *
@@ -440,6 +457,19 @@ export interface RendererHost {
  * ему как раз и надо мерить ту сборку, которую увидит игрок.
  */
 const CHEAP_TEXTURES = import.meta.env['VITE_E2E_CHEAP_TEXTURES'] === '1';
+
+/**
+ * Потолок порции прогрева в запеканиях.
+ *
+ * Четыре — примерно столько и укладывалось в бюджет простоя на здоровой
+ * машине (13 мс на комбинацию, до полусотни миллисекунд простоя),
+ * то есть для неё это не ограничение, а запись сложившегося.
+ *
+ * Нужен же потолок для машины, у которой заказ дёшев, а работа дорога:
+ * часы JavaScript такую порцию не остановят вовсе — они этой работы
+ * не видят, — и порция росла бы, пока меню не встанет.
+ */
+const WARM_PORTION_MAX = 4;
 
 export const createRendererHost = async (): Promise<RendererHost> => {
   const element = document.createElement('div');
@@ -515,20 +545,32 @@ export const createRendererHost = async (): Promise<RendererHost> => {
     machines,
     structures,
     density: bakeDensity,
-    warm(budgetMs: number): boolean {
+    warm(budgetMs: number): WarmProgress {
       warmQueue ??= [...machines.warmSteps(), ...structures.warmSteps()];
 
       const started = performance.now();
+      let baked = 0;
 
       do {
         const step = warmQueue[warmAt];
-        if (step === undefined) return false;
+        if (step === undefined) return { baked, rest: 0 };
 
         step();
         warmAt += 1;
-      } while (warmAt < warmQueue.length && performance.now() - started < budgetMs);
+        baked += 1;
+        // Бюджет здесь режет ПОРЦИЮ, а не считает цену: часы JavaScript
+        // видят только заказ, а не работу драйвера. Отсюда и второй
+        // ограничитель — по штукам: на машине, где заказ дёшев, а работа
+        // дорога, одного бюджета мало, и порция разрослась бы в замершее
+        // меню. Настоящую цену снимает наблюдатель снаружи, ему же нужна
+        // и порция помельче — иначе замер выходит слишком грубым.
+      } while (
+        warmAt < warmQueue.length &&
+        baked < WARM_PORTION_MAX &&
+        performance.now() - started < budgetMs
+      );
 
-      return warmAt < warmQueue.length;
+      return { baked, rest: warmQueue.length - warmAt };
     },
     reset() {
       machines.dispose();
