@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createIo, summariseChecks } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -162,5 +163,92 @@ describe('коммит конвейера', () => {
       ourAuthors: ['Прежнее имя'],
     });
     expect(config.ourAuthors).toEqual(['Конвейер TD_Game', 'Прежнее имя']);
+  });
+});
+
+describe('заведение рабочего дерева', () => {
+  /**
+   * Переходник, у которого известно, какие ветки существуют.
+   *
+   * Настоящий git не зовётся: проверяется выбор команды, а не работа
+   * самого git. Заводить ради этого репозиторий на диске значило бы
+   * платить секундами за ответ, который виден в списке доводов.
+   */
+  function fakeIo(existingRefs = []) {
+    const calls = [];
+    const { config } = resolveConfig({
+      commands: { verify: 'x', deploy: 'x', perf: 'x' },
+      worktreeDir: '.claude/worktrees',
+    });
+    const run = (args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse') {
+        return { code: existingRefs.includes(args.at(-1)) ? 0 : 1, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const io = createIo({ root: '/repo', config, now: 'сейчас', run, elapsed: () => 0 });
+    return { io, calls };
+  }
+
+  const addCall = (calls) => calls.find((args) => args[0] === 'worktree');
+
+  // Путь склеивает `join`, и на Windows он выходит с обратными косыми.
+  // Писать его в проверке буквально значило бы завести тест, зелёный
+  // на одной оси и красный на другой.
+  const treePath = (taskId) => join('.claude/worktrees', taskId);
+
+  it('новой задаче ветка заводится от удалённой главной', () => {
+    const { io, calls } = fakeIo();
+    expect(io.addWorktree('0001-one', 'worktree-0001-one').ok).toBe(true);
+    expect(addCall(calls)).toEqual([
+      'worktree',
+      'add',
+      treePath('0001-one'),
+      '-b',
+      'worktree-0001-one',
+      'origin/main',
+    ]);
+  });
+
+  it('уцелевшая местная ветка не ответвляется заново', () => {
+    // Дерево сносят, а ветку оставляют — в ней невлитая работа. Пока
+    // здесь стояло безусловное `-b`, git отвечал «branch already exists»,
+    // и задача 0017 держала слот исполнителя двое суток.
+    const { io, calls } = fakeIo(['refs/heads/worktree-0017-noise']);
+    expect(io.addWorktree('0017-noise', 'worktree-0017-noise').ok).toBe(true);
+    expect(addCall(calls)).toEqual([
+      'worktree',
+      'add',
+      treePath('0017-noise'),
+      'worktree-0017-noise',
+    ]);
+  });
+
+  it('ветка, оставшаяся только на origin, тоже продолжается', () => {
+    // Машину переустановили, местных веток нет вовсе. Ответвиться от
+    // главной значило бы потерять уже отправленную работу этапа.
+    const { io, calls } = fakeIo(['refs/remotes/origin/worktree-0017-noise']);
+    expect(io.addWorktree('0017-noise', 'worktree-0017-noise').ok).toBe(true);
+    expect(addCall(calls)).not.toContain('-b');
+  });
+
+  it('отказ git доходит до вызывающего словами', () => {
+    const { io } = fakeIo();
+    const failing = createIo({
+      root: '/repo',
+      config: resolveConfig({ worktreeDir: '.claude/worktrees' }).config,
+      now: 'сейчас',
+      run: (args) =>
+        args[0] === 'rev-parse'
+          ? { code: 1, stdout: '', stderr: '' }
+          : { code: 128, stdout: '', stderr: 'fatal: каталог занят\n' },
+      elapsed: () => 0,
+    });
+    expect(io.addWorktree('0001-one', 'worktree-0001-one').ok).toBe(true);
+    expect(failing.addWorktree('0001-one', 'worktree-0001-one')).toEqual({
+      ok: false,
+      why: 'fatal: каталог занят',
+    });
   });
 });
