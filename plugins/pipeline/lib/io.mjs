@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 
 /**
- * Переходник к настоящему миру: файлы, git, слоты.
+ * Переходник к настоящему миру: файлы, git, деревья.
  *
  * Всё, что здесь есть, — это исполнение уже принятых решений. Ни одного
  * решения тут не принимается, и это не педантизм: решающая часть покрыта
@@ -51,8 +51,9 @@ const readJson = (path) => {
  * @param {string} params.machine имя рабочей станции
  * @param {(args:string[])=>object} params.run исполнитель внешних команд
  * @param {() => number} params.elapsed сколько секунд идёт цикл
+ * @param {object[]} [params.reports] отчёты, ожидающие переноса
  */
-export function createIo({ root, config, git, now, machine, run, elapsed }) {
+export function createIo({ root, config, git, now, machine, run, elapsed, reports = [] }) {
   const local = (...parts) => join(root, config.paths.local, ...parts);
   const ensure = (dir) => mkdirSync(dir, { recursive: true });
 
@@ -317,80 +318,53 @@ export function createIo({ root, config, git, now, machine, run, elapsed }) {
       writeFileSync(registryPath(), asJson({ entries }));
     },
 
-    writeSlot(slot, assignment) {
-      ensure(local('slots'));
-      writeFileSync(local('slots', `${slot}.json`), asJson(assignment));
-    },
-
     /**
-     * Выписка задачи рядом со слотом: сама задача и её журнал.
+     * Опись доски: по строке на задачу, только то, чем сверяются.
      *
-     * Нужна затем, чтобы исполнителю НЕ приходилось открывать бэклог.
-     * Пока выписки не было, скиллы посылали его прямо в файлы `manage/`,
-     * а после переезда на доску те остались лежать устаревшими — и сессия
-     * читала позавчерашнюю картину молча, потому что файл на месте.
-     * Проверено 28.08.2026: задача 0012 в файле помечена `failed`,
-     * на доске стояла в аудите.
+     * Целиком бэклог исполнителю не нужен и вреден — чем больше он о нём
+     * знает, тем сильнее соблазн его править. Но две сверки без общей
+     * картины не работают: аудит ищет конфликты с задачами в работе,
+     * разбор — дубликаты. Им хватает пяти полей.
      *
-     * Выписка снимается оркестратором в тот же миг, что и выдаётся слот,
-     * поэтому расходиться с бэклогом ей негде: она живёт ровно столько,
-     * сколько назначение, и умирает вместе с ним.
+     * Сеть здесь не тревожится: снимок доски прочитан один раз в начале
+     * цикла, и `readTask` берёт из него.
      */
-    writeBrief(slot, { task, journal, board = [] }) {
-      ensure(local('slots'));
-      writeFileSync(local('slots', `${slot}.task.json`), asJson(task));
-      // Пустой журнал — это пустой файл, а не отсутствие файла: иначе
-      // исполнитель не отличит «журнала нет» от «выписку не сняли»
-      // и полезет искать правду сам.
-      writeFileSync(local('slots', `${slot}.journal.md`), journal ?? '');
-      // Опись доски нужна сверкам, которым мало своей задачи: аудит ищет
-      // конфликты с задачами в работе, разбор — дубликаты. Без неё эти
-      // проверки пришлось бы выбросить, а они ловят настоящее.
-      writeFileSync(local('slots', `${slot}.board.json`), asJson(board));
-    },
-
-    clearSlot(slot) {
-      // Выписка убирается вместе со слотом, и это не уборка ради порядка.
-      // Осиротев, она становится вторым источником правды — тем самым,
-      // из-за которого всё и затевалось.
-      for (const name of [
-        `${slot}.json`,
-        `${slot}.task.json`,
-        `${slot}.journal.md`,
-        `${slot}.board.json`,
-      ]) {
-        const path = local('slots', name);
-        if (existsSync(path)) rmSync(path);
+    boardDigest() {
+      const digest = [];
+      for (const id of this.allTaskIds()) {
+        const task = this.readTask(id);
+        if (!task) continue;
+        digest.push({
+          id: task.id,
+          title: task.title,
+          type: task.type,
+          status: task.status,
+          // Ссылки на артефакты нужны аудиту: он сопоставляет изменения
+          // OpenSpec чужих задач со своим и так ловит пересечения. Без них
+          // проверка выродилась бы в угадывание по именам веток.
+          links: task.links ?? {},
+        });
       }
+      return digest;
     },
 
     /**
-     * Где лежит отчёт: в основном дереве либо в рабочем дереве задачи.
+     * Отчёты, ожидающие переноса в бэклог.
      *
-     * Сессия с деревом положить отчёт в основное не может — запись
-     * за пределы своего каталога либо спрашивает подтверждения, либо
-     * отвергается сразу. Поэтому смотрим в оба места, а вернувшийся путь
-     * запоминаем: удалять принятый отчёт надо оттуда же, откуда взяли.
+     * Лежат в памяти супервизора, а не файлами на диске. Каталог отчётов
+     * ушёл вместе со слотами: отчёт приходит выводом того самого процесса,
+     * который супервизор и породил, — то есть туда же, откуда пришёл вопрос.
+     *
+     * Прежде отчёт был файлом, и это тянуло за собой обход всех рабочих
+     * деревьев из реестра: сессия с деревом физически не могла положить
+     * файл в основное. Искать больше негде, и двойников не бывает.
      */
-    reportPath(id, stage) {
-      const name = `${id}-${stage}.json`;
-      const own = local('reports', name);
-      if (existsSync(own)) return own;
-
-      const entry = this.registryEntry(id);
-      if (!entry?.path) return own;
-
-      const inTree = join(root, entry.path, config.paths.local, 'reports', name);
-      return existsSync(inTree) ? inTree : own;
-    },
-
-    readReport(id, stage) {
-      return readJson(this.reportPath(id, stage));
-    },
+    readReport: (id, stage) =>
+      reports.find((report) => report.taskId === id && report.stage === stage) ?? null,
 
     removeReport(id, stage) {
-      const path = this.reportPath(id, stage);
-      if (existsSync(path)) rmSync(path);
+      const at = reports.findIndex((report) => report.taskId === id && report.stage === stage);
+      if (at !== -1) reports.splice(at, 1);
     },
 
     /**

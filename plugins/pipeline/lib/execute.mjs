@@ -16,8 +16,9 @@ import { cleanup, mayCleanup } from './cleanup.mjs';
  * Исполнение решений сканера.
  *
  * Всё, что трогает мир, собрано здесь и делается через доводом переданный
- * набор действий: чтение и сохранение задачи, заведение дерева, запись
- * в слот. Поэтому порядок шагов проверяется без единого настоящего коммита.
+ * набор действий: чтение и сохранение задачи, заведение дерева, порождение
+ * процесса этапа. Поэтому порядок шагов проверяется без единого настоящего
+ * коммита, дерева и запуска.
  *
  * Сохранение задачи вместе с записью журнала — ОДНА операция хранилища,
  * а не пара «записать» и «отправить». Хранилищ у бэклога два, и устроены
@@ -142,23 +143,14 @@ async function transferReport(action, io) {
   );
   if (!push.ok) return { result: 'failed', why: push.outcome, created };
 
-  // Отчёт и слот освобождаются только после удавшейся отправки: иначе
+  // Отчёт снимается с очереди только после удавшейся отправки: иначе
   // при неудаче этап пришлось бы проходить заново, потеряв уже сделанное.
   io.removeReport(action.taskId, action.stage);
-  if (action.slot) io.clearSlot(action.slot);
   return { result: 'done', status: verdict.status, created, rejected: plan.rejected };
 }
 
-/** Взять задачу в работу: захват, отправка, дерево, реестр, слот. */
+/** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
 async function startStage(action, io) {
-  // Без слота задачу не берут. Сканер называет всё, что созрело, а раскладка
-  // решает, что из этого поместится: слотов может быть меньше, чем работы.
-  // Первый живой прогон захватил все восемь прогонов при двух слотах — потому
-  // что исполнение шло по действиям сканера, минуя раскладку.
-  if (!action.slot) {
-    return { result: 'skipped', why: 'свободного слота нет, задача ждёт своей очереди' };
-  }
-
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
@@ -232,90 +224,60 @@ async function startStage(action, io) {
   // Прогон дерева не требует: арену считает чужое железо, а замер мерит уже
   // выложенное. Первый живой прогон завёл три дерева под прогоны — пустые
   // копии репозитория, которые потом пришлось бы убирать.
+  const branch = `worktree-${action.taskId}`;
   if (NEEDS_WORKTREE.includes(action.stage)) {
-    const tree = io.addWorktree(action.taskId, action.branch);
+    const tree = io.addWorktree(action.taskId, branch);
     if (!tree.ok) return { result: 'failed', why: `дерево не завелось: ${tree.why}` };
     io.upsertRegistry({
       taskId: action.taskId,
-      branch: action.branch,
+      branch,
       path: tree.path,
       stage: action.stage,
-      sessionTitle: action.sessionTitle,
       lastSeenAt: io.now,
     });
   }
 
-  handOver(action, io, claimed.task);
+  const spawned = io.spawnStage(assignmentFor(action, io, claimed.task, branch));
+  if (!spawned.ok) return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
   return { result: 'done', status: action.stage };
 }
 
 /**
- * Передать работу исполнителю: слот и выписка задачи рядом с ним.
+ * Из чего складывается назначение.
  *
- * Слот говорит, ЧТО делать, выписка — НАД ЧЕМ. Прежде второго не было
- * вовсе, и скиллы отправляли исполнителя читать задачу прямо из бэклога.
- * Пока бэклог лежал файлами, это работало; после переезда на доску файлы
- * остались на месте устаревшими, и сессия читала их молча — файл-то есть.
+ * Прежде это были слот и выписка задачи рядом с ним — два файла на диске.
+ * Они существовали не от хорошей жизни: решал оркестратор, а работала
+ * сессия, проснувшаяся по расписанию, и передать что-либо иначе как через
+ * диск они не могли. Теперь порождает тот же, кто решает.
  *
- * Снимается выписка тем же действием, что выдаёт слот, и убирается вместе
- * с ним. Так у неё нет ни времени, ни повода разойтись с бэклогом.
+ * `sessionId` решает, начинается этап или возобновляется. Идентификатор
+ * известен — значит процесс на этом этапе уже был и прервался; тогда
+ * сессию возобновляют, и она помнит свой ход мысли. Прежде продолжатель
+ * выяснял сделанное тремя командами `git log` и иногда понимал неверно.
  */
-function handOver(action, io, task) {
-  if (!action.slot) return;
-  // Выписка кладётся ДО слота. Слот — это сигнал к работе: исполнитель
-  // просыпается по нему и по нему же решает, есть ли дело. Значит всё,
-  // на что слот указывает, обязано существовать раньше него. Окно между
-  // двумя записями ничтожно, но правило «сигнал последним» стоит держать
-  // там, где оно не стоит ничего.
-  io.writeBrief(action.slot, {
+function assignmentFor(action, io, task, branchHint) {
+  const entry = io.registryEntry(action.taskId);
+  const sessionId = io.lastSession?.(action.taskId, action.stage) ?? null;
+  return {
+    taskId: task.id,
+    stage: action.stage,
+    branch: entry?.branch ?? branchHint ?? `worktree-${task.id}`,
+    path: entry?.path ?? null,
+    continuation: Boolean(sessionId),
+    sessionId,
+    reason: action.reason ?? null,
+    // Задача, журнал и опись доски едут вместе с назначением: сессия
+    // начинается с чистого листа, и всё, чего здесь нет, для неё
+    // не существует. Бэклог открывать ей нельзя — править его она
+    // не вправе, а читать устаревшую копию с диска хуже, чем не читать.
     task,
     journal: io.readJournal(action.taskId),
-    board: boardDigest(io),
-  });
-  io.writeSlot(action.slot, action.assignment);
+    board: io.boardDigest(),
+  };
 }
 
-/**
- * Опись доски: по строке на задачу, только то, чем сверяются.
- *
- * Целиком бэклог исполнителю не нужен и вреден — чем больше он о нём знает,
- * тем сильнее соблазн его править. Но две сверки без общей картины
- * не работают: аудит ищет конфликты с задачами в работе, разбор —
- * дубликаты. Им хватает четырёх полей.
- *
- * Сеть здесь не тревожится: снимок доски прочитан один раз в начале цикла,
- * и `readTask` берёт из него.
- */
-function boardDigest(io) {
-  const digest = [];
-  for (const id of io.allTaskIds()) {
-    const task = io.readTask(id);
-    if (!task) continue;
-    digest.push({
-      id: task.id,
-      title: task.title,
-      type: task.type,
-      status: task.status,
-      // Ссылки на артефакты нужны аудиту: он сопоставляет изменения OpenSpec
-      // чужих задач со своим и так ловит пересечения. Без них проверка
-      // выродилась бы в угадывание по именам веток.
-      links: task.links ?? {},
-    });
-  }
-  return digest;
-}
-
-/** Подхватить этап за уснувшей сессией. */
+/** Дать этапу сессию: живого процесса на нём нет. */
 async function continueStage(action, io) {
-  // Без слота продолжателя не порождают — ровно как и не берут задачу
-  // в работу. Раскладка отказывает, когда прежнее назначение ещё не взято
-  // исполнителем, и списать за это попытку было бы вдвойне несправедливо:
-  // сессии не было, а счётчик вырос. Их всего две, и после второй задача
-  // встаёт и ждёт человека.
-  if (!action.slot) {
-    return { result: 'skipped', why: 'свободного слота нет, продолжение откладывается' };
-  }
-
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
@@ -326,15 +288,16 @@ async function continueStage(action, io) {
       at: io.now,
       from: task.status,
       to: task.status,
-      what: `Сессия остановилась: ${action.reason}. Этап продолжает новая сессия на том же дереве.`,
+      what: `Этапу выдана сессия: ${action.reason}.`,
     },
-    `chore(backlog): ${task.id} продолжение этапа ${task.status}`,
+    `chore(backlog): ${task.id} сессия на этап ${task.status}`,
   );
   if (!push.ok) return { result: 'failed', why: push.outcome };
 
-  // Выписка снимается с уже посчитанной задачи: продолжателю важно видеть
-  // израсходованные попытки, а не то, сколько их было до его появления.
-  handOver(action, io, counted);
+  // Назначение собирается с уже посчитанной задачи: продолжателю важно
+  // видеть израсходованные попытки, а не то, сколько их было до него.
+  const spawned = io.spawnStage(assignmentFor(action, io, counted));
+  if (!spawned.ok) return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
   return { result: 'done', status: task.status };
 }
 
@@ -419,7 +382,6 @@ async function failStage(action, io) {
     { at: io.now, from: task.status, to: 'failed', problem: action.reason },
     `chore(backlog): ${task.id} остановлена, нужен разбор`,
   );
-  if (action.slot) io.clearSlot(action.slot);
   return push.ok ? { result: 'done', status: 'failed' } : { result: 'failed', why: push.outcome };
 }
 

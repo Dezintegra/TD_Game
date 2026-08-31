@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
-import { isPaused, readAnswers, readRegistry, readReports, readTasks } from './read-state.mjs';
+import { isPaused, readAnswers, readRegistry, readStages, readTasks } from './read-state.mjs';
 
 /**
  * Проверки сбора картины мира.
@@ -123,62 +123,26 @@ describe('чтение реестра', () => {
   });
 });
 
-describe('чтение отчётов', () => {
-  const putReport = (name, body) =>
-    writeFileSync(join(root, '.pipeline', 'reports', `${name}.json`), JSON.stringify(body));
+describe('память о сессиях этапов', () => {
+  // Помнить их нужно ради одного: прерванный этап возобновляется той же
+  // сессией, а не начинается заново с пересказом сделанного. Память живёт
+  // на диске потому, что упавший супервизор иначе стёр бы её обо всех
+  // идущих этапах разом.
+  const putStages = (body) =>
+    writeFileSync(join(root, '.pipeline', 'stages.json'), JSON.stringify(body));
 
-  it('полный отчёт читается', () => {
-    putReport('0001-design', { taskId: '0001-one', stage: 'design', outcome: 'done' });
-    const { reports, problems } = readReports(root, config);
-    expect(reports).toHaveLength(1);
-    expect(problems).toEqual([]);
+  it('читается', () => {
+    putStages({ '0001-one:design': 'aaaa-bbbb' });
+    expect(readStages(root, config)['0001-one:design']).toBe('aaaa-bbbb');
   });
 
-  it('неполный отчёт пропускается с причиной', () => {
-    putReport('0002-bad', { taskId: '0002-two' });
-    const { reports, problems } = readReports(root, config);
-    expect(reports).toEqual([]);
-    expect(problems.join()).toContain('неполон');
+  it('нет файла — нет и памяти, но это не беда', () => {
+    expect(readStages(root, config)).toEqual({});
   });
 
-  describe('отчёт из рабочего дерева', () => {
-    // Сессия с деревом положить отчёт в основное НЕ МОЖЕТ: запись
-    // за пределы своего каталога либо спрашивает подтверждения, либо
-    // отвергается сразу. Пока отчёт требовался в основном дереве, весь
-    // маршрут с деревьями упирался в это на последнем шаге.
-    const treePath = '.claude/worktrees/0001-one';
-    const registry = { entries: [{ taskId: '0001-one', path: treePath }] };
-
-    const putInTree = (name, body) => {
-      const dir = join(root, treePath, '.pipeline', 'reports');
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, `${name}.json`), JSON.stringify(body));
-    };
-
-    it('находится по записи реестра', () => {
-      putInTree('0001-design', { taskId: '0001-one', stage: 'design', outcome: 'done' });
-      const { reports, problems } = readReports(root, config, registry);
-      expect(reports).toHaveLength(1);
-      expect(reports[0].taskId).toBe('0001-one');
-      expect(problems).toEqual([]);
-    });
-
-    it('без реестра не находится — искать негде', () => {
-      putInTree('0001-design', { taskId: '0001-one', stage: 'design', outcome: 'done' });
-      expect(readReports(root, config).reports).toEqual([]);
-    });
-
-    it('двойник не удваивает задачу и назван вслух', () => {
-      // Остаток прежнего порядка: тот же отчёт в обоих местах. Молча
-      // выбранный из двух однажды окажется не тем.
-      const body = { taskId: '0001-one', stage: 'design', outcome: 'done' };
-      putReport('0001-design', body);
-      putInTree('0001-design', body);
-
-      const { reports, problems } = readReports(root, config, registry);
-      expect(reports).toHaveLength(1);
-      expect(problems.join()).toContain('двойник');
-    });
+  it('испорченный файл не роняет прогон: этапы начнутся заново', () => {
+    writeFileSync(join(root, '.pipeline', 'stages.json'), '{ это не JSON');
+    expect(readStages(root, config)).toEqual({});
   });
 });
 
