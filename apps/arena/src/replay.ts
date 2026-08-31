@@ -1,8 +1,7 @@
 import { readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
 import { TICKS_PER_SECOND, flatten, sameAction, unflatten } from '@td/shared';
 import type { Command, ThinHeader, ThinRecord } from '@td/shared';
-import { createLogWriter } from './log.js';
+import { createLogWriter, logPathFor } from './log.js';
 import { runMatch } from './match.js';
 import { stripBom } from './ingest.js';
 
@@ -95,7 +94,7 @@ export const replay = (path: string, logDir: string): ReplayResult => {
   }
 
   const matchId = `${header.matchId}-replay`;
-  const logPath = join(logDir, `${matchId}.jsonl`);
+  const logPath = logPathFor(logDir, matchId);
   const log = createLogWriter(logPath);
 
   // Воспроизведение кончается там, где кончилась запись.
