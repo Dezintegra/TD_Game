@@ -214,6 +214,20 @@ describe('этап не дошёл до отчёта', () => {
   });
 });
 
+describe('разбор исхода не роняет супервизор', () => {
+  it('падение на одном отчёте освобождает место, а не останавливает всё', async () => {
+    // Супервизор ведёт все задачи разом: упав на разборе одного отчёта,
+    // он остановил бы конвейер целиком.
+    const { supervisor, answer, logged } = harness();
+    supervisor.spawnStage(assignment());
+    // Ответ, на котором разбор споткнётся: `result` не строка и не объект.
+    await answer(envelope({ result: { неожиданно: true } }));
+
+    expect(supervisor.running()).toEqual([]);
+    expect(logged.join()).not.toBe('');
+  });
+});
+
 describe('остановка', () => {
   it('снимает всех детей', () => {
     const { supervisor, children, killed } = harness({ config: { maxConcurrent: 2 } });

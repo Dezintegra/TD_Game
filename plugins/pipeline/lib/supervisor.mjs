@@ -107,7 +107,16 @@ export function createSupervisor({
           `${assignment.continuation ? ' возобновлением' : ''}, процесс ${handle.pid}`,
       );
 
-      handle.finished.then((run) => finish(child, run));
+      // Разбор исхода не должен уронить супервизор: он ведёт все задачи,
+      // и падение на одном отчёте остановило бы конвейер целиком.
+      handle.finished.then((run) => {
+        try {
+          finish(child, run);
+        } catch (error) {
+          children.delete(child.taskId);
+          log(`разбор исхода ${child.taskId}:${child.stage} упал: ${error.message}`);
+        }
+      });
       return { ok: true, sessionId, pid: handle.pid };
     },
 

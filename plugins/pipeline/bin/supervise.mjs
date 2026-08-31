@@ -333,10 +333,20 @@ async function loop() {
   note(`супервизор запущен, процесс ${process.pid}, корень ${root}`);
 
   let stopping = false;
+  // Ожидание между оборотами длится минуты, и без прерывания сигнал
+  // добирался бы до цикла столько же: человек нажал Ctrl+C, а супервизор
+  // ещё пять минут делает вид, что не слышал.
+  // Через `globalThis` намеренно: встроенного модуля с этим именем нет,
+  // а перечень известных линту глобальных имён здесь узкий.
+  const waking = new globalThis.AbortController();
   const stop = (signal) => {
-    if (stopping) return;
+    if (stopping) {
+      note(`повторный ${signal}: выходим немедленно`);
+      process.exit(1);
+    }
     stopping = true;
     note(`получен ${signal}: новых этапов не берём, идущим даём ${config.shutdownGraceSeconds} с`);
+    waking.abort();
   };
   process.on('SIGINT', () => stop('SIGINT'));
   process.on('SIGTERM', () => stop('SIGTERM'));
@@ -359,7 +369,11 @@ async function loop() {
     }
 
     if (stopping) break;
-    await sleep(config.cycleMinutes * 60000);
+    try {
+      await sleep(config.cycleMinutes * 60000, undefined, { signal: waking.signal });
+    } catch {
+      // Прерванное ожидание — это сигнал остановки, а не беда.
+    }
   }
 
   // Остановка не бросает детей. Сначала им дают доработать — этап может
