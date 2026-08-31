@@ -190,7 +190,9 @@ async function openBacklog({ mayWrite }) {
     };
   }
 
-  const store = createTrelloBacklog({ trello, config, snapshot: board });
+  // Имя станции нужно захвату: отказ «уже назначено» надо уметь прочесть
+  // как «назначено нами же» и довести собственное взятие до конца.
+  const store = createTrelloBacklog({ trello, config, snapshot: board, machine: hostname() });
   const adopted = mayWrite
     ? await store.adoptOrphans()
     : { adopted: [], problems: [], skipped: true };

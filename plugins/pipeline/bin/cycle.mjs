@@ -96,7 +96,7 @@ async function openBacklog(config) {
     return { ok: false, why: `доска недоступна (${board.what}): ${board.why ?? board.kind}` };
   }
 
-  const store = createTrelloBacklog({ trello, config, snapshot: board });
+  const store = createTrelloBacklog({ trello, config, snapshot: board, machine: hostname() });
   const tasks = [];
   const invalid = [];
   for (const item of store.parsedCards()) {

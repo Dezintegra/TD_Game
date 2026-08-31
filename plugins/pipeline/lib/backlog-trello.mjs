@@ -35,7 +35,7 @@ import { nextId } from './requests.mjs';
  * прочитаны, а правки адресуются по идентификатору карточки. Доску знает
  * тот, кто снимок делал.
  */
-export function createTrelloBacklog({ trello, config, snapshot, marker }) {
+export function createTrelloBacklog({ trello, config, snapshot, marker, machine = null }) {
   const { lists, labels, cards, comments } = snapshot;
   const trelloConfig = config.trello;
   const mark = marker ?? trelloConfig.marker;
@@ -77,6 +77,15 @@ export function createTrelloBacklog({ trello, config, snapshot, marker }) {
 
   /** Карточка задачи вместе с разобранным человеческим текстом. */
   const cardOf = (id) => byId.get(id)?.card ?? null;
+
+  /**
+   * Чьё имя стоит в служебной отметке владельца.
+   *
+   * Читается из снимка, снятого в начале оборота, — то есть из состояния
+   * ДО любой нашей правки. Именно этим он и ценен: после захвата отметка
+   * уже наша, и отличить свой прошлый заход от чужого будет нечем.
+   */
+  const ownerOf = (id) => byId.get(id)?.task?.owner ?? null;
 
   /**
    * Опубликовать запись журнала комментариями.
@@ -246,8 +255,28 @@ export function createTrelloBacklog({ trello, config, snapshot, marker }) {
       if (taken.ok) return { ok: true, outcome: 'ours' };
 
       // Единственный отказ, который бедой не является: задачу уже заняли.
+      //
+      // Но «заняли» — это две разные вещи, и различить их обязательно.
+      // Участник доски один на все станции, поэтому само назначение
+      // не говорит, кто держит задачу; говорит служебная отметка владельца,
+      // прочитанная ДО этой попытки. Наше имя в ней означает собственный
+      // недоведённый захват: этап оборвался, назначение осталось, — и брать
+      // такую задачу заново законно, это ровно то, ради чего конвейер её
+      // и захватывал.
+      //
+      // Пока разницы не было, задача 0016 висела с 28.08.2026: взять её
+      // конвейер не мог, а её состояние занимало единственное место
+      // исполнителя, и весь бэклог стоял за ней с 31.08.2026.
       if (/already on the card/i.test(taken.why ?? '')) {
-        return { ok: false, outcome: 'taken', why: 'задача уже назначена исполнителю' };
+        const holder = ownerOf(task.id);
+        if (machine && holder === machine) return { ok: true, outcome: 'ours' };
+        return {
+          ok: false,
+          outcome: 'taken',
+          why: holder
+            ? `задача уже назначена исполнителю (${holder})`
+            : 'задача уже назначена исполнителю',
+        };
       }
       return failure(taken);
     },
