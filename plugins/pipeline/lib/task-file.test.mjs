@@ -77,6 +77,45 @@ describe('переход состояния', () => {
     expect(moved.returnTo).toBe('implement');
   });
 
+  it('состояние возврата переживает цепочку сквозных состояний', () => {
+    // `implement → postmortem → failed`. Запиши переход покидаемое состояние,
+    // и человек, поднимая задачу из ошибки, вернул бы её в разбор.
+    const { task: analysed } = applyTransition(task({ status: 'implement' }), {
+      status: 'postmortem',
+      now: NOW,
+    });
+    expect(analysed.returnTo).toBe('implement');
+
+    const { task: halted } = applyTransition(analysed, { status: 'failed', now: NOW });
+    expect(halted.returnTo).toBe('implement');
+  });
+
+  it('вопрос без ответа, упавший в ошибку, помнит рабочее состояние', () => {
+    const waiting = task({ status: 'awaiting-po', returnTo: 'design' });
+    const { task: halted } = applyTransition(waiting, { status: 'failed', now: NOW });
+    expect(halted.returnTo).toBe('design');
+  });
+
+  it('вход в сквозное состояние обнуляет счёт попыток', () => {
+    // Иначе разбор не начался бы вовсе: задача приходит в него с исчерпанными
+    // продолжениями, и сканер объявил бы его провалившимся прежде первой
+    // сессии.
+    const tired = task({
+      status: 'implement',
+      attempts: { continuations: 2, cycleFailures: 1, rejections: 3 },
+    });
+    const { task: analysed } = applyTransition(tired, { status: 'postmortem', now: NOW });
+    expect(analysed.attempts).toEqual({ continuations: 0, cycleFailures: 0, rejections: 0 });
+  });
+
+  it('переход по маршруту счёт попыток не трогает', () => {
+    // Обнуляет его успешный этап отдельным действием, и правило это здесь
+    // не дублируется: два места, гасящие один счётчик, однажды разойдутся.
+    const tired = task({ status: 'design', attempts: { continuations: 1, cycleFailures: 0 } });
+    const { task: moved } = applyTransition(tired, { status: 'audit', now: NOW });
+    expect(moved.attempts.continuations).toBe(1);
+  });
+
   it('рабочее состояние состояния возврата не хранит', () => {
     const waiting = task({ status: 'awaiting-po', returnTo: 'design' });
     const { task: moved } = applyTransition(waiting, { status: 'design', now: NOW });

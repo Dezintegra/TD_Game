@@ -433,13 +433,20 @@ describe('перенос отчёта', () => {
     expect(io.tasks.get('0001-one').links.pr).toBe(7);
   });
 
-  it('неуспех не обнуляет счётчиков', async () => {
+  it('неуспех отправляет задачу в разбор с чистым счётом попыток', async () => {
+    // Прежде счёт здесь сохранялся: задача вставала в ошибке, и число
+    // сожжённых заходов было уликой для человека. Теперь между ней и ошибкой
+    // стоит разбор — этап, которому нужны собственные попытки. Не обнули их,
+    // и разбор был бы объявлен провалившимся прежде первой своей сессии.
+    //
+    // Улика не теряется: причина остановки уезжает в журнал задачи, а число
+    // заходов — в её историю.
     const io = fakeIo({
       tasks: [task({ status: 'design', attempts: { continuations: 2, cycleFailures: 0 } })],
       report: { taskId: '0001-one', stage: 'design', outcome: 'failed', summary: 'упало' },
     });
     await execute([transfer], io);
-    expect(io.tasks.get('0001-one').attempts.continuations).toBe(2);
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
   });
 });
 
