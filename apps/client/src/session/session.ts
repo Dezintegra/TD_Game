@@ -9,6 +9,7 @@ import type { ActionError } from './lobby-client.js';
 import { clearProfile, createProfileId, readProfile, writeProfile } from './profile.js';
 import { activeMatchOf, useSessionStore } from './session-store.js';
 import type { SessionState } from './session-store.js';
+import { createWarmPace } from './warm-pace.js';
 
 /**
  * Контроллер сессии: связывает профиль, комнаты и запуск матча.
@@ -77,6 +78,12 @@ const ensureRenderer = (): Promise<RendererHost> => {
  * Дошло дело до матча раньше, чем кончился прогрев, — матч всё равно
  * начинается, недостающее допечётся по надобности. Прогрев здесь
  * ускорение, а не условие.
+ *
+ * И ровно поэтому он умеет отступать. Тринадцать миллисекунд —
+ * это ПРОЕКТНАЯ цена запекания; там, где рисует процессор, она впятеро
+ * выше, и двести восемь заготовок превращаются в десятки секунд
+ * дёргающегося меню. Настоящую цену считает `warm-pace.ts`, и если
+ * по ней очередь не укладывается в срок, прогрев прекращается совсем.
  */
 let warming = false;
 
@@ -129,10 +136,23 @@ const whenIdle = (run: (deadline?: IdleDeadline) => void): void => {
  */
 const WARM_DISABLED = import.meta.env['VITE_E2E_CHEAP_TEXTURES'] === '1';
 
+/**
+ * Прогрев прекращён: машина его не тянет.
+ *
+ * Отступ липнет к сессии, а не к заходу в меню, и это осознанно. Машина
+ * между матчами быстрее не становится, а попытка «а вдруг теперь» стоила
+ * бы игроку ровно того же дёрганого меню, ради которого прогрев
+ * и отменён.
+ */
+let warmGaveUp = false;
+
+/** Мерка на всю сессию: замеры копятся и после возвращения в меню. */
+const pace = createWarmPace();
+
 const startWarming = (renderer: RendererHost): void => {
   // Два цикла прогрева разом печь одно и то же не должны: очередь у них
   // общая, и второй просто съедал бы простой.
-  if (WARM_DISABLED || warming) return;
+  if (WARM_DISABLED || warmGaveUp || warming) return;
   warming = true;
 
   const step = (deadline?: IdleDeadline): void => {
@@ -147,7 +167,29 @@ const startWarming = (renderer: RendererHost): void => {
     // такого не знает, и ему остаётся кадровый бюджет.
     const budget = deadline === undefined ? FRAME_WORK_BUDGET_MS : deadline.timeRemaining();
 
-    if (renderer.warm(budget).rest > 0) whenIdle(step);
+    const { baked, rest } = renderer.warm(budget);
+
+    // Мерка спрашивается сразу после работы, и отметка времени берётся
+    // здесь же: промежуток между двумя такими отметками — это работа
+    // порции плюс ожидание простоя перед ней. Ожидание входит намеренно.
+    // Браузер, переставший давать простой, и браузер, не успевающий
+    // рисовать, — это одна и та же беда, и меню от них дёргается
+    // одинаково.
+    if (!pace.afford(baked, rest, performance.now())) {
+      warming = false;
+      warmGaveUp = true;
+
+      const cost = Math.round(pace.costMs() ?? 0);
+      console.warn(
+        `Прогрев кеша спрайтов прекращён: запекание стоит ${String(cost)} мс, ` +
+          `на оставшиеся ${String(rest)} ушло бы слишком много. ` +
+          'Спрайты будут печься по надобности.',
+      );
+
+      return;
+    }
+
+    if (rest > 0) whenIdle(step);
     else warming = false;
   };
 
