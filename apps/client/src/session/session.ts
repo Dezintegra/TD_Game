@@ -9,6 +9,7 @@ import type { ActionError } from './lobby-client.js';
 import { clearProfile, createProfileId, readProfile, writeProfile } from './profile.js';
 import { activeMatchOf, useSessionStore } from './session-store.js';
 import type { SessionState } from './session-store.js';
+import { startWarmPacer } from './warm-pacer.js';
 
 /**
  * Контроллер сессии: связывает профиль, комнаты и запуск матча.
@@ -108,23 +109,16 @@ const startWarming = (renderer: RendererHost): void => {
   if (warming) return;
   warming = true;
 
-  const step = (deadline?: IdleDeadline): void => {
-    // Матч идёт — не трогаем ничего и ждём следующего простоя.
-    if (activeKey !== null) {
-      whenIdle(step);
-
-      return;
-    }
-
-    // Браузер сам говорит, сколько времени у него есть. Запасной путь
-    // такого не знает, и ему остаётся кадровый бюджет.
-    const budget = deadline === undefined ? FRAME_WORK_BUDGET_MS : deadline.timeRemaining();
-
-    if (renderer.warm(budget)) whenIdle(step);
-    else warming = false;
-  };
-
-  whenIdle(step);
+  startWarmPacer({
+    warm: (budgetMs) => renderer.warm(budgetMs),
+    whenIdle,
+    now: () => performance.now(),
+    matchRunning: () => activeKey !== null,
+    frameBudgetMs: FRAME_WORK_BUDGET_MS,
+    onDone: () => {
+      warming = false;
+    },
+  });
 };
 
 /**
