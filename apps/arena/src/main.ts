@@ -9,7 +9,7 @@ import { DEFAULT_PROFILE_ID } from '@td/ai';
 import { createLogWriter } from './log.js';
 import { runMatch } from './match.js';
 import { replayAndReport } from './replay.js';
-import { ingestFile, openDatabase } from './ingest.js';
+import { ingestFile, isLogName, openDatabase } from './ingest.js';
 import { reportBatch, reportMatch } from './report.js';
 import { printTempo } from './tempo.js';
 
@@ -301,7 +301,7 @@ const ingest = (dir: string): void => {
   let broken = 0;
 
   for (const name of readdirSync(dir)) {
-    if (!name.endsWith('.jsonl')) continue;
+    if (!isLogName(name)) continue;
 
     const result = ingestFile(db, join(dir, name));
     matches += result.matches;

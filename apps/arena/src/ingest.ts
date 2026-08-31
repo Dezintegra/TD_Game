@@ -1,5 +1,6 @@
 ﻿import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { constants, gunzipSync } from 'node:zlib';
 import type { DatabaseSync } from 'node:sqlite';
 import { CHILD_TABLES, SCHEMA } from './schema.js';
 import type { LogRecord } from './records.js';
@@ -29,6 +30,38 @@ const bit = (value: boolean): number => (value ? 1 : 0);
  */
 export const stripBom = (text: string): string =>
   text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+
+/** Расширение сжатого лога. Признак сжатия — оно, а не содержимое файла. */
+export const GZIP_SUFFIX = '.jsonl.gz';
+
+/** Похоже ли имя на файл лога — сжатый или нет. */
+export const isLogName = (name: string): boolean =>
+  name.endsWith('.jsonl') || name.endsWith(GZIP_SUFFIX);
+
+/**
+ * Прочитать лог, сжатый или нет.
+ *
+ * Сжатие узнаётся по расширению, а не по магическому числу в начале
+ * файла. Имя составляет наш же писатель, гадать не о чем, а `zcat`
+ * и файловые менеджеры опираются ровно на расширение.
+ *
+ * `Z_SYNC_FLUSH` — не украшение, без него теряется весь файл целиком.
+ * Писатель дописывает сжатые порции в конец, и прерванный прогон
+ * оставляет последнюю порцию недописанной. Обычный `gunzipSync` на таком
+ * файле бросает `Z_BUF_ERROR`, и годные первые порции пропадают вместе
+ * с оборванной — ровно то свойство, ради которого выбрано дописывание.
+ * С этим флагом возвращается всё, что успело раскодироваться; мусорный
+ * хвост оседает в последней строке, а её отбросит разбор JSON,
+ * посчитав битой.
+ */
+const readLog = (path: string): string => {
+  const raw = readFileSync(path);
+  const text = path.endsWith(GZIP_SUFFIX)
+    ? gunzipSync(raw, { finishFlush: constants.Z_SYNC_FLUSH }).toString('utf8')
+    : raw.toString('utf8');
+
+  return stripBom(text);
+};
 
 export interface IngestResult {
   readonly matches: number;
@@ -86,7 +119,7 @@ export const openDatabase = (path: string): DatabaseSync => {
  * не перестали. Такая строка пропускается с подсчётом, а не роняет сборку.
  */
 const parse = (path: string): { records: LogRecord[]; broken: number } => {
-  const lines = stripBom(readFileSync(path, 'utf8')).split('\n');
+  const lines = readLog(path).split('\n');
   const records: LogRecord[] = [];
   let broken = 0;
 
