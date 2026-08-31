@@ -119,6 +119,27 @@ describe('порождение', () => {
     expect(supervisor.lastSession('0001-one', 'design')).toBe('прежняя');
     expect(supervisor.lastSession('0001-one', 'audit')).toBe(null);
   });
+
+  it('забытая сессия не возобновляется и забвение переживает перезапуск', () => {
+    // Задачу вернули на пройденный этап: возобновлённая сессия ответила бы
+    // из своей памяти «всё сделано», не читая замечания, ради которого её
+    // и позвали. Забвение обязано лечь на диск — иначе перезапуск супервизора
+    // воскресит ту же память.
+    const { supervisor, saved } = harness({
+      stages: { '0001-one:design': 'прежняя', '0001-one:audit': 'аудиторская' },
+    });
+    expect(supervisor.forgetSession('0001-one', 'design')).toBe(true);
+    expect(supervisor.lastSession('0001-one', 'design')).toBe(null);
+    expect(saved.at(-1)).not.toHaveProperty('0001-one:design');
+    // Чужую сессию забвение не задевает.
+    expect(supervisor.lastSession('0001-one', 'audit')).toBe('аудиторская');
+  });
+
+  it('забывать нечего — и говорится об этом прямо', () => {
+    const { supervisor, saved } = harness();
+    expect(supervisor.forgetSession('0001-one', 'design')).toBe(false);
+    expect(saved).toEqual([]);
+  });
 });
 
 describe('этап кончился', () => {

@@ -82,9 +82,10 @@ function afterRejected(task) {
  *
  * @param {object} task   запись бэклога в нынешнем состоянии
  * @param {object} report отчёт: `{ stage, outcome, summary }`
+ * @param {object} [limits] пределы: `maxRejections`
  * @returns {{ status, returnTo, note, problems }}
  */
-export function applyReport(task, report) {
+export function applyReport(task, report, limits = {}) {
   const problems = [];
 
   if (!OUTCOMES.includes(report.outcome)) {
@@ -115,6 +116,19 @@ export function applyReport(task, report) {
       note: report.summary ?? 'сессия упёрлась в решение уровня продукта',
       problems,
     };
+  }
+
+  // Возврат за возвратом на одном месте — это не работа, а спор двух сессий,
+  // и оплачивается он кругами по десять минут. Считается ПОДРЯД идущее:
+  // счёт обнуляется, едва проверка пройдена.
+  if (report.outcome === 'rejected' && limits.maxRejections != null) {
+    const already = (task.attempts?.rejections ?? 0) + 1;
+    if (already >= limits.maxRejections) {
+      const why =
+        `${already}-й возврат подряд из «${task.status}»: стороны не сходятся, ` +
+        `нужен разбор человеком. Последнее замечание: ${report.summary ?? 'без пояснения'}`;
+      return { status: 'failed', returnTo: task.status, note: why, problems };
+    }
   }
 
   const target = report.outcome === 'done' ? afterDone(task) : afterRejected(task);

@@ -310,6 +310,10 @@ async function turn() {
       ...(backlog.store ?? {}),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
+      forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),
+      // Предел возвратов доезжает до разбора отчёта доводом, а не читается
+      // там из настройки: разбор — чистый счёт и о конфигурации не знает.
+      maxRejections: config.maxRejections,
     };
 
     // Неудача починки печатается наравне с неудачей действия. Пока
