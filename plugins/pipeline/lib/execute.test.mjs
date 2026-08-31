@@ -157,12 +157,16 @@ function fakeIo(over = {}) {
     lastSession: () => over.lastSession ?? null,
     boardDigest: () => [...tasks.values()].map((item) => ({ id: item.id, status: item.status })),
 
+    // Записи может не быть вовсе, и `null` здесь — не «умолчание сойдёт»,
+    // а проверяемый случай: задача захвачена, дерева ещё нет.
     registryEntry: () =>
-      over.entry ?? {
-        taskId: '0001-one',
-        branch: 'worktree-0001-one',
-        path: '.claude/worktrees/0001-one',
-      },
+      'entry' in over
+        ? over.entry
+        : {
+            taskId: '0001-one',
+            branch: 'worktree-0001-one',
+            path: '.claude/worktrees/0001-one',
+          },
     dropRegistry(id) {
       steps.push(`запись реестра ${id} снята`);
     },
@@ -535,6 +539,24 @@ describe('сессия на идущий этап', () => {
     });
     const [result] = await execute([carryOn], io);
     expect(result.result).toBe('failed');
+  });
+
+  it('безместной задаче сессия не выдаётся, и оборот не падает', async () => {
+    // Прежде отсутствие дерева доходило до склейки пути и бросало
+    // TypeError: падало не одно действие, а весь оборот цикла вместе
+    // с решениями по всем прочим задачам (31.08.2026).
+    const io = fakeIo({ tasks: [task({ status: 'implement' })], entry: null });
+    const [result] = await execute([carryOn], io);
+    expect(result.result).toBe('failed');
+    expect(result.why).toContain('дерева у задачи нет');
+    expect(io.steps).not.toContain('запущен этап 0001-one:implement');
+  });
+
+  it('этапу без дерева отсутствие записи не мешает', async () => {
+    // Прогону дерево не нужно вовсе: арену считает чужое железо.
+    const io = fakeIo({ tasks: [task({ status: 'benchmark' })], entry: null });
+    const [result] = await execute([{ ...carryOn, stage: 'benchmark' }], io);
+    expect(result.result).toBe('done');
   });
 });
 
