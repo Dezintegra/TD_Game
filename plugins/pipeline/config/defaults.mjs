@@ -211,6 +211,7 @@ export const DEFAULTS = {
       deploy: 'Выкладка',
       cleanup: 'Уборка',
       closed: 'Закрыто',
+      postmortem: 'Разбор ошибки',
       failed: 'Ошибка',
       'awaiting-po': 'Ждёт ответа',
     },

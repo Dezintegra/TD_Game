@@ -140,6 +140,26 @@ describe('сквозные состояния', () => {
     expect(canTransition(failed, 'review').ok).toBe(false);
   });
 
+  it('разбор ошибки достижим из любого рабочего состояния', () => {
+    for (const status of ['triage', 'design', 'implement', 'benchmark', 'review', 'cleanup']) {
+      expect(canTransition(task({ status }), 'postmortem').ok, status).toBe(true);
+    }
+  });
+
+  it('из разбора ошибки выход только в ошибку', () => {
+    // Вход в разбор открыт отовсюду, а выход держится тем, что `postmortem`
+    // не объявлен ни в одном маршруте: разрешённым остаётся лишь сквозной
+    // переход в `failed`. Поднимает задачу человек, и делает это из ошибки.
+    const analysed = task({ status: 'postmortem', returnTo: 'implement' });
+    expect(canTransition(analysed, 'failed').ok).toBe(true);
+    expect(canTransition(analysed, 'implement').ok).toBe(false);
+    expect(canTransition(analysed, 'closed').ok).toBe(false);
+  });
+
+  it('разбор разбора не назначается', () => {
+    expect(canTransition(task({ status: 'postmortem' }), 'postmortem').ok).toBe(false);
+  });
+
   it('закрытая задача не оживает', () => {
     expect(canTransition(task({ status: 'closed' }), 'design').ok).toBe(false);
   });
@@ -298,6 +318,10 @@ describe('связность таблицы', () => {
   it('дерево нужно только тем состояниям, что правят код', () => {
     expect(NEEDS_WORKTREE).not.toContain('benchmark');
     expect(NEEDS_WORKTREE).not.toContain('triage');
+    // Разбор читает журнал, лог и правила конвейера — писать ему некуда
+    // и незачем. Дерево упавшей задачи он тоже не трогает: оно сохранено
+    // для человека.
+    expect(NEEDS_WORKTREE).not.toContain('postmortem');
     expect(NEEDS_WORKTREE).toContain('implement');
   });
 });

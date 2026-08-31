@@ -50,8 +50,11 @@ describe('успешный этап двигает задачу по маршр�
     // Тип берётся по этапу, а не один на всех: этап живёт лишь на том
     // маршруте, где объявлен. Толкование бывает только у задачи-прогона,
     // и подсунув ему `feature`, сторож поймал бы не дыру, а свою ошибку.
+    // Разбор ошибки — единственное исключение, и оно по существу: его
+    // удачный исход и есть переход в `failed`. Проверяется он отдельно,
+    // ниже, — сторожу здесь ловить нечего.
     const typeFor = { triage: 'note', interpret: 'run' };
-    for (const status of NEEDS_SESSION) {
+    for (const status of NEEDS_SESSION.filter((stage) => stage !== 'postmortem')) {
       const type = typeFor[status] ?? 'feature';
       const source = task({
         status,
@@ -64,6 +67,15 @@ describe('успешный этап двигает задачу по маршр�
       const verdict = applyReport(source, report({ stage: status }));
       expect(verdict.status, `этап ${status}`).not.toBe('failed');
     }
+  });
+
+  it('удавшийся разбор ошибки ведёт задачу в ошибку', () => {
+    const verdict = applyReport(
+      task({ status: 'postmortem', returnTo: 'implement' }),
+      report({ stage: 'postmortem' }),
+    );
+    expect(verdict.status).toBe('failed');
+    expect(verdict.problems).toEqual([]);
   });
 
   it('разбор замечания закрывает задачу', () => {
