@@ -1,129 +1,127 @@
 import { describe, expect, it } from 'vitest';
-import { WARM_HORIZON_MS, WARM_SAMPLE_MIN, createWarmPace } from './warm-pace.js';
+import {
+  WARM_FRAME_LIMIT_MS,
+  WARM_WINDOW_FRAMES_MIN,
+  WARM_WINDOW_MS,
+  createWarmPace,
+} from './warm-pace.js';
 
-/** Сколько запеканий в базовом наборе. Порядок величины, не точное число. */
-const QUEUE = 208;
+/** Кадр на экране с шестьюдесятью герцами. */
+const SMOOTH_MS = 1000 / 60;
 
-/** Порция прогрева: столько запеканий укладывается в один простой. */
-const PORTION = 4;
+/** Кадр на машине, которую прогрев душит: замер в режиме runner'а. */
+const JANKY_MS = 50;
 
 /**
- * Прогнать прогрев по заданной цене запекания и вернуть, на какой порции
- * он был прекращён. `undefined` — прошёл очередь целиком.
+ * Прокрутить кадровые часы и вернуть приговор каждого кадра.
  *
- * Время идёт ровно с той скоростью, которую задаёт цена: это и есть
- * то, что мерка наблюдает в жизни — промежуток между порциями.
+ * Время идёт ровно теми шагами, которые задал вызывающий: это и есть
+ * то, что мерка видит в жизни — метки `requestAnimationFrame`.
  */
-const runAt = (costMs: number, queue = QUEUE): number | undefined => {
+const play = (deltas: readonly number[]): boolean[] => {
   const pace = createWarmPace();
-  let clock = 0;
-  let rest = queue;
-  let portions = 0;
+  let clock = 1_000;
 
-  while (rest > 0) {
-    const baked = Math.min(PORTION, rest);
-    rest -= baked;
-    clock += baked * costMs;
-    portions += 1;
+  return deltas.map((delta) => {
+    clock += delta;
 
-    if (!pace.afford(baked, rest, clock)) return portions;
-  }
-
-  return undefined;
+    return pace.frame(clock);
+  });
 };
 
-describe('мерка скорости прогрева', () => {
-  it('пропускает машину с проектной ценой запекания', () => {
-    // 13 мс на комбинацию — то, ради чего прогрев и заведён: очередь
-    // проходится за 2,7 с, и меню этого не замечает.
-    expect(runAt(13)).toBeUndefined();
+/** Столько ровных кадров укладывается в одно окно наблюдения. */
+const perWindow = Math.ceil(WARM_WINDOW_MS / SMOOTH_MS);
+
+/** Кадры одной длины: столько-то окон подряд. */
+const steady = (deltaMs: number, windows: number): number[] =>
+  Array.from({ length: Math.ceil((WARM_WINDOW_MS * windows) / deltaMs) + 1 }, () => deltaMs);
+
+describe('мерка вреда от прогрева', () => {
+  it('не трогает прогрев на ровных кадрах', () => {
+    // Шестьдесят кадров в секунду — то, что замер показал на здоровой
+    // машине ВО ВРЕМЯ прогрева. Прогрев там не мешает никому.
+    expect(play(steady(SMOOTH_MS, 6)).every(Boolean)).toBe(true);
   });
 
-  it('останавливает машину, на которой рисует процессор', () => {
-    // 72 мс — замер 31.08.2026 в режиме runner'а. Очередь при такой
-    // цене стоит 15 с, то есть впятеро против проектного.
-    const stoppedAt = runAt(72);
+  it('прекращает прогрев на дёрганых кадрах', () => {
+    // Пятьдесят миллисекунд на кадр — двадцать кадров в секунду, ровно
+    // как в замере больной машины во время прогрева.
+    const verdicts = play(steady(JANKY_MS, 4));
 
-    expect(stoppedAt).toBeDefined();
-    // Приговор выносится сразу, как только набралось замеров: тянуть
-    // незачем, каждая лишняя порция — это дёрганое меню.
-    expect(stoppedAt).toBe(WARM_SAMPLE_MIN + 1);
+    expect(verdicts.includes(false)).toBe(true);
   });
 
-  it('не судит раньше, чем накопит замеры', () => {
+  it('не судит по первому окну: там загрузка страницы', () => {
+    // Первое окно несёт компиляцию шейдера — 746–830 мс на первое
+    // запекание сессии. Судить по ней значило бы признать негодной
+    // любую машину.
+    const verdicts = play([...steady(JANKY_MS, 1), ...steady(SMOOTH_MS, 4)]);
+
+    expect(verdicts.every(Boolean)).toBe(true);
+  });
+
+  it('прекращает прогрев на втором дёрганом окне, а не позже', () => {
+    // Приговор нужен вовремя: на больной машине каждое лишнее окно —
+    // это полсекунды дёрганого меню.
+    const verdicts = play(steady(JANKY_MS, 4));
+
+    expect(verdicts.indexOf(false)).toBeLessThan(2 * Math.ceil(WARM_WINDOW_MS / JANKY_MS) + 2);
+  });
+
+  it('не отменяет прогрев из-за одной заминки', () => {
+    // Сборка мусора, перерисовка списка комнат, чужой процесс на ядре —
+    // один долгий кадр среди ровных случается и на здоровой машине.
+    // Судится СРЕДНЯЯ длина кадра в окне, и одна заминка её не тянет.
+    const window = [...Array.from({ length: perWindow }, () => SMOOTH_MS), 200];
+    const verdicts = play([...window, ...window, ...window]);
+
+    expect(verdicts.every(Boolean)).toBe(true);
+  });
+
+  it('не судит по одному кадру', () => {
     const pace = createWarmPace();
 
-    // Цена запредельная — секунда на запекание, — и всё же первые
-    // порции проходят: одиночный долгий промежуток означает заминку
-    // браузера, а не негодную машину.
-    for (let portion = 0; portion < WARM_SAMPLE_MIN; portion += 1) {
-      expect(pace.afford(PORTION, QUEUE, (portion + 1) * 4_000)).toBe(true);
+    // Окно закрывается по времени, и одинокий долгий кадр закрыл бы его
+    // сам собой. Средняя длина кадра по одному кадру — это не средняя
+    // длина, а сам этот кадр.
+    expect(pace.frame(1_000)).toBe(true);
+    expect(pace.frame(1_000 + WARM_WINDOW_MS * 2)).toBe(true);
+    expect(pace.frameMs()).toBeUndefined();
+  });
+
+  it('забывает окно на время матча', () => {
+    const pace = createWarmPace();
+    let clock = 1_000;
+
+    for (let frame = 0; frame < perWindow * 3; frame += 1) {
+      clock += SMOOTH_MS;
+      expect(pace.frame(clock)).toBe(true);
     }
 
-    expect(pace.afford(PORTION, QUEUE, (WARM_SAMPLE_MIN + 1) * 4_000)).toBe(false);
-  });
+    // Матч на пять минут. Без сброса первый же кадр после него дал бы
+    // «длину кадра» во весь матч и отменил бы прогрев ни за что.
+    pace.pause();
+    clock += 5 * 60 * 1000;
 
-  it('не судит машину по компиляции шейдера', () => {
-    // Первое запекание сессии несёт компиляцию шейдера — 746–830 мс,
-    // одну на всю сессию. Войди она в замер, негодной оказалась бы любая
-    // машина: 800 мс на очередь дают прогноз в два с половиной часа.
-    const pace = createWarmPace();
-    let clock = 800;
-    let rest = QUEUE - 1;
-
-    // Первая порция — одно запекание, и оно же самое дорогое.
-    expect(pace.afford(1, rest, clock)).toBe(true);
-
-    for (let portion = 0; portion < WARM_SAMPLE_MIN + 2; portion += 1) {
-      const baked = PORTION;
-      rest -= baked;
-      clock += baked * 13;
-
-      expect(pace.afford(baked, rest, clock)).toBe(true);
+    for (let frame = 0; frame < perWindow * 3; frame += 1) {
+      clock += SMOOTH_MS;
+      expect(pace.frame(clock)).toBe(true);
     }
   });
 
-  it('судит по лучшему промежутку, а не по среднему', () => {
-    // Свёрнутая вкладка растягивает промежуток на любую величину,
-    // и растянутый замер говорит о вкладке, а не о машине. Укоротить
-    // же промежуток нечем: быстрее собственной работы прогрев не пойдёт.
+  it('показывает измеренную длину кадра, чтобы объяснению было чем оперировать', () => {
     const pace = createWarmPace();
-    let clock = 0;
-    let rest = QUEUE;
+    let clock = 1_000;
 
-    const portion = (gapMs: number): boolean => {
-      rest -= PORTION;
-      clock += gapMs;
+    expect(pace.frameMs()).toBeUndefined();
 
-      return pace.afford(PORTION, rest, clock);
-    };
+    // Два окна: первое не судит, второе называет цифру.
+    for (let frame = 0; frame < perWindow * 2 + WARM_WINDOW_FRAMES_MIN; frame += 1) {
+      clock += SMOOTH_MS;
+      pace.frame(clock);
+    }
 
-    // Здоровая машина, но с одной десятисекундной ямой посередине.
-    expect(portion(52)).toBe(true);
-    expect(portion(10_000)).toBe(true);
-    expect(portion(52)).toBe(true);
-    expect(portion(52)).toBe(true);
-    expect(portion(52)).toBe(true);
-  });
-
-  it('судит по остатку очереди, а не по одной цене', () => {
-    // Остаток — часть приговора наравне с ценой. У короткого хвоста
-    // та же цена запекания укладывается в срок, у длинного — нет.
-    const costMs = 60;
-    const affordable = Math.floor(WARM_HORIZON_MS / costMs);
-
-    expect(runAt(costMs, affordable)).toBeUndefined();
-    expect(runAt(costMs, affordable * 3)).toBeDefined();
-  });
-
-  it('показывает измеренную цену, чтобы объяснению было чем оперировать', () => {
-    const pace = createWarmPace();
-
-    expect(pace.costMs()).toBeUndefined();
-
-    pace.afford(PORTION, QUEUE, 100);
-    pace.afford(PORTION, QUEUE - PORTION, 300);
-
-    expect(pace.costMs()).toBe(50);
+    expect(pace.frameMs()).toBeCloseTo(SMOOTH_MS, 5);
+    expect(pace.frameMs()).toBeLessThan(WARM_FRAME_LIMIT_MS);
   });
 });

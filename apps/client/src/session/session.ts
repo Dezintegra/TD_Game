@@ -146,16 +146,64 @@ const WARM_DISABLED = import.meta.env['VITE_E2E_CHEAP_TEXTURES'] === '1';
  */
 let warmGaveUp = false;
 
-/** Мерка на всю сессию: замеры копятся и после возвращения в меню. */
+/** Мерка на всю сессию: наблюдение продолжается и после матча. */
 const pace = createWarmPace();
+
+/** Сколько заготовок оставалось в очереди. Только ради сообщения в консоль. */
+let warmRest = 0;
+
+/**
+ * Кадровые часы прогрева.
+ *
+ * Крутятся ровно столько, сколько идёт прогрев, и только затем, чтобы
+ * заметить дёрганое меню. Считать кадры без нужды не за чем: пустой
+ * `requestAnimationFrame` дёшев, но не бесплатен, а после прогрева
+ * наблюдать уже нечего.
+ */
+const watchFrames = (): void => {
+  const tick = (timestamp: number): void => {
+    if (!warming) return;
+
+    // Матч идёт — кадры принадлежат бою. Прогрев в это время молчит,
+    // и судить его по чужим кадрам не за что.
+    if (activeKey !== null) {
+      pace.pause();
+      requestAnimationFrame(tick);
+
+      return;
+    }
+
+    if (pace.frame(timestamp)) {
+      requestAnimationFrame(tick);
+
+      return;
+    }
+
+    warming = false;
+    warmGaveUp = true;
+
+    const frameMs = Math.round(pace.frameMs() ?? 0);
+    console.warn(
+      `Прогрев кеша спрайтов прекращён: с ним меню отдаёт кадр за ${String(frameMs)} мс, ` +
+        `а в очереди оставалось ${String(warmRest)} заготовок. ` +
+        'Спрайты будут печься по надобности.',
+    );
+  };
+
+  requestAnimationFrame(tick);
+};
 
 const startWarming = (renderer: RendererHost): void => {
   // Два цикла прогрева разом печь одно и то же не должны: очередь у них
   // общая, и второй просто съедал бы простой.
   if (WARM_DISABLED || warmGaveUp || warming) return;
   warming = true;
+  watchFrames();
 
   const step = (deadline?: IdleDeadline): void => {
+    // Прогрев прекращён кадровыми часами: меню дороже заготовок.
+    if (!warming) return;
+
     // Матч идёт — не трогаем ничего и ждём следующего простоя.
     if (activeKey !== null) {
       whenIdle(step);
@@ -167,30 +215,19 @@ const startWarming = (renderer: RendererHost): void => {
     // такого не знает, и ему остаётся кадровый бюджет.
     const budget = deadline === undefined ? FRAME_WORK_BUDGET_MS : deadline.timeRemaining();
 
-    const { baked, rest } = renderer.warm(budget);
+    warmRest = renderer.warm(budget).rest;
 
-    // Мерка спрашивается сразу после работы, и отметка времени берётся
-    // здесь же: промежуток между двумя такими отметками — это работа
-    // порции плюс ожидание простоя перед ней. Ожидание входит намеренно.
-    // Браузер, переставший давать простой, и браузер, не успевающий
-    // рисовать, — это одна и та же беда, и меню от них дёргается
-    // одинаково.
-    if (!pace.afford(baked, rest, performance.now())) {
-      warming = false;
-      warmGaveUp = true;
-
-      const cost = Math.round(pace.costMs() ?? 0);
-      console.warn(
-        `Прогрев кеша спрайтов прекращён: запекание стоит ${String(cost)} мс, ` +
-          `на оставшиеся ${String(rest)} ушло бы слишком много. ` +
-          'Спрайты будут печься по надобности.',
-      );
+    if (warmRest > 0) {
+      whenIdle(step);
 
       return;
     }
 
-    if (rest > 0) whenIdle(step);
-    else warming = false;
+    warming = false;
+    // Пара к сообщению об отступе. Без него в консоли видно только беду,
+    // и «прогрев прошёл целиком» отличить от «прогрев не начинался»
+    // нечем — а это разные вещи и лечатся по-разному.
+    console.info('Прогрев кеша спрайтов закончен.');
   };
 
   whenIdle(step);
