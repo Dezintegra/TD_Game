@@ -6,7 +6,7 @@ import { availableParallelism } from 'node:os';
 import { TICKS_PER_SECOND, applyRuleTuning, ruleTuning, ruleTuningIsNeutral } from '@td/shared';
 import type { RuleTuning } from '@td/shared';
 import { DEFAULT_PROFILE_ID } from '@td/ai';
-import { createLogWriter } from './log.js';
+import { createLogWriter, logPathFor } from './log.js';
 import { runMatch } from './match.js';
 import { replayAndReport } from './replay.js';
 import { ingestFile, isLogName, openDatabase } from './ingest.js';
@@ -183,7 +183,7 @@ const matchIdOf = (seed: number, profiles: readonly string[]): string =>
 
 const runOne = (seed: number, profiles: readonly string[], seconds: number | undefined): void => {
   const matchId = matchIdOf(seed, profiles);
-  const log = createLogWriter(join(LOG_DIR, `${matchId}.jsonl`));
+  const log = createLogWriter(logPathFor(LOG_DIR, matchId));
 
   const result = runMatch({
     matchId,

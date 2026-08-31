@@ -5,6 +5,7 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DatabaseSync } from 'node:sqlite';
 import { ingestFile, isLogName, openDatabase } from './ingest.js';
+import { createLogWriter, logPathFor } from './log.js';
 import type { LogRecord } from './records.js';
 
 /**
@@ -138,6 +139,29 @@ describe('сборка базы из сжатого лога', () => {
     // граница, а не точное число: важно, что уцелевшее не потеряно.
     expect(result.matches).toBe(1);
     expect(commandsIn(db, 'проверка').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('написанное писателем читается сборкой', () => {
+    // Круг замыкается здесь: до этого теста писатель и читатель
+    // проверялись порознь, и разъехаться они могли бы молча — сборка
+    // просто не нашла бы файла и промолчала о пустом отчёте.
+    //
+    // Записей нарочно больше, чем помещается в одну порцию: писатель
+    // сбрасывает их по 512, и на меньшем числе многочленность архива
+    // не проверялась бы вовсе.
+    const path = logPathFor(dir, 'написанное');
+    const writer = createLogWriter(path);
+
+    writer.write(HEADER);
+    for (let tick = 1; tick <= 600; tick += 1) writer.write(command(tick));
+    writer.write(FOOTER);
+    writer.close();
+
+    const result = ingestFile(db, path);
+
+    expect(result.matches).toBe(1);
+    expect(result.broken).toBe(0);
+    expect(commandsIn(db, 'проверка')).toHaveLength(600);
   });
 
   it('имя лога узнаётся по обоим расширениям', () => {

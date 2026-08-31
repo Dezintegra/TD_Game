@@ -2,6 +2,7 @@
 import { createRequire } from 'node:module';
 import { constants, gunzipSync } from 'node:zlib';
 import type { DatabaseSync } from 'node:sqlite';
+import { LOG_SUFFIX } from './log.js';
 import { CHILD_TABLES, SCHEMA } from './schema.js';
 import type { LogRecord } from './records.js';
 
@@ -31,12 +32,14 @@ const bit = (value: boolean): number => (value ? 1 : 0);
 export const stripBom = (text: string): string =>
   text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 
-/** Расширение сжатого лога. Признак сжатия — оно, а не содержимое файла. */
-export const GZIP_SUFFIX = '.jsonl.gz';
-
-/** Похоже ли имя на файл лога — сжатый или нет. */
+/**
+ * Похоже ли имя на файл лога.
+ *
+ * Оба расширения, а не одно: несжатые логи, снятые прежде, читаются
+ * по-старому. Перепаковывать их незачем, а ломать их чтение — тем более.
+ */
 export const isLogName = (name: string): boolean =>
-  name.endsWith('.jsonl') || name.endsWith(GZIP_SUFFIX);
+  name.endsWith('.jsonl') || name.endsWith(LOG_SUFFIX);
 
 /**
  * Прочитать лог, сжатый или нет.
@@ -54,9 +57,9 @@ export const isLogName = (name: string): boolean =>
  * хвост оседает в последней строке, а её отбросит разбор JSON,
  * посчитав битой.
  */
-const readLog = (path: string): string => {
+export const readLogText = (path: string): string => {
   const raw = readFileSync(path);
-  const text = path.endsWith(GZIP_SUFFIX)
+  const text = path.endsWith(LOG_SUFFIX)
     ? gunzipSync(raw, { finishFlush: constants.Z_SYNC_FLUSH }).toString('utf8')
     : raw.toString('utf8');
 
@@ -119,7 +122,7 @@ export const openDatabase = (path: string): DatabaseSync => {
  * не перестали. Такая строка пропускается с подсчётом, а не роняет сборку.
  */
 const parse = (path: string): { records: LogRecord[]; broken: number } => {
-  const lines = readLog(path).split('\n');
+  const lines = readLogText(path).split('\n');
   const records: LogRecord[] = [];
   let broken = 0;
 
