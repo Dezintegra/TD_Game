@@ -92,96 +92,21 @@ export function readRegistry(root, config) {
 }
 
 /**
- * Прочитать отчёты сессий, ожидающие переноса в бэклог.
+ * Прочитать, какие сессии этапов супервизор помнит.
  *
- * Смотрим не только в основное дерево, но и в каждое рабочее из реестра.
- * Причина не в удобстве: сессия с деревом ФИЗИЧЕСКИ не может положить
- * отчёт в основное. Запись за пределы своего каталога либо спрашивает
- * подтверждения, либо отвергается сразу — проверено опытом 29.08.2026,
- * сессия в дереве получила «edit the worktree copy of this file instead
- * of the shared-checkout path».
+ * По идентификатору на пару «задача и этап». Помнить их нужно ради одного:
+ * прерванный этап возобновляется той же сессией, а не начинается заново
+ * с пересказом сделанного. Переживает перезапуск супервизора — иначе
+ * упавший супервизор стирал бы память обо всех идущих этапах разом.
  *
- * Пока отчёт требовался в основном дереве, весь маршрут с деревьями —
- * проработка, аудит, имплементация, доработка, ревью, выкладка — упирался
- * в это на последнем шаге, уже сделав работу. Работали только этапы
- * без дерева: прогон и разбор, они и живут в основном.
- *
- * Отчёт без обязательных полей пропускается с причиной: применить его
- * вслепую значило бы двинуть задачу неизвестно куда.
+ * Чтения отчётов с диска здесь больше нет вовсе: отчёт приходит выводом
+ * процесса, и обходить за ним рабочие деревья не надо.
  */
-export function readReports(root, config, registry = { entries: [] }) {
-  const dirs = [
-    join(root, config.paths.local, 'reports'),
-    // Порядок важен: основное дерево первым. Отчёт, оказавшийся в обоих
-    // местах, — это остаток прежнего порядка, и верить надо тому, который
-    // оркестратор уже видел.
-    ...(registry.entries ?? []).map((entry) =>
-      join(root, entry.path, config.paths.local, 'reports'),
-    ),
-  ];
-
-  const reports = [];
-  const problems = [];
-  const seen = new Set();
-
-  for (const path of dirs.flatMap((dir) => listFiles(dir, '.json'))) {
-    const { value, problem } = readJson(path);
-    if (problem) {
-      problems.push(`отчёт ${path} не разобрался: ${problem}`);
-      continue;
-    }
-    if (!value.taskId || !value.stage || !value.outcome) {
-      problems.push(`отчёт ${path} неполон: нужны taskId, stage и outcome`);
-      continue;
-    }
-
-    // Один отчёт на пару «задача и этап». Двойник означает остаток
-    // прежнего порядка — берём первый найденный и говорим о втором вслух,
-    // потому что молча выбранный из двух однажды окажется не тем.
-    const id = `${value.taskId} ${value.stage}`;
-    if (seen.has(id)) {
-      problems.push(`отчёт ${path} — двойник уже найденного по ${id}, пропущен`);
-      continue;
-    }
-    seen.add(id);
-
-    reports.push({ ...value, path });
-  }
-
-  return { reports, problems };
-}
-
-/** Прочитать занятость слотов исполнителей. */
-export function readSlots(root, config, slotNames) {
-  const dir = join(root, config.paths.local, 'slots');
-  const occupancy = {};
-  for (const name of slotNames) {
-    const path = join(dir, `${name}.json`);
-    if (!existsSync(path)) continue;
-    const { value } = readJson(path);
-    if (value) occupancy[name] = value;
-  }
-  return occupancy;
-}
-
-/**
- * Прочитать снимок сессий, положенный оркестратором.
- *
- * Сам сценарий сессий не видит: он обычная программа на Node, а список
- * сессий отдаёт только сессия. Поэтому оркестратор перед прогоном
- * складывает снимок в файл, а счётная часть работает с ним как с обычными
- * входными данными — и остаётся проверяемой без всякой среды.
- *
- * Снимка нет — значит, о живости сессий ничего не известно. Это НЕ повод
- * считать их мёртвыми: продолжатель, порождённый по недоразумению, посадит
- * на одно дерево две сессии.
- */
-export function readSessions(root, config) {
-  const path = join(root, config.paths.local, 'sessions.json');
-  if (!existsSync(path)) return { sessions: [], known: false };
+export function readStages(root, config) {
+  const path = join(root, config.paths.local, 'stages.json');
+  if (!existsSync(path)) return {};
   const { value } = readJson(path);
-  if (!Array.isArray(value?.sessions)) return { sessions: [], known: false };
-  return { sessions: value.sessions, known: true };
+  return value && typeof value === 'object' ? value : {};
 }
 
 /** Взведён ли рубильник паузы. */

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
@@ -187,6 +187,24 @@ describe('этапы и скиллы', () => {
     const dir = fileURLToPath(new URL('../skills/', import.meta.url));
     const missing = NEEDS_SESSION.filter((stage) => !existsSync(`${dir}${stage}.md`));
     expect(missing).toEqual([]);
+  });
+
+  it('ни один скилл не посылает исполнителя за слотом или отчётом на диск', () => {
+    // Слоты и каталог отчётов удалены вместе с прежним устройством: работа
+    // приходит промптом, отчёт возвращается сообщением. Забытое упоминание
+    // страшнее мёртвой ссылки — сессия честно пойдёт искать файл, не найдёт
+    // и решит, что назначения нет. Такое уже было с выпиской задачи после
+    // переезда бэклога на доску: файл остался на месте, но устарел, и сессия
+    // читала позавчерашнюю картину молча.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const guilty = [];
+    for (const stage of NEEDS_SESSION) {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      for (const banned of ['.pipeline/slots', '.pipeline/reports', 'set_session_title']) {
+        if (text.includes(banned)) guilty.push(`${stage}.md: ${banned}`);
+      }
+    }
+    expect(guilty).toEqual([]);
   });
 });
 

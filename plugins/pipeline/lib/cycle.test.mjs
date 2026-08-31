@@ -1,5 +1,4 @@
-import { describe, expect, it } from 'vitest';
-import { DEFAULT_SLOTS } from './slots.mjs';
+﻿import { describe, expect, it } from 'vitest';
 import {
   budgetsAgree,
   countFailure,
@@ -22,11 +21,10 @@ import { runCycle } from './cycle.mjs';
 
 const NOW = '2026-08-26T12:00:00+03:00';
 
-const { config: base } = resolveConfig({
+const { config } = resolveConfig({
   commands: { verify: 'x', deploy: 'x', perf: 'x' },
   worktreeDir: '.claude/worktrees',
 });
-const config = { ...base, slots: DEFAULT_SLOTS };
 
 const task = (id, over = {}) => ({
   id,
@@ -62,7 +60,7 @@ const cycle = (over = {}) =>
       invalid: [],
       registry: { entries: [] },
       reports: [],
-      sessions: [],
+      running: [],
       ...over.state,
     },
     config,
@@ -157,7 +155,7 @@ describe('цикл', () => {
       state: { tasks: [task('0001-one')] },
     });
     expect(result.outcome).toBe('locked');
-    expect(result.assignments).toEqual([]);
+    expect(result.actions).toEqual([]);
   });
 
   it('замок мёртвого процесса цикл не останавливает', () => {
@@ -176,20 +174,21 @@ describe('цикл', () => {
     const result = cycle({ state: { tasks: [task('0001-one')], paused: true } });
     expect(result.outcome).toBe('paused');
     expect(result.lock).not.toBeNull();
-    expect(result.assignments).toEqual([]);
+    expect(result.actions).toEqual([]);
   });
 
   it('пустой бэклог не даёт работы', () => {
     expect(cycle().outcome).toBe('idle');
   });
 
-  it('задача из очереди раскладывается по слотам', () => {
+  it('задача из очереди берётся в работу', () => {
     const result = cycle({ state: { tasks: [task('0001-one')] } });
     expect(result.outcome).toBe('worked');
-    expect(result.assignments).toHaveLength(1);
-    expect(result.assignments[0]).toMatchObject({
-      slot: 'worker',
-      assignment: { taskId: '0001-one', stage: 'design' },
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      kind: 'start-stage',
+      taskId: '0001-one',
+      stage: 'design',
     });
   });
 });
@@ -276,7 +275,7 @@ describe('запрет записей', () => {
 
   it('чужой хвост не даёт брать задачи в работу', () => {
     const result = cycle({ ...foreignTail, state: { tasks: [task('0001-one')] } });
-    expect(result.assignments).toEqual([]);
+    expect(result.actions).toEqual([]);
     expect(result.notes.join()).toContain('Ivanov Dm');
   });
 
@@ -297,7 +296,7 @@ describe('запрет записей', () => {
       },
       state: { tasks: [task('0001-one')] },
     });
-    expect(result.assignments).toEqual([]);
+    expect(result.actions).toEqual([]);
     expect(result.notes.join()).toContain('сети нет');
   });
 
@@ -307,6 +306,6 @@ describe('запрет записей', () => {
       state: { tasks: [task('0001-one')] },
     });
     expect(result.outcome).toBe('worked');
-    expect(result.assignments).toHaveLength(1);
+    expect(result.actions).toHaveLength(1);
   });
 });

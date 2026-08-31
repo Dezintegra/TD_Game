@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { hasWork, scan } from './scan.mjs';
 // resolveConfig уже импортирован выше — здесь он нужен и проверкам настройки.
@@ -30,21 +30,15 @@ const task = (over = {}) => ({
   ...over,
 });
 
-/** Запись реестра с живой сессией. */
+/** Запись реестра рабочего дерева. */
 const entry = (taskId, over = {}) => ({
   taskId,
   branch: `worktree-${taskId}`,
-  sessionTitle: `pipeline:${taskId}:design`,
+  path: `.claude/worktrees/${taskId}`,
   ...over,
 });
 
-/** Сессия, работавшая только что. */
-const alive = (title) => ({ title, isRunning: true, lastActivityAt: '2026-08-26T11:59:00+03:00' });
-
-/** Сессия, молчащая дольше отпущенного. */
-const silent = (title) => ({ title, isRunning: true, lastActivityAt: '2026-08-26T11:00:00+03:00' });
-
-const run = (state) => scan({ now: NOW, config, ...state });
+const run = (state) => scan({ config, ...state });
 const kinds = (result) => result.actions.map((action) => action.kind);
 
 describe('пустая картина', () => {
@@ -181,7 +175,7 @@ describe('исполнитель один', () => {
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' }), task({ id: '0002-two', status: 'new' })],
       registry: { entries: [entry('0001-one')] },
-      sessions: [alive('pipeline:0001-one:design')],
+      running: [{ taskId: '0001-one', stage: 'design' }],
     });
     expect(kinds(result)).not.toContain('start-stage');
     expect(result.notes.join()).toContain('исполнитель занят');
@@ -263,7 +257,7 @@ describe('преимущество прогонов', () => {
     const result = run({
       tasks: [perf, task({ id: '0002-two', status: 'design' })],
       registry: { entries: [entry('0002-two')] },
-      sessions: [alive('pipeline:0002-two:design')],
+      running: [{ taskId: '0002-two', stage: 'design' }],
     });
     expect(kinds(result)).not.toContain('start-stage');
     expect(result.notes.join()).toContain('исполнитель занят');
@@ -303,319 +297,96 @@ describe('приоритеты', () => {
   });
 });
 
-describe('уснувшие сессии', () => {
-  it('живую сессию не трогают', () => {
+describe('этапы без живого процесса', () => {
+  /** Живой этап: ровно то, что знает о своих детях супервизор. */
+  const running = (taskId, stage) => [{ taskId, stage }];
+
+  it('этап с живым процессом не трогают', () => {
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' })],
       registry: { entries: [entry('0001-one')] },
-      sessions: [alive('pipeline:0001-one:design')],
+      running: running('0001-one', 'design'),
     });
     expect(kinds(result)).not.toContain('continue-stage');
   });
 
-  it('молчащей сессии назначают продолжателя', () => {
+  it('этапу без процесса выдают сессию', () => {
+    // Прежде здесь мерились три срока — молчания, «не идёт» и выдержки
+    // от выдачи слота, — и каждый ловил свою разновидность недоразумения.
+    // Все три существовали потому, что доступа к процессу не было. Теперь
+    // вопрос один и ответ на него точный.
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' })],
       registry: { entries: [entry('0001-one')] },
-      sessions: [silent('pipeline:0001-one:design')],
+      running: [],
     });
     expect(result.actions).toContainEqual({
       kind: 'continue-stage',
       taskId: '0001-one',
       stage: 'design',
-      reason: 'молчит дольше отпущенного',
+      reason: 'этапу нужна сессия, живого процесса нет',
     });
   });
 
-  it('давно завершившаяся сессия получает продолжателя', () => {
+  it('чужой живой этап своего не прикрывает', () => {
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' })],
       registry: { entries: [entry('0001-one')] },
-      sessions: [
-        {
-          title: 'pipeline:0001-one:design',
-          isRunning: false,
-          lastActivityAt: '2026-08-26T11:00:00+03:00',
-        },
-      ],
+      running: running('0002-two', 'design'),
     });
     expect(kinds(result)).toContain('continue-stage');
   });
 
-  it('только что закончившая ход сессия продолжателя НЕ получает', () => {
-    // Признак «не идёт» ненадёжен на коротком промежутке: снимок ловит
-    // сессию между ходами. 27.08.2026 оркестратор объявил сессию по 0005
-    // завершившейся за двадцать пять секунд ДО её же последней активности —
-    // прогон арены при этом спокойно досчитался, а задача успела сгореть.
+  it('процесс прошлого этапа за нынешний не считают', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'audit' })],
+      registry: { entries: [entry('0001-one')] },
+      running: running('0001-one', 'design'),
+    });
+    expect(kinds(result)).toContain('continue-stage');
+  });
+
+  it('при готовом отчёте сессию не выдают', () => {
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' })],
       registry: { entries: [entry('0001-one')] },
-      sessions: [{ title: 'pipeline:0001-one:design', isRunning: false, lastActivityAt: NOW }],
-    });
-    expect(kinds(result)).not.toContain('continue-stage');
-  });
-
-  describe('закончившаяся сессия опознаётся раньше смертного срока', () => {
-    /** Сессия, числящаяся незапущенной с указанного мига. */
-    const ended = (title, notRunningSince) => ({
-      title,
-      isRunning: false,
-      // Отметка активности свежая: по одному лишь сроку молчания такую
-      // сессию сочли бы живой. Значит срабатывает именно новое правило.
-      lastActivityAt: '2026-08-26T11:59:00+03:00',
-      notRunningSince,
-    });
-
-    const inDesign = () => task({ id: '0001-one', status: 'design' });
-
-    it('не идёт дольше отпущенного — продолжатель', () => {
-      const result = run({
-        tasks: [inDesign()],
-        registry: { entries: [entry('0001-one')] },
-        sessions: [ended('pipeline:0001-one:design', '2026-08-26T11:40:00+03:00')],
-      });
-      expect(result.actions).toContainEqual({
-        kind: 'continue-stage',
-        taskId: '0001-one',
-        stage: 'design',
-        reason: 'сессия завершилась без отчёта',
-      });
-    });
-
-    it('только что переставшая идти продолжателя НЕ получает', () => {
-      // Сторож против возврата прежней беды: признак «не идёт» на коротком
-      // промежутке ловит сессию между ходами. Однажды по нему похоронили
-      // живую сессию за двадцать пять секунд до её же активности.
-      const result = run({
-        tasks: [inDesign()],
-        registry: { entries: [entry('0001-one')] },
-        sessions: [ended('pipeline:0001-one:design', '2026-08-26T11:57:00+03:00')],
-      });
-      expect(kinds(result)).not.toContain('continue-stage');
-    });
-
-    it('идущая, но молчащая по-прежнему ждёт полного срока', () => {
-      // Новое правило судит по признаку «не идёт». Идущей сессии оно
-      // не касается вовсе: она может как раз считать что-то долгое.
-      const stillGoing = {
-        title: 'pipeline:0001-one:design',
-        isRunning: true,
-        lastActivityAt: '2026-08-26T11:45:00+03:00',
-        notRunningSince: null,
-      };
-      const result = run({
-        tasks: [inDesign()],
-        registry: { entries: [entry('0001-one')] },
-        sessions: [stillGoing],
-      });
-      expect(kinds(result)).not.toContain('continue-stage');
-    });
-  });
-
-  it('при готовом отчёте продолжателя не назначают', () => {
-    const result = run({
-      tasks: [task({ id: '0001-one', status: 'design' })],
-      registry: { entries: [entry('0001-one')] },
-      sessions: [silent('pipeline:0001-one:design')],
+      running: [],
       reports: [{ taskId: '0001-one', stage: 'design', outcome: 'done' }],
     });
     expect(kinds(result)).not.toContain('continue-stage');
     expect(kinds(result)).toContain('transfer-report');
   });
 
-  it('без снимка сессий продолжателей не назначают', () => {
-    // Молчание не признак смерти. Продолжатель, порождённый по недоразумению,
-    // посадит на одно дерево две сессии, и они перепишут работу друг друга.
+  it('этап с деревом, но без записи реестра, ждёт сверки', () => {
+    // Дерево заводится вместе с записью. Нет записи — значит взятие задачи
+    // оборвалось на середине, и доводит его сверка, а не выдача сессии
+    // в дерево, которого может не быть.
     const result = run({
-      tasks: [task({ id: '0001-one', status: 'design' })],
-      registry: { entries: [entry('0001-one')] },
-      sessions: [],
-      sessionsKnown: false,
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [] },
+      running: [],
     });
     expect(kinds(result)).not.toContain('continue-stage');
-    expect(result.notes.join()).toContain('снимок сессий не сделан');
-  });
-
-  describe('этап без сессии: слот отличает начало от смерти', () => {
-    // Запись реестра заводится вместе с деревом и при смене этапа
-    // НЕ обновляется: и заголовок сессии, и отметка `lastSeenAt` остаются
-    // от прежнего этапа. Поймано 28.08.2026 в первый живой прогон по доске —
-    // задача переехала в аудит в 12:05, а отметка осталась от проработки,
-    // 05:06. Верить ей нельзя ни в одном из случаев ниже.
-    const stale = (taskId) =>
-      entry(taskId, {
-        sessionTitle: `pipeline:${taskId}:design`,
-        lastSeenAt: '2026-08-26T05:00:00+03:00',
-      });
-
-    const justMoved = (over = {}) =>
-      task({
-        id: '0001-one',
-        status: 'audit',
-        statusChangedAt: '2026-08-26T11:56:00+03:00',
-        ...over,
-      });
-
-    /** Слот, выданный под нынешний этап минуты назад. */
-    const slot = (over = {}) => ({
-      worker: {
-        taskId: '0001-one',
-        stage: 'audit',
-        assignedAt: '2026-08-26T11:58:00+03:00',
-        ...over,
-      },
-    });
-
-    it('слота нет — этап начинают немедленно, не выжидая получаса', () => {
-      // Первую сессию нового этапа выдаёт этот же путь: `start-stage` бывает
-      // только у задач из очереди. Пока выдержка отмерялась от смены
-      // состояния, каждый этап после первого начинался на полчаса позже.
-      const result = run({
-        tasks: [justMoved()],
-        registry: { entries: [stale('0001-one')] },
-        sessions: [],
-      });
-      expect(result.actions).toContainEqual({
-        kind: 'continue-stage',
-        taskId: '0001-one',
-        stage: 'audit',
-        reason: 'сессии нет',
-      });
-    });
-
-    it('слот выдан, исполнитель ещё не проснулся — второго не шлют', () => {
-      const result = run({
-        tasks: [justMoved()],
-        registry: { entries: [stale('0001-one')] },
-        sessions: [],
-        occupancy: slot(),
-      });
-      expect(kinds(result)).not.toContain('continue-stage');
-    });
-
-    it('слот выдан давно, а сессии так и нет — продолжателя шлют', () => {
-      const result = run({
-        tasks: [justMoved()],
-        registry: { entries: [stale('0001-one')] },
-        sessions: [],
-        occupancy: slot({ assignedAt: '2026-08-26T09:00:00+03:00' }),
-      });
-      expect(kinds(result)).toContain('continue-stage');
-    });
-
-    it('отметка проснувшегося исполнителя важнее выдачи слота', () => {
-      // Слот выдан давно, но исполнитель взялся за работу только что.
-      const result = run({
-        tasks: [justMoved()],
-        registry: { entries: [stale('0001-one')] },
-        sessions: [],
-        occupancy: slot({
-          assignedAt: '2026-08-26T09:00:00+03:00',
-          startedAt: '2026-08-26T11:58:00+03:00',
-        }),
-      });
-      expect(kinds(result)).not.toContain('continue-stage');
-    });
-
-    it('слот от ПРОШЛОГО этапа за начатую работу не считают', () => {
-      const result = run({
-        tasks: [justMoved()],
-        registry: { entries: [stale('0001-one')] },
-        sessions: [],
-        occupancy: slot({ stage: 'design' }),
-      });
-      expect(kinds(result)).toContain('continue-stage');
-    });
-
-    it('живую сессию нового этапа находят, хотя в реестре заголовок старый', () => {
-      const result = run({
-        tasks: [justMoved()],
-        registry: { entries: [stale('0001-one')] },
-        sessions: [alive('pipeline:0001-one:audit')],
-      });
-      expect(kinds(result)).not.toContain('continue-stage');
-    });
-  });
-
-  it('умершая сессия ПРОГОНА тоже получает продолжателя', () => {
-    // Прогон на чужом железе — класс «ожидательный», и раньше он в отбор
-    // не попадал вовсе: перечислялись ресурсные, ревью и исключительные.
-    // Умершая сессия прогона не подхватывалась никогда, задача стояла
-    // в этапе, а слот был занят ею навсегда. 27.08.2026 задача 0002
-    // простояла так почти шесть часов, и заметить это удалось только глазами.
-    const result = run({
-      tasks: [
-        task({
-          id: '0002-run',
-          type: 'run',
-          status: 'benchmark',
-          statusChangedAt: '2026-08-26T09:00:00+03:00',
-          run: { kind: 'arena', expectation: 'доли побед около равных' },
-        }),
-      ],
-      registry: { entries: [] },
-      sessions: [
-        {
-          title: 'pipeline:0002-run:benchmark',
-          isRunning: false,
-          lastActivityAt: '2026-08-26T11:00:00+03:00',
-        },
-      ],
-    });
-    expect(kinds(result)).toContain('continue-stage');
   });
 
   it('прогон без дерева и без записи в реестре подхватывается', () => {
     // Дерева у задачи типа run нет по устройству маршрута, и требовать
-    // запись реестра значило бы снова не подхватывать её никогда.
+    // запись реестра значило бы не подхватывать её никогда. 27.08.2026
+    // задача 0002 простояла так почти шесть часов, и заметить это удалось
+    // только глазами.
     const result = run({
       tasks: [
         task({
           id: '0002-run',
           type: 'run',
           status: 'benchmark',
-          statusChangedAt: '2026-08-26T09:00:00+03:00',
           run: { kind: 'arena', expectation: 'доли побед около равных' },
         }),
       ],
       registry: { entries: [] },
-      sessions: [],
+      running: [],
     });
     expect(kinds(result)).toContain('continue-stage');
-  });
-
-  it('только что взятая задача продолжателя не получает', () => {
-    // Исполнитель и оркестратор ходят по расписанию независимо, и между
-    // взятием задачи и первым пробуждением исполнителя проходит до целого
-    // интервала. Продолжатель, порождённый в эту щель, ничего не чинит,
-    // зато тратит попытку — а их всего две.
-    //
-    // «Взята» — значит слот ей уже выдан, и обстановка обязана это отражать.
-    // Прежде слот здесь не задавался: сканер его не видел вовсе и отмерял
-    // выдержку от смены состояния. Из-за этого та же обстановка описывала
-    // разом два несовместимых случая — взятую задачу и только начавшийся
-    // этап, которого никто не берёт, — и второй молча ждал полчаса.
-    const result = run({
-      tasks: [
-        task({
-          id: '0002-run',
-          type: 'run',
-          status: 'benchmark',
-          statusChangedAt: '2026-08-26T11:58:00+03:00',
-          run: { kind: 'arena', expectation: 'доли побед около равных' },
-        }),
-      ],
-      registry: { entries: [] },
-      sessions: [],
-      occupancy: {
-        worker: {
-          taskId: '0002-run',
-          stage: 'benchmark',
-          assignedAt: '2026-08-26T11:58:00+03:00',
-        },
-      },
-    });
-    expect(kinds(result)).not.toContain('continue-stage');
   });
 
   it('исчерпанные продолжения ведут к разбору человеком', () => {
@@ -628,7 +399,7 @@ describe('уснувшие сессии', () => {
         }),
       ],
       registry: { entries: [entry('0001-one')] },
-      sessions: [silent('pipeline:0001-one:design')],
+      running: [],
     });
     expect(kinds(result)).toContain('fail-stage');
     expect(result.notes.join()).toContain('исчерпаны');
@@ -641,15 +412,17 @@ describe('хвосты', () => {
     expect(result.actions[0]).toEqual({ kind: 'push-tail', scope: 'main', commits: 2 });
   });
 
-  it('ветку живой сессии не отправляют', () => {
+  it('ветку идущего этапа не отправляют', () => {
+    // Неизвестно, доделан ли атомарный коммит. Прежде это выяснялось
+    // по снимку сессий, теперь — прямым вопросом о живом процессе.
     const result = run({
       tasks: [task({ id: '0001-one', status: 'implement' })],
-      registry: { entries: [entry('0001-one', { sessionTitle: 'pipeline:0001-one:implement' })] },
-      sessions: [alive('pipeline:0001-one:implement')],
+      registry: { entries: [entry('0001-one')] },
+      running: [{ taskId: '0001-one', stage: 'implement' }],
       tails: { main: 0, branches: { 'worktree-0001-one': 1 } },
     });
     expect(kinds(result)).not.toContain('push-tail');
-    expect(result.notes.join()).toContain('живая сессия');
+    expect(result.notes.join()).toContain('идёт этап');
   });
 
   it('залипший хвост одной задачи не мешает другим', () => {
@@ -657,7 +430,7 @@ describe('хвосты', () => {
       tasks: [task({ id: '0001-one', status: 'pr' }), task({ id: '0002-two', status: 'pr' })],
       registry: { entries: [entry('0001-one')] },
       tails: { main: 0, branches: { 'worktree-0001-one': 3 } },
-      sessions: [],
+      running: [],
     });
     expect(result.actions).toContainEqual({
       kind: 'poll-external',
@@ -712,7 +485,7 @@ describe('порядок действий', () => {
     const result = run({
       tasks: [task({ id: '0001-one', status: 'design' }), task({ id: '0002-two' })],
       registry: { entries: [entry('0001-one')] },
-      sessions: [alive('pipeline:0001-one:design')],
+      running: [{ taskId: '0001-one', stage: 'design' }],
       reports: [{ taskId: '0001-one', stage: 'design', outcome: 'done' }],
       tails: { main: 1, branches: {} },
     });
