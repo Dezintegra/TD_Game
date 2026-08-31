@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { stagePrompt } from './stage-prompt.mjs';
+import { clipMiddle, stagePrompt } from './stage-prompt.mjs';
 
 /**
  * Проверки промпта назначения.
@@ -83,6 +83,55 @@ describe('опись доски', () => {
 
   it('пустая не поминается вовсе', () => {
     expect(stagePrompt({ assignment, task, board: [] })).not.toContain('Прочие задачи');
+  });
+});
+
+describe('лог упавшего этапа', () => {
+  const analysing = { taskId: task.id, stage: 'postmortem', branch: null, path: null };
+  const halted = { ...task, status: 'postmortem', returnTo: 'implement' };
+
+  it('прикладывается разбору вместе с путём к файлу', () => {
+    const text = stagePrompt({
+      assignment: analysing,
+      task: halted,
+      stageLog: {
+        stage: 'implement',
+        path: '.pipeline/logs/0042-fix-tesla-price-implement.log',
+        text: 'отказов:   3\nотказано Bash Get-ChildItem',
+      },
+    });
+    expect(text).toContain('Лог упавшего этапа (implement)');
+    expect(text).toContain('.pipeline/logs/0042-fix-tesla-price-implement.log');
+    expect(text).toContain('Get-ChildItem');
+  });
+
+  it('отсутствие лога названо вслух: это само по себе улика', () => {
+    const text = stagePrompt({
+      assignment: analysing,
+      task: halted,
+      stageLog: { stage: 'implement', path: '.pipeline/logs/нет.log', text: null },
+    });
+    expect(text).toContain('Лога нет');
+  });
+
+  it('прочим этапам лога не дают: им нечего с ним делать', () => {
+    expect(stagePrompt({ assignment, task })).not.toContain('Лог упавшего этапа');
+  });
+
+  it('берётся голова и хвост, а пропущенное названо числом', () => {
+    // Смысл лога лежит по краям: в голове сводка исхода и отказанные
+    // действия, в хвосте — то, на чём всё оборвалось. Середина бывает
+    // в сотни килобайт вывода сборки.
+    const long = `НАЧАЛО${'середина'.repeat(5000)}КОНЕЦ`;
+    const clipped = clipMiddle(long, 100, 100);
+    expect(clipped).toContain('НАЧАЛО');
+    expect(clipped).toContain('КОНЕЦ');
+    expect(clipped).toContain(`пропущено ${long.length - 200} знаков`);
+  });
+
+  it('короткий лог не режется вовсе', () => {
+    expect(clipMiddle('коротко', 100, 100)).toBe('коротко');
+    expect(clipMiddle('коротко', 100, 100)).not.toContain('пропущено');
   });
 });
 

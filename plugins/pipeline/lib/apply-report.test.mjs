@@ -50,8 +50,11 @@ describe('успешный этап двигает задачу по маршр�
     // Тип берётся по этапу, а не один на всех: этап живёт лишь на том
     // маршруте, где объявлен. Толкование бывает только у задачи-прогона,
     // и подсунув ему `feature`, сторож поймал бы не дыру, а свою ошибку.
+    // Разбор ошибки — единственное исключение, и оно по существу: его
+    // удачный исход и есть переход в `failed`. Проверяется он отдельно,
+    // ниже, — сторожу здесь ловить нечего.
     const typeFor = { triage: 'note', interpret: 'run' };
-    for (const status of NEEDS_SESSION) {
+    for (const status of NEEDS_SESSION.filter((stage) => stage !== 'postmortem')) {
       const type = typeFor[status] ?? 'feature';
       const source = task({
         status,
@@ -64,6 +67,15 @@ describe('успешный этап двигает задачу по маршр�
       const verdict = applyReport(source, report({ stage: status }));
       expect(verdict.status, `этап ${status}`).not.toBe('failed');
     }
+  });
+
+  it('удавшийся разбор ошибки ведёт задачу в ошибку', () => {
+    const verdict = applyReport(
+      task({ status: 'postmortem', returnTo: 'implement' }),
+      report({ stage: 'postmortem' }),
+    );
+    expect(verdict.status).toBe('failed');
+    expect(verdict.problems).toEqual([]);
   });
 
   it('разбор замечания закрывает задачу', () => {
@@ -132,12 +144,12 @@ describe('замечания — рабочий ход, а не ошибка', (
     expect(verdict.status).toBe('revise');
   });
 
-  it('замечания там, где их быть не может, ведут в ошибку', () => {
+  it('замечания там, где их быть не может, ведут в разбор', () => {
     const verdict = applyReport(
       task({ status: 'implement' }),
       report({ stage: 'implement', outcome: 'rejected' }),
     );
-    expect(verdict.status).toBe('failed');
+    expect(verdict.status).toBe('postmortem');
     expect(verdict.problems.join()).toContain('никуда не ведёт');
   });
 });
@@ -161,7 +173,7 @@ describe('спор, который не сходится', () => {
     expect(second.status).toBe('design');
   });
 
-  it('возврат за пределом отдаёт задачу человеку, а не крутит ещё круг', () => {
+  it('возврат за пределом отдаёт задачу в разбор, а не крутит ещё круг', () => {
     // 31.08.2026 задача 0011 прошла четыре круга подряд на неизменной вершине:
     // проработка отвечала «всё закрыто», аудит честно отклонял снова. Круг
     // стоил около доллара и десяти минут, а остановиться было нечему.
@@ -170,8 +182,8 @@ describe('спор, который не сходится', () => {
       rejection,
       { maxRejections: 3 },
     );
-    expect(verdict.status).toBe('failed');
-    expect(verdict.note).toContain('нужен разбор человеком');
+    expect(verdict.status).toBe('postmortem');
+    expect(verdict.note).toContain('нужен разбор');
     // Человеку важно не «предел исчерпан», а из-за чего спорили.
     expect(verdict.note).toContain('шаг 3.4 меряет не то');
   });
@@ -197,13 +209,27 @@ describe('спор, который не сходится', () => {
 });
 
 describe('несчастливые исходы', () => {
-  it('неуспех сохраняет состояние возврата', () => {
+  it('неуспех отправляет в разбор, сохраняя состояние возврата', () => {
     const verdict = applyReport(
       task({ status: 'implement' }),
       report({ stage: 'implement', outcome: 'failed', summary: 'сборка не собралась' }),
     );
-    expect(verdict).toMatchObject({ status: 'failed', returnTo: 'implement' });
+    expect(verdict).toMatchObject({ status: 'postmortem', returnTo: 'implement' });
     expect(verdict.note).toContain('сборка');
+  });
+
+  it('неудавшийся разбор останавливает задачу, а не назначает разбор разбора', () => {
+    // Петля здесь была бы дорогой и незаметной: конвейер крутил бы её,
+    // пока кто-нибудь не посмотрит на доску.
+    const analysed = task({ status: 'postmortem', returnTo: 'implement' });
+    for (const bad of [
+      report({ stage: 'postmortem', outcome: 'failed', summary: 'лога нет' }),
+      report({ stage: 'postmortem', outcome: 'почти получилось' }),
+      report({ stage: 'design' }),
+      report({ stage: 'postmortem', outcome: 'rejected' }),
+    ]) {
+      expect(applyReport(analysed, bad).status, JSON.stringify(bad.outcome)).toBe('failed');
+    }
   });
 
   it('вопрос уводит в ожидание ответа с сохранением возврата', () => {
@@ -216,13 +242,13 @@ describe('несчастливые исходы', () => {
 
   it('неизвестный исход не применяется', () => {
     const verdict = applyReport(task(), report({ outcome: 'почти получилось' }));
-    expect(verdict.status).toBe('failed');
+    expect(verdict.status).toBe('postmortem');
     expect(verdict.problems.join()).toContain('неизвестный исход');
   });
 
   it('отчёт о чужом этапе не применяется', () => {
     const verdict = applyReport(task({ status: 'implement' }), report({ stage: 'design' }));
-    expect(verdict.status).toBe('failed');
+    expect(verdict.status).toBe('postmortem');
     expect(verdict.problems.join()).toContain('а задача в «implement»');
   });
 });
@@ -256,10 +282,10 @@ describe('опрос внешнего состояния', () => {
     expect(verdict.status).toBe('interpret');
   });
 
-  it('неудавшийся прогон уводит в ошибку', () => {
+  it('неудавшийся прогон уводит в разбор', () => {
     const verdict = applyExternal(task({ type: 'run', status: 'benchmark' }), {
       state: 'failure',
     });
-    expect(verdict).toMatchObject({ status: 'failed', returnTo: 'benchmark' });
+    expect(verdict).toMatchObject({ status: 'postmortem', returnTo: 'benchmark' });
   });
 });

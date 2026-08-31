@@ -98,6 +98,13 @@ function fakeIo(over = {}) {
       this.writeTask(next);
       return { ...this.commitAndPush(paths, message), paths };
     },
+    // Дополнение трогает ТОЛЬКО журнал: ни состояния, ни положения
+    // в очереди у дополняемой задачи оно не меняет.
+    amendTask(taskId, text, message) {
+      const paths = [this.journalPath(taskId)];
+      this.appendJournal(taskId, text);
+      return over.amend ?? { ...this.commitAndPush(paths, message), paths };
+    },
     releaseTask(next) {
       this.writeTask(next);
     },
@@ -392,7 +399,7 @@ describe('перенос отчёта', () => {
     expect(io.tasks.get('0001-one').attempts.rejections).toBe(1);
   });
 
-  it('возврат за пределом отдаёт задачу человеку и сессию не трогает', async () => {
+  it('возврат за пределом отдаёт задачу в разбор, забыв его прошлую сессию', async () => {
     const io = fakeIo({
       maxRejections: 3,
       tasks: [
@@ -401,8 +408,13 @@ describe('перенос отчёта', () => {
       report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', summary: 'мимо' },
     });
     await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
-    expect(io.tasks.get('0001-one').status).toBe('failed');
-    expect(io.steps.filter((step) => step.startsWith('забыта сессия'))).toEqual([]);
+    expect(io.tasks.get('0001-one').status).toBe('postmortem');
+
+    // Сессия спорившего этапа не трогается: спор кончен, разбирать его будет
+    // не он. А вот сессия разбора забывается — иначе задача, разобранная
+    // однажды, услышала бы от неё вывод о позапрошлом падении.
+    expect(io.steps).toContain('забыта сессия 0001-one:postmortem');
+    expect(io.steps).not.toContain('забыта сессия 0001-one:audit');
   });
 
   it('номер pull request из отчёта попадает в саму задачу', async () => {
@@ -433,13 +445,20 @@ describe('перенос отчёта', () => {
     expect(io.tasks.get('0001-one').links.pr).toBe(7);
   });
 
-  it('неуспех не обнуляет счётчиков', async () => {
+  it('неуспех отправляет задачу в разбор с чистым счётом попыток', async () => {
+    // Прежде счёт здесь сохранялся: задача вставала в ошибке, и число
+    // сожжённых заходов было уликой для человека. Теперь между ней и ошибкой
+    // стоит разбор — этап, которому нужны собственные попытки. Не обнули их,
+    // и разбор был бы объявлен провалившимся прежде первой своей сессии.
+    //
+    // Улика не теряется: причина остановки уезжает в журнал задачи, а число
+    // заходов — в её историю.
     const io = fakeIo({
       tasks: [task({ status: 'design', attempts: { continuations: 2, cycleFailures: 0 } })],
       report: { taskId: '0001-one', stage: 'design', outcome: 'failed', summary: 'упало' },
     });
     await execute([transfer], io);
-    expect(io.tasks.get('0001-one').attempts.continuations).toBe(2);
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
   });
 });
 
@@ -649,6 +668,44 @@ describe('ответ владельца продукта', () => {
   });
 });
 
+describe('остановка задачи', () => {
+  const stop = (taskId = '0001-one') => ({
+    kind: 'fail-stage',
+    taskId,
+    stage: 'implement',
+    reason: 'этап не доводится до конца, продолжения исчерпаны',
+  });
+
+  it('рабочая задача останавливается разбором, а не ошибкой', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    const [result] = await execute([stop()], io);
+    expect(result.result).toBe('done');
+
+    const moved = io.tasks.get('0001-one');
+    expect(moved.status).toBe('postmortem');
+    expect(moved.returnTo).toBe('implement');
+    // Счёт обнуляется переходом: иначе сканер объявил бы разбор
+    // провалившимся прежде первой его сессии.
+    expect(moved.attempts.continuations).toBe(0);
+    expect(io.steps).toContain('забыта сессия 0001-one:postmortem');
+    expect(io.journals.get('0001-one')).toContain('продолжения исчерпаны');
+  });
+
+  it('разбор, не доведённый до конца, останавливает задачу окончательно', async () => {
+    // Разбора разбора не бывает: петля крутилась бы, пока её не заметит
+    // человек, и каждый круг стоил бы сессии.
+    const io = fakeIo({ tasks: [task({ status: 'postmortem', returnTo: 'implement' })] });
+    const [result] = await execute([stop()], io);
+    expect(result.result).toBe('done');
+
+    const moved = io.tasks.get('0001-one');
+    expect(moved.status).toBe('failed');
+    // Состояние возврата уцелело: человек поднимет задачу в имплементацию,
+    // а не в разбор.
+    expect(moved.returnTo).toBe('implement');
+  });
+});
+
 describe('уборка', () => {
   const sweep = { kind: 'cleanup', taskId: '0001-one' };
   const inCleanup = () =>
@@ -662,11 +719,12 @@ describe('уборка', () => {
     expect(io.steps).toContain('запись реестра 0001-one снята');
   });
 
-  it('невлитый pull request останавливает задачу, ничего не удаляя', async () => {
+  it('невлитый pull request отправляет задачу в разбор, ничего не удаляя', async () => {
     const io = fakeIo({ tasks: [inCleanup()], pr: { state: 'open' } });
     const [result] = await execute([sweep], io);
     expect(result.result).toBe('done');
-    expect(io.tasks.get('0001-one').status).toBe('failed');
+    expect(io.tasks.get('0001-one').status).toBe('postmortem');
+    expect(io.tasks.get('0001-one').returnTo).toBe('cleanup');
     expect(io.steps).not.toContain('запись реестра 0001-one снята');
   });
 
@@ -816,6 +874,124 @@ describe('заявки на новые задачи', () => {
     const [result] = await execute([triage], io);
     expect(result.created).toEqual([]);
     expect(io.tasks.size).toBe(1);
+  });
+});
+
+describe('дополнение существующей задачи', () => {
+  const analysis = { kind: 'transfer-report', taskId: '0001-one', stage: 'postmortem' };
+  const halted = () => task({ status: 'postmortem', returnTo: 'implement' });
+  const older = (over = {}) =>
+    task({ id: '0002-two', status: 'candidate', title: 'Запретить перечисление', ...over });
+
+  const withAmendments = (amendments, over = {}) =>
+    fakeIo({
+      tasks: [halted(), older(over.older)],
+      report: { taskId: '0001-one', stage: 'postmortem', outcome: 'done', amendments },
+      ...over,
+    });
+
+  it('фактура уезжает в журнал названной задачи, ничего в ней не двигая', async () => {
+    // Пять кандидатов об одной причине — это не пять находок, а один сигнал,
+    // размазанный так, что его перестают читать.
+    const io = withAmendments([{ taskId: '0002-two', facts: 'Та же причина уронила 0001.' }]);
+    const [result] = await execute([analysis], io);
+
+    expect(result.result).toBe('done');
+    expect(result.amended).toEqual(['0002-two']);
+    expect(io.journals.get('0002-two')).toContain('Та же причина уронила 0001');
+    // Названа и задача-источник: по одной фактуре без неё не понять, откуда она.
+    expect(io.journals.get('0002-two')).toContain('Дополнение по разбору 0001-one');
+    // Состояние дополненной не тронуто, новой задачи не завелось.
+    expect(io.tasks.get('0002-two').status).toBe('candidate');
+    expect(result.created).toEqual([]);
+    expect(io.tasks.size).toBe(2);
+  });
+
+  it('источник связывается с дополненной задачей', async () => {
+    const io = withAmendments([{ taskId: '0002-two', facts: 'ещё случай' }]);
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').links.related).toContain('0002-two');
+  });
+
+  it('дополнение уезжает своим коммитом и раньше смены состояния', async () => {
+    const io = withAmendments([{ taskId: '0002-two', facts: 'ещё случай' }]);
+    await execute([analysis], io);
+
+    const amended = io.steps.findIndex((step) => step.includes('дополнена фактурой'));
+    const moved = io.steps.findIndex((step) => step.includes('postmortem → failed'));
+    expect(amended).toBeGreaterThanOrEqual(0);
+    expect(moved).toBeGreaterThan(amended);
+  });
+
+  it('негодное дополнение отклоняется с причиной, годное применяется', async () => {
+    const io = withAmendments([
+      { taskId: '0099-none', facts: 'мимо' },
+      { taskId: '0002-two', facts: 'по делу' },
+    ]);
+    const [result] = await execute([analysis], io);
+    expect(result.amended).toEqual(['0002-two']);
+    expect(io.journals.get('0001-one')).toContain('дополнение отклонено');
+  });
+
+  it('закрытая задача дополнений не принимает', async () => {
+    const io = withAmendments([{ taskId: '0002-two', facts: 'ещё случай' }], {
+      older: { status: 'closed' },
+    });
+    const [result] = await execute([analysis], io);
+    expect(result.amended).toEqual([]);
+    expect(io.journals.get('0001-one')).toContain('дополнений не принимает');
+  });
+
+  it('неудача на дополнении не трогает состояния разбираемой задачи', async () => {
+    const io = withAmendments([{ taskId: '0002-two', facts: 'ещё случай' }], {
+      amend: { ok: false, outcome: 'offline' },
+    });
+    const [result] = await execute([analysis], io);
+    expect(result.result).toBe('failed');
+    // Состояние цело, отчёт цел: следующий цикл начнёт заново.
+    expect(io.tasks.get('0001-one').status).toBe('postmortem');
+  });
+
+  it('блокирующая заявка разбора встаёт в очередь, минуя кандидатов', async () => {
+    const io = fakeIo({
+      tasks: [halted()],
+      report: {
+        taskId: '0001-one',
+        stage: 'postmortem',
+        outcome: 'done',
+        requests: [
+          {
+            type: 'feature',
+            title: 'Запретить перечисление каталогов в скиллах',
+            description: 'Молчаливый отказ роняет каждую задачу подряд.',
+            blocking: true,
+          },
+        ],
+      },
+    });
+    const [result] = await execute([analysis], io);
+    expect(io.tasks.get(result.created[0]).status).toBe('new');
+  });
+
+  it('та же метка с разбора замечаний не слушается', async () => {
+    const io = fakeIo({
+      tasks: [task({ type: 'note', status: 'triage' })],
+      report: {
+        taskId: '0001-one',
+        stage: 'triage',
+        outcome: 'done',
+        requests: [
+          {
+            type: 'feature',
+            title: 'Очень нужное',
+            description: 'Сессия считает это срочным.',
+            blocking: true,
+          },
+        ],
+      },
+    });
+    const [result] = await execute([{ ...analysis, stage: 'triage' }], io);
+    expect(io.tasks.get(result.created[0]).status).toBe('candidate');
   });
 });
 

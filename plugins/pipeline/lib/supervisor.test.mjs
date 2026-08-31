@@ -34,6 +34,8 @@ function harness(over = {}) {
     return child;
   };
 
+  const logsAsked = [];
+
   const supervisor = createSupervisor({
     config: { ...config, ...over.config },
     root: '/repo',
@@ -43,6 +45,10 @@ function harness(over = {}) {
     saveStages: (stages) => saved.push({ ...stages }),
     stages: over.stages ?? {},
     log: (line) => logged.push(line),
+    readStageLog: (taskId, stage) => {
+      logsAsked.push(`${taskId}:${stage}`);
+      return { stage, path: `.pipeline/logs/${taskId}-${stage}.log`, text: 'отказов:   3' };
+    },
   });
 
   /** Довести последний порождённый процесс до конца с таким выводом. */
@@ -54,7 +60,7 @@ function harness(over = {}) {
     await sleep(0);
   };
 
-  return { supervisor, children, killed, logged, saved, answer };
+  return { supervisor, children, killed, logged, saved, answer, logsAsked };
 }
 
 const assignment = (over = {}) => ({
@@ -90,6 +96,25 @@ describe('порождение', () => {
     const second = supervisor.spawnStage(assignment({ stage: 'audit' }));
     expect(second.ok).toBe(false);
     expect(second.why).toContain('уже идёт');
+  });
+
+  it('разбору берётся лог того этапа, из которого задача упала', () => {
+    // Имя лога складывается из задачи и этапа, а этап хранит сама задача —
+    // состоянием возврата. Угадывать его по журналу было бы гаданием.
+    const { supervisor, logsAsked } = harness();
+    supervisor.spawnStage(
+      assignment({
+        stage: 'postmortem',
+        task: { id: '0001-one', status: 'postmortem', returnTo: 'implement', title: 'проба' },
+      }),
+    );
+    expect(logsAsked).toEqual(['0001-one:implement']);
+  });
+
+  it('прочим этапам лог не читается вовсе', () => {
+    const { supervisor, logsAsked } = harness();
+    supervisor.spawnStage(assignment());
+    expect(logsAsked).toEqual([]);
   });
 
   it('квота — это счёт живых детей, а не число в настройке', () => {

@@ -201,6 +201,21 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       return { ok: true, outcome: 'saved' };
     },
 
+    /**
+     * Дописать фактуру в журнал задачи, не трогая её саму.
+     *
+     * У доски журнал — это комментарии карточки, поэтому дополнение
+     * и выглядит ровно так, как надо человеку: новая запись под задачей,
+     * видная без единого лишнего щелчка. Карточка при этом никуда не едет
+     * и описания не теряет.
+     */
+    async amendTask(taskId, text) {
+      const card = cardOf(taskId);
+      if (!card) return { ok: false, outcome: 'failed', why: `карточки задачи ${taskId} нет` };
+      const posted = await comment(card.id, text);
+      return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
+    },
+
     /** Завести новую карточку: колонка по состоянию, метка по типу. */
     async createTask(task) {
       const idList = listIdByState.get(task.status);

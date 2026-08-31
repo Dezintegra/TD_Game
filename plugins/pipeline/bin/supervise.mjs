@@ -233,6 +233,18 @@ const supervisor = createSupervisor({
     mkdirSync(local('logs'), { recursive: true });
     writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
   },
+  // Тот же лог читается обратно — разбором упавшей задачи, и только им.
+  // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
+  // без лога всё равно начинается, а сам факт его отсутствия — улика.
+  readStageLog: (taskId, stage) => {
+    if (!stage) return null;
+    const path = local('logs', `${taskId}-${stage}.log`);
+    return {
+      stage,
+      path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
+      text: existsSync(path) ? readFileSync(path, 'utf8') : null,
+    };
+  },
 });
 
 /**

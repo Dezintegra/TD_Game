@@ -31,14 +31,34 @@ export function applyTransition(task, { status, note, now }) {
   // Состояние возврата хранится только у сквозных состояний: из них задача
   // возвращается туда, откуда ушла. У рабочих оно всегда пусто, иначе старое
   // значение однажды уведёт задачу в давно пройденный этап.
-  const returnTo = CROSSCUT.includes(status) ? task.status : null;
+  //
+  // Сквозные при этом ходят цепочкой: `implement → postmortem → failed`.
+  // Записав здесь покидаемое состояние, мы дали бы `returnTo: 'postmortem'`,
+  // и человек, поднимая задачу из ошибки, вернул бы её в разбор, а не
+  // в имплементацию. Поэтому из сквозного в сквозное возврат НАСЛЕДУЕТСЯ.
+  const returnTo = CROSSCUT.includes(status)
+    ? CROSSCUT.includes(task.status)
+      ? task.returnTo
+      : task.status
+    : null;
 
   const history = [...(task.history ?? []), { at: now, from: task.status, to: status, note }].slice(
     -HISTORY_LIMIT,
   );
 
+  // Вход в сквозное состояние обнуляет счёт попыток: там начинается новая
+  // работа, и заминки прежнего этапа к ней не относятся.
+  //
+  // Без этого разбор не начался бы НИКОГДА. Главный путь в остановку —
+  // исчерпание продолжений, и задача приходит в разбор ровно с этим счётом;
+  // сессию же разбору выдаёт то самое действие, которое смотрит на счётчик.
+  // Сканер объявил бы разбор провалившимся прежде первой его сессии.
+  const attempts = CROSSCUT.includes(status)
+    ? { continuations: 0, cycleFailures: 0, rejections: 0 }
+    : task.attempts;
+
   return {
-    task: { ...task, status, returnTo, statusChangedAt: now, history },
+    task: { ...task, status, returnTo, attempts, statusChangedAt: now, history },
     problems: [],
   };
 }

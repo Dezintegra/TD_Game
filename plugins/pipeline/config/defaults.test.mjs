@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULTS, resolveConfig } from './defaults.mjs';
-import { STATES } from './transitions.mjs';
+import { DEFAULTS, missingForStage, resolveConfig } from './defaults.mjs';
+import { NEEDS_SESSION, STATES } from './transitions.mjs';
 
 /**
  * Проверки слияния настройки.
@@ -48,6 +48,25 @@ describe('метки доски', () => {
   it('различаются цветом: две одноцветные метки на карточке неразличимы взглядом', () => {
     const colors = Object.values(DEFAULTS.trello.labels).map((label) => label.color);
     expect(new Set(colors).size).toBe(colors.length);
+  });
+});
+
+describe('сроки этапов', () => {
+  it('назван у каждого этапа с сессией', () => {
+    // Общий срок есть, и без него этап не повис бы. Но сорок пять минут
+    // по умолчанию — это грубая мерка: короткому этапу она разрешает висеть
+    // втрое дольше нужного, а длинный обрывает на середине.
+    const unnamed = NEEDS_SESSION.filter((stage) => !DEFAULTS.stageTimeoutMinutes[stage]);
+    expect(unnamed).toEqual([]);
+  });
+});
+
+describe('чего требует этап', () => {
+  it('разбору ошибки не требуется ничего', () => {
+    // Требуй он настройку — и разбор оказался бы невозможен ровно там, где
+    // нужен больше всего: при падении из-за нехватки этой самой настройки.
+    const { config } = resolveConfig({});
+    expect(missingForStage(config, 'postmortem', { status: 'postmortem' })).toEqual([]);
   });
 });
 

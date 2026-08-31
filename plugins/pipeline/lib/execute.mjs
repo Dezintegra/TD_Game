@@ -1,4 +1,4 @@
-import { applyExternal, applyReport } from './apply-report.mjs';
+import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
 import {
   applyTransition,
   claimTask,
@@ -9,7 +9,7 @@ import {
   releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
-import { planRequests } from './requests.mjs';
+import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 
@@ -55,25 +55,34 @@ async function transferReport(action, io) {
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
+  // Остановленная задача счётчиков больше не считает: их обнулил сам переход
+  // в сквозное состояние, и наращивать возвраты поверх обнулённого значило бы
+  // приписать разбору спор, которого он не вёл.
+  const halted = verdict.status === 'postmortem' || verdict.status === 'failed';
+
   // Дошедший до конца этап обнуляет счётчики: прошлые заминки больше не в счёт,
   // иначе задача упрётся в предел там, где всё было хорошо.
   //
   // Возврат — случай особый: обнулить счёт здесь значило бы никогда до предела
   // и не дойти. Поэтому возврат счёт наращивает, а гасит его успех проверки.
-  let next =
-    verdict.status === 'failed'
-      ? moved.task
-      : report.outcome === 'rejected'
-        ? countRejection(moved.task)
-        : resetAttempts(moved.task);
+  let next = halted
+    ? moved.task
+    : report.outcome === 'rejected'
+      ? countRejection(moved.task)
+      : resetAttempts(moved.task);
 
   // Возврат отправляет задачу на этап, где сессия уже была, и возобновлять её
   // нельзя: возобновлённая отвечает из своей памяти — «всё сделано» — и вершина
   // между кругами не меняется вовсе. Забытая сессия начинается заново и читает
   // свежее замечание журналом, как и всякий новый исполнитель.
-  if (report.outcome === 'rejected' && verdict.status !== 'failed') {
+  if (report.outcome === 'rejected' && !halted) {
     io.forgetSession?.(action.taskId, verdict.status);
   }
+
+  // По той же причине забывается и прошлый разбор: задача, однажды
+  // разобранная и упавшая снова, возобновила бы ту сессию — и услышала бы
+  // от неё вывод о позапрошлом падении.
+  if (verdict.status === 'postmortem') io.forgetSession?.(action.taskId, 'postmortem');
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без
@@ -90,11 +99,30 @@ async function transferReport(action, io) {
     existingIds: io.allTaskIds(),
     now: io.now,
     sourceId: task.id,
+    // Этап, с которого пришёл отчёт: по нему решается, слушать ли признак
+    // блокирующей заявки. Право заводить работу мимо шлюза кандидатов есть
+    // только у разбора ошибки.
+    sourceStage: task.status,
   });
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
     plan.notes = [...(plan.notes ?? []), `заявка отклонена: ${bad.problems.join('; ')}`];
+  }
+
+  // Дополнения разбираются здесь же и по тем же правилам: одна негодная
+  // запись не отменяет остальных, а причина отказа уезжает в журнал.
+  const facts = planAmendments(report.amendments, {
+    known: new Map(
+      io
+        .allTaskIds()
+        .map((id) => [id, io.readTask(id)])
+        .filter(([, item]) => item),
+    ),
+    sourceId: task.id,
+  });
+  for (const bad of facts.rejected) {
+    plan.notes = [...(plan.notes ?? []), `дополнение отклонено: ${bad.problems.join('; ')}`];
   }
 
   // Задачи по заявкам заводятся ПЕРЕД сменой состояния породившей, и порядок
@@ -116,6 +144,24 @@ async function transferReport(action, io) {
     if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
     created.push(born.id);
     next = relate(next, born.id);
+  }
+
+  // Дополнения уезжают тем же порядком и по той же причине: до смены
+  // состояния, каждое своим коммитом. Неудача здесь не оставляет следов —
+  // состояние не тронуто, отчёт цел, следующий цикл начнёт заново.
+  const amended = [];
+  for (const item of facts.planned) {
+    const written = await io.amendTask(
+      item.taskId,
+      `**Дополнение по разбору ${task.id}**\n\n${item.facts}\n`,
+      `chore(backlog): ${item.taskId} дополнена фактурой из разбора ${task.id}`,
+    );
+    if (!written.ok) return { result: 'failed', why: written.outcome, created, amended };
+    amended.push(item.taskId);
+    // Связь проставляется у источника. Обратной не делаем намеренно: правка
+    // чужой задачи ради ссылки — это переезд карточки в ту же колонку и лишняя
+    // запись в её журнале, а сам источник и так назван в тексте дополнения.
+    next = relate(next, item.taskId);
   }
 
   // Вопрос записывается ТЕМ ЖЕ действием, что и переход в ожидание.
@@ -153,17 +199,23 @@ async function transferReport(action, io) {
       what: report.summary,
       links: report.links ?? {},
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
-      problem: verdict.status === 'failed' ? verdict.note : undefined,
+      problem: halted ? verdict.note : undefined,
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
     [asked, answered].filter(Boolean),
   );
-  if (!push.ok) return { result: 'failed', why: push.outcome, created };
+  if (!push.ok) return { result: 'failed', why: push.outcome, created, amended };
 
   // Отчёт снимается с очереди только после удавшейся отправки: иначе
   // при неудаче этап пришлось бы проходить заново, потеряв уже сделанное.
   io.removeReport(action.taskId, action.stage);
-  return { result: 'done', status: verdict.status, created, rejected: plan.rejected };
+  return {
+    result: 'done',
+    status: verdict.status,
+    created,
+    amended,
+    rejected: [...plan.rejected, ...facts.rejected],
+  };
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
@@ -397,20 +449,42 @@ async function pollExternal(action, io) {
     : { result: 'failed', why: push.outcome };
 }
 
-/** Остановить задачу: продолжения исчерпаны, дальше нужен человек. */
+/**
+ * Остановить задачу: продолжения исчерпаны, сама она дальше не двинется.
+ *
+ * Куда именно — решает `haltOf`: рабочая задача идёт в разбор, а задача,
+ * уже стоящая в разборе, — в ошибку. Разбора разбора не бывает.
+ */
 async function failStage(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
+  return halt(task, action.reason, io);
+}
 
-  const moved = applyTransition(task, { status: 'failed', note: action.reason, now: io.now });
+/**
+ * Общий ход остановки: перевод, забывание прежнего разбора, запись.
+ *
+ * Сессия разбора забывается при каждом входе в него. Память о сессиях
+ * переживает и этап, и перезапуск супервизора, поэтому задача, однажды
+ * разобранная, поднятая человеком и упавшая снова, возобновила бы прошлый
+ * разбор — а тот ответил бы из своей памяти «уже разобрала», не читая нового
+ * лога. Это в точности та беда, ради которой заведён `forgetSession`.
+ */
+async function halt(task, why, io) {
+  const status = haltOf(task);
+  const moved = applyTransition(task, { status, note: why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  if (status === 'postmortem') io.forgetSession?.(task.id, 'postmortem');
 
   const push = await io.saveTask(
     moved.task,
-    { at: io.now, from: task.status, to: 'failed', problem: action.reason },
-    `chore(backlog): ${task.id} остановлена, нужен разбор`,
+    { at: io.now, from: task.status, to: status, problem: why },
+    `chore(backlog): ${task.id} остановлена, ${
+      status === 'postmortem' ? 'нужен разбор' : 'разбор не довёл до причины'
+    }`,
   );
-  return push.ok ? { result: 'done', status: 'failed' } : { result: 'failed', why: push.outcome };
+  return push.ok ? { result: 'done', status } : { result: 'failed', why: push.outcome };
 }
 
 /**
@@ -434,16 +508,7 @@ async function cleanupTask(action, io) {
 
   if (verdict.verdict === 'wait') return { result: 'skipped', why: verdict.why };
 
-  if (verdict.verdict === 'fail') {
-    const moved = applyTransition(task, { status: 'failed', note: verdict.why, now: io.now });
-    if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-    const push = await io.saveTask(
-      moved.task,
-      { at: io.now, from: task.status, to: 'failed', problem: verdict.why },
-      `chore(backlog): ${task.id} уборка отменена, нужен разбор`,
-    );
-    return push.ok ? { result: 'done', status: 'failed' } : { result: 'failed', why: push.outcome };
-  }
+  if (verdict.verdict === 'fail') return halt(task, verdict.why, io);
 
   if (verdict.verdict === 'proceed') {
     const swept = cleanup({ task, entry, io });

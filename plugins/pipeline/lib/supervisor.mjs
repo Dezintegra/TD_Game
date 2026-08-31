@@ -26,6 +26,7 @@ export function createSupervisor({
   stages = {},
   log = () => {},
   writeStageLog = () => {},
+  readStageLog = () => null,
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
@@ -88,6 +89,13 @@ export function createSupervisor({
           task: assignment.task,
           journal: assignment.journal,
           board: assignment.board,
+          // Разбору дают лог того этапа, из которого задача упала. Его имя
+          // хранит сама задача — состоянием возврата, — и потому спрашивается
+          // здесь, а не угадывается по журналу.
+          stageLog:
+            assignment.stage === 'postmortem'
+              ? readStageLog(assignment.taskId, assignment.task?.returnTo)
+              : null,
         }),
         config,
         root,

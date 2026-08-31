@@ -16,6 +16,33 @@ import { canTransition } from '../config/transitions.mjs';
 export const OUTCOMES = ['done', 'rejected', 'question', 'failed'];
 
 /**
+ * Куда ведёт остановка задачи.
+ *
+ * Прямо в ошибку задача больше не падает: между рабочим этапом и ошибкой
+ * стоит разбор, который читает журнал и лог упавшего этапа, называет причину
+ * и заявляет её починку. Иначе причина остаётся в логе, которого не читает
+ * никто, и через день роняет следующую задачу.
+ *
+ * Единственное исключение — сам разбор. Не сумев разобраться, он
+ * останавливает задачу, а не назначает разбор разбора: петля крутилась бы,
+ * пока её не заметит человек.
+ *
+ * Правило живёт одной функцией, а не восемью условиями по двум файлам:
+ * восемь копий одного правила — это восемь мест, где оно однажды разойдётся.
+ */
+export const haltOf = (task) => (task.status === 'postmortem' ? 'failed' : 'postmortem');
+
+/** Остановка задачи с названной причиной. */
+const halt = (task, why, problems = []) => ({
+  status: haltOf(task),
+  // Состояние возврата считает переход: из сквозного в сквозное оно
+  // наследуется, чтобы человек поднял задачу в упавший этап, а не в разбор.
+  returnTo: task.status,
+  note: why,
+  problems,
+});
+
+/**
  * Куда ведёт успешно законченный этап.
  *
  * Разбор нарочно табличный: маршрут читается глазами целиком, а не
@@ -49,6 +76,11 @@ function afterDone(task) {
       return 'cleanup';
     case 'cleanup':
       return 'closed';
+    // Удавшийся разбор ошибки ведёт задачу в саму ошибку — и это не сбой,
+    // а его назначение. Разбор не спасает задачу, а объясняет, почему её
+    // не удалось довести; поднимает её оттуда человек.
+    case 'postmortem':
+      return 'failed';
     // Ответ владельца продукта возвращает задачу туда, откуда она ушла.
     // Без этой ветки отчёт спрашивающей сессии было бы некуда применить,
     // и единственным выходом из ожидания остался бы ответ, вписанный
@@ -90,23 +122,18 @@ export function applyReport(task, report, limits = {}) {
 
   if (!OUTCOMES.includes(report.outcome)) {
     problems.push(`неизвестный исход «${report.outcome}»`);
-    return { status: 'failed', returnTo: task.status, note: problems.join('; '), problems };
+    return halt(task, problems.join('; '), problems);
   }
 
   if (report.stage !== task.status) {
     // Отчёт о чужом этапе означает, что состояние успели сменить без нас.
     // Молча применять его нельзя: он посчитан по другой картине.
     problems.push(`отчёт об этапе «${report.stage}», а задача в «${task.status}»`);
-    return { status: 'failed', returnTo: task.status, note: problems.join('; '), problems };
+    return halt(task, problems.join('; '), problems);
   }
 
   if (report.outcome === 'failed') {
-    return {
-      status: 'failed',
-      returnTo: task.status,
-      note: report.summary ?? 'этап завершился неуспешно',
-      problems,
-    };
+    return halt(task, report.summary ?? 'этап завершился неуспешно', problems);
   }
 
   if (report.outcome === 'question') {
@@ -126,21 +153,21 @@ export function applyReport(task, report, limits = {}) {
     if (already >= limits.maxRejections) {
       const why =
         `${already}-й возврат подряд из «${task.status}»: стороны не сходятся, ` +
-        `нужен разбор человеком. Последнее замечание: ${report.summary ?? 'без пояснения'}`;
-      return { status: 'failed', returnTo: task.status, note: why, problems };
+        `нужен разбор. Последнее замечание: ${report.summary ?? 'без пояснения'}`;
+      return halt(task, why, problems);
     }
   }
 
   const target = report.outcome === 'done' ? afterDone(task) : afterRejected(task);
   if (!target) {
     problems.push(`из «${task.status}» исход «${report.outcome}» никуда не ведёт`);
-    return { status: 'failed', returnTo: task.status, note: problems.join('; '), problems };
+    return halt(task, problems.join('; '), problems);
   }
 
   const verdict = canTransition(task, target);
   if (!verdict.ok) {
     problems.push(verdict.reason);
-    return { status: 'failed', returnTo: task.status, note: verdict.reason, problems };
+    return halt(task, verdict.reason, problems);
   }
 
   return {
@@ -182,7 +209,7 @@ export function applyExternal(task, external) {
         note: 'прогон закончен, числа в журнале — вывод делает толкование',
       };
     }
-    return { status: 'failed', returnTo: 'benchmark', note: 'прогон не удался' };
+    return halt(task, 'прогон не удался');
   }
 
   return { status: task.status, returnTo: task.returnTo, note: 'опрос не относится к состоянию' };
