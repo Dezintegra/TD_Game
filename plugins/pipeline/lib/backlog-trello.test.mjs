@@ -63,8 +63,8 @@ const card = (over = {}) => ({
   ...over,
 });
 
-const backlog = (over = {}, trello = fakeTrello()) =>
-  createTrelloBacklog({ trello, config, snapshot: snapshot(over) });
+const backlog = (over = {}, trello = fakeTrello(), machine = null) =>
+  createTrelloBacklog({ trello, config, snapshot: snapshot(over), machine });
 
 describe('чтение задач', () => {
   it('карточка читается как задача', () => {
@@ -260,6 +260,52 @@ describe('захват задачи назначением исполнител�
       why: 'member is already on the card',
     });
     const store = backlog({ cards: [card()] }, trello);
+
+    expect(await store.acquire(task)).toMatchObject({ ok: false, outcome: 'taken' });
+  });
+
+  it('своё же назначение не мешает довести взятие до конца', async () => {
+    // Участник доски один на все станции, поэтому «уже назначено» само
+    // по себе не говорит, кто держит задачу. Говорит отметка владельца:
+    // наше имя означает оборванный собственный захват. Пока разницы
+    // не было, задача 0016 висела с 28.08.2026 неберущейся — и своим
+    // состоянием занимала единственное место исполнителя, останавливая
+    // весь бэклог.
+    const trello = withMe({
+      ok: false,
+      kind: 'refused',
+      status: 400,
+      why: 'member is already on the card',
+    });
+    const store = backlog({ cards: [card({ meta: { owner: 'станция-1' } })] }, trello, 'станция-1');
+
+    expect(await store.acquire(task)).toMatchObject({ ok: true, outcome: 'ours' });
+  });
+
+  it('чужой захват остаётся чужим, и хозяин называется', async () => {
+    const trello = withMe({
+      ok: false,
+      kind: 'refused',
+      status: 400,
+      why: 'member is already on the card',
+    });
+    const store = backlog({ cards: [card({ meta: { owner: 'станция-2' } })] }, trello, 'станция-1');
+
+    const result = await store.acquire(task);
+    expect(result).toMatchObject({ ok: false, outcome: 'taken' });
+    expect(result.why).toContain('станция-2');
+  });
+
+  it('без имени станции разбирать нечего: занято значит занято', async () => {
+    // Читающий сценарий имени машины не передаёт, и молча считать чужой
+    // захват своим ему нельзя.
+    const trello = withMe({
+      ok: false,
+      kind: 'refused',
+      status: 400,
+      why: 'member is already on the card',
+    });
+    const store = backlog({ cards: [card({ meta: { owner: 'станция-1' } })] }, trello);
 
     expect(await store.acquire(task)).toMatchObject({ ok: false, outcome: 'taken' });
   });
