@@ -115,6 +115,31 @@ describe('сборка базы из сжатого лога', () => {
     expect(commandsIn(db, 'проверка')).toHaveLength(4);
   });
 
+  it('прерванный прогон оставляет годные записи', () => {
+    // Ради этого свойства писатель и дописывает в конец, а не переписывает
+    // файл целиком. Проверка нужна отдельно от чтения: годный сжатый лог
+    // читается и обычным gunzipSync — а вот недописанный он роняет
+    // целиком, вместе с порциями, которые легли на диск задолго до обрыва.
+    const whole = [HEADER, command(10), command(20)];
+    const lost = [command(30), command(40), FOOTER];
+
+    const path = join(dir, 'cut.jsonl.gz');
+    const packed = Buffer.concat([
+      asMultiMemberGzip(whole, whole.length),
+      asMultiMemberGzip(lost, lost.length),
+    ]);
+    // Обрыв посреди последней порции: диск успел принять её начало.
+    writeFileSync(path, packed.subarray(0, packed.length - 8));
+
+    const result = ingestFile(db, path);
+
+    // Матч записан, две команды до обрыва на месте. Что уцелело
+    // от оборванной порции — дело случая, поэтому проверяется нижняя
+    // граница, а не точное число: важно, что уцелевшее не потеряно.
+    expect(result.matches).toBe(1);
+    expect(commandsIn(db, 'проверка').length).toBeGreaterThanOrEqual(2);
+  });
+
   it('имя лога узнаётся по обоим расширениям', () => {
     expect(isLogName('матч.jsonl')).toBe(true);
     expect(isLogName('матч.jsonl.gz')).toBe(true);
