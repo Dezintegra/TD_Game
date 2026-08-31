@@ -89,7 +89,7 @@ export function nextId(existingIds, title) {
  * Негодную заявку лучше отвергнуть с причиной, чем завести задачу, которую
  * никто не сможет истолковать.
  */
-export function taskFromRequest(request, { id, now, sourceId }) {
+export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }) {
   const problems = [];
 
   const type = ['feature', 'run', 'note'].includes(request?.type) ? request.type : null;
@@ -120,13 +120,21 @@ export function taskFromRequest(request, { id, now, sourceId }) {
     // себе работу сам, а человек узнавал об этом, когда задача уже шла
     // по маршруту.
     //
-    // Прогон — исключение, и единственное. Он заводится не потому, что так
-    // придумал агент, а потому что правило требует замера при вливании
-    // правки, задевшей правила игры. Решение принято раньше и не им.
-    // Задержись прогон в шлюзе — в главную ветку уедет правка баланса
-    // без заказанного замера, то есть ровно тот тихий сдвиг, от которого
-    // правило и стоит.
-    status: type === 'run' ? 'new' : 'candidate',
+    // Исключений из шлюза ровно два, и оба одной природы: решение принято
+    // не агентом.
+    //
+    // Прогон заводится потому, что правило требует замера при вливании
+    // правки, задевшей правила игры. Задержись он в шлюзе — в главную ветку
+    // уедет правка баланса без заказанного замера, то есть ровно тот тихий
+    // сдвиг, от которого правило и стоит.
+    //
+    // Блокирующая причина — потому, что конвейер не может вести СЛЕДУЮЩИЕ
+    // задачи. Пока человек смотрит на доску, та же причина роняет всё, что
+    // конвейер успевает взять, и кандидат в этих условиях не шлюз, а пробка.
+    // Право метить заявку блокирующей есть не у всякого этапа: `mayQueue`
+    // спрашивается у того, кто разбирает отчёт, — иначе шлюз кандидатов
+    // размылся бы до необязательного.
+    status: type === 'run' || (mayQueue && request.blocking === true) ? 'new' : 'candidate',
     returnTo: null,
     priority: Math.min(999, Math.max(0, priority)),
     createdAt: now,
@@ -156,20 +164,82 @@ export function taskFromRequest(request, { id, now, sourceId }) {
  * Идентификаторы выдаются заранее и все разом: они нужны, чтобы связать
  * порождённые задачи с породившей ещё до того, как хоть одна записана.
  */
-export function planRequests(requests, { existingIds, now, sourceId }) {
+export function planRequests(requests, { existingIds, now, sourceId, sourceStage = null }) {
   const planned = [];
   const rejected = [];
   const taken = [...existingIds];
 
+  // Право заводить работу мимо шлюза кандидатов есть только у разбора
+  // ошибки: он судит не о том, что игре не помешало бы, а о том, почему
+  // конвейер встал.
+  const mayQueue = sourceStage === 'postmortem';
+
   for (const request of requests ?? []) {
     const id = nextId(taken, request?.title ?? 'zadacha');
-    const { task, problems } = taskFromRequest(request, { id, now, sourceId });
+    const { task, problems } = taskFromRequest(request, { id, now, sourceId, mayQueue });
     if (!task) {
       rejected.push({ request, problems });
       continue;
     }
     taken.push(id);
     planned.push(task);
+  }
+
+  return { planned, rejected };
+}
+
+/**
+ * Состояния, задачи в которых дополнений не принимают.
+ *
+ * Та же причина, всплывшая после закрытия задачи, — это не «ещё один
+ * случай», а регрессия: закрытую задачу починили и проверили, и приписывать
+ * к ней новую фактуру значит хоронить сигнал в законченной истории.
+ * Остановленная не лучше: её саму ещё предстоит поднимать человеку.
+ */
+const CLOSED_TO_FACTS = ['closed', 'failed'];
+
+/**
+ * Разобрать дополнения отчёта.
+ *
+ * Дополнение — это фактура к уже заведённой задаче: «та же причина, вот
+ * ещё один случай». Оно ничего не двигает и никого не заводит, поэтому
+ * и проверок ему нужно немного — но нужны: `taskId` приходит из отчёта
+ * сессии, то есть из недоверенного по сути места.
+ *
+ * Одна негодная запись не отменяет остальных: каждая проверяется сама
+ * по себе, а причина отказа уезжает в журнал разбираемой задачи.
+ *
+ * @param {object[]} amendments перечень `{ taskId, facts }`
+ * @param {object} params  `known` — задачи бэклога по идентификаторам,
+ *                         `sourceId` — кто дополняет
+ * @returns {{ planned: object[], rejected: object[] }}
+ */
+export function planAmendments(amendments, { known, sourceId }) {
+  const planned = [];
+  const rejected = [];
+
+  for (const amendment of amendments ?? []) {
+    const taskId = String(amendment?.taskId ?? '').trim();
+    const facts = String(amendment?.facts ?? '').trim();
+    const problems = [];
+
+    if (!taskId) problems.push('в дополнении не названа задача');
+    else if (taskId === sourceId) problems.push('дополнить саму себя задача не может');
+
+    const target = taskId ? (known.get?.(taskId) ?? known[taskId]) : null;
+    if (taskId && taskId !== sourceId && !target) {
+      problems.push(`задачи ${taskId} нет в бэклоге`);
+    }
+    if (target && CLOSED_TO_FACTS.includes(target.status)) {
+      problems.push(
+        `задача ${taskId} в состоянии «${target.status}» и дополнений не принимает: ` +
+          'та же причина после закрытия — это регрессия, и ей нужна своя задача',
+      );
+    }
+    if (!facts) problems.push(`дополнение к ${taskId || 'задаче'} пусто`);
+
+    if (problems.length > 0) rejected.push({ amendment, problems });
+    else planned.push({ taskId, facts });
   }
 
   return { planned, rejected };

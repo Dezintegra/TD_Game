@@ -9,7 +9,7 @@ import {
   releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
-import { planRequests } from './requests.mjs';
+import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 
@@ -99,11 +99,30 @@ async function transferReport(action, io) {
     existingIds: io.allTaskIds(),
     now: io.now,
     sourceId: task.id,
+    // Этап, с которого пришёл отчёт: по нему решается, слушать ли признак
+    // блокирующей заявки. Право заводить работу мимо шлюза кандидатов есть
+    // только у разбора ошибки.
+    sourceStage: task.status,
   });
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
     plan.notes = [...(plan.notes ?? []), `заявка отклонена: ${bad.problems.join('; ')}`];
+  }
+
+  // Дополнения разбираются здесь же и по тем же правилам: одна негодная
+  // запись не отменяет остальных, а причина отказа уезжает в журнал.
+  const facts = planAmendments(report.amendments, {
+    known: new Map(
+      io
+        .allTaskIds()
+        .map((id) => [id, io.readTask(id)])
+        .filter(([, item]) => item),
+    ),
+    sourceId: task.id,
+  });
+  for (const bad of facts.rejected) {
+    plan.notes = [...(plan.notes ?? []), `дополнение отклонено: ${bad.problems.join('; ')}`];
   }
 
   // Задачи по заявкам заводятся ПЕРЕД сменой состояния породившей, и порядок
@@ -125,6 +144,24 @@ async function transferReport(action, io) {
     if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
     created.push(born.id);
     next = relate(next, born.id);
+  }
+
+  // Дополнения уезжают тем же порядком и по той же причине: до смены
+  // состояния, каждое своим коммитом. Неудача здесь не оставляет следов —
+  // состояние не тронуто, отчёт цел, следующий цикл начнёт заново.
+  const amended = [];
+  for (const item of facts.planned) {
+    const written = await io.amendTask(
+      item.taskId,
+      `**Дополнение по разбору ${task.id}**\n\n${item.facts}\n`,
+      `chore(backlog): ${item.taskId} дополнена фактурой из разбора ${task.id}`,
+    );
+    if (!written.ok) return { result: 'failed', why: written.outcome, created, amended };
+    amended.push(item.taskId);
+    // Связь проставляется у источника. Обратной не делаем намеренно: правка
+    // чужой задачи ради ссылки — это переезд карточки в ту же колонку и лишняя
+    // запись в её журнале, а сам источник и так назван в тексте дополнения.
+    next = relate(next, item.taskId);
   }
 
   // Вопрос записывается ТЕМ ЖЕ действием, что и переход в ожидание.
@@ -167,12 +204,18 @@ async function transferReport(action, io) {
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
     [asked, answered].filter(Boolean),
   );
-  if (!push.ok) return { result: 'failed', why: push.outcome, created };
+  if (!push.ok) return { result: 'failed', why: push.outcome, created, amended };
 
   // Отчёт снимается с очереди только после удавшейся отправки: иначе
   // при неудаче этап пришлось бы проходить заново, потеряв уже сделанное.
   io.removeReport(action.taskId, action.stage);
-  return { result: 'done', status: verdict.status, created, rejected: plan.rejected };
+  return {
+    result: 'done',
+    status: verdict.status,
+    created,
+    amended,
+    rejected: [...plan.rejected, ...facts.rejected],
+  };
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */

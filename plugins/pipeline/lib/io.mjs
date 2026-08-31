@@ -103,6 +103,24 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
       return { ...push, paths };
     },
 
+    /**
+     * Дописать фактуру в журнал задачи, не трогая её саму.
+     *
+     * Дополняется ЖУРНАЛ, а не описание. Описание — единственное место, где
+     * живёт постановка задачи, и дописывать в него из чужого разбора значит
+     * однажды затереть чужую формулировку. Журнал же для того и заведён.
+     *
+     * Сама задача не сохраняется вовсе: ни состояния, ни положения в очереди
+     * дополнение не меняет. Поэтому и коммит здесь один, на файл журнала.
+     */
+    amendTask(taskId, text, message) {
+      const paths = [journalPath(taskId)];
+      this.appendJournal(taskId, text);
+      const push = this.commitAndPush(paths, message);
+      if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
+      return { ...push, paths };
+    },
+
     /** Завести новую задачу: запись плюс отправка своим коммитом. */
     createTask(task, message) {
       const paths = [taskPath(task.id)];
