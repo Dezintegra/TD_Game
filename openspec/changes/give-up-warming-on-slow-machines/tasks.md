@@ -5,7 +5,7 @@
 
 ## 1. Прогрев отчитывается о сделанном
 
-- [ ] 1.1 `scene.ts`: `RendererHost.warm(budgetMs)` возвращает
+- [x] 1.1 `scene.ts`: `RendererHost.warm(budgetMs)` возвращает
       `{ baked, rest }` вместо `boolean`. `session.ts` читает `rest > 0`
       там, где читал `true`. Поведение не меняется ничем.
 

@@ -147,7 +147,7 @@ const startWarming = (renderer: RendererHost): void => {
     // такого не знает, и ему остаётся кадровый бюджет.
     const budget = deadline === undefined ? FRAME_WORK_BUDGET_MS : deadline.timeRemaining();
 
-    if (renderer.warm(budget)) whenIdle(step);
+    if (renderer.warm(budget).rest > 0) whenIdle(step);
     else warming = false;
   };
 
