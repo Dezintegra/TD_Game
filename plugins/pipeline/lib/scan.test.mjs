@@ -57,10 +57,70 @@ describe('пустая картина', () => {
   it('негодная запись в работу не берётся и названа', () => {
     const result = run({
       tasks: [],
-      invalid: [{ id: '0009-bad', problems: ['нет поля priority'] }],
+      invalid: [{ id: '0009-bad', problems: ['нет поля priority'], status: 'new', flags: [] }],
     });
-    expect(result.actions).toEqual([]);
+    expect(result.actions.some((action) => action.kind === 'start-stage')).toBe(false);
     expect(result.notes.join()).toContain('0009-bad');
+  });
+});
+
+describe('негодная карточка', () => {
+  const bad = (over = {}) => ({
+    id: '0009-bad',
+    problems: ['нет метки вида прогона'],
+    status: 'new',
+    flags: [],
+    ...over,
+  });
+
+  it('уносится в ошибку с претензиями и состоянием возврата', () => {
+    // Пока карточка стоит в очереди неотличимо от годных, её беда видна
+    // только в журнале цикла — и повторяется там каждые пять минут, пока
+    // кто-нибудь не заглянет. 0054 и 0062 простояли так сутки.
+    const [action] = run({ invalid: [bad()] }).actions;
+    expect(action).toMatchObject({
+      kind: 'quarantine-card',
+      taskId: '0009-bad',
+      returnTo: 'new',
+    });
+    expect(action.problems).toEqual(['нет метки вида прогона']);
+  });
+
+  it('карточка из чужой колонки возвращается в очередь', () => {
+    // Состояния у неё нет вовсе: ни в одном состоянии маршрута она не была.
+    const [action] = run({ invalid: [bad({ status: null })] }).actions;
+    expect(action.returnTo).toBe('new');
+  });
+
+  it('под живым этапом не трогается', () => {
+    // Утащить задачу из-под работающей сессии хуже испорченного описания:
+    // этап останется без задачи, а его отчёт — без места приложения.
+    const result = run({
+      invalid: [bad({ status: 'implement' })],
+      running: [{ taskId: '0009-bad', stage: 'implement' }],
+    });
+    expect(result.actions.some((action) => action.kind === 'quarantine-card')).toBe(false);
+    expect(result.notes.join()).toContain('унесём, когда закончится');
+  });
+
+  it('уже стоящая в карантине второго комментария не получает', () => {
+    const result = run({ invalid: [bad({ status: 'failed', flags: ['unparsed'] })] });
+    expect(result.actions.some((action) => action.kind === 'quarantine-card')).toBe(false);
+  });
+
+  it('в ошибке, но ещё без метки — уносится, чтобы получить пометку', () => {
+    const result = run({ invalid: [bad({ status: 'failed', flags: [] })] });
+    expect(result.actions.some((action) => action.kind === 'quarantine-card')).toBe(true);
+  });
+
+  it('исправленная лишается метки', () => {
+    const [action] = run({ tasks: [], marked: ['0010-fixed'] }).actions;
+    expect(action).toMatchObject({ kind: 'clear-card', taskId: '0010-fixed' });
+  });
+
+  it('пауза останавливает и карантин: доску конвейер тогда не правит', () => {
+    const result = run({ invalid: [bad()], marked: ['0010-fixed'], paused: true });
+    expect(result.actions).toEqual([]);
   });
 });
 

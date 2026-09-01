@@ -254,6 +254,84 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     },
 
     /**
+     * Унести негодную карточку в карантин.
+     *
+     * Три записи, и порядок их таков, что обрыв между ними не создаёт
+     * неразрешимого состояния: переехавшая без метки получит метку
+     * следующим циклом, помеченная без комментария — комментарий.
+     *
+     * Состояние возврата записывается ВМЕСТЕ с переездом, одним запросом.
+     * Разъедься они — карточка заперлась бы в ошибке навсегда: из неё
+     * задача выходит только в сохранённое состояние, и возврат
+     * исправленной карточки отменялся бы как недопустимый переход.
+     *
+     * Карточка без разобранного служебного блока — обычное дело здесь:
+     * порча блока сама по себе повод для карантина. Тогда блок пишется
+     * заново из того немногого, что известно, и это лучше, чем ничего:
+     * без него возврат снова стал бы невозможен.
+     */
+    async quarantineCard(id, { problems, returnTo }) {
+      const item = byId.get(id);
+      if (!item) return { ok: false, outcome: 'failed', why: `карточки задачи ${id} нет` };
+
+      const idList = listIdByState.get('failed');
+      if (!idList) {
+        return { ok: false, outcome: 'failed', why: 'на доске нет колонки для «failed»' };
+      }
+
+      const moved = await trello.put(`cards/${item.card.id}`, {
+        idList,
+        desc: joinDescription(item.card.human, metaOf({ ...item.task, returnTo })),
+      });
+      if (!moved.ok) return failure(moved);
+
+      const labelId = labelIdByKey.get('unparsed');
+      if (labelId && !item.card.flags.includes('unparsed')) {
+        const marked = await trello.post(`cards/${item.card.id}/idLabels`, { value: labelId });
+        if (!marked.ok) return failure(marked);
+      }
+
+      // Претензии переносятся дословно: они написаны для человека и уже
+      // содержат указание, что исправить. Пересказывать их своими словами
+      // значило бы терять именно ту часть, ради которой они писались.
+      const written = await comment(
+        item.card.id,
+        [
+          '**Карточка не прошла проверку и убрана в «Ошибку».**',
+          '',
+          ...problems.map((problem) => `- ${problem}`),
+          '',
+          `Исправьте перечисленное и верните карточку в «${trelloConfig.lists[returnTo] ?? returnTo}» — ` +
+            'метка снимется сама.',
+        ].join('\n'),
+      );
+      if (!written.ok) return failure(written);
+
+      return { ok: true, outcome: 'saved' };
+    },
+
+    /**
+     * Снять с исправленной карточки метку «не разобрано».
+     *
+     * Комментарий с прежними претензиями не трогается: он часть истории
+     * карточки, и по нему видно, чем она болела. Снимается только краснота,
+     * которую иначе не уберёт никто — человек, исправивший карточку,
+     * о метке уже не думает.
+     */
+    async clearCard(id) {
+      const item = byId.get(id);
+      if (!item) return { ok: false, outcome: 'failed', why: `карточки задачи ${id} нет` };
+
+      const labelId = labelIdByKey.get('unparsed');
+      if (!labelId || !item.card.flags.includes('unparsed')) {
+        return { ok: true, outcome: 'saved' };
+      }
+
+      const cleared = await trello.delete(`cards/${item.card.id}/idLabels/${labelId}`);
+      return cleared.ok ? { ok: true, outcome: 'saved' } : failure(cleared);
+    },
+
+    /**
      * Захватить задачу назначением исполнителя в карточке.
      *
      * Это операция «сравни-и-запиши», и в этом весь смысл. Проверено

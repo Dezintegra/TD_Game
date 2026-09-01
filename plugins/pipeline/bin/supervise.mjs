@@ -25,7 +25,7 @@ import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from '../lib/cycle.mjs';
 import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
 import { createTrelloBacklog } from '../lib/backlog-trello.mjs';
-import { checkCard } from '../lib/validate-card.mjs';
+import { sortCards } from '../lib/validate-card.mjs';
 
 /**
  * Супервизор: долгий процесс, который ведёт конвейер.
@@ -197,18 +197,13 @@ async function openBacklog({ mayWrite }) {
     ? await store.adoptOrphans()
     : { adopted: [], problems: [], skipped: true };
 
-  const tasks = [];
-  const invalid = [];
-  for (const item of store.parsedCards()) {
-    const problems = checkCard(item);
-    if (problems.length > 0) invalid.push({ id: item.task.id ?? item.card.name, problems });
-    else tasks.push(item.task);
-  }
+  const { tasks, invalid, marked } = sortCards(store.parsedCards());
 
   return {
     ok: true,
     tasks,
     invalid,
+    marked,
     store,
     notes: [
       ...adopted.problems,
@@ -286,6 +281,7 @@ async function turn() {
   const state = {
     tasks: backlog.tasks,
     invalid: backlog.invalid,
+    marked: backlog.marked ?? [],
     registry,
     reports: supervisor.reports,
     running: supervisor.running(),

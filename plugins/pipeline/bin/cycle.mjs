@@ -12,7 +12,7 @@ import { resolveConfig } from '../config/defaults.mjs';
 import { scan } from '../lib/scan.mjs';
 import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
 import { createTrelloBacklog } from '../lib/backlog-trello.mjs';
-import { checkCard } from '../lib/validate-card.mjs';
+import { sortCards } from '../lib/validate-card.mjs';
 
 /**
  * Что конвейер собирается делать.
@@ -97,14 +97,7 @@ async function openBacklog(config) {
   }
 
   const store = createTrelloBacklog({ trello, config, snapshot: board, machine: hostname() });
-  const tasks = [];
-  const invalid = [];
-  for (const item of store.parsedCards()) {
-    const problems = checkCard(item);
-    if (problems.length > 0) invalid.push({ id: item.task.id ?? item.card.name, problems });
-    else tasks.push(item.task);
-  }
-  return { ok: true, tasks, invalid };
+  return { ok: true, ...sortCards(store.parsedCards()) };
 }
 
 async function main() {
@@ -124,6 +117,7 @@ async function main() {
   const decision = scan({
     tasks: backlog.tasks,
     invalid: backlog.invalid,
+    marked: backlog.marked ?? [],
     registry,
     reports: [],
     // Живых этапов смотрящий прогон не знает: дескрипторы у супервизора.

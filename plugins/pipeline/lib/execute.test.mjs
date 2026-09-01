@@ -995,6 +995,73 @@ describe('дополнение существующей задачи', () => {
   });
 });
 
+describe('карантин негодной карточки', () => {
+  const quarantine = {
+    kind: 'quarantine-card',
+    taskId: '0009-bad',
+    problems: ['нет метки вида прогона'],
+    returnTo: 'new',
+  };
+
+  /** Переходник с доской: у файлового этих методов нет вовсе. */
+  const withBoard = (over = {}) => {
+    const io = fakeIo();
+    const calls = [];
+    io.quarantineCard = (taskId, params) => {
+      calls.push({ taskId, ...params });
+      return over.quarantine ?? { ok: true, outcome: 'saved' };
+    };
+    io.clearCard = (taskId) => {
+      calls.push({ cleared: taskId });
+      return over.clear ?? { ok: true, outcome: 'saved' };
+    };
+    return { io, calls };
+  };
+
+  it('карточка уносится вместе с претензиями и состоянием возврата', async () => {
+    const { io, calls } = withBoard();
+    const [result] = await execute([quarantine], io);
+
+    expect(result.result).toBe('done');
+    expect(calls[0]).toMatchObject({
+      taskId: '0009-bad',
+      problems: ['нет метки вида прогона'],
+      returnTo: 'new',
+    });
+  });
+
+  it('задачи в бэклоге при этом не ищут: её там и нет', async () => {
+    // Карточка негодна как раз потому, что задачей не читается. Требуй
+    // это действие задачу — оно не сработало бы никогда.
+    const { io } = withBoard();
+    const [result] = await execute([quarantine], io);
+    expect(result.result).toBe('done');
+    expect(io.tasks.has('0009-bad')).toBe(false);
+  });
+
+  it('неудача доски названа, а не проглочена', async () => {
+    const { io } = withBoard({ quarantine: { ok: false, outcome: 'offline', why: 'нет сети' } });
+    const [result] = await execute([quarantine], io);
+    expect(result).toMatchObject({ result: 'failed', why: 'нет сети' });
+  });
+
+  it('файловый бэклог отвечает пропуском с причиной, а не падением', async () => {
+    // Там негодную запись отбивает JSON Schema, и «перенести» её значило бы
+    // переписать файл, который схему не прошёл.
+    const [result] = await execute([quarantine], fakeIo());
+    expect(result).toMatchObject({ result: 'skipped' });
+    expect(result.why).toContain('только доска');
+  });
+
+  it('исправленная карточка лишается метки', async () => {
+    const { io, calls } = withBoard();
+    const [result] = await execute([{ kind: 'clear-card', taskId: '0010-fixed' }], io);
+
+    expect(result.result).toBe('done');
+    expect(calls[0]).toEqual({ cleared: '0010-fixed' });
+  });
+});
+
 describe('досылка хвоста ветки задачи', () => {
   const tail = {
     kind: 'push-tail',
