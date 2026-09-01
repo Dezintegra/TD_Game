@@ -143,7 +143,11 @@ export function createSupervisor({
         startedAt: now(),
         startedMs: nowMs(),
         timeoutMs,
-        turns: 0,
+        // Событий ассистента, а не ходов. Различие не педантизм: приложение
+        // считает ходы по-своему и в итоговом событии даёт другое число —
+        // проба 01.09.2026 дала восемь против пяти. Одно слово с двумя
+        // разными числами в соседних строках читателя обманывает.
+        steps: 0,
         last: null,
         handle: null,
       };
@@ -229,7 +233,7 @@ export function createSupervisor({
    */
   function watch(child, event, line) {
     if (event?.type === 'result') return;
-    if (event?.type === 'assistant') child.turns += 1;
+    if (event?.type === 'assistant') child.steps += 1;
 
     const said = describeEvent(event);
     if (said.length === 0) {
@@ -257,7 +261,7 @@ export function createSupervisor({
       say.line(
         TAG.pulse,
         `${child.taskId} ${child.stage}: идёт ${humanDuration(ran)} из ${humanDuration(child.timeoutMs)}` +
-          `, до срока ${humanDuration(left)}, ходов ${child.turns}` +
+          `, до срока ${humanDuration(left)}, событий ${child.steps}` +
           `${child.last ? `; последнее — ${clip(child.last, 90)}` : '; пока молчит'}`,
       );
     }
