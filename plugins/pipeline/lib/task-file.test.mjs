@@ -246,3 +246,41 @@ describe('журнал', () => {
     expect(journalAppendix(task(), first, entry)).not.toContain('# 0001-one');
   });
 });
+
+describe('отказанные действия в журнале задачи', () => {
+  // Журнал задачи уезжает в промпт следующей сессии, а журнал цикла
+  // не уезжает никуда: отказ, названный только там, для работы невидим.
+  const denials = [
+    { tool_name: 'PowerShell', tool_input: { command: 'Remove-Item -Recurse .matchlog/run-42' } },
+    { tool_name: 'Glob', tool_input: { pattern: '~/Downloads/*.mp3' } },
+  ];
+
+  it('оба отказа названы с доводами вызова', () => {
+    const text = journalEntry({ at: NOW, from: 'benchmark', to: 'interpret', denials });
+    expect(text).toContain('**Отказано в действиях:**');
+    expect(text).toContain('- PowerShell: Remove-Item -Recurse .matchlog/run-42');
+    expect(text).toContain('- Glob: {"pattern":"~/Downloads/*.mp3"}');
+  });
+
+  it('без отказов раздела нет вовсе', () => {
+    const text = journalEntry({ at: NOW, from: 'design', to: 'audit', what: 'сделано' });
+    expect(text).not.toContain('Отказано в действиях');
+  });
+
+  it('отметка «сверять нечем» стоит строкой в том же разделе', () => {
+    const text = journalEntry({
+      at: NOW,
+      from: 'deploy',
+      to: 'cleanup',
+      denials,
+      denialsNote: 'сопоставить отказ с делом нечем: проверяемого следа у этапа нет',
+    });
+    expect(text).toContain('- сопоставить отказ с делом нечем');
+  });
+
+  it('одна отметка без отказов раздела не заводит', () => {
+    // Отметка объясняет отказ, а не заменяет его: без отказов объяснять нечего.
+    const text = journalEntry({ at: NOW, from: 'deploy', to: 'cleanup', denialsNote: 'нечем' });
+    expect(text).not.toContain('Отказано в действиях');
+  });
+});
