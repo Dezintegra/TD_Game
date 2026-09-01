@@ -14,6 +14,7 @@ import {
   shouldPause,
 } from '../lib/lock.mjs';
 import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
+import { checkEnvironment } from '../lib/environment.mjs';
 import { createGit } from '../lib/git.mjs';
 import { isPaused, readAnswers, readRegistry, readStages, readTasks } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
@@ -443,11 +444,26 @@ function greet() {
       ? `доска Trello ${config.trello?.board ?? '— не названа —'}`
       : `файлы в ${config.paths.tasks}`;
 
+  // Переменные подтягиваются ДО осмотра: иначе он честно доложит, что доступа
+  // к доске нет, при заполненном рядом файле.
+  const envFiles = loadEnv();
+  const world = checkEnvironment({
+    home,
+    root,
+    config,
+    run: (program, args) => runCommand(args, program),
+    exists: existsSync,
+    envFiles,
+  });
+
   say.block('СУПЕРВИЗОР КОНВЕЙЕРА ЗАПУЩЕН', [
     ['процесс', process.pid],
     ['инструмент', home],
     ['корень проекта', root],
-    ['настройка', configPath()],
+    [
+      'настройка',
+      existsSync(configPath()) ? configPath() : `${configPath()} — НЕТ, взяты умолчания`,
+    ],
     ['бэклог', backlogName],
     ['главная ветка', `${config.remote}/${config.mainBranch}`],
     ['оборот раз в', humanDuration(config.cycleMinutes * 60000)],
@@ -456,7 +472,18 @@ function greet() {
     ['вывод этапа', config.stageOutputFormat],
     flags.includes('--dry-run') && ['режим', 'ТЕНЬ: считаем и печатаем, мира не трогаем'],
     isPaused(root, config) && ['режим', 'ПАУЗА: новой работы не берём'],
+    ...world.rows,
   ]);
+
+  for (const problem of world.problems) note(problem, TAG.warn);
+
+  // Единственная нехватка, останавливающая запуск. Всё прочее — предупреждение:
+  // без `gh` конвейер прекрасно живёт, пока ни одна задача не дошла до проверок.
+  if (world.fatal) {
+    note(world.fatal, TAG.error);
+    releaseLock();
+    process.exit(1);
+  }
 }
 
 /** Чем кончился оборот, по-человечески. Коды исходов наружу не выносим. */
