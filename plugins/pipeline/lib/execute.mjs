@@ -9,6 +9,7 @@ import {
   releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
+import { judgeDenials } from './denials.mjs';
 import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
@@ -45,11 +46,67 @@ export const RESULT = {
   raced: 'задачу занял кто-то другой',
 };
 
+/**
+ * Улики о деле этапа: их спрашивают, только когда этапу в чём-то отказали.
+ *
+ * Отметка начала этапа живёт у супервизора, рядом с идентификатором сессии,
+ * а прочее берётся из git. Складываются они здесь, потому что сам суд над
+ * отказом — чистый счёт и ни о том, ни о другом не знает.
+ */
+function evidenceFor(task, stage, io) {
+  return {
+    ...(io.stageEvidence?.(task) ?? {}),
+    stageStartedAt: io.stageStartedAt?.(task.id, stage) ?? null,
+  };
+}
+
 /** Перенести отчёт сессии в бэклог. */
 async function transferReport(action, io) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
+
+  // Отказанные действия судят ЗДЕСЬ, а не в супервизоре, и после разбора
+  // отчёта, а не до него. До разбора неизвестны ни исход, ни ссылки — то
+  // есть ровно то, чем след и проверяется; суд получался бы вслепую и
+  // потому не мог не быть грубым.
+  const denials = report.denials ?? [];
+  const trust =
+    denials.length > 0
+      ? judgeDenials({
+          denials,
+          report,
+          stage: action.stage,
+          evidence: evidenceFor(task, action.stage, io),
+        })
+      : { verdict: 'passing', why: null };
+
+  if (trust.verdict === 'undermining') {
+    // Продолжение здесь бессмысленно и стоит денег: правило разрешений
+    // не изменилось, продолжатель упрётся туда же. Хуже: возобновлённая
+    // сессия помнит собственный отчёт и ответит из него «всё сделано».
+    io.forgetSession?.(action.taskId, action.stage);
+
+    // Отчёт при этом не пропадает. Основание записано ценой: 31.08.2026
+    // задача 0006 ушла в ошибку с полностью снятыми числами шестидесяти
+    // матчей, и числа эти остались лежать в логе, которого не прочитал никто.
+    const stopped = await halt(task, trust.why, io, {
+      what: report.summary,
+      decisions: report.decisions ?? [],
+      links: report.links ?? {},
+      denials,
+    });
+    // Отчёт снимается с очереди и здесь: иначе следующий цикл принёс бы его
+    // снова, а задача уже стоит в разборе.
+    if (stopped.result === 'done') io.removeReport(action.taskId, action.stage);
+    return stopped;
+  }
+
+  // «Сверять нечем» — не отсутствие следа, а поломка прибора либо этап,
+  // у которого проверяемого следа не бывает вовсе. Отчёт применяется,
+  // но молчать об этом нельзя: отметка и есть та заметность, ради которой
+  // заводилось прежнее правило.
+  const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
@@ -200,6 +257,8 @@ async function transferReport(action, io) {
       links: report.links ?? {},
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
+      denials,
+      denialsNote,
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
     [asked, answered].filter(Boolean),
@@ -469,8 +528,12 @@ async function failStage(action, io) {
  * разобранная, поднятая человеком и упавшая снова, возобновила бы прошлый
  * разбор — а тот ответил бы из своей памяти «уже разобрала», не читая нового
  * лога. Это в точности та беда, ради которой заведён `forgetSession`.
+ *
+ * `extra` — то, что остановка обязана унести в журнал вместе с причиной:
+ * содержимое отброшенного отчёта и перечень отказанных действий. Терять
+ * отчёт молча нельзя, и стоит это правило дороже, чем кажется.
  */
-async function halt(task, why, io) {
+async function halt(task, why, io, extra = {}) {
   const status = haltOf(task);
   const moved = applyTransition(task, { status, note: why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
@@ -479,7 +542,7 @@ async function halt(task, why, io) {
 
   const push = await io.saveTask(
     moved.task,
-    { at: io.now, from: task.status, to: status, problem: why },
+    { at: io.now, from: task.status, to: status, problem: why, ...extra },
     `chore(backlog): ${task.id} остановлена, ${
       status === 'postmortem' ? 'нужен разбор' : 'разбор не довёл до причины'
     }`,

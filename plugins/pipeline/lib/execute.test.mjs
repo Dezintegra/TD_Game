@@ -166,6 +166,21 @@ function fakeIo(over = {}) {
       steps.push(`забыта сессия ${taskId}:${stage}`);
       return true;
     },
+
+    // Улики о деле этапа. Их обязаны спрашивать ТОЛЬКО при непустом перечне
+    // отказов, поэтому обращение сюда попадает в перечень шагов.
+    stageEvidence(next) {
+      steps.push(`спрошены улики ${next.id}`);
+      return (
+        over.evidence ?? {
+          branchOnRemote: true,
+          unpushed: 0,
+          lastCommitAt: '2026-08-26T11:30:00+03:00',
+          previousRun: null,
+        }
+      );
+    },
+    stageStartedAt: () => over.stageStartedAt ?? '2026-08-26T11:00:00+03:00',
     maxRejections: over.maxRejections,
     boardDigest: () => [...tasks.values()].map((item) => ({ id: item.id, status: item.status })),
 
@@ -459,6 +474,95 @@ describe('перенос отчёта', () => {
     });
     await execute([transfer], io);
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
+  });
+});
+
+describe('отказанные действия при переносе отчёта', () => {
+  // Прежде отчёт отбрасывался при любом непустом перечне отказов, и мерка
+  // оказалась слишком грубой: шесть отброшенных отчётов подряд за вечер
+  // 31.08.2026, и ни один не потерян из-за настоящей беды.
+  const transfer = { kind: 'transfer-report', taskId: '0001-one', stage: 'design' };
+
+  const denials = [{ tool_name: 'PowerShell', tool_input: { command: 'node --version' } }];
+
+  const withDenials = (over = {}) =>
+    fakeIo({
+      tasks: [task({ status: 'design' })],
+      report: {
+        taskId: '0001-one',
+        stage: 'design',
+        outcome: 'done',
+        summary: 'изменение заведено целиком',
+        decisions: ['перечень средств отвергнут: он неполон по устройству'],
+        links: { change: 'judge-denials-by-deeds' },
+        denials,
+      },
+      ...over,
+    });
+
+  it('попутный отказ двигает задачу дальше по маршруту', async () => {
+    const io = withDenials();
+    const [result] = await execute([transfer], io);
+
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('audit');
+    expect(io.steps).toContain('отчёт 0001-one:design убран');
+  });
+
+  it('попутный отказ виден в журнале задачи', async () => {
+    // Журнал цикла не уезжает никуда, а журнал задачи едет в промпт
+    // следующей сессии: заметность отказа живёт только здесь.
+    const io = withDenials();
+    await execute([transfer], io);
+
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('**Отказано в действиях:**');
+    expect(journal).toContain('PowerShell: node --version');
+  });
+
+  it('подрывающий отказ отправляет задачу в разбор сразу', async () => {
+    // Ветки задачи у origin нет — значит этап отчитался об успехе, которого
+    // не случилось. Продолжение бессмысленно: правило разрешений не менялось.
+    const io = withDenials({ evidence: { branchOnRemote: false, unpushed: 0 } });
+    await execute([transfer], io);
+
+    expect(io.tasks.get('0001-one').status).toBe('postmortem');
+    expect(io.steps).toContain('забыта сессия 0001-one:design');
+    expect(io.steps).toContain('отчёт 0001-one:design убран');
+  });
+
+  it('отброшенный отчёт целиком уезжает в журнал', async () => {
+    // Основание записано ценой: 0006 ушла в ошибку с полностью снятыми
+    // числами шестидесяти матчей, которых не прочитал никто.
+    const io = withDenials({ evidence: { branchOnRemote: false, unpushed: 0 } });
+    await execute([transfer], io);
+
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('изменение заведено целиком');
+    expect(journal).toContain('перечень средств отвергнут');
+    expect(journal).toContain('change: judge-denials-by-deeds');
+    expect(journal).toContain('**Отказано в действиях:**');
+    expect(journal).toContain('**Не удалось:**');
+  });
+
+  it('«сверять нечем» пропускает отчёт, но говорит об этом', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'design' })],
+      report: { taskId: '0001-one', stage: 'design', outcome: 'done', denials },
+      // Молчаливая поломка прибора не должна стоить работы этапа.
+      evidence: { branchOnRemote: null, unpushed: null },
+    });
+    await execute([transfer], io);
+
+    expect(io.tasks.get('0001-one').status).toBe('audit');
+    expect(io.journals.get('0001-one')).toContain('сопоставить отказ с делом нечем');
+  });
+
+  it('без отказов улики не спрашиваются ни разу', async () => {
+    // Холостой ход не должен стоить ни одного лишнего вызова git.
+    const io = fakeIo({ tasks: [task({ status: 'design' })] });
+    await execute([transfer], io);
+    expect(io.steps).not.toContain('спрошены улики 0001-one');
   });
 });
 
