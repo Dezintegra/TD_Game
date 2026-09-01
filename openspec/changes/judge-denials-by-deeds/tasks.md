@@ -15,7 +15,7 @@
 
 ## 1. Чистый разбор отказов
 
-- [ ] 1.1 Завести `plugins/pipeline/lib/denials.mjs` с функцией
+- [x] 1.1 Завести `plugins/pipeline/lib/denials.mjs` с функцией
       `judgeDenials({ denials, report, stage, evidence })`, возвращающей
       `{ verdict, why }`, где `verdict` — `passing`, `undermining` либо
       `unverifiable`. Улики приходят доводом, git и файлов модуль
