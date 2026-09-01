@@ -46,9 +46,16 @@ import { sortCards } from '../lib/validate-card.mjs';
 
 const flags = process.argv.slice(2).filter((arg) => arg.startsWith('--'));
 const rootArg = process.argv.slice(2).find((arg) => !arg.startsWith('--'));
-const root = resolve(rootArg ?? findRoot());
 
-/** Корень репозитория: вверх от расположения плагина до каталога с .git. */
+/**
+ * Каталог самого инструмента. От него считаются ЕГО пути — правила этапов
+ * и настройка разрешений, — тогда как проектные считаются от корня
+ * репозитория. Граница проходит здесь и больше нигде.
+ */
+const home = fileURLToPath(new URL('..', import.meta.url));
+const root = resolve(rootArg ?? process.env.PIPELINE_ROOT ?? findRoot());
+
+/** Корень репозитория: вверх от каталога инструмента до каталога с .git. */
 function findRoot() {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 10; depth += 1) {
@@ -58,8 +65,16 @@ function findRoot() {
   return process.cwd();
 }
 
+/** Путь к настройке: свой ключ, переменная окружения либо файл рядом с инструментом. */
+function configPath() {
+  const named = process.argv.slice(2).find((arg) => arg.startsWith('--config='));
+  if (named) return resolve(named.slice('--config='.length));
+  if (process.env.PIPELINE_CONFIG) return resolve(process.env.PIPELINE_CONFIG);
+  return join(home, 'pipeline.config.json');
+}
+
 function loadConfig() {
-  const path = fileURLToPath(new URL('../pipeline.config.json', import.meta.url));
+  const path = configPath();
   const project = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
   return resolveConfig(project);
 }
@@ -216,6 +231,7 @@ async function openBacklog({ mayWrite }) {
 const supervisor = createSupervisor({
   config,
   root,
+  home,
   spawn,
   killTree: createKillTree((program, args) => runCommand(args, program)),
   saveStages,

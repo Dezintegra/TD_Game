@@ -18,7 +18,44 @@ const { config } = resolveConfig({
 });
 
 const root = '/repo';
+const home = '/repo/supervisor';
 const flag = (args, name) => args[args.indexOf(name) + 1];
+
+describe('свои пути считаются от каталога инструмента', () => {
+  // Ради этих трёх проверок изменение и затевалось. Пока умолчания несли
+  // приставку каталога и разрешались от корня репозитория, скопированный
+  // в другой проект инструмент отдавал приложению ключ
+  // `--append-system-prompt-file` на несуществующий файл. Отвергать такой
+  // ключ приложение не станет: этап уходит работать БЕЗ правил своего
+  // этапа и отчитывается о чём-нибудь другом.
+  const line = (extra = {}) =>
+    stageCommand({
+      assignment: { taskId: '0001-x', stage: 'triage' },
+      prompt: 'п',
+      config: resolveConfig({ ...config, ...extra }).config,
+      root,
+      home,
+    });
+
+  it('правила этапа берутся из каталога инструмента, а не из корня проекта', () => {
+    const path = flag(line().args, '--append-system-prompt-file');
+    expect(path).toContain('supervisor');
+    expect(path).toContain('triage.md');
+  });
+
+  it('настройка разрешений берётся оттуда же', () => {
+    expect(flag(line().args, '--settings')).toContain('supervisor');
+  });
+
+  it('абсолютный путь берётся как есть: проект вправе вынести правила куда угодно', () => {
+    const path = flag(
+      line({ skillsDir: '/etc/pipeline-skills' }).args,
+      '--append-system-prompt-file',
+    );
+    expect(path).not.toContain('supervisor');
+    expect(path).toContain('pipeline-skills');
+  });
+});
 
 describe('этап с рабочим деревом', () => {
   const { program, args, cwd } = stageCommand({

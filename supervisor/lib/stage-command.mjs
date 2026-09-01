@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 
 /**
@@ -23,9 +23,20 @@ import { NEEDS_WORKTREE } from '../config/transitions.mjs';
  * @param {string} params.prompt     промпт назначения
  * @param {object} params.config     настройка после слияния с умолчаниями
  * @param {string} params.root       корень основного дерева
- * @returns {{ program: string, args: string[], cwd: string }}
+ * @param {string} params.home       каталог самого инструмента
+ * @returns {{ program: string, args: string[], cwd: string, stdin: string }}
  */
-export function stageCommand({ assignment, prompt, config, root }) {
+export function stageCommand({ assignment, prompt, config, root, home = root }) {
+  // Свой путь считается от каталога инструмента, а не от корня репозитория.
+  // Правила этапов и настройка разрешений — части самого инструмента: они
+  // переезжают вместе с ним, и разрешать их от корня значило бы требовать,
+  // чтобы во всяком проекте инструмент лежал по одному и тому же пути.
+  //
+  // Искать сначала у себя, а не нашлось — в корне, намеренно НЕ делается:
+  // молчаливый выбор одного пути из двух превращает опечатку в имени файла
+  // в работу по чужим правилам, а такую беду ничем не заметить.
+  const own = (path) => (isAbsolute(path) ? path : resolve(home, path));
+
   // Промпт уезжает в стандартный ввод, а не в аргумент. Причина не в красоте:
   // аргументы командной строки на Windows ограничены примерно тридцатью двумя
   // тысячами знаков на всё, а промпт назначения складывается из описания
@@ -44,7 +55,7 @@ export function stageCommand({ assignment, prompt, config, root }) {
   // Скилл нашёлся бы или не нашёлся в зависимости от того, как приложение
   // подхватило плагин; файл лежит по пути и никуда не девается. Проба
   // 31.08.2026 подтвердила: правило из файла сессия соблюдает.
-  args.push('--append-system-prompt-file', join(root, config.skillsDir, `${assignment.stage}.md`));
+  args.push('--append-system-prompt-file', join(own(config.skillsDir), `${assignment.stage}.md`));
 
   // Ответ структурой, а не текстом: из него берутся исход, отказанные
   // действия и идентификатор сессии. Разбирать человекочитаемый вывод
@@ -71,7 +82,7 @@ export function stageCommand({ assignment, prompt, config, root }) {
 
   // Разрешения конвейера отдельным файлом: они не протекают в настройки
   // человека, а человеческие — в конвейер.
-  if (config.stageSettings) args.push('--settings', join(root, config.stageSettings));
+  if (config.stageSettings) args.push('--settings', own(config.stageSettings));
 
   // Модель называется, только если проект её назвал. Умолчания здесь нет
   // намеренно: угаданная модель — это чужой выбор цены и качества.

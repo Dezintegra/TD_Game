@@ -12,7 +12,7 @@
 ## Что здесь лежит
 
 ```
-plugins/pipeline/
+supervisor/
   pipeline.config.json      настройка под этот проект
   config/
     defaults.mjs            умолчания и перечень обязательных значений
@@ -127,7 +127,7 @@ plugins/pipeline/
 
 ## Установка в новый проект
 
-1. Скопировать каталог `plugins/pipeline/` и завести доску по образцу
+1. Скопировать каталог `supervisor/` и завести доску по образцу
    (колонки по состояниям, метки типов).
 2. Заполнить `pipeline.config.json`: имя удалённого репозитория и главной
    ветки, каталог рабочих деревьев, команды проверки, выкладки и замеров.
@@ -156,7 +156,7 @@ plugins/pipeline/
 
 ```powershell
 schtasks /Create /TN "TD pipeline supervisor" /SC MINUTE /MO 5 ^
-  /TR "node C:\src\dezintegra\TD_Game\plugins\pipeline\bin\supervise.mjs" ^
+  /TR "node C:\src\dezintegra\TD_Game\supervisor\bin\supervise.mjs" ^
   /RL LIMITED /F
 ```
 
@@ -260,7 +260,7 @@ schtasks /Delete /TN "TD pipeline supervisor" /F
 ## Проверки
 
 ```bash
-npx vitest run --root plugins/pipeline
+npx vitest run --root supervisor
 ```
 
 Быстрые, без единого настоящего вызова git, заведения дерева и порождения

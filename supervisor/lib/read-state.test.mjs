@@ -24,10 +24,12 @@ const { config } = resolveConfig({
   worktreeDir: '.claude/worktrees',
 });
 
-const realSchema = fileURLToPath(new URL('../../../manage/schema.json', import.meta.url));
-const realExample = fileURLToPath(
-  new URL('../../../manage/examples/feature.json', import.meta.url),
-);
+// Два уровня вверх, а не три: инструмент лежит в `supervisor/`, а не
+// в `plugins/pipeline/`. Глубина каталога здесь — единственное, чем
+// перенос ломает тесты, и молча он это не делает: копирование падает
+// на несуществующем пути.
+const realSchema = fileURLToPath(new URL('../../manage/schema.json', import.meta.url));
+const realExample = fileURLToPath(new URL('../../manage/examples/feature.json', import.meta.url));
 
 let root;
 

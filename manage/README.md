@@ -222,6 +222,6 @@ manage/
 и ничего не трогает, если всё на месте:
 
 ```bash
-node plugins/pipeline/bin/board-setup.mjs            # что будет сделано
-node plugins/pipeline/bin/board-setup.mjs --execute  # сделать
+node supervisor/bin/board-setup.mjs            # что будет сделано
+node supervisor/bin/board-setup.mjs --execute  # сделать
 ```

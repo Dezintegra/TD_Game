@@ -11,7 +11,7 @@ import { loadSchema, validateTask } from './validate-task.mjs';
  * редактор и конвейер.
  */
 
-const repoRoot = new URL('../../../', import.meta.url);
+const repoRoot = new URL('../../', import.meta.url);
 const schema = loadSchema(fileURLToPath(new URL('manage/schema.json', repoRoot)));
 
 /** Прочитать образец задачи из `manage/examples/`. */

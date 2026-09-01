@@ -16,7 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:scripts": "vitest run --root scripts",
-    "test:pipeline": "vitest run --root plugins/pipeline",
+    "test:pipeline": "vitest run --root supervisor",
     "test": "pnpm test:scripts && pnpm test:pipeline && turbo run test --concurrency=3",
     "test:match": "turbo run test:match --concurrency=3",
     "test:all": "pnpm test && pnpm test:match",

@@ -30,12 +30,12 @@
       "Write(.matchlog/**)",
       "Edit(.matchlog/**)",
 
-      "PowerShell(node plugins/pipeline/bin/cycle.mjs:*)",
-      "PowerShell(node plugins/pipeline/bin/board.mjs:*)",
-      "PowerShell(node plugins/pipeline/bin/snapshot.mjs:*)",
-      "Bash(node plugins/pipeline/bin/cycle.mjs:*)",
-      "Bash(node plugins/pipeline/bin/board.mjs:*)",
-      "Bash(node plugins/pipeline/bin/snapshot.mjs:*)",
+      "PowerShell(node supervisor/bin/cycle.mjs:*)",
+      "PowerShell(node supervisor/bin/board.mjs:*)",
+      "PowerShell(node supervisor/bin/snapshot.mjs:*)",
+      "Bash(node supervisor/bin/cycle.mjs:*)",
+      "Bash(node supervisor/bin/board.mjs:*)",
+      "Bash(node supervisor/bin/snapshot.mjs:*)",
       "PowerShell(node .matchlog/*)",
       "Bash(node .matchlog/*)",
 

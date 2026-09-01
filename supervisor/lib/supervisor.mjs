@@ -19,6 +19,8 @@ import { stagePrompt } from './stage-prompt.mjs';
 export function createSupervisor({
   config,
   root,
+  /** Каталог самого инструмента. От него считаются его собственные пути. */
+  home = root,
   spawn,
   killTree,
   now = () => new Date().toISOString(),
@@ -118,6 +120,7 @@ export function createSupervisor({
         }),
         config,
         root,
+        home,
       });
 
       let handle;

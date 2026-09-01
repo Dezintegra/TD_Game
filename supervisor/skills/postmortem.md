@@ -89,14 +89,14 @@ description: Устанавливает причину, по которой за
 
 **Чем мерить прочитанное** — всё это только для чтения:
 
-- `plugins/pipeline/skills/<этап>.md` — правила того самого этапа, который
+- `supervisor/skills/<этап>.md` — правила того самого этапа, который
   не справился. Половина причин находится здесь: правило, которого нет;
   правило, понятое двояко; пример, который сессия переписала буквально;
-- `plugins/pipeline/config/stage-settings.json` — правила разрешений
+- `supervisor/config/stage-settings.json` — правила разрешений
   конвейера. Сюда смотрят при всяком отказанном действии;
-- `plugins/pipeline/config/defaults.mjs` — сроки этапов, пределы
+- `supervisor/config/defaults.mjs` — сроки этапов, пределы
   продолжений и возвратов, что каждому этапу нужно для работы;
-- `plugins/pipeline/config/transitions.mjs` — автомат состояний;
+- `supervisor/config/transitions.mjs` — автомат состояний;
 - `.pipeline/cycle.log` — что делал сам супервизор в те минуты;
 - `CLAUDE.md` и `manage/README.md` — правила проекта и устройство доски.
 
