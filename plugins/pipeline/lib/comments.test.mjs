@@ -3,6 +3,7 @@ import {
   findAnswer,
   isOurs,
   joinJournalParts,
+  prefixOf,
   splitJournalEntry,
   stripMarker,
 } from './comments.mjs';
@@ -30,8 +31,50 @@ describe('короткая запись', () => {
   });
 
   it('помещающаяся ровно в предел не разбивается', () => {
-    const text = 'я'.repeat(opts.limit - marker.length - 1);
+    const text = 'я'.repeat(opts.limit - prefixOf(marker).length - 1);
     expect(splitJournalEntry(text, opts)).toHaveLength(1);
+  });
+});
+
+describe('источник записи', () => {
+  it('запись сессии помечается агентской', () => {
+    const [only] = splitJournalEntry('Проработка закончена.', { ...opts, source: 'agent' });
+    expect(only.startsWith('🤖 [agent] ')).toBe(true);
+  });
+
+  it('запись конвейера — супервизорской', () => {
+    const [only] = splitJournalEntry('Взята в работу.', { ...opts, source: 'supervisor' });
+    expect(only.startsWith('🤖 [supervisor] ')).toBe(true);
+  });
+
+  it('не названный источник считается супервизорским: доску пишет он', () => {
+    const [only] = splitJournalEntry('Взята в работу.', opts);
+    expect(only.startsWith('🤖 [supervisor] ')).toBe(true);
+  });
+
+  it('тег стоит на каждой части длинной записи, а не только на первой', () => {
+    const long = Array.from({ length: 40 }, (_, i) => `строка ${i}`).join('\n');
+    for (const part of splitJournalEntry(long, { ...opts, source: 'agent' })) {
+      expect(part.startsWith('🤖 [agent] (часть ')).toBe(true);
+    }
+  });
+
+  it('тег снимается вместе с пометкой, а в самой записи не остаётся', () => {
+    const text = 'Проработка закончена.';
+    const [only] = splitJournalEntry(text, { ...opts, source: 'agent' });
+    expect(stripMarker(only, marker)).toBe(text);
+  });
+
+  it('записи, написанные до появления тегов, читаются по-прежнему', () => {
+    // На доске лежат сотни таких. Не прочитав их, конвейер принёс бы
+    // следующей сессии журнал с мусором в первой строке каждой записи.
+    expect(stripMarker('🤖 старая запись', marker)).toBe('старая запись');
+    expect(stripMarker('🤖 (часть 1 из 2)\n\nстарая часть', marker)).toBe('старая часть');
+  });
+
+  it('свой комментарий узнаётся с тегом так же, как и без него', () => {
+    const [only] = splitJournalEntry('вопрос', { ...opts, source: 'agent' });
+    expect(isOurs(only, marker)).toBe(true);
   });
 });
 

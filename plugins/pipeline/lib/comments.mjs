@@ -14,13 +14,46 @@ import { MAX_TEXT } from './trello.mjs';
  */
 
 /**
+ * Кто написал запись.
+ *
+ * Автор комментария в Trello этого не расскажет: конвейер пишет под одним
+ * пользователем, и запись сессии-исполнителя выглядит там ровно так же,
+ * как запись самого супервизора. Разница же существенная. Сессия говорит
+ * о работе — что сделано и почему так решено; супервизор говорит о ходе
+ * конвейера — взял, выдал сессию, остановил, прибрал. Читающий доску
+ * должен различать их с одного взгляда, поэтому источник и стоит
+ * в начале строки, сразу за пометкой.
+ */
+export const SOURCE_TAGS = {
+  agent: '[agent]',
+  supervisor: '[supervisor]',
+};
+
+/**
+ * Источник по умолчанию — супервизор.
+ *
+ * Не из вежливости к нему, а потому, что записи в Trello делает именно он:
+ * сессия к доске не прикасается вовсе, она возвращает отчёт. Значит
+ * неразмеченная запись — почти наверняка его собственная, и такой дефолт
+ * ошибается реже любого другого.
+ */
+const DEFAULT_SOURCE = 'supervisor';
+
+/** Приставка комментария: пометка конвейера, следом источник записи. */
+export function prefixOf(marker, source = DEFAULT_SOURCE) {
+  return `${marker} ${SOURCE_TAGS[source] ?? SOURCE_TAGS[DEFAULT_SOURCE]}`;
+}
+
+/**
  * Сколько знаков резервируется под заголовок части.
  *
- * `🤖 (часть 10 из 12)` плюс два перевода строки — с запасом. Резерв
- * считается один на все части, чтобы разбиение не зависело от того,
- * сколько частей получится: иначе счёт зациклится сам на себе.
+ * ` (часть 10 из 12)` плюс два перевода строки — с запасом; длина самой
+ * приставки прибавляется к этому отдельно, потому что теги источника
+ * разной длины. Резерв считается один на все части, чтобы разбиение
+ * не зависело от того, сколько частей получится: иначе счёт зациклится
+ * сам на себе.
  */
-const HEADER_RESERVE = 32;
+const HEADER_RESERVE = 26;
 
 /**
  * Разбить запись журнала на комментарии.
@@ -33,14 +66,16 @@ const HEADER_RESERVE = 32;
  * @param {string} text  запись журнала
  * @param {object} params
  * @param {string} params.marker пометка конвейера
+ * @param {string} [params.source] кто написал: `agent` либо `supervisor`
  * @param {number} [params.limit] предел длины комментария
  * @returns {string[]} комментарии в порядке публикации
  */
-export function splitJournalEntry(text, { marker, limit = MAX_TEXT }) {
-  const whole = `${marker} ${text}`;
+export function splitJournalEntry(text, { marker, source, limit = MAX_TEXT }) {
+  const prefix = prefixOf(marker, source);
+  const whole = `${prefix} ${text}`;
   if (whole.length <= limit) return [whole];
 
-  const room = limit - HEADER_RESERVE;
+  const room = limit - prefix.length - HEADER_RESERVE;
   const chunks = [];
   let current = '';
 
@@ -69,7 +104,7 @@ export function splitJournalEntry(text, { marker, limit = MAX_TEXT }) {
   flush();
 
   const total = chunks.length;
-  return chunks.map((chunk, index) => `${marker} (часть ${index + 1} из ${total})\n\n${chunk}`);
+  return chunks.map((chunk, index) => `${prefix} (часть ${index + 1} из ${total})\n\n${chunk}`);
 }
 
 /**
@@ -85,14 +120,21 @@ export function joinJournalParts(comments, { marker }) {
     .trim();
 }
 
-/** Снять пометку конвейера и заголовок части, оставив саму запись. */
+/**
+ * Снять служебную приставку, оставив саму запись.
+ *
+ * Приставка — это пометка конвейера, необязательный тег источника
+ * и необязательный заголовок части. Необязательны оба намеренно:
+ * на доске лежат комментарии, написанные до появления тегов, и читать
+ * их конвейер обязан по-прежнему — иначе журнал старых задач пришёл бы
+ * в следующую сессию с мусором в первой строке каждой записи.
+ */
 export function stripMarker(text, marker) {
-  const withoutHeader = text.replace(
-    new RegExp(`^${escapeForRegExp(marker)}\\s*\\(часть \\d+ из \\d+\\)\\s*\\n+`),
-    '',
+  const head = new RegExp(
+    `^${escapeForRegExp(marker)}\\s*(?:\\[[^\\]\\n]*\\]\\s*)?(?:\\(часть \\d+ из \\d+\\)\\s*\\n+)?`,
   );
-  if (withoutHeader !== text) return withoutHeader;
-  return text.startsWith(marker) ? text.slice(marker.length).trimStart() : text;
+  const found = head.exec(text);
+  return found ? text.slice(found[0].length) : text;
 }
 
 /** Экранировать пометку: в ней может оказаться что угодно, включая скобки. */
