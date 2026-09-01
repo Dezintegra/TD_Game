@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createTrelloBacklog } from './backlog-trello.mjs';
 import { joinDescription } from './card.mjs';
+import { checkCard } from './validate-card.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 
 /**
@@ -164,23 +165,70 @@ describe('сохранение задачи', () => {
 });
 
 describe('заведение задачи', () => {
-  it('карточка встаёт в конец очереди с меткой типа', async () => {
-    const trello = fakeTrello();
-    const store = backlog({}, trello);
-    await store.createTask({
-      id: '0032-new',
-      type: 'run',
-      title: 'Померить',
-      description: 'Текст.',
-      status: 'new',
-      links: { change: null, pr: null, run: null, related: [] },
-      attempts: { continuations: 0, cycleFailures: 0 },
-    });
+  const born = (over = {}) => ({
+    id: '0032-new',
+    type: 'run',
+    title: 'Померить',
+    description: 'Текст.',
+    status: 'new',
+    run: { kind: 'arena', params: {}, expectation: 'Доли побед остаются в вилке 45–55.' },
+    links: { change: null, pr: null, run: null, related: [] },
+    attempts: { continuations: 0, cycleFailures: 0 },
+    ...over,
+  });
 
-    const posted = trello.calls.find((call) => call.path === 'cards');
-    expect(posted.body).toMatchObject({ idList: 'list-new', pos: 'bottom' });
-    expect(posted.body.idLabels).toEqual(['label-run']);
-    expect(posted.body.name).toBe('0032-new · Померить');
+  const posted = async (task) => {
+    const trello = fakeTrello();
+    await backlog({}, trello).createTask(task);
+    return trello.calls.find((call) => call.path === 'cards').body;
+  };
+
+  it('карточка встаёт в конец очереди с меткой типа', async () => {
+    const body = await posted(born());
+    expect(body).toMatchObject({ idList: 'list-new', pos: 'bottom' });
+    expect(body.name).toBe('0032-new · Померить');
+  });
+
+  it('прогон несёт и метку вида, и ожидаемый результат разделом описания', async () => {
+    // Обе величины конвейер читает не из служебного блока: вид прогона —
+    // из метки, ожидание — из раздела человеческого текста. Пока запись
+    // о них не знала, всякая заявка на прогон рождала карточку, которую
+    // тут же отвергала собственная проверка.
+    const body = await posted(born());
+    expect(body.idLabels).toEqual(['label-run', 'label-arena']);
+    expect(body.desc).toContain('## Ожидаемый результат');
+    expect(body.desc).toContain('в вилке 45–55');
+  });
+
+  it('заведённая карточка проходит собственную проверку', async () => {
+    // Главный сторож этой пары: что записали, то и прочитали. Он ловит
+    // расхождение чтения и записи в принципе, а не отдельные его случаи.
+    const task = born();
+    const body = await posted(task);
+
+    const store = backlog({
+      cards: [
+        {
+          id: 'card-new',
+          name: body.name,
+          desc: body.desc,
+          idList: 'list-new',
+          idLabels: body.idLabels,
+          pos: 65536,
+          closed: false,
+        },
+      ],
+    });
+    const [item] = store.parsedCards();
+
+    expect(checkCard(item)).toEqual([]);
+    expect(item.task.run).toMatchObject({ kind: 'arena', expectation: task.run.expectation });
+  });
+
+  it('доработка обходится меткой типа: вида прогона у неё нет', async () => {
+    const body = await posted(born({ type: 'feature', run: undefined }));
+    expect(body.idLabels).toEqual(['label-feature']);
+    expect(body.desc).not.toContain('Ожидаемый результат');
   });
 });
 
