@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
+import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
 import { readAnswer, startStage as spawnStageProcess } from './run-stage.mjs';
 import { parseReport } from './parse-report.mjs';
 import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
@@ -24,11 +26,17 @@ export function createSupervisor({
   spawn,
   killTree,
   now = () => new Date().toISOString(),
+  /** Часы в миллисекундах: длительности считаются ими, а не разбором строк. */
+  nowMs = () => Date.now(),
   saveStages = () => {},
   stages = {},
   log = () => {},
   writeStageLog = () => {},
   readStageLog = () => null,
+  /** Рассказчик. По умолчанию немой: счётная часть обязана работать и без него. */
+  say = { line: () => {} },
+  setPulse = nodeSetInterval,
+  clearPulse = nodeClearInterval,
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
@@ -41,6 +49,8 @@ export function createSupervisor({
   const known = Object.fromEntries(
     Object.entries(stages).map(([at, value]) => [at, remembered(value)]),
   );
+  /** Часы пульса. Заводятся с первым этапом и снимаются с последним. */
+  let pulseTimer = null;
 
   const key = (taskId, stage) => `${taskId}:${stage}`;
 
@@ -123,17 +133,37 @@ export function createSupervisor({
         home,
       });
 
-      let handle;
+      // Дескриптор заводится ДО порождения: обработчики событий пишут
+      // в него ходы и последнее действие, а пульс их оттуда читает.
+      const timeoutMs = stageTimeoutMs(assignment.stage, config);
+      const child = {
+        taskId: assignment.taskId,
+        stage: assignment.stage,
+        sessionId,
+        startedAt: now(),
+        startedMs: nowMs(),
+        timeoutMs,
+        turns: 0,
+        last: null,
+        handle: null,
+      };
+
       try {
-        handle = spawnStageProcess({
+        child.handle = spawnStageProcess({
           command,
-          timeoutMs: stageTimeoutMs(assignment.stage, config),
+          timeoutMs,
           spawn,
           killTree,
+          onEvent: (event, line) => watch(child, event, line),
+          // Поток ошибок печатается всегда: там появляются предупреждения
+          // самого приложения, к отчёту не относящиеся, — и именно они
+          // объясняют половину странных исходов.
+          onStderr: (line) => say.line(TAG.warn, `${child.taskId} ⚠ ${clip(line, 200)}`),
         });
       } catch (error) {
         return { ok: false, why: error.message };
       }
+      const handle = child.handle;
 
       // Отметка начала ставится один раз и переживает продолжения: она
       // отвечает на вопрос «этот ли заход сделал коммит», а продолжатель
@@ -142,19 +172,25 @@ export function createSupervisor({
       known[at] = { sessionId, startedAt: known[at]?.startedAt ?? now() };
       saveStages(known);
 
-      const child = {
-        taskId: assignment.taskId,
-        stage: assignment.stage,
-        sessionId,
-        startedAt: now(),
-        handle,
-      };
       children.set(assignment.taskId, child);
+      startPulse();
 
       log(
         `этап ${assignment.taskId}:${assignment.stage} запущен` +
           `${assignment.continuation ? ' возобновлением' : ''}, процесс ${handle.pid}`,
       );
+
+      // Отдельной строкой и с полным составом: это ответ на вопрос «какая
+      // задача идёт прямо сейчас», ради которого за консолью и следят.
+      say.line(
+        TAG.task,
+        `${assignment.taskId} → ${assignment.stage}` +
+          `${assignment.continuation ? ' (возобновление)' : ''}` +
+          `, срок ${humanDuration(timeoutMs)}, процесс ${handle.pid}` +
+          `${assignment.path ? `, дерево ${assignment.path}` : ''}`,
+      );
+      if (assignment.reason)
+        say.line(TAG.task, `${assignment.taskId}   зачем: ${clip(assignment.reason, 140)}`);
 
       // Разбор исхода не должен уронить супервизор: он ведёт все задачи,
       // и падение на одном отчёте остановило бы конвейер целиком.
@@ -163,7 +199,9 @@ export function createSupervisor({
           finish(child, run);
         } catch (error) {
           children.delete(child.taskId);
+          stopPulse();
           log(`разбор исхода ${child.taskId}:${child.stage} упал: ${error.message}`);
+          say.line(TAG.error, `${child.taskId} разбор исхода упал: ${error.message}`);
         }
       });
       return { ok: true, sessionId, pid: handle.pid };
@@ -178,7 +216,66 @@ export function createSupervisor({
     async settle() {
       await Promise.all([...children.values()].map((child) => child.handle.finished));
     },
+
+    /** Напечатать состояние идущих этапов сейчас же. Ею и бьётся пульс. */
+    pulse,
   };
+
+  /**
+   * Пересказать событие этапа.
+   *
+   * Итоговое событие сюда не попадает: его печатает завершение, где известны
+   * и длительность, и стоимость, и отказы.
+   */
+  function watch(child, event, line) {
+    if (event?.type === 'result') return;
+    if (event?.type === 'assistant') child.turns += 1;
+
+    const said = describeEvent(event);
+    if (said.length === 0) {
+      // Строка, не разобравшаяся в событие, — это чужой вывод в общий поток:
+      // предупреждение менеджера пакетов и тому подобное. Печатаем его, но
+      // обрывок JSON — нет: он ничего не значит без своего целого.
+      if (!event && line && !line.trimStart().startsWith('{')) {
+        say.line(TAG.stage, `${child.taskId} ${clip(line, 160)}`);
+      }
+      return;
+    }
+
+    child.last = said.at(-1);
+    say.line(
+      TAG.stage,
+      said.map((one) => `${child.taskId} ${one}`),
+    );
+  }
+
+  /** Состояние каждого живого этапа: сколько идёт, сколько осталось, чем занят. */
+  function pulse() {
+    for (const child of children.values()) {
+      const ran = nowMs() - child.startedMs;
+      const left = child.startedMs + child.timeoutMs - nowMs();
+      say.line(
+        TAG.pulse,
+        `${child.taskId} ${child.stage}: идёт ${humanDuration(ran)} из ${humanDuration(child.timeoutMs)}` +
+          `, до срока ${humanDuration(left)}, ходов ${child.turns}` +
+          `${child.last ? `; последнее — ${clip(child.last, 90)}` : '; пока молчит'}`,
+      );
+    }
+  }
+
+  function startPulse() {
+    if (pulseTimer || !config.pulseSeconds) return;
+    pulseTimer = setPulse(pulse, config.pulseSeconds * 1000);
+    // Часы пульса не должны сами по себе удерживать процесс супервизора
+    // живым: этап может кончиться за минуту, а супервизор — ждать сигнала.
+    pulseTimer?.unref?.();
+  }
+
+  function stopPulse() {
+    if (!pulseTimer || children.size > 0) return;
+    clearPulse(pulseTimer);
+    pulseTimer = null;
+  }
 
   /**
    * Что делать с кончившимся этапом.
@@ -191,9 +288,23 @@ export function createSupervisor({
    */
   function finish(child, run) {
     children.delete(child.taskId);
+    stopPulse();
 
     const answer = readAnswer(run);
     writeStageLog(child.taskId, child.stage, renderLog(child, run, answer));
+
+    // Итог этапа одной строкой: то, ради чего человек и смотрит в консоль,
+    // отойдя на час. В журнале этапа то же самое есть подробнее, но журнал
+    // надо открыть, а строку видно сразу.
+    say.line(
+      answer.outcome === 'done' ? TAG.stage : TAG.warn,
+      `${child.taskId} ${child.stage} завершён: ${answer.outcome}` +
+        `${answer.why ? ` — ${answer.why}` : ''}` +
+        `, ${humanDuration(nowMs() - child.startedMs)}` +
+        `, ходов ${answer.turns ?? '—'}` +
+        `, стоимость ${answer.cost != null ? `$${answer.cost.toFixed(2)}` : '—'}` +
+        `, отказов ${answer.denials.length}`,
+    );
 
     // Идентификатор из ответа точнее выданного: приложение вправе завести
     // свой, и возобновлять надо именно его.
@@ -223,11 +334,16 @@ export function createSupervisor({
         `этап ${child.taskId}:${child.stage}: отказано ${denial.tool_name} — ` +
           `${JSON.stringify(denial.tool_input)}`,
       );
+      say.line(
+        TAG.warn,
+        `${child.taskId} отказано ${denial.tool_name}: ${clip(JSON.stringify(denial.tool_input), 140)}`,
+      );
     }
 
     const parsed = parseReport(answer.result);
     if (!parsed.report) {
       log(`отчёт ${child.taskId}:${child.stage} не разобрался: ${parsed.why}; вывод в журнале`);
+      say.line(TAG.warn, `${child.taskId} отчёт не разобрался: ${clip(parsed.why, 140)}`);
       return;
     }
 
@@ -237,6 +353,10 @@ export function createSupervisor({
       log(
         `отчёт ${child.taskId} говорит об этапе «${parsed.report.stage}», ` +
           `а шёл «${child.stage}» — не принят`,
+      );
+      say.line(
+        TAG.warn,
+        `${child.taskId} отчёт о чужом этапе «${parsed.report.stage}» — не принят`,
       );
       return;
     }

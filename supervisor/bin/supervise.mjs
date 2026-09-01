@@ -13,6 +13,7 @@ import {
   refreshLock,
   shouldPause,
 } from '../lib/lock.mjs';
+import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
 import { createGit } from '../lib/git.mjs';
 import { isPaused, readAnswers, readRegistry, readStages, readTasks } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
@@ -52,7 +53,9 @@ const rootArg = process.argv.slice(2).find((arg) => !arg.startsWith('--'));
  * и настройка разрешений, — тогда как проектные считаются от корня
  * репозитория. Граница проходит здесь и больше нигде.
  */
-const home = fileURLToPath(new URL('..', import.meta.url));
+// `resolve` здесь не для красоты: без него путь приходит с разделителем
+// на конце, и он лезет во все склейки и во весь вывод.
+const home = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const root = resolve(rootArg ?? process.env.PIPELINE_ROOT ?? findRoot());
 
 /** Корень репозитория: вверх от каталога инструмента до каталога с .git. */
@@ -91,6 +94,23 @@ function runCommand(args, program = 'git') {
 
 const runGit = (args) => runCommand(args, 'git');
 const { config, missing } = loadConfig();
+
+/**
+ * Рассказчик.
+ *
+ * Подробный по умолчанию, и это перемена. Прежде супервизор молчал, пока
+ * не потребуют ключом `--verbose`, — а наблюдать за конвейером нужно всегда,
+ * а не только когда о нём вспомнили. Ключ оставлен и ничего не меняет:
+ * он стоит в чужих сторожах и командных файлах, и отвергать его значило бы
+ * ломать их запуск ради чистоты перечня ключей.
+ *
+ * Цвет — только в терминал. При перенаправлении в файл журнал сторожа
+ * наполнился бы управляющими последовательностями, а читать их нечем.
+ */
+const say = createConsole({
+  quiet: flags.includes('--quiet'),
+  colour: Boolean(process.stdout.isTTY) && !process.env.NO_COLOR,
+});
 const local = (...parts) => join(root, config.paths.local, ...parts);
 const ensureLocal = () => mkdirSync(local(), { recursive: true });
 
@@ -136,8 +156,14 @@ function isAlive(pid) {
   }
 }
 
-/** Дозапись в журнал цикла. Он местный и в репозиторий не едет. */
-function note(lines) {
+/**
+ * Дозапись в журнал цикла. Он местный и в репозиторий не едет.
+ *
+ * Те же строки идут и в консоль. Одно другому не замена: журнал читают
+ * потом и целиком, консоль смотрят сейчас и мельком, — и если оставить
+ * только журнал, то за работой конвейера снова нельзя будет наблюдать.
+ */
+function note(lines, tag = TAG.cycle) {
   const list = [lines].flat().filter(Boolean);
   if (list.length === 0) return;
   ensureLocal();
@@ -145,7 +171,10 @@ function note(lines) {
   const text = list.map((line) => `${stamp} ${line}\n`).join('');
   const path = local('cycle.log');
   writeFileSync(path, (existsSync(path) ? readFileSync(path, 'utf8') : '') + text);
-  if (flags.includes('--verbose')) for (const line of list) console.log(line);
+  // `null` означает «только в журнал». Так пишет супервизор: он рассказывает
+  // о том же своими строками, с верными тегами и подробнее, и печатать
+  // журнальную запись рядом значило бы говорить дважды.
+  if (tag) say.line(tag, list);
 }
 
 function readFailures() {
@@ -251,7 +280,8 @@ const supervisor = createSupervisor({
   killTree: createKillTree((program, args) => runCommand(args, program)),
   saveStages,
   stages: readStages(root, config),
-  log: (line) => note(line),
+  say,
+  log: (line) => note(line, null),
   writeStageLog: (taskId, stage, text) => {
     // Вывод процесса целиком — взамен списка сессий, в котором этапы
     // больше не видны. Взамен неравноценное: кода возврата, стоимости
@@ -272,6 +302,11 @@ const supervisor = createSupervisor({
     };
   },
 });
+
+/** Сколько задач стоит в этом состоянии. Состояние задачи и есть её колонка. */
+function counted(tasks, status) {
+  return tasks.filter((task) => task.status === status).length;
+}
 
 /**
  * Один оборот цикла.
@@ -301,9 +336,21 @@ async function turn() {
 
   const backlog = await openBacklog({ mayWrite });
   if (!backlog.ok) {
-    note(backlog.why);
+    note(backlog.why, TAG.error);
     return backlog.outcome;
   }
+
+  // Опись доски строкой: сколько задач прочитано, сколько идёт, сколько ждёт
+  // человека и сколько не разобралось. Это первое, о чём спрашивают, глядя
+  // в консоль, и последнее, что видно из журнала цикла.
+  say.line(
+    TAG.board,
+    `прочитано задач ${backlog.tasks.length}` +
+      `, идёт этапов ${supervisor.running().length}` +
+      `, ждут ответа ${counted(backlog.tasks, 'awaiting-po')}` +
+      `, в ошибке ${counted(backlog.tasks, 'failed')}` +
+      `${backlog.invalid?.length ? `, не разобралось ${backlog.invalid.length}` : ''}`,
+  );
 
   const registry = readRegistry(root, config);
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
@@ -380,14 +427,60 @@ async function turn() {
   return result.outcome;
 }
 
+/**
+ * Представиться.
+ *
+ * Печатается один раз, при запуске, и отвечает на вопросы, которые иначе
+ * задают журналу цикла и файлу настройки: что именно запущено, откуда взята
+ * настройка, каким проектом оно правит и как часто просыпается.
+ *
+ * Особенно нужно на второй машине: там половина бед — это «запустил не то»
+ * и «взял чужую настройку», и обе видно прямо здесь.
+ */
+function greet() {
+  const backlogName =
+    config.backlog === 'trello'
+      ? `доска Trello ${config.trello?.board ?? '— не названа —'}`
+      : `файлы в ${config.paths.tasks}`;
+
+  say.block('СУПЕРВИЗОР КОНВЕЙЕРА ЗАПУЩЕН', [
+    ['процесс', process.pid],
+    ['инструмент', home],
+    ['корень проекта', root],
+    ['настройка', configPath()],
+    ['бэклог', backlogName],
+    ['главная ветка', `${config.remote}/${config.mainBranch}`],
+    ['оборот раз в', humanDuration(config.cycleMinutes * 60000)],
+    ['этапов разом', config.maxConcurrent],
+    ['пульс этапа раз в', humanDuration(config.pulseSeconds * 1000)],
+    ['вывод этапа', config.stageOutputFormat],
+    flags.includes('--dry-run') && ['режим', 'ТЕНЬ: считаем и печатаем, мира не трогаем'],
+    isPaused(root, config) && ['режим', 'ПАУЗА: новой работы не берём'],
+  ]);
+}
+
+/** Чем кончился оборот, по-человечески. Коды исходов наружу не выносим. */
+const OUTCOME = {
+  idle: 'работы нет',
+  worked: 'работа выдана',
+  blocked: 'записи невозможны',
+  paused: 'взведён рубильник паузы',
+  locked: 'замок держит другой цикл',
+  failed: 'оборот не удался',
+  misconfigured: 'настройка неполна',
+  unreachable: 'бэклог недоступен',
+};
+
 /** Бесконечный цикл с рубильником паузы и сторожем неудач. */
 async function loop() {
   const budgets = budgetsAgree(config);
-  if (!budgets.ok) note(budgets.why);
-  if (missing.length > 0) note(`в настройке не хватает: ${missing.join(', ')}`);
+  if (!budgets.ok) note(budgets.why, TAG.warn);
+  if (missing.length > 0) note(`в настройке не хватает: ${missing.join(', ')}`, TAG.warn);
 
-  note(`супервизор запущен, процесс ${process.pid}, корень ${root}`);
+  note(`супервизор запущен, процесс ${process.pid}, корень ${root}`, null);
+  greet();
 
+  let turns = 0;
   let stopping = false;
   // Ожидание между оборотами длится минуты, и без прерывания сигнал
   // добирался бы до цикла столько же: человек нажал Ctrl+C, а супервизор
@@ -409,11 +502,20 @@ async function loop() {
 
   while (!stopping) {
     let outcome = 'failed';
+    turns += 1;
+    const began = Date.now();
+    say.line(TAG.cycle, `оборот №${turns} начат`);
+
     try {
       outcome = await turn();
     } catch (error) {
-      note(`оборот цикла упал: ${error.stack ?? error.message}`);
+      note(`оборот цикла упал: ${error.stack ?? error.message}`, TAG.error);
     }
+
+    say.line(
+      TAG.cycle,
+      `оборот №${turns}: ${OUTCOME[outcome] ?? outcome} (${humanDuration(Date.now() - began)})`,
+    );
 
     const failures = countFailure(readFailures(), outcome);
     writeFailures(failures);
@@ -421,10 +523,21 @@ async function loop() {
     if (pause.pause) {
       ensureLocal();
       writeFileSync(local('pause'), `${pause.why}\n`);
-      note(pause.why);
+      note(pause.why, TAG.error);
     }
 
     if (stopping) break;
+
+    // Время следующего оборота, а не «жду пять минут»: глядя в консоль
+    // посреди тишины, человек хочет знать, когда она кончится, а не сколько
+    // её было отпущено от какого-то момента в прошлом.
+    const nextAt = new Date(Date.now() + config.cycleMinutes * 60000);
+    say.line(
+      TAG.cycle,
+      `следующий оборот в ${clock(nextAt)} (через ${humanDuration(config.cycleMinutes * 60000)})` +
+        `${supervisor.running().length > 0 ? '; этап продолжает работать' : ''}`,
+    );
+
     try {
       await sleep(config.cycleMinutes * 60000, undefined, { signal: waking.signal });
     } catch {
