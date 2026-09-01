@@ -259,6 +259,26 @@ describe('этапы и скиллы', () => {
     expect(rules.filter((rule) => /\/:\*\)/.test(rule))).toEqual([]);
   });
 
+  it('служебный каталог конвейера открыт чтением, и не мнимой формой', () => {
+    // Этап живёт в своём дереве, а реестр деревьев — в `.pipeline` основного,
+    // то есть вне его рабочего каталога. Список `allow` этой границы не двигает:
+    // проба 01.09.2026 показала, что с `Read(.pipeline/**)` отказ повторяется
+    // слово в слово, а с `additionalDirectories` его нет вовсе. Цена вопроса
+    // измерена — четыре этапа аудита подряд встали на одном и том же файле.
+    //
+    // Путей два, и оба нужны: относительный считается от рабочего каталога,
+    // а он у этапов разный — корень у безместных, дерево тремя уровнями ниже
+    // у прочих.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    expect(settings.permissions.additionalDirectories).toContain('.pipeline');
+    expect(settings.permissions.additionalDirectories).toContain('../../../.pipeline');
+
+    const rules = [...settings.permissions.allow, ...settings.permissions.deny];
+    expect(rules.filter((rule) => /^Read\(\.pipeline/.test(rule))).toEqual([]);
+  });
+
   it('удаление файлов правилами не выписывается: оно всё равно не пройдёт', () => {
     // Проверено 31.08.2026 тремя пробами: с шаблоном, без перекрывающего
     // запрета и с точным совпадением команды — отказ во всех трёх. Правило
