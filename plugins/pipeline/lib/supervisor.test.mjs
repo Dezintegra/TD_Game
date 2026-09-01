@@ -8,10 +8,12 @@ import { resolveConfig } from '../config/defaults.mjs';
  * Проверки хозяйства идущих этапов.
  *
  * Порождение подставное, поэтому проверяется ровно то, ради чего супервизор
- * и написан: квота прямым счётом детей, отчёт из вывода, память о сессии
- * ради возобновления и — главное — недоверие отчёту при отказанных
- * действиях. Последнее словами не заменишь: беда сменила вид с заметной
- * («сессия висит») на незаметную («этап тихо сделал не то»).
+ * и написан: квота прямым счётом детей, отчёт из вывода, память об этапе
+ * ради возобновления и отметка его начала.
+ *
+ * Судить отказанные действия супервизор больше не берётся: здесь отчёт ещё
+ * не разобран, и след этапа проверить нечем. Его дело — назвать отказы
+ * в журнале цикла и увезти их вместе с отчётом.
  */
 
 const { config } = resolveConfig({
@@ -255,21 +257,25 @@ describe('этап кончился', () => {
   });
 });
 
-describe('отказанные действия лишают отчёт доверия', () => {
-  // Прежде неразрешённое действие вешало сессию насмерть — беда была
-  // заметной. Теперь оно даёт отказ, и этап тихо докладывает об успехе,
-  // часть которого ему не позволили сделать.
+describe('отказанные действия едут вместе с отчётом', () => {
+  // Прежде отчёт при непустом перечне отказов не принимался вовсе. Мерка
+  // оказалась слишком грубой: вечер 31.08.2026 дал шесть отброшенных отчётов
+  // подряд, и ни один не потерян из-за настоящей беды. Судить отказ по следу
+  // этапа здесь нечем — отчёт ещё не разобран, — и потому суд переехал
+  // в перенос отчёта, а супервизор остался хозяином процессов.
   const denied = {
     permission_denials: [
       { tool_name: 'PowerShell', tool_input: { command: 'npx --yes openspec' } },
     ],
   };
 
-  it('отчёт не принимается', async () => {
+  it('отчёт кладётся в очередь переноса, а отказы едут в нём', async () => {
     const { supervisor, answer } = harness();
     supervisor.spawnStage(assignment());
     await answer(envelope(denied));
-    expect(supervisor.reports).toEqual([]);
+
+    expect(supervisor.reports).toHaveLength(1);
+    expect(supervisor.reports[0].denials).toEqual(denied.permission_denials);
   });
 
   it('отказ назван в журнале целиком: это указание, где скилл разошёлся с делом', async () => {
@@ -278,6 +284,20 @@ describe('отказанные действия лишают отчёт дове
     await answer(envelope(denied));
     expect(logged.join()).toContain('PowerShell');
     expect(logged.join()).toContain('openspec');
+  });
+
+  it('без отказов поле остаётся пустым перечнем', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+    expect(supervisor.reports[0].denials).toEqual([]);
+  });
+
+  it('отчёт о чужом этапе не спасают никакие отказы', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ ...denied, result: JSON.stringify({ ...report, stage: 'audit' }) }));
+    expect(supervisor.reports).toEqual([]);
   });
 });
 
