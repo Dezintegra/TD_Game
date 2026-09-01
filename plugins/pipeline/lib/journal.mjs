@@ -1,3 +1,5 @@
+import { describeDenial } from './denials.mjs';
+
 /**
  * Журнал задачи: дозаписываемая история, а не переписываемый документ.
  *
@@ -35,6 +37,8 @@ export const journalHeader = (task) =>
  * @param {string[]} [entry.decisions] принятые решения с обоснованием
  * @param {object} [entry.links]   ссылки на артефакты
  * @param {string} [entry.problem] причина, если этап не удался
+ * @param {object[]} [entry.denials] действия, отвергнутые проверкой разрешений
+ * @param {string} [entry.denialsNote] отметка, когда сверить отказ с делом нечем
  */
 export function journalEntry(entry) {
   return [`## ${entry.at} · ${entry.from} → ${entry.to}`, '', journalBody(entry)].join('\n');
@@ -46,7 +50,14 @@ export function journalEntry(entry) {
  * Нужно доске: комментарий Trello датируется сам, и вторая отметка времени
  * в его первой строке только мешала бы читать.
  */
-export function journalBody({ what, decisions = [], links = {}, problem }) {
+export function journalBody({
+  what,
+  decisions = [],
+  links = {},
+  problem,
+  denials = [],
+  denialsNote,
+}) {
   const lines = [];
 
   if (what) lines.push(what, '');
@@ -65,6 +76,20 @@ export function journalBody({ what, decisions = [], links = {}, problem }) {
   if (named.length > 0) {
     lines.push('**Артефакты:**', '');
     for (const [key, value] of named) lines.push(`- ${key}: ${value}`);
+    lines.push('');
+  }
+
+  // Отказы едут ИМЕННО СЮДА, а не только в журнал цикла и лог этапа.
+  // Журнал задачи уезжает в промпт следующей сессии, а журнал цикла
+  // не уезжает никуда — и потому единственная заметность отказа, которую
+  // видит работа, живёт здесь.
+  //
+  // Доводы вызова печатаются целиком: именно они показывают, какое правило
+  // разрешений не дописано. Длину сторожит разбиение записи на комментарии.
+  if (denials.length > 0) {
+    lines.push('**Отказано в действиях:**', '');
+    for (const denial of denials) lines.push(`- ${describeDenial(denial)}`);
+    if (denialsNote) lines.push(`- ${denialsNote}`);
     lines.push('');
   }
 

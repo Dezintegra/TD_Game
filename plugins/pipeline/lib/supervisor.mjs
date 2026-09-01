@@ -32,8 +32,13 @@ export function createSupervisor({
   const children = new Map();
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
-  /** Память о сессиях: `taskId:stage` → идентификатор. Переживает перезапуск. */
-  const known = { ...stages };
+  /**
+   * Память об этапах: `taskId:stage` → `{ sessionId, startedAt }`.
+   * Переживает перезапуск супервизора.
+   */
+  const known = Object.fromEntries(
+    Object.entries(stages).map(([at, value]) => [at, remembered(value)]),
+  );
 
   const key = (taskId, stage) => `${taskId}:${stage}`;
 
@@ -44,7 +49,18 @@ export function createSupervisor({
     running: () => [...children.values()].map(({ taskId, stage }) => ({ taskId, stage })),
 
     /** Идентификатор сессии прошлого захода на этот этап, если он был. */
-    lastSession: (taskId, stage) => known[key(taskId, stage)] ?? null,
+    lastSession: (taskId, stage) => known[key(taskId, stage)]?.sessionId ?? null,
+
+    /**
+     * Когда на этот этап зашли ПЕРВЫЙ раз.
+     *
+     * Этим отличают свежий коммит от чужого, и потому отметка не двигается
+     * продолжением: продолжатель приходит к уже сделанным коммитам и объявил
+     * бы их чужими. Отметки нет — значит сверять нечем, и это верный ответ,
+     * а не поломка: так выглядит первый запуск после обновления, когда файл
+     * лежит в прежней раскладке.
+     */
+    stageStartedAt: (taskId, stage) => known[key(taskId, stage)]?.startedAt ?? null,
 
     /**
      * Забыть сессию этапа: следующий заход начнётся с чистого листа.
@@ -53,6 +69,9 @@ export function createSupervisor({
      * помнит свой прошлый вывод и отвечает из него — «всё сделано», — не читая
      * замечания, ради которого её и позвали. Проверено 31.08.2026: четыре
      * круга подряд на неизменной вершине, тридцать секунд на круг.
+     *
+     * Стирается запись ЦЕЛИКОМ, вместе с отметкой начала. Возврат начинает
+     * этап заново, и коммиты прошлого захода для него действительно чужие.
      */
     forgetSession(taskId, stage) {
       if (!(key(taskId, stage) in known)) return false;
@@ -113,7 +132,11 @@ export function createSupervisor({
         return { ok: false, why: error.message };
       }
 
-      known[key(assignment.taskId, assignment.stage)] = sessionId;
+      // Отметка начала ставится один раз и переживает продолжения: она
+      // отвечает на вопрос «этот ли заход сделал коммит», а продолжатель
+      // приходит к чужим с его точки зрения коммитам.
+      const at = key(assignment.taskId, assignment.stage);
+      known[at] = { sessionId, startedAt: known[at]?.startedAt ?? now() };
       saveStages(known);
 
       const child = {
@@ -159,8 +182,9 @@ export function createSupervisor({
    *
    * Три исхода, и все три разные. Отчёт есть — в очередь на перенос. Снят
    * по сроку — ничего: следующий оборот увидит этап без процесса и выдаст
-   * продолжение, а идентификатор сессии уже запомнен. Отказ — в журнал,
-   * и то же продолжение.
+   * продолжение, а идентификатор сессии уже запомнен. Отказанные действия
+   * называются в журнале цикла и едут вместе с отчётом: судит их перенос,
+   * которому доступен и разобранный отчёт, и git.
    */
   function finish(child, run) {
     children.delete(child.taskId);
@@ -171,7 +195,8 @@ export function createSupervisor({
     // Идентификатор из ответа точнее выданного: приложение вправе завести
     // свой, и возобновлять надо именно его.
     if (answer.sessionId) {
-      known[key(child.taskId, child.stage)] = answer.sessionId;
+      const at = key(child.taskId, child.stage);
+      known[at] = { ...known[at], sessionId: answer.sessionId };
       saveStages(known);
     }
 
@@ -180,22 +205,21 @@ export function createSupervisor({
       return;
     }
 
-    // Отказанное действие — это не мелочь в журнале. Прежде неразрешённое
-    // действие вешало сессию насмерть: беда была заметной. Теперь оно даёт
-    // отказ, и этап тихо докладывает об успехе, часть которого ему
-    // не позволили сделать. Заметность приходится возвращать правилом.
-    if (answer.denials.length > 0) {
-      for (const denial of answer.denials) {
-        log(
-          `этап ${child.taskId}:${child.stage}: отказано ${denial.tool_name} — ` +
-            `${JSON.stringify(denial.tool_input)}`,
-        );
-      }
+    // Отказанное действие называется в журнале цикла целиком: по доводам
+    // вызова видно, какое правило разрешений не дописано.
+    //
+    // А вот СУДИТЬ по одному лишь наличию отказов супервизор больше не
+    // берётся, и это не послабление. Здесь отчёт ещё не разобран: неизвестны
+    // ни исход, ни ссылки — то есть ровно то, чем след этапа и проверяется.
+    // Суд получался вслепую и потому не мог не быть грубым: вечер 31.08.2026
+    // дал шесть отброшенных отчётов подряд, и ни один не потерян из-за
+    // настоящей беды. Перечень едет в отчёт полем `denials`, а разбирает его
+    // `execute.transferReport`, где есть и разобранный отчёт, и git.
+    for (const denial of answer.denials) {
       log(
-        `отчёт ${child.taskId}:${child.stage} не принят: этап отчитался об успехе ` +
-          'при отказанных действиях, нужен разбор человеком',
+        `этап ${child.taskId}:${child.stage}: отказано ${denial.tool_name} — ` +
+          `${JSON.stringify(denial.tool_input)}`,
       );
-      return;
     }
 
     const parsed = parseReport(answer.result);
@@ -214,9 +238,24 @@ export function createSupervisor({
       return;
     }
 
-    reports.push({ ...parsed.report, taskId: child.taskId });
+    // Отказы едут ВМЕСТЕ с отчётом: судить их будет перенос, и своего
+    // источника у него нет — процесс к тому времени давно закрыт.
+    reports.push({ ...parsed.report, taskId: child.taskId, denials: answer.denials });
     log(`этап ${child.taskId}:${child.stage} закончен с исходом ${parsed.report.outcome}`);
   }
+}
+
+/**
+ * Привести запись об этапе к нынешней раскладке.
+ *
+ * Прежде значением была голая строка — идентификатор сессии. Читать её
+ * обязательно: супервизор перезапускают сторожем, и первый же запуск после
+ * обновления придёт к файлу прежнего вида. Отметки начала в нём нет, и это
+ * честный ответ «сверять нечем», а не поломка.
+ */
+function remembered(value) {
+  if (typeof value === 'string') return { sessionId: value, startedAt: null };
+  return { sessionId: value?.sessionId ?? null, startedAt: value?.startedAt ?? null };
 }
 
 /** Вывод процесса целиком плюс то, чего в нём нет: срок, стоимость, отказы. */

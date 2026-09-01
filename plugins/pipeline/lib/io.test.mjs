@@ -98,6 +98,72 @@ describe('очередь отчётов', () => {
   });
 });
 
+describe('улики о деле этапа', () => {
+  // Их спрашивают, только когда этапу в чём-то отказали: тогда решают,
+  // попутный это был отказ или подрывающий. Настоящий git не зовётся ни разу.
+  const { config } = resolveConfig({
+    commands: { verify: 'x', deploy: 'x', perf: 'x' },
+    worktreeDir: '.claude/worktrees',
+  });
+
+  const task = (over = {}) => ({ id: '0001-one', links: { run: null }, ...over });
+
+  /** Переходник, отвечающий заранее заготовленным, и список спрошенного. */
+  function fakeIo(answers = []) {
+    const asked = [];
+    const queue = [...answers];
+    const run = (args) => {
+      asked.push(args.join(' '));
+      return queue.shift() ?? { code: 0, stdout: '', stderr: '' };
+    };
+    return { io: createIo({ root: '/repo', config, now: 'сейчас', run }), asked };
+  }
+
+  const ok = (stdout) => ({ code: 0, stdout, stderr: '' });
+
+  it('спрашиваются ровно три команды и ровно про свою ветку', () => {
+    const { io, asked } = fakeIo([ok('a1b2c3d\n'), ok('0\n'), ok('2026-09-01T12:30:00+03:00\n')]);
+    const evidence = io.stageEvidence(task());
+
+    expect(evidence).toEqual({
+      branchOnRemote: true,
+      unpushed: 0,
+      lastCommitAt: '2026-09-01T12:30:00+03:00',
+      previousRun: null,
+    });
+    expect(asked).toEqual([
+      'rev-parse --verify --quiet origin/worktree-0001-one',
+      'rev-list --count origin/worktree-0001-one..worktree-0001-one',
+      'log -1 --format=%cI worktree-0001-one',
+    ]);
+  });
+
+  it('ветки у origin нет — так и сказано, а не «git промолчал»', () => {
+    // `--verify --quiet` на несуществующей ссылке даёт ненулевой код
+    // и пустой поток ошибок.
+    const { io } = fakeIo([{ code: 1, stdout: '', stderr: '' }]);
+    expect(io.stageEvidence(task()).branchOnRemote).toBe(false);
+  });
+
+  it('отказ git — это пусто, а не отсутствие ветки', () => {
+    // Слив эти случаи, мы заставили бы поломку прибора стоить этапу работы.
+    const broken = { code: 128, stdout: '', stderr: 'fatal: not a git repository' };
+    const { io } = fakeIo([broken, broken, broken]);
+    const evidence = io.stageEvidence(task());
+
+    expect(evidence.branchOnRemote).toBe(null);
+    expect(evidence.unpushed).toBe(null);
+    expect(evidence.lastCommitAt).toBe(null);
+  });
+
+  it('прежний номер прогона берётся из самой задачи', () => {
+    // «Новый номер» проверяется сравнением, а не наличием.
+    const { io } = fakeIo();
+    const evidence = io.stageEvidence(task({ links: { run: '33428427058' } }));
+    expect(evidence.previousRun).toBe('33428427058');
+  });
+});
+
 describe('коммит конвейера', () => {
   /** Переходник с подставным запускателем: настоящий git не зовётся ни разу. */
   function fakeIo(over = {}) {
