@@ -321,6 +321,9 @@ async function turn() {
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),
+      // Отметка первого захода на этап: ею отличают свежий коммит от чужого,
+      // когда отказ разрешений судят по следу.
+      stageStartedAt: (taskId, stage) => supervisor.stageStartedAt(taskId, stage),
       // Предел возвратов доезжает до разбора отчёта доводом, а не читается
       // там из настройки: разбор — чистый счёт и о конфигурации не знает.
       maxRejections: config.maxRejections,

@@ -8,16 +8,20 @@ import { resolveConfig } from '../config/defaults.mjs';
  * Проверки хозяйства идущих этапов.
  *
  * Порождение подставное, поэтому проверяется ровно то, ради чего супервизор
- * и написан: квота прямым счётом детей, отчёт из вывода, память о сессии
- * ради возобновления и — главное — недоверие отчёту при отказанных
- * действиях. Последнее словами не заменишь: беда сменила вид с заметной
- * («сессия висит») на незаметную («этап тихо сделал не то»).
+ * и написан: квота прямым счётом детей, отчёт из вывода, память об этапе
+ * ради возобновления и отметка его начала.
+ *
+ * Судить отказанные действия супервизор больше не берётся: здесь отчёт ещё
+ * не разобран, и след этапа проверить нечем. Его дело — назвать отказы
+ * в журнале цикла и увезти их вместе с отчётом.
  */
 
 const { config } = resolveConfig({
   commands: { verify: 'x', deploy: 'x', perf: 'x' },
   worktreeDir: '.claude/worktrees',
 });
+
+const NOW = '2026-08-31T12:00:00+03:00';
 
 function harness(over = {}) {
   const children = [];
@@ -41,7 +45,7 @@ function harness(over = {}) {
     root: '/repo',
     spawn,
     killTree: (pid) => killed.push(pid),
-    now: () => '2026-08-31T12:00:00+03:00',
+    now: over.now ?? (() => NOW),
     saveStages: (stages) => saved.push({ ...stages }),
     stages: over.stages ?? {},
     log: (line) => logged.push(line),
@@ -136,11 +140,13 @@ describe('порождение', () => {
     const { supervisor, saved } = harness();
     const { sessionId } = supervisor.spawnStage(assignment());
     expect(sessionId).toBeTruthy();
-    expect(saved.at(-1)['0001-one:design']).toBe(sessionId);
+    expect(saved.at(-1)['0001-one:design'].sessionId).toBe(sessionId);
   });
 
   it('память о сессии переживает перезапуск', () => {
-    const { supervisor } = harness({ stages: { '0001-one:design': 'прежняя' } });
+    const { supervisor } = harness({
+      stages: { '0001-one:design': { sessionId: 'прежняя', startedAt: NOW } },
+    });
     expect(supervisor.lastSession('0001-one', 'design')).toBe('прежняя');
     expect(supervisor.lastSession('0001-one', 'audit')).toBe(null);
   });
@@ -151,7 +157,10 @@ describe('порождение', () => {
     // и позвали. Забвение обязано лечь на диск — иначе перезапуск супервизора
     // воскресит ту же память.
     const { supervisor, saved } = harness({
-      stages: { '0001-one:design': 'прежняя', '0001-one:audit': 'аудиторская' },
+      stages: {
+        '0001-one:design': { sessionId: 'прежняя', startedAt: NOW },
+        '0001-one:audit': { sessionId: 'аудиторская', startedAt: NOW },
+      },
     });
     expect(supervisor.forgetSession('0001-one', 'design')).toBe(true);
     expect(supervisor.lastSession('0001-one', 'design')).toBe(null);
@@ -164,6 +173,54 @@ describe('порождение', () => {
     const { supervisor, saved } = harness();
     expect(supervisor.forgetSession('0001-one', 'design')).toBe(false);
     expect(saved).toEqual([]);
+  });
+});
+
+describe('отметка начала этапа', () => {
+  // Ею отличают свежий коммит от чужого, когда отказ судят по следу.
+  const LATER = '2026-08-31T13:00:00+03:00';
+
+  it('первый заход её ставит', () => {
+    const { supervisor } = harness();
+    supervisor.spawnStage(assignment());
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(NOW);
+  });
+
+  it('продолжение её не двигает', async () => {
+    // Продолжатель приходит к уже сделанным коммитам: сдвинув отметку,
+    // он объявил бы их чужими и отправил бы задачу в разбор ни за что.
+    let clock = NOW;
+    const { supervisor, answer } = harness({ now: () => clock });
+    supervisor.spawnStage(assignment());
+    clock = LATER;
+    await answer(envelope({ result: 'без отчёта' }));
+
+    supervisor.spawnStage(assignment({ continuation: true }));
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(NOW);
+  });
+
+  it('отчёт замещает идентификатор сессии, но не отметку', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+
+    expect(supervisor.lastSession('0001-one', 'design')).toBe('сессия-от-приложения');
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(NOW);
+  });
+
+  it('забвение стирает и отметку', () => {
+    const { supervisor } = harness();
+    supervisor.spawnStage(assignment());
+    supervisor.forgetSession('0001-one', 'design');
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(null);
+  });
+
+  it('файл прежней раскладки читается, а отметка выходит пустой', () => {
+    // Так выглядит первый запуск после обновления: супервизор перезапускает
+    // сторож, и он приходит к файлу, где значением была голая строка.
+    const { supervisor } = harness({ stages: { '0001-one:design': 'прежняя' } });
+    expect(supervisor.lastSession('0001-one', 'design')).toBe('прежняя');
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(null);
   });
 });
 
@@ -200,21 +257,25 @@ describe('этап кончился', () => {
   });
 });
 
-describe('отказанные действия лишают отчёт доверия', () => {
-  // Прежде неразрешённое действие вешало сессию насмерть — беда была
-  // заметной. Теперь оно даёт отказ, и этап тихо докладывает об успехе,
-  // часть которого ему не позволили сделать.
+describe('отказанные действия едут вместе с отчётом', () => {
+  // Прежде отчёт при непустом перечне отказов не принимался вовсе. Мерка
+  // оказалась слишком грубой: вечер 31.08.2026 дал шесть отброшенных отчётов
+  // подряд, и ни один не потерян из-за настоящей беды. Судить отказ по следу
+  // этапа здесь нечем — отчёт ещё не разобран, — и потому суд переехал
+  // в перенос отчёта, а супервизор остался хозяином процессов.
   const denied = {
     permission_denials: [
       { tool_name: 'PowerShell', tool_input: { command: 'npx --yes openspec' } },
     ],
   };
 
-  it('отчёт не принимается', async () => {
+  it('отчёт кладётся в очередь переноса, а отказы едут в нём', async () => {
     const { supervisor, answer } = harness();
     supervisor.spawnStage(assignment());
     await answer(envelope(denied));
-    expect(supervisor.reports).toEqual([]);
+
+    expect(supervisor.reports).toHaveLength(1);
+    expect(supervisor.reports[0].denials).toEqual(denied.permission_denials);
   });
 
   it('отказ назван в журнале целиком: это указание, где скилл разошёлся с делом', async () => {
@@ -223,6 +284,20 @@ describe('отказанные действия лишают отчёт дове
     await answer(envelope(denied));
     expect(logged.join()).toContain('PowerShell');
     expect(logged.join()).toContain('openspec');
+  });
+
+  it('без отказов поле остаётся пустым перечнем', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+    expect(supervisor.reports[0].denials).toEqual([]);
+  });
+
+  it('отчёт о чужом этапе не спасают никакие отказы', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ ...denied, result: JSON.stringify({ ...report, stage: 'audit' }) }));
+    expect(supervisor.reports).toEqual([]);
   });
 });
 
