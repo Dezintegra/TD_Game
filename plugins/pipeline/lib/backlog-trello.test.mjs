@@ -232,6 +232,98 @@ describe('заведение задачи', () => {
   });
 });
 
+describe('карантин негодной карточки', () => {
+  const problems = ['нет метки вида прогона — поставьте одну из: arena, perf, bench-tick'];
+
+  const quarantine = async (over = {}, returnTo = 'new') => {
+    const trello = fakeTrello();
+    const store = backlog({ cards: [card(over)] }, trello);
+    const result = await store.quarantineCard('0031-proba', { problems, returnTo });
+    return { trello, result };
+  };
+
+  it('карточка переезжает в «Ошибку» вместе с состоянием возврата', async () => {
+    // Одним запросом, и это существенно: разъедься переезд и запись
+    // возврата — карточка заперлась бы в ошибке навсегда.
+    const { trello } = await quarantine();
+
+    const puts = trello.calls.filter((call) => call.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(puts[0].body.idList).toBe('list-failed');
+    expect(puts[0].body.desc).toContain('"returnTo":"new"');
+  });
+
+  it('человеческий текст описания не переписывается', async () => {
+    const { trello } = await quarantine();
+    const put = trello.calls.find((call) => call.method === 'PUT');
+    expect(put.body.desc.startsWith('Что нужно сделать.')).toBe(true);
+  });
+
+  it('вешается метка «не разобрано»', async () => {
+    const { trello } = await quarantine();
+    const labelled = trello.calls.find((call) => call.path.includes('idLabels'));
+    expect(labelled.body.value).toBe('label-unparsed');
+  });
+
+  it('на уже помеченную карточку метка вторично не вешается', async () => {
+    const { trello } = await quarantine({ idLabels: ['label-feature', 'label-unparsed'] });
+    expect(trello.calls.some((call) => call.path.includes('idLabels'))).toBe(false);
+  });
+
+  it('претензии переносятся в комментарий дословно', async () => {
+    // Они написаны для человека и уже содержат указание, что исправить.
+    // Пересказ своими словами потерял бы именно эту часть.
+    const { trello } = await quarantine({}, 'design');
+    const posted = trello.calls.find((call) => call.path.includes('actions/comments'));
+
+    expect(posted.body.text).toContain(problems[0]);
+    // И куда возвращать — колонкой, а не служебным именем состояния.
+    expect(posted.body.text).toContain('«Проработка»');
+  });
+
+  it('отсутствие колонки ошибки названо вслух', async () => {
+    const board = snapshot({ cards: [card()] });
+    board.lists = board.lists.filter((list) => list.name !== config.trello.lists.failed);
+    const store = createTrelloBacklog({ trello: fakeTrello(), config, snapshot: board });
+
+    const result = await store.quarantineCard('0031-proba', { problems, returnTo: 'new' });
+    expect(result).toMatchObject({ ok: false, outcome: 'failed' });
+  });
+
+  it('обрыв связи назван обрывом', async () => {
+    const trello = fakeTrello({ default: { ok: false, kind: 'offline', why: 'ECONNRESET' } });
+    const store = backlog({ cards: [card()] }, trello);
+
+    const result = await store.quarantineCard('0031-proba', { problems, returnTo: 'new' });
+    expect(result).toMatchObject({ ok: false, outcome: 'offline' });
+  });
+});
+
+describe('снятие метки с исправленной карточки', () => {
+  it('метка снимается, а комментарии не трогаются', async () => {
+    const trello = fakeTrello();
+    const store = backlog(
+      { cards: [card({ idLabels: ['label-feature', 'label-unparsed'] })] },
+      trello,
+    );
+
+    await store.clearCard('0031-proba');
+
+    const deleted = trello.calls.find((call) => call.method === 'DELETE');
+    expect(deleted.path).toContain('idLabels/label-unparsed');
+    expect(trello.calls.some((call) => call.path.includes('actions/comments'))).toBe(false);
+  });
+
+  it('непомеченную карточку не трогает вовсе', async () => {
+    const trello = fakeTrello();
+    const store = backlog({ cards: [card()] }, trello);
+
+    const result = await store.clearCard('0031-proba');
+    expect(result.ok).toBe(true);
+    expect(trello.calls).toEqual([]);
+  });
+});
+
 describe('журнал', () => {
   it('склеивается из своих комментариев, чужие не подмешиваются', () => {
     const store = backlog({

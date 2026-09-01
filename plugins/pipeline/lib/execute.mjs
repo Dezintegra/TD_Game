@@ -549,8 +549,45 @@ async function pushTail(action, io) {
     : { result: 'failed', why: push.why };
 }
 
+/**
+ * Унести негодную карточку в карантин.
+ *
+ * Задачи в бэклоге у неё нет — она и негодна как раз потому, что задачей
+ * не читается. Поэтому здесь нет ни `readTask`, ни перехода состояния:
+ * действие целиком на стороне хранилища, и адресуется карточка тем именем,
+ * под которым её увидело чтение.
+ *
+ * Карантина у файлового бэклога нет и не будет: там негодную запись
+ * отбивает JSON Schema, а «перенести» её значило бы переписать файл,
+ * который схему не прошёл. Отсутствие метода — пропуск с причиной,
+ * а не падение.
+ */
+async function quarantineCard(action, io) {
+  if (!io.quarantineCard) {
+    return { result: 'skipped', why: 'карантин негодных карточек умеет только доска' };
+  }
+
+  const done = await io.quarantineCard(action.taskId, {
+    problems: action.problems ?? [],
+    returnTo: action.returnTo ?? 'new',
+  });
+  return done.ok ? { result: 'done', status: 'failed' } : { result: 'failed', why: done.why };
+}
+
+/** Снять метку с исправленной карточки. */
+async function clearCard(action, io) {
+  if (!io.clearCard) {
+    return { result: 'skipped', why: 'метки живут только на доске' };
+  }
+
+  const done = await io.clearCard(action.taskId);
+  return done.ok ? { result: 'done' } : { result: 'failed', why: done.why };
+}
+
 const HANDLERS = {
   'push-tail': pushTail,
+  'quarantine-card': quarantineCard,
+  'clear-card': clearCard,
   cleanup: cleanupTask,
   'transfer-report': transferReport,
   'start-stage': startStage,
