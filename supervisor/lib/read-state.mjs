@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import { loadSchema, validateTask } from './validate-task.mjs';
 
 /**
@@ -49,14 +49,31 @@ function listFiles(dir, ext) {
 }
 
 /**
+ * Где лежит схема записи бэклога.
+ *
+ * Своя схема проекта, если он её назвал, — от корня репозитория. Иначе
+ * схема инструмента — от каталога инструмента. Никакого поиска в двух
+ * местах по очереди: выбор делает наличие поля в настройке, а не наличие
+ * файла на диске.
+ *
+ * Проверено пробой 01.09.2026: до этого путь всегда считался от корня,
+ * и скопированный в чужой репозиторий инструмент падал на первом обороте
+ * с голым `ENOENT` по `manage/schema.json`.
+ */
+export function schemaPath(root, config, home = root) {
+  if (config.paths?.schema) return join(root, config.paths.schema);
+  return isAbsolute(config.taskSchema) ? config.taskSchema : resolve(home, config.taskSchema);
+}
+
+/**
  * Прочитать задачи бэклога и разложить их на годные и негодные.
  *
  * Файл, чьё имя не совпадает с полем `id`, считается негодным: имя файла —
  * это имя ветки и рабочего дерева, и расхождение увело бы работу не туда.
  */
-export function readTasks(root, config) {
+export function readTasks(root, config, home = root) {
   const dir = join(root, config.paths.tasks);
-  const schema = loadSchema(join(root, config.paths.schema));
+  const schema = loadSchema(schemaPath(root, config, home));
 
   const tasks = [];
   const invalid = [];

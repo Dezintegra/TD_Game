@@ -226,7 +226,7 @@ function loadEnv() {
 /** Открыть бэклог — файловый или на доске. */
 async function openBacklog({ mayWrite }) {
   if (config.backlog !== 'trello') {
-    return { ok: true, ...readTasks(root, config), notes: [] };
+    return { ok: true, ...readTasks(root, config, home), notes: [] };
   }
 
   loadEnv();

@@ -32,6 +32,8 @@ import { sortCards } from '../lib/validate-card.mjs';
  */
 
 const rootArg = process.argv.slice(2).find((arg) => !arg.startsWith('--'));
+/** Каталог инструмента: от него считаются его собственные пути. */
+const home = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const root = resolve(rootArg ?? findRoot());
 
 function findRoot() {
@@ -80,7 +82,7 @@ function loadEnv() {
  */
 async function openBacklog(config) {
   if (config.backlog !== 'trello') {
-    return { ok: true, ...readTasks(root, config) };
+    return { ok: true, ...readTasks(root, config, home) };
   }
 
   loadEnv();

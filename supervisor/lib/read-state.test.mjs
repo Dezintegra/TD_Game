@@ -24,11 +24,11 @@ const { config } = resolveConfig({
   worktreeDir: '.claude/worktrees',
 });
 
-// Два уровня вверх, а не три: инструмент лежит в `supervisor/`, а не
-// в `plugins/pipeline/`. Глубина каталога здесь — единственное, чем
-// перенос ломает тесты, и молча он это не делает: копирование падает
-// на несуществующем пути.
-const realSchema = fileURLToPath(new URL('../../manage/schema.json', import.meta.url));
+// Схема берётся настоящая, из каталога инструмента: она его часть, а не
+// данные проекта, и на чужой машине приезжает вместе с ним. Прежде она
+// бралась из `manage/` проекта, и скопированный инструмент падал на первом
+// обороте с голым `ENOENT` — проба 01.09.2026.
+const realSchema = fileURLToPath(new URL('../config/task-schema.json', import.meta.url));
 const realExample = fileURLToPath(new URL('../../manage/examples/feature.json', import.meta.url));
 
 let root;
@@ -37,7 +37,10 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'pipeline-state-'));
   mkdirSync(join(root, 'manage', 'tasks'), { recursive: true });
   mkdirSync(join(root, '.pipeline', 'reports'), { recursive: true });
-  copyFileSync(realSchema, join(root, 'manage', 'schema.json'));
+  // Временный корень служит здесь и корнем проекта, и каталогом инструмента:
+  // проверяется чтение задач, а не разведение путей.
+  mkdirSync(join(root, 'config'), { recursive: true });
+  copyFileSync(realSchema, join(root, 'config', 'task-schema.json'));
 });
 
 afterEach(() => {

@@ -29,7 +29,8 @@ const configPath = fileURLToPath(new URL('../pipeline.config.json', import.meta.
 const project = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {};
 const { config } = resolveConfig(project);
 
-const { tasks, invalid } = readTasks(root, config);
+const home = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const { tasks, invalid } = readTasks(root, config, home);
 const html = renderBoard(tasks, { now: new Date().toISOString() });
 const out = join(root, 'manage', 'board.html');
 writeFileSync(out, `${html}\n`);

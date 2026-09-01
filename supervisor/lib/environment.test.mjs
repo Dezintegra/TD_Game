@@ -107,17 +107,49 @@ describe('доступ к доске', () => {
   });
 
   it('файловому бэклогу доступ к доске не нужен', () => {
-    const { config: local } = resolveConfig({ ...config, backlog: 'files' });
-    const world = checkEnvironment({
-      home,
-      root,
-      config: local,
-      env: {},
-      envFiles: [],
-      run: () => ({ code: 0, stdout: 'v1' }),
-      exists: () => true,
-    });
-    expect(world.problems).toEqual([]);
+    expect(fileBacklog().problems).toEqual([]);
+  });
+});
+
+/** Осмотр в проекте с файловым бэклогом; отклонения задаются доводами. */
+function fileBacklog({ noFiles = [], config: given } = {}) {
+  const { config: local } = resolveConfig({ ...config, ...given, backlog: 'files' });
+  return checkEnvironment({
+    home,
+    root,
+    config: local,
+    env: {},
+    envFiles: [],
+    run: () => ({ code: 0, stdout: 'v1' }),
+    exists: (path) => !noFiles.some((part) => String(path).includes(part)),
+  });
+}
+
+describe('схема записи бэклога', () => {
+  it('берётся из каталога инструмента, а не из проекта', () => {
+    // Проба 01.09.2026: скопированный в чужой репозиторий инструмент падал
+    // на первом обороте с голым ENOENT по пути `manage/schema.json`,
+    // которого на чужой машине нет и быть не может.
+    const shown = fileBacklog().rows.find(([key]) => key === 'схема записи')?.[1];
+    expect(shown).toContain('supervisor');
+    expect(shown).not.toContain('manage');
+  });
+
+  it('своя схема проекта побеждает и считается от корня', () => {
+    const shown = fileBacklog({ config: { paths: { schema: 'manage/schema.json' } } }).rows.find(
+      ([key]) => key === 'схема записи',
+    )?.[1];
+    expect(shown).toContain('manage');
+  });
+
+  it('её отсутствие останавливает запуск, а не роняет первый оборот', () => {
+    expect(fileBacklog({ noFiles: ['task-schema'] }).fatal).toContain('схема записи');
+  });
+
+  it('бэклогу на доске она не нужна и не спрашивается', () => {
+    const world = look({ noFiles: ['task-schema'] });
+    expect(world.fatal).toBe(null);
+    expect(world.rows.some(([key]) => key === 'схема записи')).toBe(false);
   });
 });
 
