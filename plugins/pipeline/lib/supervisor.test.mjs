@@ -19,6 +19,8 @@ const { config } = resolveConfig({
   worktreeDir: '.claude/worktrees',
 });
 
+const NOW = '2026-08-31T12:00:00+03:00';
+
 function harness(over = {}) {
   const children = [];
   const killed = [];
@@ -41,7 +43,7 @@ function harness(over = {}) {
     root: '/repo',
     spawn,
     killTree: (pid) => killed.push(pid),
-    now: () => '2026-08-31T12:00:00+03:00',
+    now: over.now ?? (() => NOW),
     saveStages: (stages) => saved.push({ ...stages }),
     stages: over.stages ?? {},
     log: (line) => logged.push(line),
@@ -136,11 +138,13 @@ describe('порождение', () => {
     const { supervisor, saved } = harness();
     const { sessionId } = supervisor.spawnStage(assignment());
     expect(sessionId).toBeTruthy();
-    expect(saved.at(-1)['0001-one:design']).toBe(sessionId);
+    expect(saved.at(-1)['0001-one:design'].sessionId).toBe(sessionId);
   });
 
   it('память о сессии переживает перезапуск', () => {
-    const { supervisor } = harness({ stages: { '0001-one:design': 'прежняя' } });
+    const { supervisor } = harness({
+      stages: { '0001-one:design': { sessionId: 'прежняя', startedAt: NOW } },
+    });
     expect(supervisor.lastSession('0001-one', 'design')).toBe('прежняя');
     expect(supervisor.lastSession('0001-one', 'audit')).toBe(null);
   });
@@ -151,7 +155,10 @@ describe('порождение', () => {
     // и позвали. Забвение обязано лечь на диск — иначе перезапуск супервизора
     // воскресит ту же память.
     const { supervisor, saved } = harness({
-      stages: { '0001-one:design': 'прежняя', '0001-one:audit': 'аудиторская' },
+      stages: {
+        '0001-one:design': { sessionId: 'прежняя', startedAt: NOW },
+        '0001-one:audit': { sessionId: 'аудиторская', startedAt: NOW },
+      },
     });
     expect(supervisor.forgetSession('0001-one', 'design')).toBe(true);
     expect(supervisor.lastSession('0001-one', 'design')).toBe(null);
@@ -164,6 +171,54 @@ describe('порождение', () => {
     const { supervisor, saved } = harness();
     expect(supervisor.forgetSession('0001-one', 'design')).toBe(false);
     expect(saved).toEqual([]);
+  });
+});
+
+describe('отметка начала этапа', () => {
+  // Ею отличают свежий коммит от чужого, когда отказ судят по следу.
+  const LATER = '2026-08-31T13:00:00+03:00';
+
+  it('первый заход её ставит', () => {
+    const { supervisor } = harness();
+    supervisor.spawnStage(assignment());
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(NOW);
+  });
+
+  it('продолжение её не двигает', async () => {
+    // Продолжатель приходит к уже сделанным коммитам: сдвинув отметку,
+    // он объявил бы их чужими и отправил бы задачу в разбор ни за что.
+    let clock = NOW;
+    const { supervisor, answer } = harness({ now: () => clock });
+    supervisor.spawnStage(assignment());
+    clock = LATER;
+    await answer(envelope({ result: 'без отчёта' }));
+
+    supervisor.spawnStage(assignment({ continuation: true }));
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(NOW);
+  });
+
+  it('отчёт замещает идентификатор сессии, но не отметку', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+
+    expect(supervisor.lastSession('0001-one', 'design')).toBe('сессия-от-приложения');
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(NOW);
+  });
+
+  it('забвение стирает и отметку', () => {
+    const { supervisor } = harness();
+    supervisor.spawnStage(assignment());
+    supervisor.forgetSession('0001-one', 'design');
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(null);
+  });
+
+  it('файл прежней раскладки читается, а отметка выходит пустой', () => {
+    // Так выглядит первый запуск после обновления: супервизор перезапускает
+    // сторож, и он приходит к файлу, где значением была голая строка.
+    const { supervisor } = harness({ stages: { '0001-one:design': 'прежняя' } });
+    expect(supervisor.lastSession('0001-one', 'design')).toBe('прежняя');
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(null);
   });
 });
 

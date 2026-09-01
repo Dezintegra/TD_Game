@@ -32,8 +32,13 @@ export function createSupervisor({
   const children = new Map();
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
-  /** Память о сессиях: `taskId:stage` → идентификатор. Переживает перезапуск. */
-  const known = { ...stages };
+  /**
+   * Память об этапах: `taskId:stage` → `{ sessionId, startedAt }`.
+   * Переживает перезапуск супервизора.
+   */
+  const known = Object.fromEntries(
+    Object.entries(stages).map(([at, value]) => [at, remembered(value)]),
+  );
 
   const key = (taskId, stage) => `${taskId}:${stage}`;
 
@@ -44,7 +49,18 @@ export function createSupervisor({
     running: () => [...children.values()].map(({ taskId, stage }) => ({ taskId, stage })),
 
     /** Идентификатор сессии прошлого захода на этот этап, если он был. */
-    lastSession: (taskId, stage) => known[key(taskId, stage)] ?? null,
+    lastSession: (taskId, stage) => known[key(taskId, stage)]?.sessionId ?? null,
+
+    /**
+     * Когда на этот этап зашли ПЕРВЫЙ раз.
+     *
+     * Этим отличают свежий коммит от чужого, и потому отметка не двигается
+     * продолжением: продолжатель приходит к уже сделанным коммитам и объявил
+     * бы их чужими. Отметки нет — значит сверять нечем, и это верный ответ,
+     * а не поломка: так выглядит первый запуск после обновления, когда файл
+     * лежит в прежней раскладке.
+     */
+    stageStartedAt: (taskId, stage) => known[key(taskId, stage)]?.startedAt ?? null,
 
     /**
      * Забыть сессию этапа: следующий заход начнётся с чистого листа.
@@ -53,6 +69,9 @@ export function createSupervisor({
      * помнит свой прошлый вывод и отвечает из него — «всё сделано», — не читая
      * замечания, ради которого её и позвали. Проверено 31.08.2026: четыре
      * круга подряд на неизменной вершине, тридцать секунд на круг.
+     *
+     * Стирается запись ЦЕЛИКОМ, вместе с отметкой начала. Возврат начинает
+     * этап заново, и коммиты прошлого захода для него действительно чужие.
      */
     forgetSession(taskId, stage) {
       if (!(key(taskId, stage) in known)) return false;
@@ -113,7 +132,11 @@ export function createSupervisor({
         return { ok: false, why: error.message };
       }
 
-      known[key(assignment.taskId, assignment.stage)] = sessionId;
+      // Отметка начала ставится один раз и переживает продолжения: она
+      // отвечает на вопрос «этот ли заход сделал коммит», а продолжатель
+      // приходит к чужим с его точки зрения коммитам.
+      const at = key(assignment.taskId, assignment.stage);
+      known[at] = { sessionId, startedAt: known[at]?.startedAt ?? now() };
       saveStages(known);
 
       const child = {
@@ -171,7 +194,8 @@ export function createSupervisor({
     // Идентификатор из ответа точнее выданного: приложение вправе завести
     // свой, и возобновлять надо именно его.
     if (answer.sessionId) {
-      known[key(child.taskId, child.stage)] = answer.sessionId;
+      const at = key(child.taskId, child.stage);
+      known[at] = { ...known[at], sessionId: answer.sessionId };
       saveStages(known);
     }
 
@@ -217,6 +241,19 @@ export function createSupervisor({
     reports.push({ ...parsed.report, taskId: child.taskId });
     log(`этап ${child.taskId}:${child.stage} закончен с исходом ${parsed.report.outcome}`);
   }
+}
+
+/**
+ * Привести запись об этапе к нынешней раскладке.
+ *
+ * Прежде значением была голая строка — идентификатор сессии. Читать её
+ * обязательно: супервизор перезапускают сторожем, и первый же запуск после
+ * обновления придёт к файлу прежнего вида. Отметки начала в нём нет, и это
+ * честный ответ «сверять нечем», а не поломка.
+ */
+function remembered(value) {
+  if (typeof value === 'string') return { sessionId: value, startedAt: null };
+  return { sessionId: value?.sessionId ?? null, startedAt: value?.startedAt ?? null };
 }
 
 /** Вывод процесса целиком плюс то, чего в нём нет: срок, стоимость, отказы. */
