@@ -95,9 +95,18 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
    * Запись, не влезающая в предел Trello, разбивается на пронумерованные
    * части — усечение запрещено: обрезанный лог падения бесполезен ровно
    * в том случае, ради которого его и писали.
+   *
+   * `source` говорит, чей это текст. Запросы к Trello все до одного делает
+   * супервизор, поэтому по автору комментария различить нельзя ничего,
+   * а разница между «так решила сессия» и «так распорядился конвейер»
+   * читающему доску нужна постоянно.
    */
-  async function comment(cardId, text) {
-    const parts = splitJournalEntry(text, { marker: mark, limit: trelloConfig.maxTextLength });
+  async function comment(cardId, text, source) {
+    const parts = splitJournalEntry(text, {
+      marker: mark,
+      source,
+      limit: trelloConfig.maxTextLength,
+    });
     for (const part of parts) {
       const posted = await trello.post(`cards/${cardId}/actions/comments`, { text: part });
       if (!posted.ok) return posted;
@@ -154,10 +163,10 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       return joinJournalParts(own, { marker: mark });
     },
 
-    async appendJournal(id, text) {
+    async appendJournal(id, text, source) {
       const card = cardOf(id);
       if (!card) return { ok: false, outcome: 'failed', why: `карточки задачи ${id} нет` };
-      const posted = await comment(card.id, text);
+      const posted = await comment(card.id, text, source);
       return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
     },
 
@@ -194,9 +203,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       });
       if (!moved.ok) return failure(moved);
 
+      // Источник берётся из самой записи: переход состояния бывает и делом
+      // сессии — тогда в записи её отчёт, — и распоряжением супервизора.
       const written = await comment(
         card.id,
         `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}`,
+        entry.source,
       );
       if (!written.ok) return failure(written);
 
@@ -210,11 +222,16 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * и выглядит ровно так, как надо человеку: новая запись под задачей,
      * видная без единого лишнего щелчка. Карточка при этом никуда не едет
      * и описания не теряет.
+     *
+     * `message` здесь не нужен вовсе — доске нечего коммитить, — но стоит
+     * на своём месте: сигнатура общая с файловым хранилищем, и менять
+     * порядок доводов ради одного из них значило бы заставить исполнение
+     * помнить, с каким из них оно работает.
      */
-    async amendTask(taskId, text) {
+    async amendTask(taskId, text, message, source) {
       const card = cardOf(taskId);
       if (!card) return { ok: false, outcome: 'failed', why: `карточки задачи ${taskId} нет` };
-      const posted = await comment(card.id, text);
+      const posted = await comment(card.id, text, source);
       return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
     },
 
@@ -452,7 +469,10 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       }
       lines.push('', 'Чтобы ответить, напишите комментарий к этой карточке.');
 
-      await comment(card.id, lines.join('\n'));
+      // Вопрос помечается агентским: сформулировала его сессия, супервизор
+      // лишь донёс. Владельцу продукта это говорит, с кого спрашивать,
+      // если спрашивают невнятно.
+      await comment(card.id, lines.join('\n'), 'agent');
       return null;
     },
 
@@ -468,7 +488,9 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       const answer = report?.decisions?.[0];
       if (!card || !answer) return null;
 
-      await comment(card.id, `**Ответ принят**\n\n${answer}`);
+      // Ответ собрала спрашивающая сессия, она же его и пересказала, —
+      // значит запись агентская, как и сам вопрос.
+      await comment(card.id, `**Ответ принят**\n\n${answer}`, 'agent');
       return null;
     },
 

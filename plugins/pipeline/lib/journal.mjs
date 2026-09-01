@@ -39,6 +39,13 @@ export const journalHeader = (task) =>
  * @param {string} [entry.problem] причина, если этап не удался
  * @param {object[]} [entry.denials] действия, отвергнутые проверкой разрешений
  * @param {string} [entry.denialsNote] отметка, когда сверить отказ с делом нечем
+ * @param {string} [entry.source] чей это текст: `agent` либо `supervisor`
+ *
+ * Источник в саму запись не печатается: у файлового журнала он был бы
+ * шумом — там и так всё написано конвейером, а различать сессию
+ * и супервизора нужно ровно там, где записи стоят вперемешку с людскими,
+ * то есть в комментариях карточки. Поэтому поле читает доска, а здесь
+ * оно только объявлено, чтобы его не потеряли при следующей правке.
  */
 export function journalEntry(entry) {
   return [`## ${entry.at} · ${entry.from} → ${entry.to}`, '', journalBody(entry)].join('\n');
