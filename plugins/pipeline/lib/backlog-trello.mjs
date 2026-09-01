@@ -1,10 +1,12 @@
 import {
   joinDescription,
+  labelKeysOf,
   metaOf,
   nameWithId,
   parseCard,
   splitDescription,
   titleOf,
+  withExpectation,
 } from './card.mjs';
 import { findAnswer, joinJournalParts, splitJournalEntry } from './comments.mjs';
 import { journalBody } from './journal.mjs';
@@ -216,7 +218,19 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
     },
 
-    /** Завести новую карточку: колонка по состоянию, метка по типу. */
+    /**
+     * Завести новую карточку: колонка по состоянию, метки по задаче.
+     *
+     * Меток две, а не одна: тип задачи и вид прогона. Второй прежде
+     * не ставился вовсе, и заявка на прогон рождала карточку, которую
+     * тут же отвергала собственная проверка — вида прогона нет. Туда же
+     * терялось и ожидание: оно живёт разделом описания, а не полем.
+     *
+     * Карточка обязана рождаться годной. Заведённая негодной, она
+     * не берётся в работу никогда и при этом даже не падает в ошибку —
+     * значит и разбора не получит, и заметить её можно только глазами
+     * в журнале цикла.
+     */
     async createTask(task) {
       const idList = listIdByState.get(task.status);
       if (!idList) {
@@ -226,8 +240,10 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       const created = await trello.post('cards', {
         idList,
         name: nameWithId(task.id, task.title),
-        desc: joinDescription(task.description ?? '', metaOf(task)),
-        idLabels: [labelIdByKey.get(task.type)].filter(Boolean),
+        desc: joinDescription(withExpectation(task.description ?? '', task), metaOf(task)),
+        idLabels: labelKeysOf(task)
+          .map((key) => labelIdByKey.get(key))
+          .filter(Boolean),
         // Новая задача встаёт в конец очереди: приоритет — это положение
         // карточки, и лезть новичку в начало не за что.
         pos: 'bottom',
