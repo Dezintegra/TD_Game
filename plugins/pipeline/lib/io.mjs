@@ -458,6 +458,40 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
       return { ok: false, why: result.stderr.trim() };
     },
 
+    /**
+     * Улики о деле этапа: по ним отказ разрешений судят попутным или подрывающим.
+     *
+     * Спрашиваются ТОЛЬКО при непустом перечне отказов — а это редкий случай.
+     * При обычном отчёте не делается ни одного лишнего вызова git.
+     *
+     * Свежести `origin/<ветка>` добывать не нужно, и это не упущение:
+     * дополнительные рабочие деревья делят с основным один каталог `.git`,
+     * поэтому отправка из дерева задачи обновляет удалённую ссылку в том же
+     * репозитории, откуда читает супервизор. Отдельный `git fetch` стоил бы
+     * сети на каждом отказе и не добавил бы ни одного факта.
+     *
+     * Этап доводом не приходит намеренно: набор улик один и тот же для всех
+     * этапов — так он объявлен и в замысле, — а разбирает их по этапам тот,
+     * кто выносит вердикт.
+     */
+    stageEvidence(task) {
+      const branch = this.registryEntry(task.id)?.branch ?? `worktree-${task.id}`;
+      const seen = run(['rev-parse', '--verify', '--quiet', `${config.remote}/${branch}`]);
+      const unpushed = this.unpushed(branch);
+      // Дата КОММИТТЕРА, а не автора: авторская переживает перевыкладку,
+      // а нам нужен момент попадания коммита в ветку.
+      const dated = run(['log', '-1', '--format=%cI', branch]);
+
+      return {
+        branchOnRemote: knownRef(seen),
+        unpushed,
+        lastCommitAt: dated.code === 0 ? dated.stdout.trim() || null : null,
+        // Номер прогона, который задача знала ДО этапа: «новый номер»
+        // проверяется сравнением, а не наличием.
+        previousRun: task.links?.run ?? null,
+      };
+    },
+
     /** Сколько коммитов ветки нет в её удалённом двойнике. */
     unpushed(branch) {
       const result = run(['rev-list', '--count', `${config.remote}/${branch}..${branch}`]);
@@ -503,6 +537,19 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
       return null;
     },
   };
+}
+
+/**
+ * Есть ли ветка у удалённого репозитория.
+ *
+ * Три ответа, а не два. `--verify --quiet` на несуществующей ссылке даёт
+ * ненулевой код и пустой поток ошибок — это «ветки нет». Любой другой ответ
+ * означает, что git не смог сказать, и слить эти случаи в один нельзя:
+ * тогда молчаливая поломка прибора стоила бы этапу всей его работы.
+ */
+function knownRef(result) {
+  if (result.code === 0) return true;
+  return String(result.stderr ?? '').trim() === '' ? false : null;
 }
 
 /**
