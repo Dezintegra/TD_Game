@@ -18,15 +18,26 @@ function fakeChild(pid = 4242) {
   child.pid = pid;
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  // Вход тоже подставной: он помнит, что ему подали и закрыли ли его.
+  // Незакрытый вход — не мелочь: приложение ждёт конца потока и без него
+  // простоит до истечения срока этапа, ничего не сделав.
+  const stdin = new EventEmitter();
+  stdin.written = [];
+  stdin.closed = false;
+  stdin.end = (text) => {
+    if (text != null) stdin.written.push(text);
+    stdin.closed = true;
+  };
+  child.stdin = stdin;
   return child;
 }
 
-function harness({ timeoutMs = 1000 } = {}) {
+function harness({ timeoutMs = 1000, command } = {}) {
   const child = fakeChild();
   const killed = [];
   const timers = [];
   const handle = startStage({
-    command: { program: 'claude', args: ['-p', 'делай'], cwd: '/repo' },
+    command: command ?? { program: 'claude', args: ['-p'], cwd: '/repo', stdin: 'делай' },
     timeoutMs,
     spawn: () => child,
     killTree: (pid) => killed.push(pid),
@@ -38,6 +49,35 @@ function harness({ timeoutMs = 1000 } = {}) {
   });
   return { child, killed, handle, fire: () => timers.forEach((fn) => fn()) };
 }
+
+describe('промпт подаётся на вход', () => {
+  it('текст назначения уходит в stdin и вход закрывается', async () => {
+    // Аргументы командной строки на Windows ограничены, и назначение растущей
+    // задачи однажды перестаёт в них влезать: 01.09.2026 порождение упало
+    // с `spawn ENAMETOOLONG` двадцать шесть раз и держало четыре задачи.
+    const { child } = harness();
+    expect(child.stdin.written).toEqual(['делай']);
+    expect(child.stdin.closed).toBe(true);
+  });
+
+  it('без промпта вход не трогается вовсе', async () => {
+    // Иначе закрытый впустую вход отличался бы от неоткрытого, а этапу
+    // без назначения подавать нечего.
+    const { child } = harness({ command: { program: 'claude', args: ['-p'], cwd: '/repo' } });
+    expect(child.stdin.written).toEqual([]);
+    expect(child.stdin.closed).toBe(false);
+  });
+
+  it('оборванный вход не роняет супервизор', async () => {
+    // Ошибка записи в закрывшийся процесс — обычное дело; исход этапа
+    // разберут как всегда, а супервизор ведёт все задачи разом и падать
+    // из-за одной не вправе.
+    const { child, handle } = harness();
+    expect(() => child.stdin.emit('error', new Error('канал закрыт'))).not.toThrow();
+    child.emit('close', 0);
+    await handle.finished;
+  });
+});
 
 describe('этап отработал', () => {
   it('отдаёт код возврата и собранный вывод', async () => {
