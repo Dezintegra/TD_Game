@@ -29,6 +29,9 @@ import { clearTimeout as nodeClearTimeout, setTimeout as nodeSetTimeout } from '
  * @param {number} params.timeoutMs   срок, по истечении которого этап снимают
  * @param {Function} params.spawn     порождение процесса
  * @param {Function} params.killTree  снятие поддерева процессов
+ * @param {Function} [params.onEvent]  событие потока: разобранный объект либо
+ *                                     `null` и сырая строка, если не разобралось
+ * @param {Function} [params.onStderr] строка, пришедшая в поток ошибок
  * @param {Function} [params.setTimer]
  * @param {Function} [params.clearTimer]
  * @returns {{ pid, finished: Promise<object>, kill: Function }}
@@ -38,6 +41,8 @@ export function startStage({
   timeoutMs,
   spawn,
   killTree,
+  onEvent = () => {},
+  onStderr = () => {},
   setTimer = nodeSetTimeout,
   clearTimer = nodeClearTimeout,
 }) {
@@ -58,11 +63,24 @@ export function startStage({
 
   let stdout = '';
   let stderr = '';
+
+  // Вывод копится целиком — он уезжает в журнал этапа, — и одновременно
+  // режется на строки для наблюдения. Одно другому не замена: журнал
+  // читают потом и полностью, а консоль смотрят сейчас и выборочно.
+  //
+  // Резать приходится с остатком: кусок приходит по мере готовности сокета
+  // и обрывается посреди строки где угодно. Разбирать куски как строки
+  // значило бы терять каждое второе событие на длинном ответе.
+  const lines = splitter((line) => safely(() => deliver(line, onEvent)));
+  const errLines = splitter((line) => safely(() => onStderr(line)));
+
   child.stdout?.on('data', (chunk) => {
     stdout += chunk;
+    lines.push(String(chunk));
   });
   child.stderr?.on('data', (chunk) => {
     stderr += chunk;
+    errLines.push(String(chunk));
   });
 
   let killedBy = null;
@@ -79,6 +97,11 @@ export function startStage({
   const finished = new Promise((resolve) => {
     const done = (code, error) => {
       clearTimer(timer);
+      // Последняя строка приходит без перевода в конце, и без этого слива
+      // терялось бы именно итоговое событие — то самое, из которого берётся
+      // весь отчёт.
+      lines.flush();
+      errLines.flush();
       resolve({ code, killedBy, stdout, stderr, error: error ?? null });
     };
     // «error» — это не упавший этап, а несостоявшийся запуск: нет такой
@@ -89,6 +112,74 @@ export function startStage({
   });
 
   return { pid: child.pid, finished, kill: () => stop('shutdown') };
+}
+
+/**
+ * Резалка потока на строки с остатком.
+ *
+ * Кусок из сокета обрывается посреди строки где угодно, и хвост надо
+ * донести до следующего куска. `flush` доносит последнюю строку, за которой
+ * перевода уже не будет.
+ */
+function splitter(onLine) {
+  let rest = '';
+  return {
+    push(chunk) {
+      rest += chunk;
+      const parts = rest.split('\n');
+      rest = parts.pop() ?? '';
+      for (const part of parts) if (part.trim()) onLine(part.trim());
+    },
+    flush() {
+      const last = rest.trim();
+      rest = '';
+      if (last) onLine(last);
+    },
+  };
+}
+
+/** Разобрать строку потока и отдать наружу. Сырая строка идёт следом всегда. */
+function deliver(line, onEvent) {
+  onEvent(parseLine(line), line);
+}
+
+/**
+ * Наблюдение не вправе уронить супервизор.
+ *
+ * Он ведёт все задачи разом, и падение на разборе одного события остановило бы
+ * конвейер целиком. Цена ошибки здесь несоизмерима с ценой самого наблюдения.
+ */
+function safely(action) {
+  try {
+    action();
+  } catch {
+    // Молча: жаловаться на неудачу наблюдения некуда, кроме того же наблюдения.
+  }
+}
+
+/** Строка потока как объект. Не разобралась — `null`, и это законный ответ. */
+function parseLine(line) {
+  const text = stripBom(line).trim();
+  if (!text.startsWith('{')) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Снять метку порядка байтов.
+ *
+ * Стоит отдельной мелочью потому, что стоила бы получаса поисков: метка
+ * невидима, а `JSON.parse` на ней спотыкается с сообщением про неожиданный
+ * знак в начале — то есть указывает ровно туда, где глазами ничего нет.
+ */
+function stripBom(text) {
+  const line = String(text ?? '');
+  // Сравнением кода, а не знаком в выражении: в исходнике метка невидима,
+  // и правка рядом стёрла бы её незаметно и для глаза, и для обзора кода.
+  return line.charCodeAt(0) === 0xfeff ? line.slice(1) : line;
 }
 
 /**
@@ -156,13 +247,39 @@ export function readAnswer(run) {
 /**
  * Разобрать ответ приложения.
  *
- * Ответ приходит одним объектом JSON, но вокруг него бывает мусор: строка
- * предупреждения от менеджера пакетов, пустые строки. Поэтому ищем объект,
- * а не требуем, чтобы весь вывод был им.
+ * Ответов два вида, и порядок разбора идёт от нового к старому.
+ *
+ * Поток событий (`stream-json`) — это NDJSON: по объекту на строку, и нужен
+ * из них ровно один, помеченный `type: "result"`. Прежний приём — вырезать
+ * от первой скобки до последней — на таком выводе даёт заведомо негодный
+ * JSON: срез захватывает все события разом.
+ *
+ * Однократный ответ (`json`) — один объект, вокруг которого бывает мусор:
+ * строка предупреждения от менеджера пакетов, пустые строки. Поэтому ищем
+ * объект, а не требуем, чтобы весь вывод был им.
  */
 function parseEnvelope(stdout) {
-  const text = String(stdout ?? '').trim();
+  const text = stripBom(stdout).trim();
   if (!text) return null;
+
+  // Итоговое событие берётся ПОСЛЕДНЕЕ. Продолженная сессия печатает своё
+  // на каждый заход, и первое из них говорит о прошлом ходе работы.
+  let result = null;
+  let stream = false;
+  for (const line of text.split('\n')) {
+    const event = parseLine(line);
+    if (!event?.type) continue;
+    if (event.type === 'result') result = event;
+    else stream = true;
+  }
+  if (result) return result;
+
+  // Поток был, а итога в нём нет — это оборванный этап, и признать его
+  // удавшимся нельзя. Без этой проверки оборвавшийся на первом же событии
+  // этап отдавал бы ровно один объект, тот разбирался бы запасным путём
+  // как ответ, а отсутствующий признак ошибки читался бы как успех:
+  // отказ превращался бы в «сделано» ценой одного события.
+  if (stream) return null;
 
   try {
     return JSON.parse(text);

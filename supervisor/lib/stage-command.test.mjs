@@ -102,8 +102,25 @@ describe('этап с рабочим деревом', () => {
     expect(flag(args, '--append-system-prompt-file')).toContain('implement.md');
   });
 
-  it('отвечает структурой, а не текстом', () => {
-    expect(flag(args, '--output-format')).toBe('json');
+  it('отвечает потоком событий, а не одним объектом в конце', () => {
+    expect(flag(args, '--output-format')).toBe('stream-json');
+    // Ключ приложение при потоке требует — без него поток не включается.
+    expect(args).toContain('--verbose');
+  });
+
+  it('однократный ответ возвращается настройкой и без лишнего ключа', () => {
+    // Откат должен делаться правкой настройки, а не правкой кода на боевой
+    // машине: поток требует `--verbose`, и поведи себя эта пара у чужой
+    // сборки приложения иначе — чинить пришлось бы посреди работы.
+    const { config: plain } = resolveConfig({ ...config, stageOutputFormat: 'json' });
+    const { args: plainArgs } = stageCommand({
+      assignment: { taskId: '0001-x', stage: 'triage' },
+      prompt: 'п',
+      config: plain,
+      root,
+    });
+    expect(flag(plainArgs, '--output-format')).toBe('json');
+    expect(plainArgs).not.toContain('--verbose');
   });
 
   it('получает идентификатор сессии заранее — тогда возобновлять есть что', () => {
