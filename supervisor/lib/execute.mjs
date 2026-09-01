@@ -212,6 +212,7 @@ async function transferReport(action, io) {
       item.taskId,
       `**Дополнение по разбору ${task.id}**\n\n${item.facts}\n`,
       `chore(backlog): ${item.taskId} дополнена фактурой из разбора ${task.id}`,
+      'agent',
     );
     if (!written.ok) return { result: 'failed', why: written.outcome, created, amended };
     amended.push(item.taskId);
@@ -259,6 +260,9 @@ async function transferReport(action, io) {
       problem: halted ? verdict.note : undefined,
       denials,
       denialsNote,
+      // Здесь и только здесь запись говорит словами сессии: всё остальное,
+      // что конвейер пишет на доску, — его собственная механика.
+      source: 'agent',
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
     [asked, answered].filter(Boolean),

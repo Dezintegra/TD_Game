@@ -145,6 +145,23 @@ describe('сохранение задачи', () => {
     expect(posted.body.text).toContain('Взята.');
   });
 
+  it('запись сессии помечается агентской, а распоряжение конвейера — своё', async () => {
+    // Автор комментария у обоих один: запросы к Trello делает супервизор.
+    // Различает их только тег, и без него доска читалась бы как один
+    // сплошной голос.
+    const trello = fakeTrello();
+    const store = backlog({ cards: [card()] }, trello);
+
+    await store.saveTask(task(), { ...entry, source: 'agent' });
+    await store.saveTask(task(), entry);
+
+    const [fromAgent, fromSupervisor] = trello.calls
+      .filter((call) => call.path.includes('actions/comments'))
+      .map((call) => call.body.text);
+    expect(fromAgent.startsWith(`${marker} [agent] `)).toBe(true);
+    expect(fromSupervisor.startsWith(`${marker} [supervisor] `)).toBe(true);
+  });
+
   it('отсутствие колонки — беда, названная вслух, а не молчаливый успех', async () => {
     const board = snapshot({ cards: [card()] });
     board.lists = board.lists.filter((list) => list.name !== config.trello.lists.design);
