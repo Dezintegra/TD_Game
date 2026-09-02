@@ -371,7 +371,33 @@ async function startStage(action, io) {
   }
 
   const spawned = io.spawnStage(assignmentFor(action, io, claimed.task, branch));
-  if (!spawned.ok) return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
+
+  // Захват и запись «Взята в работу» остаются на месте при любом отказе:
+  // задача действительно взята и действительно стоит в этапе. Отменять
+  // тут нечего — не хватает лишь сессии, и её выдаст ближайший оборот
+  // действием `continue-stage`.
+  if (!spawned.ok && spawned.reason === 'busy') {
+    return { result: 'skipped', why: `этап не запустился: ${spawned.why}` };
+  }
+
+  if (!spawned.ok) {
+    // Отдельной записью, а не поверх «Взята в работу»: первая говорит
+    // о состоявшемся захвате и остаётся правдой, вторая — о несостоявшемся
+    // запуске. Слив их в одну, мы получили бы ту же ложь, ради которой
+    // всё и правится.
+    await io.saveTask(
+      countSpawnFailure(claimed.task),
+      {
+        at: io.now,
+        from: action.stage,
+        to: action.stage,
+        problem: `Этап не запустился: ${spawned.why}.`,
+      },
+      `chore(backlog): ${task.id} этап ${action.stage} не запустился`,
+    );
+    return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
+  }
+
   return { result: 'done', status: action.stage };
 }
 

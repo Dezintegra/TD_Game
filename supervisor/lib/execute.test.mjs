@@ -319,14 +319,31 @@ describe('взятие задачи в работу', () => {
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
   });
 
-  it('этап, который не запустился, за успех не выдаётся', async () => {
+  it('этап, который не завёлся, за успех не выдаётся', async () => {
     // Несостоявшееся порождение — это отказ настройки, а не работа сессии.
     // Выдав его за успех, конвейер оставил бы задачу в этапе, которого
     // никто не делает.
-    const io = fakeIo({ spawn: { ok: false, why: 'все места заняты' } });
+    const io = fakeIo({ spawn: { ok: false, reason: 'not-born', why: 'spawn claude ENOENT' } });
     const [result] = await execute([startAction], io);
     expect(result.result).toBe('failed');
-    expect(result.why).toContain('все места заняты');
+    expect(result.why).toContain('ENOENT');
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBe(1);
+    expect(io.journals.get('0001-one')).toContain('ENOENT');
+  });
+
+  it('при тесноте захват остаётся, а второго дерева не появляется', async () => {
+    // Задача действительно взята и действительно стоит в этапе — отменять
+    // тут нечего. Не хватает лишь сессии, и её выдаст ближайший оборот.
+    const io = fakeIo({ spawn: { ok: false, reason: 'busy', why: 'все места заняты' } });
+    const [result] = await execute([startAction], io);
+
+    expect(result.result).toBe('skipped');
+    expect(io.tasks.get('0001-one')).toMatchObject({ owner: 'станция-1', status: 'design' });
+    expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toHaveLength(1);
+    // Записей о задаче ровно одна — та, что говорит о взятии в работу.
+    expect(io.journals.get('0001-one')).toContain('Взята в работу');
+    expect(io.journals.get('0001-one')).not.toContain('не запустился');
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBeUndefined();
   });
 
   it('прогону дерево не заводится: арену считает чужое железо', async () => {

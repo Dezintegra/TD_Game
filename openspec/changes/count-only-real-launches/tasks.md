@@ -66,11 +66,11 @@
 
 ## 4. `startStage` разбирает отказ порождения тем же правилом
 
-- [ ] `supervisor/lib/execute.mjs`, `startStage`: отказ `busy` → `skipped`
+- [x] `supervisor/lib/execute.mjs`, `startStage`: отказ `busy` → `skipped`
       с причиной (задача уже взята и стоит в этапе, сессию ей выдаст
       ближайший оборот), отказ `not-born` → `failed` с причиной
       и `countSpawnFailure` отдельной записью.
-- [ ] Тест: захват и запись «Взята в работу» при отказе `busy` остаются
+- [x] Тест: захват и запись «Взята в работу» при отказе `busy` остаются
       на месте, а второго дерева и второй записи не появляется.
 
 **Проверка:** `npx vitest run --root supervisor lib/execute.test.mjs`
