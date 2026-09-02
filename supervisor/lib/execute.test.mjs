@@ -319,14 +319,31 @@ describe('взятие задачи в работу', () => {
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
   });
 
-  it('этап, который не запустился, за успех не выдаётся', async () => {
+  it('этап, который не завёлся, за успех не выдаётся', async () => {
     // Несостоявшееся порождение — это отказ настройки, а не работа сессии.
     // Выдав его за успех, конвейер оставил бы задачу в этапе, которого
     // никто не делает.
-    const io = fakeIo({ spawn: { ok: false, why: 'все места заняты' } });
+    const io = fakeIo({ spawn: { ok: false, reason: 'not-born', why: 'spawn claude ENOENT' } });
     const [result] = await execute([startAction], io);
     expect(result.result).toBe('failed');
-    expect(result.why).toContain('все места заняты');
+    expect(result.why).toContain('ENOENT');
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBe(1);
+    expect(io.journals.get('0001-one')).toContain('ENOENT');
+  });
+
+  it('при тесноте захват остаётся, а второго дерева не появляется', async () => {
+    // Задача действительно взята и действительно стоит в этапе — отменять
+    // тут нечего. Не хватает лишь сессии, и её выдаст ближайший оборот.
+    const io = fakeIo({ spawn: { ok: false, reason: 'busy', why: 'все места заняты' } });
+    const [result] = await execute([startAction], io);
+
+    expect(result.result).toBe('skipped');
+    expect(io.tasks.get('0001-one')).toMatchObject({ owner: 'станция-1', status: 'design' });
+    expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toHaveLength(1);
+    // Записей о задаче ровно одна — та, что говорит о взятии в работу.
+    expect(io.journals.get('0001-one')).toContain('Взята в работу');
+    expect(io.journals.get('0001-one')).not.toContain('не запустился');
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBeUndefined();
   });
 
   it('прогону дерево не заводится: арену считает чужое железо', async () => {
@@ -701,13 +718,62 @@ describe('сессия на идущий этап', () => {
     expect(io.spawned[0]).toMatchObject({ continuation: true, sessionId: 'сессия-прежняя' });
   });
 
-  it('незапустившийся этап не выдаётся за успех', async () => {
+  it('удавшееся порождение пишет в журнал задачи выданную сессию', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([carryOn], io);
+    expect(io.journals.get('0001-one')).toContain('Этапу выдана сессия');
+  });
+
+  it('удавшееся порождение гасит счёт несостоявшихся запусков', async () => {
+    // Оно доказывает, что машинерия запуска работает, и прежние отказы
+    // к делу больше не относятся.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement', attempts: { continuations: 0, spawnFailures: 2 } })],
+    });
+    await execute([carryOn], io);
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBe(0);
+  });
+
+  it('несостоявшийся запуск продолжения не тратит', async () => {
+    // Признак сделанности из карточки задачи 0067, дословно: порождение,
+    // вернувшее ok: false, оставляет attempts.continuations неизменным.
     const io = fakeIo({
       tasks: [task({ status: 'implement' })],
-      spawn: { ok: false, why: 'по этой задаче уже идёт этап' },
+      spawn: { ok: false, reason: 'not-born', why: 'spawn claude ENOENT' },
     });
     const [result] = await execute([carryOn], io);
+
     expect(result.result).toBe('failed');
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
+  });
+
+  it('причина несостоявшегося запуска уезжает в журнал задачи', async () => {
+    // Прежде она оставалась в одном лишь cycle.log, а карточка утверждала
+    // обратное — «Этапу выдана сессия», — и разбор шёл по ложному следу.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      spawn: { ok: false, reason: 'not-born', why: 'spawn claude ENOENT' },
+    });
+    await execute([carryOn], io);
+
+    expect(io.journals.get('0001-one')).toContain('ENOENT');
+    expect(io.journals.get('0001-one')).not.toContain('Этапу выдана сессия');
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBe(1);
+  });
+
+  it('теснота не тратит ничего и журнала не трогает вовсе', async () => {
+    // Оборот идёт раз в пять минут, прогон арены держит место десятками
+    // минут: запись о тесноте дала бы карточке дюжину строк в час.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      spawn: { ok: false, reason: 'busy', why: 'все места заняты' },
+    });
+    const [result] = await execute([carryOn], io);
+
+    expect(result.result).toBe('skipped');
+    expect(result.why).toContain('все места заняты');
+    expect(io.journals.get('0001-one')).toBeUndefined();
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
   });
 
   it('безместной задаче сессия не выдаётся, и оборот не падает', async () => {

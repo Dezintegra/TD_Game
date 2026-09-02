@@ -54,7 +54,7 @@ export function applyTransition(task, { status, note, now }) {
   // сессию же разбору выдаёт то самое действие, которое смотрит на счётчик.
   // Сканер объявил бы разбор провалившимся прежде первой его сессии.
   const attempts = CROSSCUT.includes(status)
-    ? { continuations: 0, cycleFailures: 0, rejections: 0 }
+    ? { continuations: 0, cycleFailures: 0, rejections: 0, spawnFailures: 0 }
     : task.attempts;
 
   return {
@@ -91,6 +91,20 @@ export function countContinuation(task) {
 }
 
 /**
+ * Отметить, что процесс этапа породить не удалось.
+ *
+ * Счёт ведётся отдельно от продолжений намеренно. Продолжение стоит сессии:
+ * денег, времени этапа, круга работы. Несостоявшийся запуск не стоит ничего,
+ * кроме строки в журнале, — и лечится он не новой сессией, а настройкой.
+ * Смешав их, разбор пойдёт искать причину в сессии, которой не было: так
+ * задачи 0043, 0062, 0022 и 0088 ушли в ошибку с ложной уликой.
+ */
+export function countSpawnFailure(task) {
+  const attempts = task.attempts ?? { continuations: 0, cycleFailures: 0 };
+  return { ...task, attempts: { ...attempts, spawnFailures: (attempts.spawnFailures ?? 0) + 1 } };
+}
+
+/**
  * Отметить, что проверяющий этап вернул работу.
  *
  * Счёт ведётся ПОДРЯД идущим возвратам и обнуляется, как только проверка
@@ -109,7 +123,10 @@ export function countRejection(task) {
  * через все оставшиеся этапы и упёрлась бы в предел там, где всё было хорошо.
  */
 export function resetAttempts(task) {
-  return { ...task, attempts: { continuations: 0, cycleFailures: 0, rejections: 0 } };
+  return {
+    ...task,
+    attempts: { continuations: 0, cycleFailures: 0, rejections: 0, spawnFailures: 0 },
+  };
 }
 
 /** Записать ссылку на порождённый артефакт, не трогая остальных. */

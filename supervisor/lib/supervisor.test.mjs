@@ -30,8 +30,11 @@ function harness(over = {}) {
   const saved = [];
 
   const spawn = () => {
+    if (over.spawnThrows) throw new Error(over.spawnThrows);
     const child = new EventEmitter();
-    child.pid = 1000 + children.length;
+    // Номер процесса — признак рождения. Подставной `spawn` умеет и не давать
+    // его: так ведёт себя настоящий на несуществующей команде.
+    if (!over.stillborn) child.pid = 1000 + children.length;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
     children.push(child);
@@ -173,6 +176,74 @@ describe('порождение', () => {
     const { supervisor, saved } = harness();
     expect(supervisor.forgetSession('0001-one', 'design')).toBe(false);
     expect(saved).toEqual([]);
+  });
+});
+
+describe('несостоявшийся запуск', () => {
+  // Отказ порождения и упавший этап — разные беды, и лечатся они по-разному.
+  // Разбирается это полем `reason`, а не текстом сообщения: сравнение русских
+  // строк между файлами превратило бы правку формулировки в подмену смысла.
+
+  it('теснота называется занятостью, а не поломкой', () => {
+    const { supervisor } = harness();
+    supervisor.spawnStage(assignment());
+    expect(supervisor.spawnStage(assignment({ taskId: '0002-two' })).reason).toBe('busy');
+    expect(supervisor.spawnStage(assignment({ stage: 'audit' })).reason).toBe('busy');
+  });
+
+  it('теснота не делает этап идущим', () => {
+    const { supervisor } = harness();
+    supervisor.spawnStage(assignment());
+    supervisor.spawnStage(assignment({ taskId: '0002-two' }));
+    expect(supervisor.running()).toEqual([{ taskId: '0001-one', stage: 'design' }]);
+  });
+
+  it('процесс без номера запущенным не считается', () => {
+    // Так `spawn` отвечает на несуществующую команду: объект возвращает сразу,
+    // а `ENOENT` присылает событием позже. Дожидаться события нельзя.
+    const { supervisor } = harness({ stillborn: true });
+    const spawned = supervisor.spawnStage(assignment());
+
+    expect(spawned.ok).toBe(false);
+    expect(spawned.reason).toBe('not-born');
+    expect(supervisor.running()).toEqual([]);
+  });
+
+  it('идентификатор незаведённой сессии не запоминается', () => {
+    // Иначе следующее продолжение ушло бы возобновлять то, чего не было,
+    // и умерло бы за секунды с «No conversation found with session ID».
+    const { supervisor, saved } = harness({ stillborn: true });
+    supervisor.spawnStage(assignment());
+
+    expect(supervisor.lastSession('0001-one', 'design')).toBe(null);
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(null);
+    expect(saved).toEqual([]);
+  });
+
+  it('о несостоявшемся запуске не пишут «запущен»', () => {
+    const { supervisor, logged } = harness({ stillborn: true });
+    supervisor.spawnStage(assignment());
+    expect(logged.join()).not.toContain('запущен');
+  });
+
+  it('упавшее порождение — тоже не рождение', () => {
+    // Так выглядел `spawn ENAMETOOLONG`, отбивший запуск двенадцати задачам
+    // за ночь 31.08–01.09.2026.
+    const { supervisor } = harness({ spawnThrows: 'spawn ENAMETOOLONG' });
+    const spawned = supervisor.spawnStage(assignment());
+
+    expect(spawned.reason).toBe('not-born');
+    expect(spawned.why).toContain('ENAMETOOLONG');
+    expect(supervisor.running()).toEqual([]);
+  });
+
+  it('удавшееся порождение по-прежнему помнит сессию и говорит о запуске', () => {
+    const { supervisor, logged } = harness();
+    const spawned = supervisor.spawnStage(assignment());
+
+    expect(spawned.ok).toBe(true);
+    expect(supervisor.lastSession('0001-one', 'design')).toBe(spawned.sessionId);
+    expect(logged.join()).toContain('запущен');
   });
 });
 

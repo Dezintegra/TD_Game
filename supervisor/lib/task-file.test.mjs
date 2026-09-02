@@ -4,6 +4,7 @@ import {
   claimTask,
   countContinuation,
   countRejection,
+  countSpawnFailure,
   linkArtifact,
   relate,
   releaseClaim,
@@ -105,7 +106,12 @@ describe('переход состояния', () => {
       attempts: { continuations: 2, cycleFailures: 1, rejections: 3 },
     });
     const { task: analysed } = applyTransition(tired, { status: 'postmortem', now: NOW });
-    expect(analysed.attempts).toEqual({ continuations: 0, cycleFailures: 0, rejections: 0 });
+    expect(analysed.attempts).toEqual({
+      continuations: 0,
+      cycleFailures: 0,
+      rejections: 0,
+      spawnFailures: 0,
+    });
   });
 
   it('переход по маршруту счёт попыток не трогает', () => {
@@ -168,12 +174,28 @@ describe('счётчики', () => {
   });
 
   it('дошедший до конца этап сбрасывает счётчики', () => {
-    const tired = task({ attempts: { continuations: 2, cycleFailures: 1, rejections: 2 } });
+    const tired = task({
+      attempts: { continuations: 2, cycleFailures: 1, rejections: 2, spawnFailures: 2 },
+    });
     expect(resetAttempts(tired).attempts).toEqual({
       continuations: 0,
       cycleFailures: 0,
       rejections: 0,
+      spawnFailures: 0,
     });
+  });
+
+  it('несостоявшийся запуск считается', () => {
+    expect(countSpawnFailure(task()).attempts.spawnFailures).toBe(1);
+    expect(countSpawnFailure(countSpawnFailure(task())).attempts.spawnFailures).toBe(2);
+  });
+
+  it('счёт несостоявшихся запусков не трогает счёт продолжений', () => {
+    // Продолжение платит за сессию, которая была и не справилась,
+    // а несостоявшийся запуск — за сессию, которой не было вовсе.
+    // Общий счётчик увёл бы разбор искать причину не там.
+    const counted = countSpawnFailure(task({ attempts: { continuations: 1, cycleFailures: 0 } }));
+    expect(counted.attempts.continuations).toBe(1);
   });
 
   it('возврат проверяющего этапа считается', () => {
