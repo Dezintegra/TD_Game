@@ -1,0 +1,23 @@
+{
+  "name": "pipeline-supervisor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Супервизор конвейера агентской разработки: берёт задачи с доски, заводит рабочие деревья и порождает этапы дочерними процессами claude",
+  "bin": {
+    "pipeline-supervisor": "bin/supervise.mjs"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "start": "node bin/supervise.mjs",
+    "shadow": "node bin/supervise.mjs --dry-run",
+    "cycle": "node bin/cycle.mjs",
+    "board": "node bin/board.mjs",
+    "board-setup": "node bin/board-setup.mjs",
+    "test": "vitest run --root ."
+  },
+  "$dependenciesNote": "Зависимостей нет и заводить их нельзя. Инструмент обязан переноситься копированием каталога, а всякая зависимость означает установку на каждой машине — ровно ту помеху, ради устранения которой он и вынесен. Для прогона тестов нужен vitest, но он берётся из проекта, в котором инструмент лежит, и в зависимости не пишется.",
+  "$workspaceNote": "Пакетом рабочего пространства pnpm этот каталог не является: шаблоны в pnpm-workspace.yaml его не захватывают. Это намеренно — запись туда привязала бы инструмент к одному репозиторию и потребовала бы правки файла блокировки."
+}

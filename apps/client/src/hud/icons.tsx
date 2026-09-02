@@ -1,5 +1,13 @@
 import type { ReactNode } from 'react';
 import { StructureKind, UnitType } from '@td/shared';
+import {
+  SIDE_SELF,
+  baseIconKey,
+  generalIconKey,
+  structureIconKey,
+  unitIconKey,
+} from '../game/icon-sprites.js';
+import { useHudStore } from '../game/store.js';
 
 /**
  * Пиктограммы юнитов и построек для верхней полосы.
@@ -165,3 +173,96 @@ export const STRUCTURE_GLYPH: Readonly<Record<StructureKind, () => ReactNode>> =
   [StructureKind.TowerBasic]: TowerGlyph,
   [StructureKind.TowerSniper]: TowerSniperGlyph,
 };
+
+// ─────────────────────────────────────────────────────────────────────────
+// Отрисованные объекты вместо контуров
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Значок объекта: отрисованная машина, а пока её нет — прежний контур.
+ *
+ * Плитка заказа отвечает на вопрос «та ли это машина», и контур на него
+ * не отвечает: игрок сопоставляет рисунок с машиной на поле сам,
+ * а ошибается не в названии, а в заказе. Поэтому здесь стоит тот же
+ * объект, что и на поле, — отрисованный тем же кодом и с того же ракурса
+ * (см. `game/icon-sprites.ts`).
+ *
+ * Контур при этом никуда не девается и мёртвым грузом не лежит. Иконки
+ * печатаются по одной за кадр и уже ПОСЛЕ рельефа, чтобы не удлинять
+ * начало матча, — и всё это время плитка обязана что-то показывать.
+ * Показывает она контур.
+ *
+ * Подписка идёт на СТРОКУ иконки, а не на карту целиком: строку zustand
+ * сравнивает по значению, и появление соседней иконки этот значок
+ * не перерисовывает.
+ *
+ * Размер задаёт родитель — и это то же правило, что у контуров:
+ * `width`/`height` в сто процентов, а сколько это точек, решает CSS.
+ * Иначе размер иконки нельзя было бы поменять медиазапросом.
+ */
+const ObjectIcon = ({
+  iconKey,
+  fallback: Fallback,
+}: {
+  readonly iconKey: string;
+  readonly fallback: () => ReactNode;
+}) => {
+  const src = useHudStore((state) => state.icons[iconKey]);
+
+  if (src === undefined) return <Fallback />;
+
+  return (
+    <img
+      src={src}
+      alt=""
+      aria-hidden
+      // `contain` обязателен: у машин и башен разные пропорции, и растянуть
+      // снайпера по клетке башни значило бы соврать про его силуэт —
+      // а силуэтом они и различаются.
+      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+    />
+  );
+};
+
+/**
+ * Сторона у значка обязательна там, где показывают ЧУЖОЙ состав.
+ *
+ * Машина покрашена в графит, и сторону на ней несут маркеры да подсветка
+ * по краю. Поставь в сводку соперника свой значок — и чужие восемь Тесл
+ * оказались бы помечены своим цветом: на поле, где цвет означает
+ * принадлежность, это худшая из возможных ошибок.
+ *
+ * Своя сторона стоит умолчанием: заказывает игрок только своё, и плитки
+ * с окном прокачки о существовании второй стороны не знают.
+ */
+export const UnitIcon = ({
+  type,
+  side = SIDE_SELF,
+}: {
+  readonly type: UnitType;
+  readonly side?: number;
+}) => <ObjectIcon iconKey={unitIconKey(type, side)} fallback={UNIT_GLYPH[type]} />;
+
+export const StructureIcon = ({
+  kind,
+  side = SIDE_SELF,
+}: {
+  readonly kind: StructureKind;
+  readonly side?: number;
+}) => <ObjectIcon iconKey={structureIconKey(kind, side)} fallback={STRUCTURE_GLYPH[kind]} />;
+
+/**
+ * База — та же постройка, только печёт её другой запекатель.
+ *
+ * Отдельным компонентом, а не `StructureIcon` с видом «база», потому что
+ * подложка у неё своя: в таблице `STRUCTURE_GLYPH` базе досталась
+ * пиктограмма стены — там она никогда не показывалась и заполняла
+ * запись лишь ради полноты.
+ */
+export const BaseIcon = ({ side = SIDE_SELF }: { readonly side?: number }) => (
+  <ObjectIcon iconKey={baseIconKey(side)} fallback={BaseGlyph} />
+);
+
+export const GeneralIcon = ({ side = SIDE_SELF }: { readonly side?: number }) => (
+  <ObjectIcon iconKey={generalIconKey(side)} fallback={GeneralGlyph} />
+);

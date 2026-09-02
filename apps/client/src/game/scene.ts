@@ -6,11 +6,14 @@ import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } from './camera.js';
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
-import { clearRockLayer, mountRockDiagonal } from './relief-render.js';
+import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
+import { ARMOUR_SUPERSAMPLE, armourBakeDensity, rockBakeDensity } from './bake-density.js';
 import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
 import { drawEntities } from './entities.js';
+import { createIconBaker } from './icon-sprites.js';
+import type { IconBaker, IconMap } from './icon-sprites.js';
 import { createMachineSprites } from './machine-sprites.js';
 import { createStructureSprites } from './structure-sprites.js';
 import type { StructureSpriteColors, StructureSprites } from './structure-sprites.js';
@@ -102,6 +105,18 @@ export interface Scene {
    * и разбор кадров матча, которые всё это время копятся в сокете.
    */
   bakeTerrain(budgetMs: number): boolean;
+  /**
+   * Запечь очередную иконку интерфейса.
+   *
+   * Возвращает пополненную карту, пока работа есть, и `null`, когда всё
+   * запечено. Вызывать положено из кадра и ПОСЛЕ того, как допечён
+   * рельеф: одну работу в кадре мы уже держим, и вторая рядом с ней
+   * означала бы съеденный кадр вместо отложенного запекания.
+   *
+   * Иконки отдаются наружу, а не ставятся сценой на место: рисует их
+   * React, а сцена о нём не знает и знать не должна.
+   */
+  bakeIcons(): IconMap | null;
   /** Рисует текущее состояние мира и подсказки. */
   render(world: WorldState, localPlayer: PlayerId, intent: OverlayIntent): void;
   /** Сдвигает камеру на заданное число экранных пикселей и снимает слежение. */
@@ -337,7 +352,130 @@ const readMinimapColors = (): MinimapColors => ({
  */
 const MINIMAP_EVERY_FRAMES = 6;
 
-export const createScene = async (host: HTMLElement): Promise<Scene> => {
+/**
+ * Отрисовщик и кеши спрайтов, живущие ДОЛЬШЕ матча.
+ *
+ * Заведено ради прогрева. Текстура принадлежит контексту WebGL,
+ * в котором запечена, и отдать её другому контексту нельзя ни при каких
+ * условиях. Пока приложение создавалось внутри `createScene` — то есть
+ * при старте матча, — подготовить спрайты заранее было НЕЧЕМ: греть
+ * попросту не на чем.
+ *
+ * Отсюда и всё остальное устройство: элемент `#scene` заводится один раз
+ * и не удаляется, приложение живёт с загрузки страницы, а матч приходит
+ * и уходит поверх них.
+ */
+/**
+ * Отчёт порции прогрева.
+ *
+ * Считает штуки, а не время, и это принципиально. Времени внутри вызова
+ * у запекания нет: заказ уходит в текстуру и продолжается вне часов
+ * JavaScript, поэтому `performance.now()` вокруг `warm` показывает
+ * оформление заказа, а не работу (проверено 31.08.2026). Настоящую цену
+ * снимает наблюдатель снаружи — ему и нужен счёт сделанного, чтобы
+ * поделить на него прошедшее время.
+ */
+export interface WarmProgress {
+  /** Сколько комбинаций запечено этой порцией. Не меньше одной. */
+  readonly baked: number;
+  /** Сколько комбинаций в очереди ещё не тронуто. */
+  readonly rest: number;
+}
+
+export interface RendererHost {
+  readonly app: Application;
+  /** Элемент, в котором лежит канвас. Живёт столько же, сколько страница. */
+  readonly element: HTMLElement;
+  readonly machines: MachineSprites;
+  readonly structures: StructureSprites;
+  /**
+   * Плотность запекания брони. Считается один раз на страницу: плотность
+   * экрана в течение сессии не меняется, а зум на неё не влияет — она
+   * и так покрывает весь его диапазон.
+   */
+  readonly density: number;
+  /**
+   * Запечь базовый набор спрайтов, потратив не больше отпущенного.
+   *
+   * Работа режется на порции — как у `bakeTerrain`, и по той же причине:
+   * полтора десятка тысяч точек на комбинацию нельзя запечь одним циклом,
+   * не заморозив страницу.
+   *
+   * Одна комбинация печётся всегда, даже при нулевом бюджете: иначе
+   * на медленной машине прогрев не сдвинулся бы вовсе.
+   */
+  warm(budgetMs: number): WarmProgress;
+  /**
+   * Сбросить кеши и начать прогрев заново.
+   *
+   * Кеши переживают матч намеренно — на этом держится прогрев, — но
+   * расти без предела им нельзя. За матч наполняется около ста тридцати
+   * комбинаций и десять мегабайт, а мест в кеше почти три тысячи:
+   * прокачка ветвей открывает новые сочетания ступеней, и за долгую
+   * сессию из многих матчей набежало бы за две сотни мегабайт.
+   *
+   * Поэтому кеш сбрасывается ровно тогда, когда игрок вышел в меню:
+   * там есть и время на новый прогрев, и повод — следующий матч может
+   * оказаться другим. Между матчами подряд (кнопка «Новый матч») сброса
+   * НЕ происходит: сочетания там те же самые, а прогревать заново
+   * значило бы начинать матч холодным.
+   */
+  reset(): void;
+  destroy(): void;
+}
+
+/**
+ * Поднять отрисовщик и кеши спрайтов.
+ *
+ * Зовётся один раз за жизнь страницы, ДО первого матча — из меню.
+ *
+ * Тикер сразу останавливается: пока матча нет, рисовать нечего, а тикер
+ * PixiJS по умолчанию перерисовывает сцену каждый кадр. Пустая сцена
+ * стоит немного, но жечь кадры в меню незачем — там и без нас работает
+ * выпечка звука.
+ */
+/**
+ * Дешёвые текстуры: `VITE_E2E_CHEAP_TEXTURES=1`.
+ *
+ * Плотность запекания выведена из предельного приближения: спрайт печётся
+ * вчетверо подробнее показа, чтобы на полном зуме не расплываться. Это
+ * верно для игрока и бессмысленно для сквозной проверки — она приближение
+ * не трогает, чёткость не сверяет и картинку вообще смотрит только
+ * на предмет «есть ли и где лежит».
+ *
+ * Платит же она за эту подробность полной ценой, причём вчетверо большей
+ * обычной: точки растут квадратом, и запекание одной комбинации
+ * дорожает с 3,3 до примерно 13 мс. На runner'е GitHub, где рисует
+ * процессор, а четыре ядра делят два браузера, сервер и клиент,
+ * это и вымывало у проверок весь запас времени.
+ *
+ * Единица — не «похуже», а «ровно столько, сколько показано»: при
+ * единичном масштабе точка текстуры приходится на точку экрана.
+ * Отрисовка остаётся настоящей, проверять по ней можно всё то же.
+ *
+ * Замер кадров этот флаг НЕ получает (`playwright.perf.config.ts`):
+ * ему как раз и надо мерить ту сборку, которую увидит игрок.
+ */
+const CHEAP_TEXTURES = import.meta.env['VITE_E2E_CHEAP_TEXTURES'] === '1';
+
+/**
+ * Потолок порции прогрева в запеканиях.
+ *
+ * Четыре — примерно столько и укладывалось в бюджет простоя на здоровой
+ * машине (13 мс на комбинацию, до полусотни миллисекунд простоя),
+ * то есть для неё это не ограничение, а запись сложившегося.
+ *
+ * Нужен же потолок для машины, у которой заказ дёшев, а работа дорога:
+ * часы JavaScript такую порцию не остановят вовсе — они этой работы
+ * не видят, — и порция росла бы, пока меню не встанет.
+ */
+const WARM_PORTION_MAX = 4;
+
+export const createRendererHost = async (): Promise<RendererHost> => {
+  const element = document.createElement('div');
+  element.id = 'scene';
+  document.body.appendChild(element);
+
   const app = new Application();
 
   await app.init({
@@ -346,10 +484,116 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
     // Учитываем плотность пикселей монитора, иначе на ретине картинка мылит.
     resolution: window.devicePixelRatio,
     autoDensity: true,
-    resizeTo: host,
+    resizeTo: element,
   });
 
-  host.appendChild(app.canvas);
+  element.appendChild(app.canvas);
+  app.ticker.stop();
+
+  /**
+   * Плотность запекания брони. Считается один раз: плотность экрана
+   * в течение сессии не меняется, а зум на неё не влияет — она и так
+   * покрывает весь его диапазон, см. `bake-density.ts`.
+   *
+   * В сквозных проверках плотность единичная — см. `CHEAP_TEXTURES`.
+   */
+  const bakeDensity = CHEAP_TEXTURES ? 1 : armourBakeDensity(app.renderer.resolution);
+
+  /**
+   * Кеш запечённых машин.
+   *
+   * Разрешение покрывает предельное приближение целиком: на экране
+   * с плотными пикселями машина обязана быть подробнее, а не крупнее,
+   * и вдобавок она обязана пережить четырёхкратный зум без растяжения.
+   * Кратность сглаживания при этом постоянна — почему именно так,
+   * разобрано у самой величины.
+   */
+  const machines: MachineSprites = createMachineSprites(
+    app.renderer,
+    readMachineColors(),
+    bakeDensity,
+    ARMOUR_SUPERSAMPLE,
+  );
+
+  /**
+   * Кеш запечённых построек.
+   *
+   * Отдельный от машинного, хотя приём тот же: у постройки другой ключ
+   * (облик вместо ступеней прокачки), другая палитра и другая фактура,
+   * а общего осталось бы одно только слово «спрайт».
+   */
+  const structures: StructureSprites = createStructureSprites(
+    app.renderer,
+    readStructureColors(),
+    bakeDensity,
+    ARMOUR_SUPERSAMPLE,
+  );
+
+  /**
+   * Очередь прогрева и место в ней.
+   *
+   * Собирается лениво, при первом же шаге: перечни строят замыкания
+   * на каждую комбинацию, и делать эту работу тем, кто прогревом
+   * не пользуется, незачем.
+   */
+  let warmQueue: readonly (() => void)[] | undefined;
+  let warmAt = 0;
+
+  return {
+    app,
+    element,
+    machines,
+    structures,
+    density: bakeDensity,
+    warm(budgetMs: number): WarmProgress {
+      warmQueue ??= [...machines.warmSteps(), ...structures.warmSteps()];
+
+      const started = performance.now();
+      let baked = 0;
+
+      do {
+        const step = warmQueue[warmAt];
+        if (step === undefined) return { baked, rest: 0 };
+
+        step();
+        warmAt += 1;
+        baked += 1;
+        // Бюджет здесь режет ПОРЦИЮ, а не считает цену: часы JavaScript
+        // видят только заказ, а не работу драйвера. Отсюда и второй
+        // ограничитель — по штукам: на машине, где заказ дёшев, а работа
+        // дорога, одного бюджета мало, и порция разрослась бы в замершее
+        // меню. Настоящую цену снимает наблюдатель снаружи, ему же нужна
+        // и порция помельче — иначе замер выходит слишком грубым.
+      } while (
+        warmAt < warmQueue.length &&
+        baked < WARM_PORTION_MAX &&
+        performance.now() - started < budgetMs
+      );
+
+      return { baked, rest: warmQueue.length - warmAt };
+    },
+    reset() {
+      machines.dispose();
+      structures.dispose();
+      // Перечень перестраивать не нужно — замыкания в нём ссылаются
+      // на те же кеши, а место в очереди отматывается к началу.
+      warmAt = 0;
+    },
+    destroy() {
+      machines.dispose();
+      structures.dispose();
+      app.destroy(true, { children: true });
+      element.remove();
+    },
+  };
+};
+
+export const createScene = (renderer: RendererHost): Scene => {
+  const { app, machines, structures, density: bakeDensity } = renderer;
+
+  // Тикер PixiJS и есть отрисовка: игровой цикл считает кадр, а рисует
+  // сцену тикер. В меню он остановлен, здесь — пускается.
+  app.ticker.start();
 
   // Мировой контейнер несёт камеру, внешний — только тряску. Разделение
   // не косметическое: положение мирового контейнера читает наведение,
@@ -432,7 +676,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
    * между светом выстрелов и светом взрывов — разряд ярче очереди
    * штурмовика, но тише гибели.
    */
-  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc });
+  const arcs: ArcSprites = createArcSprites(app.renderer, { arc: shotColors.arc }, bakeDensity);
 
   const flashGraphics = new Graphics();
   flashGraphics.blendMode = 'add';
@@ -561,30 +805,20 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   const baseSelfColors = readBaseColors(token('--td-accent', 0x00ff29));
   const baseEnemyColors = readBaseColors(token('--td-player-enemy', 0xd264ff));
   const entityColors = readEntityColors();
-  /**
-   * Кеш запечённых машин.
-   *
-   * Разрешение берётся то же, с которым работает приложение: спрайт
-   * рисуется один к одному, и на экране с плотными пикселями машина
-   * обязана быть подробнее, а не крупнее.
-   */
-  const machines: MachineSprites = createMachineSprites(
-    app.renderer,
-    readMachineColors(),
-    app.renderer.resolution,
-  );
 
   /**
-   * Кеш запечённых построек.
+   * Запекатель иконок интерфейса.
    *
-   * Отдельный от машинного, хотя приём тот же: у постройки другой ключ
-   * (облик вместо ступеней прокачки), другая палитра и другая фактура,
-   * а общего осталось бы одно только слово «спрайт».
+   * Заводится здесь, потому что здесь живут и отрисовщик, и прочитанные
+   * из CSS цвета сторон, — но НЕ работает, пока его не позовут. Зовут
+   * из кадра и только после того, как допечён рельеф: старт матча уже
+   * держит его запекание, и складывать одно с другим нельзя.
    */
-  const structures: StructureSprites = createStructureSprites(
+  const iconBaker: IconBaker = createIconBaker(
     app.renderer,
+    readMachineColors(),
     readStructureColors(),
-    app.renderer.resolution,
+    readBaseColors,
   );
 
   const blastColors = readBlastColors();
@@ -624,6 +858,15 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
         readonly localPlayer: PlayerId;
         /** Диагонали в порядке запекания, а не по возрастанию номера. */
         readonly order: readonly number[];
+        /**
+         * Плотность запекания скал этой карты.
+         *
+         * Считается на карту, а не на сцену: она выведена из бюджета
+         * видеопамяти, а расход зависит от числа скальных клеток. Лежит
+         * в задании, чтобы смена карты посреди запекания не смешала
+         * клетки двух карт, запечённые с разной плотностью.
+         */
+        readonly rockDensity: number;
         at: number;
       }
     | undefined;
@@ -632,7 +875,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   let layout: MinimapLayout = minimapLayout(
     app.screen.width,
     app.screen.height,
-    sizeToken('--td-field-inset-right', 0),
+    sizeToken('--td-field-inset-top', 0),
   );
   let frame = 0;
 
@@ -697,14 +940,14 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
   };
 
   const relayoutMinimap = (): void => {
-    // Отступ справа читается из токена при каждой перекладке, а не один
-    // раз при создании сцены: на телефоне он ненулевой, на мониторе ноль,
-    // и меняется он поворотом экрана — то есть ровно тогда, когда
-    // миникарта и перекладывается.
+    // Отступ сверху читается из токена при каждой перекладке, а не один
+    // раз при создании сцены: он равен высоте своей сводки, а она
+    // меняется поворотом экрана — то есть ровно тогда, когда миникарта
+    // и перекладывается.
     layout = minimapLayout(
       app.screen.width,
       app.screen.height,
-      sizeToken('--td-field-inset-right', 0),
+      sizeToken('--td-field-inset-top', 0),
     );
     if (currentMap !== undefined) {
       drawMinimapTerrain(minimapTerrain, currentMap, layout, minimapColors);
@@ -773,6 +1016,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
         map,
         localPlayer,
         order: bakeOrderOf(map, localPlayer, terrainBands.length),
+        rockDensity: rockBakeDensity(bakeDensity, countRockCells(map)),
         at: 0,
       };
     },
@@ -792,10 +1036,14 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
         const diagonal = job.order[job.at] ?? 0;
         const layer = terrainBands[diagonal];
         if (layer !== undefined) {
-          mountRockDiagonal(layer, app.renderer, job.map, diagonal, {
-            rock: terrainColors.rock,
-            sky: terrainColors.rockSky,
-          });
+          mountRockDiagonal(
+            layer,
+            app.renderer,
+            job.map,
+            diagonal,
+            { rock: terrainColors.rock, sky: terrainColors.rockSky },
+            job.rockDensity,
+          );
 
           // База ставится ПОСЛЕ скал своей диагонали: `mountRockDiagonal`
           // чистит слой целиком, и база, положенная раньше, была бы
@@ -820,6 +1068,7 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
               x,
               y,
               index === job.localPlayer ? baseSelfColors : baseEnemyColors,
+              bakeDensity,
             );
           });
         }
@@ -832,6 +1081,8 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
       baking = undefined;
       return false;
     },
+
+    bakeIcons: () => iconBaker.step(),
 
     render(world, localPlayer, intent) {
       clearEntityLayers();
@@ -995,12 +1246,21 @@ export const createScene = async (host: HTMLElement): Promise<Scene> => {
 
     destroy() {
       // Текстуры живут в видеопамяти, и сборщик мусора о ней не знает:
-      // без уборки утечка копилась бы матч за матчем. И разряды,
-      // и машины — до самого приложения.
+      // без уборки утечка копилась бы матч за матчем.
       arcs.destroy();
-      machines.dispose();
-      structures.dispose();
-      app.destroy(true, { children: true });
+
+      // Тикер останавливается вместе с матчем: в меню рисовать нечего.
+      app.ticker.stop();
+
+      // Снимается ТОЛЬКО матчевое. Приложение и кеши спрайтов
+      // принадлежат хозяину отрисовщика и переживают смену матча —
+      // на этом и держится прогрев, ради которого всё затевалось.
+      //
+      // `texture` в параметрах уничтожения не ставится намеренно:
+      // спрайты машин ссылаются на текстуры кеша, и уничтожь мы их
+      // заодно — прогрев обнулялся бы каждым матчем, а второй матч
+      // рисовал бы пустоту.
+      for (const child of app.stage.removeChildren()) child.destroy({ children: true });
     },
 
     get terrainRebuildCount() {

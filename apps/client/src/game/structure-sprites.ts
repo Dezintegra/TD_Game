@@ -79,6 +79,17 @@ export interface StructureSprites {
    * ступень готовности; последняя означает «достроено», и только она.
    */
   sprite(side: number, kind: StructureKind, look: number, step: number): StructureSprite;
+  /**
+   * Базовый набор: по одному запеканию на шаг. Нужен прогреву.
+   *
+   * Достроенные постройки всех обликов для обеих сторон. Ступени
+   * возведения сюда НЕ входят: недострой появляется по одной штуке
+   * за постановку, и одиночное запекание кадру по силам. А вот
+   * достроенная стена — дело другое: постановка меняет облик до четырёх
+   * соседей разом, и вот эти четыре запекания в одном кадре и есть
+   * то, ради чего прогрев затевался.
+   */
+  warmSteps(): readonly (() => void)[];
   /** Освободить видеопамять. Обязательно при смене матча. */
   dispose(): void;
 }
@@ -125,6 +136,7 @@ export const createStructureSprites = (
   renderer: Renderer,
   colors: StructureSpriteColors,
   resolution: number,
+  supersample: number,
 ): StructureSprites => {
   const cache = new Array<StructureSprite | undefined>(
     KIND_COUNT * STRUCTURE_LOOK_COUNT * READINESS_STEPS * SIDE_COUNT,
@@ -174,6 +186,7 @@ export const createStructureSprites = (
       armourColors(side),
       false,
       resolution,
+      supersample,
       STRUCTURE_TUNING,
     );
 
@@ -183,6 +196,32 @@ export const createStructureSprites = (
 
   return {
     sprite,
+    warmSteps() {
+      const steps: (() => void)[] = [];
+
+      for (let index = 0; index < KIND_COUNT; index += 1) {
+        // Вид постройки — целое от нуля: ключ кеша строится на нём же
+        // арифметикой (`kind * STRUCTURE_LOOK_COUNT`), так что перебор
+        // по числам не вольность, а то же самое представление.
+        const kind = index as StructureKind;
+
+        // Облики у стены и у башни разные по смыслу. У стены это маска
+        // связей — годятся все шестнадцать значений. У башни это румб,
+        // и `normaliseLook` сводит всё вне единицы-семёрки к югу: печь
+        // остальное значило бы печь один и тот же спрайт девять раз.
+        const wall = kind === StructureKind.Wall;
+        const firstLook = wall ? 0 : 1;
+        const pastLook = wall ? STRUCTURE_LOOK_COUNT : DIRECTION_COUNT;
+
+        for (let look = firstLook; look < pastLook; look += 1) {
+          for (let side = 0; side < SIDE_COUNT; side += 1) {
+            steps.push(() => sprite(side, kind, look, BUILT_STEP));
+          }
+        }
+      }
+
+      return steps;
+    },
     dispose() {
       // Уничтожать обязательно: текстура живёт в видеопамяти,
       // а сборщик мусора о видеопамяти не знает.

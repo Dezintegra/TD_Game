@@ -1,8 +1,19 @@
 ﻿import { AttackStance } from '@td/shared';
 import { create } from 'zustand';
 import type { Notice } from './rejections.js';
+import type { IconMap } from './icon-sprites.js';
 import { DEFAULT_SOUND_SETTINGS } from '../audio/settings.js';
 import type { SoundSettings } from '../audio/settings.js';
+
+/**
+ * Пустая карта иконок — общая для всех, а не новый объект на каждый
+ * начальный снимок.
+ *
+ * Селектор zustand сравнивает по ссылке, и новый пустой объект на каждое
+ * начальное состояние означал бы «иконки изменились» при каждом создании
+ * store.
+ */
+const EMPTY_ICONS: IconMap = {};
 
 /**
  * Store — единственный канал связи между игровым циклом и React.
@@ -66,6 +77,19 @@ export interface StatRow {
   /** Индекс ветки в `UPGRADE_BRANCHES` — с ним уходит команда покупки. */
   readonly branch: number;
   readonly value: number;
+  /**
+   * Каким значение станет после покупки. Нет — покупки не будет.
+   *
+   * Нужно ровно затем, ради чего игрок и открыл окно прокачки. Цена сама
+   * по себе не отвечает на вопрос «стоит ли»: чтобы ответить, надо знать,
+   * что за неё дадут.
+   *
+   * Считается прогоном той же функции баланса по игроку с купленным
+   * уровнем, а не умножением показанного числа на процент. Своя
+   * арифметика в интерфейсе была бы второй копией правила прироста
+   * и однажды разошлась бы с первой — молча.
+   */
+  readonly next?: number;
   /** Сколько знаков после запятой показывать. */
   readonly fraction: number;
   /** Цена следующего уровня, в «видимых» единицах. */
@@ -434,6 +458,18 @@ interface HudState {
    */
   readonly statsOpen: boolean;
   /**
+   * Иконки объектов, отрисованные тем же кодом, что и спрайты поля.
+   *
+   * Ключ — вид объекта, значение — готовая картинка строкой `data:`.
+   * Пустая карта означает «ещё не отрисованы»: печь их начинают после
+   * первого показанного кадра, чтобы не удлинять старт матча, и до этого
+   * момента плитки показывают прежние контурные значки.
+   *
+   * Состояние интерфейса, а не мира: по сети не ходит, в предсказании
+   * не участвует, при разрыве связи не меняется.
+   */
+  readonly icons: IconMap;
+  /**
    * Громкости и выключатель звука.
    *
    * Состояние интерфейса того же рода, что `selection`: мира оно
@@ -458,11 +494,12 @@ interface HudState {
   setSelection(selection: SelectionView | null): void;
   setMenuOpen(open: boolean): void;
   toggleStats(): void;
+  setIcons(icons: IconMap): void;
   setSound(sound: SoundSettings): void;
 }
 
 /**
- * Где хранится выбор игрока «показывать характеристики или нет».
+ * Где хранится выбор игрока «показывать прокачку или нет».
  *
  * localStorage, а не состояние матча: это настройка интерфейса, она
  * не имеет отношения ни к миру, ни к сессии и должна пережить и новый
@@ -474,11 +511,26 @@ interface HudState {
  */
 const STATS_OPEN_KEY = 'td:toolbar-stats';
 
+/**
+ * По умолчанию прокачка ЗАКРЫТА, и это следствие переезда, а не вкус.
+ *
+ * Пока прокачка была столбцами под плитками, открытое состояние ничему
+ * не мешало: столбцы стояли в своей полосе и поля не закрывали. Теперь
+ * это окно поверх поля с подложкой, ловящей нажатие мимо, — и открытым
+ * по умолчанию оно означало бы, что матч начинается с модального окна
+ * поверх карты. Первое нажатие игрока по полю уходило бы в подложку,
+ * а `Esc` закрывал бы окно вместо того, чтобы открыть меню матча.
+ *
+ * Ключ хранилища при этом ОСТАЛСЯ прежним. Переименовать его было бы
+ * честнее по имени, но дороже по существу: играющим это вернуло бы
+ * чужое умолчание, а значение в нём по-прежнему отвечает на тот же
+ * вопрос — показывать прокачку или нет.
+ */
 const readStatsOpen = (): boolean => {
   try {
-    return localStorage.getItem(STATS_OPEN_KEY) !== '0';
+    return localStorage.getItem(STATS_OPEN_KEY) === '1';
   } catch {
-    return true;
+    return false;
   }
 };
 
@@ -523,6 +575,7 @@ export const useHudStore = create<HudState>((set) => ({
   selection: null,
   menuOpen: false,
   statsOpen: readStatsOpen(),
+  icons: EMPTY_ICONS,
   sound: DEFAULT_SOUND_SETTINGS,
 
   setStatus: (status) => set({ status }),
@@ -578,6 +631,7 @@ export const useHudStore = create<HudState>((set) => ({
       writeStatsOpen(statsOpen);
       return { statsOpen };
     }),
+  setIcons: (icons) => set({ icons }),
   setSound: (sound) => set({ sound }),
 }));
 
@@ -603,6 +657,7 @@ export const hudActions = {
   setSelection: (selection: SelectionView | null) => useHudStore.getState().setSelection(selection),
   setMenuOpen: (open: boolean) => useHudStore.getState().setMenuOpen(open),
   toggleStats: () => useHudStore.getState().toggleStats(),
+  setIcons: (icons: IconMap) => useHudStore.getState().setIcons(icons),
   setSound: (sound: SoundSettings) => useHudStore.getState().setSound(sound),
 };
 

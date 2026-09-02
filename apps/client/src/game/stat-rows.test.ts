@@ -6,6 +6,7 @@ import {
   UPGRADE_BRANCHES,
   UpgradeStat,
   UpgradeTarget,
+  growPpm,
   upgradeBranchIndex,
 } from '@td/shared';
 import { createWorld, playerStats, upgradeCosts } from '@td/sim';
@@ -35,11 +36,8 @@ const withLevel = (player: PlayerState, branch: number, effectPpm: number): Play
   ),
 });
 
-const levelsOf = (player: PlayerState): readonly number[] =>
-  player.upgrades.map((entry) => entry.level);
-
 const rowsOf = (player: PlayerState, energy = 1_000_000) =>
-  statRowsOf(playerStats(player), upgradeCosts(player), energy, levelsOf(player));
+  statRowsOf(player, playerStats(player), upgradeCosts(player), energy);
 
 const valueOf = (player: PlayerState, target: UpgradeTarget, stat: UpgradeStat): number => {
   const branch = upgradeBranchIndex(target, stat);
@@ -236,8 +234,8 @@ describe('ветка на потолке', () => {
 
 describe('доступность покупки', () => {
   it('при нехватке энергии строка помечена недоступной, но остаётся', () => {
-    const poor = statRowsOf(playerStats(base), upgradeCosts(base), 0, levelsOf(base));
-    const rich = statRowsOf(playerStats(base), upgradeCosts(base), 1_000_000, levelsOf(base));
+    const poor = statRowsOf(base, playerStats(base), upgradeCosts(base), 0);
+    const rich = statRowsOf(base, playerStats(base), upgradeCosts(base), 1_000_000);
 
     expect(poor[UpgradeTarget.UnitAssault]).toHaveLength(
       rich[UpgradeTarget.UnitAssault]?.length ?? 0,
@@ -252,6 +250,89 @@ describe('доступность покупки', () => {
 
     // Ветки штурмовика стоят сорок видимых единиц за первый уровень.
     expect(row?.cost).toBe(40);
+  });
+});
+
+/**
+ * Значение после покупки — то, ради чего игрок и открыл окно.
+ *
+ * Проверяется не «оно больше», а СОВПАДЕНИЕ с тем, что игрок получит
+ * на самом деле: обещанное число берётся из строки ДО покупки,
+ * а действительное — из строки ПОСЛЕ применения покупки ядром. Расхождение
+ * между ними иначе не поймать ничем: обе величины выглядят правдоподобно,
+ * и врёт только вторая цифра.
+ */
+describe('значение после покупки', () => {
+  const promisedAndReal = (
+    target: UpgradeTarget,
+    stat: UpgradeStat,
+  ): { readonly promised: number | undefined; readonly real: number } => {
+    const index = upgradeBranchIndex(target, stat);
+    const branch = UPGRADE_BRANCHES[index];
+    if (branch === undefined) throw new Error(`Нет ветки ${String(index)}`);
+
+    const before = rowsOf(base)[target]?.find((entry) => entry.branch === index);
+
+    // Покупка делается ТЕМ ЖЕ ростом множителя, что и в ядре
+    // (`apply.ts`), — иначе проверка сверяла бы обещание с собственной
+    // выдумкой, а не с игрой.
+    const bought = withLevel(
+      base,
+      index,
+      growPpm(base.upgrades[index]?.effectPpm ?? PPM_ONE, branch.effectPercent),
+    );
+    const after = rowsOf(bought)[target]?.find((entry) => entry.branch === index);
+    if (after === undefined) throw new Error('Нет строки после покупки');
+
+    return { promised: before?.next, real: after.value };
+  };
+
+  it('обещанная атака совпадает с полученной', () => {
+    const { promised, real } = promisedAndReal(UpgradeTarget.UnitAssault, UpgradeStat.Attack);
+    expect(promised).toBe(real);
+  });
+
+  it('обещанная скорострельность совпадает с полученной', () => {
+    // Здесь особенно: внутри хранится перезарядка, и прокачка её
+    // уменьшает. Наивное «умножить показанное на процент» дало бы
+    // падающее число под стрелкой вверх.
+    const { promised, real } = promisedAndReal(UpgradeTarget.UnitAssault, UpgradeStat.FireRate);
+    expect(promised).toBeCloseTo(real, 6);
+    expect(promised ?? 0).toBeGreaterThan(
+      rowsOf(base)[UpgradeTarget.UnitAssault]?.find(
+        (entry) =>
+          entry.branch === upgradeBranchIndex(UpgradeTarget.UnitAssault, UpgradeStat.FireRate),
+      )?.value ?? 0,
+    );
+  });
+
+  it('обещанное время возрождения совпадает с полученным и УБЫВАЕТ', () => {
+    const { promised, real } = promisedAndReal(UpgradeTarget.General, UpgradeStat.RespawnTime);
+    expect(promised).toBeCloseTo(real, 6);
+
+    const now =
+      rowsOf(base)[UpgradeTarget.General]?.find(
+        (entry) =>
+          entry.branch === upgradeBranchIndex(UpgradeTarget.General, UpgradeStat.RespawnTime),
+      )?.value ?? 0;
+    expect(promised ?? 0).toBeLessThan(now);
+  });
+
+  it('у предельной ветки обещания нет вовсе', () => {
+    // Покупки не будет, и показывать «станет столько же» значило бы
+    // обещать рост, которого не случится.
+    const cooldown = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeCooldown);
+    const maxedOut: PlayerState = {
+      ...base,
+      upgrades: base.upgrades.map((entry, index) =>
+        index === cooldown ? { ...entry, level: NUKE_COOLDOWN_MAX_LEVEL } : entry,
+      ),
+    };
+
+    const row = rowsOf(maxedOut)[NUKE_STAT_GROUP]?.find((entry) => entry.branch === cooldown);
+
+    expect(row?.maxed).toBe(true);
+    expect(row?.next).toBeUndefined();
   });
 });
 
