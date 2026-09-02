@@ -56,6 +56,14 @@ export function createSupervisor({
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
   /**
+   * Исходы осиротевших этапов, дождавшиеся записи в журнал задачи.
+   *
+   * Очередь по образцу `reports`, и по той же причине: писать на доску вправе
+   * только исполнение решений, а супервизор — хозяин процессов, и второго пути
+   * к доске у него быть не должно.
+   */
+  const orphanOutcomes = [];
+  /**
    * Память об этапах: `taskId:stage` → `{ sessionId, startedAt, live }`.
    * Переживает перезапуск супервизора.
    *
@@ -85,6 +93,33 @@ export function createSupervisor({
 
   return {
     reports,
+    orphanOutcomes,
+
+    /**
+     * Обойти сирот: кто кончился, кто оказался посторонним, кто пережил срок.
+     *
+     * Зовётся раз в оборот, до чтения `running()`. Отдельно от сборки потому,
+     * что сирота живёт минутами и часами: судить его один раз при запуске
+     * значило бы держать его в перечне идущих до самого конца супервизора.
+     */
+    sweep,
+
+    /**
+     * Забыть исход сироты: он записан в журнал задачи, дескриптор больше
+     * не нужен.
+     *
+     * Стирание идёт ПОСЛЕ удавшейся записи, а не до неё. Обрыв между ними
+     * оставляет дескриптор на диске, и следующий оборот пробует снова:
+     * повторная запись стоит одного лишнего комментария, потерянная —
+     * необъяснимого провала в журнале задачи.
+     */
+    forgetOrphan(taskId, stage) {
+      const at = orphanOutcomes.findIndex((item) => item.taskId === taskId && item.stage === stage);
+      if (at === -1) return false;
+      const [outcome] = orphanOutcomes.splice(at, 1);
+      forget(outcome.at);
+      return true;
+    },
 
     /**
      * Идущие этапы для сканера: вся картина живости, какая есть.
@@ -366,30 +401,100 @@ export function createSupervisor({
       });
     }
     if (changed) saveStages(known);
-    judgeOrphans();
+    sweep();
   }
 
   /**
-   * Опознать каждого сироту и отпустить тех, чей процесс кончился.
+   * Обойти сирот и развести их по исходам.
    *
    * Живость сироты — конъюнкция: номер существует И опознание совпало
    * с записанным. Одного номера мало: система их переиспользует.
+   *
+   * Снятие делается ровно в одном случае — процесс опознан и пережил
+   * записанный ему срок. Всё прочее остаётся жить: цена ошибочного снятия
+   * поддеревом на рабочей станции несоизмерима с ценой лишнего ожидания
+   * длиной в один срок этапа.
    */
-  function judgeOrphans() {
+  function sweep() {
     for (const orphan of [...orphans.values()]) {
       const verdict = judgeOrphan(orphan);
-      if (verdict === 'ours' || verdict === 'unidentified') continue;
 
-      orphans.delete(orphan.taskId);
-      log(
-        `этап ${orphan.at} осиротел при смене супервизора и ${
-          verdict === 'gone'
-            ? 'кончился'
-            : 'больше не свой: номер занял посторонний процесс, снимать его нельзя'
-        }: процесс ${orphan.live.pid}, начат ${orphan.live.startedAt}`,
+      if (verdict === 'gone') {
+        release(orphan, 'gone', 'процесс кончился сам, а исход его записать было некому');
+        continue;
+      }
+      if (verdict === 'stale') {
+        release(
+          orphan,
+          'stale',
+          'номер процесса занял посторонний: дескриптор протух, ' +
+            'сам процесс не снят — он не наш',
+        );
+        continue;
+      }
+
+      const ran = ranMs(orphan.live);
+      const overdue = ran === null || ran >= (orphan.live.timeoutMs ?? 0);
+      if (!overdue) {
+        // Неопознанный называется в журнале цикла один раз, а не каждый
+        // оборот: строка, повторяющаяся раз в пять минут, перестаёт читаться.
+        if (verdict === 'unidentified' && !orphan.noted) {
+          orphan.noted = true;
+          log(
+            `этап ${orphan.at} осиротел и не опознаётся (процесс ${orphan.live.pid}): ` +
+              'числится идущим до своего срока, снят не будет ни при каких условиях',
+          );
+        }
+        continue;
+      }
+
+      if (verdict === 'ours' && ran !== null) {
+        killTree(orphan.live.pid);
+        release(orphan, 'killed', 'снят по истечении своего срока вместе со всем поддеревом');
+        continue;
+      }
+
+      // Неопознанный за сроком уходит из перечня, но НЕ снимается: под его
+      // номером может работать что угодно, а `taskkill /T /F` уносит целое
+      // дерево процессов рабочей станции.
+      release(
+        orphan,
+        'left',
+        ran === null
+          ? 'срок сверить нечем: отметки начала в дескрипторе нет, процесс оставлен работать'
+          : 'срок вышел, но опознать процесс не удалось — оставлен работать',
       );
-      forget(orphan);
     }
+  }
+
+  /** Сколько миллисекунд идёт процесс. `null` — сверить нечем. */
+  function ranMs(live) {
+    const from = Number.isFinite(live.startedMs) ? live.startedMs : Date.parse(live.startedAt);
+    return Number.isFinite(from) ? nowMs() - from : null;
+  }
+
+  /**
+   * Отпустить сироту: он больше не идущий этап.
+   *
+   * Дескриптор при этом НЕ стирается — исход встаёт в очередь, и стереть его
+   * можно будет лишь после того, как исход ляжет в журнал задачи. Молчаливое
+   * исчезновение запрещено: отчёт такого этапа потерян вместе с прежним
+   * супервизором, и журнал задачи — единственное место, где следующая сессия
+   * и разбор узнают, почему прошлый заход не дал ничего.
+   */
+  function release(orphan, outcome, why) {
+    orphans.delete(orphan.taskId);
+    orphanOutcomes.push({
+      taskId: orphan.taskId,
+      stage: orphan.stage,
+      at: orphan.at,
+      pid: orphan.live.pid,
+      startedAt: orphan.live.startedAt,
+      timeoutMs: orphan.live.timeoutMs,
+      outcome,
+      why,
+    });
+    log(`этап ${orphan.at} осиротел при смене супервизора: ${why} (процесс ${orphan.live.pid})`);
   }
 
   /**
@@ -412,9 +517,9 @@ export function createSupervisor({
   }
 
   /** Стереть дескриптор с диска: процесса, о котором он говорил, больше нет. */
-  function forget(orphan) {
-    if (!known[orphan.at]?.live) return;
-    delete known[orphan.at].live;
+  function forget(at) {
+    if (!known[at]?.live) return;
+    delete known[at].live;
     saveStages(known);
   }
 

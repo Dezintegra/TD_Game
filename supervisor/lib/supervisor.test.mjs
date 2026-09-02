@@ -439,13 +439,12 @@ describe('сироты при запуске', () => {
     expect(killed).toEqual([]);
   });
 
-  it('исчезнувший процесс освобождает задачу, и дескриптор стирается', () => {
-    const { supervisor, saved, logged } = harness({
+  it('исчезнувший процесс освобождает задачу и назван в журнале цикла', () => {
+    const { supervisor, logged } = harness({
       stages: withLive(),
       probe: () => ({ known: true, alive: false, image: null }),
     });
     expect(supervisor.running()).toEqual([]);
-    expect(saved.at(-1)['0001-one:implement'].live).toBeUndefined();
     expect(logged.join()).toContain('осиротел');
   });
 
@@ -465,6 +464,21 @@ describe('сироты при запуске', () => {
       probe: () => ({ known: false, alive: false, image: null }),
     });
     expect(supervisor.running()).toEqual([{ taskId: '0001-one', stage: 'implement' }]);
+  });
+
+  it('дескриптор исчезнувшего остаётся на диске до записи исхода в журнал', () => {
+    // Обрыв между «убрал из перечня» и «записал в журнал» обязан оставлять
+    // дескриптор на месте: повторная запись стоит одного лишнего
+    // комментария, потерянная — необъяснимого провала в журнале задачи.
+    const { supervisor, saved } = harness({
+      stages: withLive(),
+      probe: () => ({ known: true, alive: false, image: null }),
+    });
+    expect(saved).toEqual([]);
+
+    expect(supervisor.forgetOrphan('0001-one', 'implement')).toBe(true);
+    expect(saved.at(-1)['0001-one:implement'].live).toBeUndefined();
+    expect(supervisor.orphanOutcomes).toEqual([]);
   });
 
   it('дескриптор чужой станции не судится, стирается и назван в журнале', () => {
@@ -494,6 +508,165 @@ describe('сироты при запуске', () => {
     expect(spawned.ok).toBe(false);
     expect(spawned.reason).toBe('busy');
     expect(children).toEqual([]);
+  });
+});
+
+describe('обход сирот по обороту', () => {
+  // Сирота живёт минутами и часами, поэтому судить его один раз при запуске
+  // мало: он кончится посреди работы супервизора, и место должно
+  // освободиться тогда же, а не при следующем перезапуске.
+
+  /** Дескриптор с управляемым возрастом: начат в 900 000, срок — час. */
+  const withLive = (over = {}) => ({
+    '0001-one:implement': {
+      sessionId: 'прежняя',
+      startedAt: NOW,
+      live: {
+        pid: 29704,
+        image: 'claude.exe',
+        machine: 'станция-1',
+        supervisorPid: 111,
+        startedAt: NOW,
+        startedMs: 900_000,
+        timeoutMs: 3_600_000,
+        ...over,
+      },
+    },
+  });
+
+  /** Часы: 900 000 — миг рождения, дальше — сколько прошло. */
+  const at = (ms) => () => 900_000 + ms;
+
+  it('кончившийся посреди работы уходит из перечня в тот же обход', () => {
+    let alive = true;
+    const { supervisor } = harness({
+      stages: withLive(),
+      probe: () => ({ known: true, alive, image: 'claude.exe' }),
+    });
+    expect(supervisor.running()).toHaveLength(1);
+
+    alive = false;
+    supervisor.sweep();
+    expect(supervisor.running()).toEqual([]);
+  });
+
+  it('исход исчезнувшего встаёт в очередь с номером процесса и отметкой начала', () => {
+    const { supervisor } = harness({
+      stages: withLive(),
+      probe: () => ({ known: true, alive: false, image: null }),
+    });
+    expect(supervisor.orphanOutcomes).toHaveLength(1);
+    expect(supervisor.orphanOutcomes[0]).toMatchObject({
+      taskId: '0001-one',
+      stage: 'implement',
+      pid: 29704,
+      startedAt: NOW,
+      outcome: 'gone',
+    });
+  });
+
+  it('переживший срок опознанный снимается поддеревом', () => {
+    const { supervisor, killed } = harness({
+      stages: withLive(),
+      nowMs: at(3_600_001),
+    });
+    expect(killed).toEqual([29704]);
+    expect(supervisor.orphanOutcomes[0].outcome).toBe('killed');
+    expect(supervisor.running()).toEqual([]);
+  });
+
+  it('срок берётся из дескриптора, а не назначается заново', () => {
+    // Этапу отпущено то, что ему отпустили при запуске: час у дескриптора
+    // и час не прошёл — значит он идёт, чего бы ни стояло в настройке.
+    const { supervisor, killed } = harness({
+      stages: withLive(),
+      nowMs: at(3_599_000),
+    });
+    expect(killed).toEqual([]);
+    expect(supervisor.running()).toHaveLength(1);
+  });
+
+  it('протухший дескриптор исход даёт, а процесс не снимает', () => {
+    // Номер переиспользован системой: под ним работает кто угодно, и снятие
+    // поддеревом унесло бы постороннее дерево процессов рабочей станции.
+    const { supervisor, killed } = harness({
+      stages: withLive(),
+      probe: () => ({ known: true, alive: true, image: 'chrome.exe' }),
+      nowMs: at(3_600_001),
+    });
+    expect(killed).toEqual([]);
+    expect(supervisor.orphanOutcomes[0].outcome).toBe('stale');
+  });
+
+  it('неопознанный в пределах срока остаётся идущим и назван один раз', () => {
+    const { supervisor, logged } = harness({
+      stages: withLive(),
+      probe: () => ({ known: false, alive: false, image: null }),
+      nowMs: at(60_000),
+    });
+    supervisor.sweep();
+    supervisor.sweep();
+
+    expect(supervisor.running()).toHaveLength(1);
+    expect(logged.filter((line) => line.includes('не опознаётся'))).toHaveLength(1);
+  });
+
+  it('неопознанный за сроком уходит из перечня, но не снимается', () => {
+    const { supervisor, killed } = harness({
+      stages: withLive(),
+      probe: () => ({ known: false, alive: false, image: null }),
+      nowMs: at(3_600_001),
+    });
+    expect(supervisor.running()).toEqual([]);
+    expect(killed).toEqual([]);
+    expect(supervisor.orphanOutcomes[0].outcome).toBe('left');
+  });
+
+  it('дескриптор без опознания судится тем же правилом', () => {
+    // Опрос при рождении мог не удаться. Живой процесс с таким дескриптором
+    // неотличим от неопознанного, и снимать его нельзя точно так же.
+    const { supervisor, killed } = harness({
+      stages: withLive({ image: undefined }),
+      nowMs: at(3_600_001),
+    });
+    expect(killed).toEqual([]);
+    expect(supervisor.orphanOutcomes[0].outcome).toBe('left');
+  });
+
+  it('исход одного сироты не тянет за собой второго', () => {
+    const stages = {
+      ...withLive(),
+      '0002-two:audit': {
+        sessionId: 'вторая',
+        startedAt: NOW,
+        live: {
+          pid: 30000,
+          image: 'claude.exe',
+          machine: 'станция-1',
+          supervisorPid: 111,
+          startedAt: NOW,
+          startedMs: 900_000,
+          timeoutMs: 3_600_000,
+        },
+      },
+    };
+    const { supervisor } = harness({
+      stages,
+      config: { maxConcurrent: 3 },
+      probe: (pid) => ({ known: true, alive: pid !== 29704, image: 'claude.exe' }),
+    });
+
+    expect(supervisor.running()).toEqual([{ taskId: '0002-two', stage: 'audit' }]);
+    expect(supervisor.orphanOutcomes.map((item) => item.taskId)).toEqual(['0001-one']);
+  });
+
+  it('забыть можно только записанный исход, и чужой при этом не трогается', () => {
+    const { supervisor, saved } = harness({
+      stages: withLive(),
+      probe: () => ({ known: true, alive: false, image: null }),
+    });
+    expect(supervisor.forgetOrphan('0002-two', 'audit')).toBe(false);
+    expect(saved).toEqual([]);
   });
 });
 
