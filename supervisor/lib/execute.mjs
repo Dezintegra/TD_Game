@@ -11,6 +11,7 @@ import {
   resetAttempts,
 } from './task-file.mjs';
 import { judgeDenials } from './denials.mjs';
+import { pipelineCause, recoveryFrom } from './recovery.mjs';
 import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
@@ -163,11 +164,27 @@ async function transferReport(action, io) {
     // блокирующей заявки. Право заводить работу мимо шлюза кандидатов есть
     // только у разбора ошибки.
     sourceStage: task.status,
+    // Разбор, назвавший причину конвейерной, заводит конвейерные заявки.
+    pipelineCause: pipelineCause(report),
   });
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
     plan.notes = [...(plan.notes ?? []), `заявка отклонена: ${bad.problems.join('; ')}`];
+  }
+
+  // Вердикт удавшегося разбора едет в саму задачу: по нему сканер потом
+  // решает, возвращать ли её из ошибки и когда. Идентификаторы конвейерных
+  // починок известны уже здесь — до записи, — и разбору знать их не нужно.
+  if (task.status === 'postmortem' && verdict.status === 'failed' && report.outcome === 'done') {
+    const judged = recoveryFrom(report, {
+      task: next,
+      created: plan.planned.filter((born) => born.area === 'pipeline').map((born) => born.id),
+      known: io.allTaskIds(),
+      maxReturns: io.maxAutoReturns,
+    });
+    next = { ...next, recovery: judged.recovery };
+    plan.notes = [...(plan.notes ?? []), ...judged.notes];
   }
 
   // Дополнения разбираются здесь же и по тем же правилам: одна негодная
@@ -561,6 +578,70 @@ async function answerQuestion(action, io) {
     : { result: 'failed', why: push.outcome };
 }
 
+/**
+ * Вернуть из ошибки задачу, упавшую по вине конвейера.
+ *
+ * Переход тот же, что делает человек мышью, — из `failed` в сохранённое
+ * состояние, — и объявлен он был для него. Разница в том, что здесь
+ * известно, почему: вердикт разбора и закрытые починки называются
+ * в журнале поимённо, чтобы через месяц было видно, чем задачу поднимали.
+ *
+ * Сессия упавшего этапа забывается. Причина была в конвейере — в правиле,
+ * разрешении, коде, — и возобновлённая сессия отвечала бы из памяти
+ * о прежних правилах. Новая читает журнал, как всякий новый исполнитель.
+ */
+async function returnTask(action, io) {
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+  // Картина могла смениться между решением и исполнением: человек поднял
+  // задачу сам либо разбор переписал вердикт. Тогда возвращать нечего.
+  if (task.status !== 'failed') return { result: 'skipped', why: 'задача уже не в ошибке' };
+  if (task.recovery?.causedBy !== 'pipeline') {
+    return { result: 'skipped', why: 'вердикт разбора уже не конвейерный' };
+  }
+  if (!task.returnTo) {
+    return { result: 'failed', why: 'некуда возвращать: состояние возврата пусто' };
+  }
+
+  const moved = applyTransition(task, {
+    status: task.returnTo,
+    note: 'возвращена конвейером: причина была в конвейере и снята',
+    now: io.now,
+  });
+  if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  // Счётчики попыток обнуляются, как при ручном подъёме, а счёт возвратов
+  // растёт: он и есть предохранитель, и вердикт снимается — задача снова
+  // в работе, и судить о ней будет следующий разбор, если он понадобится.
+  const returns = (task.recovery.returns ?? 0) + 1;
+  const next = {
+    ...resetAttempts(moved.task),
+    recovery: { causedBy: null, fixedBy: [], returns },
+  };
+  io.forgetSession?.(task.id, task.returnTo);
+
+  const fixed = action.fixedBy ?? task.recovery.fixedBy ?? [];
+  const limit = io.maxAutoReturns != null ? ` из ${io.maxAutoReturns}` : '';
+  const push = await io.saveTask(
+    next,
+    {
+      at: io.now,
+      from: task.status,
+      to: task.returnTo,
+      what:
+        'Возвращена в работу конвейером: по разбору причина падения была ' +
+        `в конвейере, а не в задаче, ${
+          fixed.length > 0 ? `и починки закрыты: ${fixed.join(', ')}` : 'и чинить было нечего'
+        }. Возврат ${returns}${limit}; счётчики попыток обнулены, ` +
+        `сессия этапа «${task.returnTo}» начнётся заново.`,
+    },
+    `chore(backlog): ${task.id} возвращена в ${task.returnTo} после починки конвейера`,
+  );
+  return push.ok
+    ? { result: 'done', status: task.returnTo }
+    : { result: 'failed', why: push.outcome };
+}
+
 /** Применить внешнее состояние: проверки CI или прогон на чужом железе. */
 async function pollExternal(action, io) {
   const task = io.readTask(action.taskId);
@@ -731,6 +812,7 @@ const HANDLERS = {
   'start-stage': startStage,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
+  'return-task': returnTask,
   'poll-external': pollExternal,
   'fail-stage': failStage,
 };

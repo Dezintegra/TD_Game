@@ -193,6 +193,79 @@ describe('блокирующая причина', () => {
   });
 });
 
+describe('причина в конвейере', () => {
+  const pipeline = request({ area: 'pipeline' });
+  const plan = (requests, sourceStage) =>
+    planRequests(requests, { existingIds: [], now: NOW, sourceId: '0001-one', sourceStage });
+
+  it('заявка с любого этапа встаёт в очередь первой и проходит схему', () => {
+    // 02.09.2026 починки разрешений pnpm и сгорающих продолжений простояли
+    // в кандидатах часами: разборы честно не назвали их блокирующими,
+    // а прочим этапам метить было нечем. Зона причины — другой вопрос,
+    // чем срочность, и право на него есть у всех.
+    for (const stage of ['implement', 'review', 'triage', 'postmortem', null]) {
+      const { planned } = plan([pipeline], stage);
+      expect(planned[0], `этап ${stage}`).toMatchObject({
+        status: 'new',
+        blocking: true,
+        area: 'pipeline',
+      });
+      expect(validateTask(planned[0], schema), `этап ${stage}`).toEqual([]);
+    }
+  });
+
+  it('прогон с причиной в конвейере тоже встаёт первым', () => {
+    const { planned } = plan(
+      [
+        request({
+          type: 'run',
+          area: 'pipeline',
+          run: { kind: 'bench-tick', expectation: 'стоимость тика не выросла' },
+        }),
+      ],
+      'interpret',
+    );
+    expect(planned[0]).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+  });
+
+  it('признак проходит только точным словом', () => {
+    // Заявка приходит из отчёта сессии — недоверенного по сути места, —
+    // и правдоподобное значение не должно тихо менять маршрут.
+    for (const value of [true, 'Pipeline', 'конвейер', 1, ['pipeline']]) {
+      const { planned } = plan([request({ area: value })], 'implement');
+      expect(planned[0].status, JSON.stringify(value)).toBe('candidate');
+      expect(planned[0], JSON.stringify(value)).not.toHaveProperty('area');
+    }
+  });
+
+  it('у обычной заявки поля area нет вовсе', () => {
+    const { planned } = plan([request()], 'implement');
+    expect(planned[0]).not.toHaveProperty('area');
+  });
+
+  it('разбор с причиной в конвейере делает конвейерными все свои заявки', () => {
+    // Отчёт с причиной в конвейере и починкой в кандидатах противоречил бы
+    // сам себе: задача вернулась бы сразу, а починка ждала бы человека.
+    const { planned } = planRequests([request()], {
+      existingIds: [],
+      now: NOW,
+      sourceStage: 'postmortem',
+      pipelineCause: true,
+    });
+    expect(planned[0]).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+  });
+
+  it('тот же признак с прочих этапов не слушается', () => {
+    const { planned } = planRequests([request()], {
+      existingIds: [],
+      now: NOW,
+      sourceStage: 'triage',
+      pipelineCause: true,
+    });
+    expect(planned[0].status).toBe('candidate');
+  });
+});
+
 describe('дополнение существующей задачи', () => {
   const known = new Map([
     ['0002-two', { id: '0002-two', status: 'candidate' }],

@@ -89,7 +89,10 @@ export function nextId(existingIds, title) {
  * Негодную заявку лучше отвергнуть с причиной, чем завести задачу, которую
  * никто не сможет истолковать.
  */
-export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }) {
+export function taskFromRequest(
+  request,
+  { id, now, sourceId, mayQueue = false, pipelineByDefault = false },
+) {
   const problems = [];
 
   const type = ['feature', 'run', 'note'].includes(request?.type) ? request.type : null;
@@ -109,10 +112,28 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
 
   const priority = Number.isInteger(request.priority) ? request.priority : 50;
 
+  // Причина в самом конвейере — код супервизора, правила этапов, разрешения,
+  // настройка, схема записи, доска. Такую починку владелец продукта
+  // не одобряет, а лишь задерживает: чинит её тот же конвейер, что
+  // и роняет. 02.09.2026 починки разрешений `pnpm` и сгорающих продолжений
+  // простояли в кандидатах часами, пока те же причины роняли следующие
+  // задачи, — разборы честно не назвали их блокирующими по узкой мерке,
+  // а прочим этапам метить нечем вовсе.
+  //
+  // Признак отвечает на другой вопрос, чем `blocking`: не «насколько
+  // горит», а «в чьей зоне». Поэтому право на него есть у любого этапа,
+  // и проверяется он так же строго — только это слово.
+  //
+  // `pipelineByDefault` приносит разбор ошибки, назвавший причину
+  // конвейерной: тогда конвейерны и все его заявки, даже без признака.
+  const pipeline = request.area === 'pipeline' || pipelineByDefault;
+
   // Право метить заявку блокирующей есть не у всякого этапа: `mayQueue`
   // спрашивается у того, кто разбирает отчёт, — иначе шлюз кандидатов
-  // размылся бы до необязательного.
-  const blocking = mayQueue && request.blocking === true;
+  // размылся бы до необязательного. Причина в конвейере встаёт первой
+  // по своему праву: всё, что конвейер взял бы раньше неё, упало бы
+  // на ней же.
+  const blocking = pipeline || (mayQueue && request.blocking === true);
 
   const task = {
     $schema: '../schema.json',
@@ -125,7 +146,7 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
     // себе работу сам, а человек узнавал об этом, когда задача уже шла
     // по маршруту.
     //
-    // Исключений из шлюза ровно два, и оба одной природы: решение принято
+    // Исключений из шлюза ровно три, и все одной природы: решение принято
     // не агентом.
     //
     // Прогон заводится потому, что правило требует замера при вливании
@@ -136,6 +157,10 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
     // Блокирующая причина — потому, что конвейер не может вести СЛЕДУЮЩИЕ
     // задачи. Пока человек смотрит на доску, та же причина роняет всё, что
     // конвейер успевает взять, и кандидат в этих условиях не шлюз, а пробка.
+    //
+    // Причина в конвейере — потому, что решать о ней владельцу продукта
+    // нечего: зона перечислима, чинится тем же конвейером, и человек
+    // приносит в такое решение одну задержку.
     status: type === 'run' || blocking ? 'new' : 'candidate',
     returnTo: null,
     priority: Math.min(999, Math.max(0, priority)),
@@ -157,6 +182,12 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
   // «обычная», и записи с ним состав не меняют.
   if (blocking) task.blocking = true;
 
+  // Зона причины остаётся на задаче тем же порядком, что и признак
+  // блокирующей: только у конвейерной и только словом. По ней перенос
+  // отчёта разбора узнаёт, какие из заведённых задач — починки конвейера,
+  // после закрытия которых упавшую задачу можно вернуть в работу.
+  if (pipeline) task.area = 'pipeline';
+
   if (type === 'run') {
     task.run = {
       kind: ['arena', 'perf', 'bench-tick'].includes(request.run?.kind)
@@ -176,7 +207,10 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
  * Идентификаторы выдаются заранее и все разом: они нужны, чтобы связать
  * порождённые задачи с породившей ещё до того, как хоть одна записана.
  */
-export function planRequests(requests, { existingIds, now, sourceId, sourceStage = null }) {
+export function planRequests(
+  requests,
+  { existingIds, now, sourceId, sourceStage = null, pipelineCause = false },
+) {
   const planned = [];
   const rejected = [];
   const taken = [...existingIds];
@@ -186,9 +220,20 @@ export function planRequests(requests, { existingIds, now, sourceId, sourceStage
   // конвейер встал.
   const mayQueue = sourceStage === 'postmortem';
 
+  // Разбор, назвавший причину конвейерной, подаёт конвейерные заявки:
+  // иначе задача вернулась бы сразу, а починка ждала бы человека
+  // в кандидатах, и падение повторилось бы на ровном месте.
+  const pipelineByDefault = mayQueue && pipelineCause;
+
   for (const request of requests ?? []) {
     const id = nextId(taken, request?.title ?? 'zadacha');
-    const { task, problems } = taskFromRequest(request, { id, now, sourceId, mayQueue });
+    const { task, problems } = taskFromRequest(request, {
+      id,
+      now,
+      sourceId,
+      mayQueue,
+      pipelineByDefault,
+    });
     if (!task) {
       rejected.push({ request, problems });
       continue;

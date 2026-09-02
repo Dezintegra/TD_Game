@@ -29,6 +29,25 @@ describe('образцы задач', () => {
   });
 });
 
+describe('поля возврата из ошибки', () => {
+  it('запись с вердиктом разбора и зоной причины годна', () => {
+    // По вердикту конвейер возвращает задачу из ошибки сам, по зоне —
+    // заводит заявку мимо кандидатов. Схема, не знающая этих полей,
+    // отвергла бы такую запись у файлового хранилища молча.
+    const task = {
+      ...feature(),
+      area: 'pipeline',
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 },
+    };
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('вердикт из двух слов, а не из любого', () => {
+    const task = { ...feature(), recovery: { causedBy: 'кто-то', fixedBy: [], returns: 0 } };
+    expect(validateTask(task, schema)).toHaveLength(1);
+  });
+});
+
 describe('обязательные поля', () => {
   it('пропущенное поле названо по имени', () => {
     const task = feature();

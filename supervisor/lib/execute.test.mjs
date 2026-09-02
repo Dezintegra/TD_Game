@@ -182,6 +182,7 @@ function fakeIo(over = {}) {
     },
     stageStartedAt: () => over.stageStartedAt ?? '2026-08-26T11:00:00+03:00',
     maxRejections: over.maxRejections,
+    maxAutoReturns: over.maxAutoReturns ?? 2,
     boardDigest: () => [...tasks.values()].map((item) => ({ id: item.id, status: item.status })),
 
     // Записи может не быть вовсе, и `null` здесь — не «умолчание сойдёт»,
@@ -851,6 +852,81 @@ describe('ответ владельца продукта', () => {
   });
 });
 
+describe('возврат из ошибки по вине конвейера', () => {
+  const fallen = (over = {}) =>
+    task({
+      status: 'failed',
+      returnTo: 'implement',
+      attempts: { continuations: 2, cycleFailures: 1, rejections: 0, spawnFailures: 0 },
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 },
+      ...over,
+    });
+  const back = {
+    kind: 'return-task',
+    taskId: '0001-one',
+    returnTo: 'implement',
+    fixedBy: ['0091-fix'],
+  };
+
+  it('возвращает в состояние возврата, обнуляет попытки и наращивает счёт', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    const [result] = await execute([back], io);
+
+    expect(result).toMatchObject({ result: 'done', status: 'implement' });
+    const moved = io.tasks.get('0001-one');
+    expect(moved.status).toBe('implement');
+    expect(moved.returnTo).toBeNull();
+    expect(moved.attempts).toEqual({
+      continuations: 0,
+      cycleFailures: 0,
+      rejections: 0,
+      spawnFailures: 0,
+    });
+    // Вердикт снят, счёт вырос: судить о задаче будет следующий разбор.
+    expect(moved.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 1 });
+  });
+
+  it('журнал называет причину возврата и закрытые починки поимённо', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    await execute([back], io);
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('failed → implement');
+    expect(journal).toContain('причина падения была в конвейере');
+    expect(journal).toContain('починки закрыты: 0091-fix');
+    expect(journal).toContain('Возврат 1 из 2');
+  });
+
+  it('сессия упавшего этапа забывается: новая читает свежие правила', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    await execute([back], io);
+    expect(io.steps).toContain('забыта сессия 0001-one:implement');
+  });
+
+  it('когда чинить было нечего, так и пишет', async () => {
+    const io = fakeIo({
+      tasks: [fallen({ recovery: { causedBy: 'pipeline', fixedBy: [], returns: 1 } })],
+    });
+    await execute([{ ...back, fixedBy: [] }], io);
+    expect(io.journals.get('0001-one')).toContain('чинить было нечего');
+    expect(io.tasks.get('0001-one').recovery.returns).toBe(2);
+  });
+
+  it('задачу, которую человек уже поднял, второй раз не трогает', async () => {
+    const io = fakeIo({ tasks: [fallen({ status: 'implement', returnTo: null })] });
+    const [result] = await execute([back], io);
+    expect(result.result).toBe('skipped');
+    expect(io.steps).toEqual([]);
+  });
+
+  it('без конвейерного вердикта не возвращает', async () => {
+    const io = fakeIo({
+      tasks: [fallen({ recovery: { causedBy: 'task', fixedBy: [], returns: 0 } })],
+    });
+    const [result] = await execute([back], io);
+    expect(result.result).toBe('skipped');
+  });
+});
+
 describe('остановка задачи', () => {
   const stop = (taskId = '0001-one') => ({
     kind: 'fail-stage',
@@ -1175,6 +1251,91 @@ describe('дополнение существующей задачи', () => {
     });
     const [result] = await execute([{ ...analysis, stage: 'triage' }], io);
     expect(io.tasks.get(result.created[0]).status).toBe('candidate');
+  });
+});
+
+describe('вердикт разбора', () => {
+  const analysis = { kind: 'transfer-report', taskId: '0001-one', stage: 'postmortem' };
+  const halted = (over = {}) => task({ status: 'postmortem', returnTo: 'implement', ...over });
+  const fix = (over = {}) => ({
+    type: 'feature',
+    title: 'Разрешить pnpm в правилах разрешений',
+    description: 'Отказ молчаливый и повторится на каждой задаче.',
+    ...over,
+  });
+  const judged = (report, over = {}) =>
+    fakeIo({
+      tasks: [halted(over.halted), task({ id: '0084-pnpm', status: 'candidate' })],
+      report: { taskId: '0001-one', stage: 'postmortem', outcome: 'done', ...report },
+      ...over,
+    });
+
+  it('причина в конвейере: вердикт и номер заведённой починки едут в задачу', async () => {
+    // Идентификатор своей заявки разбор знать не может — его выдаёт перенос.
+    // Заявка при этом конвейерна и без `area`: причина в конвейере делает
+    // конвейерными все заявки отчёта, иначе задача вернулась бы сразу,
+    // а починка ждала бы человека в кандидатах.
+    const io = judged({ causedBy: 'pipeline', requests: [fix()] });
+    const [result] = await execute([analysis], io);
+
+    const born = io.tasks.get(result.created[0]);
+    expect(born).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+    expect(io.tasks.get('0001-one')).toMatchObject({
+      status: 'failed',
+      recovery: { causedBy: 'pipeline', fixedBy: [born.id], returns: 0 },
+    });
+  });
+
+  it('названный разбором кандидат с описи попадает в fixedBy', async () => {
+    const io = judged({ causedBy: 'pipeline', fixedBy: ['0084-pnpm'] });
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').recovery.fixedBy).toEqual(['0084-pnpm']);
+  });
+
+  it('несуществующая задача в fixedBy отброшена, причина в журнале', async () => {
+    const io = judged({ causedBy: 'pipeline', fixedBy: ['0999-nowhere', '0084-pnpm'] });
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').recovery.fixedBy).toEqual(['0084-pnpm']);
+    expect(io.journals.get('0001-one')).toContain('0999-nowhere');
+  });
+
+  it('причина в задаче: вердикт записан, починок нет', async () => {
+    const io = judged({ causedBy: 'task', requests: [fix()] });
+    const [result] = await execute([analysis], io);
+    expect(io.tasks.get('0001-one').recovery).toEqual({
+      causedBy: 'task',
+      fixedBy: [],
+      returns: 0,
+    });
+    // Заявка при причине в задаче идёт обычным путём — кандидатом.
+    expect(io.tasks.get(result.created[0]).status).toBe('candidate');
+  });
+
+  it('разбор без причины применяется, но не возвращает, и журнал это говорит', async () => {
+    const io = judged({});
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one')).toMatchObject({
+      status: 'failed',
+      recovery: { causedBy: null, fixedBy: [], returns: 0 },
+    });
+    expect(io.journals.get('0001-one')).toContain('не назвал причину');
+  });
+
+  it('на пределе возвратов вердикт не записывается, журнал зовёт человека', async () => {
+    const io = judged(
+      { causedBy: 'pipeline' },
+      { halted: { recovery: { causedBy: null, fixedBy: [], returns: 2 } } },
+    );
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').recovery).toEqual({ causedBy: null, fixedBy: [], returns: 2 });
+    expect(io.journals.get('0001-one')).toContain('возвращалась дважды, дальше человек');
+  });
+
+  it('неудавшийся разбор вердикта не оставляет', async () => {
+    const io = judged({ outcome: 'failed', causedBy: 'pipeline', summary: 'лога нет' });
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').status).toBe('failed');
+    expect(io.tasks.get('0001-one')).not.toHaveProperty('recovery');
   });
 });
 

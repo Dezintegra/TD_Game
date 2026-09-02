@@ -26,6 +26,7 @@ export const ACTIONS = [
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
   'answer-question', // разобрать ответ владельца продукта
+  'return-task', // вернуть из ошибки задачу, упавшую по вине конвейера
   'poll-external', // опросить проверки CI или прогон на чужом железе
   'quarantine-card', // унести негодную карточку в ошибку с пометкой
   'clear-card', // снять пометку с исправленной карточки
@@ -214,6 +215,46 @@ export function scan(state) {
     if (task.status === 'awaiting-po' && answers[task.id]) {
       actions.push({ kind: 'answer-question', taskId: task.id, returnTo: task.returnTo });
     }
+  }
+
+  // 3б. Возврат из ошибки задачи, упавшей по вине конвейера. Вердикт дал
+  //     разбор; здесь только смотрят, закрыты ли починки. Это событие ДРУГИХ
+  //     задач, и увидеть его может лишь тот, кто каждый оборот читает всю
+  //     доску, — потому решает сканер, а не перенос отчёта разбора.
+  //
+  //     Прежде задачу из ошибки поднимал только человек. 02.09.2026 так стояли
+  //     пять задач с целыми ветками и pull request, чья причина лежала
+  //     в конвейере и была уже починена: решения в подъёме нет, одна задержка.
+  const invalidIds = new Set(invalid.map((bad) => bad.id));
+  for (const task of tasks) {
+    if (task.status !== 'failed' || task.recovery?.causedBy !== 'pipeline') continue;
+    if (!task.returnTo) {
+      notes.push(`задача ${task.id}: причина в конвейере, но возвращать некуда — возврат пуст`);
+      continue;
+    }
+
+    const pending = (task.recovery.fixedBy ?? []).filter((id) => {
+      const fix = byId.get(id);
+      if (fix) return fix.status !== 'closed';
+      // Негодная карточка — задача есть, но не читается: ждём её. Задачи,
+      // которой нет нигде, считаем закрытой и убранной в архив: идентификатор
+      // проверен при разборе, и исчезнуть иначе он не мог.
+      return invalidIds.has(id);
+    });
+    if (pending.length > 0) {
+      notes.push(
+        `задача ${task.id} ждёт починок конвейера: ` +
+          pending.map((id) => `${id} (${byId.get(id)?.status ?? 'не разобрана'})`).join(', '),
+      );
+      continue;
+    }
+
+    actions.push({
+      kind: 'return-task',
+      taskId: task.id,
+      returnTo: task.returnTo,
+      fixedBy: [...(task.recovery.fixedBy ?? [])],
+    });
   }
 
   // 4. Ожидательные состояния опрашиваются: квоту они не занимают,

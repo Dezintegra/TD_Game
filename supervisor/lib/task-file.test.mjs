@@ -114,6 +114,39 @@ describe('переход состояния', () => {
     });
   });
 
+  it('вход в разбор стирает вердикт прошлого разбора, но хранит счёт возвратов', () => {
+    // Вердикт относится к прошлому падению: задача, упавшая снова и не
+    // дождавшаяся нового вердикта, вернулась бы по старому. Счёт же —
+    // предохранитель на всю жизнь задачи.
+    const judged = task({
+      status: 'implement',
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 },
+    });
+    const { task: analysed } = applyTransition(judged, { status: 'postmortem', now: NOW });
+    expect(analysed.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 1 });
+  });
+
+  it('прочие переходы вердикт не трогают, а неразобранной задаче его не заводят', () => {
+    const judged = task({
+      status: 'failed',
+      returnTo: 'implement',
+      recovery: { causedBy: 'pipeline', fixedBy: [], returns: 0 },
+    });
+    const { task: back } = applyTransition(judged, { status: 'implement', now: NOW });
+    expect(back.recovery).toEqual(judged.recovery);
+
+    const { task: fresh } = applyTransition(task({ status: 'implement' }), {
+      status: 'postmortem',
+      now: NOW,
+    });
+    expect(fresh).not.toHaveProperty('recovery');
+  });
+
+  it('сброс попыток счёт возвратов не трогает', () => {
+    const judged = task({ recovery: { causedBy: null, fixedBy: [], returns: 2 } });
+    expect(resetAttempts(judged).recovery).toEqual(judged.recovery);
+  });
+
   it('переход по маршруту счёт попыток не трогает', () => {
     // Обнуляет его успешный этап отдельным действием, и правило это здесь
     // не дублируется: два места, гасящие один счётчик, однажды разойдутся.

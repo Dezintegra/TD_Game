@@ -57,8 +57,26 @@ export function applyTransition(task, { status, note, now }) {
     ? { continuations: 0, cycleFailures: 0, rejections: 0, spawnFailures: 0 }
     : task.attempts;
 
+  // Вход в разбор стирает прошлый вердикт, но не счёт возвратов. Вердикт
+  // относится к прошлому падению: задача, упавшая снова и не дождавшаяся
+  // нового (разбор сам не удался и ушёл в ошибку без отчёта), вернулась бы
+  // по старому. Счёт же — предохранитель на всю жизнь задачи, и обнулять
+  // его вместе с попытками значило бы отменить его вовсе.
+  const recovery =
+    status === 'postmortem' && task.recovery
+      ? { causedBy: null, fixedBy: [], returns: task.recovery.returns ?? 0 }
+      : task.recovery;
+
   return {
-    task: { ...task, status, returnTo, attempts, statusChangedAt: now, history },
+    task: {
+      ...task,
+      status,
+      returnTo,
+      attempts,
+      statusChangedAt: now,
+      history,
+      ...(recovery ? { recovery } : {}),
+    },
     problems: [],
   };
 }
