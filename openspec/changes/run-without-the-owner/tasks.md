@@ -59,7 +59,7 @@
 
 ## 4. Самообновление супервизора
 
-- [ ] 4.1 Команды git: `currentBranch`, `aheadOn`, `treeOf`
+- [x] 4.1 Команды git: `currentBranch`, `aheadOn`, `treeOf`
       (`supervisor/lib/git.mjs`); решение о самообновлении
       `supervisor/lib/self-update.mjs` — выключено, актуально, заблокировано
       с причиной, подтянуто, ждёт тишины, перезапуск. Проверяемо:
