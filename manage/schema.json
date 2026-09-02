@@ -219,6 +219,29 @@
         "summary": { "type": "string", "minLength": 1 },
         "answeredAt": { "type": ["string", "null"], "format": "date-time" }
       }
+    },
+    "recovery": {
+      "type": "object",
+      "description": "Вердикт разбора ошибки и счёт автоматических возвратов. Появляется после первого разбора; отсутствие означает, что задачу не разбирали.",
+      "additionalProperties": false,
+      "required": ["causedBy", "fixedBy", "returns"],
+      "properties": {
+        "causedBy": {
+          "description": "Чья причина падения по последнему разбору: pipeline — в конвейере, task — в самой задаче, null — вердикта нет. Задачу с причиной в конвейере конвейер возвращает из ошибки сам.",
+          "type": ["string", "null"],
+          "enum": ["pipeline", "task", null]
+        },
+        "fixedBy": {
+          "type": "array",
+          "description": "Идентификаторы задач, после закрытия которых причина снята. Пустой перечень — вернуть сразу.",
+          "items": { "type": "string" }
+        },
+        "returns": {
+          "type": "integer",
+          "description": "Сколько раз конвейер возвращал задачу из ошибки сам. Не обнуляется никогда: это предохранитель на всю жизнь задачи.",
+          "minimum": 0
+        }
+      }
     }
   },
   "allOf": [

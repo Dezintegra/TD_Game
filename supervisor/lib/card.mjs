@@ -167,6 +167,11 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     history: [],
   };
 
+  // Вердикт разбора и счёт автоматических возвратов. Читаются только
+  // из блока: задача, которую ни разу не разбирали, поля не имеет,
+  // и отсутствие — честный ответ «не судили», а не пустой вердикт.
+  if (meta?.recovery) task.recovery = recoveryOf(meta.recovery);
+
   if (task.type === 'run') {
     task.run = { kind: labels.runKinds[0] ?? null, expectation: expectationOf(human) };
   }
@@ -217,5 +222,23 @@ export function metaOf(task) {
     statusChangedAt: task.statusChangedAt,
     links: task.links ?? { change: null, pr: null, run: null, related: [] },
     attempts: task.attempts ?? { continuations: 0, cycleFailures: 0 },
+    // Вердикт разбора едет в блок только у разобранной задачи: у прочих
+    // поля нет, и записи с ним состав не меняют. Без блока счёт возвратов
+    // обнулялся бы каждым чтением карточки, и предохранитель «не больше
+    // двух» не сработал бы никогда — бэклог живёт на доске, а не в файлах.
+    ...(task.recovery ? { recovery: recoveryOf(task.recovery) } : {}),
+  };
+}
+
+/**
+ * Вердикт разбора в раскладке записи: чья причина, чем чинится, сколько
+ * раз возвращали. Приводится к полному виду при чтении и записи, чтобы
+ * блок, написанный прежней версией без какого-то поля, не ронял разбор.
+ */
+export function recoveryOf(recovery = {}) {
+  return {
+    causedBy: ['pipeline', 'task'].includes(recovery.causedBy) ? recovery.causedBy : null,
+    fixedBy: Array.isArray(recovery.fixedBy) ? recovery.fixedBy.map(String) : [],
+    returns: Number.isInteger(recovery.returns) && recovery.returns > 0 ? recovery.returns : 0,
   };
 }

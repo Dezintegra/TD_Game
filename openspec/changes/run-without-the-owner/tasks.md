@@ -32,7 +32,7 @@
 
 ## 3. Возврат из ошибки
 
-- [ ] 3.1 Завести поле `recovery` на задаче: схемы, `metaOf` и `parseCard`
+- [x] 3.1 Завести поле `recovery` на задаче: схемы, `metaOf` и `parseCard`
       (`supervisor/lib/card.mjs`), стирание вердикта при входе в разбор
       с сохранением счёта (`supervisor/lib/task-file.mjs`). Проверяемо:
       `card.test.mjs` — поле переживает дорогу туда и обратно;

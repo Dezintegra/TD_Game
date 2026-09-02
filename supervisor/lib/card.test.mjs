@@ -247,4 +247,44 @@ describe('сборка отметок', () => {
 
     expect(back.attempts.spawnFailures).toBe(2);
   });
+
+  it('вердикт разбора и счёт возвратов переживают дорогу туда и обратно', () => {
+    // По вердикту конвейер возвращает задачу из ошибки, по счёту —
+    // останавливается после второго возврата. Потеряйся любое из них
+    // при чтении карточки — задача либо не вернётся, либо вернётся
+    // без предела.
+    const task = {
+      id: '0041-x',
+      owner: null,
+      statusChangedAt: '2026-09-02T09:00:00.000Z',
+      attempts: { continuations: 0, cycleFailures: 0 },
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 },
+    };
+    const desc = joinDescription('Текст.', metaOf(task));
+    const { task: back } = parseCard(card({ desc }), ctx);
+
+    expect(back.recovery).toEqual({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 });
+  });
+
+  it('у неразобранной задачи вердикта нет вовсе', () => {
+    // Отсутствие — честный ответ «не судили», а не пустой вердикт: записи
+    // без поля состав не меняют, и ни одна проверка целиком не узнает
+    // о нём против воли.
+    const task = { id: '0031-x', owner: null, statusChangedAt: '2026-08-21T09:00:00.000Z' };
+    expect(metaOf(task)).not.toHaveProperty('recovery');
+    const { task: back } = parseCard(card({ desc: joinDescription('', metaOf(task)) }), ctx);
+    expect(back).not.toHaveProperty('recovery');
+  });
+
+  it('вердикт из блока прежней раскладки приводится к полному виду', () => {
+    // Блок пишет та версия, что стояла на момент записи; читает — та,
+    // что стоит теперь. Неполный или испорченный вердикт не должен ронять
+    // разбор карточки: он приводится к тому, что из него можно понять.
+    const desc = joinDescription('', {
+      id: '0041-x',
+      recovery: { causedBy: 'кто-то', returns: '2' },
+    });
+    const { task: back } = parseCard(card({ desc }), ctx);
+    expect(back.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 0 });
+  });
 });
