@@ -11,14 +11,14 @@
 
 ## 1. Отказ порождения называет причину, а процесс без номера не считается запущенным
 
-- [ ] `supervisor/lib/supervisor.mjs`, `spawnStage`: к обоим отказам
+- [x] `supervisor/lib/supervisor.mjs`, `spawnStage`: к обоим отказам
       («по этой задаче уже идёт этап», «все места заняты») добавить
       `reason: 'busy'`; к отказу из `catch` — `reason: 'not-born'`.
-- [ ] Там же: после `spawnStageProcess` проверить номер процесса. Номера
+- [x] Там же: после `spawnStageProcess` проверить номер процесса. Номера
       нет — вернуть `{ ok: false, reason: 'not-born', why: 'процесс
       не родился' }` **до** записи `known[at]`, до `children.set`,
       до `startPulse` и до строки журнала о запуске.
-- [ ] Тесты в `supervisor/lib/supervisor.test.mjs`: подставной `spawn`,
+- [x] Тесты в `supervisor/lib/supervisor.test.mjs`: подставной `spawn`,
       возвращающий объект без `pid`, даёт отказ `not-born`; идентификатор
       сессии после него не запоминается (`lastSession` возвращает `null`),
       `busy` не превращает этап в идущий, а удавшееся порождение
