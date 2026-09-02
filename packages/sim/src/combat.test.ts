@@ -11,9 +11,11 @@ import {
   ShotSide,
   ShotWeapon,
   StructureKind,
+  TOWER_KILL_BOUNTY_PPM,
   Terrain,
   UNIT_STATS,
   UnitType,
+  applyPpm,
   asEntityId,
   asPlayerId,
   asTickNumber,
@@ -682,6 +684,52 @@ describe('награда генералу', () => {
     expect(unitById(after, 60)).toBeUndefined();
     expect((after.players[0]?.energy ?? 0) - before).toBeLessThan(
       UNIT_STATS[UnitType.Assault].cost,
+    );
+  });
+});
+
+describe('награда постройке', () => {
+  /**
+   * Прибавка энергии за тик, в котором башня стреляет по штурмовику.
+   *
+   * Считается ПРОТИВ КОНТРОЛЯ: тот же мир, та же башня, тот же выстрел —
+   * разнится только прочность цели. Иначе в разницу вошёл бы ещё и доход
+   * тика, и проверка «выросла хотя бы на столько-то» стерегла бы доход,
+   * а не награду.
+   */
+  const gainWhenTargetHas = (health: number): number => {
+    const world = arrange(
+      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 100_000)],
+      [unit(60, 1, UnitType.Assault, 1, 0, health)],
+    );
+    const before = world.players[0]?.energy ?? 0;
+
+    return (step(world, []).players[0]?.energy ?? 0) - before;
+  };
+
+  it('башня, добившая штурмовика, приносит пятую часть его цены', () => {
+    const killed = gainWhenTargetHas(1);
+    const survived = gainWhenTargetHas(100_000);
+
+    expect(killed - survived).toBe(
+      applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM),
+    );
+  });
+
+  it('без гибели цели выстрел награды не приносит', () => {
+    // Контроль обязан быть пустым: платят за гибель, а не за попадание.
+    // Без этой проверки предыдущая сравнивала бы две одинаково щедрые
+    // величины и зеленела бы при награде за каждый выстрел.
+    const world = arrange(
+      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 100_000)],
+      [unit(60, 1, UnitType.Assault, 1, 0, 100_000)],
+    );
+    const before = world.players[0]?.energy ?? 0;
+    const after = step(world, []);
+
+    expect(unitById(after, 60)).toBeDefined();
+    expect((after.players[0]?.energy ?? 0) - before).toBeLessThan(
+      applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM),
     );
   });
 });
