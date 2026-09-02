@@ -155,12 +155,12 @@ gh pr create --draft --base main --title "Идущий этап пережива
 
 ## 6. Сшивание в супервизоре: обход и остановка
 
-- [ ] Звать `supervisor.sweep()` в начале `turn()`, до чтения
+- [x] Звать `supervisor.sweep()` в начале `turn()`, до чтения
       `supervisor.running()` в `state`.
-- [ ] Положить `orphans: supervisor.orphanOutcomes` в `state` и метод
-      «забыть исход» в `io`.
-- [ ] Убедиться, что `stopAll()` сирот не трогает: снимает только
-      собственных детей.
+- [x] Положить `orphans: supervisor.orphanOutcomes` в `state` и метод
+      «забыть исход» в `io` — вместе с чтением исхода `readOrphan`.
+- [x] Убедиться, что `stopAll()` сирот не трогает: снимает только
+      собственных детей. Закреплено проверкой в `supervisor.test.mjs`.
 
 **Проверка:** `node --check supervisor/bin/supervise.mjs`;
 `npx eslint supervisor/bin/supervise.mjs supervisor/lib/supervisor.mjs supervisor/lib/scan.mjs supervisor/lib/execute.mjs supervisor/lib/run-stage.mjs`;
