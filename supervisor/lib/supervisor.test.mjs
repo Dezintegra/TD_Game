@@ -398,6 +398,105 @@ describe('дескриптор живого этапа', () => {
   });
 });
 
+describe('сироты при запуске', () => {
+  // Ради этого и затевалось изменение. Прежде преемник, взявший замок, не видел
+  // ни одного этапа, порождённого прежним супервизором: сканер спрашивал
+  // живость, получал «нет» и следующим же оборотом выдавал живому этапу
+  // продолжение, заводя второй процесс на его рабочем дереве.
+
+  /** Состояние на диске с дескриптором живого этапа. */
+  const withLive = (over = {}) => ({
+    '0001-one:implement': {
+      sessionId: 'прежняя',
+      startedAt: NOW,
+      live: {
+        pid: 29704,
+        image: 'claude.exe',
+        machine: 'станция-1',
+        supervisorPid: 111,
+        startedAt: NOW,
+        startedMs: 900_000,
+        timeoutMs: 3_600_000,
+        ...over,
+      },
+    },
+  });
+
+  it('живой опознанный сирота числится идущим этапом', () => {
+    const { supervisor } = harness({ stages: withLive() });
+    expect(supervisor.running()).toEqual([{ taskId: '0001-one', stage: 'implement' }]);
+    expect(supervisor.busy()).toBe(1);
+  });
+
+  it('опознание сверяется с записанным, а не с настройкой', () => {
+    // Номер занял посторонний процесс: дескриптор протух. Этап не идёт,
+    // а сам процесс не наш, и снимать его нельзя.
+    const { supervisor, killed } = harness({
+      stages: withLive(),
+      probe: () => ({ known: true, alive: true, image: 'chrome.exe' }),
+    });
+    expect(supervisor.running()).toEqual([]);
+    expect(killed).toEqual([]);
+  });
+
+  it('исчезнувший процесс освобождает задачу, и дескриптор стирается', () => {
+    const { supervisor, saved, logged } = harness({
+      stages: withLive(),
+      probe: () => ({ known: true, alive: false, image: null }),
+    });
+    expect(supervisor.running()).toEqual([]);
+    expect(saved.at(-1)['0001-one:implement'].live).toBeUndefined();
+    expect(logged.join()).toContain('осиротел');
+  });
+
+  it('сирота без опознания в дескрипторе числится идущим', () => {
+    // Опросить систему при рождении могло не удаться. Объявить такого
+    // исчезнувшим — это ровно выдача продолжения живому этапу.
+    const { supervisor } = harness({
+      stages: withLive({ image: undefined }),
+      probe: () => ({ known: true, alive: true, image: 'claude.exe' }),
+    });
+    expect(supervisor.running()).toEqual([{ taskId: '0001-one', stage: 'implement' }]);
+  });
+
+  it('неотвечающий опрос системы тоже оставляет этап идущим', () => {
+    const { supervisor } = harness({
+      stages: withLive(),
+      probe: () => ({ known: false, alive: false, image: null }),
+    });
+    expect(supervisor.running()).toEqual([{ taskId: '0001-one', stage: 'implement' }]);
+  });
+
+  it('дескриптор чужой станции не судится, стирается и назван в журнале', () => {
+    const { supervisor, saved, logged, probed } = harness({
+      stages: withLive({ machine: 'станция-2' }),
+    });
+    expect(supervisor.running()).toEqual([]);
+    expect(saved.at(-1)['0001-one:implement'].live).toBeUndefined();
+    expect(logged.join()).toContain('станция-2');
+    // И опрашивать его незачем: номер чужой машины здесь не значит ничего.
+    expect(probed).toEqual([]);
+  });
+
+  it('память о сессии сироты остаётся: её и будет возобновлять продолжатель', () => {
+    const { supervisor } = harness({
+      stages: withLive(),
+      probe: () => ({ known: true, alive: false, image: null }),
+    });
+    expect(supervisor.lastSession('0001-one', 'implement')).toBe('прежняя');
+    expect(supervisor.stageStartedAt('0001-one', 'implement')).toBe(NOW);
+  });
+
+  it('второго процесса по задаче живого сироты не порождается', () => {
+    const { supervisor, children } = harness({ stages: withLive() });
+    const spawned = supervisor.spawnStage(assignment({ taskId: '0001-one', stage: 'implement' }));
+
+    expect(spawned.ok).toBe(false);
+    expect(spawned.reason).toBe('busy');
+    expect(children).toEqual([]);
+  });
+});
+
 describe('этап кончился', () => {
   it('отчёт уходит в очередь на перенос', async () => {
     const { supervisor, answer } = harness();
