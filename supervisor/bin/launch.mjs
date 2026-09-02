@@ -139,7 +139,7 @@ function liveSupervisor() {
 
 const killTree = createKillTree((program, list) => {
   try {
-    execFileSync(program, list, { stdio: 'ignore' });
+    execFileSync(program, list, { stdio: 'ignore', windowsHide: true });
     return { code: 0 };
   } catch (error) {
     return { code: error.status ?? 1 };

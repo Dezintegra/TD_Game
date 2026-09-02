@@ -38,10 +38,14 @@ function harness({ timeoutMs = 1000, command, onEvent, onStderr } = {}) {
   const timers = [];
   const events = [];
   const errors = [];
+  const spawned = [];
   const handle = startStage({
     command: command ?? { program: 'claude', args: ['-p'], cwd: '/repo', stdin: 'делай' },
     timeoutMs,
-    spawn: () => child,
+    spawn: (program, list, options) => {
+      spawned.push({ program, list, options });
+      return child;
+    },
     killTree: (pid) => killed.push(pid),
     onEvent:
       onEvent ??
@@ -59,8 +63,34 @@ function harness({ timeoutMs = 1000, command, onEvent, onStderr } = {}) {
     },
     clearTimer: () => {},
   });
-  return { child, killed, handle, events, errors, fire: () => timers.forEach((fn) => fn()) };
+  return {
+    child,
+    killed,
+    handle,
+    events,
+    errors,
+    spawned,
+    fire: () => timers.forEach((fn) => fn()),
+  };
 }
+
+describe('окно потомка не показывается', () => {
+  it('этап порождается со скрытой консолью', () => {
+    // Супервизор запускается с `detached: true`, а это на Windows означает
+    // процесс ВОВСЕ БЕЗ КОНСОЛИ: каждый его потомок получает свежую и видимую,
+    // окна вспыхивают десятками и перехватывают фокус у работающего человека.
+    // Проверено делом 02.09.2026 — и потому проверяется здесь, а не на глаз:
+    // пропажу этого флага иначе заметит только тот, у кого мигает экран.
+    const { spawned } = harness();
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].options.windowsHide).toBe(true);
+  });
+
+  it('рабочий каталог при этом не теряется', () => {
+    const { spawned } = harness();
+    expect(spawned[0].options.cwd).toBe('/repo');
+  });
+});
 
 describe('промпт подаётся на вход', () => {
   it('текст назначения уходит в stdin и вход закрывается', async () => {
