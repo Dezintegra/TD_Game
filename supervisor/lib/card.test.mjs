@@ -232,4 +232,19 @@ describe('сборка отметок', () => {
     expect(back.links.related).toEqual(['0030-y']);
     expect(back.attempts).toEqual({ continuations: 2, cycleFailures: 1 });
   });
+
+  it('счёт несостоявшихся запусков переживает дорогу туда и обратно', () => {
+    // Без этого счётчик обнулялся бы каждым чтением карточки, и предел
+    // не сработал бы никогда: бэклог живёт на доске, а не в файлах.
+    const task = {
+      id: '0067-x',
+      owner: null,
+      statusChangedAt: '2026-09-02T09:00:00.000Z',
+      attempts: { continuations: 0, cycleFailures: 0, spawnFailures: 2 },
+    };
+    const desc = joinDescription('Текст.', metaOf(task));
+    const { task: back } = parseCard(card({ desc }), ctx);
+
+    expect(back.attempts.spawnFailures).toBe(2);
+  });
 });

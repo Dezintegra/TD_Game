@@ -30,15 +30,15 @@
 
 ## 2. Счётчик несостоявшихся запусков
 
-- [ ] `supervisor/config/task-schema.json`: необязательное целое
+- [x] `supervisor/config/task-schema.json`: необязательное целое
       `attempts.spawnFailures` с описанием, минимум ноль. В `required`
       не добавлять — иначе все нынешние карточки перестанут читаться.
-- [ ] `supervisor/lib/task-file.mjs`: `countSpawnFailure(task)` рядом
+- [x] `supervisor/lib/task-file.mjs`: `countSpawnFailure(task)` рядом
       с `countContinuation`; `resetAttempts` и обнуление в `applyTransition`
       дописать тем же полем.
-- [ ] Тесты в `supervisor/lib/task-file.test.mjs`: счётчик растёт,
+- [x] Тесты в `supervisor/lib/task-file.test.mjs`: счётчик растёт,
       обнуляется входом в сквозное состояние и `resetAttempts`.
-- [ ] Тест в `supervisor/lib/card.test.mjs`: `attempts.spawnFailures`
+- [x] Тест в `supervisor/lib/card.test.mjs`: `attempts.spawnFailures`
       переживает круговой обход через карточку доски (запись → чтение).
       Без него счётчик обнулялся бы каждым чтением, и предел не сработал бы
       никогда.
