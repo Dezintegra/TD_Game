@@ -110,6 +110,22 @@ describe('замок', () => {
     const held = { pid: 999, takenAt: NOW, refreshedAt: NOW };
     expect(lockVerdict(held, NOW, 30, () => false).take).toBe(true);
   });
+
+  it('замок с собственным номером — переданный, его берут', () => {
+    // Старый супервизор, перезапускаясь, записывает в замок номер нового
+    // и выходит: ни в один момент замок не пуст и не мёртв, а новому
+    // достаточно узнать себя. Живость при этом не спрашивается вовсе.
+    const handed = { pid: 4242, takenAt: NOW, refreshedAt: NOW, handedFrom: 999 };
+    const verdict = lockVerdict(handed, NOW, 30, () => true, 4242);
+    expect(verdict.take).toBe(true);
+    expect(verdict.why).toContain('передан');
+  });
+
+  it('чужой живой замок без собственного номера по-прежнему не берётся', () => {
+    const held = { pid: 999, takenAt: NOW, refreshedAt: NOW };
+    expect(lockVerdict(held, NOW, 30, () => true, 4242).take).toBe(false);
+    expect(lockVerdict(held, NOW, 30, () => true).take).toBe(false);
+  });
 });
 
 describe('самозащита от бесконечных неудач', () => {

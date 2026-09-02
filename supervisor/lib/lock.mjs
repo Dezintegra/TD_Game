@@ -21,9 +21,19 @@ export const BUDGET_ORDER = 'бюджет отправки < интервал ц
  * @param {string} now           отметка времени
  * @param {number} staleMinutes  через сколько минут молчания замок брошен
  * @param {(pid:number)=>boolean} [isAlive] жив ли процесс, если это можно узнать
+ * @param {number} [pid] собственный номер процесса — ради переданного замка
  */
-export function lockVerdict(existing, now, staleMinutes, isAlive) {
+export function lockVerdict(existing, now, staleMinutes, isAlive, pid = null) {
   if (!existing) return { take: true, why: 'замок свободен' };
+
+  // Переданный замок: старый супервизор, перезапускаясь, записал в него
+  // номер нового процесса и вышел. Так ни в один момент замок не отсутствует
+  // и не указывает на мёртвого — а сторож, проснувшийся посреди перезапуска,
+  // видит живой номер и второго экземпляра не поднимает. Живость здесь
+  // не спрашивается: спрашивать о самом себе незачем.
+  if (pid != null && existing.pid === pid) {
+    return { take: true, why: `замок передан этому процессу (${pid})` };
+  }
 
   const silentFor =
     (Date.parse(now) - Date.parse(existing.refreshedAt ?? existing.takenAt)) / 60000;
