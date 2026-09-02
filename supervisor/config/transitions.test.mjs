@@ -313,6 +313,18 @@ describe('этапы и скиллы', () => {
     expect(silent).toEqual([]);
   });
 
+  it('скилл разбора требует вердикт о причине и объясняет fixedBy', () => {
+    // По `causedBy` супервизор решает, возвращать ли задачу из ошибки сам.
+    // Отчёт без него применяется как «причина в задаче» — то есть разбор,
+    // не знающий поля, вернул бы конвейер к подъёму задач человеком молча.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const text = readFileSync(`${dir}postmortem.md`, 'utf8');
+    expect(text).toContain('`causedBy`');
+    expect(text).toContain('`fixedBy`');
+    expect(text).toContain('"causedBy": "pipeline"');
+    expect(text).toContain('"causedBy": "task"');
+  });
+
   it('скилл прогона называет разрешённое ожидание и не показывает циклов', () => {
     // Ждать чужой прогон этапу надо всегда, а разрешённая форма ровно одна —
     // `gh run watch <id> --exit-status`. Не назови её скилл — сессия придумает
