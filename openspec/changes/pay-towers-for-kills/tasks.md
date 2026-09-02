@@ -73,7 +73,7 @@
       _Проверка:_ тест в `rules.test.ts` — `applyRuleTuning`
       с `killBounty: 2` удваивает долю, `resetRuleTuning` возвращает
       задуманную.
-- [ ] 3.2 Ключ `--kill-bounty` в `apps/arena/src/main.ts`: строка
+- [x] 3.2 Ключ `--kill-bounty` в `apps/arena/src/main.ts`: строка
       в `TUNING_FLAGS` и в `USAGE`. Шесть ключей становятся семью,
       текст справки поправить, а не дописать рядом.
       _Проверка:_ `arena run --kill-bounty 2 --matches 1` отрабатывает,
