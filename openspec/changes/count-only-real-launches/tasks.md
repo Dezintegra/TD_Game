@@ -48,14 +48,14 @@
 
 ## 3. `continueStage` считает после порождения, а не до него
 
-- [ ] `supervisor/lib/execute.mjs`, `continueStage`: порождать первым,
+- [x] `supervisor/lib/execute.mjs`, `continueStage`: порождать первым,
       передавая назначение с уже увеличенным счётом; сохранять задачу
       с записью «Этапу выдана сессия» только по рождении процесса, и той же
       записью обнулять `spawnFailures`.
-- [ ] Отказ `busy` → `{ result: 'skipped', why }`: ни счёта, ни записи.
-- [ ] Отказ `not-born` → `countSpawnFailure` и `saveTask` с записью
+- [x] Отказ `busy` → `{ result: 'skipped', why }`: ни счёта, ни записи.
+- [x] Отказ `not-born` → `countSpawnFailure` и `saveTask` с записью
       «Этап не запустился: <причина>»; исход `failed`.
-- [ ] Тесты в `supervisor/lib/execute.test.mjs` — дословно по признаку
+- [x] Тесты в `supervisor/lib/execute.test.mjs` — дословно по признаку
       сделанности из карточки задачи: порождение, вернувшее `ok: false`,
       оставляет `attempts.continuations` неизменным и кладёт причину
       в журнал задачи; удавшееся порождение счёт увеличивает и пишет
