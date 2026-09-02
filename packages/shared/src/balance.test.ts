@@ -322,6 +322,31 @@ describe('баланс: награда постройке за убийство'
       expect(applyPpm(bounty, TOWER_KILL_BOUNTY_PPM)).toBeLessThan(bounty);
     }
   });
+
+  it('охота башнями невыгоднее, чем просто ждать доход', () => {
+    // Тот же сторож, что стоит над наградой генерала, и заведён он по той
+    // же причине: стоит охоте стать выгоднее позиционной борьбы — и игра
+    // превращается в ферму, где вместо наступления выгодно кормить
+    // противника целями.
+    //
+    // Запас здесь огромный: базовая башня снимает штурмовика за семь
+    // выстрелов по одному в секунду, то есть пять единиц за семь секунд —
+    // 0,71 против десяти. Это и есть заявленный при проработке порядок:
+    // семь процентов базового дохода, ощутимо для отдельной башни
+    // и незаметно для экономики матча.
+    const assault = UNIT_STATS[UnitType.Assault];
+    const reward = applyPpm(assault.cost, TOWER_KILL_BOUNTY_PPM);
+
+    for (const kind of BUILDABLE_KINDS) {
+      if (!isArmedStructure(kind)) continue;
+
+      const stats = STRUCTURE_STATS[kind];
+      const shots = Math.ceil(assault.health / stats.attack);
+      const perTick = reward / (shots * stats.cooldownTicks);
+
+      expect(perTick).toBeLessThan(BASE_INCOME_PER_TICK);
+    }
+  });
 });
 
 describe('баланс: скорострельность генерала', () => {
