@@ -23,7 +23,10 @@ import { cellCentre, cellIndex, createWorld } from '@td/sim';
 import type { PlayerState, PlayerStats, WorldState } from '@td/sim';
 import { playerStats } from '@td/sim';
 import { approachOf } from './approach.js';
-import { STRATEGIST_PROFILE } from './profile.js';
+import { BASELINE_PROFILE, STRATEGIST_PROFILE } from './profile.js';
+import type { AiProfile } from './profile.js';
+import { NukeNote } from './observer.js';
+import type { DecisionRecord } from './observer.js';
 import { nukeOutcome } from './value.js';
 import { createOpponent, findNukeTarget, nukeWorthIt } from './opponent.js';
 
@@ -448,5 +451,118 @@ describe('требуемое скопление выводится из конс
     expect(worthIt(foeUnits(plain, UnitType.Assault, needPlain - 1))).toBe(false);
     expect(worthIt(foeUnits(invested, UnitType.Assault, needInvested))).toBe(true);
     expect(worthIt(foeUnits(invested, UnitType.Assault, needInvested - 1))).toBe(false);
+  });
+});
+
+/**
+ * Четыре помехи удару и четыре мира, в каждом из которых удар останавливает
+ * своя проверка.
+ *
+ * Разделение это и есть весь смысл прибора. Снаружи все четыре случая
+ * выглядят одинаково — удара просто нет, — а лечатся по-разному: откат это
+ * темп, пустая казна это экономика, недостаточная цель это калибровка.
+ * Прогон 33105088891 с четырьмя ударами на шестьдесят матчей неотличим
+ * от прогона, в котором денег не набралось ни разу, и от прогона, в котором
+ * на карте не сложилось ни одного скопления.
+ *
+ * Миры НЕ шагают: `decide` зовётся на неподвижном мире, и меняется в нём
+ * ровно одно — то условие, ради которого мир и собран.
+ */
+describe('помеха ядерному удару называется поимённо', () => {
+  /** Тик поздней фазы: только в ней Стратег держит запас под удар. */
+  const LATE_TICK = 300 * 30 + 1;
+
+  const recordsOver = (
+    world: WorldState,
+    profile: AiProfile,
+    ticks = 60,
+  ): readonly DecisionRecord[] => {
+    const records: DecisionRecord[] = [];
+    const opponent = createOpponent(asPlayerId(ME), SEED, profile, (record) => {
+      records.push(record);
+    });
+
+    let current = world;
+    for (let tick = 0; tick < ticks; tick += 1) {
+      opponent.decide(current);
+      current = { ...current, tick: asTickNumber(current.tick + 1) };
+    }
+
+    return records;
+  };
+
+  const firstRecord = (world: WorldState, profile: AiProfile): DecisionRecord => {
+    const [first] = recordsOver(world, profile);
+    if (first === undefined) throw new Error('решений не было');
+
+    return first;
+  };
+
+  /** Энергии хватает на покупку и не хватает на пуск. */
+  const poorAndLate = (world: WorldState): WorldState =>
+    patchPlayer({ ...world, tick: asTickNumber(LATE_TICK) }, ME, { energy: BASE_UNIT_COST * 4 });
+
+  it('установка не остыла — помеха «откат»', () => {
+    const cooling = patchPlayer(withCrowd(rich(createWorld(SEED))), ME, {
+      nukeReadyAtTick: asTickNumber(100_000),
+    });
+
+    expect(firstRecord(cooling, STRATEGIST_PROFILE).nukeNote).toBe(NukeNote.Cooling);
+  });
+
+  it('манера под удар не копит и денег нет — помеха «обход не выполнялся»', () => {
+    // Базовая манера не объявляет `nuke.invest`, поэтому запаса под удар
+    // не держит и карту глазами ракетчика не осматривает вовсе. Скопление
+    // на карте при этом ЕСТЬ — и всё равно не найдено, потому что искать
+    // никто не ходил. Отсюда и «три удара из четырёх у Стратега».
+    const poor = poorAndLate(withCrowd(createWorld(SEED)));
+
+    expect(firstRecord(poor, BASELINE_PROFILE).nukeNote).toBe(NukeNote.NotSearched);
+  });
+
+  it('деньги есть, а скопления нет — помеха «цель дешевле пуска»', () => {
+    const empty = rich(createWorld(SEED));
+
+    expect(firstRecord(empty, STRATEGIST_PROFILE).nukeNote).toBe(NukeNote.TargetTooCheap);
+  });
+
+  it('цель есть, а денег нет — помеха «не по карману»', () => {
+    // Тот же бедный поздний мир, что и во второй проверке, и та же толпа.
+    // Разница одна: манера копит под удар, значит обход выполняется,
+    // и цель находится. Именно эти два случая прежде были неразличимы.
+    const poor = poorAndLate(withCrowd(createWorld(SEED)));
+
+    expect(firstRecord(poor, STRATEGIST_PROFILE).nukeNote).toBe(NukeNote.Unaffordable);
+  });
+
+  it('обход не выполнялся — обеих величин в записи нет', () => {
+    // Отсутствие, а не ноль: ноль читался бы как «искали и нашли пустоту»,
+    // и разбор посчитал бы карту пустой там, где её никто не смотрел.
+    const record = firstRecord(poorAndLate(withCrowd(createWorld(SEED))), BASELINE_PROFILE);
+
+    expect(record.nukeNote).toBe(NukeNote.NotSearched);
+    expect(record.nukeNet).toBeUndefined();
+    expect(record.nukeCost).toBeUndefined();
+  });
+
+  it('обход выполнен — записаны и ценность цели, и цена пуска', () => {
+    const record = firstRecord(poorAndLate(withCrowd(createWorld(SEED))), STRATEGIST_PROFILE);
+    const player = poorAndLate(createWorld(SEED)).players[ME];
+    if (player === undefined) throw new Error('мир без стороны');
+
+    expect(record.nukeCost).toBe(playerStats(player).nuke.cost);
+    // Цель нашлась и порог перешагнула: помеха здесь — казна, а не карта.
+    expect(record.nukeNet ?? 0).toBeGreaterThan(record.nukeCost ?? 0);
+  });
+
+  it('удар состоялся — помехи нет вовсе', () => {
+    // Пятого значения в перечислении нет намеренно: состоявшийся удар
+    // помехи не имеет, и это уже сказано полем `struck`.
+    const striking = recordsOver(withCrowd(rich(createWorld(SEED))), STRATEGIST_PROFILE).filter(
+      (record) => record.struck,
+    );
+
+    expect(striking.length).toBeGreaterThan(0);
+    for (const record of striking) expect(record.nukeNote).toBeUndefined();
   });
 });
