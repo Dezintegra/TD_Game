@@ -12,13 +12,13 @@ npx vitest run --root supervisor config/transitions.test.mjs
 
 ## 1. Открыть перечень сценариев и набор тестов конвейера
 
-- [ ] В `supervisor/config/stage-settings.json`, в перечень `allow`, добавить
+- [x] В `supervisor/config/stage-settings.json`, в перечень `allow`, добавить
       четыре правила: `Bash(pnpm run)`, `PowerShell(pnpm run)`,
       `Bash(pnpm test:pipeline:*)`, `PowerShell(pnpm test:pipeline:*)`.
       Первые два — **точной формой, без хвоста `:*`**.
-- [ ] Дописать в `$pnpmNote` того же файла, почему открыт голый `pnpm run`,
+- [x] Дописать в `$pnpmNote` того же файла, почему открыт голый `pnpm run`,
       а не `pnpm run:*`, и назвать закрытые им сценарии поимённо.
-- [ ] Открыть черновой pull request сразу после этого коммита: до его
+- [x] Открыть черновой pull request сразу после этого коммита: до его
       появления пуши в ветку не запускают проверок CI вовсе.
 
 **Проверка:** `node --check` к JSON неприменим, поэтому — прогон сторожей
