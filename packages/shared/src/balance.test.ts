@@ -12,6 +12,7 @@ import {
   BlastKind,
   ENERGY_SCALE,
   FIRST_MISSILE_SIDE,
+  GENERAL_KILL_REWARD,
   GENERAL_STATS,
   GENERAL_WEAPON,
   NUKE_COOLDOWN_MAX_LEVEL,
@@ -300,6 +301,26 @@ describe('баланс: награда постройке за убийство'
     // убийство Теслы за 250 равным убийству штурмовика за 25, то есть
     // платила бы за число трупов, а не за нанесённый противнику ущерб.
     expect(applyPpm(UNIT_STATS[UnitType.Tesla].cost, TOWER_KILL_BOUNTY_PPM)).toBe(energy(50));
+  });
+
+  it('за любое убийство постройка получает строго меньше генерала', () => {
+    // То самое различие, на котором держится плата за риск: за генерала
+    // надо стоять в пяти клетках от боя под ответным огнём, а башня стои́т
+    // в безопасности. Генералу платится полная добыча, постройке — доля.
+    //
+    // Проверяется по всей добыче поимённо, а не на одном штурмовике:
+    // сравнение долей само по себе ничего не стережёт, потому что
+    // округление вниз идёт от цены убитого, и уравнять их можно было бы
+    // на дешёвой цели незаметно для теста, глядящего в одну точку.
+    const bounties = [
+      ...UNIT_TYPES.map((unitType) => UNIT_STATS[unitType].cost),
+      ...BUILDABLE_KINDS.map((kind) => STRUCTURE_STATS[kind].cost),
+      GENERAL_KILL_REWARD,
+    ];
+
+    for (const bounty of bounties) {
+      expect(applyPpm(bounty, TOWER_KILL_BOUNTY_PPM)).toBeLessThan(bounty);
+    }
   });
 });
 
