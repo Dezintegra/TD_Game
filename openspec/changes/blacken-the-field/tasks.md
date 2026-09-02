@@ -10,21 +10,21 @@
 
 ## 1. Поверхность поля становится чёрной
 
-- [ ] 1.1 `packages/ui/src/tokens.css`: токен `--td-field-surface: #000`
+- [x] 1.1 `packages/ui/src/tokens.css`: токен `--td-field-surface: #000`
       в разделе игровой семантики поля, с комментарием — зачем отдельный
       от `--td-bg-page` и почему именно ноль (на сером подложке отражение
       неразличимо).
-- [ ] 1.2 `terrain.ts`: `TerrainColors` получает поле `surface`;
+- [x] 1.2 `terrain.ts`: `TerrainColors` получает поле `surface`;
       `drawGround` разъезжается на `drawField` (заливка по четырём
       спроецированным углам карты плюс линия границы) и `drawGrid`
       (только сетка).
-- [ ] 1.3 `scene.ts`: два `Graphics` земли вместо одного, поверхность
+- [x] 1.3 `scene.ts`: два `Graphics` земли вместо одного, поверхность
       ниже сетки; `readTerrainColors` читает новый токен.
-- [ ] 1.4 `scene.ts`: цвет поверхности у отражений — `readEntityColors`,
+- [x] 1.4 `scene.ts`: цвет поверхности у отражений — `readEntityColors`,
       `readMachineColors`, `readStructureColors` берут
       `--td-field-surface` вместо `--td-bg-page`; комментарии про «цвет
       фона сцены» переписать, они станут неверными.
-- [ ] 1.5 Тесты `terrain.test.ts` (новый файл, заглушка `Graphics` — как
+- [x] 1.5 Тесты `terrain.test.ts` (новый файл, заглушка `Graphics` — как
       в `minimap.test.ts`): заливка поверхности ровно одна; её вершины
       совпадают с проекцией углов карты; `drawField` не рисует линий
       сетки, `drawGrid` не делает заливок.

@@ -5,7 +5,7 @@ import { cellIndex, cellX, cellY } from '@td/sim';
 import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } from './camera.js';
 import type { Camera } from './camera.js';
-import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
+import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid } from './terrain.js';
 import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
 import { ARMOUR_SUPERSAMPLE, armourBakeDensity, rockBakeDensity } from './bake-density.js';
 import type { TerrainColors } from './terrain.js';
@@ -215,6 +215,7 @@ const sizeToken = (name: string, fallback: number): number => {
 };
 
 const readTerrainColors = (): TerrainColors => ({
+  surface: token('--td-field-surface', 0x000000),
   grid: token('--td-border-subtle', 0x3a3a3a),
   gridMajor: token('--td-border-control', 0x4d4d4d),
   rock: token('--td-rock', 0x6e6a63),
@@ -255,7 +256,10 @@ const readMachineColors = (): MachineSpriteColors => ({
   // Небо то же, что подсвечивает скалы: разный подсвет у соседних
   // предметов читается ошибкой.
   sky: token('--td-rock-sky', 0x5c7ea8),
-  ground: token('--td-bg-page', 0x191919),
+  // Цвет поверхности поля, а НЕ фона страницы: отражение приглушается
+  // до цвета земли, и земля под машиной — чёрное зеркало. Возьми мы здесь
+  // фон, отражение легло бы на чёрное поле серым пятном.
+  ground: token('--td-field-surface', 0x000000),
 });
 
 /**
@@ -277,15 +281,18 @@ const readStructureColors = (): StructureSpriteColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
   sky: token('--td-rock-sky', 0x5c7ea8),
-  ground: token('--td-bg-page', 0x191919),
+  // Тот же цвет поверхности поля, что у машин: постройка и танк стоят
+  // на одной земле, и разойдись их «цвет земли» — разошлись бы и тени.
+  ground: token('--td-field-surface', 0x000000),
 });
 
 const readEntityColors = (): EntityColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
-  // Цвет поверхности — тот же, которым залит фон сцены. Земля рисуется
-  // линиями и заливок не имеет, поэтому под отражением всегда именно он.
-  ground: token('--td-bg-page', 0x191919),
+  // Цвет поверхности поля. Земля теперь залита им сплошь, и отражение
+  // ложится именно на него, а не на фон страницы: фон виден только
+  // за границами карты.
+  ground: token('--td-field-surface', 0x000000),
   health: token('--td-health-full', 0x00ff29),
   healthLow: token('--td-health-low', 0xff5c5c),
   beacon: token('--td-beacon', 0xff3b30),
@@ -602,8 +609,12 @@ export const createScene = (renderer: RendererHost): Scene => {
   const worldContainer = new Container();
   shakeContainer.addChild(worldContainer);
 
-  const groundGraphics = new Graphics();
-  worldContainer.addChild(groundGraphics);
+  // Земля двумя слоями: поверхность видна всегда, сетка — только
+  // в режиме строительства. Порядок именно такой: линии сетки лежат
+  // НА земле, но ниже всего остального — перечёркивать ими машины нельзя.
+  const fieldGraphics = new Graphics();
+  const gridGraphics = new Graphics();
+  worldContainer.addChild(fieldGraphics, gridGraphics);
 
   // Слоёв получается около четырёхсот. Это дёшево: пустой Graphics ничего
   // не рисует, а обход четырёхсот детей на кадр не измеряется. Заливок
@@ -995,7 +1006,11 @@ export const createScene = (renderer: RendererHost): Scene => {
 
       // Дешёвое делается сразу: земля — одна заливка, миникарта — обход
       // клеток без запекания. Игрок видит поле и свою карту немедленно.
-      drawGround(groundGraphics, terrainColors);
+      //
+      // Оба слоя земли строятся ЗДЕСЬ и больше не перестраиваются никогда:
+      // сетка прячется видимостью слоя, а не отсутствием геометрии.
+      drawField(fieldGraphics, terrainColors);
+      drawGrid(gridGraphics, terrainColors);
       drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
 
       // Скалы — нет. Их запекание стоит около полутора секунд, и одним
