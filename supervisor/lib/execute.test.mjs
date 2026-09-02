@@ -208,6 +208,24 @@ function fakeIo(over = {}) {
     deleteBranch: () => ({ ok: true }),
     deleteRemoteBranch: () => ({ ok: true }),
 
+    // Исход этапа, осиротевшего при смене супервизора. Он живёт очередью
+    // в супервизоре, а не на диске: писать на доску вправе только исполнение.
+    readOrphan: (taskId, stage) =>
+      'orphan' in over
+        ? over.orphan
+        : {
+            taskId,
+            stage,
+            pid: 29704,
+            startedAt: '2026-08-26T11:00:00+03:00',
+            outcome: 'gone',
+            why: 'процесс кончился сам',
+          },
+    forgetOrphan(taskId, stage) {
+      steps.push(`исход сироты ${taskId}:${stage} забыт`);
+      return true;
+    },
+
     allTaskIds: () => [...tasks.keys()],
     readReport: (id, stage) => over.report ?? { taskId: id, stage, outcome: 'done' },
     removeReport(id, stage) {
@@ -221,6 +239,66 @@ function fakeIo(over = {}) {
 }
 
 const startAction = { kind: 'start-stage', taskId: '0001-one', stage: 'design' };
+
+describe('исход осиротевшего этапа', () => {
+  const noteAction = { kind: 'note-orphan', taskId: '0001-one', stage: 'implement' };
+
+  it('дописывается в журнал, не трогая саму задачу', async () => {
+    // Задача 0070: два изменения одной задачи в один оборот делаются
+    // по одному снимку доски, и второе затирает первое. А запись об исходе
+    // и выдача сессии попадают в один оборот по построению.
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('done');
+    expect(io.steps).toContain('дописан журнал 0001-one');
+    expect(io.steps.filter((step) => step.startsWith('записана задача'))).toEqual([]);
+    expect(io.tasks.get('0001-one')).toMatchObject({ status: 'implement', history: [] });
+  });
+
+  it('запись называет процесс, потерянный отчёт и ветку', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([noteAction], io);
+
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('29704');
+    expect(journal).toContain('осиротел');
+    expect(journal).toContain('Отчёт этого захода потерян');
+    expect(journal).toContain('в ветке задачи');
+  });
+
+  it('исход забывается только после удавшейся записи', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([noteAction], io);
+
+    const written = io.steps.indexOf('дописан журнал 0001-one');
+    const forgotten = io.steps.indexOf('исход сироты 0001-one:implement забыт');
+    expect(written).toBeGreaterThanOrEqual(0);
+    expect(forgotten).toBeGreaterThan(written);
+  });
+
+  it('неудачная запись исход из очереди не убирает', async () => {
+    // Дескриптор при этом остаётся на диске, и следующий оборот пробует
+    // снова: повторная запись стоит одного лишнего комментария, потерянная —
+    // необъяснимого провала в журнале задачи.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      amend: { ok: false, outcome: 'offline' },
+    });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('failed');
+    expect(io.steps).not.toContain('исход сироты 0001-one:implement забыт');
+  });
+
+  it('исхода уже нет — действие пропускается без записи', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })], orphan: null });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('skipped');
+    expect(io.steps).toEqual([]);
+  });
+});
 
 describe('взятие задачи в работу', () => {
   it('захват отправляется раньше заведения дерева', async () => {

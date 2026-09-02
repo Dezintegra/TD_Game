@@ -532,6 +532,61 @@ async function continueStage(action, io) {
   return { result: 'done', status: task.status };
 }
 
+/**
+ * Записать в журнал задачи исход этапа, осиротевшего при смене супервизора.
+ *
+ * Пишется ЖУРНАЛ, и только он: ни состояния, ни счётчиков, ни положения
+ * в очереди запись не меняет. Причина не в осторожности, а в задаче 0070 —
+ * два изменения одной задачи в один оборот делаются по одному и тому же
+ * снимку доски, и второе затирает первое. А `note-orphan` и `continue-stage`
+ * попадают в один оборот по построению: сирота кончился, значит этапу тут же
+ * нужна сессия. `amendTask` полей задачи не трогает, и затирать ему нечего.
+ */
+async function noteOrphan(action, io) {
+  const outcome = io.readOrphan?.(action.taskId, action.stage);
+  if (!outcome) return { result: 'skipped', why: 'исход осиротевшего этапа уже записан' };
+
+  const written = await io.amendTask(
+    action.taskId,
+    orphanRecord(outcome),
+    `chore(backlog): ${action.taskId} исход осиротевшего этапа ${action.stage}`,
+    'supervisor',
+  );
+  // Исход снимается с очереди — а с ним и дескриптор с диска — только после
+  // удавшейся записи. Обрыв оставляет и то и другое на месте, и следующий
+  // оборот пробует снова.
+  if (!written.ok) return { result: 'failed', why: written.outcome };
+  io.forgetOrphan?.(action.taskId, action.stage);
+  return { result: 'done' };
+}
+
+/** Чем кончился осиротевший процесс — теми словами, какими это видел наблюдатель. */
+const ORPHAN_END = {
+  gone: 'процесс кончился сам',
+  stale: 'номер процесса занял посторонний: снимать его было нельзя',
+  killed: 'процесс снят поддеревом по истечении своего срока',
+  left: 'опознать процесс не удалось, и он оставлен работать',
+};
+
+/**
+ * Запись об осиротевшем этапе.
+ *
+ * Она обязана отвечать на вопрос следующей сессии и разбора: почему заход
+ * не дал ничего. Поэтому в ней и номер процесса, и отметка начала — по ним
+ * ищут журнал этапа, — и прямо сказанное «отчёт потерян, сделанное ищите
+ * в ветке»: коммит в отправленной ветке потерю отчёта переживает.
+ */
+function orphanRecord(outcome) {
+  return (
+    `**Этап «${outcome.stage}» осиротел при смене супервизора**\n\n` +
+    `Процесс ${outcome.pid}, начатый ${outcome.startedAt}, порождён прежним ` +
+    `супервизором и пережил его. ${ORPHAN_END[outcome.outcome] ?? outcome.why}.\n\n` +
+    'Отчёт этого захода потерян: он приходит стандартным выводом, а тот был ' +
+    'трубой в умерший процесс. Сделанное, если оно было, лежит в ветке задачи — ' +
+    'ищите его коммитами, а не по этой записи.\n'
+  );
+}
+
 /** Разобрать ответ владельца продукта и вернуть задачу в работу. */
 async function answerQuestion(action, io) {
   const task = io.readTask(action.taskId);
@@ -810,6 +865,7 @@ const HANDLERS = {
   cleanup: cleanupTask,
   'transfer-report': transferReport,
   'start-stage': startStage,
+  'note-orphan': noteOrphan,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
   'return-task': returnTask,
