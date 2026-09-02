@@ -28,12 +28,12 @@ npx vitest run --root supervisor config/transitions.test.mjs
 
 ## 2. Открыть безопасный осмотр инструмента
 
-- [ ] Добавить в `allow` четыре правила точной формой:
+- [x] Добавить в `allow` четыре правила точной формой:
       `Bash(node supervisor/bin/launch.mjs --help)`,
       `PowerShell(node supervisor/bin/launch.mjs --help)`,
       `Bash(node supervisor/bin/board-setup.mjs)`,
       `PowerShell(node supervisor/bin/board-setup.mjs)`.
-- [ ] Завести в файле `$binNote` — почему открыты два сценария поимённо,
+- [x] Завести в файле `$binNote` — почему открыты два сценария поимённо,
       а не `node supervisor/bin/*`, и что именно открыла бы широкая форма.
 
 **Проверка:** прогон сторожей. Плюс живая проба самой команды:
