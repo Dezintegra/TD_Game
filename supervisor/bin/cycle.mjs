@@ -53,7 +53,15 @@ function loadConfig() {
 
 function runCommand(args, program = 'git') {
   try {
-    const stdout = execFileSync(program, args, { cwd: root, encoding: 'utf8', stdio: 'pipe' });
+    // `windowsHide` прячет консольное окно потомка. Без него каждый вызов
+    // git из супервизора, запущенного в фоне, вспыхивает отдельным окном
+    // и забирает фокус — а вызовов этих десятки за оборот.
+    const stdout = execFileSync(program, args, {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: 'pipe',
+      windowsHide: true,
+    });
     return { code: 0, stdout, stderr: '' };
   } catch (error) {
     return { code: error.status ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
