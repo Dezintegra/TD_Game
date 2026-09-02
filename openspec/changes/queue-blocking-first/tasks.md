@@ -24,6 +24,6 @@
 
 ## 3. Документы
 
-- [ ] 3.1 Сказать в `manage/README.md` и `supervisor/skills/postmortem.md`,
+- [x] 3.1 Сказать в `manage/README.md` и `supervisor/skills/postmortem.md`,
       что блокирующая заявка встаёт первой в очереди. Проверяемо:
       `npx prettier --check` по обоим файлам зелёный
