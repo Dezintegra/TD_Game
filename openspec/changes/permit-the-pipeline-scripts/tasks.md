@@ -44,7 +44,7 @@ npx vitest run --root supervisor config/transitions.test.mjs
 
 ## 3. Закрыть подъём и снятие супервизора поимённо
 
-- [ ] Добавить в `deny` (обе оболочки):
+- [x] Добавить в `deny` (обе оболочки):
       `node supervisor/bin/supervise.mjs:*`,
       `node supervisor/bin/launch.mjs --stop:*`,
       `node supervisor/bin/launch.mjs * --stop:*`,
@@ -52,9 +52,9 @@ npx vitest run --root supervisor config/transitions.test.mjs
       `node supervisor/bin/launch.mjs --dry-run:*`,
       `node supervisor/bin/board-setup.mjs --execute:*`,
       `node supervisor/bin/backlog-migrate.mjs:*`.
-- [ ] Дописать в `$denyNote`, почему `--stop` опаснее подъёма: пускатель
+- [x] Дописать в `$denyNote`, почему `--stop` опаснее подъёма: пускатель
       снимает поддерево, а этап — потомок супервизора, то есть снимает себя.
-- [ ] Убедиться глазами и словами в теле коммита, что **ни один** новый
+- [x] Убедиться глазами и словами в теле коммита, что **ни один** новый
       запрет не является приставкой ни одного разрешения (грабли `$cleanupNote`:
       запрет, перекрывший своё же разрешение, отнял у этапа отчёт).
 
