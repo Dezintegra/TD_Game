@@ -11,6 +11,7 @@ import {
   resetAttempts,
 } from './task-file.mjs';
 import { judgeDenials } from './denials.mjs';
+import { pipelineCause, recoveryFrom } from './recovery.mjs';
 import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
@@ -161,11 +162,27 @@ async function transferReport(action, io) {
     // блокирующей заявки. Право заводить работу мимо шлюза кандидатов есть
     // только у разбора ошибки.
     sourceStage: task.status,
+    // Разбор, назвавший причину конвейерной, заводит конвейерные заявки.
+    pipelineCause: pipelineCause(report),
   });
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
     plan.notes = [...(plan.notes ?? []), `заявка отклонена: ${bad.problems.join('; ')}`];
+  }
+
+  // Вердикт удавшегося разбора едет в саму задачу: по нему сканер потом
+  // решает, возвращать ли её из ошибки и когда. Идентификаторы конвейерных
+  // починок известны уже здесь — до записи, — и разбору знать их не нужно.
+  if (task.status === 'postmortem' && verdict.status === 'failed' && report.outcome === 'done') {
+    const judged = recoveryFrom(report, {
+      task: next,
+      created: plan.planned.filter((born) => born.area === 'pipeline').map((born) => born.id),
+      known: io.allTaskIds(),
+      maxReturns: io.maxAutoReturns,
+    });
+    next = { ...next, recovery: judged.recovery };
+    plan.notes = [...(plan.notes ?? []), ...judged.notes];
   }
 
   // Дополнения разбираются здесь же и по тем же правилам: одна негодная

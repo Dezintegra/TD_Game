@@ -85,6 +85,14 @@ describe('пределы попыток', () => {
     expect(config.maxSpawnFailures).toBe(1);
     expect(config.maxContinuations).toBe(DEFAULTS.maxContinuations);
   });
+
+  it('автоматических возвратов из ошибки по умолчанию два', () => {
+    // Цена ошибки разбора: два возврата ограничивают потерю двумя сессиями
+    // упавшего этапа и двумя разборами, а третье падение подряд смотрит человек.
+    const { config } = resolveConfig({});
+    expect(config.maxAutoReturns).toBe(2);
+    expect(resolveConfig({ maxAutoReturns: 0 }).config.maxAutoReturns).toBe(0);
+  });
 });
 
 describe('доска в умолчаниях', () => {

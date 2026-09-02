@@ -89,7 +89,10 @@ export function nextId(existingIds, title) {
  * Негодную заявку лучше отвергнуть с причиной, чем завести задачу, которую
  * никто не сможет истолковать.
  */
-export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }) {
+export function taskFromRequest(
+  request,
+  { id, now, sourceId, mayQueue = false, pipelineByDefault = false },
+) {
   const problems = [];
 
   const type = ['feature', 'run', 'note'].includes(request?.type) ? request.type : null;
@@ -120,7 +123,10 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
   // Признак отвечает на другой вопрос, чем `blocking`: не «насколько
   // горит», а «в чьей зоне». Поэтому право на него есть у любого этапа,
   // и проверяется он так же строго — только это слово.
-  const pipeline = request.area === 'pipeline';
+  //
+  // `pipelineByDefault` приносит разбор ошибки, назвавший причину
+  // конвейерной: тогда конвейерны и все его заявки, даже без признака.
+  const pipeline = request.area === 'pipeline' || pipelineByDefault;
 
   // Право метить заявку блокирующей есть не у всякого этапа: `mayQueue`
   // спрашивается у того, кто разбирает отчёт, — иначе шлюз кандидатов
@@ -201,7 +207,10 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
  * Идентификаторы выдаются заранее и все разом: они нужны, чтобы связать
  * порождённые задачи с породившей ещё до того, как хоть одна записана.
  */
-export function planRequests(requests, { existingIds, now, sourceId, sourceStage = null }) {
+export function planRequests(
+  requests,
+  { existingIds, now, sourceId, sourceStage = null, pipelineCause = false },
+) {
   const planned = [];
   const rejected = [];
   const taken = [...existingIds];
@@ -211,9 +220,20 @@ export function planRequests(requests, { existingIds, now, sourceId, sourceStage
   // конвейер встал.
   const mayQueue = sourceStage === 'postmortem';
 
+  // Разбор, назвавший причину конвейерной, подаёт конвейерные заявки:
+  // иначе задача вернулась бы сразу, а починка ждала бы человека
+  // в кандидатах, и падение повторилось бы на ровном месте.
+  const pipelineByDefault = mayQueue && pipelineCause;
+
   for (const request of requests ?? []) {
     const id = nextId(taken, request?.title ?? 'zadacha');
-    const { task, problems } = taskFromRequest(request, { id, now, sourceId, mayQueue });
+    const { task, problems } = taskFromRequest(request, {
+      id,
+      now,
+      sourceId,
+      mayQueue,
+      pipelineByDefault,
+    });
     if (!task) {
       rejected.push({ request, problems });
       continue;

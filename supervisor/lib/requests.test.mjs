@@ -242,6 +242,28 @@ describe('причина в конвейере', () => {
     const { planned } = plan([request()], 'implement');
     expect(planned[0]).not.toHaveProperty('area');
   });
+
+  it('разбор с причиной в конвейере делает конвейерными все свои заявки', () => {
+    // Отчёт с причиной в конвейере и починкой в кандидатах противоречил бы
+    // сам себе: задача вернулась бы сразу, а починка ждала бы человека.
+    const { planned } = planRequests([request()], {
+      existingIds: [],
+      now: NOW,
+      sourceStage: 'postmortem',
+      pipelineCause: true,
+    });
+    expect(planned[0]).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+  });
+
+  it('тот же признак с прочих этапов не слушается', () => {
+    const { planned } = planRequests([request()], {
+      existingIds: [],
+      now: NOW,
+      sourceStage: 'triage',
+      pipelineCause: true,
+    });
+    expect(planned[0].status).toBe('candidate');
+  });
 });
 
 describe('дополнение существующей задачи', () => {
