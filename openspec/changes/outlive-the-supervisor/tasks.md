@@ -24,16 +24,16 @@ npx prettier --check supervisor/lib/<файл>.mjs
 
 ## 1. Опознание процесса: спросить систему об имени образа
 
-- [ ] В `supervisor/lib/run-stage.mjs` завести `createProbeProcess(run, platform)`
+- [x] В `supervisor/lib/run-stage.mjs` завести `createProbeProcess(run, platform)`
       по образцу `createKillTree` (`run-stage.mjs:309`): возвращает
       `(pid) => ({ known, alive, image })`.
-- [ ] Windows: `tasklist /FI "PID eq <pid>" /NH /FO CSV`, имя образа —
+- [x] Windows: `tasklist /FI "PID eq <pid>" /NH /FO CSV`, имя образа —
       первое поле CSV. Ответ «нет такого процесса» приходит текстом,
       а не кодом возврата: строку, не начинающуюся с кавычки, читать
       как «процесса нет».
-- [ ] Прочие системы: `ps -p <pid> -o comm=`, ненулевой код возврата —
+- [x] Прочие системы: `ps -p <pid> -o comm=`, ненулевой код возврата —
       «процесса нет».
-- [ ] Неудача самой команды (нет `tasklist`, вывод не разобрался) даёт
+- [x] Неудача самой команды (нет `tasklist`, вывод не разобрался) даёт
       `known: false` — «спросить не удалось», и это НЕ равно «процесса нет».
 
 **Проверка:** `npx vitest run --root supervisor lib/run-stage.test.mjs` —
@@ -50,28 +50,31 @@ gh pr create --draft --base main --title "Идущий этап пережива
 
 ## 2. Дескриптор живого этапа ложится на диск и стирается
 
-- [ ] `createSupervisor` принимает довод `probe` — тот самый
+- [x] `createSupervisor` принимает довод `probe` — тот самый
       `createProbeProcess` из шага 1; `supervisor/bin/supervise.mjs`
       собирает его из `runCommand` и передаёт вместе с
       `machine: hostname()` и `supervisorPid: process.pid`.
-- [ ] В `supervisor/lib/supervisor.mjs` при удавшемся порождении писать
+- [x] В `supervisor/lib/supervisor.mjs` при удавшемся порождении писать
       в `known[at]` поле
       `live: { pid, image, machine, supervisorPid, startedAt, timeoutMs }`
       и звать `saveStages`. Писать **после** проверки `handle.pid`
       (`supervisor.mjs:189`): у процесса без номера дескриптора быть не должно.
-- [ ] **Имя образа спрашивается у системы прямо при рождении** — вызовом
+      Отметок времени в дескрипторе вышло две — `startedAt` строкой для
+      записи в журнал задачи и `startedMs` числом для счёта срока, — ровно
+      как у дескриптора собственного ребёнка.
+- [x] **Имя образа спрашивается у системы прямо при рождении** — вызовом
       `probe(handle.pid)` сразу после проверки номера, — и кладётся полем
       `image`. Из настройки `claudeCommand` оно не выводится: почему
       именно так, сказано в `design.md`, Решение 2.
-- [ ] Опросить не удалось (`known: false`) либо `probe` не передан —
+- [x] Опросить не удалось (`known: false`) либо `probe` не передан —
       `live` пишется **без** `image`, причина уходит в `log`. Дескриптор
       без `image` не ломает запись: судьба такого сироты разобрана
       шагами 3 и 4 как «жив, но неопознан».
-- [ ] В `finish` стирать `live` и звать `saveStages` — при любом исходе,
+- [x] В `finish` стирать `live` и звать `saveStages` — при любом исходе,
       включая снятие по сроку и неразобравшийся отчёт.
-- [ ] `remembered` (`supervisor.mjs:404`) научить переносить `live`,
+- [x] `remembered` (`supervisor.mjs:404`) научить переносить `live`,
       сохранив терпимость к записи-строке прежней раскладки.
-- [ ] Имя станции и номер супервизора приходят доводами `machine`
+- [x] Имя станции и номер супервизора приходят доводами `machine`
       и `supervisorPid`, а не читаются из `node:os` внутри: счётная часть
       супервизора уже принимает так же и часы, и порождение.
 
