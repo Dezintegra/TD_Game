@@ -34,12 +34,12 @@
 
 ## 2. Сетка показывается только в режиме строительства
 
-- [ ] 2.1 `terrain.ts`: `showGrid(grid, building)` — выставляет `visible`
+- [x] 2.1 `terrain.ts`: `showGrid(grid, building)` — выставляет `visible`
       у слоя сетки и не делает ничего больше. `scene.ts`: в `render`
       зовётся только она, `gridGraphics` в `render` иначе не трогается.
       Никакого перестроения; счётчик `terrainRebuildCount` при смене
       режима не растёт.
-- [ ] 2.2 Тест в `terrain.test.ts`: заглушка `Graphics`, запоминающая
+- [x] 2.2 Тест в `terrain.test.ts`: заглушка `Graphics`, запоминающая
       **все** вызовы (та же, что в `minimap.test.ts`, с добавленным полем
       `visible`). Сто переключений `showGrid` подряд — в заглушке
       не осталось ни одного вызова рисования (`clear`, `moveTo`, `lineTo`,

@@ -5,7 +5,7 @@ import { cellIndex, cellX, cellY } from '@td/sim';
 import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } from './camera.js';
 import type { Camera } from './camera.js';
-import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid } from './terrain.js';
+import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid, showGrid } from './terrain.js';
 import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
 import { ARMOUR_SUPERSAMPLE, armourBakeDensity, rockBakeDensity } from './bake-density.js';
 import type { TerrainColors } from './terrain.js';
@@ -616,6 +616,11 @@ export const createScene = (renderer: RendererHost): Scene => {
   const gridGraphics = new Graphics();
   worldContainer.addChild(fieldGraphics, gridGraphics);
 
+  // Сетка спрятана до первого кадра. Иначе она успела бы мелькнуть между
+  // построением земли и первым `render`: карта приходит раньше кадра,
+  // а режим строительства в начале матча выключен.
+  showGrid(gridGraphics, false);
+
   // Слоёв получается около четырёхсот. Это дёшево: пустой Graphics ничего
   // не рисует, а обход четырёхсот детей на кадр не измеряется. Заливок
   // при этом не прибавляется ни одной — они просто разъехались по разным
@@ -1101,6 +1106,13 @@ export const createScene = (renderer: RendererHost): Scene => {
 
     render(world, localPlayer, intent) {
       clearEntityLayers();
+
+      // Сетка нужна только тому, кто ставит постройку: в бою она дробит
+      // поле и мешает читать его с одного взгляда. Здесь ровно одна
+      // строка — выставленная видимость готового слоя, — и это осознанно:
+      // всё остальное, что могло бы тут случиться, было бы перестроением
+      // территории на кадре.
+      showGrid(gridGraphics, intent.building);
 
       // Дробный номер тика: мир идёт тридцать раз в секунду, кадров вдвое
       // больше, и эффект, посчитанный от целого номера, дёргался бы через

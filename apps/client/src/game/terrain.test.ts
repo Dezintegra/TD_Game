@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MAP_HEIGHT_CELLS, MAP_WIDTH_CELLS } from '@td/shared';
 import type { Graphics } from 'pixi.js';
-import { drawField, drawGrid } from './terrain.js';
+import { drawField, drawGrid, showGrid } from './terrain.js';
 import type { TerrainColors } from './terrain.js';
 import { worldToScreen } from './iso.js';
 
@@ -150,5 +150,36 @@ describe('сетка клеток', () => {
     drawGrid(graphics, colors);
 
     expect(calls[0]?.name).toBe('clear');
+  });
+});
+
+describe('переключение сетки по режиму строительства', () => {
+  it('следует за режимом', () => {
+    const { graphics } = tracing();
+
+    showGrid(graphics, true);
+    expect(graphics.visible).toBe(true);
+
+    showGrid(graphics, false);
+    expect(graphics.visible).toBe(false);
+  });
+
+  it('сто переключений не перестраивают территорию', () => {
+    // Это и есть проверка требования «смена режима не вызывает
+    // перестроения». Защищает она полуторасекундное запекание скал:
+    // перестроение геометрии территории по нажатию клавиши разбудило бы
+    // его жестом, и заметили бы это не тестом, а провалом кадров.
+    //
+    // Считаются ВСЕ вызовы заглушки, а не только формы: «ничего не рисует»
+    // иначе не проверить — очистка слоя формы не создаёт, а работу делает.
+    const { graphics, calls } = tracing();
+    drawGrid(graphics, colors);
+    const afterBuild = calls.length;
+
+    for (let step = 0; step < 100; step += 1) showGrid(graphics, step % 2 === 0);
+
+    expect(calls).toHaveLength(afterBuild);
+    // Последним был шаг 99, то есть выключение.
+    expect(graphics.visible).toBe(false);
   });
 });
