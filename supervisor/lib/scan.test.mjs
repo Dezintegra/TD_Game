@@ -470,6 +470,44 @@ describe('этапы без живого процесса', () => {
     expect(result.notes.join()).toContain('исчерпаны');
   });
 
+  it('исчерпанные запуски останавливают задачу своей причиной', () => {
+    // «Продолжения исчерпаны» здесь было бы прямой ложью: сессии не было
+    // ни одной, и разбор пошёл бы читать её лог, которого нет. Так уже
+    // погибли 0043, 0062, 0022 и 0088.
+    const result = run({
+      tasks: [
+        task({
+          id: '0001-one',
+          status: 'design',
+          attempts: { continuations: 0, cycleFailures: 0, spawnFailures: 3 },
+        }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [],
+    });
+    const [stop] = result.actions.filter((action) => action.kind === 'fail-stage');
+
+    expect(stop.reason).toContain('этап не порождается');
+    expect(stop.reason).not.toContain('продолжения исчерпаны');
+    expect(kinds(result)).not.toContain('continue-stage');
+  });
+
+  it('непустой, но не исчерпанный счёт запусков сессии не мешает', () => {
+    const result = run({
+      tasks: [
+        task({
+          id: '0001-one',
+          status: 'design',
+          attempts: { continuations: 0, cycleFailures: 0, spawnFailures: 2 },
+        }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(kinds(result)).not.toContain('fail-stage');
+  });
+
   it('при занятом единственном месте сессию не просят вовсе', () => {
     // Просить и получать отказ каждые пять минут — значит наполнить журнал
     // цикла строкой, которая при исправной работе означает беду. Прочитанной

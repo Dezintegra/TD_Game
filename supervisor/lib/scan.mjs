@@ -300,6 +300,19 @@ export function scan(state) {
       continue;
     }
 
+    // Причина названа уровнем поломки, а не последствием. «Продолжения
+    // исчерпаны» здесь было бы прямой ложью: сессии не было ни одной,
+    // и разбор, поверив, пошёл бы читать её лог, которого нет.
+    const spawnFailures = task.attempts?.spawnFailures ?? 0;
+    if (spawnFailures >= config.maxSpawnFailures) {
+      const why =
+        `этап не порождается: запуск не состоялся ${spawnFailures} раз подряд, ` +
+        'причины — в журнале задачи';
+      notes.push(`задача ${task.id}: ${why}`);
+      actions.push({ kind: 'fail-stage', taskId: task.id, stage: task.status, reason: why });
+      continue;
+    }
+
     waitingForSession.push(task);
   }
 

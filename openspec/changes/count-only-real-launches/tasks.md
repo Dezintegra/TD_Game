@@ -95,17 +95,17 @@
 
 ## 6. Предел несостоявшихся запусков и своя причина остановки
 
-- [ ] `supervisor/config/defaults.mjs`: `maxSpawnFailures: 3`
+- [x] `supervisor/config/defaults.mjs`: `maxSpawnFailures: 3`
       с объяснением, почему предел не общий с продолжениями.
-- [ ] `supervisor/lib/scan.mjs`: при достижении предела — `fail-stage`
+- [x] `supervisor/lib/scan.mjs`: при достижении предела — `fail-stage`
       с причиной «этап не порождается: запуск не состоялся N раз подряд,
       причины — в журнале задачи», и замечание в журнал цикла той же
       формулировкой.
-- [ ] Тесты в `supervisor/lib/scan.test.mjs`: при исчерпанных
+- [x] Тесты в `supervisor/lib/scan.test.mjs`: при исчерпанных
       `spawnFailures` назначается `fail-stage`, и его причина не содержит
       слов «продолжения исчерпаны»; при непустом, но не исчерпанном счёте
       задача по-прежнему получает сессию.
-- [ ] Тест в `supervisor/config/defaults.test.mjs`: значение попадает
+- [x] Тест в `supervisor/config/defaults.test.mjs`: значение попадает
       в слитую настройку и переопределяется настройкой проекта.
 
 **Проверка:** `npx vitest run --root supervisor lib/scan.test.mjs config/defaults.test.mjs`
