@@ -137,6 +137,38 @@ describe('блокирующая причина', () => {
     }
   });
 
+  it('признак едет дальше самой задачей и проходит схему', () => {
+    // Хранилище ставит блокирующую задачу первой в очереди и узнаёт её
+    // по этому полю. Пока признак терялся здесь, задача миновала
+    // кандидатов, но вставала в конец «Заведено» и ждала всю очередь.
+    const { planned } = planRequests([blocking], {
+      existingIds: [],
+      now: NOW,
+      sourceId: '0001-one',
+      sourceStage: 'postmortem',
+    });
+    expect(planned[0].blocking).toBe(true);
+    expect(validateTask(planned[0], schema)).toEqual([]);
+  });
+
+  it('у прочих задач поля нет вовсе, а не false', () => {
+    // Отсутствие и есть «обычная»: записи без поля состав не меняют,
+    // и ни одна проверка, сверяющая задачу целиком, не должна узнать
+    // о признаке против воли.
+    const cases = [
+      { requests: [request()], sourceStage: 'postmortem' },
+      { requests: [blocking], sourceStage: 'triage' },
+      {
+        requests: [request({ type: 'run', run: { kind: 'arena', expectation: 'равные доли' } })],
+        sourceStage: 'postmortem',
+      },
+    ];
+    for (const { requests, sourceStage } of cases) {
+      const { planned } = planRequests(requests, { existingIds: [], now: NOW, sourceStage });
+      expect(planned[0], sourceStage).not.toHaveProperty('blocking');
+    }
+  });
+
   it('разбор без метки заводит кандидата, как и все', () => {
     const { planned } = planRequests([request()], {
       existingIds: [],
