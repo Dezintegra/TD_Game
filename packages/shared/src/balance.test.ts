@@ -31,6 +31,7 @@ import {
   ShotSide,
   ShotWeapon,
   StructureKind,
+  TOWER_KILL_BOUNTY_PPM,
   UNIT_SEPARATION_RADIUS,
   UNIT_STATS,
   UNIT_TYPES,
@@ -283,6 +284,22 @@ describe('баланс: дальность генерала', () => {
     const perTick = assault.cost / (shots * GENERAL_STATS.cooldownTicks);
 
     expect(perTick).toBeLessThan(BASE_INCOME_PER_TICK);
+  });
+});
+
+describe('баланс: награда постройке за убийство', () => {
+  it('на штурмовике доля даёт ровно пять единиц', () => {
+    // Пять — это число, названное владельцем продукта. Хранится оно
+    // долей, а не пятёркой, но обязано давать пятёрку именно там, где
+    // владелец его и представлял: на самой дешёвой машине.
+    expect(applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM)).toBe(energy(5));
+  });
+
+  it('на Тесле та же доля даёт пятьдесят: награда следует за ценой убитого', () => {
+    // Ради этого доля и заведена долей. Плоская пятёрка сделала бы
+    // убийство Теслы за 250 равным убийству штурмовика за 25, то есть
+    // платила бы за число трупов, а не за нанесённый противнику ущерб.
+    expect(applyPpm(UNIT_STATS[UnitType.Tesla].cost, TOWER_KILL_BOUNTY_PPM)).toBe(energy(50));
   });
 });
 
