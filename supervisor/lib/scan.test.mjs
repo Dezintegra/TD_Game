@@ -388,8 +388,12 @@ describe('этапы без живого процесса', () => {
     });
   });
 
+  /** Настройка на два места: иначе живой чужой процесс займёт единственное. */
+  const roomy = { ...config, maxConcurrent: 2 };
+
   it('чужой живой этап своего не прикрывает', () => {
     const result = run({
+      config: roomy,
       tasks: [task({ id: '0001-one', status: 'design' })],
       registry: { entries: [entry('0001-one')] },
       running: running('0002-two', 'design'),
@@ -399,6 +403,7 @@ describe('этапы без живого процесса', () => {
 
   it('процесс прошлого этапа за нынешний не считают', () => {
     const result = run({
+      config: roomy,
       tasks: [task({ id: '0001-one', status: 'audit' })],
       registry: { entries: [entry('0001-one')] },
       running: running('0001-one', 'design'),
@@ -463,6 +468,57 @@ describe('этапы без живого процесса', () => {
     });
     expect(kinds(result)).toContain('fail-stage');
     expect(result.notes.join()).toContain('исчерпаны');
+  });
+
+  it('при занятом единственном месте сессию не просят вовсе', () => {
+    // Просить и получать отказ каждые пять минут — значит наполнить журнал
+    // цикла строкой, которая при исправной работе означает беду. Прочитанной
+    // она после этого быть перестаёт.
+    const result = run({
+      tasks: [
+        task({ id: '0001-one', status: 'review' }),
+        task({ id: '0002-run', type: 'run', status: 'benchmark' }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [{ taskId: '0002-run', stage: 'benchmark' }],
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(result.notes.join()).toContain('свободных мест нет');
+  });
+
+  it('единственное свободное место достаётся задаче поважнее', () => {
+    // Порядок чтения бэклога основанием быть не может: 02.09.2026 задача
+    // 0022 умерла на этапе review, не получив ни одной сессии, пока место
+    // держал прогон арены.
+    const result = run({
+      tasks: [
+        task({ id: '0001-idle', status: 'design', priority: 90 }),
+        task({ id: '0002-hot', status: 'design', priority: 10 }),
+      ],
+      registry: { entries: [entry('0001-idle'), entry('0002-hot')] },
+      running: [],
+    });
+    const asked = result.actions.filter((action) => action.kind === 'continue-stage');
+    expect(asked).toHaveLength(1);
+    expect(asked[0].taskId).toBe('0002-hot');
+  });
+
+  it('остановка не ждёт свободного места', () => {
+    // Иначе повторился бы случай 0022: место освободилось за три минуты
+    // до остановки, а остановка всё равно случилась.
+    const result = run({
+      tasks: [
+        task({
+          id: '0001-one',
+          status: 'design',
+          attempts: { continuations: 2, cycleFailures: 0 },
+        }),
+        task({ id: '0002-run', type: 'run', status: 'benchmark' }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [{ taskId: '0002-run', stage: 'benchmark' }],
+    });
+    expect(kinds(result)).toContain('fail-stage');
   });
 });
 
