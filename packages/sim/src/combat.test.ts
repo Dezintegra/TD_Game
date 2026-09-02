@@ -716,6 +716,61 @@ describe('награда постройке', () => {
     );
   });
 
+  it('за добитую стену платится доля цены стены, а не цены машины', () => {
+    // Добыча берётся у той же `bounty`, что платит генералу, поэтому вид
+    // убитого решает, сколько причитается. Проверка стережёт именно это:
+    // при плоской награде обе цены дали бы одно число, и подмена одной
+    // другой прошла бы незамеченной.
+    const gain = (health: number): number => {
+      const world = arrange(
+        [
+          structure(50, 0, StructureKind.TowerBasic, 0, 0, 100_000),
+          structure(51, 1, StructureKind.Wall, 1, 0, health),
+        ],
+        [],
+      );
+      const before = world.players[0]?.energy ?? 0;
+
+      return (step(world, []).players[0]?.energy ?? 0) - before;
+    };
+
+    const wall = STRUCTURE_STATS[StructureKind.Wall].cost;
+
+    expect(gain(1) - gain(100_000)).toBe(applyPpm(wall, TOWER_KILL_BOUNTY_PPM));
+    expect(applyPpm(wall, TOWER_KILL_BOUNTY_PPM)).not.toBe(
+      applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM),
+    );
+  });
+
+  it('машина не получает и доли: платят только постройке и генералу', () => {
+    // Существующая проверка «убийство юнитом награды не даёт» сравнивает
+    // прибавку с ПОЛНОЙ ценой убитого и потому зеленела бы, начни машина
+    // получать пятую часть. Здесь сравнение точное: прибавка обязана
+    // равняться одному лишь доходу тика.
+    const attacker: PlayerId = asPlayerId(0);
+    const world = arrange(
+      [],
+      [unit(60, 1, UnitType.Assault, 1, 0, 1), unit(61, attacker, UnitType.Assault, 2, 0, 100)],
+    );
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, []);
+    const control = arrange(
+      [],
+      [
+        unit(60, 1, UnitType.Assault, 1, 0, 100_000),
+        unit(61, attacker, UnitType.Assault, 2, 0, 100),
+      ],
+    );
+    const controlBefore = control.players[0]?.energy ?? 0;
+    const controlAfter = step(control, []);
+
+    expect(unitById(after, 60)).toBeUndefined();
+    expect((after.players[0]?.energy ?? 0) - before).toBe(
+      (controlAfter.players[0]?.energy ?? 0) - controlBefore,
+    );
+  });
+
   it('без гибели цели выстрел награды не приносит', () => {
     // Контроль обязан быть пустым: платят за гибель, а не за попадание.
     // Без этой проверки предыдущая сравнивала бы две одинаково щедрые
