@@ -43,7 +43,7 @@ import { createWorld } from './world.js';
 import type { PlayerState, StructureState, WorldState } from './world.js';
 import { step } from './step.js';
 import { checksum } from './checksum.js';
-import { cellAt, cellCentre, cellIndex, cellX, squaredDistanceToFootprint } from './map.js';
+import { cellAt, cellCentre, cellIndex, cellX, cellY, squaredDistanceToFootprint } from './map.js';
 import { buildOccupancy } from './occupancy.js';
 import { playerStats } from './stats.js';
 
@@ -449,6 +449,42 @@ describe('строительство', () => {
     expect(after.units[UnitType.Tesla].range).toBe(before.units[UnitType.Tesla].range);
   });
 
+  it('ни одна купленная прокачка дальность штурмовика не двигает', () => {
+    // Соседний разбор выше проверяет ветку ДАЛЬНОСТИ и только её,
+    // а проверка состава таблицы в `balance.test.ts` говорит о третьем —
+    // что ветки дальности у штурмовика в таблице нет. Ни то, ни другое
+    // не закрывает требования «никакая купленная прокачка дальность
+    // штурмовика не двигает»: завести ей рост дальности можно и сбоку,
+    // прицепив его к ветке атаки или прочности.
+    //
+    // Поэтому перебираются ВСЕ ветки штурмовика по полю `target`,
+    // а не список индексов: вставка новой ветки не должна проходить
+    // мимо этого разбора молча.
+    const world = richWorld();
+    const branches = UPGRADE_BRANCHES.map((branch, index) => ({ branch, index })).filter(
+      ({ branch }) => branch.target === UpgradeTarget.UnitAssault,
+    );
+
+    // Контроль: ветки у штурмовика вообще есть. Без него разбор
+    // сравнивал бы пустое с пустым и зеленел бы всегда.
+    expect(branches.length).toBeGreaterThan(0);
+
+    const bought = run(
+      world,
+      branches.length + 2,
+      branches.map(({ index }) => buy(0, index)),
+    );
+
+    // Купилось: иначе «дальность не изменилась» означало бы всего лишь
+    // «ничего не произошло».
+    const levels = playerOf(bought, 0).upgrades;
+    for (const { index } of branches) {
+      expect(levels[index]?.level).toBeGreaterThan(0);
+    }
+
+    expect(playerStats(playerOf(bought, 0)).units[UnitType.Assault].range).toBe(cellsToUnits(4));
+  });
+
   it('прокачка дальности действует на уже выпущенных юнитов', () => {
     // Характеристики считаются из состояния игрока каждый тик, а не
     // запоминаются юнитом при рождении, — но проверить это надо, а не
@@ -538,26 +574,42 @@ describe('строительство', () => {
     ]);
     const centre = cellCentre(cell);
 
-    const doomed: WorldState = {
-      ...built,
-      structures: built.structures.map((s) => (s.cell === cell ? { ...s, health: 1 } : s)),
-      units: [
-        {
-          id: asEntityId(500),
-          owner: asPlayerId(1),
-          unitType: UnitType.Assault,
-          // Две клетки от стены, а не одна. Ближе нельзя: расстояние
-          // до построек считается до основания, и с одной клетки юнит
-          // достаёт уже до самой базы, а назначенная цель важнее
-          // случайной стены — он выстрелил бы по базе.
-          position: { x: centre.x + 2000, y: centre.y },
-          health: 100,
-          facing: DIRECTION_SOUTH,
-          readyAtTick: asTickNumber(0),
-          kills: 0,
-        },
-      ],
-    };
+    const doomedWall = built.structures.find((s) => s.cell === cell);
+    expect(doomedWall).toBeDefined();
+
+    // Стена назначается стрелку целью явно.
+    //
+    // Прежде вместо этого выбиралось расстояние — две клетки, — и держалось
+    // оно на том, что с них юнит достаёт до стены, но ещё не достаёт
+    // до базы: назначенная цель важнее случайной стены, и с одной клетки
+    // он выстрелил бы по базе. Подъём дальности штурмовика до четырёх
+    // клеток этот расчёт отменил — с двух клеток база теперь тоже
+    // в радиусе, стена оставалась цела, и разбор краснел.
+    //
+    // Расстояние подбирать заново не стали: разбор здесь про то, что
+    // погибшая постройка освобождает клетку, а вовсе не про выбор цели,
+    // и привязывать его к зазору между двумя дальностями — значит
+    // ронять его при каждой правке баланса.
+    const doomed: WorldState = patchPlayer(
+      {
+        ...built,
+        structures: built.structures.map((s) => (s.cell === cell ? { ...s, health: 1 } : s)),
+        units: [
+          {
+            id: asEntityId(500),
+            owner: asPlayerId(1),
+            unitType: UnitType.Assault,
+            position: { x: centre.x + 2000, y: centre.y },
+            health: 100,
+            facing: DIRECTION_SOUTH,
+            readyAtTick: asTickNumber(0),
+            kills: 0,
+          },
+        ],
+      },
+      1,
+      { targetStructure: doomedWall?.id },
+    );
 
     const after = run(doomed, 2);
 
@@ -1252,9 +1304,31 @@ const towerAt = (
   health = 10_000,
 ) => ({ ...wallAt(cell, owner, id), kind, health });
 
+/**
+ * Дальность штурмовика в клетках, выведенная из его характеристик.
+ *
+ * Расстановки трёх разборов ниже выбраны КАК ГРАНИЦА дальности: цель
+ * стои́т впритык, ровно на пределе. Это не украшение комментария,
+ * а конструкция — цель, оказавшаяся глубоко внутри радиуса, не проверяет
+ * уже ничего и остаётся при этом зелёной, то есть портится молча. Так
+ * и вышло бы при подъёме дальности с двух клеток до четырёх, если бы
+ * расстояние осталось записанным числом.
+ *
+ * Поэтому оно выводится из таблицы характеристик: следующая правка
+ * дальности не должна повторять эту работу.
+ */
+const ASSAULT_RANGE_CELLS = UNIT_STATS[UnitType.Assault].range / cellsToUnits(1);
+
+/** Ряд, в котором стои́т мой юнит во всех трёх разборах. */
+const SHOOTER_ROW = 20;
+
+/** Ряд цели: ровно на дальности штурмовика от стрелка. */
+const TARGET_ROW = SHOOTER_ROW + ASSAULT_RANGE_CELLS;
+
 describe('остановка юнита на противнике', () => {
-  const MINE = cellIndex(20, 20);
-  const THEIRS = cellIndex(20, 22);
+  const MINE = cellIndex(20, SHOOTER_ROW);
+  /** Ровно на дальности штурмовика, то есть впритык. */
+  const THEIRS = cellIndex(20, TARGET_ROW);
 
   /** Здоровья с запасом: тест про движение, а не про то, кто кого убьёт. */
   const TOUGH = 1_000_000;
@@ -1303,9 +1377,11 @@ describe('остановка юнита на противнике', () => {
     const world = engaging(
       withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901),
     );
+    // Стена в клетке сразу перед стрелком: при любой дальности от двух
+    // клеток она оказывается МЕЖДУ ним и целью, ради чего и ставится.
     const walled: WorldState = {
       ...world,
-      structures: [...world.structures, wallAt(cellIndex(20, 21), 1, 902)],
+      structures: [...world.structures, wallAt(cellIndex(20, SHOOTER_ROW + 1), 1, 902)],
     };
 
     const after = run(walled, 4);
@@ -1332,9 +1408,9 @@ describe('остановка юнита на противнике', () => {
  * защищают, а не чинят.
  */
 describe('огонь на ходу', () => {
-  const MINE = cellIndex(20, 20);
-  /** Ровно две клетки — дальность штурмовика, то есть впритык. */
-  const THEIRS = cellIndex(20, 22);
+  const MINE = cellIndex(20, SHOOTER_ROW);
+  /** Ровно на дальности штурмовика, то есть впритык. */
+  const THEIRS = cellIndex(20, TARGET_ROW);
 
   /** Здоровья с запасом: тесты про выстрелы, а не про то, кто кого убьёт. */
   const TOUGH = 1_000_000;
@@ -1344,7 +1420,7 @@ describe('огонь на ходу', () => {
   const unitOf = (world: WorldState, id: number) =>
     world.units.find((unit) => unit.id === asEntityId(id));
 
-  /** Мой юнит и чужой в двух клетках от него. Режим у обоих — «Прорыв». */
+  /** Мой юнит и чужой на дальности от него. Режим у обоих — «Прорыв». */
   const facingEachOther = (): WorldState =>
     withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
 
@@ -1436,10 +1512,24 @@ describe('огонь на ходу', () => {
       expect(unitOf(world, 901)?.position).not.toEqual(unitOf(before, 901)?.position);
     }
 
-    // Обменялись именно огнём, а не поводом: по выстрелу с каждой стороны
-    // и оба полной силы.
-    expect(unitOf(world, 900)?.health).toBe(TOUGH - ASSAULT.attack);
-    expect(unitOf(world, 901)?.health).toBe(TOUGH - ASSAULT.attack);
+    // Обменялись именно огнём, а не поводом: по два выстрела с каждой
+    // стороны и все полной силы.
+    //
+    // Прежде здесь стоял ОДИН выстрел, и разница — прямое следствие
+    // подъёма дальности штурмовика с двух клеток до четырёх. Колонны
+    // расходятся по диагонали со скоростью около 0,067 клетки за тик
+    // каждая; за окно в две перезарядки они успевают разойтись примерно
+    // на три клетки. При дальности в две клетки этого хватало, чтобы
+    // выйти из радиуса до второго выстрела, при четырёх — уже нет.
+    //
+    // Это и есть удвоение ответного огня, названное в предложении
+    // изменения: волна в «Прорыве» вдвое дольше держит встречного
+    // в своём круге. Проработка считала иначе — там записано, что
+    // к тридцатому тику колонны расходятся дальше шести клеток, — и
+    // ошиблась: расчёт исходил из расхождения с первого тика, тогда
+    // как колонны сперва сближаются и лишь потом расходятся.
+    expect(unitOf(world, 900)?.health).toBe(TOUGH - ASSAULT.attack * 2);
+    expect(unitOf(world, 901)?.health).toBe(TOUGH - ASSAULT.attack * 2);
 
     const mine = unitOf(world, 900)?.position ?? cellCentre(AHEAD);
     const theirs = unitOf(world, 901)?.position ?? cellCentre(ONCOMING);
@@ -1463,9 +1553,9 @@ describe('огонь на ходу', () => {
  * правила: стена не стреляет, и сносить её просто так нечего ради.
  */
 describe('остановка юнита на стреляющей постройке', () => {
-  const MINE = cellIndex(20, 20);
-  /** Ровно две клетки — дальность штурмовика, то есть впритык. */
-  const THEIRS = cellIndex(20, 22);
+  const MINE = cellIndex(20, SHOOTER_ROW);
+  /** Ровно на дальности штурмовика, то есть впритык. */
+  const THEIRS = cellIndex(20, TARGET_ROW);
 
   const TOUGH = 1_000_000;
 
@@ -1519,9 +1609,12 @@ describe('остановка юнита на стреляющей построй
     // Пара, ради которой у Теслы отдельный столбец в линии огня: навесом
     // бьют по тому, что стоит, поэтому башню за стеной она достаёт —
     // а значит, и стоять ради неё обязана.
+    // Стена ставится в клетке сразу перед юнитом: она обязана остаться
+    // МЕЖДУ ним и башней, а не рядом с ними, — иначе линия огня
+    // не перекрыта и разбор проверяет не то, ради чего заведён.
     const withWall = (world: WorldState): WorldState => ({
       ...world,
-      structures: [...world.structures, wallAt(cellIndex(20, 21), 1, 903)],
+      structures: [...world.structures, wallAt(cellIndex(20, SHOOTER_ROW + 1), 1, 903)],
     });
 
     const infantry = withWall(facing(towerAt(THEIRS, 1, 902)));
@@ -1537,10 +1630,15 @@ describe('остановка юнита на стреляющей построй
   });
 
   it('башня вне радиуса юнита с маршрута его не сбивает', () => {
-    // Снайперская башня достаёт на восемь клеток и стреляет по юниту,
+    // Снайперская башня достаёт на семь клеток и стреляет по юниту,
     // а он до неё не дотягивается. Преследования в игре нет: юнит идёт
     // дальше, а не разворачивается на обидчика.
-    const far = towerAt(cellIndex(20, 26), 1, 902, StructureKind.TowerSniper);
+    //
+    // Место выведено из дальности штурмовика: клетка ЗА его пределом.
+    // Числом его записывать нельзя — оно обязано лежать между двумя
+    // дальностями сразу, и подъём одной только дальности юнита однажды
+    // уже съел бы весь зазор молча.
+    const far = towerAt(cellIndex(20, TARGET_ROW + 1), 1, 902, StructureKind.TowerSniper);
 
     expect(positionAfter(facing(far), 4)).not.toEqual(cellCentre(MINE));
   });
@@ -1622,6 +1720,80 @@ describe('остановка у назначенной цели', () => {
       expect(apart).toBeGreaterThan(TOWER_RANGE * TOWER_RANGE);
     });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Огонь по базе с подхода
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Штурмовик открывает огонь по базе с четырёх клеток, а не подъезжает
+ * к её стене вплотную.
+ *
+ * Это та самая просьба, с которой началось изменение: «если до базы пять
+ * клеток — пусть уже стреляет». Пять и четыре здесь не спорят: расстояние
+ * до постройки меряется до КРАЯ основания, а у базы основание три клетки
+ * на три, то есть от края до середины ровно клетка. Четыре до края и есть
+ * пять до середины.
+ *
+ * Границы записаны числом в клетках, а не выведены из характеристик,
+ * и это намеренно: разбор проверяет ЗАКАЗАННУЮ величину, и вернись
+ * дальность к двум клеткам — он обязан покраснеть, а не подстроиться.
+ */
+describe('огонь по базе с подхода', () => {
+  const ASSAULT = UNIT_STATS[UnitType.Assault];
+  const BASE_FOOTPRINT = STRUCTURE_STATS[StructureKind.Base].footprintRadius;
+
+  /** Здоровья с запасом: разбор про подход, а не про то, кто кого убьёт. */
+  const TOUGH = 1_000_000;
+
+  /** Сколько тиков нужно, чтобы пройти клетку. Считается от скорости. */
+  const TICKS_PER_CELL = Math.ceil(cellsToUnits(1) / ASSAULT.speed);
+
+  /** С какого расстояния штурмовик начинает подход, в клетках. */
+  const START_CELLS = 9;
+
+  it('останавливается в четырёх клетках от края основания и бьёт по базе', () => {
+    const empty = openWorld();
+    const baseCell = baseCellOf(empty, 1);
+    // Подход по прямой сверху: карта в `openWorld` расчищена целиком,
+    // так что обходить нечего и путь не вмешивается в расстояние.
+    const start = cellIndex(cellX(baseCell), cellY(baseCell) - START_CELLS);
+
+    const world = withUnitAt(empty, 0, start, TOUGH, 900);
+    const baseBefore = world.structures.find((s) => s.cell === baseCell);
+    expect(baseBefore).toBeDefined();
+    // Целью по умолчанию и так стои́т база противника; проверяем это,
+    // а не назначаем заново: разбор обязан проверять штатный ход вещей.
+    expect(world.players[0]?.targetStructure).toBe(baseBefore?.id);
+
+    const arrived = run(world, (START_CELLS + 1) * TICKS_PER_CELL);
+    const settled = arrived.units.find((unit) => unit.id === asEntityId(900))?.position;
+
+    // Дошёл: иначе «встал в четырёх клетках» означало бы «стои́т там,
+    // где его поставили», и разбор проходил бы при сломанном движении.
+    expect(settled).not.toEqual(cellCentre(start));
+    // И встал: лишний тик его больше не двигает.
+    expect(step(arrived, []).units.find((unit) => unit.id === asEntityId(900))?.position).toEqual(
+      settled,
+    );
+
+    const apart = squaredDistanceToFootprint(
+      settled ?? cellCentre(start),
+      baseCell,
+      BASE_FOOTPRINT,
+    );
+
+    // Верхняя граница — заказанные четыре клетки. Нижняя не украшение:
+    // без неё правило было бы выполнено и юнитом, упёршимся в стену.
+    expect(apart).toBeLessThanOrEqual(cellsToUnits(4) * cellsToUnits(4));
+    expect(apart).toBeGreaterThan(cellsToUnits(3) * cellsToUnits(3));
+
+    // И стреляет оттуда же: остановка без огня была бы не подходом,
+    // а затором.
+    const baseAfter = arrived.structures.find((s) => s.cell === baseCell);
+    expect(baseAfter?.health).toBeLessThan(baseBefore?.health ?? 0);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
