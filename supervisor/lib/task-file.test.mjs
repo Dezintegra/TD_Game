@@ -204,11 +204,19 @@ describe('счётчики', () => {
     expect(again.attempts.rejections).toBe(2);
   });
 
-  it('счёт возвратов не трогает счёт продолжений', () => {
-    // Заминки разной природы: уснувшая сессия и несходящийся спор лечатся
-    // по-разному, и общий счётчик путал бы их пределы.
-    const counted = countRejection(task({ attempts: { continuations: 1, cycleFailures: 0 } }));
-    expect(counted.attempts.continuations).toBe(1);
+  it('возврат гасит счёт продолжений, сохраняя счёт возвратов', () => {
+    // Продолжения считают сессии на этапе, а возврат уводит задачу на другой
+    // этап. Счёт, притащенный с аудита, останавливал проработку, не дав ей
+    // ни одной сессии: так 02.09.2026 легли 0022, 0080 и 0088.
+    const counted = countRejection(
+      task({ attempts: { continuations: 2, cycleFailures: 1, spawnFailures: 1, rejections: 1 } }),
+    );
+    expect(counted.attempts).toEqual({
+      continuations: 0,
+      cycleFailures: 0,
+      spawnFailures: 0,
+      rejections: 2,
+    });
   });
 });
 

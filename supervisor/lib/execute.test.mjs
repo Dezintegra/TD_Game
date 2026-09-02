@@ -431,6 +431,19 @@ describe('перенос отчёта', () => {
     expect(io.tasks.get('0001-one').attempts.rejections).toBe(1);
   });
 
+  it('возврат обнуляет продолжения: проработка начинает со своим счётом', async () => {
+    // Задача 0088 пришла в проработку с двумя продолжениями, съеденными
+    // аудитом, и была остановлена следующим же оборотом, не получив сессии.
+    const io = fakeIo({
+      tasks: [task({ status: 'audit', attempts: { continuations: 2, cycleFailures: 0 } })],
+      report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', summary: 'мимо' },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
+    expect(io.tasks.get('0001-one').status).toBe('design');
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
+    expect(io.tasks.get('0001-one').attempts.rejections).toBe(1);
+  });
+
   it('возврат за пределом отдаёт задачу в разбор, забыв его прошлую сессию', async () => {
     const io = fakeIo({
       maxRejections: 3,

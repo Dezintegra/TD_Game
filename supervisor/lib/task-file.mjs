@@ -113,7 +113,20 @@ export function countSpawnFailure(task) {
  */
 export function countRejection(task) {
   const attempts = task.attempts ?? { continuations: 0, cycleFailures: 0 };
-  return { ...task, attempts: { ...attempts, rejections: (attempts.rejections ?? 0) + 1 } };
+  // Продолжения гасятся, как при успехе: они считают сессии НА ЭТАПЕ, а возврат
+  // отправляет задачу на другой этап. Пока счёт тащился через возврат, задача
+  // приходила в проработку с чужим счётом и останавливалась там, не получив
+  // ни одной сессии: 02.09.2026 так легли 0022, 0080 и 0088 (карточка 0081).
+  // Спор считается своим счётчиком, и мешать их нельзя.
+  return {
+    ...task,
+    attempts: {
+      continuations: 0,
+      cycleFailures: 0,
+      spawnFailures: 0,
+      rejections: (attempts.rejections ?? 0) + 1,
+    },
+  };
 }
 
 /**
