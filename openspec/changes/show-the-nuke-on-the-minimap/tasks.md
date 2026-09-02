@@ -6,16 +6,16 @@
 
 ## 1. Окружность на земле переезжает в общий модуль
 
-- [ ] 1.1 Завести `apps/client/src/game/ground-circle.ts` с функцией
+- [x] 1.1 Завести `apps/client/src/game/ground-circle.ts` с функцией
       `traceGroundCircle(graphics, centreX, centreY, radiusCells, project, steps)`:
       считает точки окружности в мировых клетках и проецирует каждую
       переданной проекцией. Тело — нынешний `traceWorldCircle`
       из `overlays.ts`, у которого проекция и число отрезков стали
       параметрами.
-- [ ] 1.2 Переключить `overlays.ts` на общий помощник: `worldToScreen`
+- [x] 1.2 Переключить `overlays.ts` на общий помощник: `worldToScreen`
       проекцией, `CIRCLE_STEPS = 56` числом отрезков. Своей копии
       в `overlays.ts` не остаётся.
-- [ ] 1.3 Завести `apps/client/src/game/ground-circle.test.ts`: при
+- [x] 1.3 Завести `apps/client/src/game/ground-circle.test.ts`: при
       подстановке `worldToScreen` ломаная совпадает с прежней (первая
       точка на угле ноль, число точек равно `steps + 1`, замыкание
       в исходную), а отношение ширины габарита к высоте равно тому,
