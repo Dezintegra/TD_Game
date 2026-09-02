@@ -30,11 +30,11 @@
 
 ## 2. Цвет тревоги доезжает до миникарты
 
-- [ ] 2.1 Добавить в `MinimapColors` поле `strike` — цвет угрозы,
+- [x] 2.1 Добавить в `MinimapColors` поле `strike` — цвет угрозы,
       тот же `--td-strike`, которым удар размечен на поле.
-- [ ] 2.2 Прочитать токен в `readMinimapColors` в `scene.ts`:
+- [x] 2.2 Прочитать токен в `readMinimapColors` в `scene.ts`:
       `strike: token('--td-strike', 0xff5c5c)`.
-- [ ] 2.3 Дополнить литералы `MinimapColors` в `minimap.test.ts`
+- [x] 2.3 Дополнить литералы `MinimapColors` в `minimap.test.ts`
       новым полем, чтобы типы сходились.
 
 **Проверка:** `npx vitest run apps/client/src/game/minimap.test.ts`

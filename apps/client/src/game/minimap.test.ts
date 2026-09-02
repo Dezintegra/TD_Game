@@ -20,6 +20,7 @@ import {
   minimapLayout,
   projectToMinimap,
 } from './minimap.js';
+import type { MinimapColors } from './minimap.js';
 import { MAP_BOUNDS, screenToWorld, worldToScreen } from './iso.js';
 
 /**
@@ -76,6 +77,24 @@ const extentOf = (shapes: readonly Shape[]) => ({
 
 const layout = minimapLayout(1920, 856);
 const world = createWorld(4321);
+
+/**
+ * Цвета взяты РАЗНЫМИ намеренно.
+ *
+ * Прежде здесь стояли нули: геометрию они не портили, а больше ничего
+ * и не проверялось. Различие своей метки и чужой — это в том числе цвет
+ * обводки, и на одинаковых нулях такая проверка зеленела бы всегда,
+ * ничего при этом не проверяя.
+ */
+const colors: MinimapColors = {
+  background: 0x141414,
+  border: 0x4d4d4d,
+  rock: 0x6e6a63,
+  self: 0x00ff29,
+  enemy: 0xd264ff,
+  viewport: 0xc4c4c4,
+  strike: 0xff5c5c,
+};
 
 describe('раскладка миникарты', () => {
   it('отношение сторон выводится из габаритов спроецированной карты', () => {
@@ -211,14 +230,7 @@ describe('проекция миникарты', () => {
 describe('отрисовка миникарты', () => {
   it('рельеф укладывается в отведённую область', () => {
     const { graphics, shapes } = tracing();
-    drawMinimapTerrain(graphics, world.map, layout, {
-      background: 0,
-      border: 0,
-      rock: 0,
-      self: 0,
-      enemy: 0,
-      viewport: 0,
-    });
+    drawMinimapTerrain(graphics, world.map, layout, colors);
 
     expect(shapes.length).toBeGreaterThan(0);
 
@@ -250,7 +262,7 @@ describe('отрисовка миникарты', () => {
       asPlayerId(0),
       [],
       layout,
-      { background: 0, border: 0, rock: 0, self: 0, enemy: 0, viewport: 0 },
+      colors,
     );
 
     const rects = shapes.filter((shape) => shape.kind === 'rect');
@@ -286,7 +298,7 @@ describe('отрисовка миникарты', () => {
       asPlayerId(0),
       [],
       layout,
-      { background: 0, border: 0, rock: 0, self: 0, enemy: 0, viewport: 0 },
+      colors,
     );
 
     const rects = shapes.filter((shape) => shape.kind === 'rect');
@@ -312,7 +324,7 @@ describe('отрисовка миникарты', () => {
       asPlayerId(0),
       corners,
       layout,
-      { background: 0, border: 0, rock: 0, self: 0, enemy: 0, viewport: 0 },
+      colors,
     );
 
     const points = shapes.filter((shape) => shape.kind === 'point');

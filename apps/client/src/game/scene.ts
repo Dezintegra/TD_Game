@@ -342,6 +342,7 @@ const readMinimapColors = (): MinimapColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
   viewport: token('--td-text-secondary', 0xc4c4c4),
+  strike: token('--td-strike', 0xff5c5c),
 });
 
 /**
