@@ -151,7 +151,7 @@ origin/main..HEAD` показывает все коммиты задачи. Пр
    git -C <дерево> fetch origin
    git -C <дерево> rebase origin/main
    # разобрать конфликты, продолжить rebase
-   pnpm install --frozen-lockfile        # если сдвинулся lockfile
+   pnpm install --frozen-lockfile --prefer-offline   # если сдвинулся lockfile
    git -C <дерево> push --force-with-lease origin <своя ветка>
    ```
 
