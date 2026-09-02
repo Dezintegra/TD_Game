@@ -388,6 +388,11 @@ async function turn() {
     );
   }
 
+  // Обход сирот идёт ДО чтения живости: этап, осиротевший при смене
+  // супервизора, мог кончиться минуту назад, и место обязано освободиться
+  // этим же оборотом, а не при следующем перезапуске.
+  supervisor.sweep();
+
   const paused = isPaused(root, config);
   const mayWrite = !flags.includes('--dry-run') && !paused;
 
@@ -420,6 +425,10 @@ async function turn() {
     registry,
     reports: supervisor.reports,
     running: supervisor.running(),
+    // Исходы этапов, осиротевших при смене супервизора: живость они уже
+    // не значат, зато объясняют в журнале задачи, почему прошлый заход
+    // ничего не дал.
+    orphans: supervisor.orphanOutcomes,
     answers: readAnswers(root, config),
     paused,
     draining,
@@ -457,6 +466,12 @@ async function turn() {
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),
+      // Исход сироты и его забвение — та же пара, что чтение и снятие отчёта:
+      // дескриптор стирается с диска лишь после удавшейся записи в журнал.
+      readOrphan: (taskId, stage) =>
+        supervisor.orphanOutcomes.find((item) => item.taskId === taskId && item.stage === stage) ??
+        null,
+      forgetOrphan: (taskId, stage) => supervisor.forgetOrphan(taskId, stage),
       // Отметка первого захода на этап: ею отличают свежий коммит от чужого,
       // когда отказ разрешений судят по следу.
       stageStartedAt: (taskId, stage) => supervisor.stageStartedAt(taskId, stage),

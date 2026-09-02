@@ -805,4 +805,32 @@ describe('остановка', () => {
 
     expect(killed).toEqual(children.map((child) => child.pid));
   });
+
+  it('живого сироту не трогает, и дескриптор его остаётся на диске', () => {
+    // Своего ребёнка супервизор снимает И записывает исход. Чужого он снял бы,
+    // не сумев записать: очередь исходов в этот миг исполнять уже некому.
+    // Вышла бы та же потеря, ради отмены которой всё и затеяно.
+    const { supervisor, killed, saved } = harness({
+      stages: {
+        '0001-one:implement': {
+          sessionId: 'прежняя',
+          startedAt: NOW,
+          live: {
+            pid: 29704,
+            image: 'claude.exe',
+            machine: 'станция-1',
+            supervisorPid: 111,
+            startedAt: NOW,
+            startedMs: 900_000,
+            timeoutMs: 3_600_000,
+          },
+        },
+      },
+    });
+
+    supervisor.stopAll();
+
+    expect(killed).toEqual([]);
+    expect(saved).toEqual([]);
+  });
 });
