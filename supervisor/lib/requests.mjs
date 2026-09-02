@@ -109,6 +109,11 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
 
   const priority = Number.isInteger(request.priority) ? request.priority : 50;
 
+  // Право метить заявку блокирующей есть не у всякого этапа: `mayQueue`
+  // спрашивается у того, кто разбирает отчёт, — иначе шлюз кандидатов
+  // размылся бы до необязательного.
+  const blocking = mayQueue && request.blocking === true;
+
   const task = {
     $schema: '../schema.json',
     id,
@@ -131,10 +136,7 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
     // Блокирующая причина — потому, что конвейер не может вести СЛЕДУЮЩИЕ
     // задачи. Пока человек смотрит на доску, та же причина роняет всё, что
     // конвейер успевает взять, и кандидат в этих условиях не шлюз, а пробка.
-    // Право метить заявку блокирующей есть не у всякого этапа: `mayQueue`
-    // спрашивается у того, кто разбирает отчёт, — иначе шлюз кандидатов
-    // размылся бы до необязательного.
-    status: type === 'run' || (mayQueue && request.blocking === true) ? 'new' : 'candidate',
+    status: type === 'run' || blocking ? 'new' : 'candidate',
     returnTo: null,
     priority: Math.min(999, Math.max(0, priority)),
     createdAt: now,
@@ -144,6 +146,16 @@ export function taskFromRequest(request, { id, now, sourceId, mayQueue = false }
     links: { change: null, pr: null, run: null, related: sourceId ? [sourceId] : [] },
     attempts: { continuations: 0, cycleFailures: 0 },
   };
+
+  // Признак едет дальше самой задачей: хранилище ставит такую задачу
+  // в начало очереди. Пока признак терялся здесь, блокирующая задача
+  // миновала кандидатов, но вставала в конец «Заведено» — и 02.09.2026
+  // задача 0080 простояла так восемь часов двадцать седьмой из двадцати
+  // семи, а четыре взятые перед ней упали на той же причине.
+  //
+  // У прочих задач поля нет вовсе, а не `false`: отсутствие и есть
+  // «обычная», и записи с ним состав не меняют.
+  if (blocking) task.blocking = true;
 
   if (type === 'run') {
     task.run = {

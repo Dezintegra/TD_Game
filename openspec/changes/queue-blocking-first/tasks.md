@@ -13,7 +13,7 @@
 
 ## 2. Признак и положение карточки
 
-- [ ] 2.1 Проводить признак блокирующей до задачи полем `blocking: true`
+- [x] 2.1 Проводить признак блокирующей до задачи полем `blocking: true`
       (`supervisor/lib/requests.mjs`), объявить поле в `manage/schema.json`,
       заводить такую карточку с `pos: 'top'`
       (`supervisor/lib/backlog-trello.mjs`). Проверяемо:
