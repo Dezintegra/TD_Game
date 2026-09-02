@@ -291,6 +291,28 @@ describe('этапы и скиллы', () => {
     expect(rules.filter((rule) => /Remove-Item|rm -rf/.test(rule))).toEqual([]);
   });
 
+  it('этапы, подающие заявки, знают признак причины в конвейере', () => {
+    // Заявка с `area: "pipeline"` минует кандидатов с любого этапа. Скилл,
+    // не знающий признака, заведёт починку конвейера кандидатом — и она
+    // будет ждать человека, пока та же причина роняет следующие задачи;
+    // 02.09.2026 так простояли четыре починки.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const requesting = [
+      'design',
+      'audit',
+      'implement',
+      'revise',
+      'review',
+      'interpret',
+      'triage',
+      'postmortem',
+    ];
+    const silent = requesting.filter(
+      (stage) => !readFileSync(`${dir}${stage}.md`, 'utf8').includes('`area: "pipeline"`'),
+    );
+    expect(silent).toEqual([]);
+  });
+
   it('скилл прогона называет разрешённое ожидание и не показывает циклов', () => {
     // Ждать чужой прогон этапу надо всегда, а разрешённая форма ровно одна —
     // `gh run watch <id> --exit-status`. Не назови её скилл — сессия придумает
