@@ -6,6 +6,8 @@ import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } from './camera.js';
 import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid, showGrid } from './terrain.js';
+import { createCloudLayer } from './clouds-render.js';
+import type { CloudColors, CloudLayer } from './clouds-render.js';
 import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
 import { ARMOUR_SUPERSAMPLE, armourBakeDensity, rockBakeDensity } from './bake-density.js';
 import type { TerrainColors } from './terrain.js';
@@ -213,6 +215,11 @@ const sizeToken = (name: string, fallback: number): number => {
   const found = /^(-?[\d.]+)px$/.exec(readToken(name, ''));
   return found?.[1] === undefined ? fallback : Number(found[1]);
 };
+
+const readCloudColors = (): CloudColors => ({
+  cloud: token('--td-cloud', 0x6e6e6e),
+  deep: token('--td-cloud-deep', 0x3c3c3c),
+});
 
 const readTerrainColors = (): TerrainColors => ({
   surface: token('--td-field-surface', 0x000000),
@@ -607,7 +614,23 @@ export const createScene = (renderer: RendererHost): Scene => {
   // и подмешивать в него дрожание нельзя. Подробности у `applyShake`.
   const shakeContainer = new Container();
   const worldContainer = new Container();
-  shakeContainer.addChild(worldContainer);
+
+  /**
+   * Мгла за границами поля.
+   *
+   * ПЕРВЫМ ребёнком тряски, то есть ниже мира: поверхность поля залита
+   * сплошь и закрывает мглу собой, поэтому видна мгла ровно там, где
+   * карты нет. Отдельного отсечения по границе карты не нужно вовсе —
+   * его делает сама земля.
+   *
+   * Внутри тряски, а не снаружи: мгла — часть картинки мира, а не прибор.
+   * Стой она неподвижно, пока трясётся всё остальное, — читалось бы это
+   * приклеенным к экрану стеклом. Миникарта и джойстик остаются снаружи
+   * по обратной причине: они как раз приборы.
+   */
+  const clouds: CloudLayer = createCloudLayer(readCloudColors());
+
+  shakeContainer.addChild(clouds.layer, worldContainer);
 
   // Земля двумя слоями: поверхность видна всегда, сетка — только
   // в режиме строительства. Порядок именно такой: линии сетки лежат
@@ -1114,6 +1137,16 @@ export const createScene = (renderer: RendererHost): Scene => {
       // территории на кадре.
       showGrid(gridGraphics, intent.building);
 
+      // Мгла считается от часов кадра и от смещения мира на экране —
+      // того самого, которое ставит камера. Номер тика ей не годится:
+      // при догоне истории мир проматывается пачками, и мгла скакала бы
+      // рывками ровно тогда, когда игрок ждёт спокойного фона.
+      clouds.update(
+        performance.now(),
+        { x: worldContainer.x, y: worldContainer.y },
+        { width: app.screen.width, height: app.screen.height },
+      );
+
       // Дробный номер тика: мир идёт тридцать раз в секунду, кадров вдвое
       // больше, и эффект, посчитанный от целого номера, дёргался бы через
       // кадр. Снимается один раз на кадр — он же и отмечает смену тика.
@@ -1275,6 +1308,7 @@ export const createScene = (renderer: RendererHost): Scene => {
       // Текстуры живут в видеопамяти, и сборщик мусора о ней не знает:
       // без уборки утечка копилась бы матч за матчем.
       arcs.destroy();
+      clouds.destroy();
 
       // Тикер останавливается вместе с матчем: в меню рисовать нечего.
       app.ticker.stop();

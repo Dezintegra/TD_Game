@@ -154,6 +154,17 @@ export interface CloudCamera {
   readonly y: number;
 }
 
+/**
+ * Шаг решётки в экранных точках.
+ *
+ * Отдан наружу, потому что от него считается и размер пятна: пятно обязано
+ * с запасом перекрывать свою ячейку, иначе между клубами проступят швы.
+ */
+export const cloudCellSize = (viewport: CloudViewport): CloudViewport => ({
+  width: viewport.width / CLOUD_COLUMNS,
+  height: viewport.height / CLOUD_ROWS,
+});
+
 /** Доля [0, 1) из хеша номера пятна и приметы величины. */
 const unit = (index: number, salt: number): number => hashOf([index, salt]) / 0x1_0000_0000;
 
@@ -180,8 +191,7 @@ export const cloudPuffs = (
   // нечем и незачем: рисовать всё равно некуда.
   if (viewport.width <= 0 || viewport.height <= 0) return [];
 
-  const cellWidth = viewport.width / CLOUD_COLUMNS;
-  const cellHeight = viewport.height / CLOUD_ROWS;
+  const { width: cellWidth, height: cellHeight } = cloudCellSize(viewport);
   const seconds = timeMs / 1000;
 
   const puffs: CloudPuff[] = [];
