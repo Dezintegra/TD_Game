@@ -4,6 +4,8 @@ import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   NUKE_COOLDOWN_MAX_LEVEL,
+  STRUCTURE_STATS,
+  StructureKind,
   UNIT_CAP,
   UNIT_STATS,
   UnitType,
@@ -18,10 +20,11 @@ import {
 } from '@td/shared';
 import type { Command } from '@td/shared';
 import { cellCentre, cellIndex, createWorld } from '@td/sim';
-import type { PlayerState, WorldState } from '@td/sim';
+import type { PlayerState, PlayerStats, WorldState } from '@td/sim';
 import { playerStats } from '@td/sim';
 import { approachOf } from './approach.js';
 import { STRATEGIST_PROFILE } from './profile.js';
+import { nukeOutcome } from './value.js';
 import { createOpponent, findNukeTarget, nukeWorthIt } from './opponent.js';
 
 /**
@@ -49,6 +52,21 @@ const patchPlayer = (world: WorldState, id: number, patch: Partial<PlayerState>)
 
 const rich = (world: WorldState): WorldState =>
   patchPlayer(patchPlayer(world, 0, { energy: 10_000_000 }), 1, { energy: 10_000_000 });
+
+/** Игрок, купивший уровни радиуса и мощности удара. */
+const withNukeLevels = (world: WorldState, radius: number, damage: number): WorldState => {
+  const radiusBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeRadius);
+  const damageBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeDamage);
+
+  return patchPlayer(world, ME, {
+    upgrades: (world.players[ME]?.upgrades ?? []).map((state, index) => {
+      if (index === radiusBranch) return { ...state, level: radius };
+      if (index === damageBranch) return { ...state, level: damage };
+
+      return state;
+    }),
+  });
+};
 
 /**
  * Толпа чужих машин в середине карты — цель, которая заведомо окупает
@@ -265,5 +283,170 @@ describe('запас под удар держится по обстановке,
     // Та же энергия, тот же тик, та же фаза. Изменилась одна обстановка,
     // и запас — её свойство, а не свойство фазы.
     expect(purchases(poorAndLate(withCrowd(createWorld(SEED))))).toBe(0);
+  });
+});
+
+/**
+ * Сколько целей оправдывают удар — и почему это число нигде не записано.
+ *
+ * Порог выгоды удара равен цене пуска, и в целях он выражается по-разному
+ * для каждого их вида. Ни одно из этих чисел здесь не записано: все они
+ * выводятся из констант баланса заново на каждом прогоне, а проверяются
+ * ТОЙ ЖЕ оценкой, которой пользуется решение, — `nukeOutcome`
+ * и `nukeWorthIt`.
+ *
+ * Разделение существенно, и вот почему. Записанное число пережило бы
+ * правку цены, радиуса или мощности, ничего о ней не сказав, — ровно так
+ * требуемое скопление и выросло вдвое незамеченным, когда радиус
+ * сократили с десяти клеток до четырёх. А выведенное, но проверяемое
+ * списанной с оценки формулой, пережило бы правку самого зачёта: когда
+ * «в радиусе — значит погиб» сменилось вычитанием прочности, требуемое
+ * число крепких целей выросло на треть, и списанная формула выросла бы
+ * вместе с ним.
+ *
+ * Поэтому ожидание выводится из констант, а ответ спрашивается у оценки:
+ * разойдутся — тест упадёт.
+ */
+describe('требуемое скопление выводится из констант, а не записано числом', () => {
+  const statsPair = (
+    world: WorldState,
+  ): { readonly mine: PlayerStats; readonly foe: PlayerStats } => {
+    const mine = world.players[ME];
+    const foe = world.players[FOE];
+    if (mine === undefined || foe === undefined) throw new Error('мир без стороны');
+
+    return { mine: playerStats(mine), foe: playerStats(foe) };
+  };
+
+  /**
+   * Чистая ценность удара по середине карты — той самой оценкой, которой
+   * её меряет решение. Своих целей в этих мирах нет, поэтому `loss`
+   * остаётся нулевым, а `net` равен цене накрытого чужого.
+   */
+  const netAt = (world: WorldState): number => {
+    const { mine, foe } = statsPair(world);
+    const outcome = nukeOutcome(world, asPlayerId(ME), cellCentre(CROWD_CELL), mine, foe, () => 0);
+
+    return outcome.gain - outcome.loss;
+  };
+
+  const worthIt = (world: WorldState): boolean =>
+    nukeWorthIt({ cell: CROWD_CELL, net: netAt(world) }, statsPair(world).mine.nuke.cost);
+
+  /** Чужие машины одного вида, все в середине карты и все целые. */
+  const foeUnits = (world: WorldState, type: UnitType, count: number): WorldState => ({
+    ...world,
+    units: Array.from({ length: count }, (_unused, index) => ({
+      id: asEntityId(6000 + index),
+      owner: asPlayerId(FOE),
+      unitType: type,
+      position: cellCentre(CROWD_CELL),
+      health: statsPair(world).foe.units[type].health,
+      facing: 1,
+      readyAtTick: asTickNumber(0),
+      kills: 0,
+    })),
+  });
+
+  /** Чужие постройки одного вида, там же. Базы мира остаются на местах. */
+  const foeStructures = (world: WorldState, kind: StructureKind, count: number): WorldState => ({
+    ...world,
+    structures: [
+      ...world.structures,
+      ...Array.from({ length: count }, (_unused, index) => ({
+        id: asEntityId(6500 + index),
+        owner: asPlayerId(FOE),
+        kind,
+        cell: CROWD_CELL,
+        health: statsPair(world).foe.structures[kind].health,
+        kills: 0,
+        readyAtTick: asTickNumber(0),
+        builtAtTick: asTickNumber(0),
+        demolishAtTick: asTickNumber(0),
+        facing: 1,
+      })),
+    ],
+  });
+
+  /**
+   * Сколько целей нужно, чтобы удар окупился.
+   *
+   * Вывод целиком из констант баланса: цена цели, её прочность, мощность
+   * заряда и цена пуска. Строгое «больше», а не «не меньше»: решение бьёт
+   * при `net > cost`, поэтому ровно окупающееся скопление порога
+   * не переходит. Отсюда и `floor(…) + 1`, а не `ceil`: они расходятся
+   * ровно в том случае, когда деление нацело, и `ceil` дал бы число
+   * на единицу меньше нужного.
+   */
+  const required = (cost: number, price: number, health: number, damage: number): number =>
+    Math.floor(cost / (price * (Math.min(health, damage) / health))) + 1;
+
+  const requiredUnits = (type: UnitType, mine: PlayerStats, foe: PlayerStats): number => {
+    const baseline = foe.units[type];
+
+    return required(mine.nuke.cost, baseline.cost, baseline.health, mine.nuke.damage);
+  };
+
+  const requiredStructures = (kind: StructureKind, mine: PlayerStats, foe: PlayerStats): number => {
+    const baseline = foe.structures[kind];
+
+    return required(mine.nuke.cost, baseline.cost, baseline.health, mine.nuke.damage);
+  };
+
+  it('в середине пустой карты бить не по кому — иначе проверки ниже мерили бы не то', () => {
+    // Ловушка, которую этот случай стережёт: попади в круг чужая база,
+    // генерал или скала с постройкой, и «требуемое число целей» считалось
+    // бы от чужого добра, оказавшегося рядом по случайности карты.
+    expect(netAt(createWorld(SEED))).toBe(0);
+  });
+
+  for (const type of [UnitType.Assault, UnitType.Sniper, UnitType.Tesla] as const) {
+    it(`${UNIT_STATS[type].label}: выведенного числа хватает, на одну машину меньше — нет`, () => {
+      const world = createWorld(SEED);
+      const { mine, foe } = statsPair(world);
+      const need = requiredUnits(type, mine, foe);
+
+      expect(need).toBeGreaterThan(0);
+      expect(worthIt(foeUnits(world, type, need))).toBe(true);
+      expect(worthIt(foeUnits(world, type, need - 1))).toBe(false);
+    });
+  }
+
+  for (const kind of [StructureKind.TowerBasic, StructureKind.Wall] as const) {
+    it(`${STRUCTURE_STATS[kind].label}: выведенного числа хватает, на одну меньше — нет`, () => {
+      const world = createWorld(SEED);
+      const { mine, foe } = statsPair(world);
+      const need = requiredStructures(kind, mine, foe);
+
+      expect(need).toBeGreaterThan(0);
+      expect(worthIt(foeStructures(world, kind, need))).toBe(true);
+      expect(worthIt(foeStructures(world, kind, need - 1))).toBe(false);
+    });
+  }
+
+  it('требуемое скопление своё у каждого игрока', () => {
+    // Цена пуска растёт от купленных уровней радиуса и мощности, а против
+    // штурмовика прибавка мощности не даёт ничего: доля в зачёте у него
+    // и так единица. Значит вложившийся в удар требует БОЛЬШЕГО скопления,
+    // чем не вложившийся, — и число это выводится из его собственной цены
+    // пуска, а не из константы, общей для обоих.
+    const plain = createWorld(SEED);
+    const invested = withNukeLevels(plain, 2, 3);
+
+    const needPlain = requiredUnits(UnitType.Assault, statsPair(plain).mine, statsPair(plain).foe);
+    const needInvested = requiredUnits(
+      UnitType.Assault,
+      statsPair(invested).mine,
+      statsPair(invested).foe,
+    );
+
+    expect(needInvested).toBeGreaterThan(needPlain);
+
+    // И каждое из двух чисел проверено той же оценкой, что и выше:
+    // вывод обязан сходиться у обоих игроков, а не у одного из них.
+    expect(worthIt(foeUnits(plain, UnitType.Assault, needPlain))).toBe(true);
+    expect(worthIt(foeUnits(plain, UnitType.Assault, needPlain - 1))).toBe(false);
+    expect(worthIt(foeUnits(invested, UnitType.Assault, needInvested))).toBe(true);
+    expect(worthIt(foeUnits(invested, UnitType.Assault, needInvested - 1))).toBe(false);
   });
 });
