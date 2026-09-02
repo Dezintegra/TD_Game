@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   budgetsAgree,
@@ -25,6 +25,7 @@ import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from '../lib/cycle.mjs';
+import { judgeSelfUpdate } from '../lib/self-update.mjs';
 import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
 import { createTrelloBacklog } from '../lib/backlog-trello.mjs';
 import { sortCards } from '../lib/validate-card.mjs';
@@ -95,6 +96,26 @@ function runCommand(args, program = 'git') {
 
 const runGit = (args) => runCommand(args, 'git');
 const { config, missing } = loadConfig();
+const git = createGit(runGit, { remote: config.remote, mainBranch: config.mainBranch });
+
+/**
+ * Каталог инструмента от корня репозитория, с прямыми косыми: так его
+ * понимает git. Инструмент, лежащий вне репозитория, обновлять нечем —
+ * тогда `null`, и самообновление честно объявляет себя выключенным.
+ */
+function ownDirOf() {
+  const path = relative(root, home);
+  if (!path || path.startsWith('..') || isAbsolute(path)) return null;
+  return path.split(sep).join('/');
+}
+
+const ownDir = ownDirOf();
+/**
+ * Хеш дерева собственного кода на момент запуска. По нему после каждого
+ * оборота видно, сменился ли код на диске, — чем угодно: подтягиванием,
+ * ручным `git pull`, локальным коммитом.
+ */
+const loadedTree = ownDir ? git.treeOf(ownDir) : null;
 
 /**
  * Рассказчик.
@@ -320,7 +341,6 @@ async function turn() {
   const started = Date.now();
   const elapsed = () => (Date.now() - started) / 1000;
 
-  const git = createGit(runGit, { remote: config.remote, mainBranch: config.mainBranch });
   const now = new Date().toISOString();
   const machine = hostname();
 
@@ -331,6 +351,18 @@ async function turn() {
   // потому, что замок брался внутри цикла и до него не доходило дело при
   // недоступной доске.
   writeLock(refreshLock(readLock() ?? newLock(process.pid, now), now));
+
+  // Один `git fetch` на оборот — свой, а не по случаю. До сих пор удалённая
+  // ветка обновлялась в общем `.git` только тогда, когда её подтягивала
+  // сессия этапа, и подтягивание главной ветки работало на этом случайном
+  // обновлении. Неудача сверки оборот не останавливает: он идёт
+  // по последней известной картине.
+  const fetched = git.fetch(config.mainBranch);
+  if (!fetched.ok) {
+    note(
+      `свериться с удалённой веткой не удалось (${fetched.failure}): работаем по прежней картине`,
+    );
+  }
 
   const paused = isPaused(root, config);
   const mayWrite = !flags.includes('--dry-run') && !paused;
@@ -406,6 +438,8 @@ async function turn() {
       // Предел возвратов доезжает до разбора отчёта доводом, а не читается
       // там из настройки: разбор — чистый счёт и о конфигурации не знает.
       maxRejections: config.maxRejections,
+      // Тем же порядком — предел автоматических возвратов из ошибки.
+      maxAutoReturns: config.maxAutoReturns,
     };
 
     // Неудача починки печатается наравне с неудачей действия. Пока
@@ -426,6 +460,54 @@ async function turn() {
 
   note([...backlog.notes, ...repair.notes, ...result.notes]);
   return result.outcome;
+}
+
+/**
+ * Перезапуститься на новом коде, передав замок.
+ *
+ * Порядок выстрадан замыслом, а не удобством: сначала рождается новый
+ * процесс, потом в замок записывается ЕГО номер, и только потом старый
+ * выходит. Так ни в один момент замок не пуст и не указывает на мёртвого —
+ * а сторож планировщика, проснувшийся посреди перезапуска, видит живой
+ * номер и второго экземпляра не поднимает.
+ *
+ * Новый процесс — тот же, что у пускателя в фоновом режиме: отсоединённый,
+ * с выводом в файл, с теми же аргументами. Консоль не наследуется намеренно:
+ * окно принадлежит старому процессу и закроется вместе с ним, а запись
+ * в закрытую консоль на Windows роняет процесс.
+ *
+ * Возвращает `false`, если новый процесс не родился: тогда старый продолжает
+ * работать на прежнем коде — это хуже перезапуска, но лучше пустого места.
+ */
+function restart() {
+  ensureLocal();
+  const outPath = local('supervisor.out.log');
+  let child;
+  try {
+    child = spawn(process.execPath, process.argv.slice(1), {
+      cwd: root,
+      detached: true,
+      stdio: ['ignore', openSync(outPath, 'a'), openSync(local('supervisor.err.log'), 'a')],
+      windowsHide: true,
+      env: process.env,
+    });
+  } catch (error) {
+    note(`перезапуск не удался: ${error.message}; продолжаю на прежнем коде`, TAG.error);
+    return false;
+  }
+  if (!child.pid) {
+    note('перезапуск не удался: новый процесс не родился; продолжаю на прежнем коде', TAG.error);
+    return false;
+  }
+  child.unref();
+
+  const now = new Date().toISOString();
+  writeLock({ ...newLock(child.pid, now), handedFrom: process.pid });
+  note(
+    `перезапуск на новом коде: процесс ${child.pid} получил замок, ` +
+      `его вывод — в ${outPath}; этот процесс (${process.pid}) завершается`,
+  );
+  return true;
 }
 
 /**
@@ -472,6 +554,16 @@ function greet() {
     ['вывод этапа', config.stageOutputFormat],
     flags.includes('--dry-run') && ['режим', 'ТЕНЬ: считаем и печатаем, мира не трогаем'],
     isPaused(root, config) && ['режим', 'ПАУЗА: новой работы не берём'],
+    [
+      'самообновление',
+      config.selfUpdate === false
+        ? 'выключено настройкой'
+        : flags.includes('--dry-run')
+          ? 'выключено: тень'
+          : ownDir
+            ? `слежу за ${ownDir}/ (дерево ${loadedTree ? loadedTree.slice(0, 7) : 'не прочиталось'})`
+            : 'выключено: инструмент лежит вне репозитория',
+    ],
     ...world.rows,
   ]);
 
@@ -555,6 +647,25 @@ async function loop() {
 
     if (stopping) break;
 
+    // Свой код проверяется ПОСЛЕ оборота: отчёты этого оборота уже перенесены,
+    // и если этапов нет — момент тихий. Причина отложенного обновления пишется
+    // раз в оборот; выключенное самообновление называется один раз.
+    const update = judgeSelfUpdate({
+      git,
+      ownDir,
+      mainBranch: config.mainBranch,
+      loadedTree,
+      enabled: config.selfUpdate !== false,
+      dryRun: flags.includes('--dry-run'),
+      running: supervisor.busy(),
+      pending: supervisor.reports.length,
+    });
+    if (update.verdict !== 'off' || turns === 1) note(update.notes);
+    if (update.verdict === 'restart' && restart()) {
+      // Без снятия замка: он уже передан новому процессу.
+      process.exit(0);
+    }
+
     // Время следующего оборота, а не «жду пять минут»: глядя в консоль
     // посреди тишины, человек хочет знать, когда она кончится, а не сколько
     // её было отпущено от какого-то момента в прошлом.
@@ -585,7 +696,9 @@ async function loop() {
 }
 
 const startedAt = new Date().toISOString();
-const verdict = lockVerdict(readLock(), startedAt, config.lockStaleMinutes, isAlive);
+// Собственный номер нужен переданному замку: старый процесс, перезапускаясь,
+// записывает в замок номер нового и выходит, и новому достаточно узнать себя.
+const verdict = lockVerdict(readLock(), startedAt, config.lockStaleMinutes, isAlive, process.pid);
 if (!verdict.take) {
   // Сторож будит супервизор раз в пять минут независимо от того, жив ли
   // прежний. Отсев двойного запуска — весь тут, и потому замок берётся
@@ -593,6 +706,9 @@ if (!verdict.take) {
   // например при недоступной доске.
   console.log(`СУПЕРВИЗОР УЖЕ РАБОТАЕТ: ${verdict.why}`);
 } else {
+  // Отметка передачи читается ДО записи своего замка: своя запись её стирает.
+  const handedFrom = readLock()?.handedFrom ?? null;
   writeLock(newLock(process.pid, startedAt));
+  if (handedFrom) note(`замок получен от процесса ${handedFrom}: продолжаю на новом коде`, null);
   await loop();
 }

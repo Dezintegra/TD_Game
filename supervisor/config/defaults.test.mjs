@@ -86,6 +86,11 @@ describe('пределы попыток', () => {
     expect(config.maxContinuations).toBe(DEFAULTS.maxContinuations);
   });
 
+  it('самообновление включено умолчанием и выключается настройкой', () => {
+    expect(resolveConfig({}).config.selfUpdate).toBe(true);
+    expect(resolveConfig({ selfUpdate: false }).config.selfUpdate).toBe(false);
+  });
+
   it('автоматических возвратов из ошибки по умолчанию два', () => {
     // Цена ошибки разбора: два возврата ограничивают потерю двумя сессиями
     // упавшего этапа и двумя разборами, а третье падение подряд смотрит человек.
