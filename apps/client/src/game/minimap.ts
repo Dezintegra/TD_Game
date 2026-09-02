@@ -255,16 +255,26 @@ export const drawMinimapTerrain = (
  * четырёхугольником карты завело бы второе независимое правило геометрии
  * рядом с проекцией. Выступ до двадцати точек говорит правду: удар
  * действительно накрывает площадь, часть которой уходит за край карты.
+ *
+ * СВОЙ УДАР И ЧУЖОЙ РАЗЛИЧАЮТСЯ ДВАЖДЫ: цветом и видом отметки эпицентра.
+ * Свой — подтверждение заказа, чужой — тревога, и требуют они
+ * противоположных действий. Одного цвета для этого мало: своя сторона
+ * зелёная, тревога красная, а красно-зелёная пара — худшая для дальтонизма;
+ * решать же по метке приходится за три секунды. Форма эпицентра различие
+ * дублирует и от цвета не зависит вовсе.
  */
 const drawNukes = (
   graphics: Graphics,
   world: WorldState,
+  localPlayer: PlayerId,
   layout: MinimapLayout,
   colors: MinimapColors,
 ): void => {
   for (const nuke of world.nukes) {
     const centreX = cellX(nuke.cell) + 0.5;
     const centreY = cellY(nuke.cell) + 0.5;
+    const own = nuke.owner === localPlayer;
+    const colour = own ? colors.self : colors.strike;
 
     // Радиус берётся у самой ракеты, а не из балансной постоянной:
     // он прокачивается, и круг обязан показывать границу ИМЕННО ЭТОЙ
@@ -280,14 +290,26 @@ const drawNukes = (
       (cellsX, cellsY) => projectToMinimap(cellsX, cellsY, layout),
       NUKE_CIRCLE_STEPS,
     );
-    graphics.stroke({ width: 1.5, color: colors.strike, alpha: 0.9 });
+    graphics.stroke({ width: 1.5, color: colour, alpha: 0.9 });
 
     // Эпицентр отдельной отметкой: круг накрываемой площади на миникарте
     // меньше сорока точек в поперечнике, и его геометрический центр
     // на глаз не определяется.
     const centre = projectToMinimap(centreX, centreY, layout);
-    graphics.circle(centre.x, centre.y, NUKE_MARK_PX);
-    graphics.fill({ color: colors.strike, alpha: 0.95 });
+
+    if (own) {
+      graphics.circle(centre.x, centre.y, NUKE_MARK_PX);
+      graphics.fill({ color: colour, alpha: 0.95 });
+      continue;
+    }
+
+    const arm = NUKE_MARK_PX + 2;
+    graphics
+      .moveTo(centre.x - arm, centre.y)
+      .lineTo(centre.x + arm, centre.y)
+      .moveTo(centre.x, centre.y - arm)
+      .lineTo(centre.x, centre.y + arm)
+      .stroke({ width: 1.5, color: colour, alpha: 0.95 });
   }
 };
 
@@ -361,7 +383,7 @@ export const drawMinimapEntities = (
     paint(general.owner, () => graphics.circle(centre.x, centre.y, 4));
   }
 
-  drawNukes(graphics, world, layout, colors);
+  drawNukes(graphics, world, localPlayer, layout, colors);
 
   // Рамка обзора. Прямоугольником она становится сама: область экрана
   // прямоугольна, и та же проекция переводит её в прямоугольник. Прежний
