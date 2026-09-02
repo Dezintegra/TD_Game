@@ -78,6 +78,17 @@ describe('обрывки взятия задачи', () => {
     });
   });
 
+  it('идентификатор с дефисом на конце — своё дерево, а не чужое', () => {
+    // Идентификатор режется на сорока знаках и может оборваться на дефисе,
+    // как у 0088-razreshit-konveyeru-komandy-zamera-pnpm-. Шаблон без такого
+    // допуска считал дерево чужим: запись снималась каждый оборот, взятие
+    // «доводилось» на существующий каталог, а задача молча не получала
+    // сессии (02.09.2026).
+    const id = '0088-razreshit-konveyeru-komandy-zamera-pnpm-';
+    const result = run({ tasks: [task(id)], worktrees: [tree(id)] });
+    expect(kinds(result)).toEqual(['adopt-worktree']);
+  });
+
   it('запись без дерева снимается', () => {
     const result = run({ tasks: [task('0001-one')], registry: { entries: [entry('0001-one')] } });
     expect(kinds(result)).toEqual(['drop-entry']);
