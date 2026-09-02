@@ -230,6 +230,27 @@ describe('неполная настройка', () => {
   });
 });
 
+describe('слив перед самообновлением', () => {
+  it('сессий не выдаём, идущее доделываем, опросы идут', () => {
+    // Новый код супервизора на диске; перезапуск ждёт «нет этапов и отчётов».
+    // Выдавать сессии дальше значило бы никогда этого не дождаться.
+    const result = run({
+      draining: true,
+      tasks: [
+        task({ id: '0001-one', status: 'design' }),
+        task({ id: '0002-two', status: 'new' }),
+        task({ id: '0003-three', status: 'pr', links: { pr: 3 } }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [],
+    });
+    expect(kinds(result)).not.toContain('start-stage');
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(kinds(result)).toContain('poll-external');
+    expect(result.notes.join()).toContain('самообновление');
+  });
+});
+
 describe('исполнитель один', () => {
   it('пока задача в работе, новых не берут', () => {
     const result = run({

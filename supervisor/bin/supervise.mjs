@@ -51,6 +51,14 @@ const flags = process.argv.slice(2).filter((arg) => arg.startsWith('--'));
 const rootArg = process.argv.slice(2).find((arg) => !arg.startsWith('--'));
 
 /**
+ * Слив перед самообновлением: новый код уже на диске, ждём тишины. Пока
+ * флаг взведён, сканер не выдаёт сессий — иначе при двух местах и полной
+ * очереди тихий момент не наступил бы никогда (замечено 02.09.2026
+ * в первый же час после вливания самообновления).
+ */
+let draining = false;
+
+/**
  * Каталог самого инструмента. От него считаются ЕГО пути — правила этапов
  * и настройка разрешений, — тогда как проектные считаются от корня
  * репозитория. Граница проходит здесь и больше нигде.
@@ -398,6 +406,7 @@ async function turn() {
     running: supervisor.running(),
     answers: readAnswers(root, config),
     paused,
+    draining,
     tails: { main: git.tail() ?? 0, branches: {} },
   };
 
@@ -661,6 +670,7 @@ async function loop() {
       pending: supervisor.reports.length,
     });
     if (update.verdict !== 'off' || turns === 1) note(update.notes);
+    draining = update.verdict === 'wait';
     if (update.verdict === 'restart' && restart()) {
       // Без снятия замка: он уже передан новому процессу.
       process.exit(0);

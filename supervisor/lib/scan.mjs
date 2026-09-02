@@ -369,7 +369,16 @@ export function scan(state) {
   // при исправной работе означает беду, обязана быть редкой, иначе её
   // перестают читать.
   let free = Math.max(0, config.maxConcurrent - running.length);
+  // Слив перед самообновлением: новый код супервизора уже на диске, и он
+  // перезапустится, как только не останется ни этапов, ни отчётов. Выдавать
+  // сессии сейчас значило бы никогда этого не дождаться: при двух местах
+  // и сотне задач в очереди тихий момент сам не наступает. Идущее
+  // доделывается, отчёты переносятся, опросы идут — не берётся только новое.
+  if (state.draining && waitingForSession.length > 0) {
+    notes.push('самообновление ждёт тишины: сессий не выдаём, идущее доделываем');
+  }
   for (const task of [...waitingForSession].sort(byPriorityThenAge)) {
+    if (state.draining) continue;
     if (free === 0) {
       notes.push(`задача ${task.id} ждёт сессию: свободных мест нет`);
       continue;
@@ -409,6 +418,10 @@ export function scan(state) {
       continue;
     }
 
+    if (state.draining) {
+      notes.push(`задача ${task.id} ждёт: самообновление сливает работу`);
+      continue;
+    }
     if (busy) {
       notes.push(`задача ${task.id} ждёт: исполнитель занят`);
       continue;
