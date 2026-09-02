@@ -827,8 +827,13 @@ export const GENERAL_KILL_REWARD = BASE_UNIT_COST * 20;
  * Асимметрия с генералом намеренна: за генерала надо стоять в пяти
  * клетках от боя под ответным огнём, а башня стои́т в безопасности.
  * Это плата за риск, и стирать её нельзя — стережёт `balance.test.ts`.
+ *
+ * Величина подвижна множителем `killBounty` из `rules.ts`: число выбрано
+ * рассуждением, а рассуждение может ошибиться, и развёртка 1/2/4 отвечает
+ * на вопрос «может, стоит и больше» замером, а не спором.
  */
-export const TOWER_KILL_BOUNTY_PPM = PPM_ONE / 5;
+const TOWER_KILL_BOUNTY_PPM_BY_DESIGN = PPM_ONE / 5;
+export let TOWER_KILL_BOUNTY_PPM = TOWER_KILL_BOUNTY_PPM_BY_DESIGN;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Ветеранские ранги за убийства
@@ -1811,9 +1816,13 @@ export const AI_DECISION_INTERVAL_TICKS = 15;
  * ускорении — ровно та беда, которую в замере не видно.
  */
 onRuleTuningApplied(() => {
-  const { income, speed } = ruleTuning();
+  const { income, speed, killBounty } = ruleTuning();
 
   BASE_INCOME_PER_TICK = Math.max(1, Math.round(BASE_INCOME_PER_TICK_BY_DESIGN * income));
+  // Доля округляется к целым миллионным: `applyPpm` делит на миллион,
+  // и дробный множитель дал бы дробную награду — то есть плавающую точку
+  // в состоянии мира, которой ядру иметь нельзя.
+  TOWER_KILL_BOUNTY_PPM = Math.max(1, Math.round(TOWER_KILL_BOUNTY_PPM_BY_DESIGN * killBounty));
   BASE_SPEED_UNITS_PER_TICK = Math.max(1, Math.round(BASE_SPEED_BY_DESIGN * speed));
 
   UNIT_STATS = buildUnitStats();

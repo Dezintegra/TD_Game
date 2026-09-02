@@ -5,6 +5,7 @@ import {
   SEPARATION_WALL_CLEARANCE,
   STRUCTURE_STATS,
   StructureKind,
+  TOWER_KILL_BOUNTY_PPM,
   UNIT_SEPARATION_RADIUS,
   UNIT_STATS,
   UnitType,
@@ -143,6 +144,33 @@ describe('настройка правил', () => {
     expect(BASE_INCOME_PER_TICK).toBe(income);
     expect(UNIT_STATS[UnitType.Assault].speed).toBe(speed);
     expect(STRUCTURE_STATS[StructureKind.TowerBasic].health).toBe(tower);
+  });
+
+  it('награда за убийство двигается и возвращается сбросом', () => {
+    const byDesign = TOWER_KILL_BOUNTY_PPM;
+
+    applyRuleTuning({ killBounty: 2 });
+    expect(TOWER_KILL_BOUNTY_PPM).toBe(byDesign * 2);
+    // Развёртка обещана уровнями 1/2/4, и верхний обязан доехать так же.
+    applyRuleTuning({ killBounty: 4 });
+    expect(TOWER_KILL_BOUNTY_PPM).toBe(byDesign * 4);
+
+    resetRuleTuning();
+    expect(TOWER_KILL_BOUNTY_PPM).toBe(byDesign);
+  });
+
+  it('награда за убийство не трогает ни доход, ни цены', () => {
+    // Проверка второго рода, ради которой этот файл и заведён: множитель
+    // обязан двигать ровно одно. Награда выражена долей ЦЕНЫ убитого,
+    // и стоило бы ей поехать вместе с долей — замер получил бы сумму
+    // двух правок вместо одной.
+    const income = BASE_INCOME_PER_TICK;
+    const assault = UNIT_STATS[UnitType.Assault].cost;
+
+    applyRuleTuning({ killBounty: 4 });
+
+    expect(BASE_INCOME_PER_TICK).toBe(income);
+    expect(UNIT_STATS[UnitType.Assault].cost).toBe(assault);
   });
 
   it('множители складываются, а не отменяют друг друга', () => {

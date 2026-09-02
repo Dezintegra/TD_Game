@@ -66,7 +66,7 @@
 
 ## 3. Множитель правил и ключ арены
 
-- [ ] 3.1 Завести седьмое поле `killBounty` в `RuleTuning`
+- [x] 3.1 Завести седьмое поле `killBounty` в `RuleTuning`
       (`packages/shared/src/rules.ts`), умолчание — единица. Долю
       в `balance.ts` собирать функцией и перевыдавать через
       `onRuleTuningApplied`, как это сделано у прочих величин.
