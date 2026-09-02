@@ -9,8 +9,8 @@ import {
   asTickNumber,
   cellsToUnits,
 } from '@td/shared';
-import { createWorld } from '@td/sim';
-import type { StructureState, UnitState, WorldState } from '@td/sim';
+import { cellIndex, createWorld } from '@td/sim';
+import type { NukeState, StructureState, UnitState, WorldState } from '@td/sim';
 import type { Graphics } from 'pixi.js';
 import {
   MINIMAP_ASPECT,
@@ -22,6 +22,7 @@ import {
 } from './minimap.js';
 import type { MinimapColors } from './minimap.js';
 import { MAP_BOUNDS, screenToWorld, worldToScreen } from './iso.js';
+import { traceGroundCircle } from './ground-circle.js';
 
 /**
  * Миникарта показывает тот же мир, что и поле, и главное её свойство —
@@ -343,5 +344,118 @@ describe('отрисовка миникарты', () => {
     // И это именно прямоугольник, а не выродившийся в отрезок.
     expect(Math.abs(b.x - a.x)).toBeGreaterThan(1);
     expect(Math.abs(c.y - b.y)).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * Ядерный удар на миникарте.
+ *
+ * Игрок видит за раз около трети поля, а удар летит три секунды. Метка
+ * на поле помогает лишь тому, кто в эту часть поля сейчас смотрит; удар,
+ * идущий в невидимую треть, без миникарты для игрока не существует
+ * до самого взрыва.
+ */
+const nuke = (id: number, owner: number, cell: number, radiusCells: number): NukeState => ({
+  id: asEntityId(id),
+  owner: asPlayerId(owner),
+  cell,
+  detonateAtTick: asTickNumber(30),
+  radius: cellsToUnits(radiusCells),
+  damage: 500,
+});
+
+/** Мир без сущностей: остаются одни удары, и разбирать нарисованное просто. */
+const onlyNukes = (nukes: readonly NukeState[]): WorldState => {
+  return { ...world, structures: [], units: [], generals: [], nukes } as WorldState;
+};
+
+const drawNukes = (nukes: readonly NukeState[], localPlayer = 0): readonly Shape[] => {
+  const { graphics, shapes } = tracing();
+  drawMinimapEntities(graphics, onlyNukes(nukes), asPlayerId(localPlayer), [], layout, colors);
+  return shapes;
+};
+
+/** Габарит ломаной: круг удара — единственное, что рисуется отрезками. */
+const ringSizeOf = (shapes: readonly Shape[]): { width: number; height: number } => {
+  const points = shapes.filter((shape) => shape.kind === 'point');
+  const extent = extentOf(points);
+
+  return { width: extent.maxX - extent.minX, height: extent.maxY - extent.minY };
+};
+
+describe('ядерный удар на миникарте', () => {
+  it('матч без ударов миникарту не меняет ничем', () => {
+    expect(drawNukes([])).toHaveLength(0);
+  });
+
+  it('удар в полёте даёт круг и отметку эпицентра', () => {
+    const shapes = drawNukes([nuke(1, 1, cellIndex(20, 20), 4)]);
+
+    const points = shapes.filter((shape) => shape.kind === 'point');
+    const circles = shapes.filter((shape) => shape.kind === 'circle');
+
+    // Круг — замкнутая ломаная, а не пара отрезков.
+    expect(points.length).toBeGreaterThan(8);
+    const first = points[0];
+    const last = points[points.length - 1];
+    expect(first).toBeDefined();
+    expect(last).toBeDefined();
+    if (first === undefined || last === undefined) return;
+
+    expect(last.x).toBeCloseTo(first.x, 9);
+    expect(last.y).toBeCloseTo(first.y, 9);
+
+    // И отдельная отметка эпицентра: центр эллипса в сорок точек
+    // поперёк на глаз не определяется.
+    expect(circles).toHaveLength(1);
+  });
+
+  it('после удара отметка пропадает', () => {
+    // Отметка целиком выводится из world.nukes. Взорвавшейся ракеты
+    // там уже нет — значит, и убирать её отдельно не приходится.
+    expect(drawNukes([nuke(1, 1, cellIndex(20, 20), 4)]).length).toBeGreaterThan(0);
+    expect(drawNukes([])).toHaveLength(0);
+  });
+
+  it('круг следует радиусу ИМЕННО ЭТОЙ ракеты, а не балансной постоянной', () => {
+    // Радиус прокачивается. Показывать базовые четыре клетки там, где
+    // прокачанный удар накроет восемь, значило бы обещать границу,
+    // по которой игрок уводит войска, — и хоронить их по настоящей.
+    const small = ringSizeOf(drawNukes([nuke(1, 1, cellIndex(20, 20), 4)]));
+    const large = ringSizeOf(drawNukes([nuke(1, 1, cellIndex(20, 20), 8)]));
+
+    expect(large.width).toBeCloseTo(small.width * 2, 6);
+    expect(large.height).toBeCloseTo(small.height * 2, 6);
+  });
+
+  it('круг растянут проекцией ровно так же, как на поле', () => {
+    // Ровный круг соврал бы о накрываемой площади — то есть ровно о том,
+    // ради чего нарисован. Две картинки одного удара расходиться не вправе.
+    const shapes = drawNukes([nuke(1, 1, cellIndex(20, 20), 4)]);
+    const onMinimap = ringSizeOf(shapes);
+
+    // Число отрезков берётся из нарисованного, а не вписывается сюда:
+    // сравнивать надо ту же ломаную, а не ту же фигуру при другом шаге.
+    const steps = shapes.filter((shape) => shape.kind === 'point').length - 1;
+
+    const field = tracing();
+    traceGroundCircle(field.graphics, 20.5, 20.5, 4, worldToScreen, steps);
+    const onField = ringSizeOf(field.shapes);
+
+    expect(onMinimap.width / onMinimap.height).toBeCloseTo(onField.width / onField.height, 6);
+  });
+
+  it('отметка эпицентра одного размера в любом углу карты', () => {
+    // Она — такая же точка, как отметки юнитов, и правилу постоянного
+    // экранного размера подчиняется. Растянутая проекцией, она читалась бы
+    // направлением, которого у неё нет.
+    const near = cellIndex(2, 2);
+    const far = cellIndex(MAP_WIDTH_CELLS - 3, MAP_HEIGHT_CELLS - 3);
+    const shapes = drawNukes([nuke(1, 1, near, 4), nuke(2, 1, far, 4)]);
+
+    const circles = shapes.filter((shape) => shape.kind === 'circle');
+    expect(circles).toHaveLength(2);
+    expect(circles[0]?.width).toBe(circles[1]?.width);
+    expect(circles[0]?.width).toBe(circles[0]?.height);
   });
 });
