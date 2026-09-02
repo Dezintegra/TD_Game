@@ -323,6 +323,15 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * без локальной git заведёт сам, с отслеживанием, — и это ровно то,
      * что нужно после потери дерева вместе с локальной веткой.
      */
+    /**
+     * Путь дерева задачи в той форме, в какой его хранит реестр: от корня
+     * и через разделитель этой системы. Сверка получает пути из
+     * `git worktree list` абсолютными, а запуск этапа склеивает путь
+     * с корнем — абсолютный после склейки указывал бы в никуда.
+     * Проверено 02.09.2026: усыновлённое дерево 0088 дало `spawn ENOENT`.
+     */
+    worktreePathFor: (taskId) => join(config.worktreeDir, taskId),
+
     addWorktree(taskId, branch) {
       const path = join(config.worktreeDir, taskId);
       const base = `${config.remote}/${config.mainBranch}`;
