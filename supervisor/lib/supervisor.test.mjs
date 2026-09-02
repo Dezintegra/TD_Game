@@ -42,14 +42,28 @@ function harness(over = {}) {
   };
 
   const logsAsked = [];
+  const probed = [];
 
   const supervisor = createSupervisor({
     config: { ...config, ...over.config },
     root: '/repo',
     spawn,
     killTree: (pid) => killed.push(pid),
+    // Опрос системы подставной: живых процессов проверки не поднимают.
+    // По умолчанию отвечает «процесс жив, образ claude.exe» — так выглядит
+    // только что порождённый этап.
+    probe:
+      over.probe === null
+        ? null
+        : (pid) => {
+            probed.push(pid);
+            return over.probe ? over.probe(pid) : { known: true, alive: true, image: 'claude.exe' };
+          },
+    machine: over.machine ?? 'станция-1',
+    supervisorPid: over.supervisorPid ?? 777,
     now: over.now ?? (() => NOW),
-    saveStages: (stages) => saved.push({ ...stages }),
+    nowMs: over.nowMs ?? (() => 1_000_000),
+    saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
     stages: over.stages ?? {},
     log: (line) => logged.push(line),
     readStageLog: (taskId, stage) => {
@@ -67,7 +81,7 @@ function harness(over = {}) {
     await sleep(0);
   };
 
-  return { supervisor, children, killed, logged, saved, answer, logsAsked };
+  return { supervisor, children, killed, logged, saved, answer, logsAsked, probed };
 }
 
 const assignment = (over = {}) => ({
@@ -292,6 +306,95 @@ describe('отметка начала этапа', () => {
     const { supervisor } = harness({ stages: { '0001-one:design': 'прежняя' } });
     expect(supervisor.lastSession('0001-one', 'design')).toBe('прежняя');
     expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(null);
+  });
+});
+
+describe('дескриптор живого этапа', () => {
+  // Всё изменение затевалось ради него. Пока живость жила единственным
+  // экземпляром в памяти, преемник, взявший замок, не видел ни одного этапа,
+  // порождённого прежним супервизором: он выдавал живому этапу продолжение
+  // и заводил второй процесс на его рабочем дереве (0074, 0030).
+
+  it('после порождения лежит на диске с номером процесса и опознанием', () => {
+    const { supervisor, saved, children } = harness();
+    supervisor.spawnStage(assignment());
+
+    const live = saved.at(-1)['0001-one:design'].live;
+    expect(live).toMatchObject({
+      pid: children.at(-1).pid,
+      image: 'claude.exe',
+      machine: 'станция-1',
+      supervisorPid: 777,
+    });
+    expect(live.startedAt).toBe(NOW);
+    expect(live.timeoutMs).toBeGreaterThan(0);
+  });
+
+  it('опознание спрашивается у системы номером порождённого процесса', () => {
+    // Не выводится из настройки: `claudeCommand` равно «claude», на Windows
+    // это обёртка `.cmd`, и образ живого процесса ей не равен — сверка
+    // с настройкой давала бы несовпадение всегда.
+    const { supervisor, children, probed } = harness();
+    supervisor.spawnStage(assignment());
+    expect(probed).toEqual([children.at(-1).pid]);
+  });
+
+  it('не спросилось — дескриптор всё равно ложится, но без опознания', () => {
+    const { supervisor, saved, logged } = harness({
+      probe: () => ({ known: false, alive: false, image: null }),
+    });
+    supervisor.spawnStage(assignment());
+
+    const live = saved.at(-1)['0001-one:design'].live;
+    expect(live.pid).toBeTruthy();
+    expect(live.image).toBeUndefined();
+    expect(logged.join()).toContain('без опознания');
+  });
+
+  it('упавший опрос системы порождение не отменяет', () => {
+    // Супервизор ведёт все задачи разом: падать на опросе одного процесса
+    // он не вправе, а этап уже порождён и работает.
+    const { supervisor, saved } = harness({
+      probe: () => {
+        throw new Error('нет такой команды');
+      },
+    });
+    expect(supervisor.spawnStage(assignment()).ok).toBe(true);
+    expect(saved.at(-1)['0001-one:design'].live.image).toBeUndefined();
+  });
+
+  it('после завершения этапа дескриптора нет, а память о сессии осталась', async () => {
+    const { supervisor, saved, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+
+    expect(saved.at(-1)['0001-one:design'].live).toBeUndefined();
+    expect(supervisor.lastSession('0001-one', 'design')).toBe('сессия-от-приложения');
+    expect(supervisor.stageStartedAt('0001-one', 'design')).toBe(NOW);
+  });
+
+  it('дескриптор стирается и при исходе без отчёта', async () => {
+    // Оставленный, он объявил бы задачу занятой навсегда — и это было бы
+    // хуже прежней беды, а не лучше.
+    const { supervisor, saved, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: 'без отчёта', session_id: null }));
+
+    expect(saved.at(-1)['0001-one:design'].live).toBeUndefined();
+  });
+
+  it('несостоявшееся порождение дескриптора не оставляет', () => {
+    const { supervisor, saved } = harness({ stillborn: true });
+    supervisor.spawnStage(assignment());
+    expect(saved).toEqual([]);
+  });
+
+  it('запись прежней раскладки читается без дескриптора и без ошибки', () => {
+    // Так выглядит первый запуск после обновления: значением была голая
+    // строка, и отсутствие дескриптора означает «этап не идёт».
+    const { supervisor } = harness({ stages: { '0001-one:design': 'прежняя' } });
+    expect(supervisor.lastSession('0001-one', 'design')).toBe('прежняя');
+    expect(supervisor.running()).toEqual([]);
   });
 });
 

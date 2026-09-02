@@ -19,7 +19,7 @@ import { createGit } from '../lib/git.mjs';
 import { isPaused, readAnswers, readRegistry, readStages, readTasks } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
-import { createKillTree } from '../lib/run-stage.mjs';
+import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
@@ -316,6 +316,14 @@ const supervisor = createSupervisor({
   home,
   spawn,
   killTree: createKillTree((program, args) => runCommand(args, program)),
+  // Опрос системы о процессе по номеру. Тем же способом, что и снятие:
+  // одной внешней командой, ответ вместо исключения.
+  probe: createProbeProcess((program, args) => runCommand(args, program)),
+  // Дескриптор живого этапа называет станцию и своего супервизора: местное
+  // хранилище состояния можно скопировать, а номер процесса с другой машины
+  // здесь не значит ничего.
+  machine: hostname(),
+  supervisorPid: process.pid,
   saveStages,
   stages: readStages(root, config),
   say,

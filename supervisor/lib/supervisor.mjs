@@ -25,6 +25,19 @@ export function createSupervisor({
   home = root,
   spawn,
   killTree,
+  /**
+   * Опрос системы о процессе по номеру: `(pid) => { known, alive, image }`.
+   * Приходит доводом наравне с порождением и снятием — тогда сироты
+   * проверяются за миллисекунды и без единого живого процесса.
+   */
+  probe = null,
+  /**
+   * Имя станции и номер собственного процесса. Доводами, а не чтением
+   * `node:os` внутри: счётная часть супервизора уже принимает так же
+   * и часы, и порождение.
+   */
+  machine = null,
+  supervisorPid = null,
   now = () => new Date().toISOString(),
   /** Часы в миллисекундах: длительности считаются ими, а не разбором строк. */
   nowMs = () => Date.now(),
@@ -43,8 +56,13 @@ export function createSupervisor({
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
   /**
-   * Память об этапах: `taskId:stage` → `{ sessionId, startedAt }`.
+   * Память об этапах: `taskId:stage` → `{ sessionId, startedAt, live }`.
    * Переживает перезапуск супервизора.
+   *
+   * `live` — дескриптор идущего процесса. Он и есть всё изменение: пока
+   * живость жила единственным экземпляром в памяти, преемник, взявший замок,
+   * не видел ни одного этапа, порождённого прежним супервизором, — и выдавал
+   * живому этапу продолжение, заводя второй процесс на его рабочем дереве.
    */
   const known = Object.fromEntries(
     Object.entries(stages).map(([at, value]) => [at, remembered(value)]),
@@ -194,7 +212,14 @@ export function createSupervisor({
       // отвечает на вопрос «этот ли заход сделал коммит», а продолжатель
       // приходит к чужим с его точки зрения коммитам.
       const at = key(assignment.taskId, assignment.stage);
-      known[at] = { sessionId, startedAt: known[at]?.startedAt ?? now() };
+      known[at] = {
+        sessionId,
+        startedAt: known[at]?.startedAt ?? now(),
+        // Дескриптор ложится на диск ТЕМ ЖЕ действием, что и память о сессии:
+        // обе записи об одном процессе, и разъехаться им нельзя. Отдельный
+        // файл дал бы второе место, где можно забыть стереть.
+        live: describeLive(handle.pid, timeoutMs, assignment),
+      };
       saveStages(known);
 
       children.set(assignment.taskId, child);
@@ -274,6 +299,59 @@ export function createSupervisor({
     );
   }
 
+  /**
+   * Дескриптор живого этапа: чем он опознаётся и по чему судится.
+   *
+   * Опознание спрашивается у системы прямо здесь, при рождении процесса,
+   * а не выводится из настройки. Причина в том, что `claudeCommand` равно
+   * `claude`, на Windows это обёртка `.cmd`, и образ живого процесса ей
+   * не равен: сверка с настройкой давала бы несовпадение всегда, то есть
+   * тихо выключила бы всю проверку.
+   *
+   * Отметки времени две, и обе нужны. Строкой — для записи в журнал задачи,
+   * которую будет читать человек; числом — для счёта срока, чтобы не
+   * разбирать строку и не гадать, что делать с неразобравшейся. Так же
+   * устроен и дескриптор собственного ребёнка.
+   */
+  function describeLive(pid, timeoutMs, assignment) {
+    const live = {
+      pid,
+      machine,
+      supervisorPid,
+      startedAt: now(),
+      startedMs: nowMs(),
+      timeoutMs,
+    };
+
+    const seen = ask(pid);
+    if (seen.known && seen.image) return { ...live, image: seen.image };
+
+    // Дескриптор без опознания — законная запись, а не поломка: судьба
+    // такого сироты разобрана отдельно («жив, но неопознан»), и снимать
+    // его нельзя ни при каких условиях. Молчать об этом всё же нельзя:
+    // из журнала цикла видно, что опрос системы не работает вовсе.
+    log(
+      `дескриптор ${assignment.taskId}:${assignment.stage} записан без опознания процесса ` +
+        `${pid}: ${probe ? 'спросить систему не удалось' : 'опрос системы не передан'}`,
+    );
+    return live;
+  }
+
+  /**
+   * Спросить систему о процессе, не дав ей уронить супервизор.
+   *
+   * Неудача опроса — это «спросить не удалось», а НЕ «процесса нет»: первое
+   * оставляет этап идущим до его срока, второе отпускает рабочее дерево.
+   */
+  function ask(pid) {
+    if (!probe) return { known: false, alive: false, image: null };
+    try {
+      return probe(pid) ?? { known: false, alive: false, image: null };
+    } catch {
+      return { known: false, alive: false, image: null };
+    }
+  }
+
   /** Состояние каждого живого этапа: сколько идёт, сколько осталось, чем занят. */
   function pulse() {
     for (const child of children.values()) {
@@ -331,11 +409,19 @@ export function createSupervisor({
         `, отказов ${answer.denials.length}`,
     );
 
+    // Дескриптор стирается при ЛЮБОМ исходе — отчётом, отказом, снятием
+    // по сроку, — потому что процесса больше нет, а дескриптор говорит
+    // ровно о нём. Оставленный, он объявил бы задачу занятой навсегда.
+    //
     // Идентификатор из ответа точнее выданного: приложение вправе завести
-    // свой, и возобновлять надо именно его.
-    if (answer.sessionId) {
-      const at = key(child.taskId, child.stage);
-      known[at] = { ...known[at], sessionId: answer.sessionId };
+    // свой, и возобновлять надо именно его. Обе правки — одной записью:
+    // разделив их, мы получили бы миг, в котором на диске лежит дескриптор
+    // мёртвого процесса.
+    const at = key(child.taskId, child.stage);
+    if (known[at]) {
+      const kept = { ...known[at] };
+      delete kept.live;
+      known[at] = answer.sessionId ? { ...kept, sessionId: answer.sessionId } : kept;
       saveStages(known);
     }
 
@@ -400,10 +486,18 @@ export function createSupervisor({
  * обязательно: супервизор перезапускают сторожем, и первый же запуск после
  * обновления придёт к файлу прежнего вида. Отметки начала в нём нет, и это
  * честный ответ «сверять нечем», а не поломка.
+ *
+ * Дескриптор живого этапа переносится как есть. Его отсутствие означает
+ * «этап не идёт» — тоже честный ответ, а не поломка: так выглядит и память
+ * о законченном этапе, и файл прежней раскладки.
  */
 function remembered(value) {
   if (typeof value === 'string') return { sessionId: value, startedAt: null };
-  return { sessionId: value?.sessionId ?? null, startedAt: value?.startedAt ?? null };
+  const kept = {
+    sessionId: value?.sessionId ?? null,
+    startedAt: value?.startedAt ?? null,
+  };
+  return value?.live ? { ...kept, live: value.live } : kept;
 }
 
 /** Вывод процесса целиком плюс то, чего в нём нет: срок, стоимость, отказы. */
