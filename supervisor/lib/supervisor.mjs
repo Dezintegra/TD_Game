@@ -67,16 +67,37 @@ export function createSupervisor({
   const known = Object.fromEntries(
     Object.entries(stages).map(([at, value]) => [at, remembered(value)]),
   );
+  /**
+   * Осиротевшие этапы: `taskId` → `{ taskId, stage, at, live }`.
+   *
+   * Сирота — этап, чей дескриптор прочитан с диска, а породил его не этот
+   * супервизор. Живой сирота ничем не отличается от собственного ребёнка
+   * с точки зрения счёта: место занято, сессия не выдаётся, второй процесс
+   * на его рабочем дереве не заводится.
+   */
+  const orphans = new Map();
   /** Часы пульса. Заводятся с первым этапом и снимаются с последним. */
   let pulseTimer = null;
 
   const key = (taskId, stage) => `${taskId}:${stage}`;
 
+  adoptOrphans();
+
   return {
     reports,
 
-    /** Идущие этапы для сканера: вся картина живости, какая есть. */
-    running: () => [...children.values()].map(({ taskId, stage }) => ({ taskId, stage })),
+    /**
+     * Идущие этапы для сканера: вся картина живости, какая есть.
+     *
+     * Собственные дети и живые сироты идут одним перечнем намеренно. Все
+     * четыре трактовки живости в сканере — негодная карточка, хвост ветки,
+     * выдача сессии, счёт мест — для сироты верны дословно, и особый случай
+     * там означал бы, что сирота не то же самое, что идущий этап. А он то же.
+     */
+    running: () => [
+      ...[...children.values()].map(({ taskId, stage }) => ({ taskId, stage })),
+      ...[...orphans.values()].map(({ taskId, stage }) => ({ taskId, stage })),
+    ],
 
     /** Идентификатор сессии прошлого захода на этот этап, если он был. */
     lastSession: (taskId, stage) => known[key(taskId, stage)]?.sessionId ?? null,
@@ -110,8 +131,8 @@ export function createSupervisor({
       return true;
     },
 
-    /** Сколько этапов идёт прямо сейчас. */
-    busy: () => children.size,
+    /** Сколько этапов идёт прямо сейчас — вместе с осиротевшими. */
+    busy: () => children.size + orphans.size,
 
     /**
      * Породить этап.
@@ -129,6 +150,16 @@ export function createSupervisor({
     spawnStage(assignment) {
       if (children.has(assignment.taskId)) {
         return { ok: false, reason: 'busy', why: 'по этой задаче уже идёт этап' };
+      }
+      // Живой сирота держит задачу так же, как собственный ребёнок. Без этой
+      // проверки на его рабочем дереве завёлся бы второй процесс — ровно то,
+      // ради отмены чего дескриптор и кладётся на диск.
+      if (orphans.has(assignment.taskId)) {
+        return {
+          ok: false,
+          reason: 'busy',
+          why: 'по этой задаче идёт этап, осиротевший при смене супервизора',
+        };
       }
       if (children.size >= config.maxConcurrent) {
         return { ok: false, reason: 'busy', why: 'все места заняты' };
@@ -297,6 +328,94 @@ export function createSupervisor({
       TAG.stage,
       said.map((one) => `${child.taskId} ${one}`),
     );
+  }
+
+  /**
+   * Подобрать сирот из прочитанного с диска состояния.
+   *
+   * Всякая запись с дескриптором — сирота: собственных детей у супервизора
+   * в этот миг нет вовсе, а дескриптор пишется при рождении процесса
+   * и стирается при его конце. Значит он остался от прежнего супервизора,
+   * и вопрос ровно один — жив ли ещё тот процесс.
+   *
+   * Дескриптор чужой станции не судится: местное хранилище состояния можно
+   * скопировать, а номер процесса с другой машины здесь не значит ничего —
+   * его вполне мог занять кто угодно.
+   */
+  function adoptOrphans() {
+    let changed = false;
+    for (const [at, value] of Object.entries(known)) {
+      if (!value?.live) continue;
+
+      if (machine && value.live.machine && value.live.machine !== machine) {
+        log(
+          `дескриптор ${at} записан станцией «${value.live.machine}», а мы «${machine}»: ` +
+            'не судим и стираем — номер процесса чужой машины здесь ничего не значит',
+        );
+        delete value.live;
+        changed = true;
+        continue;
+      }
+
+      const cut = at.lastIndexOf(':');
+      orphans.set(at.slice(0, cut), {
+        taskId: at.slice(0, cut),
+        stage: at.slice(cut + 1),
+        at,
+        live: value.live,
+      });
+    }
+    if (changed) saveStages(known);
+    judgeOrphans();
+  }
+
+  /**
+   * Опознать каждого сироту и отпустить тех, чей процесс кончился.
+   *
+   * Живость сироты — конъюнкция: номер существует И опознание совпало
+   * с записанным. Одного номера мало: система их переиспользует.
+   */
+  function judgeOrphans() {
+    for (const orphan of [...orphans.values()]) {
+      const verdict = judgeOrphan(orphan);
+      if (verdict === 'ours' || verdict === 'unidentified') continue;
+
+      orphans.delete(orphan.taskId);
+      log(
+        `этап ${orphan.at} осиротел при смене супервизора и ${
+          verdict === 'gone'
+            ? 'кончился'
+            : 'больше не свой: номер занял посторонний процесс, снимать его нельзя'
+        }: процесс ${orphan.live.pid}, начат ${orphan.live.startedAt}`,
+      );
+      forget(orphan);
+    }
+  }
+
+  /**
+   * Что стало с осиротевшим процессом. Исходов четыре, и путать их дорого:
+   *
+   * - `gone`         — процесса с таким номером нет; этап кончился;
+   * - `ours`         — номер есть, и опознание совпало с записанным;
+   * - `stale`        — номер есть, но опознание другое: номер переиспользован;
+   * - `unidentified` — спросить не удалось либо опознания нет в дескрипторе.
+   *
+   * Последний исход — не разновидность первого, и в этом всё дело. Объявив
+   * неопознанного исчезнувшим, мы выдали бы продолжение живому этапу
+   * и завели бы второй процесс на его рабочем дереве.
+   */
+  function judgeOrphan(orphan) {
+    const seen = ask(orphan.live.pid);
+    if (seen.known && !seen.alive) return 'gone';
+    if (!seen.known || !orphan.live.image) return 'unidentified';
+    return seen.image === orphan.live.image ? 'ours' : 'stale';
+  }
+
+  /** Стереть дескриптор с диска: процесса, о котором он говорил, больше нет. */
+  function forget(orphan) {
+    if (!known[orphan.at]?.live) return;
+    delete known[orphan.at].live;
+    saveStages(known);
   }
 
   /**
