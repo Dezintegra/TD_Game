@@ -114,7 +114,13 @@ export function runCycle({ git, state, config, now, pid, lock, isAlive, ourAutho
  * Действия, которые пишут в главную ветку. При запрете записей они
  * откладываются, а всё остальное продолжает работать.
  */
-const WRITES_TO_MAIN = ['transfer-report', 'answer-question', 'start-stage', 'fail-stage'];
+const WRITES_TO_MAIN = [
+  'transfer-report',
+  'answer-question',
+  'return-task',
+  'start-stage',
+  'fail-stage',
+];
 
 /**
  * Вправе ли цикл завершиться.

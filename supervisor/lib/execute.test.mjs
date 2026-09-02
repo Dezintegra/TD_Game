@@ -839,6 +839,81 @@ describe('ответ владельца продукта', () => {
   });
 });
 
+describe('возврат из ошибки по вине конвейера', () => {
+  const fallen = (over = {}) =>
+    task({
+      status: 'failed',
+      returnTo: 'implement',
+      attempts: { continuations: 2, cycleFailures: 1, rejections: 0, spawnFailures: 0 },
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 },
+      ...over,
+    });
+  const back = {
+    kind: 'return-task',
+    taskId: '0001-one',
+    returnTo: 'implement',
+    fixedBy: ['0091-fix'],
+  };
+
+  it('возвращает в состояние возврата, обнуляет попытки и наращивает счёт', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    const [result] = await execute([back], io);
+
+    expect(result).toMatchObject({ result: 'done', status: 'implement' });
+    const moved = io.tasks.get('0001-one');
+    expect(moved.status).toBe('implement');
+    expect(moved.returnTo).toBeNull();
+    expect(moved.attempts).toEqual({
+      continuations: 0,
+      cycleFailures: 0,
+      rejections: 0,
+      spawnFailures: 0,
+    });
+    // Вердикт снят, счёт вырос: судить о задаче будет следующий разбор.
+    expect(moved.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 1 });
+  });
+
+  it('журнал называет причину возврата и закрытые починки поимённо', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    await execute([back], io);
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('failed → implement');
+    expect(journal).toContain('причина падения была в конвейере');
+    expect(journal).toContain('починки закрыты: 0091-fix');
+    expect(journal).toContain('Возврат 1 из 2');
+  });
+
+  it('сессия упавшего этапа забывается: новая читает свежие правила', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    await execute([back], io);
+    expect(io.steps).toContain('забыта сессия 0001-one:implement');
+  });
+
+  it('когда чинить было нечего, так и пишет', async () => {
+    const io = fakeIo({
+      tasks: [fallen({ recovery: { causedBy: 'pipeline', fixedBy: [], returns: 1 } })],
+    });
+    await execute([{ ...back, fixedBy: [] }], io);
+    expect(io.journals.get('0001-one')).toContain('чинить было нечего');
+    expect(io.tasks.get('0001-one').recovery.returns).toBe(2);
+  });
+
+  it('задачу, которую человек уже поднял, второй раз не трогает', async () => {
+    const io = fakeIo({ tasks: [fallen({ status: 'implement', returnTo: null })] });
+    const [result] = await execute([back], io);
+    expect(result.result).toBe('skipped');
+    expect(io.steps).toEqual([]);
+  });
+
+  it('без конвейерного вердикта не возвращает', async () => {
+    const io = fakeIo({
+      tasks: [fallen({ recovery: { causedBy: 'task', fixedBy: [], returns: 0 } })],
+    });
+    const [result] = await execute([back], io);
+    expect(result.result).toBe('skipped');
+  });
+});
+
 describe('остановка задачи', () => {
   const stop = (taskId = '0001-one') => ({
     kind: 'fail-stage',

@@ -634,6 +634,85 @@ describe('ожидание и уборка', () => {
   });
 });
 
+describe('возврат из ошибки по вине конвейера', () => {
+  const fallen = (recovery, over = {}) =>
+    task({ id: '0041-one', status: 'failed', returnTo: 'implement', recovery, ...over });
+  const fix = (status) => task({ id: '0091-fix', status, type: 'feature' });
+  const returned = { kind: 'return-task', taskId: '0041-one', returnTo: 'implement' };
+
+  it('чинить нечего — возвращается ближайшим оборотом', () => {
+    // Работа цела, причина в конвейере и снята: решения в подъёме нет,
+    // одна задержка. 02.09.2026 так стояли пять задач с pull request.
+    const result = run({ tasks: [fallen({ causedBy: 'pipeline', fixedBy: [], returns: 0 })] });
+    expect(result.actions).toContainEqual({ ...returned, fixedBy: [] });
+  });
+
+  it('пока починка не закрыта, задача ждёт, и журнал цикла называет, чего', () => {
+    const result = run({
+      tasks: [
+        fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 }),
+        fix('implement'),
+      ],
+    });
+    expect(kinds(result)).not.toContain('return-task');
+    expect(result.notes.join()).toContain('ждёт починок конвейера: 0091-fix (implement)');
+  });
+
+  it('закрытая починка возвращает задачу', () => {
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 }), fix('closed')],
+    });
+    expect(result.actions).toContainEqual({ ...returned, fixedBy: ['0091-fix'] });
+  });
+
+  it('починка в карантине — не закрыта, ждём', () => {
+    // Негодная карточка не читается задачей, но она есть — и может быть
+    // исправлена и доведена. Считать её закрытой значило бы вернуть задачу
+    // на ту же причину.
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 })],
+      invalid: [{ id: '0091-fix', problems: ['нет метки типа'], status: 'failed', flags: [] }],
+    });
+    expect(kinds(result)).not.toContain('return-task');
+    expect(result.notes.join()).toContain('0091-fix (не разобрана)');
+  });
+
+  it('починки, которой нет нигде, не ждут: она закрыта и убрана', () => {
+    // Идентификатор проверен при разборе, и исчезнуть иначе он не мог.
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 })],
+    });
+    expect(result.actions).toContainEqual({ ...returned, fixedBy: ['0091-fix'] });
+  });
+
+  it('причина в задаче или без вердикта — конвейер не трогает', () => {
+    for (const recovery of [
+      { causedBy: 'task', fixedBy: [], returns: 0 },
+      { causedBy: null, fixedBy: [], returns: 2 },
+      undefined,
+    ]) {
+      const result = run({ tasks: [fallen(recovery)] });
+      expect(result.actions, JSON.stringify(recovery)).toEqual([]);
+    }
+  });
+
+  it('без состояния возврата возвращать некуда, и это названо', () => {
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: [], returns: 0 }, { returnTo: null })],
+    });
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('возвращать некуда');
+  });
+
+  it('пауза останавливает и возврат', () => {
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: [], returns: 0 })],
+      paused: true,
+    });
+    expect(result.actions).toEqual([]);
+  });
+});
+
 describe('порядок действий', () => {
   it('хвост идёт раньше переноса отчёта', () => {
     const result = run({
