@@ -230,6 +230,132 @@ describe('неполная настройка', () => {
   });
 });
 
+describe('непокрытые команды этапа', () => {
+  /**
+   * Настройка, при которой команды выкладки не проходят: ровно сегодняшняя
+   * картина, только записанная короче. Открывать `ssh` в проверке нельзя —
+   * это решение владельца продукта (задача 0117), и подменять его выдуманной
+   * настройкой тут не приходится: проверяется сканер, а не правила.
+   */
+  const closed = { allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'], deny: [] };
+
+  /** Та же настройка, но с открытыми командами выкладки. */
+  const opened = {
+    allow: [
+      'Bash(ssh:*)',
+      'PowerShell(ssh:*)',
+      'Bash(node scripts/deploy.mjs:*)',
+      'PowerShell(node scripts/deploy.mjs:*)',
+    ],
+    deny: [],
+  };
+
+  const deploying = (over = {}) =>
+    task({ id: '0002-deploy', status: 'deploy', links: { pr: 7 }, ...over });
+
+  it('задача в выкладке не получает сессию и не растит продолжений', () => {
+    // За 02–03.09.2026 так сгорело семь задач подряд, все на одном и том же
+    // `ssh … dezintegra "true"`, и каждая забрала ещё и сессию разбора.
+    const result = run({
+      tasks: [deploying()],
+      registry: { entries: [entry('0002-deploy')] },
+      permissions: closed,
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(kinds(result)).not.toContain('fail-stage');
+    expect(result.notes.join()).toContain('ждёт починок конвейера');
+    expect(result.notes.join()).toContain('dezintegra "true"');
+  });
+
+  it('удержание не уводит в ошибку и при исчерпанных продолжениях', () => {
+    // Ошибка потребовала бы разбора — той самой второй сессии, ради отмены
+    // которой всё затеяно. А тратить продолжение не на что: сессии не было.
+    const result = run({
+      tasks: [deploying({ attempts: { continuations: 99, cycleFailures: 0 } })],
+      registry: { entries: [entry('0002-deploy')] },
+      permissions: closed,
+    });
+    expect(kinds(result)).not.toContain('fail-stage');
+  });
+
+  it('удержанная задача не занимает исполнителя', () => {
+    // Оставь её в счёте — и она держала бы единственное место навсегда:
+    // сессии нет, этап не кончается, место не освобождается. Вдобавок
+    // выкладка объявлена исключительным этапом, то есть требующим тишины.
+    const result = run({
+      tasks: [deploying(), task({ id: '0003-next' })],
+      registry: { entries: [entry('0002-deploy')] },
+      permissions: closed,
+    });
+    expect(result.actions).toContainEqual({
+      kind: 'start-stage',
+      taskId: '0003-next',
+      stage: 'design',
+    });
+    expect(result.notes.join()).not.toContain('исполнитель занят');
+    expect(result.notes.join()).not.toContain('машина должна молчать');
+  });
+
+  it('покрытые команды ничего не меняют', () => {
+    const result = run({
+      tasks: [deploying()],
+      registry: { entries: [entry('0002-deploy')] },
+      permissions: opened,
+    });
+    expect(result.actions).toContainEqual({
+      kind: 'continue-stage',
+      taskId: '0002-deploy',
+      stage: 'deploy',
+      reason: 'этапу нужна сессия, живого процесса нет',
+    });
+  });
+
+  it('без правил разрешений никто не удержан, но это названо', () => {
+    // «Не знаем, значит держим» остановило бы конвейер целиком из-за опечатки
+    // в пути к файлу настройки.
+    const result = run({
+      tasks: [deploying()],
+      registry: { entries: [entry('0002-deploy')] },
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(result.notes.join()).toContain('проверить нечем');
+  });
+
+  it('живой этап удержание не трогает', () => {
+    // Командам идущей сессии судья — среда, а не сканер: вмешиваться посреди
+    // работы значило бы отнимать у задачи уже начатый этап.
+    const result = run({
+      tasks: [deploying()],
+      registry: { entries: [entry('0002-deploy')] },
+      running: [{ taskId: '0002-deploy', stage: 'deploy' }],
+      permissions: closed,
+    });
+    expect(result.notes.join()).not.toContain('ждёт починок конвейера');
+  });
+
+  it('очередная задача не берётся, если её первому этапу команды не покрыты', () => {
+    // Перечень подаётся ДОВОДОМ, и это не украшение проверки. Боевой перечень
+    // объявлен `review` и `deploy`, а из очереди задача уходит в `design`,
+    // `benchmark` или `triage`: проверка на боевом перечне была бы
+    // вечнозелёной, а снятая ветка кода её бы пережила.
+    const result = run({
+      tasks: [task()],
+      permissions: closed,
+      stageCommands: { design: ['ssh -o BatchMode=yes dezintegra "true"'] },
+    });
+    expect(kinds(result)).not.toContain('start-stage');
+    expect(result.notes.join()).toContain('ждёт починок конвейера');
+    expect(result.notes.join()).toContain('«design»');
+  });
+
+  it('этап без объявленных команд не задерживается', () => {
+    // Молчание перечня значит «не проверяли», а не «всё плохо».
+    const result = run({ tasks: [task()], permissions: closed, stageCommands: {} });
+    expect(kinds(result)).toContain('start-stage');
+    expect(result.notes.join()).not.toContain('ждёт починок конвейера');
+  });
+});
+
 describe('слив перед самообновлением', () => {
   it('сессий не выдаём, идущее доделываем, опросы идут', () => {
     // Новый код супервизора на диске; перезапуск ждёт «нет этапов и отчётов».
