@@ -66,6 +66,99 @@ const SHELL_NOTE_MARKS = [
 ];
 
 /**
+ * Тела правил, снятых у Bash 03.09.2026, — снимок круга команд на день снятия.
+ *
+ * Перечень записан потому, что иначе потерю пары нечем поймать: снятое
+ * правило исчезает из файла бесследно, и сторожу неоткуда узнать, чья пара
+ * пропала. Это не движущаяся цель — законное сужение круга потребует стереть
+ * отсюда строку, то есть станет видно дифом и потребует довода. Ровно та
+ * громкость, ради которой заведено всё изменение.
+ *
+ * Исключение объявлено одно и поимённо: `git switch:*` пары не получает —
+ * переключение веток скиллы этапов запрещают словами, а разрешение осталось
+ * наследством от времён, когда запрета ещё не было.
+ */
+const COVERED_COMMANDS = [
+  'node supervisor/bin/cycle.mjs:*',
+  'node supervisor/bin/board.mjs:*',
+  'node supervisor/bin/snapshot.mjs:*',
+  'node supervisor/bin/launch.mjs --help',
+  'node supervisor/bin/board-setup.mjs',
+  'node .matchlog/*',
+  'git -C:*',
+  'git --no-pager:*',
+  'git status:*',
+  'git log:*',
+  'git diff:*',
+  'git add:*',
+  'git commit:*',
+  'git push:*',
+  'git fetch:*',
+  'git rev-list:*',
+  'git rev-parse:*',
+  'git worktree:*',
+  'git branch:*',
+  'gh pr:*',
+  'gh run:*',
+  'gh workflow:*',
+  'gh api:*',
+  'npx eslint:*',
+  'npx prettier:*',
+  'npx vitest:*',
+  'npx vite:*',
+  'npx playwright:*',
+  'npx tsc:*',
+  'openspec:*',
+  'pnpm install:*',
+  'pnpm build:*',
+  'pnpm e2e:perf:*',
+  'pnpm bench:tick:*',
+  'pnpm run',
+  'pnpm test:pipeline:*',
+  'node scripts/perf-run.mjs:*',
+];
+
+/** Единственное снятое правило, которому пара не заводится. */
+const UNPAIRED_COMMAND = 'git switch:*';
+
+const settings = () =>
+  JSON.parse(
+    readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+  );
+
+/** Правила `Bash(...)`, вернувшиеся в список разрешений. */
+const bashAllowRules = (permissions) =>
+  permissions.allow.filter((rule) => rule.startsWith('Bash('));
+
+/** Команды из перечня, у которых не стало правила `PowerShell(...)`. */
+const lostPairs = (permissions) =>
+  COVERED_COMMANDS.filter((body) => !permissions.allow.includes(`PowerShell(${body})`));
+
+/**
+ * Запреты, стоящие лишь в одной оболочке.
+ *
+ * Запреты остаются в обеих формах, хотя разрешений на Bash больше нет:
+ * запрет впрок ничего не стоит и переживает возврат разрешения. Сняв его
+ * вместе с разрешением, возврат Bash-правил сделали бы тихо опасным.
+ *
+ * Из сверки выведены правила, начинающиеся с оператора вызова `& ` — полный
+ * путь к `gh.exe` в кавычках. Форма эта у PowerShell своя, у Bash её нет
+ * вовсе, и требовать ей пару значило бы требовать бессмыслицы.
+ */
+const denyGapsBetweenShells = (permissions) => {
+  const bodies = { Bash: new Set(), PowerShell: new Set() };
+  for (const rule of permissions.deny) {
+    const wrapped = /^(Bash|PowerShell)\((.*)\)$/.exec(rule);
+    if (wrapped && !wrapped[2].startsWith('& ')) bodies[wrapped[1]].add(wrapped[2]);
+  }
+  const gaps = [];
+  for (const body of bodies.PowerShell) if (!bodies.Bash.has(body)) gaps.push(`Bash(${body})`);
+  for (const body of bodies.Bash)
+    if (!bodies.PowerShell.has(body)) gaps.push(`PowerShell(${body})`);
+  return gaps;
+};
+
+/**
  * Разбор скилла на блоки кода.
  *
  * Ограждения считаются попарно, как их считает разметка: первое открывает
@@ -237,5 +330,74 @@ describe('единственная оболочка: скиллы', () => {
       'Примеры общих памяток проекта, размеченные `bash`, этому правилу не перечат.',
     ].join('\n');
     expect(missingNoteMarks(halved)).toEqual(['не запрет действия, а не ту оболочку']);
+  });
+});
+
+describe('единственная оболочка: правила разрешений', () => {
+  it('в списке разрешений нет ни одного правила Bash', () => {
+    // Пока команда открыта в обеих оболочках, попытка позвать её не в той
+    // проходит гейт и падает ВНУТРИ команды — кодом 127 либо жалобой
+    // на отсутствие вспомогательной программы. Такой провал не попадает
+    // в перечень отказанных действий вовсе, и сессия толкует его как беду
+    // своей работы. Отказ разрешений, в отличие от него, называет причину
+    // сам и записывается в журнал цикла.
+    expect(bashAllowRules(settings().permissions)).toEqual([]);
+  });
+
+  it('вернувшееся правило Bash делает сторожа красным', () => {
+    // Проба на порчу: возврат стоит одной строки, а заметят его не раньше,
+    // чем очередная имплементация потеряет след этапа.
+    const returned = { allow: ['PowerShell(pnpm install:*)', 'Bash(pnpm install:*)'], deny: [] };
+    expect(bashAllowRules(returned)).toEqual(['Bash(pnpm install:*)']);
+  });
+
+  it('правило Bash в запретах сторожа не тревожит', () => {
+    // Сторож судит только разрешения. Запреты живут в обеих оболочках
+    // нарочно, и покрасить их значило бы потребовать снятия того, что стоит
+    // впрок и ничего не стоит.
+    const denyOnly = { allow: ['PowerShell(git push:*)'], deny: ['Bash(git push --force:*)'] };
+    expect(bashAllowRules(denyOnly)).toEqual([]);
+  });
+
+  it('у каждой снятой команды осталась пара PowerShell', () => {
+    // Снятие правил MUST NOT сужать круг доступных этапу команд. Проверяется
+    // это перечнем, а не сверкой файла с самим собой: снятое правило исчезает
+    // бесследно, и без записанного снимка потерю пары нечем поймать.
+    expect(lostPairs(settings().permissions)).toEqual([]);
+  });
+
+  it('исключение объявлено явно и в перечень не входит', () => {
+    // `git switch:*` — единственное из тридцати восьми снятых правил без
+    // пары. Проба сторожит не столько сам факт, сколько его объявленность:
+    // молчаливое исключение через полгода не отличить от забытой команды.
+    expect(COVERED_COMMANDS).not.toContain(UNPAIRED_COMMAND);
+    expect(settings().permissions.allow).not.toContain(`PowerShell(${UNPAIRED_COMMAND})`);
+  });
+
+  it('пропавшая пара делает сторожа красным и называет команду', () => {
+    const withoutPush = {
+      allow: settings().permissions.allow.filter((rule) => rule !== 'PowerShell(git push:*)'),
+      deny: [],
+    };
+    expect(lostPairs(withoutPush)).toEqual(['git push:*']);
+  });
+
+  it('запреты сохранены в обеих оболочках', () => {
+    expect(denyGapsBetweenShells(settings().permissions)).toEqual([]);
+  });
+
+  it('запрет, оставленный в одной оболочке, делает сторожа красным', () => {
+    const halfDenied = { allow: [], deny: ['PowerShell(git push --force:*)'] };
+    expect(denyGapsBetweenShells(halfDenied)).toEqual(['Bash(git push --force:*)']);
+  });
+
+  it('запрет с оператором вызова пары не требует', () => {
+    // Полный путь к `gh.exe` через `& "..."` — форма PowerShell, и у Bash её
+    // нет вовсе. Сторож, требующий ей пару, требовал бы бессмыслицы.
+    const callOperator = {
+      allow: [],
+      deny: ['PowerShell(& "C:\\Program Files\\GitHub CLI\\gh.exe" repo delete:*)'],
+    };
+    expect(denyGapsBetweenShells(callOperator)).toEqual([]);
   });
 });
