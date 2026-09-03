@@ -197,6 +197,58 @@ describe('цена состояния', () => {
   });
 });
 
+/**
+ * Команды, которыми этап ревью доводит изменение до `main`. Список короткий
+ * нарочно: сторожить надо тот путь, отказ на котором обнаружится только там,
+ * где рядом нет человека, — посреди вливания.
+ */
+const MERGE_PATH = ['gh pr view 1 --json state,isDraft', 'gh pr ready 1', 'gh pr merge 1 --merge'];
+
+/**
+ * Приставка правила: обёртка оболочки снята, хвост `:*` отброшен.
+ * Для чужой оболочки возвращается `null` — правило `Bash(...)` о правах
+ * в PowerShell не говорит ничего.
+ */
+const prefixOf = (rule, shell) => {
+  const wrapped = new RegExp(`^${shell}\\((.*)\\)$`).exec(rule);
+  return wrapped ? wrapped[1].replace(/:\*$/, '') : null;
+};
+
+/**
+ * Совпадение по приставке — мерка самой среды, и сторожить надо именно её.
+ * Приставка обязана кончаться на границе слова: без этого `gh pr` покрыло бы
+ * выдуманное `gh press`, и сторож зеленел бы на настройке, которой
+ * в действительности не соответствует ничего. Звёздочка внутри правила
+ * (`git -C * push`) стоит вместо довода.
+ */
+const coversCommand = (prefix, command) => {
+  const body = prefix
+    .split('*')
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*');
+  return new RegExp(`^${body}(\\s|$)`).test(command);
+};
+
+/**
+ * Перечень команд вливания, не покрытых настройкой. Команда покрыта, только
+ * если совпала с приставкой хотя бы одного `allow` и не совпала с приставкой
+ * ни одного `deny`: запрет, оказавшийся приставкой собственного разрешения,
+ * уже отнимал у этапа работу (см. `$cleanupNote` в stage-settings.json).
+ */
+const uncoveredMergeCommands = (permissions) => {
+  const guilty = [];
+  for (const shell of ['Bash', 'PowerShell']) {
+    for (const command of MERGE_PATH) {
+      const prefixes = (rules) =>
+        rules.map((rule) => prefixOf(rule, shell)).filter((prefix) => prefix !== null);
+      const allowed = prefixes(permissions.allow).some((prefix) => coversCommand(prefix, command));
+      const denied = prefixes(permissions.deny).some((prefix) => coversCommand(prefix, command));
+      if (!allowed || denied) guilty.push(`${shell}: ${command}`);
+    }
+  }
+  return guilty;
+};
+
 describe('этапы и скиллы', () => {
   it('у каждого этапа с сессией есть скилл', () => {
     // Сессия-исполнитель читает указания своего этапа из
@@ -331,6 +383,45 @@ describe('этапы и скиллы', () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  it('команды вливания покрыты правилами в обеих оболочках', () => {
+    // Ревью доводит изменение до `main` тремя командами, и отказ на любой
+    // из них случается там, где человека рядом нет. 03.09.2026 задача 0130
+    // встала на `gh pr merge`, отбитом черновым статусом; лечение потребовало
+    // `gh pr ready`, которую скилл не называл, а правила покрывали попутно —
+    // широким `gh pr:*`.
+    //
+    // Попутное покрытие теряется молча: сузив `gh pr:*` до перечня подкоманд,
+    // автор правки не узнает, что вывел `gh pr ready` из-под разрешений.
+    // Узнает об этом ревью — отказом посреди вливания.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    expect(uncoveredMergeCommands(settings.permissions)).toEqual([]);
+  });
+
+  it('сужение широкого правила выводит команду из-под разрешений заметно', () => {
+    // Проба на порчу, прогоняемая набором, а не руками: сторож, который
+    // не краснеет на сломанной настройке, — украшение. Правило сужено до
+    // `gh pr merge:*`, и `gh pr ready` обязана числиться непокрытой.
+    const narrowed = {
+      allow: ['Bash(gh pr merge:*)', 'PowerShell(gh pr merge:*)'],
+      deny: [],
+    };
+    expect(uncoveredMergeCommands(narrowed)).toContain('Bash: gh pr ready 1');
+    expect(uncoveredMergeCommands(narrowed)).toContain('PowerShell: gh pr ready 1');
+  });
+
+  it('запрет, совпавший с приставкой разрешения, считается непокрытием', () => {
+    // Разрешение при перекрывающем запрете не работает, а выглядит рабочим.
+    // Так `.matchlog/*` перекрывал уборку собственного подкаталога и отнимал
+    // у этапа прогона отчёт.
+    const shadowed = {
+      allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'],
+      deny: ['Bash(gh pr ready:*)'],
+    };
+    expect(uncoveredMergeCommands(shadowed)).toEqual(['Bash: gh pr ready 1']);
   });
 
   it('этапы, подающие заявки, знают признак причины в конвейере', () => {
