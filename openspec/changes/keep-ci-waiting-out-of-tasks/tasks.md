@@ -17,13 +17,13 @@
 
 ## 1. Открыть черновой pull request на артефактах проработки
 
-- [ ] Артефакты проработки (`proposal.md`, `design.md`, `tasks.md`,
+- [x] Артефакты проработки (`proposal.md`, `design.md`, `tasks.md`,
       `specs/dev-pipeline-worker/spec.md`) уже лежат в ветке отдельным
       коммитом — отправить ветку, если она ещё не отправлена
       (`git -C <дерево> push -u origin HEAD`), и открыть черновой pull
       request в `main`:
       `gh pr create --draft --base main --title "<заголовок>" --body-file <файл>`.
-- [ ] Тело pull request писать файлом: `--body` длинной прозой отказывается
+- [x] Тело pull request писать файлом: `--body` длинной прозой отказывается
       ещё до вызова `gh`.
 
 **Проверка:** `gh pr view <номер> --json number,state,isDraft` отвечает
