@@ -498,6 +498,11 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
         // Номер прогона, который задача знала ДО этапа: «новый номер»
         // проверяется сравнением, а не наличием.
         previousRun: task.links?.run ?? null,
+        // Номер pull request, который задача знала ДО этапа, — и по той же
+        // причине: pull request, открытый прошлым заходом, следом нынешнего
+        // быть не должен. Нового обращения к git улика не стоит: номер лежит
+        // в самой задаче.
+        previousPr: task.links?.pr ?? null,
       };
     },
 

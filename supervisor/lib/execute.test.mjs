@@ -177,6 +177,7 @@ function fakeIo(over = {}) {
           unpushed: 0,
           lastCommitAt: '2026-08-26T11:30:00+03:00',
           previousRun: null,
+          previousPr: null,
         }
       );
     },
