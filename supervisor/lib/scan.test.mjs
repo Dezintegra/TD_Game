@@ -54,6 +54,19 @@ describe('пустая картина', () => {
     expect(result.notes.join()).toContain('паузы');
   });
 
+  it('пауза сервера останавливает всё, включая записи об отказах', () => {
+    // Записи ждут, пока сервер ответит, и не теряются: очередь отказов живёт
+    // у супервизора и под паузой не расходуется. Писать на доску под лежачим
+    // сервером незачем — оборот под паузой к ней не обращается вовсе.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      apiPaused: true,
+      apiFailures: [{ taskId: '0001-one', stage: 'implement', why: 'состояние 529' }],
+    });
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('сервер модели не отвечает');
+  });
+
   it('негодная запись в работу не берётся и названа', () => {
     const result = run({
       tasks: [],

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { budgetsAgree } from '../lib/lock.mjs';
 import { createGit } from '../lib/git.mjs';
 import {
+  isApiPaused,
   isPaused,
   readAnswers,
   readPermissions,
@@ -144,6 +145,7 @@ async function main() {
     // цикл, иначе он показывал бы работу, которой цикл не сделает.
     permissions: readPermissions(home, config),
     paused: isPaused(root, config),
+    apiPaused: isApiPaused(root, config),
     tails: { main: git.tail() ?? 0, branches: {} },
     config,
   });

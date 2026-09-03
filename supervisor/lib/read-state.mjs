@@ -158,8 +158,44 @@ export function readPermissions(home, config) {
   };
 }
 
-/** Взведён ли рубильник паузы. */
+/** Взведён ли рубильник человека. Снимается только руками. */
 export const isPaused = (root, config) => existsSync(join(root, config.paths.local, 'pause'));
+
+/**
+ * Взведена ли пауза сервера модели.
+ *
+ * Файл свой, а не поле в общем: такой файл пришлось бы читать и разбирать,
+ * а его порча превратила бы обе паузы в неизвестность. Два файла — два
+ * независимых признака, каждый читается существованием, и снятие одного
+ * физически не может задеть другой.
+ */
+export const isApiPaused = (root, config) =>
+  existsSync(join(root, config.paths.local, 'pause.api'));
+
+/**
+ * Состояние паузы сервера: когда взведена, сколько проб сделано, когда была
+ * последняя.
+ *
+ * Испорченный или пустой файл даёт пустое состояние, а не исключение: пауза
+ * при этом остаётся взведённой (её признак — само существование файла),
+ * и первая же проба под ней сделается сразу. Терять из-за нечитаемой отметки
+ * возможность узнать, что сервер ответил, было бы худшим из исходов.
+ */
+export function readApiPause(root, config) {
+  const path = join(root, config.paths.local, 'pause.api');
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    return {
+      armedAt: parsed.armedAt ?? null,
+      attempt: Number.isFinite(parsed.attempt) ? parsed.attempt : 0,
+      lastProbeAt: Number.isFinite(parsed.lastProbeAt) ? parsed.lastProbeAt : null,
+      status: parsed.status ?? null,
+    };
+  } catch {
+    return { armedAt: null, attempt: 0, lastProbeAt: null, status: null };
+  }
+}
 
 /**
  * Разобрать файл вопросов и понять, на какие из них уже ответили.

@@ -108,7 +108,8 @@ function firstStage(task) {
  * @param {object?}  state.permissions правила разрешений: `{ allow, deny }`; `null` — нечем проверять
  * @param {object=}  state.stageCommands что предписано этапу; по умолчанию `STAGE_COMMANDS`
  * @param {object}   state.config    настройка после слияния с умолчаниями
- * @param {boolean}  state.paused    взведён ли рубильник паузы
+ * @param {boolean}  state.paused    взведён ли рубильник человека
+ * @param {boolean}  state.apiPaused взведена ли пауза сервера модели
  * @returns {{ actions: object[], notes: string[] }}
  */
 export function scan(state) {
@@ -137,6 +138,7 @@ export function scan(state) {
     answers = {},
     config,
     paused = false,
+    apiPaused = false,
   } = state;
 
   const actions = [];
@@ -153,6 +155,19 @@ export function scan(state) {
 
   if (paused) {
     notes.push('взведён рубильник паузы: конвейер не порождает работы');
+    return { actions, notes };
+  }
+
+  // Пауза сервера останавливает сканер тем же порядком — до всего прочего,
+  // и записи об отказах вместе с остальным.
+  //
+  // Это осознанно. Записи ждут, пока сервер ответит, и потерять их нельзя:
+  // очередь отказов живёт у супервизора и не расходуется под паузой, а сам
+  // возврат продолжения ничего не решает, пока сессий всё равно не выдают.
+  // Писать же на доску под лежачим сервером незачем: оборот под паузой
+  // обращений к ней не делает вовсе.
+  if (apiPaused) {
+    notes.push('сервер модели не отвечает: конвейер не порождает работы');
     return { actions, notes };
   }
 

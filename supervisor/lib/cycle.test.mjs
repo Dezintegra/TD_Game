@@ -193,6 +193,26 @@ describe('цикл', () => {
     expect(result.actions).toEqual([]);
   });
 
+  it('пауза сервера останавливает цикл своей причиной, а не чужой', () => {
+    // Одна строка на два случая была бы вредна: по ней нельзя решить,
+    // надо ли что-то делать. Ждущий человека конвейер требует человека,
+    // ждущий сервер не требует никого.
+    const result = cycle({ state: { tasks: [task('0001-one')], apiPaused: true } });
+    expect(result.outcome).toBe('api-paused');
+    expect(result.lock).not.toBeNull();
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('сервер модели не отвечает');
+    expect(result.notes.join()).not.toContain('рубильник');
+  });
+
+  it('взведены обе — причиной назван человек: его паузу снимает только он', () => {
+    const result = cycle({
+      state: { tasks: [task('0001-one')], paused: true, apiPaused: true },
+    });
+    expect(result.outcome).toBe('paused');
+    expect(result.notes.join()).toContain('рубильник паузы');
+  });
+
   it('пустой бэклог не даёт работы', () => {
     expect(cycle().outcome).toBe('idle');
   });

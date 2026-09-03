@@ -17,7 +17,9 @@ import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
 import { checkEnvironment } from '../lib/environment.mjs';
 import { createGit } from '../lib/git.mjs';
 import {
+  isApiPaused,
   isPaused,
+  readApiPause,
   readAnswers,
   readPermissions,
   readRegistry,
@@ -401,7 +403,11 @@ async function turn() {
   supervisor.sweep();
 
   const paused = isPaused(root, config);
-  const mayWrite = !flags.includes('--dry-run') && !paused;
+  const apiPaused = isApiPaused(root, config);
+  // Записи запрещает и пауза сервера: оборот под ней всё равно не дойдёт
+  // до сканирования, а лишнее обращение к доске под лежачим сервером
+  // ничего не даёт.
+  const mayWrite = !flags.includes('--dry-run') && !paused && !apiPaused;
 
   const backlog = await openBacklog({ mayWrite });
   if (!backlog.ok) {
@@ -442,6 +448,7 @@ async function turn() {
     // 288 раз в сутки и остаётся чистым счётом от доводов.
     permissions: readPermissions(home, config),
     paused,
+    apiPaused,
     draining,
     tails: { main: git.tail() ?? 0, branches: {} },
   };
@@ -610,7 +617,8 @@ function greet() {
     ['пульс этапа раз в', humanDuration(config.pulseSeconds * 1000)],
     ['вывод этапа', config.stageOutputFormat],
     flags.includes('--dry-run') && ['режим', 'ТЕНЬ: считаем и печатаем, мира не трогаем'],
-    isPaused(root, config) && ['режим', 'ПАУЗА: новой работы не берём'],
+    isPaused(root, config) && ['режим', 'ПАУЗА человека: новой работы не берём'],
+    isApiPaused(root, config) && ['режим', 'ПАУЗА сервера: пробуем по расписанию'],
     [
       'самообновление',
       config.selfUpdate === false
@@ -641,6 +649,7 @@ const OUTCOME = {
   worked: 'работа выдана',
   blocked: 'записи невозможны',
   paused: 'взведён рубильник паузы',
+  'api-paused': 'сервер модели не отвечает',
   locked: 'замок держит другой цикл',
   failed: 'оборот не удался',
   misconfigured: 'настройка неполна',
