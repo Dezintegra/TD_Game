@@ -126,6 +126,38 @@ export function readStages(root, config) {
   return value && typeof value === 'object' ? value : {};
 }
 
+/**
+ * Прочитать правила разрешений, которые достанутся этапу ключом `--settings`.
+ *
+ * Путь считается **от каталога инструмента**: настройка разрешений — часть
+ * самого инструмента, как и правила этапов (см. границу «своё — проектное»
+ * в README). Абсолютный путь берётся как есть.
+ *
+ * Файла нет, файл не разобрался, поля `permissions` в нём нет — возвращается
+ * `null`, и сканер по такому ответу не держит ни одной задачи. Обратное
+ * решение — «не знаем, значит держим» — остановило бы конвейер целиком
+ * из-за опечатки в пути; отсутствие файла к тому же уже названо осмотром
+ * окружения при запуске.
+ */
+export function readPermissions(home, config) {
+  if (!config.stageSettings) return null;
+  const path = isAbsolute(config.stageSettings)
+    ? config.stageSettings
+    : resolve(home, config.stageSettings);
+  if (!existsSync(path)) return null;
+
+  const { value } = readJson(path);
+  const permissions = value?.permissions;
+  if (!permissions || typeof permissions !== 'object') return null;
+
+  // Списки приводятся к массивам здесь, а не у читателя: сканер — чистый счёт,
+  // и разбирать полуразобранную настройку не его дело.
+  return {
+    allow: Array.isArray(permissions.allow) ? permissions.allow : [],
+    deny: Array.isArray(permissions.deny) ? permissions.deny : [],
+  };
+}
+
 /** Взведён ли рубильник паузы. */
 export const isPaused = (root, config) => existsSync(join(root, config.paths.local, 'pause'));
 

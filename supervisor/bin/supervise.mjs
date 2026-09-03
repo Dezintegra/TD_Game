@@ -16,7 +16,14 @@ import {
 import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
 import { checkEnvironment } from '../lib/environment.mjs';
 import { createGit } from '../lib/git.mjs';
-import { isPaused, readAnswers, readRegistry, readStages, readTasks } from '../lib/read-state.mjs';
+import {
+  isPaused,
+  readAnswers,
+  readPermissions,
+  readRegistry,
+  readStages,
+  readTasks,
+} from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
@@ -430,6 +437,9 @@ async function turn() {
     // ничего не дал.
     orphans: supervisor.orphanOutcomes,
     answers: readAnswers(root, config),
+    // Правила разрешений читаются здесь, а не сканером: сканер запускается
+    // 288 раз в сутки и остаётся чистым счётом от доводов.
+    permissions: readPermissions(home, config),
     paused,
     draining,
     tails: { main: git.tail() ?? 0, branches: {} },

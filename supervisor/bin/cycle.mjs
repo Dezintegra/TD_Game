@@ -6,7 +6,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { budgetsAgree } from '../lib/lock.mjs';
 import { createGit } from '../lib/git.mjs';
-import { isPaused, readAnswers, readRegistry, readTasks } from '../lib/read-state.mjs';
+import {
+  isPaused,
+  readAnswers,
+  readPermissions,
+  readRegistry,
+  readTasks,
+} from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { scan } from '../lib/scan.mjs';
@@ -133,6 +139,10 @@ async function main() {
     // Живых этапов смотрящий прогон не знает: дескрипторы у супервизора.
     running: [],
     answers: readAnswers(root, config),
+    // Правила разрешений — доводом, как и всё прочее: сканер сам диска
+    // не трогает. Смотрящий прогон обязан видеть ту же картину, что боевой
+    // цикл, иначе он показывал бы работу, которой цикл не сделает.
+    permissions: readPermissions(home, config),
     paused: isPaused(root, config),
     tails: { main: git.tail() ?? 0, branches: {} },
     config,
