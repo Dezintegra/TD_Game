@@ -629,6 +629,21 @@ export function createSupervisor({
     stopPulse();
 
     const answer = readAnswer(run);
+    // Отчёт разбирается ЗДЕСЬ, а не там, где он применяется, — потому что
+    // ниже по этой функции три досрочных возврата, а лог обязан лечь на диск
+    // раньше каждого из них: как раз в тех случаях, ради которых лог и пишут,
+    // он единственное, что осталось от сессии.
+    //
+    // Разбор остаётся однократным. Второй вызов внутри `renderLog` был бы
+    // дешевле на вид и хуже по существу: два источника истины об исходе этапа
+    // расходятся молча, а сходятся на разборе падения, которого никто
+    // не поймёт.
+    //
+    // Ответа может не быть вовсе — снятие по сроку, несостоявшийся запуск.
+    // Тогда `answer.result` равен `null`, разбор берёт `String(text ?? '')`,
+    // получает пустую строку и возвращает `{ report: null, why }`. Исключений
+    // он не бросает, защиты не требует.
+    const parsed = parseReport(answer.result);
     writeStageLog(child.taskId, child.stage, renderLog(child, run, answer));
 
     // Итог этапа одной строкой: то, ради чего человек и смотрит в консоль,
@@ -686,7 +701,6 @@ export function createSupervisor({
       );
     }
 
-    const parsed = parseReport(answer.result);
     if (!parsed.report) {
       log(`отчёт ${child.taskId}:${child.stage} не разобрался: ${parsed.why}; вывод в журнале`);
       say.line(TAG.warn, `${child.taskId} отчёт не разобрался: ${clip(parsed.why, 140)}`);
