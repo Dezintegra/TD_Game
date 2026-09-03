@@ -64,6 +64,14 @@ export function createSupervisor({
    */
   const orphanOutcomes = [];
   /**
+   * Этапы, легшие на отказе сервера модели и ждущие записи в журнал задачи.
+   *
+   * Третья очередь того же вида и по той же причине: писать на доску вправе
+   * только исполнение решений. Здесь ей есть что записать помимо журнала —
+   * задаче возвращается продолжение, потраченное на заход, которого не было.
+   */
+  const apiFailures = [];
+  /**
    * Память об этапах: `taskId:stage` → `{ sessionId, startedAt, live }`.
    * Переживает перезапуск супервизора.
    *
@@ -94,6 +102,7 @@ export function createSupervisor({
   return {
     reports,
     orphanOutcomes,
+    apiFailures,
 
     /**
      * Обойти сирот: кто кончился, кто оказался посторонним, кто пережил срок.
@@ -118,6 +127,14 @@ export function createSupervisor({
       if (at === -1) return false;
       const [outcome] = orphanOutcomes.splice(at, 1);
       forget(outcome.at);
+      return true;
+    },
+
+    /** Забыть отказ сервера: он записан в задачу, очередь его больше не держит. */
+    forgetApiFailure(taskId, stage) {
+      const at = apiFailures.findIndex((item) => item.taskId === taskId && item.stage === stage);
+      if (at === -1) return false;
+      apiFailures.splice(at, 1);
       return true;
     },
 
@@ -681,6 +698,16 @@ export function createSupervisor({
       delete kept.live;
       known[at] = answer.sessionId ? { ...kept, sessionId: answer.sessionId } : kept;
       saveStages(known);
+    }
+
+    // Отказ сервера модели уезжает в свою очередь. Задача за него не платит:
+    // процесс родился, но работы не начал, — и продолжение, списанное при
+    // рождении, ей вернут. 03.09.2026 без этого 0153 и 0165 потеряли все свои
+    // продолжения за полчаса чужой перегрузки.
+    if (answer.outcome === 'api-error') {
+      apiFailures.push({ taskId: child.taskId, stage: child.stage, why: answer.why });
+      log(`этап ${child.taskId}:${child.stage} лёг на отказе сервера: ${answer.why}`);
+      return;
     }
 
     if (answer.outcome !== 'done') {

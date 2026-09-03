@@ -788,6 +788,39 @@ describe('этап не дошёл до отчёта', () => {
     expect(supervisor.reports).toEqual([]);
   });
 
+  it('отказ сервера модели уходит в свою очередь, а не в отчёты', async () => {
+    const { supervisor, answer, logged } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(
+      envelope({
+        is_error: true,
+        subtype: 'success',
+        terminal_reason: 'api_error',
+        api_error_status: 529,
+        result: 'API Error: 529 Overloaded',
+      }),
+      1,
+    );
+
+    expect(supervisor.reports).toEqual([]);
+    expect(supervisor.apiFailures).toHaveLength(1);
+    expect(supervisor.apiFailures[0]).toMatchObject({ taskId: '0001-one', stage: 'design' });
+    expect(supervisor.apiFailures[0].why).toContain('529');
+    expect(logged.join()).toContain('отказе сервера');
+  });
+
+  it('забвение снимает отказ сервера с очереди', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ is_error: true, api_error_status: 529 }), 1);
+
+    expect(supervisor.forgetApiFailure('0001-one', 'design')).toBe(true);
+    expect(supervisor.apiFailures).toEqual([]);
+    // Второй раз забывать нечего, и это не ошибка: обрыв между записью
+    // и снятием оставляет очередь на месте, а повтор обязан быть безвредным.
+    expect(supervisor.forgetApiFailure('0001-one', 'design')).toBe(false);
+  });
+
   it('место всё равно освобождается: иначе задача встала бы навсегда', async () => {
     const { supervisor, answer } = harness();
     supervisor.spawnStage(assignment());

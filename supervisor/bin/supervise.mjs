@@ -436,6 +436,7 @@ async function turn() {
     // не значат, зато объясняют в журнале задачи, почему прошлый заход
     // ничего не дал.
     orphans: supervisor.orphanOutcomes,
+    apiFailures: supervisor.apiFailures,
     answers: readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.
@@ -482,6 +483,12 @@ async function turn() {
         supervisor.orphanOutcomes.find((item) => item.taskId === taskId && item.stage === stage) ??
         null,
       forgetOrphan: (taskId, stage) => supervisor.forgetOrphan(taskId, stage),
+      // Отказ сервера и его забвение — та же пара: запись снимается с очереди
+      // только после удавшейся правки задачи.
+      readApiFailure: (taskId, stage) =>
+        supervisor.apiFailures.find((item) => item.taskId === taskId && item.stage === stage) ??
+        null,
+      forgetApiFailure: (taskId, stage) => supervisor.forgetApiFailure(taskId, stage),
       // Отметка первого захода на этап: ею отличают свежий коммит от чужого,
       // когда отказ разрешений судят по следу.
       stageStartedAt: (taskId, stage) => supervisor.stageStartedAt(taskId, stage),
