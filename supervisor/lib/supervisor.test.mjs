@@ -838,6 +838,63 @@ describe('лог этапа', () => {
     expect(wrote[0].text).toMatch(/отказов:\s+1/);
   });
 
+  it('называет ответ сессии и исход отчёта разными словами', async () => {
+    // Ровно та ловушка, ради которой всё затеяно: процесс отработал и вернул
+    // разбираемый ответ (`done`), а этап отчитался неудачей.
+    const { supervisor, answer, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: JSON.stringify({ ...report, outcome: 'failed' }) }));
+
+    expect(wrote[0].text).toMatch(/ответ сессии:\s+done/);
+    expect(wrote[0].text).toMatch(/исход отчёта:\s+failed/);
+  });
+
+  it('слова «исход» без уточнения в шапке не остаётся', async () => {
+    // Знакомое слово остановит читателя раньше, чем он дойдёт до нужного
+    // поля, — потому оно и не сохранено синонимом ни одного из двух.
+    const { supervisor, answer, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+
+    expect(wrote[0].text).not.toMatch(/^исход:/m);
+  });
+
+  it('отчёт не разобрался — сказано это и сказана причина', async () => {
+    const { supervisor, answer, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: 'я всё сделал, а отчёт забыл' }));
+
+    expect(wrote[0].text).toMatch(/исход отчёта:\s+отчёта нет — .*объекта JSON/);
+  });
+
+  it('ответа нет вовсе — это отличают от испорченного отчёта', async () => {
+    // Снятие по сроку: сессию оборвали на середине работы, и отчёта она
+    // не начинала писать. Причина разбора была бы здесь формально верной
+    // и увела бы разбор искать испорченный отчёт.
+    const { supervisor, children, wrote } = harness({
+      config: { stageTimeoutMinutes: { ...config.stageTimeoutMinutes, design: 0.0005 } },
+    });
+    supervisor.spawnStage(assignment());
+    await sleep(60);
+    children.at(-1).emit('close', 0);
+    await sleep(0);
+
+    expect(wrote[0].text).toMatch(/ответ сессии:\s+timeout/);
+    expect(wrote[0].text).toMatch(/исход отчёта:\s+отчёта нет — сессия ответа не оставила/);
+  });
+
+  it('отчёт о чужом этапе назван неприменённым', async () => {
+    const { supervisor, answer, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: JSON.stringify({ ...report, stage: 'audit' }) }));
+
+    // Целой строкой, а не по слову «audit»: оно есть и в stdout, и сторож
+    // по нему зеленел бы вхолостую.
+    expect(wrote[0].text).toMatch(
+      /исход отчёта:\s+done \(отчёт об этапе «audit», а шёл «design» — не применён\)/,
+    );
+  });
+
   it('несёт stdout целиком, а не разобранную его часть', async () => {
     // Разбор берёт из вывода последний годный объект. Всё, что было до него,
     // разбору падения нужнее всего — там и лежит рассказ о том, что пошло

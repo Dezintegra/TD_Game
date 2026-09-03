@@ -644,7 +644,7 @@ export function createSupervisor({
     // получает пустую строку и возвращает `{ report: null, why }`. Исключений
     // он не бросает, защиты не требует.
     const parsed = parseReport(answer.result);
-    writeStageLog(child.taskId, child.stage, renderLog(child, run, answer));
+    writeStageLog(child.taskId, child.stage, renderLog(child, run, answer, parsed));
 
     // Итог этапа одной строкой: то, ради чего человек и смотрит в консоль,
     // отойдя на час. В журнале этапа то же самое есть подробнее, но журнал
@@ -749,20 +749,60 @@ function remembered(value) {
   return value?.live ? { ...kept, live: value.live } : kept;
 }
 
-/** Вывод процесса целиком плюс то, чего в нём нет: срок, стоимость, отказы. */
-function renderLog(child, run, answer) {
+/**
+ * Чем кончился ЭТАП — по его же отчёту, а не по коду возврата процесса.
+ *
+ * Отчёта может не быть, и тогда это не пропуск, а улика: разбору падения
+ * важно, чем именно отчёт не стал. Случая два, и они различаются намеренно.
+ * Ответа нет вовсе (`answer.result == null`: снятие по сроку, несостоявшийся
+ * запуск) — про такую сессию «в ответе нет ни одного объекта JSON» было бы
+ * формально верно и по смыслу вздорно: читатель пошёл бы искать испорченный
+ * отчёт там, где его не начинали писать.
+ */
+function reportOutcome(child, answer, parsed) {
+  if (!parsed.report) {
+    return answer.result == null
+      ? 'отчёта нет — сессия ответа не оставила'
+      : `отчёта нет — ${parsed.why}`;
+  }
+  // Отчёт о чужом этапе к задаче не применялся вовсе, и слова «не применён»
+  // здесь обязательны: без них шапка сообщала бы исход, которого задача
+  // не получала, — то есть ровно ту же ложь, только в новом поле.
+  if (parsed.report.stage !== child.stage) {
+    return (
+      `${parsed.report.outcome} (отчёт об этапе «${parsed.report.stage}», ` +
+      `а шёл «${child.stage}» — не применён)`
+    );
+  }
+  return parsed.report.outcome;
+}
+
+/**
+ * Вывод процесса целиком плюс то, чего в нём нет: срок, стоимость, отказы.
+ *
+ * Два поля вместо одного «исхода», и это не педантизм. Ответ сессии говорит
+ * о ПРОЦЕССЕ: `done` у него значит «отработал и вернул разбираемый ответ»,
+ * и вместе со словом он несёт причину (`answer.why`), которой в отчёте нет
+ * и быть не может. Исход отчёта говорит об ЭТАПЕ. Слова `исход` в шапке
+ * не остаётся ни в каком виде: знакомое остановило бы читателя раньше, чем
+ * он дошёл до нужного поля.
+ *
+ * Колонку значений задаёт самое длинное имя — сегодня это `ответ сессии:`.
+ */
+function renderLog(child, run, answer, parsed) {
   const head = [
-    `задача:    ${child.taskId}`,
-    `этап:      ${child.stage}`,
-    `сессия:    ${answer.sessionId ?? child.sessionId}`,
-    `начат:     ${child.startedAt}`,
-    `процесс:   ${child.handle.pid}`,
-    `код:       ${run.code}`,
-    `снят:      ${run.killedBy ?? 'нет'}`,
-    `исход:     ${answer.outcome}${answer.why ? ` (${answer.why})` : ''}`,
-    `ходов:     ${answer.turns ?? '—'}`,
-    `стоимость: ${answer.cost ?? '—'}`,
-    `отказов:   ${answer.denials.length}`,
+    `задача:        ${child.taskId}`,
+    `этап:          ${child.stage}`,
+    `сессия:        ${answer.sessionId ?? child.sessionId}`,
+    `начат:         ${child.startedAt}`,
+    `процесс:       ${child.handle.pid}`,
+    `код:           ${run.code}`,
+    `снят:          ${run.killedBy ?? 'нет'}`,
+    `ответ сессии:  ${answer.outcome}${answer.why ? ` (${answer.why})` : ''}`,
+    `исход отчёта:  ${reportOutcome(child, answer, parsed)}`,
+    `ходов:         ${answer.turns ?? '—'}`,
+    `стоимость:     ${answer.cost ?? '—'}`,
+    `отказов:       ${answer.denials.length}`,
   ];
   return [
     ...head,
