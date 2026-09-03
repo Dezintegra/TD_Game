@@ -36,13 +36,17 @@ const HUMAN_TOOLS = ['AskUserQuestion'];
  * Ровно так и вышло с `node --version` — командой оболочки, а не средством.
  *
  * - `commit` — ветка у origin, хвоста нет, есть коммит не старше начала этапа;
+ * - `commit-or-pr` — то же, но свежий коммит заменим впервые открытым
+ *   pull request: имплементация законно приходит к задаче, вся правка которой
+ *   внесена проработкой, а открыть черновой PR ей всё равно обязательно —
+ *   до открытия проверки CI на отправки в ветку не запускаются вовсе;
  * - `branch` — только ветка и хвост: аудит и ревью законно не коммитят;
  * - `run` — отчёт называет номер прогона, и он новый;
  * - `none` — проверяемого следа нет вовсе, и об этом говорится вслух.
  */
 const TRACE = {
   design: 'commit',
-  implement: 'commit',
+  implement: 'commit-or-pr',
   revise: 'commit',
   audit: 'branch',
   review: 'branch',
@@ -67,19 +71,27 @@ const CHECKS = {
   commit: (report, evidence) => {
     const branch = branchTrace(evidence);
     if (branch.kind !== 'present') return branch;
+    return commitFreshness(evidence);
+  },
 
-    const committed = Date.parse(evidence.lastCommitAt ?? '');
-    if (Number.isNaN(committed)) {
-      return { kind: 'none', why: 'даты последнего коммита ветки git не назвал' };
+  'commit-or-pr': (report, evidence) => {
+    // Ветка у origin и отсутствие хвоста — предусловие ОБЕИХ половин, а не
+    // слагаемое. Сложи мы их как слагаемое, имплементация с неотправленным
+    // хвостом прошла бы по одному лишь номеру pull request, то есть отчёт
+    // `done` был бы принят у этапа, чья работа для остальной машинерии
+    // не существует.
+    const branch = branchTrace(evidence);
+    if (branch.kind !== 'present') return branch;
+
+    const commit = commitFreshness(evidence);
+    const pr = prTrace(report, evidence);
+    if (commit.kind === 'present' || pr.kind === 'present') return { kind: 'present', why: null };
+    if (commit.kind === 'missing') {
+      return { kind: 'missing', why: `${commit.why}, и ${pr.why}` };
     }
-    const started = Date.parse(evidence.stageStartedAt ?? '');
-    if (Number.isNaN(started)) {
-      return { kind: 'none', why: 'отметки начала этапа нет' };
-    }
-    if (committed < started) {
-      return { kind: 'missing', why: 'с начала этапа в ветке не появилось ни одного коммита' };
-    }
-    return { kind: 'present', why: null };
+    // Молчащий прибор не знает, был ли коммит. Объявить здесь «следа нет»
+    // значило бы вернуть ту самую беду, ради которой заводилось изменение.
+    return { kind: 'none', why: `${commit.why}, а ${pr.why}` };
   },
 
   run: (report, evidence) => {
@@ -116,6 +128,48 @@ function branchTrace(evidence) {
   return { kind: 'present', why: null };
 }
 
+/**
+ * Свежесть коммита: остаток следа `commit` после общей части.
+ *
+ * Вынесено отдельно затем, чтобы след имплементации складывался из половины,
+ * а не из целого `CHECKS.commit`: тот начинается с `branchTrace`, и его
+ * `missing` означает в том числе потерянный хвост — то, что не заменяется
+ * ничем.
+ */
+function commitFreshness(evidence) {
+  const committed = Date.parse(evidence.lastCommitAt ?? '');
+  if (Number.isNaN(committed)) {
+    return { kind: 'none', why: 'даты последнего коммита ветки git не назвал' };
+  }
+  const started = Date.parse(evidence.stageStartedAt ?? '');
+  if (Number.isNaN(started)) {
+    return { kind: 'none', why: 'отметки начала этапа нет' };
+  }
+  if (committed < started) {
+    return { kind: 'missing', why: 'с начала этапа в ветке не появилось ни одного коммита' };
+  }
+  return { kind: 'present', why: null };
+}
+
+/**
+ * Впервые открытый pull request: половина следа имплементации.
+ *
+ * Новизна проверяется сравнением с номером, который задача знала ДО этапа,
+ * а не наличием номера в отчёте: pull request, открытый прошлым заходом,
+ * следом нынешнего быть не должен. Сравнение строками — номер приходит
+ * из отчёта числом, а в карточке может лежать и строкой.
+ */
+function prTrace(report, evidence) {
+  const pr = report.links?.pr;
+  if (pr == null || pr === '') {
+    return { kind: 'missing', why: 'отчёт не называет номера pull request' };
+  }
+  if (String(pr) === String(evidence.previousPr ?? '')) {
+    return { kind: 'missing', why: 'номер pull request тот же, что задача знала до этапа' };
+  }
+  return { kind: 'present', why: null };
+}
+
 /** Отказ одной строкой: имя средства и доводы вызова. */
 export function describeDenial(denial) {
   const input = denial?.tool_input;
@@ -134,7 +188,7 @@ export function describeDenial(denial) {
  * @param {object} params.report     разобранный отчёт этапа
  * @param {string} params.stage      этап, с которого отчёт пришёл
  * @param {object} params.evidence   `{ branchOnRemote, unpushed, lastCommitAt,
- *                                      stageStartedAt, previousRun }`
+ *                                      stageStartedAt, previousRun, previousPr }`
  * @returns {{ verdict: 'passing'|'undermining'|'unverifiable', why: string|null }}
  */
 export function judgeDenials({ denials = [], report = {}, stage, evidence = {} }) {
