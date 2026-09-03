@@ -43,6 +43,7 @@ function harness(over = {}) {
 
   const logsAsked = [];
   const probed = [];
+  const wrote = [];
 
   const supervisor = createSupervisor({
     config: { ...config, ...over.config },
@@ -66,6 +67,12 @@ function harness(over = {}) {
     saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
     stages: over.stages ?? {},
     log: (line) => logged.push(line),
+    // Запись лога этапа собирается так же, как журнал цикла, и по той же
+    // причине: умолчание в `createSupervisor` — пустая функция, и без этого
+    // довода содержимое лога не видно ни одной проверке. Шапку его до сих пор
+    // не читал никто, кроме человека, — оттого расхождение в ней и прожило
+    // так долго.
+    writeStageLog: (taskId, stage, text) => wrote.push({ taskId, stage, text }),
     readStageLog: (taskId, stage) => {
       logsAsked.push(`${taskId}:${stage}`);
       return { stage, path: `.pipeline/logs/${taskId}-${stage}.log`, text: 'отказов:   3' };
@@ -81,7 +88,7 @@ function harness(over = {}) {
     await sleep(0);
   };
 
-  return { supervisor, children, killed, logged, saved, answer, logsAsked, probed };
+  return { supervisor, children, killed, logged, saved, answer, logsAsked, probed, wrote };
 }
 
 const assignment = (over = {}) => ({
@@ -778,6 +785,73 @@ describe('этап не дошёл до отчёта', () => {
     supervisor.spawnStage(assignment());
     await answer(envelope({ result: 'без отчёта' }));
     expect(supervisor.running()).toEqual([]);
+  });
+});
+
+describe('лог этапа', () => {
+  // Лог этапа читает ровно один этап — разбор, — и читает после падения,
+  // когда самого процесса давно нет. Поэтому он обязан лечь на диск при
+  // ЛЮБОМ исходе и нести то, чего в отчёте нет по устройству: код возврата,
+  // отказанные действия и вывод целиком.
+
+  it('пишется на этап, оставивший отчёт', async () => {
+    const { supervisor, answer, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+
+    expect(wrote).toHaveLength(1);
+    expect(wrote[0].taskId).toBe('0001-one');
+    expect(wrote[0].stage).toBe('design');
+  });
+
+  it('пишется и на этап, отчёта не оставивший', async () => {
+    // Как раз тогда он единственное, что осталось от сессии.
+    const { supervisor, answer, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: 'я всё сделал, а отчёт забыл' }), 1);
+
+    expect(wrote).toHaveLength(1);
+  });
+
+  it('несёт код возврата', async () => {
+    // Ищем с любым отступом: колонку значений задаёт самое длинное имя поля,
+    // и сторож не должен падать от перевыравнивания шапки.
+    const { supervisor, answer, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ is_error: true }), 3);
+
+    expect(wrote[0].text).toMatch(/код:\s+3/);
+  });
+
+  it('несёт перечень отказанных действий', async () => {
+    const { supervisor, answer, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(
+      envelope({
+        permission_denials: [{ tool_name: 'PowerShell', tool_input: { command: 'pnpm install' } }],
+      }),
+    );
+
+    expect(wrote[0].text).toContain('--- отказанные действия ---');
+    expect(wrote[0].text).toContain('PowerShell');
+    expect(wrote[0].text).toContain('pnpm install');
+    expect(wrote[0].text).toMatch(/отказов:\s+1/);
+  });
+
+  it('несёт stdout целиком, а не разобранную его часть', async () => {
+    // Разбор берёт из вывода последний годный объект. Всё, что было до него,
+    // разбору падения нужнее всего — там и лежит рассказ о том, что пошло
+    // не так.
+    const { supervisor, children, wrote } = harness();
+    supervisor.spawnStage(assignment());
+    const child = children.at(-1);
+    child.stdout.emit('data', 'приписка до конверта\n');
+    child.stdout.emit('data', JSON.stringify(envelope()));
+    child.emit('close', 0);
+    await sleep(0);
+
+    expect(wrote[0].text).toContain('--- stdout ---');
+    expect(wrote[0].text).toContain('приписка до конверта');
   });
 });
 
