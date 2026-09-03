@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 // Именованным ввозом, а не глобальным именем: перечень известных линту
 // глобальных имён у служебных сценариев узкий, и `setTimeout` в него не входит.
 import { setTimeout as later } from 'node:timers';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createKillTree } from '../lib/run-stage.mjs';
+import { decideLaunch } from '../lib/worktree-guard.mjs';
 
 /**
  * Запуск супервизора.
@@ -94,11 +95,37 @@ function findRoot() {
   return null;
 }
 
-const root = resolve(valueOf('root') ?? process.env.PIPELINE_ROOT ?? findRoot() ?? process.cwd());
+const explicitRoot = valueOf('root') ?? process.env.PIPELINE_ROOT ?? null;
+const root = resolve(explicitRoot ?? findRoot() ?? process.cwd());
 
 if (!existsSync(root)) {
   console.error(`Не найден корень проекта: ${root}`);
   console.error('Назовите его прямо: --root=C:\\путь\\к\\проекту');
+  process.exit(1);
+}
+
+/**
+ * Содержимое файла `.git` найденного корня, либо `null`.
+ *
+ * `null` значит «спрашивать нечего»: у основного дерева `.git` — каталог,
+ * а нечитаемый `.git` не повод отказывать в запуске.
+ */
+function gitLink(dir) {
+  const path = join(dir, '.git');
+  try {
+    return statSync(path).isDirectory() ? null : readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// Решение целиком принимает модуль, здесь остаются печать и код возврата.
+// Стоит сразу за поиском корня и до всего остального: и `--stop` из чужого
+// дерева одинаково бессмыслен — он смотрел бы не в тот замок и отвечал бы
+// «супервизор не работает», пока настоящий работает.
+const decision = decideLaunch({ root, gitFile: gitLink(root), explicitRoot });
+if (!decision.launch) {
+  console.error(decision.message);
   process.exit(1);
 }
 
