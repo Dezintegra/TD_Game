@@ -4,7 +4,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
-import { isPaused, readAnswers, readRegistry, readStages, readTasks } from './read-state.mjs';
+import {
+  isPaused,
+  readAnswers,
+  readPermissions,
+  readRegistry,
+  readStages,
+  readTasks,
+} from './read-state.mjs';
 
 /**
  * Проверки сбора картины мира.
@@ -148,6 +155,43 @@ describe('память о сессиях этапов', () => {
   it('испорченный файл не роняет прогон: этапы начнутся заново', () => {
     writeFileSync(join(root, '.pipeline', 'stages.json'), '{ это не JSON');
     expect(readStages(root, config)).toEqual({});
+  });
+});
+
+describe('чтение правил разрешений', () => {
+  // Путь считается от каталога инструмента, и во временном корне он тот же:
+  // здесь проверяется стойкость чтения, а не разведение путей.
+  const putSettings = (body) =>
+    writeFileSync(join(root, 'config', 'stage-settings.json'), body, 'utf8');
+
+  it('годная настройка отдаёт оба списка правил', () => {
+    putSettings(JSON.stringify({ permissions: { allow: ['Bash(gh pr:*)'], deny: ['Bash(x)'] } }));
+    expect(readPermissions(root, config)).toEqual({
+      allow: ['Bash(gh pr:*)'],
+      deny: ['Bash(x)'],
+    });
+  });
+
+  it('нет файла — нечем проверять покрытие, и это не беда', () => {
+    // «Не знаем, значит держим» остановило бы конвейер целиком из-за опечатки
+    // в пути. Отсутствие файла к тому же уже названо осмотром окружения.
+    expect(readPermissions(root, config)).toBe(null);
+  });
+
+  it('испорченный JSON не роняет цикл', () => {
+    putSettings('{ это не JSON');
+    expect(readPermissions(root, config)).toBe(null);
+  });
+
+  it('настройка без поля permissions читается как отсутствие правил', () => {
+    putSettings(JSON.stringify({ $comment: 'одни пояснения' }));
+    expect(readPermissions(root, config)).toBe(null);
+  });
+
+  it('недостающий список правил подставляется пустым', () => {
+    // Разбирать полуразобранную настройку не дело сканера: он чистый счёт.
+    putSettings(JSON.stringify({ permissions: { allow: ['Bash(gh pr:*)'] } }));
+    expect(readPermissions(root, config)).toEqual({ allow: ['Bash(gh pr:*)'], deny: [] });
   });
 });
 
