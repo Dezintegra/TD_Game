@@ -207,6 +207,26 @@ describe('цена состояния', () => {
 const uncoveredMergeCommands = (permissions) =>
   uncoveredForStage(permissions, 'review', STAGE_COMMANDS);
 
+/**
+ * Этапы, чьи команды закрыты ОСОЗНАННО, — с причиной и с тем, чем закрытие
+ * снимается.
+ *
+ * Реестр нужен потому, что сторож без него покраснел бы сразу и навсегда:
+ * выкладка с `ssh` закрыта решением о том, что боевой сервер — дело человека
+ * (`$pnpmNote` в `stage-settings.json`). А красный набор не влить — и вместе
+ * со сторожем пропала бы первая половина изменения, та самая, которая
+ * прекращает сжигать по две сессии на задачу.
+ *
+ * Замолчать беду реестром нельзя: он краснеет в обе стороны. Развилка
+ * владельца продукта — открыть команды или вывести `deploy` из автомата —
+ * от записи не решается, а становится видимой и снимается одной строкой.
+ */
+const DELIBERATELY_CLOSED = {
+  deploy:
+    'боевой сервер — решение человека ($pnpmNote в stage-settings.json). ' +
+    'Снимается задачей 0117: разрешить конвейеру команды выкладки',
+};
+
 describe('этапы и скиллы', () => {
   it('у каждого этапа с сессией есть скилл', () => {
     // Сессия-исполнитель читает указания своего этапа из
@@ -422,6 +442,69 @@ describe('этапы и скиллы', () => {
     // Одна строка, а не две: правило `Bash(...)` о правах в PowerShell
     // не говорит ничего, и та же команда под другой оболочкой остаётся покрытой.
     expect(uncoveredMergeCommands(deniedExactly)).toEqual(['Bash: gh pr ready 1']);
+  });
+
+  it('команды каждого этапа покрыты правилами либо этап числится закрытым', () => {
+    // Сторож стоит по обе стороны от одной развилки. Слева — регресс: правило
+    // сузили, покрытие потерялось, и заметить это можно было бы только отказом
+    // посреди работы. Справа — устаревшая запись: команды открыли, а сканер
+    // по-прежнему держит задачи этапа, и починка голодает позади них.
+    //
+    // Реестр не способ замолчать беду: запись обязана называть причину
+    // закрытия и то, чем оно снимается. Сегодня закрытых этапов ровно один.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+
+    const lost = [];
+    const stale = [];
+    for (const stage of Object.keys(STAGE_COMMANDS)) {
+      const uncovered = uncoveredForStage(settings.permissions, stage);
+      if (uncovered.length > 0 && !(stage in DELIBERATELY_CLOSED)) lost.push(...uncovered);
+      if (uncovered.length === 0 && stage in DELIBERATELY_CLOSED) stale.push(stage);
+    }
+
+    expect(lost).toEqual([]);
+    expect(stale).toEqual([]);
+  });
+
+  it('открытие закрытого этапа требует снять запись о нём', () => {
+    // Проба на порчу первого рода — на выдуманной настройке, а не правкой
+    // `stage-settings.json`: открывать команды выкладки здесь нельзя, это
+    // решение владельца продукта (задача 0117).
+    const opened = {
+      allow: [
+        'Bash(ssh:*)',
+        'PowerShell(ssh:*)',
+        'Bash(node scripts/deploy.mjs:*)',
+        'PowerShell(node scripts/deploy.mjs:*)',
+      ],
+      deny: [],
+    };
+    expect(uncoveredForStage(opened, 'deploy')).toEqual([]);
+    expect('deploy' in DELIBERATELY_CLOSED).toBe(true);
+  });
+
+  it('правило на одну приставку выкладки из двух этап не открывает', () => {
+    // Проба ровно на ту щель, из-за которой перечень пересматривался. Правило
+    // открывает приставку с `-o ConnectTimeout=15` — то есть шаги 4 и 5, —
+    // а сверка имён переменных окружения (шаг 7) зовёт `ssh` без него.
+    // Сторож обязан назвать её поимённо и оставить запись о закрытом `deploy`
+    // в силе: этап всё ещё умрёт, только шагом позже.
+    const halfOpen = {
+      allow: [
+        'Bash(ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra:*)',
+        'PowerShell(ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra:*)',
+        'Bash(node scripts/deploy.mjs:*)',
+        'PowerShell(node scripts/deploy.mjs:*)',
+      ],
+      deny: [],
+    };
+    const uncovered = uncoveredForStage(halfOpen, 'deploy');
+    const step7 = 'ssh -o BatchMode=yes dezintegra "grep -o \'^[A-Z_]*\' ~/td/.env"';
+    // По строке на оболочку, и обе названы: разницу в чтении оболочек надо
+    // видеть, а не проглядеть.
+    expect(uncovered).toEqual([`Bash: ${step7}`, `PowerShell: ${step7}`]);
   });
 
   it('запрет точной формы, короче команды, её разрешения не гасит', () => {
