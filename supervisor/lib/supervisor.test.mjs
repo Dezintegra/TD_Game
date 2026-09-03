@@ -3,6 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { createSupervisor } from './supervisor.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
+import { TAG } from './console.mjs';
 
 /**
  * Проверки хозяйства идущих этапов.
@@ -44,6 +45,7 @@ function harness(over = {}) {
   const logsAsked = [];
   const probed = [];
   const wrote = [];
+  const said = [];
 
   const supervisor = createSupervisor({
     config: { ...config, ...over.config },
@@ -73,6 +75,9 @@ function harness(over = {}) {
     // не читал никто, кроме человека, — оттого расхождение в ней и прожило
     // так долго.
     writeStageLog: (taskId, stage, text) => wrote.push({ taskId, stage, text }),
+    // Рассказчик подставной, и метка запоминается отдельно от текста: судить
+    // её по знакам в строке значило бы проверять раскраску, а не выбор.
+    say: { line: (tag, text) => said.push({ tag, text }) },
     readStageLog: (taskId, stage) => {
       logsAsked.push(`${taskId}:${stage}`);
       return { stage, path: `.pipeline/logs/${taskId}-${stage}.log`, text: 'отказов:   3' };
@@ -88,8 +93,11 @@ function harness(over = {}) {
     await sleep(0);
   };
 
-  return { supervisor, children, killed, logged, saved, answer, logsAsked, probed, wrote };
+  return { supervisor, children, killed, logged, saved, answer, logsAsked, probed, wrote, said };
 }
+
+/** Строка итога этапа из всего, что рассказчик напечатал. */
+const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
 
 const assignment = (over = {}) => ({
   taskId: '0001-one',
@@ -909,6 +917,54 @@ describe('лог этапа', () => {
 
     expect(wrote[0].text).toContain('--- stdout ---');
     expect(wrote[0].text).toContain('приписка до конверта');
+  });
+});
+
+describe('строка итога этапа на консоли', () => {
+  // Консоль смотрят, а логи открывают: та же подмена здесь попадается чаще.
+  // Человек, отошедший на час, читает полосу строк и различает их цветом
+  // раньше, чем словами.
+
+  it('называет оба значения', async () => {
+    const { supervisor, answer, said } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: JSON.stringify({ ...report, outcome: 'failed' }) }));
+
+    expect(finishedLine(said).text).toContain('ответ done');
+    expect(finishedLine(said).text).toContain('исход отчёта failed');
+  });
+
+  it('отчитавшийся неудачей получает предупреждающую метку при нулевом коде', async () => {
+    const { supervisor, answer, said } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: JSON.stringify({ ...report, outcome: 'failed' }) }));
+
+    expect(finishedLine(said).tag).toBe(TAG.warn);
+  });
+
+  it('спокойная метка причитается только отчитавшемуся done', async () => {
+    const { supervisor, answer, said } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+
+    expect(finishedLine(said).tag).toBe(TAG.stage);
+  });
+
+  it('отчёт о чужом этапе спокойным не считается', async () => {
+    // Он не применялся вовсе, каким бы ни был его исход.
+    const { supervisor, answer, said } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: JSON.stringify({ ...report, stage: 'audit' }) }));
+
+    expect(finishedLine(said).tag).toBe(TAG.warn);
+  });
+
+  it('отсутствие отчёта спокойным не считается', async () => {
+    const { supervisor, answer, said } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ result: 'я всё сделал, а отчёт забыл' }));
+
+    expect(finishedLine(said).tag).toBe(TAG.warn);
   });
 });
 
