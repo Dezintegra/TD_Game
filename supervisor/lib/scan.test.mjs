@@ -54,6 +54,19 @@ describe('пустая картина', () => {
     expect(result.notes.join()).toContain('паузы');
   });
 
+  it('пауза сервера останавливает всё, включая записи об отказах', () => {
+    // Записи ждут, пока сервер ответит, и не теряются: очередь отказов живёт
+    // у супервизора и под паузой не расходуется. Писать на доску под лежачим
+    // сервером незачем — оборот под паузой к ней не обращается вовсе.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      apiPaused: true,
+      apiFailures: [{ taskId: '0001-one', stage: 'implement', why: 'состояние 529' }],
+    });
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('сервер модели не отвечает');
+  });
+
   it('негодная запись в работу не берётся и названа', () => {
     const result = run({
       tasks: [],
@@ -567,6 +580,55 @@ describe('исходы осиротевших этапов', () => {
       registry: { entries: [entry('0001-one')] },
     });
     expect(kinds(result)).not.toContain('note-orphan');
+  });
+});
+
+describe('отказ сервера модели', () => {
+  const failure = (over = {}) => ({
+    taskId: '0001-one',
+    stage: 'implement',
+    why: 'сервер модели отказал (состояние 529); работы не было',
+    ...over,
+  });
+
+  it('отказ уходит записью в задачу', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+      apiFailures: [failure()],
+    });
+    expect(result.actions).toContainEqual({
+      kind: 'note-api-error',
+      taskId: '0001-one',
+      stage: 'implement',
+      why: 'сервер модели отказал (состояние 529); работы не было',
+    });
+  });
+
+  it('сессия тем же оборотом не выдаётся: две правки затёрли бы друг друга', () => {
+    // Возврат продолжения и выдача сессии — две правки одной задачи, обе
+    // по одному снимку доски (задача 0070). Продолжение ждёт один оборот.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+      apiFailures: [failure()],
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(result.notes.join()).toContain('отказе сервера');
+  });
+
+  it('отказ по задаче, которой нет в бэклоге, назван, а не записан', () => {
+    const result = run({ tasks: [], apiFailures: [failure({ taskId: '0404-lost' })] });
+    expect(kinds(result)).not.toContain('note-api-error');
+    expect(result.notes.join()).toContain('0404-lost');
+  });
+
+  it('без отказов действия не появляется вовсе', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+    });
+    expect(kinds(result)).not.toContain('note-api-error');
   });
 });
 

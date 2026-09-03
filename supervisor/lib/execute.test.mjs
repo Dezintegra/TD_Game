@@ -226,6 +226,21 @@ function fakeIo(over = {}) {
       return true;
     },
 
+    // Отказ сервера модели — та же очередь в супервизоре и та же пара
+    // «прочитать, записать, забыть».
+    readApiFailure: (taskId, stage) =>
+      'apiFailure' in over
+        ? over.apiFailure
+        : {
+            taskId,
+            stage,
+            why: 'сервер модели отказал (состояние 529); работы не было',
+          },
+    forgetApiFailure(taskId, stage) {
+      steps.push(`отказ сервера ${taskId}:${stage} забыт`);
+      return true;
+    },
+
     allTaskIds: () => [...tasks.keys()],
     readReport: (id, stage) => over.report ?? { taskId: id, stage, outcome: 'done' },
     removeReport(id, stage) {
@@ -293,6 +308,53 @@ describe('исход осиротевшего этапа', () => {
 
   it('исхода уже нет — действие пропускается без записи', async () => {
     const io = fakeIo({ tasks: [task({ status: 'implement' })], orphan: null });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('skipped');
+    expect(io.steps).toEqual([]);
+  });
+});
+
+describe('отказ сервера модели', () => {
+  const noteAction = { kind: 'note-api-error', taskId: '0001-one', stage: 'implement' };
+
+  it('возвращает продолжение, растит свой счёт и не двигает задачу', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'implement', attempts: { continuations: 1, cycleFailures: 0 } })],
+    });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('done');
+    const moved = io.tasks.get('0001-one');
+    expect(moved.attempts.continuations).toBe(0);
+    expect(moved.attempts.apiErrors).toBe(1);
+    // Состояние прежнее и разбор не зовётся: работы не было ни на один ход.
+    expect(moved.status).toBe('implement');
+  });
+
+  it('запись объясняет, почему заход не дал ничего и счёт не вырос', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([noteAction], io);
+
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('529');
+    expect(journal).toContain('отказе сервера модели');
+    expect(journal).toContain('возвращено');
+  });
+
+  it('отказ забывается только после удавшейся записи', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      push: () => ({ ok: false, outcome: 'offline' }),
+    });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('failed');
+    expect(io.steps).not.toContain('отказ сервера 0001-one:implement забыт');
+  });
+
+  it('отказа уже нет — действие пропускается без записи', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })], apiFailure: null });
     const [result] = await execute([noteAction], io);
 
     expect(result.result).toBe('skipped');
@@ -959,6 +1021,7 @@ describe('возврат из ошибки по вине конвейера', ()
       cycleFailures: 0,
       rejections: 0,
       spawnFailures: 0,
+      apiErrors: 0,
     });
     // Вердикт снят, счёт вырос: судить о задаче будет следующий разбор.
     expect(moved.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 1 });

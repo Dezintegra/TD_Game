@@ -2,10 +2,12 @@ import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
 import {
   applyTransition,
   claimTask,
+  countApiError,
   countContinuation,
   countRejection,
   countSpawnFailure,
   linkArtifact,
+  refundContinuation,
   relate,
   releaseClaim,
   resetAttempts,
@@ -587,6 +589,60 @@ function orphanRecord(outcome) {
   );
 }
 
+/**
+ * Записать отказ сервера модели и вернуть задаче потраченное продолжение.
+ *
+ * В отличие от записи о сироте, здесь правятся и поля задачи: счёт
+ * продолжений уменьшается, счёт отказов сервера растёт. Затирания чужой
+ * правки это не грозит — сканер не выдаёт такой задаче сессию тем же
+ * оборотом именно затем, чтобы двух правок по одному снимку не было.
+ *
+ * Состояние задачи не меняется и разбор не зовётся: разбирать нечего,
+ * работы не было ни на один ход.
+ */
+async function noteApiError(action, io) {
+  const failure = io.readApiFailure?.(action.taskId, action.stage);
+  if (!failure) return { result: 'skipped', why: 'отказ сервера уже записан' };
+
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+
+  const counted = countApiError(refundContinuation(task));
+  const push = await io.saveTask(
+    counted,
+    {
+      at: io.now,
+      from: task.status,
+      to: task.status,
+      problem: apiErrorRecord(action.stage, failure.why),
+    },
+    `chore(backlog): ${action.taskId} отказ сервера на этапе ${action.stage}`,
+  );
+  // Отказ снимается с очереди только после удавшейся записи: обрыв оставляет
+  // его на месте, и следующий оборот пробует снова.
+  if (!push.ok) return { result: 'failed', why: push.outcome };
+  io.forgetApiFailure?.(action.taskId, action.stage);
+  return { result: 'done', status: task.status };
+}
+
+/**
+ * Запись об отказе сервера модели.
+ *
+ * Она отвечает на вопрос следующей сессии: почему заход не дал ничего
+ * и почему счёт попыток не вырос. Без этого разбор пошёл бы искать причину
+ * в работе, которой не было.
+ */
+function apiErrorRecord(stage, why) {
+  return (
+    `**Этап «${stage}» лёг на отказе сервера модели**\n\n` +
+    `${why}. Ходов сессия не сделала, поэтому продолжение, списанное при ` +
+    'рождении процесса, задаче возвращено: платить за чужую перегрузку ей ' +
+    'нечем и незачем.\n\n' +
+    'Состояние задачи не изменилось. Как только сервер ответит, этап пойдёт ' +
+    'заново с прежним счётом попыток.\n'
+  );
+}
+
 /** Разобрать ответ владельца продукта и вернуть задачу в работу. */
 async function answerQuestion(action, io) {
   const task = io.readTask(action.taskId);
@@ -866,6 +922,7 @@ const HANDLERS = {
   'transfer-report': transferReport,
   'start-stage': startStage,
   'note-orphan': noteOrphan,
+  'note-api-error': noteApiError,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
   'return-task': returnTask,

@@ -196,6 +196,24 @@ function stripBom(text) {
 }
 
 /**
+ * Состояние отказа сервера модели — или `null`, если отказа нет.
+ *
+ * Признак берётся из двух полей, и достаточно любого. `terminal_reason` —
+ * слово приложения о случившемся, `api_error_status` — число ответа.
+ * 03.09.2026 приходили оба сразу, но полагаться на их совместность нельзя:
+ * расширить признак дешевле, чем однажды не узнать отказ и снова оплатить
+ * шесть пустых этапов.
+ *
+ * Число возвращается как есть, а при одном лишь слове — само слово: причина
+ * обязана называть состояние, и «api_error» без числа лучше пустоты.
+ */
+function apiErrorStatus(envelope) {
+  const status = envelope.api_error_status;
+  if (typeof status === 'number' && Number.isFinite(status)) return status;
+  return envelope.terminal_reason === 'api_error' ? 'api_error' : null;
+}
+
+/**
  * Что ответил этап.
  *
  * Исход берётся из кода возврата и разбора ответа — и ниоткуда больше.
@@ -245,6 +263,19 @@ export function readAnswer(run) {
     cost: envelope.total_cost_usd ?? null,
     turns: envelope.num_turns ?? null,
   };
+
+  // Отказ сервера модели — свой исход, и ступень стоит ВЫШЕ общей неудачи:
+  // иначе до неё не доходит дело. Слова общей ветки здесь заведомо лгут —
+  // подсказку она берёт из `subtype`, а у отказа сервера он равен `success`,
+  // и строка выходит про «неудачу» с пояснением «успех».
+  const apiStatus = apiErrorStatus(envelope);
+  if (apiStatus !== null) {
+    return {
+      ...answer,
+      outcome: 'api-error',
+      why: `сервер модели отказал (состояние ${apiStatus}); работы не было`,
+    };
+  }
 
   if (run.code !== 0 || envelope.is_error) {
     return {

@@ -37,6 +37,7 @@ export const ACTIONS = [
   // почему прошлый заход ничего не дал, и только потом порождается новый —
   // тогда запись успевает уехать в промпт продолжателя.
   'note-orphan',
+  'note-api-error',
   'continue-stage', // подхватить этап за уснувшей сессией
   'fail-stage', // сдаться: продолжения исчерпаны, нужен человек
   'start-stage', // взять задачу в работу
@@ -101,12 +102,14 @@ function firstStage(task) {
  * @param {object[]} state.reports   отчёты этапов, ожидающие переноса
  * @param {object[]} state.running   идущие этапы: `{ taskId, stage }`
  * @param {object[]} state.orphans   исходы осиротевших этапов, ждущие записи
+ * @param {object[]} state.apiFailures этапы, легшие на отказе сервера модели
  * @param {object}   state.tails     хвосты: `{ main, branches: { ветка: число } }`
  * @param {object}   state.answers   ответы владельца продукта: `{ идЗадачи: true }`
  * @param {object?}  state.permissions правила разрешений: `{ allow, deny }`; `null` — нечем проверять
  * @param {object=}  state.stageCommands что предписано этапу; по умолчанию `STAGE_COMMANDS`
  * @param {object}   state.config    настройка после слияния с умолчаниями
- * @param {boolean}  state.paused    взведён ли рубильник паузы
+ * @param {boolean}  state.paused    взведён ли рубильник человека
+ * @param {boolean}  state.apiPaused взведена ли пауза сервера модели
  * @returns {{ actions: object[], notes: string[] }}
  */
 export function scan(state) {
@@ -127,14 +130,20 @@ export function scan(state) {
     // не дал. Отчёта у него нет и не будет: он приходил стандартным выводом,
     // а тот был трубой в умерший процесс.
     orphans = [],
+    // Этапы, легшие на отказе сервера модели. Живость они не значат, зато
+    // требуют двух действий: вернуть задаче потраченное продолжение
+    // и объяснить в журнале, почему заход не дал ничего.
+    apiFailures = [],
     tails = { main: 0, branches: {} },
     answers = {},
     config,
     paused = false,
+    apiPaused = false,
   } = state;
 
   const actions = [];
   const notes = [];
+  const apiFailed = new Set(apiFailures.map((failure) => failure.taskId));
 
   for (const bad of invalid) {
     notes.push(
@@ -146,6 +155,19 @@ export function scan(state) {
 
   if (paused) {
     notes.push('взведён рубильник паузы: конвейер не порождает работы');
+    return { actions, notes };
+  }
+
+  // Пауза сервера останавливает сканер тем же порядком — до всего прочего,
+  // и записи об отказах вместе с остальным.
+  //
+  // Это осознанно. Записи ждут, пока сервер ответит, и потерять их нельзя:
+  // очередь отказов живёт у супервизора и не расходуется под паузой, а сам
+  // возврат продолжения ничего не решает, пока сессий всё равно не выдают.
+  // Писать же на доску под лежачим сервером незачем: оборот под паузой
+  // обращений к ней не делает вовсе.
+  if (apiPaused) {
+    notes.push('сервер модели не отвечает: конвейер не порождает работы');
     return { actions, notes };
   }
 
@@ -300,6 +322,21 @@ export function scan(state) {
     });
   }
 
+  // 4в. Этапы, легшие на отказе сервера модели. Дешёвые: журнал и счётчики,
+  //     квоты не занимают.
+  for (const failure of apiFailures) {
+    if (!byId.has(failure.taskId)) {
+      notes.push(`отказ сервера по задаче ${failure.taskId}, которой нет в бэклоге`);
+      continue;
+    }
+    actions.push({
+      kind: 'note-api-error',
+      taskId: failure.taskId,
+      stage: failure.stage,
+      why: failure.why,
+    });
+  }
+
   // 5. Уборка. Дешёвая, сессии не требует, квоту не занимает.
   for (const task of tasks) {
     if (task.status === 'cleanup' && !stuck.has(task.id)) {
@@ -413,6 +450,15 @@ export function scan(state) {
     // в ошибку — сессии не было, тратить нечего, а ошибка потребовала бы
     // разбора, той самой второй сессии, ради отмены которой всё затеяно.
     if (held.has(task.id)) continue;
+
+    // Отказ сервера этого оборота: сессию не выдаём, и не из осторожности.
+    // Возврат продолжения и выдача сессии — две правки одной задачи, обе
+    // по одному снимку доски, и вторая затёрла бы первую (задача 0070).
+    // Продолжение ждёт один оборот и достаётся задаче с верным счётом.
+    if (apiFailed.has(task.id)) {
+      notes.push(`задача ${task.id} ждёт оборота: прошлый этап лёг на отказе сервера`);
+      continue;
+    }
 
     // Запись реестра требуется только там, где есть дерево. У прогона
     // и разбора его нет вовсе, и требовать запись значило бы никогда

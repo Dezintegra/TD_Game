@@ -4,10 +4,13 @@ import {
   claimTask,
   countContinuation,
   countRejection,
+  countApiError,
   countSpawnFailure,
   linkArtifact,
+  refundContinuation,
   relate,
   releaseClaim,
+  resetApiErrors,
   resetAttempts,
 } from './task-file.mjs';
 import { journalAppendix, journalEntry } from './journal.mjs';
@@ -111,6 +114,7 @@ describe('переход состояния', () => {
       cycleFailures: 0,
       rejections: 0,
       spawnFailures: 0,
+      apiErrors: 0,
     });
   });
 
@@ -215,6 +219,7 @@ describe('счётчики', () => {
       cycleFailures: 0,
       rejections: 0,
       spawnFailures: 0,
+      apiErrors: 0,
     });
   });
 
@@ -248,8 +253,38 @@ describe('счётчики', () => {
       continuations: 0,
       cycleFailures: 0,
       spawnFailures: 0,
+      apiErrors: 0,
       rejections: 2,
     });
+  });
+
+  it('отказ сервера возвращает потраченное продолжение', () => {
+    // Процесс родился и умер, не сделав ни одного хода: платить за это
+    // задаче нечем и незачем. 03.09.2026 так пропали все продолжения
+    // у 0153 и 0165.
+    const spent = task({ attempts: { continuations: 1, cycleFailures: 0 } });
+    expect(refundContinuation(spent).attempts.continuations).toBe(0);
+  });
+
+  it('возврат продолжения не уводит счёт ниже нуля', () => {
+    // Задача, взятая из очереди впервые, продолжений не тратила, а первый
+    // же её этап может лечь на 529. Отрицательный счёт дал бы ей лишнюю
+    // попытку в обход предела.
+    expect(refundContinuation(task()).attempts.continuations).toBe(0);
+  });
+
+  it('отказы сервера считаются своим счётом и гасятся живым ответом', () => {
+    const once = countApiError(task());
+    expect(once.attempts.apiErrors).toBe(1);
+    expect(countApiError(once).attempts.apiErrors).toBe(2);
+    // Без гашения счёт копится за сутки и взводит паузу по картине,
+    // которой не было: три отказа, разделённые часами работы.
+    expect(resetApiErrors(countApiError(once)).attempts.apiErrors).toBe(0);
+  });
+
+  it('счёт отказов сервера не трогает счёт продолжений', () => {
+    const counted = countApiError(task({ attempts: { continuations: 1, cycleFailures: 0 } }));
+    expect(counted.attempts.continuations).toBe(1);
   });
 });
 

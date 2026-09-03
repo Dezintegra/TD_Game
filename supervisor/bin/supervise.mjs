@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { hostname } from 'node:os';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -13,11 +21,14 @@ import {
   refreshLock,
   shouldPause,
 } from '../lib/lock.mjs';
+import { judgeProbe, shouldProbe } from '../lib/api-health.mjs';
 import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
 import { checkEnvironment } from '../lib/environment.mjs';
 import { createGit } from '../lib/git.mjs';
 import {
+  isApiPaused,
   isPaused,
+  readApiPause,
   readAnswers,
   readPermissions,
   readRegistry,
@@ -99,14 +110,57 @@ function loadConfig() {
   return resolveConfig(project);
 }
 
+/**
+ * Спросить сервер модели, отвечает ли он.
+ *
+ * Три мелочи здесь несут всю цену, и все три замерены 03.09.2026, а не
+ * выведены рассуждением.
+ *
+ * **Дешёвая модель.** На ней проба стоит $0,019 против $0,087 на обычной.
+ *
+ * **Каталог без проекта.** Из дерева репозитория та же проба стоит $0,267:
+ * в промпт уезжают CLAUDE.md и память. Отсюда `cwd` во временном каталоге.
+ *
+ * **Никакого своего системного промпта.** Это главная неожиданность замера:
+ * `--system-prompt 'Отвечай одним словом.'` выглядит экономнее и стоит
+ * $0,053 — в 2,7 раза ДОРОЖЕ, — потому что рушит кэш промпта приложения.
+ * Двадцать четыре тысячи токенов его собственного промпта дешевле прочесть
+ * из кэша, чем заменить своими двадцатью.
+ *
+ * Итог: около двух центов и шести секунд на пробу. Заход этапа
+ * в перегруженный сервер стоит до пяти минут и одной попытки задачи, а сами
+ * этапы обходятся в $1,7–15 — так что даже проба раз в минуту окупается
+ * многократно.
+ *
+ * Судим по итоговому событию, а не по коду возврата: приложение отвечает
+ * нулём и на отказ сервера, а состояние отказа кладёт в `api_error_status`.
+ * Неразобравшийся ответ считаем отказом без состояния — сервер, чей ответ
+ * нечем прочесть, работы всё равно не примет.
+ *
+ * @returns {{ ok: boolean, status: string|number|null }}
+ */
+function probeApi() {
+  const args = ['-p', 'скажи: готов', '--output-format', 'json', '--max-turns', '1'];
+  if (config.apiProbeModel) args.push('--model', config.apiProbeModel);
+  const run = runCommand(args, config.claudeCommand, mkdtempSync(join(tmpdir(), 'td-probe-')));
+  try {
+    const envelope = JSON.parse(run.stdout.slice(run.stdout.indexOf('{')));
+    const status =
+      envelope.api_error_status ?? (envelope.terminal_reason === 'api_error' ? 'api_error' : null);
+    return { ok: !envelope.is_error && status == null, status };
+  } catch {
+    return { ok: false, status: null };
+  }
+}
+
 /** Запуск внешней команды с ответом вместо исключения. */
-function runCommand(args, program = 'git') {
+function runCommand(args, program = 'git', cwd = root) {
   try {
     // `windowsHide` прячет консольное окно потомка. Без него каждый вызов
     // git из супервизора, запущенного в фоне, вспыхивает отдельным окном
     // и забирает фокус — а вызовов этих десятки за оборот.
     const stdout = execFileSync(program, args, {
-      cwd: root,
+      cwd,
       encoding: 'utf8',
       stdio: 'pipe',
       windowsHide: true,
@@ -401,7 +455,11 @@ async function turn() {
   supervisor.sweep();
 
   const paused = isPaused(root, config);
-  const mayWrite = !flags.includes('--dry-run') && !paused;
+  const apiPaused = isApiPaused(root, config);
+  // Записи запрещает и пауза сервера: оборот под ней всё равно не дойдёт
+  // до сканирования, а лишнее обращение к доске под лежачим сервером
+  // ничего не даёт.
+  const mayWrite = !flags.includes('--dry-run') && !paused && !apiPaused;
 
   const backlog = await openBacklog({ mayWrite });
   if (!backlog.ok) {
@@ -436,11 +494,13 @@ async function turn() {
     // не значат, зато объясняют в журнале задачи, почему прошлый заход
     // ничего не дал.
     orphans: supervisor.orphanOutcomes,
+    apiFailures: supervisor.apiFailures,
     answers: readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.
     permissions: readPermissions(home, config),
     paused,
+    apiPaused,
     draining,
     tails: { main: git.tail() ?? 0, branches: {} },
   };
@@ -482,6 +542,12 @@ async function turn() {
         supervisor.orphanOutcomes.find((item) => item.taskId === taskId && item.stage === stage) ??
         null,
       forgetOrphan: (taskId, stage) => supervisor.forgetOrphan(taskId, stage),
+      // Отказ сервера и его забвение — та же пара: запись снимается с очереди
+      // только после удавшейся правки задачи.
+      readApiFailure: (taskId, stage) =>
+        supervisor.apiFailures.find((item) => item.taskId === taskId && item.stage === stage) ??
+        null,
+      forgetApiFailure: (taskId, stage) => supervisor.forgetApiFailure(taskId, stage),
       // Отметка первого захода на этап: ею отличают свежий коммит от чужого,
       // когда отказ разрешений судят по следу.
       stageStartedAt: (taskId, stage) => supervisor.stageStartedAt(taskId, stage),
@@ -603,7 +669,8 @@ function greet() {
     ['пульс этапа раз в', humanDuration(config.pulseSeconds * 1000)],
     ['вывод этапа', config.stageOutputFormat],
     flags.includes('--dry-run') && ['режим', 'ТЕНЬ: считаем и печатаем, мира не трогаем'],
-    isPaused(root, config) && ['режим', 'ПАУЗА: новой работы не берём'],
+    isPaused(root, config) && ['режим', 'ПАУЗА человека: новой работы не берём'],
+    isApiPaused(root, config) && ['режим', 'ПАУЗА сервера: пробуем по расписанию'],
     [
       'самообновление',
       config.selfUpdate === false
@@ -634,6 +701,7 @@ const OUTCOME = {
   worked: 'работа выдана',
   blocked: 'записи невозможны',
   paused: 'взведён рубильник паузы',
+  'api-paused': 'сервер модели не отвечает',
   locked: 'замок держит другой цикл',
   failed: 'оборот не удался',
   misconfigured: 'настройка неполна',
@@ -657,6 +725,76 @@ async function loop() {
   // Через `globalThis` намеренно: встроенного модуля с этим именем нет,
   // а перечень известных линту глобальных имён здесь узкий.
   const waking = new globalThis.AbortController();
+  /**
+   * Взвести, подержать или снять паузу сервера модели.
+   *
+   * Пробу делаем сами и здесь: `api-health` — чистый счёт и обращений
+   * не делает вовсе, иначе проверять его пришлось бы живым сервером,
+   * то есть по погоде.
+   *
+   * Очередь отказов под паузой не расходуется: сканер до неё не доходит.
+   * Поэтому её длина и служит признаком «отказы были» до самого снятия.
+   */
+  function judgeApi() {
+    const armed = isApiPaused(root, config);
+    const state = readApiPause(root, config) ?? { attempt: 0, lastProbeAt: null };
+    const asked = shouldProbe({
+      apiErrors: supervisor.apiFailures.length,
+      threshold: config.pauseAfterApiErrors,
+      armed,
+      now: Date.now(),
+      lastProbeAt: state.lastProbeAt,
+      attempt: state.attempt,
+      schedule: config.apiProbeBackoffSeconds,
+    });
+
+    if (!asked.probe) {
+      // Молчащая пауза неотличима от забытой, поэтому срок следующей пробы
+      // называется вслух каждый оборот, пока она держится.
+      if (armed) say.line(TAG.warn, `пауза сервера: ${asked.why}`);
+      return;
+    }
+
+    const probe = probeApi();
+    const verdict = judgeProbe({ armed, ok: probe.ok, status: probe.status });
+
+    if (verdict.verdict === 'idle') {
+      note(`проба сервера: ${verdict.why}`);
+      return;
+    }
+
+    if (verdict.verdict === 'lift') {
+      // Снимаем ТОЛЬКО свой файл. Рубильник человека означает «человек занят
+      // деревом» или «человек разбирается», и вернувшийся сервер об этом
+      // не говорит ничего.
+      rmSync(local('pause.api'), { force: true });
+      say.line(TAG.cycle, `пауза сервера снята: ${verdict.why}`);
+      return;
+    }
+
+    ensureLocal();
+    writeFileSync(
+      local('pause.api'),
+      `${JSON.stringify(
+        {
+          armedAt: armed ? (state.armedAt ?? clock()) : clock(),
+          attempt: (state.attempt ?? 0) + 1,
+          lastProbeAt: Date.now(),
+          status: probe.status,
+          why: verdict.why,
+        },
+        null,
+        2,
+      )}
+`,
+    );
+    say.line(
+      TAG.warn,
+      `${verdict.verdict === 'arm' ? 'пауза сервера взведена' : 'пауза сервера держится'}: ` +
+        `${verdict.why}`,
+    );
+  }
+
   const stop = (signal) => {
     if (stopping) {
       note(`повторный ${signal}: выходим немедленно`);
@@ -685,6 +823,11 @@ async function loop() {
       TAG.cycle,
       `оборот №${turns}: ${OUTCOME[outcome] ?? outcome} (${humanDuration(Date.now() - began)})`,
     );
+
+    // Пауза сервера решается ПОСЛЕ оборота, по тем же соображениям, что
+    // и самообновление: очередь отказов этого оборота уже собрана, и видно,
+    // сколько их было.
+    judgeApi();
 
     const failures = countFailure(readFailures(), outcome);
     writeFailures(failures);

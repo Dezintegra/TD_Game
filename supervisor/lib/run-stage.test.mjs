@@ -216,6 +216,36 @@ describe('разбор ответа', () => {
   it('пустой перечень отказов — обычное дело, а не отсутствие поля', () => {
     expect(readAnswer(run('{"is_error":false,"result":"ок"}')).denials).toEqual([]);
   });
+
+  // Ответ снят с живого случая 03.09.2026: шесть этапов подряд легли на 529,
+  // и каждый печатался как «завершился неудачей (код 1, success)».
+  it('отказ сервера модели — свой исход, а не неудача этапа', () => {
+    const overloaded =
+      '{"is_error":true,"subtype":"success","terminal_reason":"api_error",' +
+      '"api_error_status":529,"num_turns":1,"result":"API Error: 529 Overloaded"}';
+    const answer = readAnswer(run(overloaded, 1));
+    expect(answer.outcome).toBe('api-error');
+    expect(answer.why).toContain('529');
+    // Слово из subtype в причину попасть не вправе: у отказа сервера оно
+    // равно success, и «неудача, причина успех» не говорит ничего.
+    expect(answer.why).not.toContain('success');
+  });
+
+  it('одного числового состояния довольно: слова о причине бывает и нет', () => {
+    const throttled = '{"is_error":true,"subtype":"success","api_error_status":429}';
+    const answer = readAnswer(run(throttled, 1));
+    expect(answer.outcome).toBe('api-error');
+    expect(answer.why).toContain('429');
+  });
+
+  it('неудача без признаков отказа сервера остаётся обычной неудачей', () => {
+    const answer = readAnswer(run('{"is_error":true,"subtype":"error_max_turns"}', 1));
+    expect(answer.outcome).toBe('failed');
+  });
+
+  it('неразобравшийся вывод отказом сервера не признаётся: причины тут не видно', () => {
+    expect(readAnswer(run('API Error: 529 Overloaded', 1)).outcome).toBe('failed');
+  });
 });
 
 describe('поток событий', () => {
