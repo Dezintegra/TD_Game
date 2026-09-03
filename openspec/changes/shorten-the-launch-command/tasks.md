@@ -159,18 +159,18 @@ node supervisor/bin/launch.mjs --shadow --root=C:\src\dezintegra\TD_Game
 
 ## 3. `bin` и сценарии описания пакета инструмента ведут на пускатель
 
-- [ ] В `supervisor/package.json` заменить
+- [x] В `supervisor/package.json` заменить
       `"pipeline-supervisor": "bin/supervise.mjs"` на
       `"pipeline-supervisor": "bin/launch.mjs"`.
-- [ ] Там же перевести на пускатель сценарии запуска супервизора:
+- [x] Там же перевести на пускатель сценарии запуска супервизора:
       `start` → `node bin/launch.mjs`, `shadow` → `node bin/launch.mjs
       --shadow`. Иначе правка `bin` обходится тремя строками ниже:
       у `pnpm start` из каталога инструмента не было бы ни остановки,
       ни фона, ни отсечения двойного запуска.
-- [ ] Сценарии `cycle`, `board`, `board-setup` и `test` не трогать:
+- [x] Сценарии `cycle`, `board`, `board-setup` и `test` не трогать:
       они зовут другие программы инструмента, и пускатель к ним отношения
       не имеет.
-- [ ] Завести сторожа: тест читает `supervisor/package.json`, проверяет,
+- [x] Завести сторожа: тест читает `supervisor/package.json`, проверяет,
       что объявленная программа указывает на существующий файл пускателя,
       и что ни один сценарий запуска супервизора не зовёт `bin/supervise.mjs`
       напрямую.
