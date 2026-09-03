@@ -649,9 +649,17 @@ export function createSupervisor({
     // Итог этапа одной строкой: то, ради чего человек и смотрит в консоль,
     // отойдя на час. В журнале этапа то же самое есть подробнее, но журнал
     // надо открыть, а строку видно сразу.
+    //
+    // Значений в ней два, и метку выбирает ИСХОД ОТЧЁТА, а не ответ процесса.
+    // Спокойная зелёная причитается этапу, который отчитался `done`, а не
+    // процессу, который просто не упал: человек читает консоль полосой
+    // и различает строки цветом раньше, чем словами. Отчёт о чужом этапе
+    // спокойным не считается — он к задаче не применялся вовсе.
+    const reportedDone = parsed.report?.stage === child.stage && parsed.report.outcome === 'done';
     say.line(
-      answer.outcome === 'done' ? TAG.stage : TAG.warn,
-      `${child.taskId} ${child.stage} завершён: ${answer.outcome}` +
+      reportedDone ? TAG.stage : TAG.warn,
+      `${child.taskId} ${child.stage} завершён: ответ ${answer.outcome}` +
+        `, исход отчёта ${reportOutcome(child, answer, parsed)}` +
         `${answer.why ? ` — ${answer.why}` : ''}` +
         `, ${humanDuration(nowMs() - child.startedMs)}` +
         `, ходов ${answer.turns ?? '—'}` +
