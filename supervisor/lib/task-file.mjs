@@ -54,7 +54,7 @@ export function applyTransition(task, { status, note, now }) {
   // сессию же разбору выдаёт то самое действие, которое смотрит на счётчик.
   // Сканер объявил бы разбор провалившимся прежде первой его сессии.
   const attempts = CROSSCUT.includes(status)
-    ? { continuations: 0, cycleFailures: 0, rejections: 0, spawnFailures: 0 }
+    ? { continuations: 0, cycleFailures: 0, rejections: 0, spawnFailures: 0, apiErrors: 0 }
     : task.attempts;
 
   // Вход в разбор стирает прошлый вердикт, но не счёт возвратов. Вердикт
@@ -123,6 +123,53 @@ export function countSpawnFailure(task) {
 }
 
 /**
+ * Вернуть задаче продолжение, потраченное на заход, которого не было.
+ *
+ * Продолжение списывается при рождении процесса, и это правильно: требование
+ * «Продолжение засчитывается за родившийся процесс» держится именно на этом.
+ * Но процесс, умерший от отказа сервера модели, родился и не сделал ни одного
+ * хода — списание оказалось платой за чужую беду. 03.09.2026 задачи 0153
+ * и 0165 потеряли так по два продолжения из двух и ушли в разбор, где разбор
+ * умер тем же 529.
+ *
+ * Событий два, и правила у них разные: отказ порождения не списывает вовсе,
+ * отказ сервера списывает и возвращает.
+ *
+ * Ниже нуля счёт не уходит. Не из осторожности: задача, взятая из очереди
+ * впервые, продолжений не тратила, а первый же её этап может лечь на 529, —
+ * и отрицательный счёт дал бы ей лишнюю попытку в обход предела.
+ */
+export function refundContinuation(task) {
+  const attempts = task.attempts ?? { continuations: 0, cycleFailures: 0 };
+  return {
+    ...task,
+    attempts: { ...attempts, continuations: Math.max(0, attempts.continuations - 1) },
+  };
+}
+
+/**
+ * Отметить, что этап лёг на отказе сервера модели.
+ *
+ * Счёт свой, а не общий с продолжениями: те возвращаются, и по ним длину
+ * полосы отказов не узнать. Нужен именно счёт подряд идущих отказов — по нему
+ * взводится пауза сервера.
+ *
+ * Обнуляется он живым ответом (`resetApiErrors`). Без обнуления счёт копится
+ * за сутки и однажды взводит паузу по трём отказам, разделённым часами
+ * работы, — то есть по картине, которой не было.
+ */
+export function countApiError(task) {
+  const attempts = task.attempts ?? { continuations: 0, cycleFailures: 0 };
+  return { ...task, attempts: { ...attempts, apiErrors: (attempts.apiErrors ?? 0) + 1 } };
+}
+
+/** Погасить счёт отказов сервера: этап ответил, значит полоса кончилась. */
+export function resetApiErrors(task) {
+  const attempts = task.attempts ?? { continuations: 0, cycleFailures: 0 };
+  return { ...task, attempts: { ...attempts, apiErrors: 0 } };
+}
+
+/**
  * Отметить, что проверяющий этап вернул работу.
  *
  * Счёт ведётся ПОДРЯД идущим возвратам и обнуляется, как только проверка
@@ -142,6 +189,7 @@ export function countRejection(task) {
       continuations: 0,
       cycleFailures: 0,
       spawnFailures: 0,
+      apiErrors: 0,
       rejections: (attempts.rejections ?? 0) + 1,
     },
   };
@@ -156,7 +204,7 @@ export function countRejection(task) {
 export function resetAttempts(task) {
   return {
     ...task,
-    attempts: { continuations: 0, cycleFailures: 0, rejections: 0, spawnFailures: 0 },
+    attempts: { continuations: 0, cycleFailures: 0, rejections: 0, spawnFailures: 0, apiErrors: 0 },
   };
 }
 

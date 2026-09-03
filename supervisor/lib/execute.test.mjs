@@ -959,6 +959,7 @@ describe('возврат из ошибки по вине конвейера', ()
       cycleFailures: 0,
       rejections: 0,
       spawnFailures: 0,
+      apiErrors: 0,
     });
     // Вердикт снят, счёт вырос: судить о задаче будет следующий разбор.
     expect(moved.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 1 });
