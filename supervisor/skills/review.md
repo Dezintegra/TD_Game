@@ -67,7 +67,7 @@ description: Проверяет изменение по спецификация
 
 3. **Посмотри итог проверок CI — один раз, не карауля.**
 
-   ```bash
+   ```powershell
    gh pr checks <pr>            # что сейчас, и на этом всё
    ```
 
@@ -90,7 +90,7 @@ description: Проверяет изменение по спецификация
    того, как проверки позеленели: в `main` вливаются другие задачи конвейера
    и правки из основного дерева.
 
-   ```bash
+   ```powershell
    git -C <дерево> fetch origin main
    git -C <дерево> merge-tree --write-tree --name-only origin/main HEAD
    ```
@@ -106,7 +106,7 @@ description: Проверяет изменение по спецификация
 5. **Прочитай изменение целиком.** Сначала спецификацию изменения
    (`proposal.md`, `specs/*/spec.md`, `design.md`, `tasks.md`), потом диф:
 
-   ```bash
+   ```powershell
    git -C <дерево> diff --stat origin/main...HEAD
    git -C <дерево> log --oneline origin/main..HEAD
    git -C <дерево> diff origin/main...HEAD -- <файл>
@@ -181,7 +181,7 @@ description: Проверяет изменение по спецификация
    **Сначала сними черновой статус, если он стоит.** `isDraft` из шага 2
    истинно — зови:
 
-   ```bash
+   ```powershell
    gh pr ready <pr>
    ```
 
@@ -203,7 +203,7 @@ description: Проверяет изменение по спецификация
 
    Дальше — само вливание:
 
-   ```bash
+   ```powershell
    gh pr merge <pr> --rebase
    ```
 

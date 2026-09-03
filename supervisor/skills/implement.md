@@ -53,7 +53,7 @@ OpenSpec.
 
 1. **Убедись, что дерево на месте и стоит на своей ветке.**
 
-   ```bash
+   ```powershell
    git -C <дерево> rev-parse --abbrev-ref HEAD    # должно совпасть с branch
    ```
 
@@ -67,9 +67,9 @@ OpenSpec.
    Обычно ты и сама это помнишь — прерванный этап продолжает та же сессия,
    а не новая, — но память может и не дойти: тогда сверься с деревом:
 
-   ```bash
+   ```powershell
    git -C <дерево> log --oneline origin/main..HEAD   # что уже закоммичено
-   git -C <дерево> log --oneline @{u}..HEAD          # что не отправлено
+   git -C <дерево> log --oneline '@{u}..HEAD'        # что не отправлено
    git -C <дерево> status --porcelain                # что осталось в работе
    ```
 
@@ -78,7 +78,7 @@ OpenSpec.
 
 3. **Подготовь дерево к узким проверкам** — один раз за сессию:
 
-   ```bash
+   ```powershell
    pnpm install --frozen-lockfile --prefer-offline
    ```
 
@@ -93,7 +93,7 @@ OpenSpec.
 4. **Открой черновой pull request сразу после первого коммита.** Не в конце
    работы — именно после первого:
 
-   ```bash
+   ```powershell
    gh pr create --draft --base main --title "<заголовок>" --body-file <файл>
    ```
 
@@ -111,7 +111,7 @@ OpenSpec.
    1. сделай правку;
    2. прогони узкие проверки по своим файлам:
 
-      ```bash
+      ```powershell
       npx eslint <свой файл>
       npx prettier --check <свои файлы>
       npx vitest run <свой файл теста>
@@ -130,7 +130,7 @@ OpenSpec.
       следующая сессия примет за правду;
    4. собери коммит **явным перечнем путей**:
 
-      ```bash
+      ```powershell
       git -C <дерево> add -- <файл> <файл> ...
       git -C <дерево> commit -m "<тип>: <что>" -m "<почему>"
       git -C <дерево> push
@@ -209,8 +209,8 @@ OpenSpec.
 
 9. **Перед завершением убедись, что хвоста нет:**
 
-   ```bash
-   git -C <дерево> log --oneline @{u}..HEAD    # обязано быть пусто
+   ```powershell
+   git -C <дерево> log --oneline '@{u}..HEAD'  # обязано быть пусто
    git -C <дерево> status --porcelain          # ничего своего не забыто
    ```
 
