@@ -155,7 +155,7 @@
       временно возвращённое в `allow`, делает его красным; временно снятое
       `PowerShell(git push:*)` делает его красным и называет `git push:*`.
 
-- [ ] 6. **Записать причину правила словами** — `$shellNote`
+- [x] 6. **Записать причину правила словами** — `$shellNote`
       в `stage-settings.json` и раздел в `supervisor/README.md`: какие
       программы не нашлись в Git Bash 03.09.2026 (`pnpm`, `openspec`,
       `sh`), где лежит след (`.pipeline/logs/0149-…-implement.log`),
