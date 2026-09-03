@@ -148,7 +148,7 @@
   Открыть черновой pull request сразу после этого коммита: до открытия
   PR проверки CI на отправки в ветку не запускаются вовсе.
 
-- [ ] 9.2 Завести в `supervisor/lib/denials.mjs` вид следа `commit-or-pr`
+- [x] 9.2 Завести в `supervisor/lib/denials.mjs` вид следа `commit-or-pr`
       и назначить его этапу `implement` в таблице `TRACE`; `design`
       и `revise` остаются на `commit`. Проверка сперва зовёт общую часть
       `branchTrace` и её ответ, если он не `present`, возвращает как есть:
