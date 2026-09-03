@@ -106,7 +106,7 @@ describe('улики о деле этапа', () => {
     worktreeDir: '.claude/worktrees',
   });
 
-  const task = (over = {}) => ({ id: '0001-one', links: { run: null }, ...over });
+  const task = (over = {}) => ({ id: '0001-one', links: { run: null, pr: null }, ...over });
 
   /** Переходник, отвечающий заранее заготовленным, и список спрошенного. */
   function fakeIo(answers = []) {
@@ -130,6 +130,7 @@ describe('улики о деле этапа', () => {
       unpushed: 0,
       lastCommitAt: '2026-09-01T12:30:00+03:00',
       previousRun: null,
+      previousPr: null,
     });
     expect(asked).toEqual([
       'rev-parse --verify --quiet origin/worktree-0001-one',
@@ -161,6 +162,25 @@ describe('улики о деле этапа', () => {
     const { io } = fakeIo();
     const evidence = io.stageEvidence(task({ links: { run: '33428427058' } }));
     expect(evidence.previousRun).toBe('33428427058');
+  });
+
+  it('прежний номер pull request берётся из задачи и лишних команд не стоит', () => {
+    // Зеркально номеру прогона: впервые открытый pull request — это тот,
+    // которого задача до этапа не знала. Ни одного нового вызова git.
+    const { io, asked } = fakeIo();
+    const evidence = io.stageEvidence(task({ links: { run: null, pr: 124 } }));
+
+    expect(evidence.previousPr).toBe(124);
+    expect(asked).toEqual([
+      'rev-parse --verify --quiet origin/worktree-0001-one',
+      'rev-list --count origin/worktree-0001-one..worktree-0001-one',
+      'log -1 --format=%cI worktree-0001-one',
+    ]);
+  });
+
+  it('задача без ссылки на pull request даёт null, а не undefined', () => {
+    const { io } = fakeIo();
+    expect(io.stageEvidence({ id: '0001-one', links: {} }).previousPr).toBe(null);
   });
 });
 
