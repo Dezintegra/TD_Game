@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { STAGE_COMMANDS, uncoveredForStage } from './permissions.mjs';
 import {
   NEEDS_SESSION,
   NEEDS_WORKTREE,
@@ -198,83 +199,13 @@ describe('цена состояния', () => {
 });
 
 /**
- * Команды, которыми этап ревью доводит изменение до `main`. Список короткий
- * нарочно: сторожить надо тот путь, отказ на котором обнаружится только там,
- * где рядом нет человека, — посреди вливания.
+ * Непокрытые команды вливания. Мерка и сам перечень переехали в код
+ * инструмента (`config/permissions.mjs`): её читает и сканер, а вторая копия
+ * разошлась бы с первой молча. Здесь остаётся короткое имя, чтобы пробы
+ * на порчу ниже читались прежним образом.
  */
-const MERGE_PATH = ['gh pr view 1 --json state,isDraft', 'gh pr ready 1', 'gh pr merge 1 --merge'];
-
-/**
- * Разбор правила: обёртка оболочки снята, тело отдано вместе с признаком
- * формы. Форм две, и среда мерит их по-разному:
- *
- * - хвост `:*` (`Bash(gh pr:*)`) означает «с любыми доводами» — приставка;
- * - без хвоста (`Bash(gh pr view)`) правило совпадает с командой целиком —
- *   точная форма.
- *
- * Разницу подтверждает соседний сторож «перечень сценариев открыт точной
- * формой» (ниже по файлу): он целиком держится на том, что `Bash(pnpm run)`
- * без хвоста НЕ открывает `pnpm run verify`. Мерить обе формы приставкой
- * значило бы держать в одном файле две противоположные мерки одного
- * синтаксиса — и однажды на этом ошибиться.
- *
- * Для чужой оболочки возвращается `null` — правило `Bash(...)` о правах
- * в PowerShell не говорит ничего.
- */
-const patternOf = (rule, shell) => {
-  const wrapped = new RegExp(`^${shell}\\((.*)\\)$`).exec(rule);
-  if (!wrapped) return null;
-  const body = wrapped[1];
-  return body.endsWith(':*') ? { body: body.slice(0, -2), exact: false } : { body, exact: true };
-};
-
-/**
- * Сверка команды с правилом — той же меркой, какой её меряет среда, и порознь
- * для каждой формы:
- *
- * - приставка закрывается границей слова (`\s` либо конец строки): без неё
- *   `gh pr` покрыло бы выдуманное `gh press`, и сторож зеленел бы
- *   на настройке, которой в действительности не соответствует ничего;
- * - точная форма закрывается концом строки: команда с доводами таким
- *   правилом не покрыта вовсе.
- *
- * Звёздочка **внутри** тела (`git -C * push`) стоит вместо довода и толкуется
- * одинаково у обеих форм: речь тут только о хвосте.
- */
-const coversCommand = (pattern, command) => {
-  const body = pattern.body
-    .split('*')
-    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-    .join('.*');
-  return new RegExp(`^${body}${pattern.exact ? '$' : '(\\s|$)'}`).test(command);
-};
-
-/**
- * Перечень команд вливания, не покрытых настройкой. Команда покрыта, только
- * если совпала хотя бы с одним правилом `allow` и не совпала ни с одним
- * правилом `deny`: запрет, оказавшийся приставкой собственного разрешения,
- * уже отнимал у этапа работу (см. `$cleanupNote` в stage-settings.json).
- *
- * Запреты меряются той же меркой, что разрешения, а не строже. Сторож,
- * объявляющий непокрытой команду, которую среда пропускает, лечится
- * единственным доступным способом — ослаблением настройки ради успокоения
- * теста: правят не сторожа, а то, что он сторожит.
- */
-const uncoveredMergeCommands = (permissions) => {
-  const guilty = [];
-  for (const shell of ['Bash', 'PowerShell']) {
-    for (const command of MERGE_PATH) {
-      const patterns = (rules) =>
-        rules.map((rule) => patternOf(rule, shell)).filter((pattern) => pattern !== null);
-      const allowed = patterns(permissions.allow).some((pattern) =>
-        coversCommand(pattern, command),
-      );
-      const denied = patterns(permissions.deny).some((pattern) => coversCommand(pattern, command));
-      if (!allowed || denied) guilty.push(`${shell}: ${command}`);
-    }
-  }
-  return guilty;
-};
+const uncoveredMergeCommands = (permissions) =>
+  uncoveredForStage(permissions, 'review', STAGE_COMMANDS);
 
 describe('этапы и скиллы', () => {
   it('у каждого этапа с сессией есть скилл', () => {

@@ -5,7 +5,7 @@
 `vitest` тестов инструмента не находит вовсе, ему нужен ключ
 `--root supervisor`.
 
-## 1. Завести `supervisor/config/permissions.mjs` и перевести на него сторожа вливания
+## 1. Завести `supervisor/config/permissions.mjs` и перевести на него сторожа вливания — СДЕЛАНО
 
 Перенести из `supervisor/config/transitions.test.mjs` в новый модуль
 `patternOf` и `coversCommand` вместе с их пояснениями; добавить
