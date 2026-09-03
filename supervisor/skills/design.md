@@ -85,7 +85,7 @@ description: Заводит изменение OpenSpec под задачу бэ
 
 6. **Заведи изменение.**
 
-   ```
+   ```powershell
    openspec new change <имя> --description "<одна строка о сути>"
    ```
 
@@ -175,7 +175,7 @@ Requirements` CLI берёт последнюю, а требования пре�
 
 11. **Проверь форму.**
 
-    ```
+    ```powershell
     openspec validate --changes --strict
     openspec status --change <имя>
     ```
@@ -192,7 +192,7 @@ Requirements` CLI берёт последнюю, а требования пре�
 
 12. **Закоммить и сразу отправь.**
 
-    ```
+    ```powershell
     git add -- openspec/changes/<имя>
     git commit -m "docs(openspec): <имя изменения>" -m "<первый абзац тела>" -m "<второй абзац>"
     git push -u origin HEAD
