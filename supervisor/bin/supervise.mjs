@@ -19,7 +19,7 @@ import { createGit } from '../lib/git.mjs';
 import { isPaused, readAnswers, readRegistry, readStages, readTasks } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
-import { createKillTree } from '../lib/run-stage.mjs';
+import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
@@ -316,6 +316,14 @@ const supervisor = createSupervisor({
   home,
   spawn,
   killTree: createKillTree((program, args) => runCommand(args, program)),
+  // Опрос системы о процессе по номеру. Тем же способом, что и снятие:
+  // одной внешней командой, ответ вместо исключения.
+  probe: createProbeProcess((program, args) => runCommand(args, program)),
+  // Дескриптор живого этапа называет станцию и своего супервизора: местное
+  // хранилище состояния можно скопировать, а номер процесса с другой машины
+  // здесь не значит ничего.
+  machine: hostname(),
+  supervisorPid: process.pid,
   saveStages,
   stages: readStages(root, config),
   say,
@@ -380,6 +388,11 @@ async function turn() {
     );
   }
 
+  // Обход сирот идёт ДО чтения живости: этап, осиротевший при смене
+  // супервизора, мог кончиться минуту назад, и место обязано освободиться
+  // этим же оборотом, а не при следующем перезапуске.
+  supervisor.sweep();
+
   const paused = isPaused(root, config);
   const mayWrite = !flags.includes('--dry-run') && !paused;
 
@@ -412,6 +425,10 @@ async function turn() {
     registry,
     reports: supervisor.reports,
     running: supervisor.running(),
+    // Исходы этапов, осиротевших при смене супервизора: живость они уже
+    // не значат, зато объясняют в журнале задачи, почему прошлый заход
+    // ничего не дал.
+    orphans: supervisor.orphanOutcomes,
     answers: readAnswers(root, config),
     paused,
     draining,
@@ -449,6 +466,12 @@ async function turn() {
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),
+      // Исход сироты и его забвение — та же пара, что чтение и снятие отчёта:
+      // дескриптор стирается с диска лишь после удавшейся записи в журнал.
+      readOrphan: (taskId, stage) =>
+        supervisor.orphanOutcomes.find((item) => item.taskId === taskId && item.stage === stage) ??
+        null,
+      forgetOrphan: (taskId, stage) => supervisor.forgetOrphan(taskId, stage),
       // Отметка первого захода на этап: ею отличают свежий коммит от чужого,
       // когда отказ разрешений судят по следу.
       stageStartedAt: (taskId, stage) => supervisor.stageStartedAt(taskId, stage),

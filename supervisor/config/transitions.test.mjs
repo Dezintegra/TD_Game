@@ -291,6 +291,48 @@ describe('этапы и скиллы', () => {
     expect(rules.filter((rule) => /Remove-Item|rm -rf/.test(rule))).toEqual([]);
   });
 
+  it('перечень сценариев открыт точной формой, а не с любым доводом', () => {
+    // Разница между `pnpm run` и `pnpm run:*` — один символ, а последствие
+    // разное. Без доводов команда печатает перечень сценариев и не исполняет
+    // ничего; хвост `:*` означает «с любыми доводами», а довод здесь — имя
+    // сценария. Широкая форма открыла бы разом `pnpm run verify`,
+    // `pnpm run test:match`, `pnpm run balance:run` и `pnpm run deploy` —
+    // то, что правила 6 и 8 проекта закрыли осознанно.
+    //
+    // Сторож нужен потому, что расширение стоит одного символа, а заметят
+    // его не раньше, чем этап что-нибудь выложит на боевой сервер.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    const rules = [...settings.permissions.allow, ...settings.permissions.deny];
+
+    expect(rules.filter((rule) => /\(pnpm run[\s:]/.test(rule))).toEqual([]);
+    for (const shell of ['Bash', 'PowerShell']) {
+      expect(settings.permissions.allow).toContain(`${shell}(pnpm run)`);
+    }
+  });
+
+  it('подъём и снятие конвейера закрыты в обеих оболочках', () => {
+    // Запрет живёт не ради сегодняшнего дня — сегодня ни одно разрешение
+    // с этими формами не совпадает. Он ради того дня, когда правило расширят
+    // до `node supervisor/bin/*`, как просит заголовок задачи 0130.
+    //
+    // Опаснее подъёма здесь `--stop`: пускатель снимает поддерево процессов,
+    // а этап — потомок супервизора, то есть снимает себя на полуслове.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    const forms = ['supervise.mjs', 'launch.mjs --stop', 'launch.mjs --shadow'];
+    const missing = [];
+    for (const form of forms) {
+      for (const shell of ['Bash', 'PowerShell']) {
+        const rule = `${shell}(node supervisor/bin/${form}:*)`;
+        if (!settings.permissions.deny.includes(rule)) missing.push(rule);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
   it('этапы, подающие заявки, знают признак причины в конвейере', () => {
     // Заявка с `area: "pipeline"` минует кандидатов с любого этапа. Скилл,
     // не знающий признака, заведёт починку конвейера кандидатом — и она
