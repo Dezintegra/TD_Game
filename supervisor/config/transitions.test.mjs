@@ -205,6 +205,21 @@ describe('цена состояния', () => {
 const MERGE_PATH = ['gh pr view 1 --json state,isDraft', 'gh pr ready 1', 'gh pr merge 1 --merge'];
 
 /**
+ * Оболочки, которыми этап пользуется, — и их ровно одна.
+ *
+ * Прежде здесь стояли обе, и покрытие считалось по обеим безусловно. Так
+ * настройка поддерживала развилку, которая 03.09.2026 стоила задаче 0149
+ * следа этапа: правила пропускали и Bash, сессия честно брала его
+ * по разметке блока, а `pnpm install` и `git push` падали внутри команды —
+ * кодом 127 и `cannot spawn sh`, то есть молча, мимо перечня отказов.
+ *
+ * После снятия правил `Bash(...)` мерка по обеим оболочкам объявила бы
+ * непокрытой каждую команду этапа. Считать надо по тем оболочкам, которыми
+ * этап пользуется, а не по всем, какие бывают на свете.
+ */
+const STAGE_SHELLS = ['PowerShell'];
+
+/**
  * Разбор правила: обёртка оболочки снята, тело отдано вместе с признаком
  * формы. Форм две, и среда мерит их по-разному:
  *
@@ -262,7 +277,7 @@ const coversCommand = (pattern, command) => {
  */
 const uncoveredMergeCommands = (permissions) => {
   const guilty = [];
-  for (const shell of ['Bash', 'PowerShell']) {
+  for (const shell of STAGE_SHELLS) {
     for (const command of MERGE_PATH) {
       const patterns = (rules) =>
         rules.map((rule) => patternOf(rule, shell)).filter((pattern) => pattern !== null);
@@ -386,7 +401,7 @@ describe('этапы и скиллы', () => {
     const rules = [...settings.permissions.allow, ...settings.permissions.deny];
 
     expect(rules.filter((rule) => /\(pnpm run[\s:]/.test(rule))).toEqual([]);
-    for (const shell of ['Bash', 'PowerShell']) {
+    for (const shell of STAGE_SHELLS) {
       expect(settings.permissions.allow).toContain(`${shell}(pnpm run)`);
     }
   });
@@ -412,7 +427,7 @@ describe('этапы и скиллы', () => {
     expect(missing).toEqual([]);
   });
 
-  it('команды вливания покрыты правилами в обеих оболочках', () => {
+  it('команды вливания покрыты правилами единственной оболочки', () => {
     // Ревью доводит изменение до `main` тремя командами, и отказ на любой
     // из них случается там, где человека рядом нет. 03.09.2026 задача 0130
     // встала на `gh pr merge`, отбитом черновым статусом; лечение потребовало
@@ -433,11 +448,20 @@ describe('этапы и скиллы', () => {
     // не краснеет на сломанной настройке, — украшение. Правило сужено до
     // `gh pr merge:*`, и `gh pr ready` обязана числиться непокрытой.
     const narrowed = {
-      allow: ['Bash(gh pr merge:*)', 'PowerShell(gh pr merge:*)'],
+      allow: ['PowerShell(gh pr merge:*)'],
       deny: [],
     };
-    expect(uncoveredMergeCommands(narrowed)).toContain('Bash: gh pr ready 1');
     expect(uncoveredMergeCommands(narrowed)).toContain('PowerShell: gh pr ready 1');
+  });
+
+  it('правило снятой оболочки покрытием не считается', () => {
+    // Мерка судит по той оболочке, которой этап пользуется, и правило
+    // `Bash(...)` о правах в PowerShell не говорит ничего. Проба нужна ровно
+    // затем, чтобы возврат Bash-правил взамен снятых PowerShell не выглядел
+    // починкой: настройка, открывающая всё в Bash и ничего в PowerShell,
+    // обязана числиться непокрытой целиком.
+    const wrongShell = { allow: ['Bash(gh pr:*)'], deny: [] };
+    expect(uncoveredMergeCommands(wrongShell)).toHaveLength(MERGE_PATH.length);
   });
 
   it('запрет, совпавший с приставкой разрешения, считается непокрытием', () => {
@@ -445,10 +469,10 @@ describe('этапы и скиллы', () => {
     // Так `.matchlog/*` перекрывал уборку собственного подкаталога и отнимал
     // у этапа прогона отчёт.
     const shadowed = {
-      allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'],
-      deny: ['Bash(gh pr ready:*)'],
+      allow: ['PowerShell(gh pr:*)'],
+      deny: ['PowerShell(gh pr ready:*)'],
     };
-    expect(uncoveredMergeCommands(shadowed)).toEqual(['Bash: gh pr ready 1']);
+    expect(uncoveredMergeCommands(shadowed)).toEqual(['PowerShell: gh pr ready 1']);
   });
 
   it('сужение до точных правил без хвоста выводит из-под разрешений все три команды', () => {
@@ -458,22 +482,15 @@ describe('этапы и скиллы', () => {
     // Правила без хвоста среда толкует точным совпадением команды, а у всех
     // трёх команд вливания есть доводы — номер pull request и ключи. Значит
     // такая настройка отказывает каждой из них, и сторож обязан назвать все
-    // шесть: три команды на две оболочки. Ровно этой настройки сторож
-    // и не ловил, пока хвост отбрасывался безусловно.
+    // три. Ровно этой настройки сторож и не ловил, пока хвост отбрасывался
+    // безусловно.
     const exactly = {
-      allow: [
-        'Bash(gh pr view)',
-        'Bash(gh pr ready)',
-        'Bash(gh pr merge)',
-        'PowerShell(gh pr view)',
-        'PowerShell(gh pr ready)',
-        'PowerShell(gh pr merge)',
-      ],
+      allow: ['PowerShell(gh pr view)', 'PowerShell(gh pr ready)', 'PowerShell(gh pr merge)'],
       deny: [],
     };
-    // Длина, а не вхождение одной строки: список из пяти означал бы, что одна
-    // оболочка прочтена иначе, — а такую разницу надо видеть, а не проглядеть.
-    expect(uncoveredMergeCommands(exactly)).toHaveLength(6);
+    // Длина, а не вхождение одной строки: список короче означал бы, что одна
+    // из команд прочтена иначе, — а такую разницу надо видеть, а не проглядеть.
+    expect(uncoveredMergeCommands(exactly)).toHaveLength(MERGE_PATH.length);
   });
 
   it('запрет точной формы, дословно равный команде, гасит её разрешение', () => {
@@ -485,12 +502,10 @@ describe('этапы и скиллы', () => {
     // отобьёт, значит и сторож обязан назвать её непокрытой, невзирая
     // на широкое разрешение рядом.
     const deniedExactly = {
-      allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'],
-      deny: ['Bash(gh pr ready 1)'],
+      allow: ['PowerShell(gh pr:*)'],
+      deny: ['PowerShell(gh pr ready 1)'],
     };
-    // Одна строка, а не две: правило `Bash(...)` о правах в PowerShell
-    // не говорит ничего, и та же команда под другой оболочкой остаётся покрытой.
-    expect(uncoveredMergeCommands(deniedExactly)).toEqual(['Bash: gh pr ready 1']);
+    expect(uncoveredMergeCommands(deniedExactly)).toEqual(['PowerShell: gh pr ready 1']);
   });
 
   it('запрет точной формы, короче команды, её разрешения не гасит', () => {
@@ -502,8 +517,8 @@ describe('этапы и скиллы', () => {
     // команду, которую среда пропускает, лечится единственным доступным
     // способом — ослаблением настройки ради успокоения теста.
     const denyShorter = {
-      allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'],
-      deny: ['Bash(gh pr merge)'],
+      allow: ['PowerShell(gh pr:*)'],
+      deny: ['PowerShell(gh pr merge)'],
     };
     expect(uncoveredMergeCommands(denyShorter)).toEqual([]);
   });
