@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { createKillTree, readAnswer, startStage } from './run-stage.mjs';
+import { createKillTree, createProbeProcess, readAnswer, startStage } from './run-stage.mjs';
 
 /**
  * Проверки хозяина у процесса.
@@ -348,6 +348,79 @@ describe('разбор потока событий', () => {
 
   it('однократный ответ по-прежнему понимается: откат делается настройкой', () => {
     expect(readAnswer(run('{"is_error":false,"result":"ок"}')).result).toBe('ок');
+  });
+});
+
+describe('опознание процесса', () => {
+  // Живых процессов здесь нет ни одного: опрос подставной. Проверяется то,
+  // ради чего опознание и заводится, — различение трёх положений, из которых
+  // два внешне похожи: «процесса нет» и «спросить не удалось».
+  const probe = (platform, answer) => createProbeProcess(() => answer, platform);
+
+  it('на Windows спрашивает tasklist по номеру и берёт имя образа', () => {
+    const run = vi.fn(() => ({
+      code: 0,
+      stdout: '"claude.exe","29704","Console","1","12 345 K"\r\n',
+    }));
+    const seen = createProbeProcess(run, 'win32')(29704);
+
+    expect(run).toHaveBeenCalledWith('tasklist', ['/FI', 'PID eq 29704', '/NH', '/FO', 'CSV']);
+    expect(seen).toEqual({ known: true, alive: true, image: 'claude.exe' });
+  });
+
+  it('«нет такого процесса» приходит текстом при нулевом коде возврата', () => {
+    // Сообщение ещё и на языке системы, поэтому сверяется не оно, а его
+    // отсутствие: строка данных начинается с кавычки, всё прочее — разговоры.
+    const stdout = 'INFO: No tasks are running which match the specified criteria.\r\n';
+    expect(probe('win32', { code: 0, stdout })(29704)).toEqual({
+      known: true,
+      alive: false,
+      image: null,
+    });
+  });
+
+  it('пустой ответ tasklist — «спросить не удалось», а не «процесса нет»', () => {
+    // Разница дорогая: «нет» отпускает рабочее дерево задачи, «не спросилось»
+    // обязано оставить этап идущим до его срока.
+    expect(probe('win32', { code: 1, stdout: '' })(29704).known).toBe(false);
+  });
+
+  it('строка данных без имени образа тоже читается как «не спросилось»', () => {
+    expect(probe('win32', { code: 0, stdout: '"","29704"' })(29704).known).toBe(false);
+  });
+
+  it('на прочих системах спрашивает ps и берёт его вывод именем образа', () => {
+    const run = vi.fn(() => ({ code: 0, stdout: 'claude\n' }));
+    const seen = createProbeProcess(run, 'linux')(29704);
+
+    expect(run).toHaveBeenCalledWith('ps', ['-p', '29704', '-o', 'comm=']);
+    expect(seen).toEqual({ known: true, alive: true, image: 'claude' });
+  });
+
+  it('ненулевой код ps означает, что процесса нет', () => {
+    expect(probe('linux', { code: 1, stdout: '' })(29704)).toEqual({
+      known: true,
+      alive: false,
+      image: null,
+    });
+  });
+
+  it('пустой вывод ps при нулевом коде — «спросить не удалось»', () => {
+    expect(probe('linux', { code: 0, stdout: '\n' })(29704).known).toBe(false);
+  });
+
+  it('упавшая команда опроса не роняет супервизор', () => {
+    // Так выглядит система без `tasklist` в PATH: ответа нет вовсе.
+    const probing = createProbeProcess(() => {
+      throw new Error('нет такой команды');
+    }, 'win32');
+    expect(probing(29704)).toEqual({ known: false, alive: false, image: null });
+  });
+
+  it('без номера процесса не спрашивает вовсе', () => {
+    const run = vi.fn();
+    expect(createProbeProcess(run, 'win32')(undefined).known).toBe(false);
+    expect(run).not.toHaveBeenCalled();
   });
 });
 

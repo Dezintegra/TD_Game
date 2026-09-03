@@ -378,6 +378,59 @@ describe('приоритеты', () => {
   });
 });
 
+describe('исходы осиротевших этапов', () => {
+  /** Исход, каким его отдаёт супервизор: этап был, процесс кончился. */
+  const orphan = (over = {}) => ({
+    taskId: '0001-one',
+    stage: 'implement',
+    pid: 29704,
+    startedAt: '2026-08-26T11:00:00+03:00',
+    outcome: 'gone',
+    why: 'процесс кончился сам',
+    ...over,
+  });
+
+  it('исход попадает в журнал задачи отдельным действием', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+      orphans: [orphan()],
+    });
+    expect(result.actions).toContainEqual({
+      kind: 'note-orphan',
+      taskId: '0001-one',
+      stage: 'implement',
+      outcome: 'gone',
+    });
+  });
+
+  it('запись делается ПЕРЕД выдачей сессии', () => {
+    // Иначе причина пустого захода ложится в журнал уже после того, как
+    // продолжатель порождён, и в его промпт не попадает вовсе.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+      orphans: [orphan()],
+    });
+    const order = kinds(result);
+    expect(order.indexOf('note-orphan')).toBeLessThan(order.indexOf('continue-stage'));
+  });
+
+  it('исход по задаче, которой нет в бэклоге, назван, а не записан', () => {
+    const result = run({ tasks: [], orphans: [orphan({ taskId: '0404-lost' })] });
+    expect(kinds(result)).not.toContain('note-orphan');
+    expect(result.notes.join()).toContain('0404-lost');
+  });
+
+  it('без исходов действия не появляется вовсе', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+    });
+    expect(kinds(result)).not.toContain('note-orphan');
+  });
+});
+
 describe('этапы без живого процесса', () => {
   /** Живой этап: ровно то, что знает о своих детях супервизор. */
   const running = (taskId, stage) => [{ taskId, stage }];
