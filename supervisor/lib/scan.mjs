@@ -5,6 +5,7 @@ import {
   stateClass,
 } from '../config/transitions.mjs';
 import { missingForStage } from '../config/defaults.mjs';
+import { STAGE_COMMANDS, uncoveredForStage } from '../config/permissions.mjs';
 
 /**
  * Сканер: что конвейеру делать прямо сейчас.
@@ -102,6 +103,8 @@ function firstStage(task) {
  * @param {object[]} state.orphans   исходы осиротевших этапов, ждущие записи
  * @param {object}   state.tails     хвосты: `{ main, branches: { ветка: число } }`
  * @param {object}   state.answers   ответы владельца продукта: `{ идЗадачи: true }`
+ * @param {object?}  state.permissions правила разрешений: `{ allow, deny }`; `null` — нечем проверять
+ * @param {object=}  state.stageCommands что предписано этапу; по умолчанию `STAGE_COMMANDS`
  * @param {object}   state.config    настройка после слияния с умолчаниями
  * @param {boolean}  state.paused    взведён ли рубильник паузы
  * @returns {{ actions: object[], notes: string[] }}
@@ -304,6 +307,57 @@ export function scan(state) {
     }
   }
 
+  // Этап, чьи предписанные команды не проходят правил разрешений, не начинают.
+  // Причина та же, что у нехватки настройки: сессия проснулась бы, дошла
+  // до отказанной команды и встала. За 02–03.09.2026 так сгорело семь задач
+  // подряд, все на одном и том же `ssh … dezintegra "true"`, и каждая забрала
+  // с собой ещё и сессию разбора, устанавливавшего одно и то же.
+  //
+  // Перечень команд приходит доводом, как и правила: боевой объявлен `review`
+  // и `deploy`, а очередная задача уходит в `design`, `benchmark` или `triage`,
+  // и проверка раздела 7, написанная на боевом перечне, была бы вечнозелёной.
+  const stageCommands = state.stageCommands ?? STAGE_COMMANDS;
+  const permissions = state.permissions ?? null;
+  const uncoveredAt = (stage) =>
+    permissions ? uncoveredForStage(permissions, stage, stageCommands) : [];
+
+  // Запись начинается теми же словами, что и удержание упавшей задачи
+  // (раздел 3б): для читателя это одно и то же событие — конвейер чинят,
+  // и до починки работа не двигается. Различает их хвост строки.
+  const heldNote = (taskId, stage, uncovered) =>
+    `задача ${taskId} ждёт починок конвейера: команды этапа «${stage}» ` +
+    `не покрыты правилами разрешений — ${uncovered.join(', ')}`;
+
+  // Задачи, стоящие в этапе с непокрытыми командами. Считаются ДО занятости:
+  // удержанная задача не порождает процесса, а значит и места не занимает.
+  // Оставь её в счёте — и она держала бы единственное место НАВСЕГДА: сессии
+  // нет, этап не кончается, место не освобождается. Сегодня оно освобождается
+  // хотя бы через полчаса падением, то есть лечение вышло бы хуже болезни.
+  const held = new Map();
+  for (const task of tasks) {
+    if (!NEEDS_SESSION.includes(task.status)) continue;
+    // Живой этап удержание не касается: он уже идёт, и командам его сессии
+    // правила разрешений судья, а не сканер.
+    if (isRunning(task.id, task.status)) continue;
+    const uncovered = uncoveredAt(task.status);
+    if (uncovered.length === 0) continue;
+    held.set(task.id, uncovered);
+    notes.push(heldNote(task.id, task.status, uncovered));
+  }
+
+  // Нечитаемые правила не держат ничего: «не знаем, значит держим» остановило
+  // бы конвейер целиком из-за опечатки в пути. Но и промолчать нельзя —
+  // иначе проверка, которой не было, неотличима от пройденной. Говорится это
+  // лишь тогда, когда было что проверять: строка, звучащая каждые пять минут
+  // на исправном конвейере, перестаёт читаться.
+  const declared = (stage) => (stageCommands[stage] ?? []).length > 0;
+  if (!permissions && tasks.some((task) => declared(firstStage(task)) || declared(task.status))) {
+    notes.push(
+      'правила разрешений не прочитаны: покрытие команд этапов проверить нечем, ' +
+        'и ни одна задача по этой причине не удержана',
+    );
+  }
+
   // Занятость машины считается по задачам, стоящим в этапах, которым нужна
   // сессия. Не по живым процессам: задача, чей этап только что кончился без
   // отчёта, машину всё ещё занимает — ей сейчас же выдадут продолжение.
@@ -316,15 +370,18 @@ export function scan(state) {
   // семнадцать задач — парами, в одну и ту же секунду.
   //
   // Плата за простоту названа честно: прогоны арены идут по очереди.
-  const engaged = tasks.filter((task) => NEEDS_SESSION.includes(task.status));
+  const engaged = tasks.filter((task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id));
   let busy = engaged.length >= config.maxConcurrent;
 
   // Исключительный этап — замер кадров и выкладка — требует тишины на машине
   // целиком. При одном исполнителе это выходит само собой, но настройка
   // допускает и больше, а замер на engagedй машине измеряет загрузку, а не код:
   // проверено дважды, один раз цифра оказалась завышена вдесятеро.
-  const exclusiveHeld = engaged.some((task) => stateClass(task) === 'exclusive');
-  if (exclusiveHeld && !busy) {
+  //
+  // Удержанные сюда не попадают вместе с `engaged`, и это не оговорка:
+  // задача, которой не выдали сессию, машину не занимает и тишины не требует.
+  const exclusiveEngaged = engaged.some((task) => stateClass(task) === 'exclusive');
+  if (exclusiveEngaged && !busy) {
     notes.push('идёт исключительный этап: новых задач не берём, машина должна молчать');
     busy = true;
   }
@@ -349,6 +406,13 @@ export function scan(state) {
 
     // Живой процесс на этом самом этапе — работа идёт, вмешиваться незачем.
     if (isRunning(task.id, task.status)) continue;
+
+    // Команды этапа не покрыты правилами: сессию не выдаём. Причина уже
+    // названа выше, при счёте удержанных. Проверка стоит ПЕРЕД разбором
+    // пределов нарочно: удержание не тратит продолжение и не уводит задачу
+    // в ошибку — сессии не было, тратить нечего, а ошибка потребовала бы
+    // разбора, той самой второй сессии, ради отмены которой всё затеяно.
+    if (held.has(task.id)) continue;
 
     // Запись реестра требуется только там, где есть дерево. У прогона
     // и разбора его нет вовсе, и требовать запись значило бы никогда
@@ -444,6 +508,14 @@ export function scan(state) {
     const missing = missingForStage(config, stage, task);
     if (missing.length > 0) {
       notes.push(`задача ${task.id} не берётся: в настройке нет ${missing.join(', ')}`);
+      continue;
+    }
+
+    // Та же мерка, но по нехватке РАЗРЕШЕНИЙ, а не настройки. Задача остаётся
+    // в очереди: работа цела, и после починки она пойдёт с того же места.
+    const uncovered = uncoveredAt(stage);
+    if (uncovered.length > 0) {
+      notes.push(heldNote(task.id, stage, uncovered));
       continue;
     }
 
