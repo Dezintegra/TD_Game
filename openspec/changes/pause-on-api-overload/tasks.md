@@ -62,11 +62,14 @@
 ## 4. Завести `supervisor/lib/api-health.mjs`
 
 Чистый счёт без обращений куда-либо: `nextDelaySeconds(attempt, schedule)`
-(последняя задержка повторяется), `mayProbe(now, armedAt, attempt,
-schedule)` и `judgeApiPause({ apiErrors, threshold, armed, probe })` —
-последний решает «взвести, держать, снять» по известному исходу пробы,
-а не делает её сам. Дописать файл в перечень `config/`–`lib/`
-в `supervisor/README.md`.
+(последняя задержка повторяется), `shouldProbe({ apiErrors, threshold,
+armed, now, lastProbeAt, attempt, schedule })` и `judgeProbe({ armed, ok,
+status })` — последний решает «взвести, держать, снять, не взводить»
+по известному исходу пробы, а не делает её сам.
+
+В перечень файлов `supervisor/README.md` дописывать нечего: `lib/` стоит
+там одной строкой «решающая часть, покрытая тестами» и отдельных файлов
+не называет. Раздел про паузу сервера идёт пунктом 7.
 
 **Проверка:** `pnpm test:pipeline` зелёный. В `api-health.test.mjs`:
 расписание отдаёт задержки по порядку и повторяет последнюю; срок пробы
@@ -80,7 +83,7 @@ schedule)` и `judgeApiPause({ apiErrors, threshold, armed, probe })` —
 ## 5. Взводить и снимать паузу сервера в обороте
 
 В `supervisor/bin/supervise.mjs`: считать отказы сервера за оборот,
-после оборота спросить `judgeApiPause`, пробу подать доводом
+после оборота спросить `shouldProbe` и `judgeProbe`, пробу подать доводом
 (`claude -p` с коротким вопросом, однократный ответ, один ход, без
 правил разрешений и без инструментов). Взведение и снятие писать
 файлом `.pipeline/pause.api` и называть в журнале цикла — при неудаче
