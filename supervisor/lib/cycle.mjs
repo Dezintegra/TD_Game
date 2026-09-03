@@ -78,6 +78,10 @@ export function runCycle({ git, state, config, now, pid, lock, isAlive, ourAutho
   //    уже ответил.
   if (state.paused) {
     notes.push('взведён рубильник паузы: ничего не порождаем');
+    // Вторая причина называется тоже: снимет её автомат сам, но человек,
+    // глядя в журнал, обязан видеть обе — иначе, сняв свою паузу, он ждёт
+    // работы, которой не будет, пока молчит сервер.
+    if (state.apiPaused) notes.push('и сервер модели не отвечает');
     return { ...nothing('paused'), lock: held };
   }
   if (state.apiPaused) {
