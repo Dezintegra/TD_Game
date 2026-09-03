@@ -72,7 +72,7 @@ function refusal(root, main) {
     '',
     'Наберите в основном дереве:',
     `  cd ${main}`,
-    '  pnpm supervisor',
+    '  pnpm run supervisor',
     '',
     'Если корень выбран сознательно, назовите его вслух — тогда отказа не будет:',
     `  node supervisor/bin/launch.mjs --root=${main}`,
