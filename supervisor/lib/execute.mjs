@@ -276,7 +276,15 @@ async function transferReport(action, io) {
       at: io.now,
       from: task.status,
       to: verdict.status,
-      what: report.summary,
+      // Обычно запись журнала говорит словами сессии — её `summary`. Исходу
+      // `moot` этого мало: спецификация требует, чтобы запись назвала причину
+      // ВМЕСТЕ с доказательством, а сложены они в одну фразу только в записке
+      // разбора — «Предмет снят: … Проверено: …». Деться доказательству больше
+      // некуда: `task.history` доска не хранит вовсе, а отчёт после переноса
+      // снимается, и лог этапа в промпт следующих сессий не уезжает. Без этой
+      // строки закрытая задача осталась бы в журнале заявлением без улики —
+      // ровно тем, против чего написан третий предохранитель исхода.
+      what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
       links: report.links ?? {},
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
@@ -821,8 +829,8 @@ async function halt(task, why, io, extra = {}) {
  * Прибрать за завершённой задачей.
  *
  * Удаление — единственное необратимое, что делает конвейер, поэтому решение
- * принимается не здесь, а в отдельном разборе, и только по доказанной
- * влитости pull request.
+ * принимается не здесь, а в отдельном разборе: по доказанной влитости pull
+ * request, а там, где он не заводился вовсе, — по содержимому ветки.
  */
 async function cleanupTask(action, io) {
   const task = io.readTask(action.taskId);
@@ -834,6 +842,9 @@ async function cleanupTask(action, io) {
     entry,
     pr: io.readPr(task.links?.pr),
     unpushed: entry ? io.unpushed(entry.branch) : 0,
+    // Содержимое ветки спрашивается только там, где решать по pull request
+    // нечем: у обычной задачи это был бы лишний вызов git на каждой уборке.
+    ownCommits: entry && !task.links?.pr ? io.ownCommits(entry.branch) : null,
   });
 
   if (verdict.verdict === 'wait') return { result: 'skipped', why: verdict.why };
