@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addSpent,
   applyTransition,
   claimTask,
   countContinuation,
@@ -280,6 +281,28 @@ describe('счётчики', () => {
     // Без гашения счёт копится за сутки и взводит паузу по картине,
     // которой не было: три отказа, разделённые часами работы.
     expect(resetApiErrors(countApiError(once)).attempts.apiErrors).toBe(0);
+  });
+
+  it('расход прибавляется и не бывает отрицательным', () => {
+    expect(addSpent(task(), 3.25).spentUsd).toBe(3.25);
+    expect(addSpent(addSpent(task(), 3.25), 1.75).spentUsd).toBe(5);
+    // Стоимость бывает не названа вовсе; вычесть из расхода нельзя ничем.
+    expect(addSpent(task(), undefined).spentUsd).toBe(0);
+    expect(addSpent(addSpent(task(), 2), -5).spentUsd).toBe(2);
+  });
+
+  it('дошедший до конца этап расхода НЕ обнуляет', () => {
+    // Главная проба всего изменения. Предел спора умер оттого, что его
+    // счётчик гасился удачным отчётом между отказами (задача 0216).
+    // Расход обязан пережить и это, и вход в сквозное состояние.
+    const spent = addSpent(task(), 12.5);
+    expect(resetAttempts(spent).spentUsd).toBe(12.5);
+  });
+
+  it('вход в сквозное состояние расхода не обнуляет', () => {
+    const spent = addSpent(task({ status: 'implement' }), 12.5);
+    const { task: analysed } = applyTransition(spent, { status: 'postmortem', now: NOW });
+    expect(analysed.spentUsd).toBe(12.5);
   });
 
   it('счёт отказов сервера не трогает счёт продолжений', () => {

@@ -1,5 +1,6 @@
 import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
 import {
+  addSpent,
   applyTransition,
   claimTask,
   countApiError,
@@ -146,6 +147,11 @@ async function transferReport(action, io) {
   // разобранная и упавшая снова, возобновила бы ту сессию — и услышала бы
   // от неё вывод о позапрошлом падении.
   if (verdict.status === 'postmortem') io.forgetSession?.(action.taskId, 'postmortem');
+
+  // Расход прибавляется на ЛЮБОМ исходе отчёта, включая возврат и остановку:
+  // сессия стоила денег независимо от того, чем кончилась, а вся мера затеяна
+  // ровно против кругов, каждый из которых чем-то кончался.
+  next = addSpent(next, report.costUsd);
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без

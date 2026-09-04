@@ -705,7 +705,12 @@ export function createSupervisor({
     // рождении, ей вернут. 03.09.2026 без этого 0153 и 0165 потеряли все свои
     // продолжения за полчаса чужой перегрузки.
     if (answer.outcome === 'api-error') {
-      apiFailures.push({ taskId: child.taskId, stage: child.stage, why: answer.why });
+      apiFailures.push({
+        taskId: child.taskId,
+        stage: child.stage,
+        why: answer.why,
+        costUsd: answer.cost ?? 0,
+      });
       log(`этап ${child.taskId}:${child.stage} лёг на отказе сервера: ${answer.why}`);
       return;
     }
@@ -758,7 +763,19 @@ export function createSupervisor({
 
     // Отказы едут ВМЕСТЕ с отчётом: судить их будет перенос, и своего
     // источника у него нет — процесс к тому времени давно закрыт.
-    reports.push({ ...parsed.report, taskId: child.taskId, denials: answer.denials });
+    // Стоимость едет ВМЕСТЕ с отчётом по той же причине, что и отказы: своего
+    // источника у переноса нет, процесс к тому времени закрыт. Отдельная
+    // очередь дала бы ещё одну запись на доску по каждому этапу — лишнее
+    // обращение к Trello на каждый шаг ради числа, которое едет рядом даром.
+    //
+    // Отсутствие стоимости в ответе — ноль, а не беда: ответ без неё законен,
+    // и ронять из-за этого перенос отчёта нечем оправдать.
+    reports.push({
+      ...parsed.report,
+      taskId: child.taskId,
+      denials: answer.denials,
+      costUsd: answer.cost ?? 0,
+    });
     log(`этап ${child.taskId}:${child.stage} закончен с исходом ${parsed.report.outcome}`);
   }
 }

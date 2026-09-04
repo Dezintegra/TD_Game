@@ -530,6 +530,26 @@ describe('перенос отчёта', () => {
     expect(io.steps.filter((step) => step.includes('отчёт'))).toEqual([]);
   });
 
+  it('расход задачи растёт на стоимость этапа', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'design' })],
+      report: { taskId: '0001-one', stage: 'design', outcome: 'done', costUsd: 4.5 },
+    });
+    await execute([transfer], io);
+    expect(io.tasks.get('0001-one').spentUsd).toBe(4.5);
+  });
+
+  it('возврат проверяющего расход наращивает тоже', async () => {
+    // Мера затеяна против кругов, каждый из которых чем-то кончался.
+    // Считать только удачные значило бы не считать как раз спорные.
+    const io = fakeIo({
+      tasks: [task({ status: 'audit', spentUsd: 10 })],
+      report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', costUsd: 5.5 },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
+    expect(io.tasks.get('0001-one').spentUsd).toBe(15.5);
+  });
+
   it('дошедший до конца этап обнуляет счётчик продолжений', async () => {
     const io = fakeIo({
       tasks: [task({ status: 'design', attempts: { continuations: 2, cycleFailures: 0 } })],

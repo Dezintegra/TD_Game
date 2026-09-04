@@ -788,6 +788,23 @@ describe('этап не дошёл до отчёта', () => {
     expect(supervisor.reports).toEqual([]);
   });
 
+  it('отчёт несёт стоимость этапа: без неё расход задачи не посчитать', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ total_cost_usd: 3.25 }));
+    expect(supervisor.reports[0].costUsd).toBe(3.25);
+  });
+
+  it('ответ без стоимости даёт ноль, а не роняет перенос', () => {
+    // Ответ без неё законен, и ронять из-за этого отчёт нечем оправдать.
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    return answer(envelope()).then(() => {
+      expect(supervisor.reports).toHaveLength(1);
+      expect(supervisor.reports[0].costUsd).toBe(0);
+    });
+  });
+
   it('отказ сервера модели уходит в свою очередь, а не в отчёты', async () => {
     const { supervisor, answer, logged } = harness();
     supervisor.spawnStage(assignment());
