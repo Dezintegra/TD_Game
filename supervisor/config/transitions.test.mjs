@@ -536,11 +536,39 @@ const supervisorFiles = () => {
  * иначе проверка на ОТСУТСТВИЕ сходилась бы при сломанной мерке так же,
  * как при исправной.
  */
+/**
+ * Значимые слова текста: от пяти букв, сравниваются по первым пяти. Короче —
+ * предлоги и связки, которые нашлись бы где угодно.
+ */
+const stems = (text) =>
+  (text.toLowerCase().match(/[a-zа-яё][a-zа-яё-]{4,}/g) ?? []).map((word) => word.slice(0, 5));
+
+/**
+ * Мягкая сверка: значимое слово заголовка названного шага обязано встречаться
+ * в окрестности ссылки. Сверяется СЛОВО со словом, а не подстрока: чтение
+ * подстрокой находит «дельт» внутри «бездельтового» и на живой фактуре
+ * промолчало там, где сверка словом говорит.
+ *
+ * Заголовок, а не тело шага: тело велико, и пересечение в нём находится почти
+ * всегда. Три прочие редакции мерки испытаны и отвергнуты с числами — разбор
+ * в `design.md`, раздел «Смысловая сверка: четыре редакции и замер по каждой».
+ * Не переписывай мерку, не прочитав его: редакция «имя команды в обратных
+ * кавычках» уже стояла в первом списке задач и дала девятнадцать срабатываний
+ * вместо обещанных двух.
+ */
+const echoesTitle = (title, around) => {
+  const head = stems(title);
+  if (head.length === 0) return true;
+  const near = new Set(stems(around));
+  return head.some((word) => near.has(word));
+};
+
 const stepLinkFaults = (files, stepsByFile) => {
   const names = [...stepsByFile.keys()];
   const broken = [];
   const homeless = [];
   const selfLinked = [];
+  const doubtful = [];
   for (const file of files) {
     for (const link of stepLinks(file.text, file.own, names)) {
       if (!link.target) {
@@ -561,11 +589,19 @@ const stepLinkFaults = (files, stepsByFile) => {
           selfLinked.push(
             `${file.name}:${link.startLine + 1} «${link.phrase}» внутри шага ${holder.number}`,
           );
+          continue;
         }
+      }
+      const step = steps.find((item) => item.number === link.number);
+      if (!echoesTitle(step.title, link.around)) {
+        doubtful.push(
+          `${file.name}:${link.startLine + 1} «${link.phrase}» → ${link.target}.md ` +
+            `«${step.title}»\n    ${link.around}`,
+        );
       }
     }
   }
-  return { broken, homeless, selfLinked };
+  return { broken, homeless, selfLinked, doubtful };
 };
 
 /**
@@ -744,6 +780,68 @@ describe('ссылки по номерам шагов', () => {
     expect(stepLinkFaults(files, new Map([['obrazec', parseSteps(sample)]])).selfLinked).toEqual([
       `obrazec.md:5 «${linkText('шаге', 2)}» внутри ${linkText('шага', 2)}`,
     ]);
+  });
+
+  it('ссылки, не отзывающиеся на заголовок названного шага, печатаются перечнем', () => {
+    // Мерка МЯГКАЯ, и набор от неё не краснеет. Это замер, а не осторожность:
+    // проба 04.09.2026 по всей фактуре `supervisor/` — до правок этого же
+    // изменения — дала двенадцать срабатываний при одном настоящем. Причина
+    // у всех одиннадцати ложных общая: ссылка говорит О шаге, а не цитирует
+    // его — «переходи к шагу 5 `review.md`», «понадобится оно только в шаге 8
+    // `review.md`».
+    //
+    // Отличить это машиной нельзя, а единственное лекарство от такой тревоги
+    // есть ослабление мерки; первый же редактор её ослабит, унеся вместе
+    // с ложными и настоящее. Пусть лучше печатает и молчит.
+    //
+    // После правок этого изменения срабатываний стало тридцать семь (замер
+    // 04.09.2026), и это не порча мерки, а её расширение: ссылки, получившие
+    // адрес шагом «ссылка вне файла правил называет файл», раньше
+    // отбрасывались до сверки вовсе — судить их было не с чем. Почти все они
+    // говорят о правилах разрешений, а не о предмете шага, и заголовку
+    // не отзываются. Число это живое, мерку оно не сторожит и от правки любой
+    // прозы меняется: сторожит мерку проба на порчу ниже.
+    //
+    // Поимённого перечня известных ложных срабатываний здесь НЕТ, в отличие
+    // от `DELIBERATELY_CLOSED`. Перечень на двенадцать позиций пришлось бы
+    // править при любой правке ТЕКСТА скиллов — не нумерации, — и правил бы
+    // его тот, кому он мешает, то есть в сторону поблажки. Сторожит мерку
+    // проба на порчу ниже, а не число живых срабатываний.
+    const { doubtful } = stepLinkFaults(supervisorFiles(), skillSteps());
+    console.log(`ссылок, не отозвавшихся на заголовок шага: ${doubtful.length}`);
+    for (const doubt of doubtful) console.log(`  ${doubt}`);
+    expect(Array.isArray(doubtful)).toBe(true);
+  });
+
+  it('мягкая мерка срабатывает на вымышленном тексте и набора не роняет', () => {
+    // Без этой пробы сломанная мерка молчала бы неотличимо от исправной:
+    // молчание — её обычное состояние, а живым числом срабатываний она
+    // не сторожится вовсе.
+    const sample = [
+      '## Порядок работы',
+      '',
+      '1. **Записать результат в отчёт.**',
+      '',
+      '2. **Совсем другое занятие.**',
+    ].join('\n');
+    const steps = new Map([['obrazec', parseSteps(sample)]]);
+    const astray = {
+      name: 'вымысел.mjs',
+      own: null,
+      text: `Сходимость проверяют в ${linkText('шаге', 2)} \`obrazec.md\`.`,
+    };
+    const proper = {
+      name: 'вымысел.mjs',
+      own: null,
+      text: `Другое занятие разбирает ${linkText('шаг', 2)} \`obrazec.md\`.`,
+    };
+
+    expect(stepLinkFaults([astray], steps).doubtful).toHaveLength(1);
+    expect(stepLinkFaults([astray], steps).doubtful[0]).toContain('Совсем другое занятие.');
+    expect(stepLinkFaults([proper], steps).doubtful).toEqual([]);
+    // Мягкость и есть предмет пробы: жёсткие мерки на том же тексте молчат.
+    expect(stepLinkFaults([astray], steps).broken).toEqual([]);
+    expect(stepLinkFaults([astray], steps).homeless).toEqual([]);
   });
 });
 
