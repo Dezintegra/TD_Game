@@ -57,7 +57,7 @@ import {
   towerGain,
 } from './posture.js';
 import type { Verdict } from './posture.js';
-import { AttemptNote } from './observer.js';
+import { AttemptNote, NukeNote } from './observer.js';
 import type { AttemptRecord, AttemptResult, DecisionObserver, DecisionRecord } from './observer.js';
 import {
   BASELINE_PROFILE,
@@ -372,7 +372,8 @@ export const createOpponent = (
       const nukeTarget = nukeSearchDue
         ? findNukeTarget(world, me, profile, approach, stats)
         : undefined;
-      const struck = tryNuke(commands, world, me, player, stats, nukeTarget);
+      const nuke = tryNuke(commands, world, me, player, stats, nukeTarget, nukeSearchDue);
+      const struck = nuke.struck;
 
       // Запас держится, когда цель есть, а удара не вышло, — то есть
       // когда единственное, чего не хватает, это энергия. Ударили —
@@ -595,7 +596,9 @@ export const createOpponent = (
             verdicts,
             verdict,
             approach,
-            struck,
+            nuke,
+            nukeTarget,
+            nukeCost: stats.nuke.cost,
             pushed,
             commandCount: commands.length,
           }),
@@ -619,7 +622,11 @@ interface Observed {
   readonly verdicts: readonly Verdict[];
   readonly verdict: Verdict | undefined;
   readonly approach: Approach;
-  readonly struck: boolean;
+  /** Исход решения бить — вместе с помехой, если удара не вышло. */
+  readonly nuke: NukeDecision;
+  /** Лучшая найденная цель. Отсутствует, если обход карты не выполнялся. */
+  readonly nukeTarget: NukeTarget | undefined;
+  readonly nukeCost: number;
   readonly pushed: boolean;
   readonly commandCount: number;
 }
@@ -680,7 +687,16 @@ const record = (
     generalFromHome: fromHome === UNREACHABLE ? -1 : fromHome,
     approachShortest: seen.approach.shortest,
     energy: player.energy,
-    struck: seen.struck,
+    struck: seen.nuke.struck,
+    // Помеха у состоявшегося удара отсутствует, а не равна какому-нибудь
+    // «ничего не помешало»: пятого значения в перечислении нет намеренно.
+    ...(seen.nuke.struck ? {} : { nukeNote: seen.nuke.note }),
+    // Обе величины кладутся вместе и обе берутся уже посчитанными: цель —
+    // результат единственного обхода, цена пуска — поле характеристик.
+    // Отсутствие обеих и означает «обход не выполнялся».
+    ...(seen.nukeTarget === undefined
+      ? {}
+      : { nukeNet: seen.nukeTarget.net, nukeCost: seen.nukeCost }),
     pushed: seen.pushed,
     commandCount: seen.commandCount,
   };
@@ -2029,10 +2045,28 @@ export const nukeWorthIt = (target: NukeTarget | undefined, cost: number): targe
   target !== undefined && target.net > cost;
 
 /**
+ * Чем кончилось решение бить: удар состоялся либо ему что-то помешало.
+ *
+ * Возврат перестал быть `boolean` ради разбора, а не ради удобства.
+ * Помеха обязана браться из настоящей ветки, по которой ушёл возврат;
+ * восстанови её снаружи вторым набором условий — и два набора разойдутся
+ * при первой же правке, причём молча.
+ */
+type NukeDecision = { readonly struck: true } | { readonly struck: false; readonly note: NukeNote };
+
+const missed = (note: NukeNote): NukeDecision => ({ struck: false, note });
+
+/**
  * Решение бить.
  *
  * Цена пуска выводится из купленных уровней радиуса и мощности, и потому
  * спрашивается у своих характеристик, а не у константы.
+ *
+ * Условий по-прежнему три и в том же порядке: откат, казна, цель. Помеха
+ * их не добавляет — она лишь называет то из них, на котором решение
+ * остановилось. Единственное различение внутри ветки казны: обход карты
+ * при пустой казне мог и не выполняться вовсе, и «не искали» — это другой
+ * ответ, чем «искали и не нашли».
  */
 const tryNuke = (
   commands: Command[],
@@ -2041,10 +2075,18 @@ const tryNuke = (
   player: PlayerState,
   myStats: PlayerStats,
   target: NukeTarget | undefined,
-): boolean => {
-  if (world.tick < player.nukeReadyAtTick) return false;
-  if (player.energy < myStats.nuke.cost) return false;
-  if (!nukeWorthIt(target, myStats.nuke.cost)) return false;
+  /** Выполнялся ли обход карты на этом решении. */
+  searched: boolean,
+): NukeDecision => {
+  if (world.tick < player.nukeReadyAtTick) return missed(NukeNote.Cooling);
+  if (player.energy < myStats.nuke.cost) {
+    if (!searched) return missed(NukeNote.NotSearched);
+
+    return missed(
+      nukeWorthIt(target, myStats.nuke.cost) ? NukeNote.Unaffordable : NukeNote.TargetTooCheap,
+    );
+  }
+  if (!nukeWorthIt(target, myStats.nuke.cost)) return missed(NukeNote.TargetTooCheap);
 
   commands.push(
     command({
@@ -2055,5 +2097,5 @@ const tryNuke = (
     }),
   );
 
-  return true;
+  return { struck: true };
 };
