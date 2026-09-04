@@ -16,24 +16,24 @@
 
 ## 1. Объявить оба перехода в таблице и открыть черновой pull request
 
-- [ ] В `supervisor/config/transitions.mjs`, в `ROUTES.feature`, дописать
+- [x] В `supervisor/config/transitions.mjs`, в `ROUTES.feature`, дописать
       `cleanup` к маршруту из `design`: `design: ['audit', 'cleanup']`.
       Комментарием сказать, почему через уборку, а не прямо в `closed`:
       дерево заводится задаче до первой сессии, а удаляет конвейер только
       из состояния `cleanup`.
-- [ ] Там же объявить `failed: ['closed']` во всех трёх маршрутах —
+- [x] Там же объявить `failed: ['closed']` во всех трёх маршрутах —
       `feature`, `run`, `note`. Комментарием сказать, что переход выполняет
       человек мышью, как `candidate` → `new`, а конвейер его не выполняет:
       `afterDone` состояния `failed` не знает, сессий ему не выдают
       (`NEEDS_SESSION`), терминальных задач сканер не трогает.
-- [ ] В `supervisor/config/transitions.test.mjs` добавить проверки:
+- [x] В `supervisor/config/transitions.test.mjs` добавить проверки:
       `design` → `cleanup` разрешён у `feature` и запрещён у `run` и `note`;
       `failed` → `closed` разрешён у всех трёх типов; `failed` → `design`
       по-прежнему запрещён, если это не `returnTo`; `closed` → что угодно
       по-прежнему запрещено.
-- [ ] Больше в этих файлах не менять ничего: ни `STATE_CLASS`, ни
+- [x] Больше в этих файлах не менять ничего: ни `STATE_CLASS`, ни
       `NEEDS_WORKTREE`, ни `NEEDS_SESSION`.
-- [ ] Отправить ветку (`git -C <дерево> push -u origin HEAD`) и открыть
+- [x] Отправить ветку (`git -C <дерево> push -u origin HEAD`) и открыть
       черновой pull request в `main`:
       `gh pr create --draft --base main --title "<заголовок>" --body-file <файл>`.
       Тело писать файлом: длинной прозой в `--body` команда отказывается
