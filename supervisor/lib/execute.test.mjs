@@ -205,6 +205,13 @@ function fakeIo(over = {}) {
     },
     readPr: () => over.pr ?? { state: 'merged' },
     unpushed: () => over.unpushed ?? 0,
+    // Содержимое ветки. Спрашивается только у задачи без pull request,
+    // поэтому обращение сюда попадает в перечень шагов: лишний вызов git
+    // на каждой уборке надо видеть.
+    ownCommits(branch) {
+      steps.push(`спрошено содержимое ветки ${branch}`);
+      return over.ownCommits ?? 0;
+    },
     removeWorktree: () => over.worktreeRemoval ?? { ok: true },
     deleteBranch: () => ({ ok: true }),
     deleteRemoteBranch: () => ({ ok: true }),
@@ -1126,6 +1133,48 @@ describe('уборка', () => {
     expect(result.result).toBe('done');
     expect(io.tasks.get('0001-one').status).toBe('postmortem');
     expect(io.tasks.get('0001-one').returnTo).toBe('cleanup');
+    expect(io.steps).not.toContain('запись реестра 0001-one снята');
+  });
+
+  it('закрытая по снятому предмету задача убирается и доезжает до «Закрыто»', async () => {
+    // Полный ход целиком: pull request такой задаче не заводили, ветка пуста,
+    // и уборка доводит её до `closed`. Прежняя мерка уронила бы её в разбор —
+    // то есть в ту самую «Ошибку», от которой ход и заводится.
+    const io = fakeIo({
+      tasks: [
+        task({ status: 'cleanup', links: { change: null, pr: null, run: null, related: [] } }),
+      ],
+      pr: { state: 'unknown' },
+      ownCommits: 0,
+    });
+    const [result] = await execute([sweep], io);
+
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('closed');
+    expect(io.steps).toContain('спрошено содержимое ветки worktree-0001-one');
+    expect(io.steps).toContain('запись реестра 0001-one снята');
+  });
+
+  it('у задачи с pull request содержимое ветки не спрашивается вовсе', async () => {
+    // Лишний вызов git на каждой уборке — цена, которую платить не за что:
+    // где pull request заведён, решает только он.
+    const io = fakeIo({ tasks: [inCleanup()], pr: { state: 'merged' } });
+    await execute([sweep], io);
+    expect(io.steps).not.toContain('спрошено содержимое ветки worktree-0001-one');
+  });
+
+  it('своя работа в ветке без pull request останавливает уборку', async () => {
+    const io = fakeIo({
+      tasks: [
+        task({ status: 'cleanup', links: { change: null, pr: null, run: null, related: [] } }),
+      ],
+      pr: { state: 'unknown' },
+      ownCommits: 3,
+    });
+    const [result] = await execute([sweep], io);
+
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('postmortem');
     expect(io.steps).not.toContain('запись реестра 0001-one снята');
   });
 

@@ -513,6 +513,33 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
       return Number.parseInt(result.stdout.trim(), 10) || 0;
     },
 
+    /**
+     * Сколько своей работы лежит в ветке сверх главной.
+     *
+     * Считается от ГЛАВНОЙ ветки, а не от удалённого двойника своей: `unpushed`
+     * отвечает на вопрос «отправлено ли», и у ветки, которую не отправляли
+     * ни разу, не говорит о её содержимом ничего.
+     *
+     * Ключ `--no-merges` нужен по делу: скилл проработки предписывает сессии
+     * подтянуть свежую главную ветку в своё дерево, и получившийся коммит
+     * слияния — не работа, а обновление базы. Считая его работой, уборка
+     * заперлась бы у всякой задачи, зашедшей в дерево после расхождения
+     * с `main`.
+     *
+     * Команда не отработала — `null`, а не ноль: неизвестность здесь толкуется
+     * в пользу сохранности, удаление необратимо.
+     */
+    ownCommits(branch) {
+      const result = run([
+        'rev-list',
+        '--count',
+        '--no-merges',
+        `${config.remote}/${config.mainBranch}..${branch}`,
+      ]);
+      if (result.code !== 0) return null;
+      return Number.parseInt(result.stdout.trim(), 10) || 0;
+    },
+
     removeWorktree(path) {
       const result = run(['worktree', 'remove', path, '--force']);
       if (result.code === 0) return { ok: true };
