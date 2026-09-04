@@ -111,6 +111,23 @@ describe('маршруты', () => {
     expect(canTransition(task({ status: 'revise' }), 'review').ok).toBe(false);
   });
 
+  it('проработка доработки ведёт и в уборку: предмет задачи снят', () => {
+    // Второй конец проработки. Задача, чей предмет снят до начала работы,
+    // проектировать нечего, и вести её дальше по маршруту не за чем.
+    // Идёт она именно в уборку, а не в «Закрыто»: дерево заведено ей
+    // до первой сессии, а удаляет конвейер только из `cleanup`.
+    expect(canTransition(task({ status: 'design' }), 'cleanup').ok).toBe(true);
+    expect(canTransition(task({ status: 'design' }), 'audit').ok).toBe(true);
+  });
+
+  it('прогон и замечание в уборку из проработки не ходят', () => {
+    // У обоих типов проработки нет вовсе, и ход обязан упереться в таблицу,
+    // а не обойти её. У замечания первая сессия — разбор, закрывающий задачу
+    // штатно; у прогона — замер, которому вердикт выносить запрещено.
+    expect(canTransition(task({ type: 'run', status: 'design' }), 'cleanup').ok).toBe(false);
+    expect(canTransition(task({ type: 'note', status: 'design' }), 'cleanup').ok).toBe(false);
+  });
+
   it('несуществующее состояние отвергается', () => {
     expect(canTransition(task(), 'почти-готово').ok).toBe(false);
   });
@@ -163,6 +180,36 @@ describe('сквозные состояния', () => {
 
   it('закрытая задача не оживает', () => {
     expect(canTransition(task({ status: 'closed' }), 'design').ok).toBe(false);
+  });
+
+  it('из ошибки задачу закрывают, и это объявлено всем трём типам', () => {
+    // Ход человека, а не конвейера: задача, потерявшая предмет уже после
+    // остановки, прежде оставалась в «Ошибке» навсегда — единственный выход
+    // оттуда вёл в упавший этап, то есть в новое падение.
+    for (const type of ['feature', 'run', 'note']) {
+      expect(canTransition(task({ type, status: 'failed' }), 'closed').ok, type).toBe(true);
+    }
+  });
+
+  it('закрытие из ошибки не открывает дороги обратно в работу', () => {
+    // Объявлен ровно один выход. Возврат в сохранённое состояние остался
+    // прежним ходом человека, а любое другое рабочее состояние из «Ошибки»
+    // по-прежнему недостижимо.
+    const failed = task({ status: 'failed', returnTo: 'implement' });
+    expect(canTransition(failed, 'design').ok).toBe(false);
+    expect(canTransition(failed, 'cleanup').ok).toBe(false);
+    expect(canTransition(failed, 'implement').ok).toBe(true);
+  });
+
+  it('закрытая задача не закрывается второй раз и никуда не идёт', () => {
+    // Обратная сторона нового маршрута: `failed: ['closed']` объявлен
+    // у всех трёх типов, а `closed` остаётся концом пути.
+    for (const type of ['feature', 'run', 'note']) {
+      const closed = task({ type, status: 'closed', returnTo: 'implement' });
+      expect(canTransition(closed, 'closed').ok, type).toBe(false);
+      expect(canTransition(closed, 'cleanup').ok, type).toBe(false);
+      expect(canTransition(closed, 'implement').ok, type).toBe(false);
+    }
   });
 });
 
