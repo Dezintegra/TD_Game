@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { OUTCOMES } from '../lib/apply-report.mjs';
@@ -328,6 +328,383 @@ const FALSE_GROUND =
  * формулы, и поиск по всему тексту зеленел бы на разъехавшейся копии.
  */
 const traceFormula = (text) => text.match(/След объявлен поимённо:[\s\S]*?(?=\n\n)/)?.[0] ?? null;
+
+/**
+ * Шагом считается пункт нумерованного списка ВЕРХНЕГО уровня внутри раздела,
+ * чей заголовок уровня `##` начинается со слова «Порядок»: у девяти скиллов
+ * раздел зовётся «Порядок работы», у `interpret.md` — «Порядок».
+ *
+ * Границы раздела здесь не украшение, а необходимость. Нумерованные списки
+ * стоят в этих файлах и вне порядка работы: у всех десяти — в разделе
+ * «Отчёт», у `postmortem.md` — ещё и в перечне частых причин. Разбор без
+ * границ считал бы шагами их тоже и получал бы номера вразнобой.
+ *
+ * Возвращаются номер, заголовок и границы строк. Границы нужны четвёртой
+ * мерке: по ним видно, не стоит ли ссылка внутри того самого шага, чей
+ * номер она называет.
+ */
+const parseSteps = (text) => {
+  const lines = text.split('\n');
+  const steps = [];
+  let inside = false;
+  let current = null;
+  const close = (endLine) => {
+    if (current) steps.push({ ...current, endLine });
+    current = null;
+  };
+  lines.forEach((line, index) => {
+    if (/^##(?!#)\s/.test(line)) {
+      close(index - 1);
+      inside = /^##\s+Порядок/.test(line);
+      return;
+    }
+    if (!inside) return;
+    const opened = /^(\d+)\.\s+(.*)$/.exec(line);
+    if (!opened) return;
+    close(index - 1);
+    current = {
+      number: Number(opened[1]),
+      title: opened[2].replace(/[*`]/g, '').trim(),
+      startLine: index,
+    };
+  });
+  close(lines.length - 1);
+  return steps;
+};
+
+/**
+ * Файлы правил с разобранными шагами. Каталог читается целиком, а не берётся
+ * из `NEEDS_SESSION`: новый скилл, положенный рядом без раздела «Порядок»,
+ * обязан быть виден сторожу сразу, а не с той правки кода, которая о нём
+ * вспомнит.
+ */
+const skillSteps = () => {
+  const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+  const table = new Map();
+  for (const name of readdirSync(dir).filter((file) => file.endsWith('.md'))) {
+    table.set(name.slice(0, -3), parseSteps(readFileSync(`${dir}${name}`, 'utf8')));
+  }
+  return table;
+};
+
+/**
+ * Файлы правил, чьи номера идут не подряд от единицы.
+ *
+ * Мерка сторожит не тексты, а сам разбор. Стоит ему сбиться на границе
+ * раздела или на отступе вложенного списка — и он молча объявит часть ссылок
+ * битыми, а часть целыми; сторож, врущий в обе стороны, хуже отсутствующего.
+ */
+const numberingFaults = (stepsByFile) =>
+  [...stepsByFile]
+    .filter(
+      ([, steps]) => steps.length === 0 || steps.some((step, index) => step.number !== index + 1),
+    )
+    .map(
+      ([name, steps]) => `${name}: ${steps.map((step) => step.number).join(',') || 'шагов нет'}`,
+    );
+
+/**
+ * Абзацы текста с номером первой строки, нормализованные по пробелам
+ * ВНУТРИ абзаца. Обе крайности проверены пробой и отвергнуты.
+ *
+ * Построчный разбор промахивается мимо межфайловой ссылки: в `design.md`
+ * имя файла стоит на одной строке, а номер на следующей, и построчно такая
+ * ссылка читается как ссылка на свой шаг — сторож зеленел бы, сверив не тот
+ * файл, то есть молчал бы ровно на том виде ссылок, ради которого заведён.
+ *
+ * Склейка файла целиком порождает ссылки на пустом месте: в
+ * `supervisor/README.md` за заголовком «По шагам» следует нумерованный
+ * список, и склеенные они дают ссылку на несуществующий адрес. В первом
+ * прогоне прототипа она и всплыла.
+ */
+const paragraphs = (text) => {
+  const out = [];
+  let buffer = [];
+  let start = 0;
+  const close = () => {
+    if (buffer.length > 0) {
+      out.push({ startLine: start, text: buffer.join(' ').replace(/\s+/g, ' ').trim() });
+    }
+    buffer = [];
+  };
+  text.split('\n').forEach((line, index) => {
+    if (line.trim() === '') {
+      close();
+      return;
+    }
+    if (buffer.length === 0) start = index;
+    buffer.push(line);
+  });
+  close();
+  return out;
+};
+
+/**
+ * Ссылка на шаг во всех падежах, вместе с перечислениями («шаги 4 и 5»,
+ * «Строки шагов 5 и 9»). Каждое число перечисления идёт отдельной ссылкой:
+ * вторая цифра сдвигается тем же движением, что и первая, и сторож, видящий
+ * только первую, потерял бы половину.
+ */
+const STEP_LINK =
+  /(?:^|[^A-Za-zА-Яа-яЁё])(шаг[а-яё]*)\s+(\d+(?:\.\d+)?(?:\s*(?:и|,)\s*\d+(?:\.\d+)?)*)/gi;
+
+/**
+ * Ссылки на шаги, найденные в тексте.
+ *
+ * Адресат берётся из УЗКОГО окна — семьдесят знаков до ссылки и шестьдесят
+ * после: окно назад нужно для формы «(`implement.md`, шаг 9)», окно вперёд —
+ * для формы «(шаг 9 `implement.md`)». Широкое окно проверено и отвергнуто
+ * с числами: прототип с окном в тысячу двести знаков отнёс ссылку `audit.md`
+ * на его собственный шаг к `design.md` — только потому, что `design.md`
+ * помянут абзацем выше. При таком окне сторож не промахивается, а уверенно
+ * указывает на чужой файл, и разбираться в его выводе будет некому.
+ *
+ * Внутри файла правил безымянная ссылка считается ссылкой на свой шаг;
+ * вне их адресата взять неоткуда, и `target` остаётся пустым.
+ *
+ * Два вида ссылок отсекаются как чужие: составной номер («шаг 3.4» — пункт
+ * чужого списка задач) и «шаг N изменения `<имя>`». Второе опаснее: шаг 2
+ * у `design.md` есть, поэтому без отсечения сторож зеленел бы случайно,
+ * а при другом номере падал бы на верном тексте.
+ */
+const stepLinks = (text, own, names) => {
+  const found = [];
+  for (const paragraph of paragraphs(text)) {
+    const line = paragraph.text;
+    STEP_LINK.lastIndex = 0;
+    let match;
+    while ((match = STEP_LINK.exec(line)) !== null) {
+      const at = match.index + match[0].indexOf(match[1]);
+      const end = match.index + match[0].length;
+      if (/\.\d/.test(match[2])) continue;
+      if (/^\s*изменени/i.test(line.slice(end))) continue;
+
+      const named = (window) =>
+        [...window.matchAll(/([a-z-]+)\.md/g)]
+          .map((hit) => hit[1])
+          .filter((name) => names.includes(name));
+      const back = named(line.slice(Math.max(0, at - 70), at));
+      const ahead = named(line.slice(end, end + 60));
+
+      const link = {
+        startLine: paragraph.startLine,
+        phrase: `${match[1]} ${match[2]}`,
+        target: back.at(-1) ?? ahead[0] ?? own,
+        around: line.slice(Math.max(0, at - 120), end + 120),
+      };
+      for (const number of match[2].split(/\s*(?:и|,)\s*/).map(Number)) {
+        found.push({ ...link, number });
+      }
+    }
+  }
+  return found;
+};
+
+/**
+ * Файлы, в которых ищутся ссылки: всё `supervisor/` с расширениями `.md`
+ * и `.mjs`. Свой файл (`own`) есть только у файлов правил.
+ */
+const supervisorFiles = () => {
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const skills = `${root}skills/`;
+  const found = [];
+  const walk = (dir, shown) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules') walk(`${dir}${entry.name}/`, `${shown}${entry.name}/`);
+        continue;
+      }
+      if (!/\.(md|mjs)$/.test(entry.name)) continue;
+      found.push({
+        name: `${shown}${entry.name}`,
+        own: dir === skills && entry.name.endsWith('.md') ? entry.name.slice(0, -3) : null,
+        text: readFileSync(`${dir}${entry.name}`, 'utf8'),
+      });
+    }
+  };
+  walk(root, 'supervisor/');
+  return found;
+};
+
+/**
+ * Приговор по всем ссылкам сразу. Судит он тот же разбор, что и живой
+ * прогон, — и пробы на порчу гоняют этот же приговор на вымышленных файлах:
+ * иначе проверка на ОТСУТСТВИЕ сходилась бы при сломанной мерке так же,
+ * как при исправной.
+ */
+const stepLinkFaults = (files, stepsByFile) => {
+  const names = [...stepsByFile.keys()];
+  const broken = [];
+  const selfLinked = [];
+  for (const file of files) {
+    for (const link of stepLinks(file.text, file.own, names)) {
+      const steps = stepsByFile.get(link.target);
+      if (!steps) continue;
+      if (!steps.some((step) => step.number === link.number)) {
+        broken.push(`${file.name}:${link.startLine + 1} «${link.phrase}» → ${link.target}.md`);
+        continue;
+      }
+      if (file.own && link.target === file.own) {
+        const holder = steps.find(
+          (step) => link.startLine >= step.startLine && link.startLine <= step.endLine,
+        );
+        if (holder && holder.number === link.number) {
+          selfLinked.push(
+            `${file.name}:${link.startLine + 1} «${link.phrase}» внутри шага ${holder.number}`,
+          );
+        }
+      }
+    }
+  }
+  return { broken, selfLinked };
+};
+
+/**
+ * Образцы для проб на порчу собираются из слова и числа ПОРОЗНЬ.
+ *
+ * Причина не в красоте: сторож читает и этот файл тоже. Записанная целиком
+ * ссылка стала бы для него живой — на несуществующий шаг, в файле без своего
+ * скилла, — и набор покраснел бы на собственных пробах.
+ */
+const linkText = (word, number) => `${word} ${number}`;
+
+/** Вымышленный файл правил для проб: имя латиницей, иначе его не адресовать. */
+const OBRAZEC = ['## Порядок работы', '', '1. **Первое дело.**', '', '2. **Второе дело.**'].join(
+  '\n',
+);
+
+describe('ссылки по номерам шагов', () => {
+  it('номера шагов в каждом скилле идут подряд от единицы', () => {
+    expect(numberingFaults(skillSteps())).toEqual([]);
+  });
+
+  it('разбор шагов держит границу раздела и называет пропуск в нумерации', () => {
+    // Проба на порчу: проверка выше сходится и при сломанном разборе —
+    // пустой перечень у неё тот же, что у исправного, и отличить одно
+    // от другого по цвету сторожа нельзя.
+    //
+    // Образец несёт обе беды разом: пропуск номера в порядке работы
+    // и посторонний нумерованный список в разделе «Отчёт». Второй попал бы
+    // в шаги при разборе без границ и дал бы ряд «1, 3, 1» — то есть увёл
+    // бы сторожа в ложную тревогу поверх настоящей.
+    const sample = [
+      '# Этап: образец',
+      '',
+      '## Порядок работы',
+      '',
+      '1. **Первое дело.** Подробности тут.',
+      '',
+      '3. **Третье дело.** Второго нет вовсе.',
+      '',
+      '## Отчёт',
+      '',
+      '1. посторонний пункт, шагом не считается;',
+      '2. и второй такой же.',
+    ].join('\n');
+
+    const steps = parseSteps(sample);
+    expect(steps.map((step) => step.number)).toEqual([1, 3]);
+    expect(steps.map((step) => step.title)).toEqual([
+      'Первое дело. Подробности тут.',
+      'Третье дело. Второго нет вовсе.',
+    ]);
+    expect(numberingFaults(new Map([['образец', steps]]))).toEqual(['образец: 1,3']);
+  });
+
+  it('разбор шагов не считает шагом вложенный пункт', () => {
+    // Вложенные списки живут внутри шагов — у `benchmark.md` замер кадров
+    // расписан четырьмя подпунктами. Сочти их шагами, и ряд номеров пойдёт
+    // вразнобой у файла, в котором всё в порядке.
+    const sample = [
+      '## Порядок работы',
+      '',
+      '1. **Первое дело.**',
+      '',
+      '   1. подпункт, который шагом не является;',
+      '   2. и второй.',
+      '',
+      '2. **Второе дело.**',
+    ].join('\n');
+
+    expect(parseSteps(sample).map((step) => step.number)).toEqual([1, 2]);
+    expect(numberingFaults(new Map([['образец', parseSteps(sample)]]))).toEqual([]);
+  });
+
+  it('каждая ссылка указывает на существующий шаг', () => {
+    // Битых номеров в `supervisor/` сегодня ноль, и сторож заводится
+    // не поэтому. Он ловит вставку, уводящую ссылку за конец списка,
+    // и ссылку на файл, где столько шагов никогда не было, — то есть
+    // единственный вид поломки, который виден машине без суждения.
+    expect(stepLinkFaults(supervisorFiles(), skillSteps()).broken).toEqual([]);
+  });
+
+  it('несуществующий номер назван вместе с файлом и адресатом', () => {
+    const steps = new Map([['obrazec', parseSteps(OBRAZEC)]]);
+    const files = [
+      { name: 'вымысел.mjs', own: null, text: `Смотри ${linkText('шаг', 40)} \`obrazec.md\`.` },
+    ];
+    expect(stepLinkFaults(files, steps).broken).toEqual(['вымысел.mjs:1 «шаг 40» → obrazec.md']);
+  });
+
+  it('межфайловая ссылка, разорванная переносом строки, идёт к названному файлу', () => {
+    // Ровно тот случай, ради которого нормализация идёт по абзацу: имя файла
+    // осталось на предыдущей строке. Построчный разбор отнёс бы ссылку
+    // к своему файлу, где шаг с таким номером есть, — и промолчал бы.
+    const sample = ['Караулить проверки запрещено (`obrazec.md`,', `${linkText('шаг', 2)}).`].join(
+      '\n',
+    );
+    const links = stepLinks(sample, 'design', ['design', 'obrazec']);
+    expect(links.map((link) => link.target)).toEqual(['obrazec']);
+  });
+
+  it('заголовок с идущим за ним списком ссылкой не считается', () => {
+    // «По шагам» и следующий за ним пункт «1.» — не ссылка, а разметка.
+    // Склейка файла целиком приняла бы их за ссылку на несуществующий адрес.
+    const sample = ['### По шагам', '', '1. **Скопировать каталог.**'].join('\n');
+    expect(stepLinks(sample, null, ['design'])).toEqual([]);
+  });
+
+  it('чужой номер ссылкой не считается: составной и «шаг N изменения»', () => {
+    const composite = `Проба: ${linkText('шаг', 3)}.4 меряет не то.`;
+    const foreign = `Случай уже был — ${linkText('шаг', 2)} изменения \`obrazec-change\`.`;
+    expect(stepLinks(composite, null, ['obrazec'])).toEqual([]);
+    expect(stepLinks(foreign, null, ['obrazec'])).toEqual([]);
+  });
+
+  it('перечисление даёт по ссылке на каждое число', () => {
+    const sample = `Приставок две: ${linkText('шаги', '4 и 5')} щупают сервер \`obrazec.md\`.`;
+    expect(stepLinks(sample, null, ['obrazec']).map((link) => link.number)).toEqual([4, 5]);
+  });
+
+  it('ни одна ссылка не указывает на шаг, внутри которого сама стоит', () => {
+    // Мерка жёсткая, а не мягкая, и это замер, а не осторожность: одно
+    // срабатывание на всей фактуре, настоящее, ложных ноль. Осмысленных
+    // самоссылок не бывает вовсе — отсылать читателя туда, где он и так
+    // находится, никто не пишет нарочно. Такой ссылка СТАНОВИТСЯ, когда
+    // номера сдвинулись, а текст остался; признак же её машинно точен.
+    //
+    // Ловится ею второй из трёх сдвигов `benchmark.md`: шаг 6 говорил
+    // «Порядок тот же, что в шаге 6», тогда как порядок описан шагом 5.
+    expect(stepLinkFaults(supervisorFiles(), skillSteps()).selfLinked).toEqual([]);
+  });
+
+  it('самоссылка названа, а ссылка на соседний шаг — нет', () => {
+    const sample = [
+      '## Порядок работы',
+      '',
+      '1. **Первое дело.**',
+      '',
+      `2. **Второе дело.** Порядок тот же, что в ${linkText('шаге', 2)}.`,
+      '',
+      `   Первое разбирает ${linkText('шаг', 1)}, и это законно.`,
+    ].join('\n');
+    const files = [{ name: 'obrazec.md', own: 'obrazec', text: sample }];
+
+    expect(stepLinkFaults(files, new Map([['obrazec', parseSteps(sample)]])).selfLinked).toEqual([
+      'obrazec.md:5 «шаге 2» внутри шага 2',
+    ]);
+  });
+});
 
 describe('этапы и скиллы', () => {
   it('у каждого этапа с сессией есть скилл', () => {
