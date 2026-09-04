@@ -9,8 +9,8 @@ import {
   asTickNumber,
   cellsToUnits,
 } from '@td/shared';
-import { createWorld } from '@td/sim';
-import type { StructureState, UnitState, WorldState } from '@td/sim';
+import { cellIndex, createWorld } from '@td/sim';
+import type { NukeState, StructureState, UnitState, WorldState } from '@td/sim';
 import type { Graphics } from 'pixi.js';
 import {
   MINIMAP_ASPECT,
@@ -20,7 +20,9 @@ import {
   minimapLayout,
   projectToMinimap,
 } from './minimap.js';
+import type { MinimapColors } from './minimap.js';
 import { MAP_BOUNDS, screenToWorld, worldToScreen } from './iso.js';
+import { traceGroundCircle } from './ground-circle.js';
 
 /**
  * Миникарта показывает тот же мир, что и поле, и главное её свойство —
@@ -30,39 +32,97 @@ import { MAP_BOUNDS, screenToWorld, worldToScreen } from './iso.js';
  * это глазами трудно.
  */
 
-/** Заглушка Graphics, запоминающая нарисованное. */
+/**
+ * Заглушка Graphics, запоминающая нарисованное.
+ *
+ * Цвет и толщину она запоминает тоже, а не проглатывает: различие своей
+ * метки удара и чужой — это в том числе цвет обводки, и проверить его
+ * иначе нечем.
+ *
+ * Краска приходит отдельным вызовом (`fill`, `stroke`) уже ПОСЛЕ того,
+ * как фигура прочерчена, и красит всё прочерченное с прошлой покраски.
+ * Поэтому заглушка копит фигуры и проставляет им цвет задним числом —
+ * ровно так же, как это делает PixiJS.
+ */
 interface Shape {
   readonly kind: 'point' | 'rect' | 'circle';
   readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
+  color: number;
+  strokeWidth: number;
+  paint: 'fill' | 'stroke' | 'none';
+}
+
+interface PaintStyle {
+  readonly color?: number;
+  readonly width?: number;
+  readonly alpha?: number;
+}
+
+interface GraphicsStub {
+  moveTo: (x: number, y: number) => GraphicsStub;
+  lineTo: (x: number, y: number) => GraphicsStub;
+  rect: (x: number, y: number, width: number, height: number) => GraphicsStub;
+  circle: (x: number, y: number, radius: number) => GraphicsStub;
+  closePath: () => GraphicsStub;
+  fill: (style?: PaintStyle) => GraphicsStub;
+  stroke: (style?: PaintStyle) => GraphicsStub;
+  clear: () => GraphicsStub;
 }
 
 const tracing = (): { graphics: Graphics; shapes: Shape[] } => {
   const shapes: Shape[] = [];
-  const stub: Record<string, (...args: number[]) => unknown> = {};
+  let pending: Shape[] = [];
 
-  for (const name of ['moveTo', 'lineTo']) {
-    stub[name] = (x = 0, y = 0) => {
-      shapes.push({ kind: 'point', x, y, width: 0, height: 0 });
+  const add = (shape: Shape): void => {
+    pending.push(shape);
+    shapes.push(shape);
+  };
+
+  const painter =
+    (kind: 'fill' | 'stroke') =>
+    (style?: PaintStyle): GraphicsStub => {
+      for (const shape of pending) {
+        shape.paint = kind;
+        shape.color = style?.color ?? 0;
+        shape.strokeWidth = style?.width ?? 0;
+      }
+      pending = [];
       return stub;
     };
-  }
 
-  stub['rect'] = (x = 0, y = 0, width = 0, height = 0) => {
-    shapes.push({ kind: 'rect', x, y, width, height });
-    return stub;
+  const shapeOf = (
+    kind: Shape['kind'],
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ): Shape => ({ kind, x, y, width, height, color: 0, strokeWidth: 0, paint: 'none' });
+
+  const stub: GraphicsStub = {
+    moveTo: (x, y) => {
+      add(shapeOf('point', x, y, 0, 0));
+      return stub;
+    },
+    lineTo: (x, y) => {
+      add(shapeOf('point', x, y, 0, 0));
+      return stub;
+    },
+    rect: (x, y, width, height) => {
+      add(shapeOf('rect', x, y, width, height));
+      return stub;
+    },
+    circle: (x, y, radius) => {
+      add(shapeOf('circle', x, y, radius * 2, radius * 2));
+      return stub;
+    },
+    closePath: () => stub,
+    fill: painter('fill'),
+    stroke: painter('stroke'),
+    clear: () => stub,
   };
-
-  stub['circle'] = (x = 0, y = 0, radius = 0) => {
-    shapes.push({ kind: 'circle', x, y, width: radius * 2, height: radius * 2 });
-    return stub;
-  };
-
-  for (const name of ['closePath', 'fill', 'stroke', 'clear']) {
-    stub[name] = () => stub;
-  }
 
   return { graphics: stub as unknown as Graphics, shapes };
 };
@@ -76,6 +136,24 @@ const extentOf = (shapes: readonly Shape[]) => ({
 
 const layout = minimapLayout(1920, 856);
 const world = createWorld(4321);
+
+/**
+ * Цвета взяты РАЗНЫМИ намеренно.
+ *
+ * Прежде здесь стояли нули: геометрию они не портили, а больше ничего
+ * и не проверялось. Различие своей метки и чужой — это в том числе цвет
+ * обводки, и на одинаковых нулях такая проверка зеленела бы всегда,
+ * ничего при этом не проверяя.
+ */
+const colors: MinimapColors = {
+  background: 0x141414,
+  border: 0x4d4d4d,
+  rock: 0x6e6a63,
+  self: 0x00ff29,
+  enemy: 0xd264ff,
+  viewport: 0xc4c4c4,
+  strike: 0xff5c5c,
+};
 
 describe('раскладка миникарты', () => {
   it('отношение сторон выводится из габаритов спроецированной карты', () => {
@@ -211,14 +289,7 @@ describe('проекция миникарты', () => {
 describe('отрисовка миникарты', () => {
   it('рельеф укладывается в отведённую область', () => {
     const { graphics, shapes } = tracing();
-    drawMinimapTerrain(graphics, world.map, layout, {
-      background: 0,
-      border: 0,
-      rock: 0,
-      self: 0,
-      enemy: 0,
-      viewport: 0,
-    });
+    drawMinimapTerrain(graphics, world.map, layout, colors);
 
     expect(shapes.length).toBeGreaterThan(0);
 
@@ -250,7 +321,7 @@ describe('отрисовка миникарты', () => {
       asPlayerId(0),
       [],
       layout,
-      { background: 0, border: 0, rock: 0, self: 0, enemy: 0, viewport: 0 },
+      colors,
     );
 
     const rects = shapes.filter((shape) => shape.kind === 'rect');
@@ -286,7 +357,7 @@ describe('отрисовка миникарты', () => {
       asPlayerId(0),
       [],
       layout,
-      { background: 0, border: 0, rock: 0, self: 0, enemy: 0, viewport: 0 },
+      colors,
     );
 
     const rects = shapes.filter((shape) => shape.kind === 'rect');
@@ -312,7 +383,7 @@ describe('отрисовка миникарты', () => {
       asPlayerId(0),
       corners,
       layout,
-      { background: 0, border: 0, rock: 0, self: 0, enemy: 0, viewport: 0 },
+      colors,
     );
 
     const points = shapes.filter((shape) => shape.kind === 'point');
@@ -331,5 +402,151 @@ describe('отрисовка миникарты', () => {
     // И это именно прямоугольник, а не выродившийся в отрезок.
     expect(Math.abs(b.x - a.x)).toBeGreaterThan(1);
     expect(Math.abs(c.y - b.y)).toBeGreaterThan(1);
+  });
+});
+
+/**
+ * Ядерный удар на миникарте.
+ *
+ * Игрок видит за раз около трети поля, а удар летит три секунды. Метка
+ * на поле помогает лишь тому, кто в эту часть поля сейчас смотрит; удар,
+ * идущий в невидимую треть, без миникарты для игрока не существует
+ * до самого взрыва.
+ */
+const nuke = (id: number, owner: number, cell: number, radiusCells: number): NukeState => ({
+  id: asEntityId(id),
+  owner: asPlayerId(owner),
+  cell,
+  detonateAtTick: asTickNumber(30),
+  radius: cellsToUnits(radiusCells),
+  damage: 500,
+});
+
+/** Мир без сущностей: остаются одни удары, и разбирать нарисованное просто. */
+const onlyNukes = (nukes: readonly NukeState[]): WorldState => {
+  return { ...world, structures: [], units: [], generals: [], nukes } as WorldState;
+};
+
+const drawNukes = (nukes: readonly NukeState[], localPlayer = 0): readonly Shape[] => {
+  const { graphics, shapes } = tracing();
+  drawMinimapEntities(graphics, onlyNukes(nukes), asPlayerId(localPlayer), [], layout, colors);
+  return shapes;
+};
+
+/** Габарит ломаной: круг удара — единственное, что рисуется отрезками. */
+const ringSizeOf = (shapes: readonly Shape[]): { width: number; height: number } => {
+  const points = shapes.filter((shape) => shape.kind === 'point');
+  const extent = extentOf(points);
+
+  return { width: extent.maxX - extent.minX, height: extent.maxY - extent.minY };
+};
+
+describe('ядерный удар на миникарте', () => {
+  it('матч без ударов миникарту не меняет ничем', () => {
+    expect(drawNukes([])).toHaveLength(0);
+  });
+
+  it('удар в полёте даёт круг и отметку эпицентра', () => {
+    const shapes = drawNukes([nuke(1, 0, cellIndex(20, 20), 4)]);
+
+    const points = shapes.filter((shape) => shape.kind === 'point');
+    const circles = shapes.filter((shape) => shape.kind === 'circle');
+
+    // Круг — замкнутая ломаная, а не пара отрезков.
+    expect(points.length).toBeGreaterThan(8);
+    const first = points[0];
+    const last = points[points.length - 1];
+    expect(first).toBeDefined();
+    expect(last).toBeDefined();
+    if (first === undefined || last === undefined) return;
+
+    expect(last.x).toBeCloseTo(first.x, 9);
+    expect(last.y).toBeCloseTo(first.y, 9);
+
+    // И отдельная отметка эпицентра: центр эллипса в сорок точек
+    // поперёк на глаз не определяется.
+    expect(circles).toHaveLength(1);
+  });
+
+  it('после удара отметка пропадает', () => {
+    // Отметка целиком выводится из world.nukes. Взорвавшейся ракеты
+    // там уже нет — значит, и убирать её отдельно не приходится.
+    expect(drawNukes([nuke(1, 0, cellIndex(20, 20), 4)]).length).toBeGreaterThan(0);
+    expect(drawNukes([])).toHaveLength(0);
+  });
+
+  it('круг следует радиусу ИМЕННО ЭТОЙ ракеты, а не балансной постоянной', () => {
+    // Радиус прокачивается. Показывать базовые четыре клетки там, где
+    // прокачанный удар накроет восемь, значило бы обещать границу,
+    // по которой игрок уводит войска, — и хоронить их по настоящей.
+    const small = ringSizeOf(drawNukes([nuke(1, 0, cellIndex(20, 20), 4)]));
+    const large = ringSizeOf(drawNukes([nuke(1, 0, cellIndex(20, 20), 8)]));
+
+    expect(large.width).toBeCloseTo(small.width * 2, 6);
+    expect(large.height).toBeCloseTo(small.height * 2, 6);
+  });
+
+  it('круг растянут проекцией ровно так же, как на поле', () => {
+    // Ровный круг соврал бы о накрываемой площади — то есть ровно о том,
+    // ради чего нарисован. Две картинки одного удара расходиться не вправе.
+    const shapes = drawNukes([nuke(1, 0, cellIndex(20, 20), 4)]);
+    const onMinimap = ringSizeOf(shapes);
+
+    // Число отрезков берётся из нарисованного, а не вписывается сюда:
+    // сравнивать надо ту же ломаную, а не ту же фигуру при другом шаге.
+    const steps = shapes.filter((shape) => shape.kind === 'point').length - 1;
+
+    const field = tracing();
+    traceGroundCircle(field.graphics, 20.5, 20.5, 4, worldToScreen, steps);
+    const onField = ringSizeOf(field.shapes);
+
+    expect(onMinimap.width / onMinimap.height).toBeCloseTo(onField.width / onField.height, 6);
+  });
+
+  it('отметка эпицентра одного размера в любом углу карты', () => {
+    // Она — такая же точка, как отметки юнитов, и правилу постоянного
+    // экранного размера подчиняется. Растянутая проекцией, она читалась бы
+    // направлением, которого у неё нет.
+    const near = cellIndex(2, 2);
+    const far = cellIndex(MAP_WIDTH_CELLS - 3, MAP_HEIGHT_CELLS - 3);
+    const shapes = drawNukes([nuke(1, 0, near, 4), nuke(2, 0, far, 4)]);
+
+    const circles = shapes.filter((shape) => shape.kind === 'circle');
+    expect(circles).toHaveLength(2);
+    expect(circles[0]?.width).toBe(circles[1]?.width);
+    expect(circles[0]?.width).toBe(circles[0]?.height);
+  });
+
+  it('свой удар и чужой различаются И цветом, И видом эпицентра', () => {
+    // Свой удар — подтверждение заказа, чужой — тревога, и требуют они
+    // противоположных действий. Проверять один лишь цвет нельзя: своя
+    // сторона зелёная, тревога красная, а на красно-зелёной паре различие
+    // обязано пережить дальтонизм.
+    const cell = cellIndex(20, 20);
+    const mine = drawNukes([nuke(1, 0, cell, 4)], 0);
+    const theirs = drawNukes([nuke(1, 1, cell, 4)], 0);
+
+    // Цвет обводки кольца. Заглушка его запоминает — прежде проглатывала,
+    // и проверить это было нечем.
+    const myRing = mine[0];
+    const theirRing = theirs[0];
+    expect(myRing).toBeDefined();
+    expect(theirRing).toBeDefined();
+    if (myRing === undefined || theirRing === undefined) return;
+
+    expect(myRing.color).toBe(colors.self);
+    expect(theirRing.color).toBe(colors.strike);
+    expect(myRing.color).not.toBe(theirRing.color);
+    expect(myRing.strokeWidth).toBeGreaterThan(0);
+
+    // И вид эпицентра. Кольцо у обоих одно и то же, значит разница
+    // в числе фигур — это в точности разница в отметке эпицентра.
+    const ring = mine.filter((shape) => shape.kind === 'point').length;
+    const myMark = mine.length - ring;
+    const theirMark = theirs.length - ring;
+
+    expect(myMark).toBeGreaterThan(0);
+    expect(theirMark).toBeGreaterThan(0);
+    expect(myMark).not.toBe(theirMark);
   });
 });
