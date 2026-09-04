@@ -699,33 +699,35 @@ describe('этапы и скиллы', () => {
     expect(silent).toEqual([]);
   });
 
-  it('разбор и проработка знают правило дробления одной меркой', () => {
+  it('разбор и анализ знают правило дробления одной меркой', () => {
     // Мерка обязана быть одна на оба этапа и проверяемая, а не «на глаз»:
     // «большой задачу» две сессии подряд назовут по-разному. Расхождение
     // здесь дорого — 04.09.2026 задача 0216 расползлась с проработки
     // на имплементацию и после шести кругов и $76,01 не влила ни строки.
     const dir = fileURLToPath(new URL('../skills/', import.meta.url));
-    const splitting = ['triage', 'design'];
+    const splitting = ['triage', 'decompose'];
     const silent = splitting.filter((stage) => {
       const text = readFileSync(`${dir}${stage}.md`, 'utf8');
       return !text.includes('вливать порознь') && !text.includes('влить отдельным pull request');
     });
     expect(silent).toEqual([]);
 
-    // Проработка обязана назвать и ход: заявки плюс исход `question`.
-    // Правило без хода — пожелание, а не правило.
-    const design = readFileSync(`${dir}design.md`, 'utf8');
-    expect(design).toContain('Оцени дробность');
-    expect(design).toContain('`question`');
+    // Анализ обязан назвать и ход: заявки плюс исход `split`. Правило
+    // без хода — пожелание, а не правило.
+    const decompose = readFileSync(`${dir}decompose.md`, 'utf8');
+    expect(decompose).toContain('`split`');
+    expect(decompose).toContain('не меньше двух');
   });
 
-  it('разбор знает потолок стоимости и советует дробление, а не поднятие', () => {
-    // Разбор — единственный этап, который читает причину остановки. Не зная
-    // потолка, он объявит причину внешней и заявит починку не того.
+  it('анализ знает случай упора в потолок и не решает его сам', () => {
+    // Повторный анализ, признавший работу неделимой, обязан звать владельца:
+    // поднять потолок или остановить — это про цену работы против её
+    // ценности, и из кода такое не выводится. Скилл, не знающий этого случая,
+    // отправит задачу в проработку по второму кругу за те же деньги.
     const dir = fileURLToPath(new URL('../skills/', import.meta.url));
-    const text = readFileSync(`${dir}postmortem.md`, 'utf8');
-    expect(text).toContain('Потолок стоимости');
-    expect(text).toContain('раздробить');
+    const text = readFileSync(`${dir}decompose.md`, 'utf8');
+    expect(text).toContain('потолок');
+    expect(text).toContain('`question`');
   });
 
   it('скилл разбора требует вердикт о причине и объясняет fixedBy', () => {
