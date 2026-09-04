@@ -107,6 +107,33 @@ describe('задача из заявки', () => {
   });
 });
 
+describe('части, рождённые дроблением', () => {
+  it('заявка дробления даёт задачу с признаком, прочие — без него', () => {
+    // Признак ставится только заявкам дробления: заявка разбора или аудита —
+    // это находка по дороге, и её дробность никто не смотрел.
+    const split = taskFromRequest(request(), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(split.task.decomposed).toBe(true);
+
+    const found = taskFromRequest(request(), { id: '0006-found', now: NOW, sourceId: '0001-one' });
+    expect(found.task.decomposed).toBe(false);
+  });
+
+  it('помеченная часть проходит настоящую схему бэклога', () => {
+    const { task } = taskFromRequest(request(), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+});
+
 describe('блокирующая причина', () => {
   const blocking = request({ blocking: true });
 
