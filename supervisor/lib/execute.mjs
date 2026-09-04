@@ -661,6 +661,43 @@ function apiErrorRecord(stage, why) {
   );
 }
 
+/**
+ * Отправить разросшуюся задачу на повторный анализ дробности.
+ *
+ * Не в разбор ошибки: задача не сломана. Разбор читает лог упавшего этапа
+ * и ищет поломку, а тут поломки нет — работа выросла, и лог последнего этапа
+ * про это не скажет ничего. 04.09.2026 задача 0216 прошла двенадцать этапов
+ * за $76,01, расширившись по дороге с проработки на имплементацию.
+ *
+ * Признак дробления снимается, и без этого весь ход бессмыслен: анализ
+ * пропустился бы ровно в том случае, ради которого затеян.
+ */
+async function decomposeAgain(action, io) {
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+
+  const moved = applyTransition(task, {
+    status: 'decompose',
+    note: action.reason,
+    now: io.now,
+  });
+  if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  const push = await io.saveTask(
+    { ...moved.task, decomposed: false },
+    {
+      at: io.now,
+      from: task.status,
+      to: 'decompose',
+      problem: `${action.reason}. Метка о проведённом дроблении снята: анализ идёт заново.`,
+    },
+    `chore(backlog): ${task.id} ${task.status} → decompose (потолок стоимости)`,
+  );
+  return push.ok
+    ? { result: 'done', status: 'decompose' }
+    : { result: 'failed', why: push.outcome };
+}
+
 /** Разобрать ответ владельца продукта и вернуть задачу в работу. */
 async function answerQuestion(action, io) {
   const task = io.readTask(action.taskId);
@@ -944,6 +981,7 @@ const HANDLERS = {
   'start-stage': startStage,
   'note-orphan': noteOrphan,
   'note-api-error': noteApiError,
+  'decompose-again': decomposeAgain,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
   'return-task': returnTask,

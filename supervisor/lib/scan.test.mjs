@@ -621,16 +621,28 @@ describe('маршрут из очереди', () => {
 });
 
 describe('потолок стоимости задачи', () => {
-  it('расход выше потолка останавливает рабочий этап и называет оба числа', () => {
+  it('расход выше потолка отправляет на повторный анализ и называет оба числа', () => {
+    // В анализ, а не в разбор ошибки: задача не сломана, она разрослась.
     const result = run({
       tasks: [task({ id: '0001-one', status: 'implement', spentUsd: 76.01 })],
       registry: { entries: [entry('0001-one')] },
     });
-    const halt = result.actions.find((a) => a.kind === 'fail-stage');
-    expect(halt).toBeDefined();
-    expect(halt.reason).toContain('76.01');
-    expect(halt.reason).toContain(String(config.maxTaskCostUsd));
+    const again = result.actions.find((a) => a.kind === 'decompose-again');
+    expect(again).toBeDefined();
+    expect(again.reason).toContain('76.01');
+    expect(again.reason).toContain(String(config.maxTaskCostUsd));
     expect(kinds(result)).not.toContain('continue-stage');
+    expect(kinds(result)).not.toContain('fail-stage');
+  });
+
+  it('сам анализ потолком не сторожится', () => {
+    // Иначе задача, отправленная в него потолком, не смогла бы пройти тот
+    // единственный этап, ради которого её туда и отправили.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'decompose', spentUsd: 76.01 })],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(kinds(result)).not.toContain('decompose-again');
   });
 
   it('расход ниже потолка сессию не задерживает', () => {
@@ -647,7 +659,7 @@ describe('потолок стоимости задачи', () => {
       tasks: [task({ id: '0001-one', status: 'postmortem', spentUsd: 76.01 })],
     });
     expect(kinds(result)).toContain('continue-stage');
-    expect(kinds(result)).not.toContain('fail-stage');
+    expect(kinds(result)).not.toContain('decompose-again');
   });
 });
 
