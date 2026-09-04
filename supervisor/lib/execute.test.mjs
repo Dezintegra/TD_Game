@@ -915,6 +915,38 @@ describe('сессия на идущий этап', () => {
     expect(io.spawned[0].task.attempts.continuations).toBe(1);
   });
 
+  it('пакет выкладки едет в назначение выписками задач', async () => {
+    // Сессии нужен номер pull request каждой, чтобы проверить вливание,
+    // а бэклог ей открывать нельзя. Задача, которой бэклог уже не знает,
+    // не скрывается: сессия обязана назвать её исключённой, а не промолчать.
+    const io = fakeIo({
+      tasks: [
+        task({ status: 'deploy', links: { pr: 11, change: 'one' } }),
+        task({
+          id: '0002-two',
+          title: 'Вторая',
+          status: 'deploy',
+          links: { pr: 12, change: 'two' },
+        }),
+      ],
+    });
+    await execute(
+      [{ ...carryOn, stage: 'deploy', batch: ['0001-one', '0002-two', '0009-gone'] }],
+      io,
+    );
+    expect(io.spawned[0].batch).toEqual([
+      { id: '0001-one', title: 'Образец', pr: 11, change: 'one' },
+      { id: '0002-two', title: 'Вторая', pr: 12, change: 'two' },
+      { id: '0009-gone', title: null, pr: null, change: null, missing: true },
+    ]);
+  });
+
+  it('без пакета в назначении нет и перечня', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([carryOn], io);
+    expect(io.spawned[0].batch).toBe(null);
+  });
+
   it('известная сессия возобновляется, а не начинается заново', async () => {
     // Ради этого и держится память о сессиях: возобновлённая помнит свой ход
     // мысли. Прежде продолжатель выяснял сделанное тремя командами `git log`

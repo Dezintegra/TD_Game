@@ -257,6 +257,13 @@ export function createSupervisor({
         steps: 0,
         last: null,
         handle: null,
+        // Перечень пакета выкладки — идентификаторами. Хранится у ребёнка,
+        // чтобы вернуться вместе с отчётом: перенос сверяет названных в отчёте
+        // с этим перечнем, а не с колонкой доски, — состав пакета зафиксирован
+        // в момент выдачи сессии, и свежая карточка в него не входит.
+        batch: Array.isArray(assignment.batch)
+          ? assignment.batch.map((item) => (typeof item === 'string' ? item : item.id))
+          : null,
       };
 
       try {
@@ -775,6 +782,11 @@ export function createSupervisor({
       taskId: child.taskId,
       denials: answer.denials,
       costUsd: answer.cost ?? 0,
+      // Перечень пакета едет с отчётом по той же причине, что отказы
+      // и стоимость: у переноса своего источника нет. Сессия перечня
+      // не пишет — отчёт властен только над своим пакетом, и что это
+      // за пакет, знает породивший, а не порождённый.
+      ...(child.batch ? { batch: child.batch } : {}),
     });
     log(`этап ${child.taskId}:${child.stage} закончен с исходом ${parsed.report.outcome}`);
   }

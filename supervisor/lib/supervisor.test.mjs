@@ -718,6 +718,43 @@ describe('этап кончился', () => {
   });
 });
 
+describe('пакет выкладки едет вместе с отчётом', () => {
+  // У переноса своего источника нет, а сверять названных в отчёте он обязан
+  // с перечнем из назначения, а не с колонкой доски: состав пакета
+  // зафиксирован в момент выдачи сессии, и свежая карточка в него не входит.
+  const deploying = assignment({
+    stage: 'deploy',
+    batch: [
+      { id: '0001-one', title: 'ведущая', pr: 1 },
+      { id: '0002-two', title: 'вторая', pr: 2 },
+    ],
+  });
+  const deployed = JSON.stringify({ ...report, stage: 'deploy' });
+
+  it('перечень возвращается идентификаторами', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(deploying);
+    await answer(envelope({ result: deployed }));
+    expect(supervisor.reports[0].batch).toEqual(['0001-one', '0002-two']);
+  });
+
+  it('перечень из отчёта сессии не берётся: он властен только над своим пакетом', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(deploying);
+    await answer(
+      envelope({ result: JSON.stringify({ ...report, stage: 'deploy', batch: ['0009-stray'] }) }),
+    );
+    expect(supervisor.reports[0].batch).toEqual(['0001-one', '0002-two']);
+  });
+
+  it('без пакета поля нет', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+    expect(supervisor.reports[0]).not.toHaveProperty('batch');
+  });
+});
+
 describe('отказанные действия едут вместе с отчётом', () => {
   // Прежде отчёт при непустом перечне отказов не принимался вовсе. Мерка
   // оказалась слишком грубой: вечер 31.08.2026 дал шесть отброшенных отчётов

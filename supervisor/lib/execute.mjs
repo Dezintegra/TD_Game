@@ -467,6 +467,27 @@ function assignmentFor(action, io, task, branchHint) {
     task,
     journal: io.readJournal(action.taskId),
     board: io.boardDigest(),
+    // Пакет выкладки: выписки задач, которые сессия выкладывает вместе
+    // с ведущей. Перечень фиксируется здесь, в момент выдачи сессии, и это
+    // единственный источник правды о составе пакета — доску сессия не откроет,
+    // а задача, пришедшая в `deploy` позже, останется ждать следующего.
+    batch: action.batch ? action.batch.map((id) => batchDigest(io.readTask(id), id)) : null,
+  };
+}
+
+/**
+ * Что о задаче пакета нужно сессии выкладки: номер pull request, чтобы
+ * проверить вливание, имя изменения — чтобы назвать его в журнале.
+ * Задачи, которой бэклог уже не знает, выписка не скрывает: сессия обязана
+ * назвать её в отчёте исключённой, а не промолчать.
+ */
+function batchDigest(task, id) {
+  if (!task) return { id, title: null, pr: null, change: null, missing: true };
+  return {
+    id: task.id,
+    title: task.title ?? null,
+    pr: task.links?.pr ?? null,
+    change: task.links?.change ?? null,
   };
 }
 
