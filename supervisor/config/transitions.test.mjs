@@ -685,6 +685,35 @@ describe('этапы и скиллы', () => {
     expect(silent).toEqual([]);
   });
 
+  it('разбор и проработка знают правило дробления одной меркой', () => {
+    // Мерка обязана быть одна на оба этапа и проверяемая, а не «на глаз»:
+    // «большой задачу» две сессии подряд назовут по-разному. Расхождение
+    // здесь дорого — 04.09.2026 задача 0216 расползлась с проработки
+    // на имплементацию и после шести кругов и $76,01 не влила ни строки.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const splitting = ['triage', 'design'];
+    const silent = splitting.filter((stage) => {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      return !text.includes('вливать порознь') && !text.includes('влить отдельным pull request');
+    });
+    expect(silent).toEqual([]);
+
+    // Проработка обязана назвать и ход: заявки плюс исход `question`.
+    // Правило без хода — пожелание, а не правило.
+    const design = readFileSync(`${dir}design.md`, 'utf8');
+    expect(design).toContain('Оцени дробность');
+    expect(design).toContain('`question`');
+  });
+
+  it('разбор знает потолок стоимости и советует дробление, а не поднятие', () => {
+    // Разбор — единственный этап, который читает причину остановки. Не зная
+    // потолка, он объявит причину внешней и заявит починку не того.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const text = readFileSync(`${dir}postmortem.md`, 'utf8');
+    expect(text).toContain('Потолок стоимости');
+    expect(text).toContain('раздробить');
+  });
+
   it('скилл разбора требует вердикт о причине и объясняет fixedBy', () => {
     // По `causedBy` супервизор решает, возвращать ли задачу из ошибки сам.
     // Отчёт без него применяется как «причина в задаче» — то есть разбор,
