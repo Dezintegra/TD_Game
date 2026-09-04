@@ -639,6 +639,30 @@ describe('перенос отчёта', () => {
     expect(io.tasks.get('0001-one').links.pr).toBe(7);
   });
 
+  it('снятый предмет несёт в журнал и причину, и доказательство', async () => {
+    // Доказательству больше негде осесть: `task.history` доска не хранит,
+    // отчёт после переноса снимается, а лог этапа в промпт следующих сессий
+    // не уезжает. Сторож стоит ЗДЕСЬ, а не в apply-report.test.mjs: там
+    // проверяется возвращаемое значение разбора, и до записи журнала оно
+    // не доходит — оттого дыра и прошла мимо проверок.
+    const io = fakeIo({
+      tasks: [task({ status: 'design' })],
+      report: {
+        taskId: '0001-one',
+        stage: 'design',
+        outcome: 'moot',
+        summary: 'правило уже действует',
+        evidence: 'supervisor/config/stage-settings.json:67',
+      },
+    });
+    await execute([transfer], io);
+
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('Предмет снят: правило уже действует.');
+    expect(journal).toContain('Проверено: supervisor/config/stage-settings.json:67.');
+  });
+
   it('неуспех отправляет задачу в разбор с чистым счётом попыток', async () => {
     // Прежде счёт здесь сохранялся: задача вставала в ошибке, и число
     // сожжённых заходов было уликой для человека. Теперь между ней и ошибкой

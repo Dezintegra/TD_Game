@@ -276,7 +276,15 @@ async function transferReport(action, io) {
       at: io.now,
       from: task.status,
       to: verdict.status,
-      what: report.summary,
+      // Обычно запись журнала говорит словами сессии — её `summary`. Исходу
+      // `moot` этого мало: спецификация требует, чтобы запись назвала причину
+      // ВМЕСТЕ с доказательством, а сложены они в одну фразу только в записке
+      // разбора — «Предмет снят: … Проверено: …». Деться доказательству больше
+      // некуда: `task.history` доска не хранит вовсе, а отчёт после переноса
+      // снимается, и лог этапа в промпт следующих сессий не уезжает. Без этой
+      // строки закрытая задача осталась бы в журнале заявлением без улики —
+      // ровно тем, против чего написан третий предохранитель исхода.
+      what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
       links: report.links ?? {},
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
