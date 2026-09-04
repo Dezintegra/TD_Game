@@ -8,6 +8,7 @@ import {
   NEEDS_WORKTREE,
   ROUTES,
   STATES,
+  STATE_CLASS,
   canTransition,
   isExclusive,
   isResource,
@@ -323,6 +324,19 @@ const FALSE_GROUND =
 const traceFormula = (text) => text.match(/След объявлен поимённо:[\s\S]*?(?=\n\n)/)?.[0] ?? null;
 
 describe('этапы и скиллы', () => {
+  it('всякому ресурсному состоянию положена сессия', () => {
+    // Состояние, объявленное ресурсным, но забытое в NEEDS_SESSION, тратит
+    // место в квоте и НЕ получает сессии никогда: сканер выдаёт её только
+    // по этому перечню. Задача встаёт в колонке навсегда и молча — ни отказа,
+    // ни записи в журнал, ни строки в консоли.
+    //
+    // Щель найдена пробой при заведении этапа декомпозиции: снятие состояния
+    // из перечня не покраснило ни одного теста.
+    const resource = STATES.filter((state) => STATE_CLASS[state] === 'resource');
+    const forgotten = resource.filter((state) => !NEEDS_SESSION.includes(state));
+    expect(forgotten).toEqual([]);
+  });
+
   it('у каждого этапа с сессией есть скилл', () => {
     // Сессия-исполнитель читает указания своего этапа из
     // `skills/<этап>.md` и без них не знает, что делать. Расхождение
@@ -692,33 +706,35 @@ describe('этапы и скиллы', () => {
     expect(silent).toEqual([]);
   });
 
-  it('разбор и проработка знают правило дробления одной меркой', () => {
+  it('разбор и анализ знают правило дробления одной меркой', () => {
     // Мерка обязана быть одна на оба этапа и проверяемая, а не «на глаз»:
     // «большой задачу» две сессии подряд назовут по-разному. Расхождение
     // здесь дорого — 04.09.2026 задача 0216 расползлась с проработки
     // на имплементацию и после шести кругов и $76,01 не влила ни строки.
     const dir = fileURLToPath(new URL('../skills/', import.meta.url));
-    const splitting = ['triage', 'design'];
+    const splitting = ['triage', 'decompose'];
     const silent = splitting.filter((stage) => {
       const text = readFileSync(`${dir}${stage}.md`, 'utf8');
       return !text.includes('вливать порознь') && !text.includes('влить отдельным pull request');
     });
     expect(silent).toEqual([]);
 
-    // Проработка обязана назвать и ход: заявки плюс исход `question`.
-    // Правило без хода — пожелание, а не правило.
-    const design = readFileSync(`${dir}design.md`, 'utf8');
-    expect(design).toContain('Оцени дробность');
-    expect(design).toContain('`question`');
+    // Анализ обязан назвать и ход: заявки плюс исход `split`. Правило
+    // без хода — пожелание, а не правило.
+    const decompose = readFileSync(`${dir}decompose.md`, 'utf8');
+    expect(decompose).toContain('`split`');
+    expect(decompose).toContain('не меньше двух');
   });
 
-  it('разбор знает потолок стоимости и советует дробление, а не поднятие', () => {
-    // Разбор — единственный этап, который читает причину остановки. Не зная
-    // потолка, он объявит причину внешней и заявит починку не того.
+  it('анализ знает случай упора в потолок и не решает его сам', () => {
+    // Повторный анализ, признавший работу неделимой, обязан звать владельца:
+    // поднять потолок или остановить — это про цену работы против её
+    // ценности, и из кода такое не выводится. Скилл, не знающий этого случая,
+    // отправит задачу в проработку по второму кругу за те же деньги.
     const dir = fileURLToPath(new URL('../skills/', import.meta.url));
-    const text = readFileSync(`${dir}postmortem.md`, 'utf8');
-    expect(text).toContain('Потолок стоимости');
-    expect(text).toContain('раздробить');
+    const text = readFileSync(`${dir}decompose.md`, 'utf8');
+    expect(text).toContain('потолок');
+    expect(text).toContain('`question`');
   });
 
   it('скилл разбора требует вердикт о причине и объясняет fixedBy', () => {

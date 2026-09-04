@@ -227,7 +227,9 @@ describe('цикл', () => {
     expect(result.actions[0]).toMatchObject({
       kind: 'start-stage',
       taskId: '0001-one',
-      stage: 'design',
+      // Из очереди задача типа `feature` идёт в анализ на дробность, а не
+      // сразу в проработку: карточка метки дробления не несёт.
+      stage: 'decompose',
     });
   });
 });

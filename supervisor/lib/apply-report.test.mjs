@@ -208,6 +208,50 @@ describe('спор, который не сходится', () => {
   });
 });
 
+describe('работа разнесена по карточкам', () => {
+  const split = (over = {}) => ({
+    stage: 'decompose',
+    outcome: 'split',
+    summary: 'счётчик, схемы и правила вливаются порознь',
+    requests: [{ title: 'счётчик' }, { title: 'схемы' }],
+    ...over,
+  });
+
+  const fresh = (over = {}) =>
+    task({ status: 'decompose', links: { change: null, pr: null, run: null }, ...over });
+
+  it('дробление на две части закрывает задачу и называет причину', () => {
+    const verdict = applyReport(fresh(), split());
+    expect(verdict.status).toBe('closed');
+    expect(verdict.problems).toEqual([]);
+    expect(verdict.note).toContain('2 карточкам');
+    expect(verdict.note).toContain('вливаются порознь');
+  });
+
+  it('дробление меньше чем на две части не проходит', () => {
+    // Одна часть — это не дробление, а отказ от работы под видом дробления.
+    const verdict = applyReport(fresh(), split({ requests: [{ title: 'одна' }] }));
+    expect(verdict.status).toBe('postmortem');
+    expect(verdict.problems.join()).toContain('не дробление');
+  });
+
+  it('с чужого этапа работу не разносят', () => {
+    const verdict = applyReport(fresh({ status: 'design' }), split({ stage: 'design' }));
+    expect(verdict.status).toBe('postmortem');
+    expect(verdict.problems.join()).toContain('«design»');
+  });
+
+  it('поверх заведённого изменения ход не проходит', () => {
+    // Разнести по карточкам можно замысел, а не сделанную работу.
+    const verdict = applyReport(
+      fresh({ links: { change: 'decompose-before-design', pr: null, run: null } }),
+      split(),
+    );
+    expect(verdict.status).toBe('postmortem');
+    expect(verdict.problems.join()).toContain('decompose-before-design');
+  });
+});
+
 describe('предмет задачи снят', () => {
   const moot = (over = {}) => ({
     stage: 'design',

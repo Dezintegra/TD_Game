@@ -39,6 +39,7 @@ export const ACTIONS = [
   // тогда запись успевает уехать в промпт продолжателя.
   'note-orphan',
   'note-api-error',
+  'decompose-again',
   'continue-stage', // подхватить этап за уснувшей сессией
   'fail-stage', // сдаться: продолжения исчерпаны, нужен человек
   'start-stage', // взять задачу в работу
@@ -90,7 +91,13 @@ function byPriorityThenAge(a, b) {
  * кончился.
  */
 function firstStage(task) {
-  return { feature: 'design', run: 'benchmark', note: 'triage' }[task.type];
+  // Правка задача типа `feature` начинается анализом на дробность — кроме
+  // карточек, рождённых дроблением: для них этот ответ уже получен и записан
+  // меткой. Без исключения каждая часть разбитой задачи проходила бы разбор
+  // на дробность, которую для неё только что и проделали, — сессия за сессией
+  // на вопрос с известным ответом.
+  if (task.type === 'feature') return task.decomposed ? 'design' : 'decompose';
+  return { run: 'benchmark', note: 'triage' }[task.type];
 }
 
 /**
@@ -504,15 +511,22 @@ export function scan(state) {
     // потолком значило бы запретить разбирать ровно те задачи, ради которых
     // потолок и заведён.
     const spent = Number.isFinite(task.spentUsd) ? task.spentUsd : 0;
-    if (!CROSSCUT.includes(task.status) && spent >= config.maxTaskCostUsd) {
+    // Само состояние анализа потолком не сторожится, иначе задача,
+    // отправленная в него потолком, не смогла бы пройти тот единственный
+    // этап, ради которого её туда и отправили. Исключение того же рода,
+    // что у сквозных состояний, и по той же причине.
+    const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
+    if (capped && spent >= config.maxTaskCostUsd) {
       // Числа в причине обязательны: по ним человек выбирает между двумя
       // выходами — поднять потолок или раздробить задачу, — а «предел
       // исчерпан» без величин не даёт выбрать ничего.
       const why =
         `истрачено $${spent.toFixed(2)} при потолке $${config.maxTaskCostUsd}: ` +
-        'задачу нужно раздробить либо поднять ей потолок';
+        'задача разрослась, нужен повторный анализ на дробность';
       notes.push(`задача ${task.id}: ${why}`);
-      actions.push({ kind: 'fail-stage', taskId: task.id, stage: task.status, reason: why });
+      // В анализ, а не в разбор ошибки. Задача не сломана — она разрослась,
+      // и лог последнего этапа про это не скажет ничего.
+      actions.push({ kind: 'decompose-again', taskId: task.id, stage: task.status, reason: why });
       continue;
     }
 

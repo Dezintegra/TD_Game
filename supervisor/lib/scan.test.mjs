@@ -190,8 +190,10 @@ describe('неполная настройка', () => {
   it('этап, который нечем закончить, не начинают', () => {
     // Без каталога рабочих деревьев проработку начинать нельзя: сессия
     // проснётся, дойдёт до заведения дерева и встанет.
+    // Задача с меткой дробления: без неё первым этапом идёт анализ, которому
+    // не нужно ничего, и проверка стала бы вечнозелёной.
     const { config: bare } = resolveConfig({ commands: {} });
-    const result = scan({ now: NOW, config: bare, tasks: [task()] });
+    const result = scan({ now: NOW, config: bare, tasks: [task({ decomposed: true })] });
     expect(result.actions).toEqual([]);
     expect(result.notes.join()).toContain('worktreeDir');
   });
@@ -201,7 +203,7 @@ describe('неполная настройка', () => {
       commands: { verify: 'x', perf: 'x' },
       worktreeDir: '.claude/worktrees',
     });
-    const result = scan({ now: NOW, config: noDeploy, tasks: [task()] });
+    const result = scan({ now: NOW, config: noDeploy, tasks: [task({ decomposed: true })] });
     expect(result.actions).toContainEqual({
       kind: 'start-stage',
       taskId: '0001-one',
@@ -298,7 +300,7 @@ describe('непокрытые команды этапа', () => {
     // сессии нет, этап не кончается, место не освобождается. Вдобавок
     // выкладка объявлена исключительным этапом, то есть требующим тишины.
     const result = run({
-      tasks: [deploying(), task({ id: '0003-next' })],
+      tasks: [deploying(), task({ id: '0003-next', decomposed: true })],
       registry: { entries: [entry('0002-deploy')] },
       permissions: closed,
     });
@@ -368,7 +370,7 @@ describe('непокрытые команды этапа', () => {
     // `benchmark` или `triage`: проверка на боевом перечне была бы
     // вечнозелёной, а снятая ветка кода её бы пережила.
     const result = run({
-      tasks: [task()],
+      tasks: [task({ decomposed: true })],
       permissions: closed,
       stageCommands: { design: ['ssh -o BatchMode=yes dezintegra "true"'] },
     });
@@ -512,7 +514,7 @@ describe('исполнитель один', () => {
     expect(result.actions).toContainEqual({
       kind: 'start-stage',
       taskId: '0002-two',
-      stage: 'design',
+      stage: 'decompose',
     });
   });
 
@@ -672,17 +674,64 @@ describe('исходы осиротевших этапов', () => {
   });
 });
 
+describe('маршрут из очереди', () => {
+  it('новая задача идёт в анализ на дробность, а не в проработку', () => {
+    const result = run({ tasks: [task({ id: '0001-one' })] });
+    expect(result.actions).toContainEqual({
+      kind: 'start-stage',
+      taskId: '0001-one',
+      stage: 'decompose',
+    });
+  });
+
+  it('карточка от дробления анализ пропускает', () => {
+    // Иначе каждая часть разбитой задачи проходила бы разбор на дробность,
+    // которую для неё только что и проделали.
+    const result = run({ tasks: [task({ id: '0001-one', decomposed: true })] });
+    expect(result.actions).toContainEqual({
+      kind: 'start-stage',
+      taskId: '0001-one',
+      stage: 'design',
+    });
+  });
+
+  it('прогон и вольная запись идут прежними маршрутами', () => {
+    const measuring = run({
+      tasks: [
+        task({ id: '0002-run', type: 'run', run: { kind: 'arena', expectation: 'ждём сдвига' } }),
+      ],
+    });
+    expect(kinds(measuring)).toContain('start-stage');
+    expect(measuring.actions.find((a) => a.kind === 'start-stage').stage).toBe('benchmark');
+
+    const noted = run({ tasks: [task({ id: '0003-note', type: 'note' })] });
+    expect(noted.actions.find((a) => a.kind === 'start-stage').stage).toBe('triage');
+  });
+});
+
 describe('потолок стоимости задачи', () => {
-  it('расход выше потолка останавливает рабочий этап и называет оба числа', () => {
+  it('расход выше потолка отправляет на повторный анализ и называет оба числа', () => {
+    // В анализ, а не в разбор ошибки: задача не сломана, она разрослась.
     const result = run({
       tasks: [task({ id: '0001-one', status: 'implement', spentUsd: 76.01 })],
       registry: { entries: [entry('0001-one')] },
     });
-    const halt = result.actions.find((a) => a.kind === 'fail-stage');
-    expect(halt).toBeDefined();
-    expect(halt.reason).toContain('76.01');
-    expect(halt.reason).toContain(String(config.maxTaskCostUsd));
+    const again = result.actions.find((a) => a.kind === 'decompose-again');
+    expect(again).toBeDefined();
+    expect(again.reason).toContain('76.01');
+    expect(again.reason).toContain(String(config.maxTaskCostUsd));
     expect(kinds(result)).not.toContain('continue-stage');
+    expect(kinds(result)).not.toContain('fail-stage');
+  });
+
+  it('сам анализ потолком не сторожится', () => {
+    // Иначе задача, отправленная в него потолком, не смогла бы пройти тот
+    // единственный этап, ради которого её туда и отправили.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'decompose', spentUsd: 76.01 })],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(kinds(result)).not.toContain('decompose-again');
   });
 
   it('расход ниже потолка сессию не задерживает', () => {
@@ -699,7 +748,7 @@ describe('потолок стоимости задачи', () => {
       tasks: [task({ id: '0001-one', status: 'postmortem', spentUsd: 76.01 })],
     });
     expect(kinds(result)).toContain('continue-stage');
-    expect(kinds(result)).not.toContain('fail-stage');
+    expect(kinds(result)).not.toContain('decompose-again');
   });
 });
 

@@ -323,6 +323,38 @@ describe('исход осиротевшего этапа', () => {
   });
 });
 
+describe('повторный анализ дробности', () => {
+  const again = {
+    kind: 'decompose-again',
+    taskId: '0001-one',
+    stage: 'implement',
+    reason: 'истрачено $76.01 при потолке $25: задача разрослась, нужен повторный анализ',
+  };
+
+  it('задача уходит в анализ, а признак дробления снимается', async () => {
+    // Без снятия признака анализ пропустился бы ровно в том случае, ради
+    // которого затеян: задача с меткой идёт из очереди мимо него.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement', decomposed: true, spentUsd: 76.01 })],
+    });
+    const [result] = await execute([again], io);
+
+    expect(result.result).toBe('done');
+    const moved = io.tasks.get('0001-one');
+    expect(moved.status).toBe('decompose');
+    expect(moved.decomposed).toBe(false);
+  });
+
+  it('журнал называет причину с числами', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement', spentUsd: 76.01 })] });
+    await execute([again], io);
+
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('76.01');
+    expect(journal).toContain('снята');
+  });
+});
+
 describe('отказ сервера модели', () => {
   const noteAction = { kind: 'note-api-error', taskId: '0001-one', stage: 'implement' };
 
