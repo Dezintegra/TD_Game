@@ -893,6 +893,130 @@ describe('вопрос владельцу продукта', () => {
   });
 });
 
+describe('разноска отчёта пакетной выкладки', () => {
+  /**
+   * Отчёт один — ведущей, — а задач в пакете много. Перенос двигает прочих
+   * по перечням `deployed` и `skipped`, и только их: отчёт властен ровно
+   * над своим пакетом, а перечень пакета приносит супервизор.
+   */
+  const transfer = { kind: 'transfer-report', taskId: '0001-one', stage: 'deploy' };
+  const deploying = (id, over = {}) =>
+    task({ id, status: 'deploy', links: { change: null, pr: 7, run: null, related: [] }, ...over });
+  const batch = ['0001-one', '0002-two', '0003-three', '0004-four'];
+  const world = (report = {}, over = {}) =>
+    fakeIo({
+      tasks: [
+        deploying('0001-one'),
+        deploying('0002-two'),
+        deploying('0003-three'),
+        deploying('0004-four', over.fourth ?? {}),
+      ],
+      report: {
+        taskId: '0001-one',
+        stage: 'deploy',
+        outcome: 'done',
+        summary: 'Ревизия abc играет на https://dezintegra.net/.',
+        links: { revision: 'abc' },
+        batch,
+        deployed: ['0002-two'],
+        skipped: [{ taskId: '0003-three', why: 'pull request 9 не влит' }],
+        ...report,
+      },
+      ...over,
+    });
+
+  it('выложенные едут в уборку, исключённые — в ошибку с причиной', async () => {
+    const io = world();
+    const [result] = await execute([transfer], io);
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
+    expect(io.tasks.get('0002-two').status).toBe('cleanup');
+    expect(io.tasks.get('0003-three')).toMatchObject({ status: 'failed', returnTo: 'deploy' });
+    expect(io.journals.get('0003-three')).toContain('pull request 9 не влит');
+  });
+
+  it('журнал выложенной несёт сводку, ссылки и пометку о пакете', async () => {
+    const io = world();
+    await execute([transfer], io);
+    const journal = io.journals.get('0002-two');
+    expect(journal).toContain('Выложена пакетом с 0001-one');
+    expect(journal).toContain('Ревизия abc играет');
+    expect(journal).toContain('revision: abc');
+  });
+
+  it('ведущая связывается с переведёнными задачами пакета', async () => {
+    const io = world();
+    await execute([transfer], io);
+    expect(io.tasks.get('0001-one').links.related).toEqual(['0002-two', '0003-three']);
+  });
+
+  it('неназванная остаётся в выкладке, и это записано у ведущей', async () => {
+    const io = world();
+    await execute([transfer], io);
+    expect(io.tasks.get('0004-four').status).toBe('deploy');
+    expect(io.journals.get('0001-one')).toContain('0004-four из пакета отчётом не названа');
+  });
+
+  it('чужой идентификатор не двигает ничего', async () => {
+    const io = fakeIo({
+      tasks: [deploying('0001-one'), deploying('0002-two'), deploying('0009-stray')],
+      report: {
+        taskId: '0001-one',
+        stage: 'deploy',
+        outcome: 'done',
+        summary: 'выложено',
+        batch: ['0001-one', '0002-two'],
+        deployed: ['0002-two', '0009-stray'],
+      },
+    });
+    await execute([transfer], io);
+    expect(io.tasks.get('0009-stray').status).toBe('deploy');
+    expect(io.journals.get('0001-one')).toContain('0009-stray, которой в пакете не было');
+  });
+
+  it('уже переехавшая пропускается молча: перенос идемпотентен', async () => {
+    const io = world({}, { fourth: { status: 'cleanup' } });
+    const before = io.tasks.get('0004-four');
+    await execute([transfer], io);
+    expect(io.tasks.get('0004-four')).toBe(before);
+    expect(io.journals.get('0001-one') ?? '').not.toContain('0004-four');
+  });
+
+  it('неудача записи задачи пакета оставляет ведущую и отчёт на месте', async () => {
+    // Следующий оборот начнёт заново и уже переехавших узнает по состоянию.
+    let saves = 0;
+    const io = world(
+      {},
+      {
+        push: () =>
+          ++saves === 2 ? { ok: false, outcome: 'rejected' } : { ok: true, outcome: 'pushed' },
+      },
+    );
+    const [result] = await execute([transfer], io);
+    expect(result.result).toBe('failed');
+    expect(io.tasks.get('0002-two').status).toBe('cleanup');
+    expect(io.tasks.get('0001-one').status).toBe('deploy');
+    expect(io.steps).not.toContain('отчёт 0001-one:deploy убран');
+  });
+
+  it('исход ведущей решается общим порядком: failed уводит её в разбор, пакет разносится', async () => {
+    const io = world({ outcome: 'failed', summary: 'сервер погашен' });
+    await execute([transfer], io);
+    expect(io.tasks.get('0001-one').status).toBe('postmortem');
+    expect(io.tasks.get('0002-two').status).toBe('cleanup');
+  });
+
+  it('без перечня пакета перенос выкладки прежний', async () => {
+    const io = fakeIo({
+      tasks: [deploying('0001-one'), deploying('0002-two')],
+      report: { taskId: '0001-one', stage: 'deploy', outcome: 'done', deployed: ['0002-two'] },
+    });
+    await execute([transfer], io);
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
+    expect(io.tasks.get('0002-two').status).toBe('deploy');
+  });
+});
+
 describe('сессия на идущий этап', () => {
   const carryOn = {
     kind: 'continue-stage',

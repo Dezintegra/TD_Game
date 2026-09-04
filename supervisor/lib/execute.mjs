@@ -250,6 +250,17 @@ async function transferReport(action, io) {
     next = relate(next, item.taskId);
   }
 
+  // Пакет выкладки разносится ДО записи ведущей и по той же причине, что
+  // заявки: неудача на середине не должна оставлять отчёт непринятым при
+  // уже сдвинутой ведущей. Задачи, уже переехавшие прошлым заходом,
+  // разноска узнаёт по состоянию и пропускает — перенос идемпотентен.
+  if (action.stage === 'deploy' && Array.isArray(report.batch)) {
+    const spread = await spreadBatch(task, report, io);
+    if (!spread.ok) return { result: 'failed', why: spread.why, created, amended };
+    for (const id of spread.moved) next = relate(next, id);
+    plan.notes = [...(plan.notes ?? []), ...spread.notes];
+  }
+
   // Вопрос записывается ТЕМ ЖЕ действием, что и переход в ожидание.
   // Схема задачи требует поля `question` при этом состоянии, а без записи
   // вопроса у ожидания нет выхода вовсе.
@@ -315,6 +326,91 @@ async function transferReport(action, io) {
     amended,
     rejected: [...plan.rejected, ...facts.rejected],
   };
+}
+
+/**
+ * Разнести отчёт пакетной выкладки по задачам пакета.
+ *
+ * Отчёт один — ведущей, — а задач в пакете много, и о них говорят два
+ * перечня: `deployed` (код выложен → `cleanup`) и `skipped` (`{ taskId, why }`,
+ * из пакета исключена → `failed` с причиной). Исход `outcome` относится
+ * к ведущей и разбирается общим порядком; здесь двигаются только прочие.
+ *
+ * Отчёт властен ровно над своим пакетом — перечнем из назначения, который
+ * супервизор вернул вместе с отчётом. Идентификатор не из пакета не двигает
+ * ничего: сессия не откроет доску, и назвать чужую задачу может только
+ * по ошибке. Задача пакета, не названная ни в одном перечне, остаётся
+ * в `deploy` и попадёт в следующий пакет — молча увести её в уборку нельзя:
+ * сессия могла пропустить её по делу, а не по забывчивости. Оба случая
+ * ложатся записью в журнал ведущей.
+ *
+ * Каждая задача уезжает своим коммитом, и неудача любой из них возвращает
+ * неудачу целиком: ведущая и отчёт остаются на месте, следующий оборот
+ * начинает заново, а уже переехавших узнаёт по состоянию.
+ */
+async function spreadBatch(lead, report, io) {
+  const batch = report.batch.filter((id) => id !== lead.id);
+  const deployed = new Set(Array.isArray(report.deployed) ? report.deployed : []);
+  const skipped = new Map(
+    (Array.isArray(report.skipped) ? report.skipped : [])
+      .filter((item) => item && typeof item.taskId === 'string')
+      .map((item) => [item.taskId, String(item.why ?? '').trim() || 'причина не названа']),
+  );
+
+  const notes = [];
+  for (const id of [...deployed, ...skipped.keys()]) {
+    if (id !== lead.id && !batch.includes(id)) {
+      notes.push(`Отчёт назвал задачу ${id}, которой в пакете не было: она не тронута.`);
+    }
+  }
+
+  const moved = [];
+  for (const id of batch) {
+    const member = io.readTask(id);
+    if (!member) {
+      notes.push(`Задача ${id} из пакета в бэклоге не найдена.`);
+      continue;
+    }
+    // Уже переехала прошлым заходом переноса — либо её увёл человек.
+    // И то и другое не наше дело: двигаем только стоящих в выкладке.
+    if (member.status !== 'deploy') continue;
+
+    const to = deployed.has(id) ? 'cleanup' : skipped.has(id) ? 'failed' : null;
+    if (!to) {
+      notes.push(`Задача ${id} из пакета отчётом не названа: остаётся в выкладке.`);
+      continue;
+    }
+
+    const problem = to === 'failed' ? skipped.get(id) : undefined;
+    const what =
+      to === 'cleanup'
+        ? `Выложена пакетом с ${lead.id}. ${report.summary ?? ''}`.trim()
+        : `Исключена из пакета выкладки ${lead.id}.`;
+    const shifted = applyTransition(member, { status: to, note: problem ?? what, now: io.now });
+    if (!shifted.task) return { ok: false, why: `${id}: ${shifted.problems.join('; ')}` };
+
+    // Дошедшая до уборки задача счётчиков не несёт, как и ведущая: прошлые
+    // заминки этапа больше не в счёт. Исключённой их обнулил сам переход
+    // в сквозное состояние.
+    const settled = to === 'cleanup' ? resetAttempts(shifted.task) : shifted.task;
+    const push = await io.saveTask(
+      settled,
+      {
+        at: io.now,
+        from: 'deploy',
+        to,
+        what,
+        problem,
+        links: report.links ?? {},
+        source: 'agent',
+      },
+      `chore(backlog): ${id} deploy → ${to} (пакет ${lead.id})`,
+    );
+    if (!push.ok) return { ok: false, why: `${id}: ${push.outcome}`, moved, notes };
+    moved.push(id);
+  }
+
+  return { ok: true, moved, notes };
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
