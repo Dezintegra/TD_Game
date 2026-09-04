@@ -4,6 +4,7 @@ import {
   expectationOf,
   joinDescription,
   metaOf,
+  labelKeysOf,
   nameWithId,
   parseCard,
   splitDescription,
@@ -30,6 +31,7 @@ const labelKeyById = new Map([
   ['l-note', 'note'],
   ['l-arena', 'arena'],
   ['l-unparsed', 'unparsed'],
+  ['l-decomposed', 'decomposed'],
 ]);
 
 const ctx = { stateByList, labelKeyById };
@@ -201,6 +203,25 @@ describe('разбор карточки', () => {
     const { card: seen } = parseCard(card({ idLabels: ['l-feature', 'l-unparsed'] }), ctx);
     expect(seen.types).toEqual(['feature']);
     expect(seen.flags).toEqual(['unparsed']);
+  });
+
+  it('метка дробления читается в признак задачи', () => {
+    const { task } = parseCard(card({ idLabels: ['l-feature', 'l-decomposed'] }), ctx);
+    expect(task.decomposed).toBe(true);
+  });
+
+  it('без метки признак ложен, а не отсутствует', () => {
+    // Отсутствие поля означало бы «неизвестно», и маршрут из очереди пришлось
+    // бы угадывать. Здесь известно: анализа не было.
+    const { task } = parseCard(card({ idLabels: ['l-feature'] }), ctx);
+    expect(task.decomposed).toBe(false);
+  });
+
+  it('признак задачи отдаёт метку обратно на карточку', () => {
+    // Без этого метка не уехала бы на заведённую дроблением карточку,
+    // и она пошла бы на анализ, который для неё только что провели.
+    expect(labelKeysOf({ type: 'feature', decomposed: true })).toEqual(['feature', 'decomposed']);
+    expect(labelKeysOf({ type: 'feature', decomposed: false })).toEqual(['feature']);
   });
 });
 
