@@ -85,21 +85,21 @@ task.status` и рядом с веткой `question`, по трём предо�
 
 ## 3. Научить уборку мерить содержимое ветки, а не наличие pull request
 
-- [ ] В `supervisor/lib/io.mjs` рядом с `unpushed` завести
+- [x] В `supervisor/lib/io.mjs` рядом с `unpushed` завести
       `ownCommits(branch)`: `git rev-list --count --no-merges
 ${config.remote}/${config.mainBranch}..${branch}`. Команда не отработала —
       вернуть `null`. Комментарием сказать, зачем `--no-merges`: скилл
       проработки предписывает подтянуть свежую главную ветку в своё дерево,
       и коммит слияния — не работа, а обновление базы.
-- [ ] В `supervisor/lib/cleanup.mjs` заменить ветку «задача дошла до уборки
+- [x] В `supervisor/lib/cleanup.mjs` заменить ветку «задача дошла до уборки
       без pull request» на разбор по содержимому: `ownCommits === 0` →
       `proceed` с причиной «в ветке нет своей работы, терять нечего»;
       больше нуля → `fail` с числом коммитов; `null` → `fail`, потому что
       удаление необратимо и неизвестность толкуется в пользу сохранности.
-- [ ] В `supervisor/lib/execute.mjs` передать новую улику в `mayCleanup` —
+- [x] В `supervisor/lib/execute.mjs` передать новую улику в `mayCleanup` —
       только при пустом `task.links?.pr`, чтобы у обычной задачи не заводить
       лишнего вызова git.
-- [ ] В `supervisor/lib/cleanup.test.mjs` добавить проверки на три исхода
+- [x] В `supervisor/lib/cleanup.test.mjs` добавить проверки на три исхода
       новой мерки, в `supervisor/lib/io.test.mjs` — на вид самой команды
       (`rev-list --count --no-merges origin/main..worktree-…`),
       в `supervisor/lib/execute.test.mjs` — что задача, закрытая по `moot`,

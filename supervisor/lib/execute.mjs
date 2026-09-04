@@ -821,8 +821,8 @@ async function halt(task, why, io, extra = {}) {
  * Прибрать за завершённой задачей.
  *
  * Удаление — единственное необратимое, что делает конвейер, поэтому решение
- * принимается не здесь, а в отдельном разборе, и только по доказанной
- * влитости pull request.
+ * принимается не здесь, а в отдельном разборе: по доказанной влитости pull
+ * request, а там, где он не заводился вовсе, — по содержимому ветки.
  */
 async function cleanupTask(action, io) {
   const task = io.readTask(action.taskId);
@@ -834,6 +834,9 @@ async function cleanupTask(action, io) {
     entry,
     pr: io.readPr(task.links?.pr),
     unpushed: entry ? io.unpushed(entry.branch) : 0,
+    // Содержимое ветки спрашивается только там, где решать по pull request
+    // нечем: у обычной задачи это был бы лишний вызов git на каждой уборке.
+    ownCommits: entry && !task.links?.pr ? io.ownCommits(entry.branch) : null,
   });
 
   if (verdict.verdict === 'wait') return { result: 'skipped', why: verdict.why };
