@@ -5,7 +5,9 @@ import { cellIndex, cellX, cellY } from '@td/sim';
 import type { GameMap, WorldState } from '@td/sim';
 import { clampCamera, clampZoom, createCamera, moveCamera, scaleOf, zoomAt } from './camera.js';
 import type { Camera } from './camera.js';
-import { TERRAIN_DIAGONAL_COUNT, drawGround } from './terrain.js';
+import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid, showGrid } from './terrain.js';
+import { createCloudLayer } from './clouds-render.js';
+import type { CloudColors, CloudLayer } from './clouds-render.js';
 import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
 import { ARMOUR_SUPERSAMPLE, armourBakeDensity, rockBakeDensity } from './bake-density.js';
 import type { TerrainColors } from './terrain.js';
@@ -214,7 +216,13 @@ const sizeToken = (name: string, fallback: number): number => {
   return found?.[1] === undefined ? fallback : Number(found[1]);
 };
 
+const readCloudColors = (): CloudColors => ({
+  cloud: token('--td-cloud', 0x6e6e6e),
+  deep: token('--td-cloud-deep', 0x3c3c3c),
+});
+
 const readTerrainColors = (): TerrainColors => ({
+  surface: token('--td-field-surface', 0x000000),
   grid: token('--td-border-subtle', 0x3a3a3a),
   gridMajor: token('--td-border-control', 0x4d4d4d),
   rock: token('--td-rock', 0x6e6a63),
@@ -255,7 +263,10 @@ const readMachineColors = (): MachineSpriteColors => ({
   // Небо то же, что подсвечивает скалы: разный подсвет у соседних
   // предметов читается ошибкой.
   sky: token('--td-rock-sky', 0x5c7ea8),
-  ground: token('--td-bg-page', 0x191919),
+  // Цвет поверхности поля, а НЕ фона страницы: отражение приглушается
+  // до цвета земли, и земля под машиной — чёрное зеркало. Возьми мы здесь
+  // фон, отражение легло бы на чёрное поле серым пятном.
+  ground: token('--td-field-surface', 0x000000),
 });
 
 /**
@@ -277,15 +288,18 @@ const readStructureColors = (): StructureSpriteColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
   sky: token('--td-rock-sky', 0x5c7ea8),
-  ground: token('--td-bg-page', 0x191919),
+  // Тот же цвет поверхности поля, что у машин: постройка и танк стоят
+  // на одной земле, и разойдись их «цвет земли» — разошлись бы и тени.
+  ground: token('--td-field-surface', 0x000000),
 });
 
 const readEntityColors = (): EntityColors => ({
   self: token('--td-accent', 0x00ff29),
   enemy: token('--td-player-enemy', 0xd264ff),
-  // Цвет поверхности — тот же, которым залит фон сцены. Земля рисуется
-  // линиями и заливок не имеет, поэтому под отражением всегда именно он.
-  ground: token('--td-bg-page', 0x191919),
+  // Цвет поверхности поля. Земля теперь залита им сплошь, и отражение
+  // ложится именно на него, а не на фон страницы: фон виден только
+  // за границами карты.
+  ground: token('--td-field-surface', 0x000000),
   health: token('--td-health-full', 0x00ff29),
   healthLow: token('--td-health-low', 0xff5c5c),
   beacon: token('--td-beacon', 0xff3b30),
@@ -600,10 +614,35 @@ export const createScene = (renderer: RendererHost): Scene => {
   // и подмешивать в него дрожание нельзя. Подробности у `applyShake`.
   const shakeContainer = new Container();
   const worldContainer = new Container();
-  shakeContainer.addChild(worldContainer);
 
-  const groundGraphics = new Graphics();
-  worldContainer.addChild(groundGraphics);
+  /**
+   * Мгла за границами поля.
+   *
+   * ПЕРВЫМ ребёнком тряски, то есть ниже мира: поверхность поля залита
+   * сплошь и закрывает мглу собой, поэтому видна мгла ровно там, где
+   * карты нет. Отдельного отсечения по границе карты не нужно вовсе —
+   * его делает сама земля.
+   *
+   * Внутри тряски, а не снаружи: мгла — часть картинки мира, а не прибор.
+   * Стой она неподвижно, пока трясётся всё остальное, — читалось бы это
+   * приклеенным к экрану стеклом. Миникарта и джойстик остаются снаружи
+   * по обратной причине: они как раз приборы.
+   */
+  const clouds: CloudLayer = createCloudLayer(readCloudColors());
+
+  shakeContainer.addChild(clouds.layer, worldContainer);
+
+  // Земля двумя слоями: поверхность видна всегда, сетка — только
+  // в режиме строительства. Порядок именно такой: линии сетки лежат
+  // НА земле, но ниже всего остального — перечёркивать ими машины нельзя.
+  const fieldGraphics = new Graphics();
+  const gridGraphics = new Graphics();
+  worldContainer.addChild(fieldGraphics, gridGraphics);
+
+  // Сетка спрятана до первого кадра. Иначе она успела бы мелькнуть между
+  // построением земли и первым `render`: карта приходит раньше кадра,
+  // а режим строительства в начале матча выключен.
+  showGrid(gridGraphics, false);
 
   // Слоёв получается около четырёхсот. Это дёшево: пустой Graphics ничего
   // не рисует, а обход четырёхсот детей на кадр не измеряется. Заливок
@@ -995,7 +1034,11 @@ export const createScene = (renderer: RendererHost): Scene => {
 
       // Дешёвое делается сразу: земля — одна заливка, миникарта — обход
       // клеток без запекания. Игрок видит поле и свою карту немедленно.
-      drawGround(groundGraphics, terrainColors);
+      //
+      // Оба слоя земли строятся ЗДЕСЬ и больше не перестраиваются никогда:
+      // сетка прячется видимостью слоя, а не отсутствием геометрии.
+      drawField(fieldGraphics, terrainColors);
+      drawGrid(gridGraphics, terrainColors);
       drawMinimapTerrain(minimapTerrain, map, layout, minimapColors);
 
       // Скалы — нет. Их запекание стоит около полутора секунд, и одним
@@ -1086,6 +1129,23 @@ export const createScene = (renderer: RendererHost): Scene => {
 
     render(world, localPlayer, intent) {
       clearEntityLayers();
+
+      // Сетка нужна только тому, кто ставит постройку: в бою она дробит
+      // поле и мешает читать его с одного взгляда. Здесь ровно одна
+      // строка — выставленная видимость готового слоя, — и это осознанно:
+      // всё остальное, что могло бы тут случиться, было бы перестроением
+      // территории на кадре.
+      showGrid(gridGraphics, intent.building);
+
+      // Мгла считается от часов кадра и от смещения мира на экране —
+      // того самого, которое ставит камера. Номер тика ей не годится:
+      // при догоне истории мир проматывается пачками, и мгла скакала бы
+      // рывками ровно тогда, когда игрок ждёт спокойного фона.
+      clouds.update(
+        performance.now(),
+        { x: worldContainer.x, y: worldContainer.y },
+        { width: app.screen.width, height: app.screen.height },
+      );
 
       // Дробный номер тика: мир идёт тридцать раз в секунду, кадров вдвое
       // больше, и эффект, посчитанный от целого номера, дёргался бы через
@@ -1248,6 +1308,7 @@ export const createScene = (renderer: RendererHost): Scene => {
       // Текстуры живут в видеопамяти, и сборщик мусора о ней не знает:
       // без уборки утечка копилась бы матч за матчем.
       arcs.destroy();
+      clouds.destroy();
 
       // Тикер останавливается вместе с матчем: в меню рисовать нечего.
       app.ticker.stop();
