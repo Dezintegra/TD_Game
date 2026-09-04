@@ -174,6 +174,10 @@ async function transferReport(action, io) {
     sourceStage: task.status,
     // Разбор, назвавший причину конвейерной, заводит конвейерные заявки.
     pipelineCause: pipelineCause(report),
+    // Части, рождённые дроблением, анализ на дробность уже прошли — в лице
+    // задачи, которая их и породила, — и потому идут из очереди сразу
+    // в проработку.
+    decomposed: report.outcome === 'split',
   });
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
