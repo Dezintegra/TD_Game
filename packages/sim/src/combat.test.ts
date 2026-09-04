@@ -8,12 +8,15 @@ import {
   MAP_WIDTH_CELLS,
   SPLASH_OUTER_DIVISOR,
   STRUCTURE_STATS,
+  STRUCTURE_WEAPON,
   ShotSide,
   ShotWeapon,
   StructureKind,
+  TOWER_KILL_BOUNTY_PPM,
   Terrain,
   UNIT_STATS,
   UnitType,
+  applyPpm,
   asEntityId,
   asPlayerId,
   asTickNumber,
@@ -22,6 +25,8 @@ import {
   veteranRank,
 } from '@td/shared';
 import type { PlayerId } from '@td/shared';
+import { ShooterKind, TargetKind, dealDamage } from './combat.js';
+import { toWorking } from './working.js';
 import { createWorld } from './world.js';
 import type { GeneralState, StructureState, UnitState, WorldState } from './world.js';
 import { step } from './step.js';
@@ -682,6 +687,154 @@ describe('награда генералу', () => {
     expect(unitById(after, 60)).toBeUndefined();
     expect((after.players[0]?.energy ?? 0) - before).toBeLessThan(
       UNIT_STATS[UnitType.Assault].cost,
+    );
+  });
+});
+
+describe('награда постройке', () => {
+  /**
+   * Прибавка энергии за тик, в котором башня стреляет по штурмовику.
+   *
+   * Считается ПРОТИВ КОНТРОЛЯ: тот же мир, та же башня, тот же выстрел —
+   * разнится только прочность цели. Иначе в разницу вошёл бы ещё и доход
+   * тика, и проверка «выросла хотя бы на столько-то» стерегла бы доход,
+   * а не награду.
+   */
+  const gainWhenTargetHas = (health: number): number => {
+    const world = arrange(
+      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 100_000)],
+      [unit(60, 1, UnitType.Assault, 1, 0, health)],
+    );
+    const before = world.players[0]?.energy ?? 0;
+
+    return (step(world, []).players[0]?.energy ?? 0) - before;
+  };
+
+  it('башня, добившая штурмовика, приносит пятую часть его цены', () => {
+    const killed = gainWhenTargetHas(1);
+    const survived = gainWhenTargetHas(100_000);
+
+    expect(killed - survived).toBe(
+      applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM),
+    );
+  });
+
+  it('за добитую стену платится доля цены стены, а не цены машины', () => {
+    // Добыча берётся у той же `bounty`, что платит генералу, поэтому вид
+    // убитого решает, сколько причитается. Проверка стережёт именно это:
+    // при плоской награде обе цены дали бы одно число, и подмена одной
+    // другой прошла бы незамеченной.
+    const gain = (health: number): number => {
+      const world = arrange(
+        [
+          structure(50, 0, StructureKind.TowerBasic, 0, 0, 100_000),
+          structure(51, 1, StructureKind.Wall, 1, 0, health),
+        ],
+        [],
+      );
+      const before = world.players[0]?.energy ?? 0;
+
+      return (step(world, []).players[0]?.energy ?? 0) - before;
+    };
+
+    const wall = STRUCTURE_STATS[StructureKind.Wall].cost;
+
+    expect(gain(1) - gain(100_000)).toBe(applyPpm(wall, TOWER_KILL_BOUNTY_PPM));
+    expect(applyPpm(wall, TOWER_KILL_BOUNTY_PPM)).not.toBe(
+      applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM),
+    );
+  });
+
+  it('машина не получает и доли: платят только постройке и генералу', () => {
+    // Существующая проверка «убийство юнитом награды не даёт» сравнивает
+    // прибавку с ПОЛНОЙ ценой убитого и потому зеленела бы, начни машина
+    // получать пятую часть. Здесь сравнение точное: прибавка обязана
+    // равняться одному лишь доходу тика.
+    const attacker: PlayerId = asPlayerId(0);
+    const world = arrange(
+      [],
+      [unit(60, 1, UnitType.Assault, 1, 0, 1), unit(61, attacker, UnitType.Assault, 2, 0, 100)],
+    );
+    const before = world.players[0]?.energy ?? 0;
+
+    const after = step(world, []);
+    const control = arrange(
+      [],
+      [
+        unit(60, 1, UnitType.Assault, 1, 0, 100_000),
+        unit(61, attacker, UnitType.Assault, 2, 0, 100),
+      ],
+    );
+    const controlBefore = control.players[0]?.energy ?? 0;
+    const controlAfter = step(control, []);
+
+    expect(unitById(after, 60)).toBeUndefined();
+    expect((after.players[0]?.energy ?? 0) - before).toBe(
+      (controlAfter.players[0]?.energy ?? 0) - controlBefore,
+    );
+  });
+
+  it('платит за каждого убитого, а не раз на выстрел', () => {
+    // Начисление привязано к гибели цели, и проверяется это единственным
+    // честным способом: `dealDamage` зовётся по разу на каждого убитого —
+    // ровно так, как её зовёт накрытие, — и платить обязана дважды.
+    //
+    // Залпа башни здесь НЕ выдумано намеренно. Двойной вызов, названный
+    // залпом, был бы сравнением пустого с пустым: накрытия у построек
+    // сегодня нет вовсе (см. сторож ниже). Ранг в этом различии
+    // не участвует — его выдаёт `fire`, один раз на выстрел.
+    const world = arrange(
+      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 100_000)],
+      [unit(60, 1, UnitType.Assault, 1, 0, 1), unit(61, 1, UnitType.Assault, 2, 0, 1)],
+    );
+
+    const working = toWorking(world);
+    const stats = world.players.map((player) => playerStats(player));
+    const shooter = {
+      kind: ShooterKind.Structure,
+      index: world.structures.findIndex((entry) => entry.id === asEntityId(50)),
+      owner: asPlayerId(0),
+    };
+    const before = working.players[0]?.energy ?? 0;
+
+    expect(dealDamage(working, stats, shooter, { kind: TargetKind.Unit, index: 0 }, 1000)).toBe(
+      true,
+    );
+    expect(dealDamage(working, stats, shooter, { kind: TargetKind.Unit, index: 1 }, 1000)).toBe(
+      true,
+    );
+
+    expect((working.players[0]?.energy ?? 0) - before).toBe(
+      2 * applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM),
+    );
+  });
+
+  it('ни одной постройке не выдано оружие с накрытием', () => {
+    // Сторож на спящее правило. Пока у построек накрытия нет, «за каждого
+    // убитого» и «раз на выстрел» дают для башни одно и то же, и разница
+    // между ними непроверяема изнутри игры. Выдай кто-нибудь постройке
+    // разряд — сторож упадёт, и спящее правило вспомнят раньше, чем оно
+    // тихо начнёт платить за пятерых.
+    const weapons = Object.values(STRUCTURE_WEAPON);
+
+    expect(weapons.length).toBeGreaterThan(0);
+    for (const weapon of weapons) expect(weapon).not.toBe(ShotWeapon.Arc);
+  });
+
+  it('без гибели цели выстрел награды не приносит', () => {
+    // Контроль обязан быть пустым: платят за гибель, а не за попадание.
+    // Без этой проверки предыдущая сравнивала бы две одинаково щедрые
+    // величины и зеленела бы при награде за каждый выстрел.
+    const world = arrange(
+      [structure(50, 0, StructureKind.TowerBasic, 0, 0, 100_000)],
+      [unit(60, 1, UnitType.Assault, 1, 0, 100_000)],
+    );
+    const before = world.players[0]?.energy ?? 0;
+    const after = step(world, []);
+
+    expect(unitById(after, 60)).toBeDefined();
+    expect((after.players[0]?.energy ?? 0) - before).toBeLessThan(
+      applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM),
     );
   });
 });

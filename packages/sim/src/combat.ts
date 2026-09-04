@@ -14,9 +14,11 @@ import {
   ShotSide,
   ShotWeapon,
   StructureKind,
+  TOWER_KILL_BOUNTY_PPM,
   UNIT_INDIRECT_FIRE,
   UNIT_STATS,
   UNIT_WEAPON,
+  applyPpm,
   asTickNumber,
   directionTowards,
   isArmedStructure,
@@ -695,8 +697,30 @@ export interface Shooter {
 }
 
 /**
+ * Награда энергией за добивающий удар, по виду стрелка.
+ *
+ * Генералу — полная добыча: это плата за то, что игрок рискнул им лично,
+ * приведя его в пяти клетках от боя под ответный огонь. Постройке — пятая
+ * часть той же добычи: она стои́т в безопасности, и уравнивать их значило
+ * бы стереть различие, на котором держится плата за риск.
+ *
+ * Машине не платится ничего. Исход матча решают живые машины, и платить
+ * сильнейшему — усиливать перекос: это названо в не-целях изменения.
+ */
+const killReward = (kind: ShooterKind, prize: number): number => {
+  switch (kind) {
+    case ShooterKind.General:
+      return prize;
+    case ShooterKind.Structure:
+      return applyPpm(prize, TOWER_KILL_BOUNTY_PPM);
+    case ShooterKind.Unit:
+      return 0;
+  }
+};
+
+/**
  * Нанесение урона и всё, что за ним следует: гибель цели и награда
- * генералу энергией.
+ * стрелку энергией.
  *
  * Возвращает признак того, что цель погибла — вызывающему коду это нужно
  * дважды: для следа выстрела (добивающий рисуется ярче) и для награды
@@ -709,8 +733,13 @@ export interface Shooter {
  * `fire` собирает счёт и награждает один раз — но на ПОЛНОЕ число
  * убитых, а не на одного.
  *
- * С энергией генералу так же: она платится за каждого убитого. Десять
- * машин, снятых одним залпом, стоят ровно десяти машин.
+ * С энергией так же: она платится за каждого убитого. Десять машин,
+ * снятых одним залпом, стоят ровно десяти машин.
+ *
+ * У построек накрытия сегодня нет — разряд носит Тесла, а она машина, —
+ * так что «за каждого убитого» для башни всегда даёт одного. Правило
+ * всё равно записано через гибель, а не через выстрел: иначе первая же
+ * постройка с накрытием потребовала бы переписать не тест, а правило.
  */
 export const dealDamage = (
   working: Working,
@@ -724,11 +753,11 @@ export const dealDamage = (
   const killed = damageEntity(working, statsTable, target, amount);
   if (!killed) return false;
 
-  if (shooter.kind === ShooterKind.General) {
-    // Награда энергией даётся только генералу — это плата за то,
-    // что игрок рискнул им лично.
+  // Машина отсеивается до счёта добычи и до поиска игрока: это горячий
+  // путь, и убийства машинами в нём самые частые.
+  if (shooter.kind !== ShooterKind.Unit) {
     const player = working.players.find((entry) => entry.id === shooter.owner);
-    if (player !== undefined) player.energy += bounty(working, target);
+    if (player !== undefined) player.energy += killReward(shooter.kind, bounty(working, target));
   }
 
   return true;
