@@ -535,16 +535,28 @@ const supervisorFiles = () => {
 const stepLinkFaults = (files, stepsByFile) => {
   const names = [...stepsByFile.keys()];
   const broken = [];
+  const selfLinked = [];
   for (const file of files) {
     for (const link of stepLinks(file.text, file.own, names)) {
       const steps = stepsByFile.get(link.target);
       if (!steps) continue;
       if (!steps.some((step) => step.number === link.number)) {
         broken.push(`${file.name}:${link.startLine + 1} «${link.phrase}» → ${link.target}.md`);
+        continue;
+      }
+      if (file.own && link.target === file.own) {
+        const holder = steps.find(
+          (step) => link.startLine >= step.startLine && link.startLine <= step.endLine,
+        );
+        if (holder && holder.number === link.number) {
+          selfLinked.push(
+            `${file.name}:${link.startLine + 1} «${link.phrase}» внутри шага ${holder.number}`,
+          );
+        }
       }
     }
   }
-  return { broken };
+  return { broken, selfLinked };
 };
 
 /**
@@ -662,6 +674,35 @@ describe('ссылки по номерам шагов', () => {
   it('перечисление даёт по ссылке на каждое число', () => {
     const sample = `Приставок две: ${linkText('шаги', '4 и 5')} щупают сервер \`obrazec.md\`.`;
     expect(stepLinks(sample, null, ['obrazec']).map((link) => link.number)).toEqual([4, 5]);
+  });
+
+  it('ни одна ссылка не указывает на шаг, внутри которого сама стоит', () => {
+    // Мерка жёсткая, а не мягкая, и это замер, а не осторожность: одно
+    // срабатывание на всей фактуре, настоящее, ложных ноль. Осмысленных
+    // самоссылок не бывает вовсе — отсылать читателя туда, где он и так
+    // находится, никто не пишет нарочно. Такой ссылка СТАНОВИТСЯ, когда
+    // номера сдвинулись, а текст остался; признак же её машинно точен.
+    //
+    // Ловится ею второй из трёх сдвигов `benchmark.md`: шаг 6 говорил
+    // «Порядок тот же, что в шаге 6», тогда как порядок описан шагом 5.
+    expect(stepLinkFaults(supervisorFiles(), skillSteps()).selfLinked).toEqual([]);
+  });
+
+  it('самоссылка названа, а ссылка на соседний шаг — нет', () => {
+    const sample = [
+      '## Порядок работы',
+      '',
+      '1. **Первое дело.**',
+      '',
+      `2. **Второе дело.** Порядок тот же, что в ${linkText('шаге', 2)}.`,
+      '',
+      `   Первое разбирает ${linkText('шаг', 1)}, и это законно.`,
+    ].join('\n');
+    const files = [{ name: 'obrazec.md', own: 'obrazec', text: sample }];
+
+    expect(stepLinkFaults(files, new Map([['obrazec', parseSteps(sample)]])).selfLinked).toEqual([
+      'obrazec.md:5 «шаге 2» внутри шага 2',
+    ]);
   });
 });
 
