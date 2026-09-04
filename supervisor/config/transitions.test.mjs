@@ -1248,6 +1248,9 @@ describe('связность таблицы', () => {
     // и незачем. Дерево упавшей задачи он тоже не трогает: оно сохранено
     // для человека.
     expect(NEEDS_WORKTREE).not.toContain('postmortem');
+    // Уборка сносит дерево снаружи — из основного дерева, по пути из записи
+    // реестра, — и собственного дерева ей не нужно. Сессии ей не выдают вовсе.
+    expect(NEEDS_WORKTREE).not.toContain('cleanup');
     expect(NEEDS_WORKTREE).toContain('implement');
   });
 });
