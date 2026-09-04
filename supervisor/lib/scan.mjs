@@ -90,7 +90,13 @@ function byPriorityThenAge(a, b) {
  * кончился.
  */
 function firstStage(task) {
-  return { feature: 'design', run: 'benchmark', note: 'triage' }[task.type];
+  // Правка задача типа `feature` начинается анализом на дробность — кроме
+  // карточек, рождённых дроблением: для них этот ответ уже получен и записан
+  // меткой. Без исключения каждая часть разбитой задачи проходила бы разбор
+  // на дробность, которую для неё только что и проделали, — сессия за сессией
+  // на вопрос с известным ответом.
+  if (task.type === 'feature') return task.decomposed ? 'design' : 'decompose';
+  return { run: 'benchmark', note: 'triage' }[task.type];
 }
 
 /**
