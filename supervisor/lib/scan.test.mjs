@@ -259,6 +259,8 @@ describe('непокрытые команды этапа', () => {
       'PowerShell(ssh:*)',
       'Bash(node scripts/deploy.mjs:*)',
       'PowerShell(node scripts/deploy.mjs:*)',
+      'Bash(pnpm e2e:perf:*)',
+      'PowerShell(pnpm e2e:perf:*)',
     ],
     deny: [],
   };
