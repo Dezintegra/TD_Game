@@ -208,6 +208,84 @@ describe('спор, который не сходится', () => {
   });
 });
 
+describe('предмет задачи снят', () => {
+  const moot = (over = {}) => ({
+    stage: 'design',
+    outcome: 'moot',
+    summary: 'правило PowerShell(git -C:*) уже действует',
+    evidence: 'supervisor/config/stage-settings.json:67',
+    ...over,
+  });
+
+  const clean = (over = {}) =>
+    task({ status: 'design', links: { change: null, pr: null, run: null }, ...over });
+
+  it('годный отчёт ведёт задачу в уборку и называет причину с доказательством', () => {
+    const verdict = applyReport(clean(), moot());
+    expect(verdict.status).toBe('cleanup');
+    expect(verdict.problems).toEqual([]);
+    // Записка — это и есть запись журнала, ради которой ход затевался:
+    // задача, закрывшаяся без названной причины, неотличима на доске
+    // от брошенной.
+    expect(verdict.note).toContain('правило PowerShell(git -C:*) уже действует');
+    expect(verdict.note).toContain('stage-settings.json:67');
+  });
+
+  it('с чужого этапа предмет снятым не объявляют', () => {
+    // Главная лазейка: с имплементации, ревью или выкладки работа уже
+    // сделана, и сбросить её решением сессии нельзя.
+    const verdict = applyReport(clean({ status: 'implement' }), moot({ stage: 'implement' }));
+    expect(verdict.status).toBe('postmortem');
+    expect(verdict.problems.join()).toContain('«implement»');
+  });
+
+  it('поверх заведённого изменения ход не проходит', () => {
+    // Проработка, вернувшаяся из аудита с замечаниями, правит заведённое
+    // изменение, а спорит с постановкой отчётом `question`. Иначе этим ходом
+    // выбрасывались бы уже написанные артефакты.
+    const verdict = applyReport(
+      clean({ links: { change: 'close-tasks-that-lost-their-point', pr: null, run: null } }),
+      moot(),
+    );
+    expect(verdict.status).toBe('postmortem');
+    expect(verdict.problems.join()).toContain('close-tasks-that-lost-their-point');
+  });
+
+  it('поверх открытого pull request ход не проходит', () => {
+    const verdict = applyReport(clean({ links: { change: null, pr: 139, run: null } }), moot());
+    expect(verdict.status).toBe('postmortem');
+    expect(verdict.problems.join()).toContain('139');
+  });
+
+  it('без доказательства отчёт не применяется', () => {
+    // Поле `summary` есть у всякого отчёта и ни к чему не обязывает.
+    // Отдельное обязательное поле делает проверку машинной, а ход — дорогим
+    // ровно настолько, насколько он должен быть дорогим.
+    for (const bad of [moot({ evidence: undefined }), moot({ evidence: '   ' })]) {
+      const verdict = applyReport(clean(), bad);
+      expect(verdict.status, JSON.stringify(bad.evidence ?? null)).toBe('postmortem');
+      expect(verdict.problems.join()).toContain('без доказательства');
+    }
+  });
+
+  it('отчёт, не прошедший проверку, уходит в разбор, а не в ошибку сразу', () => {
+    // Останавливается задача через разбор, и содержимое отброшенного отчёта
+    // уезжает в журнал: заявленный без доказательства ход виден человеку
+    // целиком, а не пропадает молча.
+    const verdict = applyReport(clean(), moot({ evidence: '' }));
+    expect(verdict).toMatchObject({ status: 'postmortem', returnTo: 'design' });
+  });
+
+  it('ход упирается в таблицу переходов, а не обходит её', () => {
+    // У задачи не типа `feature` маршрута `design` → `cleanup` нет вовсе.
+    // Проверка стоит здесь потому, что вторая правда о переходах — первое
+    // место, где две правды разойдутся.
+    const verdict = applyReport(clean({ type: 'note' }), moot());
+    expect(verdict.status).toBe('postmortem');
+    expect(verdict.problems.join()).toContain('«note»');
+  });
+});
+
 describe('несчастливые исходы', () => {
   it('неуспех отправляет в разбор, сохраняя состояние возврата', () => {
     const verdict = applyReport(
