@@ -583,6 +583,37 @@ describe('исходы осиротевших этапов', () => {
   });
 });
 
+describe('потолок стоимости задачи', () => {
+  it('расход выше потолка останавливает рабочий этап и называет оба числа', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement', spentUsd: 76.01 })],
+      registry: { entries: [entry('0001-one')] },
+    });
+    const halt = result.actions.find((a) => a.kind === 'fail-stage');
+    expect(halt).toBeDefined();
+    expect(halt.reason).toContain('76.01');
+    expect(halt.reason).toContain(String(config.maxTaskCostUsd));
+    expect(kinds(result)).not.toContain('continue-stage');
+  });
+
+  it('расход ниже потолка сессию не задерживает', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement', spentUsd: 5 })],
+      registry: { entries: [entry('0001-one')] },
+    });
+    expect(kinds(result)).toContain('continue-stage');
+  });
+
+  it('разбор превысившей потолок задачи не запрещён', () => {
+    // Иначе потолок запретил бы понимать, почему он сработал.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'postmortem', spentUsd: 76.01 })],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(kinds(result)).not.toContain('fail-stage');
+  });
+});
+
 describe('отказ сервера модели', () => {
   const failure = (over = {}) => ({
     taskId: '0001-one',
