@@ -8,6 +8,7 @@ import {
   NEEDS_WORKTREE,
   ROUTES,
   STATES,
+  STATE_CLASS,
   canTransition,
   isExclusive,
   isResource,
@@ -330,6 +331,19 @@ const FALSE_GROUND =
 const traceFormula = (text) => text.match(/След объявлен поимённо:[\s\S]*?(?=\n\n)/)?.[0] ?? null;
 
 describe('этапы и скиллы', () => {
+  it('всякому ресурсному состоянию положена сессия', () => {
+    // Состояние, объявленное ресурсным, но забытое в NEEDS_SESSION, тратит
+    // место в квоте и НЕ получает сессии никогда: сканер выдаёт её только
+    // по этому перечню. Задача встаёт в колонке навсегда и молча — ни отказа,
+    // ни записи в журнал, ни строки в консоли.
+    //
+    // Щель найдена пробой при заведении этапа декомпозиции: снятие состояния
+    // из перечня не покраснило ни одного теста.
+    const resource = STATES.filter((state) => STATE_CLASS[state] === 'resource');
+    const forgotten = resource.filter((state) => !NEEDS_SESSION.includes(state));
+    expect(forgotten).toEqual([]);
+  });
+
   it('у каждого этапа с сессией есть скилл', () => {
     // Сессия-исполнитель читает указания своего этапа из
     // `skills/<этап>.md` и без них не знает, что делать. Расхождение
