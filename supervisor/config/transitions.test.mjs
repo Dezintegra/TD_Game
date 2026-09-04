@@ -764,7 +764,7 @@ describe('этапы и скиллы', () => {
     // `merge` нельзя: в скилле проработки оно уже стоит шагом 10, разбором
     // голой формы, и сторож по одному слову зеленел бы при полностью
     // пропавшем правиле.
-    const guilty = ['design', 'audit', 'implement'].filter(
+    const guilty = ['design', 'audit', 'implement', 'revise'].filter(
       (stage) => !skillText(stage).includes('git -C <дерево> merge origin/main'),
     );
     expect(guilty.map((stage) => `${stage}.md: git -C <дерево> merge origin/main`)).toEqual([]);
