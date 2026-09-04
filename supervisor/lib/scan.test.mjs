@@ -460,7 +460,10 @@ describe('пакетная выкладка', () => {
     const [issued] = result.actions.filter((action) => action.kind === 'continue-stage');
     expect(issued.taskId).toBe('0003-b');
     expect(issued.batch).toEqual(['0003-b']);
-    expect(result.actions.filter((action) => action.kind === 'fail-stage')).toHaveLength(2);
+    // Исчерпанные продолжения ведут в разбор, потолок стоимости — в анализ
+    // на дробность; для пакета важно одно: ни та, ни другая в нём не едет.
+    expect(kinds(result).filter((kind) => kind === 'fail-stage')).toHaveLength(1);
+    expect(kinds(result).filter((kind) => kind === 'decompose-again')).toHaveLength(1);
   });
 
   it('прочие этапы перечня пакета не получают', () => {
