@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { OUTCOMES } from '../lib/apply-report.mjs';
@@ -328,6 +328,138 @@ const FALSE_GROUND =
  * формулы, и поиск по всему тексту зеленел бы на разъехавшейся копии.
  */
 const traceFormula = (text) => text.match(/След объявлен поимённо:[\s\S]*?(?=\n\n)/)?.[0] ?? null;
+
+/**
+ * Шагом считается пункт нумерованного списка ВЕРХНЕГО уровня внутри раздела,
+ * чей заголовок уровня `##` начинается со слова «Порядок»: у девяти скиллов
+ * раздел зовётся «Порядок работы», у `interpret.md` — «Порядок».
+ *
+ * Границы раздела здесь не украшение, а необходимость. Нумерованные списки
+ * стоят в этих файлах и вне порядка работы: у всех десяти — в разделе
+ * «Отчёт», у `postmortem.md` — ещё и в перечне частых причин. Разбор без
+ * границ считал бы шагами их тоже и получал бы номера вразнобой.
+ *
+ * Возвращаются номер, заголовок и границы строк. Границы нужны четвёртой
+ * мерке: по ним видно, не стоит ли ссылка внутри того самого шага, чей
+ * номер она называет.
+ */
+const parseSteps = (text) => {
+  const lines = text.split('\n');
+  const steps = [];
+  let inside = false;
+  let current = null;
+  const close = (endLine) => {
+    if (current) steps.push({ ...current, endLine });
+    current = null;
+  };
+  lines.forEach((line, index) => {
+    if (/^##(?!#)\s/.test(line)) {
+      close(index - 1);
+      inside = /^##\s+Порядок/.test(line);
+      return;
+    }
+    if (!inside) return;
+    const opened = /^(\d+)\.\s+(.*)$/.exec(line);
+    if (!opened) return;
+    close(index - 1);
+    current = {
+      number: Number(opened[1]),
+      title: opened[2].replace(/[*`]/g, '').trim(),
+      startLine: index,
+    };
+  });
+  close(lines.length - 1);
+  return steps;
+};
+
+/**
+ * Файлы правил с разобранными шагами. Каталог читается целиком, а не берётся
+ * из `NEEDS_SESSION`: новый скилл, положенный рядом без раздела «Порядок»,
+ * обязан быть виден сторожу сразу, а не с той правки кода, которая о нём
+ * вспомнит.
+ */
+const skillSteps = () => {
+  const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+  const table = new Map();
+  for (const name of readdirSync(dir).filter((file) => file.endsWith('.md'))) {
+    table.set(name.slice(0, -3), parseSteps(readFileSync(`${dir}${name}`, 'utf8')));
+  }
+  return table;
+};
+
+/**
+ * Файлы правил, чьи номера идут не подряд от единицы.
+ *
+ * Мерка сторожит не тексты, а сам разбор. Стоит ему сбиться на границе
+ * раздела или на отступе вложенного списка — и он молча объявит часть ссылок
+ * битыми, а часть целыми; сторож, врущий в обе стороны, хуже отсутствующего.
+ */
+const numberingFaults = (stepsByFile) =>
+  [...stepsByFile]
+    .filter(
+      ([, steps]) => steps.length === 0 || steps.some((step, index) => step.number !== index + 1),
+    )
+    .map(
+      ([name, steps]) => `${name}: ${steps.map((step) => step.number).join(',') || 'шагов нет'}`,
+    );
+
+describe('ссылки по номерам шагов', () => {
+  it('номера шагов в каждом скилле идут подряд от единицы', () => {
+    expect(numberingFaults(skillSteps())).toEqual([]);
+  });
+
+  it('разбор шагов держит границу раздела и называет пропуск в нумерации', () => {
+    // Проба на порчу: проверка выше сходится и при сломанном разборе —
+    // пустой перечень у неё тот же, что у исправного, и отличить одно
+    // от другого по цвету сторожа нельзя.
+    //
+    // Образец несёт обе беды разом: пропуск номера в порядке работы
+    // и посторонний нумерованный список в разделе «Отчёт». Второй попал бы
+    // в шаги при разборе без границ и дал бы ряд «1, 3, 1» — то есть увёл
+    // бы сторожа в ложную тревогу поверх настоящей.
+    const sample = [
+      '# Этап: образец',
+      '',
+      '## Порядок работы',
+      '',
+      '1. **Первое дело.** Подробности тут.',
+      '',
+      '3. **Третье дело.** Второго нет вовсе.',
+      '',
+      '## Отчёт',
+      '',
+      '1. посторонний пункт, шагом не считается;',
+      '2. и второй такой же.',
+    ].join('\n');
+
+    const steps = parseSteps(sample);
+    expect(steps.map((step) => step.number)).toEqual([1, 3]);
+    expect(steps.map((step) => step.title)).toEqual([
+      'Первое дело. Подробности тут.',
+      'Третье дело. Второго нет вовсе.',
+    ]);
+    expect(numberingFaults(new Map([['образец', steps]]))).toEqual(['образец: 1,3']);
+  });
+
+  it('разбор шагов не считает шагом вложенный пункт', () => {
+    // Вложенные списки живут внутри шагов — у `benchmark.md` замер кадров
+    // расписан четырьмя подпунктами. Сочти их шагами, и ряд номеров пойдёт
+    // вразнобой у файла, в котором всё в порядке.
+    const sample = [
+      '## Порядок работы',
+      '',
+      '1. **Первое дело.**',
+      '',
+      '   1. подпункт, который шагом не является;',
+      '   2. и второй.',
+      '',
+      '2. **Второе дело.**',
+    ].join('\n');
+
+    expect(parseSteps(sample).map((step) => step.number)).toEqual([1, 2]);
+    expect(numberingFaults(new Map([['образец', parseSteps(sample)]]))).toEqual([]);
+  });
+});
 
 describe('этапы и скиллы', () => {
   it('у каждого этапа с сессией есть скилл', () => {
