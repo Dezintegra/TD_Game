@@ -31,6 +31,7 @@ const ssh = command(
 const node = command('node codex-node-probe.mjs', 'td-codex-processes-ready');
 const check = (events, over = {}, env = {}) =>
   checkCodexReadiness({
+    platform: 'linux',
     config: {},
     root: '/repo',
     env: { GH_TOKEN: 'test-token', ...env },
@@ -126,6 +127,7 @@ it('не принимает EPERM, echo или текст модели вмес�
 it('скрипт реально порождает процессы и временный каталог удаляется после проверки', async () => {
   let cwd;
   const result = await checkCodexReadiness({
+    platform: 'linux',
     config: {},
     root: '/repo',
     env: { GH_TOKEN: 'test-token' },
@@ -156,6 +158,7 @@ it('удаляет скрипт и каталог после ошибки пор
   let cwd;
   await expect(
     checkCodexReadiness({
+      platform: 'linux',
       config: {},
       root: '/repo',
       env: { GH_TOKEN: 'test-token' },
@@ -166,4 +169,58 @@ it('удаляет скрипт и каталог после ошибки пор
     }),
   ).rejects.toThrow('test spawn failure');
   expect(existsSync(cwd)).toBe(false);
+});
+
+it('Windows сначала готовит реальный cwd без модели, затем проверяет инструменты', async () => {
+  const calls = [];
+  const result = await checkCodexReadiness({
+    platform: 'win32',
+    config: {},
+    root: '/repo',
+    env: { GH_TOKEN: 'test-token' },
+    start: ({ command: probe, timeoutMs }) => {
+      calls.push(probe);
+      if (calls.length === 1) {
+        expect(probe.cwd).toBe('/repo');
+        expect(probe.args).toContain('sandbox');
+        expect(probe.args).toContain('td-pipeline');
+        expect(probe.args).toContain('windows.sandbox="elevated"');
+        expect(probe.args).not.toContain('--model');
+        expect(timeoutMs).toBe(600000);
+        return { finished: Promise.resolve({ code: 0, stdout: 'td-workspace-ready' }) };
+      }
+      expect(probe.args).toContain('exec');
+      return {
+        finished: Promise.resolve({
+          code: 0,
+          stdout: [git, github, push, ssh, node, completed]
+            .map((e) => JSON.stringify(e))
+            .join('\n'),
+        }),
+      };
+    },
+  });
+  expect(result.ok).toBe(true);
+  expect(calls).toHaveLength(2);
+});
+
+it.each([
+  { code: 1, stdout: 'td-workspace-ready' },
+  { code: 0, stdout: 'td-workspace-ready', killedBy: 'timeout' },
+  { code: 0, stdout: '' },
+])('отказ подготовки Windows не запускает модель: %j', async (run) => {
+  let calls = 0;
+  const result = await checkCodexReadiness({
+    platform: 'win32',
+    config: {},
+    root: '/repo',
+    env: { GH_TOKEN: 'test-token' },
+    start: () => {
+      calls += 1;
+      return { finished: Promise.resolve(run) };
+    },
+  });
+  expect(result.ok).toBe(false);
+  expect(result.why).toContain('рабочего каталога');
+  expect(calls).toBe(1);
 });

@@ -16,6 +16,7 @@ export async function checkCodexReadiness({
   spawn,
   killTree,
   start = startStage,
+  platform = process.platform,
 }) {
   const host = env?.TD_DEPLOY_HOST ?? 'dezintegra';
   if (!/^[a-zA-Z0-9_[\]][a-zA-Z0-9_.@:[\]-]*$/.test(host))
@@ -30,6 +31,29 @@ export async function checkCodexReadiness({
   const remote = config.remote ?? 'origin';
   if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(remote))
     return { ok: false, why: 'remote: требуется имя Git remote', run: null };
+  if (platform === 'win32') {
+    // Подготовка ACL реального cwd не должна расходовать время первой задачи.
+    // Прямой вызов не просит модель ждать и не расходует её токены.
+    const command = {
+      ...codexInvocation(config, [
+        'sandbox',
+        ...codexExecutionArgs(config, root, root, platform),
+        '-P',
+        'td-pipeline',
+        '-C',
+        root,
+        '--',
+        process.execPath,
+        '-e',
+        "process.stdout.write('td-workspace-ready')",
+      ]),
+      cwd: root,
+      env: codexGitEnvironment(env, root, root),
+    };
+    const run = await start({ command, timeoutMs: 600_000, spawn, killTree }).finished;
+    if (run.code !== 0 || run.killedBy || run.stdout?.trim() !== 'td-workspace-ready')
+      return { ok: false, why: 'Windows sandbox основного рабочего каталога не готов', run };
+  }
   const push = `git -C ${JSON.stringify(root)} push --dry-run ${remote} HEAD:refs/heads/codex/readiness`;
   const cwd = mkdtempSync(join(tmpdir(), 'td-codex-ready-'));
   const script = join(cwd, 'codex-node-probe.mjs');
