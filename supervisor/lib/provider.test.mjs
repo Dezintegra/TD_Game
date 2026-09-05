@@ -142,3 +142,7 @@ it('накопительный usage после resume не считает пр�
   expect(second.usage).toEqual(first.usage);
   expect(second.usageTotals.input_tokens).toBe(2000);
 });
+
+it('посторонний JSON null в потоке не роняет супервизор', () => {
+  expect(readCodexAnswer({ ...run(), stdout: 'null\n' + run().stdout }).outcome).toBe('done');
+});

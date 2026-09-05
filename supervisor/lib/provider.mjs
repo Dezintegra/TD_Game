@@ -81,6 +81,7 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
     } catch {
       continue;
     }
+    if (!event || typeof event !== 'object') continue;
     if (event.item && event.item.type !== 'agent_message' && event.item.type !== 'reasoning')
       toolsUsed = true;
     if (event.type === 'thread.started') answer.sessionId = event.thread_id ?? null;
