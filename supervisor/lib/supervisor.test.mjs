@@ -265,6 +265,11 @@ describe('порождение', () => {
     expect(saved.at(-1)).not.toHaveProperty('0001-one:design');
     // Чужую сессию забвение не задевает.
     expect(supervisor.lastSession('0001-one', 'audit')).toBe('аудиторская');
+    const restarted = harness({ stages: saved.at(-1) }).supervisor;
+    expect(restarted.lastSession('0001-one', 'design')).toBeNull();
+    expect(restarted.stageStartedAt('0001-one', 'design')).toBeNull();
+    expect(restarted.lastSession('0001-one', 'audit')).toBe('аудиторская');
+    expect(restarted.stageStartedAt('0001-one', 'audit')).toBe(NOW);
   });
 
   it('забывать нечего — и говорится об этом прямо', () => {
@@ -654,6 +659,9 @@ describe('обход сирот по обороту', () => {
     expect(killed).toEqual([29704]);
     expect(supervisor.orphanOutcomes[0].outcome).toBe('killed');
     expect(supervisor.running()).toEqual([]);
+    expect(supervisor.reports).toEqual([]);
+    expect(supervisor.lastSession('0001-one', 'implement')).toBe('прежняя');
+    expect(supervisor.stageStartedAt('0001-one', 'implement')).toBe(NOW);
   });
 
   it('срок берётся из дескриптора, а не назначается заново', () => {
