@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { releasePerfLock } from './perf-lock.mjs';
+import { preparePerfPackages } from './perf-prepare.mjs';
 import {
   BUSY_LIMIT,
   die,
@@ -54,6 +55,16 @@ if (argv.includes('--history')) {
 // Сырой вывод замера — свой у каждого дерева: это промежуточный файл
 // одного прогона, и делить его не с кем.
 const measurementsPath = join(repoRoot, 'test-results', 'perf-measurements.jsonl');
+
+// Подготовка до замера занятости: компилятор не должен попадать в цифры прогона.
+if (!checkOnly) {
+  step('Готовлю внутренние пакеты для серверов замера');
+  try {
+    preparePerfPackages(repoRoot);
+  } catch (error) {
+    die(`не удалось подготовить замер: ${error.message}`);
+  }
+}
 
 // ── Проверка обстановки ──────────────────────────────────────────────
 step('Смотрю, свободна ли машина');
