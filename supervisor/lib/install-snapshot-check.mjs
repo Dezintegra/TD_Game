@@ -88,7 +88,15 @@ export function checkInstallSnapshot({ cwd = process.cwd(), pnpmCli, run = check
   const git = (where, ...args) =>
     run(
       'git',
-      ['-C', where, '-c', 'core.fsmonitor=false', '-c', `safe.directory=${where}`, ...args],
+      [
+        '-C',
+        where,
+        '-c',
+        'core.fsmonitor=false',
+        '-c',
+        `safe.directory=${where.split(sep).join('/')}`,
+        ...args,
+      ],
       { cwd: root, env },
     ).stdout;
   const status = (where) => git(where, 'status', '--porcelain', '--untracked-files=all');

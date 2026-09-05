@@ -39,7 +39,12 @@ function fixture(ignore = '.pnpm-store/\nnode_modules/\n.matchlog/\n') {
 
 function installer(mode = 'ok') {
   return (program, args, options) => {
-    if (program !== process.execPath) return checkedProcess(program, args, options);
+    if (program !== process.execPath) {
+      if (program === 'git') {
+        expect(args.find((arg) => arg.startsWith('safe.directory='))).not.toContain('\\');
+      }
+      return checkedProcess(program, args, options);
+    }
     if (args[1] === '--version')
       return { status: 0, stdout: mode === 'version' ? '9.0.0' : '10.12.4', stderr: '' };
     expect(args.slice(1)).toEqual(['install', '--frozen-lockfile', '--store-dir', '.pnpm-store']);
