@@ -808,7 +808,7 @@ async function decomposeAgain(action, io) {
       to: 'decompose',
       problem: `${action.reason}. Метка о проведённом дроблении снята: анализ идёт заново.`,
     },
-    `chore(backlog): ${task.id} ${task.status} → decompose (потолок стоимости)`,
+    `chore(backlog): ${task.id} ${task.status} → decompose (предел ресурсов)`,
   );
   return push.ok
     ? { result: 'done', status: 'decompose' }

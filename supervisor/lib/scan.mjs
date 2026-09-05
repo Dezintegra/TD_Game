@@ -1,3 +1,4 @@
+import { taskTokens } from './token-budget.mjs';
 import {
   CROSSCUT,
   NEEDS_SESSION,
@@ -501,7 +502,7 @@ export function scan(state) {
     }
 
     // Потолок стоимости. Он стоит рядом с прочими пределами, но считает
-    // не попытки, а деньги, — и потому ловит беду, у которой своего счётчика
+    // не попытки, а расход ресурсов, — и потому ловит беду, у которой своего счётчика
     // нет вовсе. 04.09.2026 задача 0216 прошла двенадцать этапов и сожгла $76,
     // не упершись ни в один предел: все три считают попытки, а она исправно
     // проходила этап за этапом.
@@ -510,18 +511,26 @@ export function scan(state) {
     // обязана быть разобрана, а разбор — тоже сессия; проверять его тем же
     // потолком значило бы запретить разбирать ровно те задачи, ради которых
     // потолок и заведён.
-    const spent = Number.isFinite(task.spentUsd) ? task.spentUsd : 0;
+    const tokens = config.provider === 'codex';
+    const limit = tokens ? config.codexMaxTaskTokens : config.maxTaskCostUsd;
+    const spent = tokens
+      ? taskTokens(state.codexUsage ?? {}, task.id)
+      : Number.isFinite(task.spentUsd)
+        ? task.spentUsd
+        : 0;
     // Само состояние анализа потолком не сторожится, иначе задача,
     // отправленная в него потолком, не смогла бы пройти тот единственный
     // этап, ради которого её туда и отправили. Исключение того же рода,
     // что у сквозных состояний, и по той же причине.
     const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
-    if (capped && config.maxTaskCostUsd != null && spent >= config.maxTaskCostUsd) {
+    if (capped && limit != null && spent >= limit) {
       // Числа в причине обязательны: по ним человек выбирает между двумя
       // выходами — поднять потолок или раздробить задачу, — а «предел
       // исчерпан» без величин не даёт выбрать ничего.
       const why =
-        `истрачено $${spent.toFixed(2)} при потолке $${config.maxTaskCostUsd}: ` +
+        (tokens
+          ? `израсходовано ${spent} токенов при бюджете ${limit}: `
+          : `истрачено $${spent.toFixed(2)} при потолке $${limit}: `) +
         'задача разрослась, нужен повторный анализ на дробность';
       notes.push(`задача ${task.id}: ${why}`);
       // В анализ, а не в разбор ошибки. Задача не сломана — она разрослась,

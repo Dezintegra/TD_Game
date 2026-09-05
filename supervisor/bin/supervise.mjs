@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -402,6 +403,8 @@ const supervisor = createSupervisor({
   supervisorPid: process.pid,
   saveStages,
   stages: readStages(root, config),
+  codexUsage: providerOf(config) === 'codex' ? readTokenLedger(root, config) : {},
+  saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
   say,
   log: (line) => note(line, null),
   writeStageLog: (taskId, stage, text) => {
@@ -510,6 +513,7 @@ async function turn() {
     // ничего не дал.
     orphans: supervisor.orphanOutcomes,
     apiFailures: supervisor.apiFailures,
+    codexUsage: supervisor.codexUsage,
     answers: readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.

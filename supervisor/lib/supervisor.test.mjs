@@ -70,6 +70,8 @@ function harness(over = {}) {
     nowMs: over.nowMs ?? (() => 1_000_000),
     saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
     stages: over.stages ?? {},
+    codexUsage: over.codexUsage ?? {},
+    saveCodexUsage: over.saveCodexUsage,
     log: (line) => logged.push(line),
     // Запись лога этапа собирается так же, как журнал цикла, и по той же
     // причине: умолчание в `createSupervisor` — пустая функция, и без этого
@@ -1139,7 +1141,10 @@ describe('сессии разных исполнителей', () => {
         item: { type: 'agent_message', text: JSON.stringify(report) },
       }) + '\n',
     );
-    await h.answer({ type: 'turn.completed' });
+    await h.answer({
+      type: 'turn.completed',
+      usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+    });
     expect(h.supervisor.reports[0]).toMatchObject(report);
     expect(h.supervisor.lastSession('0001-one', 'design')).toBe('new-codex');
   });
@@ -1157,7 +1162,7 @@ it('помнит накопительный расход Codex после пер
     config: {
       provider: 'codex',
       maxTaskCostUsd: 25,
-      codexTokenPrices: { input: 2, cachedInput: 1, output: 8 },
+      codexMaxTaskTokens: 25_000_000,
     },
     stages: {
       '0001-one:design': {
@@ -1181,6 +1186,35 @@ it('помнит накопительный расход Codex после пер
     type: 'turn.completed',
     usage: { input_tokens: 2000, cached_input_tokens: 400, output_tokens: 200 },
   });
-  expect(h.supervisor.reports[0].costUsd).toBeCloseTo(0.0026);
+  expect(h.supervisor.codexUsage['0001-one'].thread).toBe(2200);
+  expect(h.supervisor.reports[0].costUsd).toBe(0);
   expect(h.saved.at(-1)['0001-one:design'].usage.input_tokens).toBe(2000);
+});
+
+it('расход сохраняется до разбора отчёта и не исчезает при забывании сессии', async () => {
+  const snapshots = [];
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: { provider: 'codex' },
+    codexUsage: { '0001-one': { previous: 500 } },
+    saveCodexUsage: (value) => snapshots.push(JSON.parse(JSON.stringify(value))),
+  });
+  h.supervisor.spawnStage(assignment());
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({ type: 'thread.started', thread_id: 'new' }) + '\n',
+  );
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 100 },
+    }) + '\n',
+  );
+  expect(snapshots.at(-1)['0001-one']).toEqual({ previous: 500, new: 1100 });
+  await h.answer({ type: 'turn.failed', error: { message: 'failed after usage' } });
+  expect(h.supervisor.reports).toEqual([]);
+  h.supervisor.forgetSession('0001-one', 'design');
+  expect(h.supervisor.codexUsage['0001-one']).toEqual({ previous: 500, new: 1100 });
+  expect(snapshots.every((value) => value['0001-one'].new === 1100)).toBe(true);
 });

@@ -1,5 +1,5 @@
 import { isAbsolute, join, resolve } from 'node:path';
-import { providerOf, codexInvocation, validTokenPrices } from './provider.mjs';
+import { providerOf, codexInvocation } from './provider.mjs';
 import { schemaPath } from './read-state.mjs';
 
 /**
@@ -50,11 +50,10 @@ export function checkEnvironment({
   rows.push(['исполнитель', provider]);
   if (
     provider === 'codex' &&
-    config.maxTaskCostUsd != null &&
-    !validTokenPrices(config.codexTokenPrices)
+    config.codexMaxTaskTokens != null &&
+    (!Number.isSafeInteger(config.codexMaxTaskTokens) || config.codexMaxTaskTokens <= 0)
   ) {
-    fatal =
-      'Codex: укажите codexTokenPrices (input, cachedInput, output за миллион токенов) для денежного лимита или явно codexMaxTaskCostUsd=null для работы без него.';
+    fatal = 'Codex: codexMaxTaskTokens должен быть положительным целым числом или null.';
   }
   if (provider === 'codex')
     rows.push(['разрешения Codex', 'workspace-write, сеть включена, подтверждения never']);

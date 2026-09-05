@@ -23,20 +23,23 @@ The supervisor SHALL persist the provider with every session and SHALL NOT resum
 - **THEN** its identifier is persisted before completion
 
 ### Requirement: Honest completion and spending
-The Codex adapter SHALL require a successful terminal event and process exit for success. It SHALL NOT silently disable a configured dollar cap when token prices are unavailable.
+The Codex adapter SHALL require a successful terminal event and process exit for success. It SHALL enforce a configurable task token budget for Codex independently of Claude dollar accounting.
 
 #### Scenario: Truncated stream
 - **WHEN** an agent message arrives without turn.completed
 - **THEN** the run is not accepted as successful
 
-#### Scenario: Missing prices
-- **WHEN** Codex is selected with a positive dollar cap and no explicit token prices
-- **THEN** startup explains the missing configuration and starts no stages
-
-
 #### Scenario: ChatGPT subscription
 - **WHEN** Codex runs with its default subscription configuration
-- **THEN** no dollar cap is applied to Codex, while the Claude dollar cap remains unchanged
+- **THEN** 25,000,000 input plus output tokens per task trigger decompose before the next ordinary stage, while Claude retains its dollar cap
+
+#### Scenario: Persistent cumulative usage
+- **WHEN** a turn reports cumulative session usage, including before a failed exit or invalid report
+- **THEN** the supervisor persists the session maximum, counts cached input once and sums sessions across stages without resetting on resume, restart or forgotten session
+
+#### Scenario: Unknown consumption
+- **WHEN** a completed turn omits usage while the budget is enabled
+- **THEN** the stage is not accepted as successful and existing attempt and timeout guards remain active
 
 ### Requirement: Discoverable project guidance
 The repository SHALL expose project instructions and six OpenSpec skills to Codex while retaining Claude support.

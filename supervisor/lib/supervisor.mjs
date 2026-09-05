@@ -1,3 +1,4 @@
+import { recordTokenUsage, taskTokens } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
 import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
 import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
@@ -44,6 +45,8 @@ export function createSupervisor({
   nowMs = () => Date.now(),
   saveStages = () => {},
   stages = {},
+  codexUsage = {},
+  saveCodexUsage = () => {},
   log = () => {},
   writeStageLog = () => {},
   readStageLog = () => null,
@@ -101,6 +104,7 @@ export function createSupervisor({
   adoptOrphans();
 
   return {
+    codexUsage,
     reports,
     orphanOutcomes,
     apiFailures,
@@ -409,6 +413,11 @@ export function createSupervisor({
           saveStages(known);
         }
       }
+      if (
+        event?.type === 'turn.completed' &&
+        recordTokenUsage(codexUsage, child.taskId, child.sessionId, event.usage)
+      )
+        saveCodexUsage(codexUsage);
       if (event?.type === 'item.completed') {
         child.steps += 1;
         child.last = clip(event.item?.text ?? event.item?.command ?? event.item?.type, 160);
@@ -693,10 +702,18 @@ export function createSupervisor({
       providerOf(config) === 'codex'
         ? readCodexAnswer(run, config, child.usageBaseline)
         : readAnswer(run);
-    if (answer.usage)
-      log(
-        `токены ${child.taskId}:${child.stage}: ${JSON.stringify(answer.usage)}; стоимость ${answer.cost == null ? 'неизвестна' : '— оценка по настройке'}`,
+    if (providerOf(config) === 'codex')
+      recordTokenUsage(
+        codexUsage,
+        child.taskId,
+        answer.sessionId ?? child.sessionId,
+        answer.usageTotals,
       );
+    if (providerOf(config) === 'codex') {
+      if (answer.usageTotals) saveCodexUsage(codexUsage);
+      answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${config.codexMaxTaskTokens ?? 'без лимита'} токенов задачи${answer.usage ? '' : '; расход текущего запуска неизвестен'}`;
+      log(answer.tokenBudget);
+    }
     // Отчёт разбирается ЗДЕСЬ, а не там, где он применяется, — потому что
     // ниже по этой функции три досрочных возврата, а лог обязан лечь на диск
     // раньше каждого из них: как раз в тех случаях, ради которых лог и пишут,
@@ -731,7 +748,9 @@ export function createSupervisor({
         `${answer.why ? ` — ${answer.why}` : ''}` +
         `, ${humanDuration(nowMs() - child.startedMs)}` +
         `, ходов ${answer.turns ?? '—'}` +
-        `, стоимость ${answer.cost != null ? `$${answer.cost.toFixed(2)}` : '—'}` +
+        (answer.tokenBudget
+          ? `, ${answer.tokenBudget}`
+          : `, стоимость ${answer.cost != null ? `$${answer.cost.toFixed(2)}` : '—'}`) +
         `, отказов ${answer.denials.length}`,
     );
 
@@ -912,7 +931,9 @@ function renderLog(child, run, answer, parsed) {
     `ответ сессии:  ${answer.outcome}${answer.why ? ` (${answer.why})` : ''}`,
     `исход отчёта:  ${reportOutcome(child, answer, parsed)}`,
     `ходов:         ${answer.turns ?? '—'}`,
-    `стоимость:     ${answer.cost ?? '—'}`,
+    answer.tokenBudget
+      ? `токены:        ${answer.tokenBudget}`
+      : `стоимость:     ${answer.cost ?? '—'}`,
     `отказов:       ${answer.denials.length}`,
   ];
   return [

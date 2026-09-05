@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readTokenLedger } from '../lib/token-budget.mjs';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -138,6 +139,7 @@ async function main() {
     marked: backlog.marked ?? [],
     registry,
     reports: [],
+    codexUsage: providerOf(config) === 'codex' ? readTokenLedger(root, config) : {},
     // Живых этапов смотрящий прогон не знает: дескрипторы у супервизора.
     running: [],
     answers: readAnswers(root, config),

@@ -20,15 +20,6 @@ export function codexInvocation(config, args) {
   };
 }
 
-export function validTokenPrices(prices) {
-  return (
-    prices != null &&
-    ['input', 'cachedInput', 'output'].every(
-      (key) => Number.isFinite(prices[key]) && prices[key] >= 0,
-    )
-  );
-}
-
 export function codexStageCommand({ assignment, prompt, config, root, home }) {
   const skillDir = isAbsolute(config.skillsDir)
     ? config.skillsDir
@@ -117,19 +108,11 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
   if (hasUsage && previousUsage) {
     for (const key of Object.keys(usage)) {
       if (usage[key] < (previousUsage[key] ?? 0))
-        error = 'Codex usage уменьшился: стоимость продолжения неизвестна';
+        error = 'Codex usage уменьшился: расход продолжения неизвестен';
       usage[key] = Math.max(0, usage[key] - (previousUsage[key] ?? 0));
     }
   }
   answer.usage = hasUsage ? usage : null;
-  if (hasUsage && validTokenPrices(config.codexTokenPrices)) {
-    const rates = config.codexTokenPrices;
-    answer.cost =
-      (Math.max(0, usage.input_tokens - usage.cached_input_tokens) * rates.input +
-        usage.cached_input_tokens * rates.cachedInput +
-        usage.output_tokens * rates.output) /
-      1e6;
-  }
   if (run.killedBy) return { ...answer, outcome: 'timeout', why: `этап снят: ${run.killedBy}` };
   if (run.error)
     return { ...answer, outcome: 'failed', why: `запуск не состоялся: ${run.error.message}` };
@@ -148,11 +131,18 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
       why: error ?? `Codex не завершил ход (код ${run.code})`,
     };
   }
-  if (config.maxTaskCostUsd != null && !hasUsage) {
+  if (
+    config.codexMaxTaskTokens != null &&
+    (!hasUsage ||
+      !terminal.usage ||
+      !Object.keys(usage).every(
+        (key) => Number.isFinite(terminal.usage[key]) && terminal.usage[key] >= 0,
+      ))
+  ) {
     return {
       ...answer,
       outcome: 'failed',
-      why: 'Codex не сообщил usage: денежный лимит проверить нельзя',
+      why: 'Codex не сообщил usage: токеновый бюджет проверить нельзя',
     };
   }
   return { ...answer, result: message, outcome: 'done', why: null };

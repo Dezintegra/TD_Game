@@ -7,7 +7,6 @@ import { providerOf, readCodexAnswer } from './provider.mjs';
 
 const home = fileURLToPath(new URL('..', import.meta.url));
 const config = resolveConfig({ provider: 'codex' }).config;
-const prices = { input: 2, cachedInput: 1, output: 8 };
 const report = JSON.stringify({ stage: 'design', outcome: 'done', summary: 'готово' });
 const events = [
   { type: 'thread.started', thread_id: 'thread-1' },
@@ -60,14 +59,14 @@ describe('выбор исполнителя', () => {
 });
 
 describe('ответ Codex', () => {
-  it('читает терминальное событие и считает оценку с учётом кэша', () => {
-    expect(readCodexAnswer(run(), { codexTokenPrices: prices })).toMatchObject({
+  it('читает терминальное событие и возвращает токены без долларовой оценки', () => {
+    expect(readCodexAnswer(run(), config)).toMatchObject({
       outcome: 'done',
       sessionId: 'thread-1',
       result: report,
       turns: 1,
     });
-    expect(readCodexAnswer(run(), { codexTokenPrices: prices }).cost).toBeCloseTo(0.0026);
+    expect(readCodexAnswer(run(), config).cost).toBeNull();
   });
   it('не превращает обрыв потока или ненулевой код в успех', () => {
     expect(readCodexAnswer(run(events.slice(0, -1))).outcome).toBe('failed');
@@ -77,9 +76,7 @@ describe('ответ Codex', () => {
     expect(readCodexAnswer(run([...events, { type: 'turn.started' }])).outcome).toBe('failed');
   });
   it('сохраняет идентификатор и расход при снятии по сроку', () => {
-    expect(
-      readCodexAnswer({ ...run(), killedBy: 'timeout' }, { codexTokenPrices: prices }),
-    ).toMatchObject({
+    expect(readCodexAnswer({ ...run(), killedBy: 'timeout' }, config)).toMatchObject({
       outcome: 'timeout',
       sessionId: 'thread-1',
       result: null,
@@ -89,7 +86,7 @@ describe('ответ Codex', () => {
     expect(readCodexAnswer(run()).cost).toBeNull();
     expect(
       readCodexAnswer(run([...events.slice(0, -1), { type: 'turn.completed' }]), {
-        maxTaskCostUsd: 25,
+        codexMaxTaskTokens: 25_000_000,
       }).outcome,
     ).toBe('failed');
   });
@@ -105,13 +102,11 @@ describe('предпроверка Codex', () => {
       exists: () => true,
       run: () => ({ code: 0, stdout: 'version' }),
     });
-  it('не снимает денежный потолок молча', () => {
-    expect(inspect({ maxTaskCostUsd: 25 }).fatal).toContain('codexTokenPrices');
-    expect(inspect({ codexTokenPrices: prices }).fatal).toBeNull();
-    expect(inspect({ maxTaskCostUsd: null }).fatal).toBeNull();
-    expect(
-      inspect({ maxTaskCostUsd: 25, codexTokenPrices: { ...prices, output: -1 } }).fatal,
-    ).toContain('codexTokenPrices');
+  it('проверяет положительный токеновый бюджет', () => {
+    expect(inspect().fatal).toBeNull();
+    expect(inspect({ codexMaxTaskTokens: null }).fatal).toBeNull();
+    for (const value of [-1, 0, 1.5, '100'])
+      expect(inspect({ codexMaxTaskTokens: value }).fatal).toContain('codexMaxTaskTokens');
   });
 });
 
@@ -126,7 +121,7 @@ it('отказ API до работы сохраняет попытку, посл
 });
 
 it('накопительный usage после resume не считает прошлый заход второй раз', () => {
-  const first = readCodexAnswer(run(), { codexTokenPrices: prices });
+  const first = readCodexAnswer(run(), config);
   const second = readCodexAnswer(
     run([
       ...events.slice(0, -1),
@@ -135,10 +130,10 @@ it('накопительный usage после resume не считает пр�
         usage: { input_tokens: 2000, cached_input_tokens: 400, output_tokens: 200 },
       },
     ]),
-    { codexTokenPrices: prices },
+    config,
     first.usageTotals,
   );
-  expect(second.cost).toBeCloseTo(first.cost);
+  expect(second.cost).toBeNull();
   expect(second.usage).toEqual(first.usage);
   expect(second.usageTotals.input_tokens).toBe(2000);
 });
@@ -150,7 +145,12 @@ it('посторонний JSON null в потоке не роняет супе�
 it('подписка Codex не выключает долларовый лимит Claude', () => {
   expect(resolveConfig({ provider: 'codex' }).config.maxTaskCostUsd).toBeNull();
   expect(resolveConfig({ provider: 'claude' }).config.maxTaskCostUsd).toBe(25);
-  expect(resolveConfig({ provider: 'codex', codexMaxTaskCostUsd: 10 }).config.maxTaskCostUsd).toBe(
-    10,
-  );
+  expect(resolveConfig({ provider: 'codex' }).config.codexMaxTaskTokens).toBe(25_000_000);
+});
+
+it('прошлый usage не подтверждает расход нового завершённого хода', () => {
+  expect(
+    readCodexAnswer(run([...events, { type: 'turn.started' }, { type: 'turn.completed' }]), config)
+      .outcome,
+  ).toBe('failed');
 });
