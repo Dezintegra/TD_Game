@@ -33,7 +33,7 @@ const args = process.argv.slice(2);
 
 /** Ключи без значения и ключи со значением. Всё прочее — опечатка. */
 const FLAGS = ['shadow', 'dry-run', 'detached', 'quiet', 'stop', 'help'];
-const VALUES = ['root', 'config'];
+const VALUES = ['root', 'config', 'provider'];
 
 const has = (name) => args.includes(`--${name}`);
 const valueOf = (name) => {
@@ -45,6 +45,7 @@ function usage() {
   console.log('Запуск супервизора конвейера.');
   console.log('');
   console.log('  (без доводов)     запустить и смотреть');
+  console.log('  --provider=claude|codex  исполнитель (по умолчанию из настройки, иначе claude)');
   console.log('  --shadow          тень: считать и печатать, мира не трогать');
   console.log('  --detached        в фон, вывод в .pipeline/supervisor.out.log');
   console.log('  --stop            снять вместе с поддеревом процессов');
@@ -73,6 +74,11 @@ if (unknown.length > 0) {
   console.error('Ничего не запущено — незнакомый ключ не повод поднимать конвейер.');
   console.error('');
   usage();
+  process.exit(1);
+}
+
+if (valueOf('provider') !== null && !['claude', 'codex'].includes(valueOf('provider'))) {
+  console.error(`Неизвестный provider: ${valueOf('provider')}. Ничего не запущено.`);
   process.exit(1);
 }
 
@@ -218,6 +224,7 @@ function start() {
   }
 
   const forwarded = [entry];
+  if (valueOf('provider')) forwarded.push(`--provider=${valueOf('provider')}`);
   // `--shadow` — своё имя того же, что супервизор знает как `--dry-run`.
   // Пускателю нужно слово, понятное человеку у двойного щелчка.
   if (has('shadow') || has('dry-run')) forwarded.push('--dry-run');

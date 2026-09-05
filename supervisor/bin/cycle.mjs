@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { providerOf } from '../lib/provider.mjs';
 import { budgetsAgree } from '../lib/lock.mjs';
 import { createGit } from '../lib/git.mjs';
 import {
@@ -143,7 +144,8 @@ async function main() {
     // Правила разрешений — доводом, как и всё прочее: сканер сам диска
     // не трогает. Смотрящий прогон обязан видеть ту же картину, что боевой
     // цикл, иначе он показывал бы работу, которой цикл не сделает.
-    permissions: readPermissions(home, config),
+    permissions: providerOf(config) === 'claude' ? readPermissions(home, config) : null,
+    ...(providerOf(config) === 'codex' ? { stageCommands: {} } : {}),
     paused: isPaused(root, config),
     apiPaused: isApiPaused(root, config),
     tails: { main: git.tail() ?? 0, branches: {} },

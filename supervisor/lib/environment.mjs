@@ -1,4 +1,5 @@
 import { isAbsolute, join, resolve } from 'node:path';
+import { providerOf, codexInvocation, validTokenPrices } from './provider.mjs';
 import { schemaPath } from './read-state.mjs';
 
 /**
@@ -45,6 +46,18 @@ export function checkEnvironment({
   const rows = [];
   const problems = [];
   let fatal = null;
+  const provider = providerOf(config);
+  rows.push(['исполнитель', provider]);
+  if (
+    provider === 'codex' &&
+    config.maxTaskCostUsd != null &&
+    !validTokenPrices(config.codexTokenPrices)
+  ) {
+    fatal =
+      'Codex: укажите codexTokenPrices (input, cachedInput, output за миллион токенов) для денежного лимита или явно maxTaskCostUsd=null для работы без него.';
+  }
+  if (provider === 'codex')
+    rows.push(['разрешения Codex', 'workspace-write, сеть включена, подтверждения never']);
 
   const own = (path) => (isAbsolute(path) ? path : resolve(home, path));
 
@@ -62,12 +75,21 @@ export function checkEnvironment({
 
   // Внешние программы. Порядок по важности: без первой не работает ничего.
   const programs = [
-    [config.claudeCommand, 'этапы порождаются им; без него конвейер не сделает ни шага'],
+    [
+      provider === 'codex' ? (config.codexCommand ?? 'codex') : config.claudeCommand,
+      'этапы порождаются им; без него конвейер не сделает ни шага',
+    ],
     ['git', 'ветки, деревья и коммиты — всё через него'],
     ['gh', 'опрос проверок CI и вливание pull request; без него маршрут встанет на проверках'],
   ];
   for (const [program, why] of programs) {
-    const found = version(run, program);
+    const query =
+      provider === 'codex' && program === (config.codexCommand ?? 'codex')
+        ? codexInvocation(config, ['--version'])
+        : null;
+    const found = query
+      ? version(() => run(query.program, query.args), program)
+      : version(run, program);
     rows.push([program, found ?? 'НЕ НАЙДЕНА']);
     if (!found) problems.push(`программа «${program}» не найдена: ${why}`);
   }
@@ -83,7 +105,7 @@ export function checkEnvironment({
       'не отвергает';
   }
 
-  if (config.stageSettings) {
+  if (provider === 'claude' && config.stageSettings) {
     const settings = own(config.stageSettings);
     rows.push(['разрешения этапа', exists(settings) ? settings : `${settings} — НЕТ`]);
     if (!exists(settings)) {

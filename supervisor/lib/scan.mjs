@@ -516,7 +516,7 @@ export function scan(state) {
     // этап, ради которого её туда и отправили. Исключение того же рода,
     // что у сквозных состояний, и по той же причине.
     const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
-    if (capped && spent >= config.maxTaskCostUsd) {
+    if (capped && config.maxTaskCostUsd != null && spent >= config.maxTaskCostUsd) {
       // Числа в причине обязательны: по ним человек выбирает между двумя
       // выходами — поднять потолок или раздробить задачу, — а «предел
       // исчерпан» без величин не даёт выбрать ничего.

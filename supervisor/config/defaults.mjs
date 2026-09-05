@@ -33,6 +33,10 @@ export const DEFAULTS = {
 
   /** Чем запускается этап. По имени, а не полным путём: правила разрешений
    * сверяются с приставкой команды, и полный путь не совпадает ни с одним. */
+  provider: 'claude',
+  codexCommand: 'codex',
+  codexModel: null,
+  codexTokenPrices: null,
   claudeCommand: 'claude',
 
   /**
@@ -502,6 +506,8 @@ export function missingForStage(config, stage, task) {
  * задача до выкладки не дошла.
  */
 export function resolveConfig(projectConfig = {}) {
+  if (!['claude', 'codex'].includes(projectConfig.provider ?? 'claude'))
+    throw new Error(`Неизвестный provider: ${projectConfig.provider}`);
   const project = projectConfig.trello ?? {};
   const author = { ...DEFAULTS.author, ...(projectConfig.author ?? {}) };
   const config = {

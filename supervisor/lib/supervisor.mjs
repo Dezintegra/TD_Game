@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
 import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
+import { providerOf, readCodexAnswer } from './provider.mjs';
 import { readAnswer, startStage as spawnStageProcess } from './run-stage.mjs';
 import { parseReport } from './parse-report.mjs';
 import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
@@ -152,7 +153,12 @@ export function createSupervisor({
     ],
 
     /** Идентификатор сессии прошлого захода на этот этап, если он был. */
-    lastSession: (taskId, stage) => known[key(taskId, stage)]?.sessionId ?? null,
+    lastSession: (taskId, stage) => {
+      const saved = known[key(taskId, stage)];
+      return (saved?.provider ?? 'claude') === providerOf(config)
+        ? (saved?.sessionId ?? null)
+        : null;
+    },
 
     /**
      * Когда на этот этап зашли ПЕРВЫЙ раз.
@@ -219,26 +225,35 @@ export function createSupervisor({
 
       // Идентификатор выдаётся заранее, а не берётся из ответа: тогда
       // возобновлять есть что даже после падения супервизора.
-      const sessionId = assignment.sessionId ?? randomUUID();
-      const command = stageCommand({
-        assignment: { ...assignment, sessionId },
-        prompt: stagePrompt({
-          assignment,
-          task: assignment.task,
-          journal: assignment.journal,
-          board: assignment.board,
-          // Разбору дают лог того этапа, из которого задача упала. Его имя
-          // хранит сама задача — состоянием возврата, — и потому спрашивается
-          // здесь, а не угадывается по журналу.
-          stageLog:
-            assignment.stage === 'postmortem'
-              ? readStageLog(assignment.taskId, assignment.task?.returnTo)
-              : null,
-        }),
-        config,
-        root,
-        home,
-      });
+      const provider = providerOf(config);
+      const previous = known[key(assignment.taskId, assignment.stage)];
+      const compatible = (previous?.provider ?? 'claude') === provider;
+      const sessionId =
+        (compatible ? assignment.sessionId : null) ?? (provider === 'claude' ? randomUUID() : null);
+      let command;
+      try {
+        command = stageCommand({
+          assignment: { ...assignment, sessionId },
+          prompt: stagePrompt({
+            assignment,
+            task: assignment.task,
+            journal: assignment.journal,
+            board: assignment.board,
+            // Разбору дают лог того этапа, из которого задача упала. Его имя
+            // хранит сама задача — состоянием возврата, — и потому спрашивается
+            // здесь, а не угадывается по журналу.
+            stageLog:
+              assignment.stage === 'postmortem'
+                ? readStageLog(assignment.taskId, assignment.task?.returnTo)
+                : null,
+          }),
+          config,
+          root,
+          home,
+        });
+      } catch (error) {
+        return { ok: false, reason: 'not-born', why: error.message };
+      }
 
       // Дескриптор заводится ДО порождения: обработчики событий пишут
       // в него ходы и последнее действие, а пульс их оттуда читает.
@@ -247,6 +262,10 @@ export function createSupervisor({
         taskId: assignment.taskId,
         stage: assignment.stage,
         sessionId,
+        usageBaseline:
+          compatible && assignment.continuation && previous?.sessionId === sessionId
+            ? previous?.usage
+            : null,
         startedAt: now(),
         startedMs: nowMs(),
         timeoutMs,
@@ -304,6 +323,8 @@ export function createSupervisor({
       const at = key(assignment.taskId, assignment.stage);
       known[at] = {
         sessionId,
+        provider,
+        ...(child.usageBaseline ? { usage: child.usageBaseline } : {}),
         startedAt: known[at]?.startedAt ?? now(),
         // Дескриптор ложится на диск ТЕМ ЖЕ действием, что и память о сессии:
         // обе записи об одном процессе, и разъехаться им нельзя. Отдельный
@@ -379,6 +400,22 @@ export function createSupervisor({
    * и длительность, и стоимость, и отказы.
    */
   function watch(child, event, line) {
+    if (providerOf(config) === 'codex') {
+      if (event?.type === 'thread.started' && event.thread_id) {
+        child.sessionId = event.thread_id;
+        const at = key(child.taskId, child.stage);
+        if (known[at]) {
+          known[at].sessionId = event.thread_id;
+          saveStages(known);
+        }
+      }
+      if (event?.type === 'item.completed') {
+        child.steps += 1;
+        child.last = clip(event.item?.text ?? event.item?.command ?? event.item?.type, 160);
+        say.line(TAG.stage, `${child.taskId} ${child.last}`);
+      }
+      return;
+    }
     if (event?.type === 'result') return;
     if (event?.type === 'assistant') child.steps += 1;
 
@@ -652,7 +689,14 @@ export function createSupervisor({
     children.delete(child.taskId);
     stopPulse();
 
-    const answer = readAnswer(run);
+    const answer =
+      providerOf(config) === 'codex'
+        ? readCodexAnswer(run, config, child.usageBaseline)
+        : readAnswer(run);
+    if (answer.usage)
+      log(
+        `токены ${child.taskId}:${child.stage}: ${JSON.stringify(answer.usage)}; стоимость ${answer.cost == null ? 'неизвестна' : '— оценка по настройке'}`,
+      );
     // Отчёт разбирается ЗДЕСЬ, а не там, где он применяется, — потому что
     // ниже по этой функции три досрочных возврата, а лог обязан лечь на диск
     // раньше каждого из них: как раз в тех случаях, ради которых лог и пишут,
@@ -703,6 +747,7 @@ export function createSupervisor({
     if (known[at]) {
       const kept = { ...known[at] };
       delete kept.live;
+      if (answer.usageTotals) kept.usage = answer.usageTotals;
       known[at] = answer.sessionId ? { ...kept, sessionId: answer.sessionId } : kept;
       saveStages(known);
     }
@@ -809,6 +854,8 @@ function remembered(value) {
   const kept = {
     sessionId: value?.sessionId ?? null,
     startedAt: value?.startedAt ?? null,
+    ...(value?.provider ? { provider: value.provider } : {}),
+    ...(value?.usage ? { usage: value.usage } : {}),
   };
   return value?.live ? { ...kept, live: value.live } : kept;
 }

@@ -1182,3 +1182,13 @@ describe('порядок действий', () => {
     expect(kinds(result)).toEqual(['push-tail', 'start-stage']);
   });
 });
+
+it('явное отключение денежного потолка не означает потолок в ноль', () => {
+  const result = run({
+    config: { ...config, maxTaskCostUsd: null },
+    tasks: [task({ status: 'implement', spentUsd: 100 })],
+    registry: { entries: [entry('0001-one')] },
+  });
+  expect(kinds(result)).toContain('continue-stage');
+  expect(kinds(result)).not.toContain('decompose-again');
+});
