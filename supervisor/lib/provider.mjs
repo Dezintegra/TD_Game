@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { codexPerfPaths } from './codex-perf-files.mjs';
 import { modelForStage } from './stage-model.mjs';
 
 export function providerOf(config) {
@@ -32,7 +33,7 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
     '-c',
     'sandbox_workspace_write.network_access=true',
     '-c',
-    `sandbox_workspace_write.writable_roots=${JSON.stringify([join(root, '.git')])}`,
+    `sandbox_workspace_write.writable_roots=${JSON.stringify([join(root, '.git'), ...codexPerfPaths(root, cwd)])}`,
   ];
   if (platform === 'win32') {
     // Профиль сохраняет защиту :workspace и явно разрешает служебные записи Git.
@@ -53,7 +54,7 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const filesystem = [...new Set([common, gitdir])]
+    const filesystem = [...new Set([common, gitdir, ...codexPerfPaths(root, cwd)])]
       .map((path) => JSON.stringify(path.replaceAll('\\', '/')) + '="write"')
       .join(',');
     args.push(

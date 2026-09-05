@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
+import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
 import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
 import { execFileSync, spawn } from 'node:child_process';
@@ -394,8 +395,12 @@ let codexEnvironment;
 let codexReady = false;
 const supervisor = createSupervisor({
   getCodexEnvironment: () => codexEnvironment,
-  prepareAssignment: (assignment, previous) =>
-    prepareDeploySnapshot(root, config, assignment, previous),
+  prepareAssignment: (assignment, previous) => {
+    const prepared = prepareDeploySnapshot(root, config, assignment, previous);
+    if (providerOf(config) === 'codex')
+      prepareCodexPerfFiles(root, prepared.path ? resolve(root, prepared.path) : root);
+    return prepared;
+  },
   config,
   root,
   home,
@@ -747,6 +752,7 @@ const OUTCOME = {
 async function prepareCodex() {
   note('Проверяю Git, GitHub, SSH и дочерние процессы Node в Codex перед выдачей задач', TAG.cycle);
   try {
+    prepareCodexPerfFiles(root);
     codexEnvironment = codexChildEnvironment();
     const readiness = await checkCodexReadiness({
       env: codexEnvironment,
