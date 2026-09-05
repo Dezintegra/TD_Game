@@ -181,7 +181,14 @@ export function scan(state) {
   }
 
   const entryOf = (taskId) => registry.entries.find((item) => item.taskId === taskId);
-  const hasReport = (taskId) => reports.some((report) => report.taskId === taskId);
+  // Перенос отчёта меняет весь пакет; до следующего снимка его участники
+  // не должны получать действия по старому состоянию доски.
+  const hasReport = (taskId) =>
+    reports.some(
+      (report) =>
+        report.taskId === taskId ||
+        (report.stage === 'deploy' && Array.isArray(report.batch) && report.batch.includes(taskId)),
+    );
   const isRunning = (taskId, stage) =>
     running.some((item) => item.taskId === taskId && (stage === undefined || item.stage === stage));
 
