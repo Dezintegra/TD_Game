@@ -59,6 +59,7 @@ export function startStage({
   const child = spawn(command.program, command.args, {
     cwd: command.cwd,
     windowsHide: true,
+    ...(command.env ? { env: command.env } : {}),
   });
 
   // Промпт подаётся на вход, а не аргументом: длина аргументов на Windows

@@ -36,6 +36,7 @@ export const DEFAULTS = {
   provider: 'claude',
   codexCommand: 'codex',
   codexModel: null,
+  codexWindowsSandbox: 'elevated',
   // Эвристика тяжести задачи; кэш уже входит во входные токены.
   codexMaxTaskTokens: 25_000_000,
   claudeCommand: 'claude',

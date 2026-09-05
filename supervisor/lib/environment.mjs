@@ -55,8 +55,16 @@ export function checkEnvironment({
   ) {
     fatal = 'Codex: codexMaxTaskTokens должен быть положительным целым числом или null.';
   }
-  if (provider === 'codex')
-    rows.push(['разрешения Codex', 'workspace-write, сеть включена, подтверждения never']);
+  if (provider === 'codex') {
+    rows.push([
+      'разрешения Codex',
+      process.platform === 'win32'
+        ? `td-pipeline, Windows ${config.codexWindowsSandbox ?? 'elevated'}, сеть, never`
+        : 'workspace-write, сеть, never',
+    ]);
+    if (!['elevated', 'unelevated'].includes(config.codexWindowsSandbox ?? 'elevated'))
+      fatal = 'codexWindowsSandbox: требуется elevated или unelevated';
+  }
 
   const own = (path) => (isAbsolute(path) ? path : resolve(home, path));
 

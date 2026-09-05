@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { codexChildEnvironment } from '../lib/codex-environment.mjs';
+import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -387,7 +389,10 @@ async function openBacklog({ mayWrite }) {
   };
 }
 
+let codexEnvironment;
+let codexReady = false;
 const supervisor = createSupervisor({
+  getCodexEnvironment: () => codexEnvironment,
   config,
   root,
   home,
@@ -405,6 +410,11 @@ const supervisor = createSupervisor({
   stages: readStages(root, config),
   codexUsage: providerOf(config) === 'codex' ? readTokenLedger(root, config) : {},
   saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
+  onPolicyBlocked: (why) => {
+    ensureLocal();
+    writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
+    note(`Конвейер на паузе: ${why}. Новые этапы не выдаются.`, TAG.error);
+  },
   say,
   log: (line) => note(line, null),
   writeStageLog: (taskId, stage, text) => {
@@ -478,6 +488,8 @@ async function turn() {
   // до сканирования, а лишнее обращение к доске под лежачим сервером
   // ничего не даёт.
   const mayWrite = !flags.includes('--dry-run') && !paused && !apiPaused;
+  if (mayWrite && providerOf(config) === 'codex' && !codexReady && !(await prepareCodex()))
+    return 'paused';
 
   const backlog = await openBacklog({ mayWrite });
   if (!backlog.ok) {
@@ -729,6 +741,32 @@ const OUTCOME = {
 };
 
 /** Бесконечный цикл с рубильником паузы и сторожем неудач. */
+async function prepareCodex() {
+  note('Проверяю Git и авторизацию GitHub в Codex перед выдачей задач', TAG.cycle);
+  try {
+    codexEnvironment = codexChildEnvironment();
+    const readiness = await checkCodexReadiness({
+      env: codexEnvironment,
+      config,
+      root,
+      spawn,
+      killTree: createKillTree((program, args) => runCommand(args, program)),
+    });
+    ensureLocal();
+    writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
+    if (!readiness.ok) throw new Error(readiness.why);
+    codexReady = true;
+    note('Codex: Git и авторизация GitHub проверены', TAG.cycle);
+    return true;
+  } catch (error) {
+    const why = 'Проверка Codex не прошла: ' + error.message;
+    ensureLocal();
+    writeFileSync(local('pause'), why + '\n');
+    note('КОНВЕЙЕР НЕ ЗАПУЩЕН: ' + why, TAG.error);
+    return false;
+  }
+}
+
 async function loop() {
   const budgets = budgetsAgree(config);
   if (!budgets.ok) note(budgets.why, TAG.warn);
@@ -736,6 +774,16 @@ async function loop() {
 
   note(`супервизор запущен, процесс ${process.pid}, корень ${root}`, null);
   greet();
+  if (
+    providerOf(config) === 'codex' &&
+    !flags.includes('--dry-run') &&
+    !isPaused(root, config) &&
+    !(await prepareCodex())
+  ) {
+    releaseLock();
+    process.exitCode = 1;
+    return;
+  }
 
   let turns = 0;
   let stopping = false;

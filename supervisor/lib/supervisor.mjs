@@ -2,7 +2,7 @@ import { recordTokenUsage, taskTokens } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
 import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
 import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
-import { providerOf, readCodexAnswer } from './provider.mjs';
+import { providerOf, readCodexAnswer, codexDenial } from './provider.mjs';
 import { readAnswer, startStage as spawnStageProcess } from './run-stage.mjs';
 import { parseReport } from './parse-report.mjs';
 import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
@@ -47,6 +47,8 @@ export function createSupervisor({
   stages = {},
   codexUsage = {},
   saveCodexUsage = () => {},
+  onPolicyBlocked = () => {},
+  getCodexEnvironment = () => undefined,
   log = () => {},
   writeStageLog = () => {},
   readStageLog = () => null,
@@ -57,6 +59,7 @@ export function createSupervisor({
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
+  let policyBlocked = false;
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
   /**
@@ -210,6 +213,12 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
+      if (policyBlocked)
+        return {
+          ok: false,
+          reason: 'busy',
+          why: 'Codex остановлен отказом политики; требуется диагностика',
+        };
       if (children.has(assignment.taskId)) {
         return { ok: false, reason: 'busy', why: 'по этой задаче уже идёт этап' };
       }
@@ -291,7 +300,8 @@ export function createSupervisor({
 
       try {
         child.handle = spawnStageProcess({
-          command,
+          command:
+            providerOf(config) === 'codex' ? { ...command, env: getCodexEnvironment() } : command,
           timeoutMs,
           spawn,
           killTree,
@@ -405,6 +415,13 @@ export function createSupervisor({
    */
   function watch(child, event, line) {
     if (providerOf(config) === 'codex') {
+      const denial = codexDenial(event);
+      if (denial && !policyBlocked) {
+        policyBlocked = true;
+        const why = `${child.taskId}:${child.stage}: ${denial.reason}`;
+        say.line(TAG.error, `ПАУЗА: отказ политики Codex; ${why}`);
+        onPolicyBlocked(why);
+      }
       if (event?.type === 'thread.started' && event.thread_id) {
         child.sessionId = event.thread_id;
         const at = key(child.taskId, child.stage);
