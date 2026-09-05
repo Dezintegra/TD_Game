@@ -1,4 +1,4 @@
-import { mkdtempSync, rmdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { codexExecutionArgs, codexInvocation, readCodexAnswer } from './provider.mjs';
@@ -23,7 +23,10 @@ export async function checkCodexReadiness({
     return { ok: false, why: 'remote: требуется имя Git remote', run: null };
   const push = `git -C ${JSON.stringify(root)} push --dry-run ${remote} HEAD:refs/heads/codex/readiness`;
   const cwd = mkdtempSync(join(tmpdir(), 'td-codex-ready-'));
+  const script = join(cwd, 'codex-node-probe.mjs');
   try {
+    writeFileSync(script, readFileSync(new URL('./codex-node-probe.mjs', import.meta.url)));
+    const node = `node ${JSON.stringify(script)}`;
     const args = [
       'exec',
       '--ignore-user-config',
@@ -40,7 +43,7 @@ export async function checkCodexReadiness({
       ...codexInvocation(config, args),
       cwd,
       env: codexGitEnvironment(env, root, cwd),
-      stdin: `Проверка среды. Выполни четырьмя отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree; gh api user --jq .login; ${push}; ${ssh}. Dry-run проверяет отправку Git без записи удалённых refs; SSH проверяет только соединение с сервером выкладки. Не печатай окружение, git config, токены и другие секреты. Ничего не изменяй. При ошибке или отказе остановись, не пробуй альтернативы, не меняй настройки и права доступа. Верни результат команды.`,
+      stdin: `Проверка среды. Выполни пятью отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree; gh api user --jq .login; ${push}; ${ssh}; ${node}. Dry-run проверяет отправку Git без записи удалённых refs; SSH проверяет только соединение с сервером выкладки; Node проверяет запуск дочерних процессов для pnpm и сборки. Не печатай окружение, git config, токены и другие секреты. Ничего не изменяй. При ошибке или отказе остановись, не пробуй альтернативы, не меняй настройки и права доступа. Верни результат команды.`,
     };
     const run = await start({ command, timeoutMs: 120_000, spawn, killTree }).finished;
     const answer = readCodexAnswer(run, config);
@@ -78,18 +81,30 @@ export async function checkCodexReadiness({
         /\bgit\b.*push\s+--dry-run\b/.test(item.command ?? '') &&
         item.command.includes(`${remote} HEAD:refs/heads/codex/readiness`),
     );
+    const processesReady = commands.some(
+      (item) =>
+        /\bnode\b.*codex-node-probe\.mjs/.test(item.command ?? '') &&
+        item.aggregated_output?.trim() === 'td-codex-processes-ready',
+    );
     const ok =
-      answer.outcome === 'done' && !failed && proof && authenticated && connected && pushReady;
+      answer.outcome === 'done' &&
+      !failed &&
+      proof &&
+      authenticated &&
+      connected &&
+      pushReady &&
+      processesReady;
     return {
       ok,
       why: ok
         ? null
         : (answer.why ??
           failed?.aggregated_output ??
-          'нет успешных проверочных команд Git, git push --dry-run, GitHub и SSH'),
+          'нет успешных проверочных команд Git, git push --dry-run, GitHub, SSH и дочерних процессов Node'),
       run,
     };
   } finally {
+    rmSync(script, { force: true });
     // Удаляем только пустой каталог пробы; никаких рекурсивных удалений.
     try {
       rmdirSync(cwd);
