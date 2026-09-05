@@ -13,6 +13,10 @@ export async function checkCodexReadiness({
   killTree,
   start = startStage,
 }) {
+  const host = env?.TD_DEPLOY_HOST ?? 'dezintegra';
+  if (!/^[a-zA-Z0-9_[\]][a-zA-Z0-9_.@:[\]-]*$/.test(host))
+    return { ok: false, why: 'TD_DEPLOY_HOST: требуется SSH-псевдоним или адрес', run: null };
+  const ssh = `ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -- ${host} "printf td-codex-ssh-ready"`;
   const cwd = mkdtempSync(join(tmpdir(), 'td-codex-ready-'));
   try {
     const args = [
@@ -31,7 +35,7 @@ export async function checkCodexReadiness({
       ...codexInvocation(config, args),
       cwd,
       env,
-      stdin: `Проверка среды. Выполни двумя отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree и gh api user --jq .login. Не печатай токены и другие секреты. Ничего не изменяй. При отказе остановись, не пробуй обходить политику. Верни результат команды.`,
+      stdin: `Проверка среды. Выполни тремя отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree; gh api user --jq .login; ${ssh}. SSH проверяет только соединение с сервером выкладки. Не печатай токены и другие секреты. Ничего не изменяй. При ошибке или отказе остановись, не пробуй альтернативы, не меняй настройки и права доступа. Верни результат команды.`,
     };
     const run = await start({ command, timeoutMs: 120_000, spawn, killTree }).finished;
     const answer = readCodexAnswer(run, config);
@@ -58,14 +62,20 @@ export async function checkCodexReadiness({
         /\bgh\s+api\s+user\b/.test(item.command ?? '') &&
         /^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(item.aggregated_output?.trim() ?? ''),
     );
-    const ok = answer.outcome === 'done' && !failed && proof && authenticated;
+    const connected = commands.some(
+      (item) =>
+        /\bssh\s/.test(item.command ?? '') &&
+        item.command.includes(`-- ${host} `) &&
+        item.aggregated_output?.trim() === 'td-codex-ssh-ready',
+    );
+    const ok = answer.outcome === 'done' && !failed && proof && authenticated && connected;
     return {
       ok,
       why: ok
         ? null
         : (answer.why ??
           failed?.aggregated_output ??
-          'нет успешных проверочных команд Git и GitHub'),
+          'нет успешных проверочных команд Git, GitHub и SSH'),
       run,
     };
   } finally {
