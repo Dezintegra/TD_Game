@@ -33,6 +33,11 @@
       _Проверка:_ `npx vitest run --root supervisor supervisor/lib/task-file.test.mjs`
       зелёный; прежние тесты этого файла не правлены.
 
+      Задача 0216 добавляет `queueReturns` в те же литералы `attempts`.
+      Легший вторым коммит обязан сохранить и `queueReturns`, и ключ
+      `keepRejections`; конфликт при слиянии в этих строках — повод
+      остановиться и назвать его в отчёте, а не выбирать одну сторону.
+
 - [ ] 3. **Выбор формы гашения при переносе отчёта.** В `supervisor/lib/execute.mjs`
       (ветвь на строках 131-135) при исходе `done` звать
       `resetAttempts(moved.task, { keepRejections: !isChecking(task.status) })`.
@@ -44,6 +49,11 @@
 
       _Проверка:_ `npx vitest run --root supervisor supervisor/lib/execute.test.mjs`
       зелёный, в том числе прежние тесты про возврат и про предел.
+
+      Задача 0216 меняет ту же ветвь на выбор `countQueueReturn` для исхода
+      `premature`. Легший вторым коммит обязан сохранить эту развилку рядом
+      с выбором `keepRejections`; конфликт при слиянии в этих строках — повод
+      остановиться и назвать его в отчёте.
 
 - [ ] 4. **Сторож круга качелей.** В `supervisor/lib/execute.test.mjs` завести
       тест, проигрывающий через `execute` полный круг при `maxRejections: 3`:
