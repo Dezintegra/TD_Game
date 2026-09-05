@@ -282,7 +282,7 @@ const DELIBERATELY_CLOSED = {};
  * это его предмет.
  */
 const GATED_PROGRAMS = {
-  deploy: ['ssh', 'node scripts/deploy.mjs', 'pnpm e2e:perf'],
+  deploy: ['ssh', 'node scripts/deploy-remote.mjs', 'node scripts/deploy.mjs', 'pnpm e2e:perf'],
 };
 
 /**
@@ -594,8 +594,8 @@ describe('этапы и скиллы', () => {
     // считает по правилам, а не по имени файла.
     const opened = {
       allow: [
-        'Bash(ssh:*)',
-        'PowerShell(ssh:*)',
+        'Bash(node scripts/deploy-remote.mjs:*)',
+        'PowerShell(node scripts/deploy-remote.mjs:*)',
         'Bash(node scripts/deploy.mjs:*)',
         'PowerShell(node scripts/deploy.mjs:*)',
         'Bash(pnpm e2e:perf:*)',
@@ -606,16 +606,11 @@ describe('этапы и скиллы', () => {
     expect(uncoveredForStage(opened, 'deploy')).toEqual([]);
   });
 
-  it('правило на одну приставку выкладки из двух этап не открывает', () => {
-    // Проба ровно на ту щель, из-за которой перечень пересматривался. Правило
-    // открывает приставку с `-o ConnectTimeout=15` — то есть шаги 4 и 5, —
-    // а сверка имён переменных окружения (шаг 7) зовёт `ssh` без него.
-    // Сторож обязан назвать её поимённо и оставить запись о закрытом `deploy`
-    // в силе: этап всё ещё умрёт, только шагом позже.
+  it('частичные разрешения удалённых проверок не открывают весь этап', () => {
+    const checks = STAGE_COMMANDS.deploy.slice(0, 3);
     const halfOpen = {
       allow: [
-        'Bash(ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra:*)',
-        'PowerShell(ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra:*)',
+        ...checks.flatMap((command) => [`Bash(${command})`, `PowerShell(${command})`]),
         'Bash(node scripts/deploy.mjs:*)',
         'PowerShell(node scripts/deploy.mjs:*)',
         'Bash(pnpm e2e:perf:*)',
@@ -623,11 +618,11 @@ describe('этапы и скиллы', () => {
       ],
       deny: [],
     };
-    const uncovered = uncoveredForStage(halfOpen, 'deploy');
-    const step7 = 'ssh -o BatchMode=yes dezintegra "grep -o \'^[A-Z_]*\' ~/td/.env"';
-    // По строке на оболочку, и обе названы: разницу в чтении оболочек надо
-    // видеть, а не проглядеть.
-    expect(uncovered).toEqual([`Bash: ${step7}`, `PowerShell: ${step7}`]);
+    const step7 = STAGE_COMMANDS.deploy[3];
+    expect(uncoveredForStage(halfOpen, 'deploy')).toEqual([
+      `Bash: ${step7}`,
+      `PowerShell: ${step7}`,
+    ]);
   });
 
   it('каждая объявленная команда этапа встречается в его скилле', () => {
