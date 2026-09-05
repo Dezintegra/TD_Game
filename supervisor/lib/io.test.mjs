@@ -16,6 +16,40 @@ const check = (name, status, conclusion) => ({ name, status, conclusion });
 const rollup = (...checks) => JSON.stringify({ statusCheckRollup: checks });
 
 describe('состояние проверок', () => {
+  it('успешные служебные проверки и пропущенная игра разрешают ревью', () => {
+    expect(
+      summariseChecks(
+        rollup(
+          check('затронутые области', 'COMPLETED', 'SUCCESS'),
+          check('быстрые тесты', 'COMPLETED', 'SUCCESS'),
+          check('матчевые тесты', 'COMPLETED', 'SKIPPED'),
+          check('сквозные проверки', 'COMPLETED', 'SKIPPED'),
+        ),
+      ),
+    ).toEqual({ state: 'success' });
+  });
+
+  it.each(['FAILURE', 'CANCELLED', 'TIMED_OUT'])(
+    'пропуски не скрывают проблему определения областей: %s',
+    (conclusion) => {
+      expect(
+        summariseChecks(
+          rollup(
+            check('затронутые области', 'COMPLETED', conclusion),
+            check('быстрые тесты', 'COMPLETED', 'SUCCESS'),
+            check('матчевые тесты', 'COMPLETED', 'SKIPPED'),
+          ),
+        ),
+      ).toEqual({ state: 'failure', failed: 'затронутые области' });
+    },
+  );
+
+  it('полностью пропущенный набор не разрешает ревью', () => {
+    expect(summariseChecks(rollup(check('матчевые тесты', 'COMPLETED', 'SKIPPED'))).state).toBe(
+      'pending',
+    );
+  });
+
   it('все зелёные — успех', () => {
     const state = summariseChecks(
       rollup(check('типы', 'COMPLETED', 'SUCCESS'), check('сборка', 'COMPLETED', 'SUCCESS')),
