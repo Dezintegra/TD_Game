@@ -48,6 +48,7 @@ export function createSupervisor({
   codexUsage = {},
   saveCodexUsage = () => {},
   onPolicyBlocked = () => {},
+  getCodexEnvironment = () => undefined,
   log = () => {},
   writeStageLog = () => {},
   readStageLog = () => null,
@@ -299,7 +300,8 @@ export function createSupervisor({
 
       try {
         child.handle = spawnStageProcess({
-          command,
+          command:
+            providerOf(config) === 'codex' ? { ...command, env: getCodexEnvironment() } : command,
           timeoutMs,
           spawn,
           killTree,

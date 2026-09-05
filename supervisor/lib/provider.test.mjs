@@ -164,7 +164,7 @@ it('включает Windows sandbox и доверяет только двум �
   const args = codexExecutionArgs({}, '/main', '/tree', 'win32');
   expect(args).toContain('windows.sandbox="elevated"');
   const env = args.find((arg) => arg.startsWith('shell_environment_policy.set='));
-  expect(env).toContain('GIT_CONFIG_COUNT="3"');
+  expect(env).toContain('GIT_CONFIG_COUNT="5"');
   expect(env).toContain('GIT_CONFIG_VALUE_0=""');
   expect(env).not.toContain('*');
   expect(codexExecutionArgs({}, '/main', '/tree', 'linux').join()).not.toContain('windows.sandbox');

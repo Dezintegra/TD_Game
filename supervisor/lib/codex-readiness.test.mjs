@@ -33,7 +33,23 @@ const check = (events, over = {}) =>
   });
 describe('проверка готовности Codex', () => {
   it('принимает только успешную выполненную команду', async () => {
-    expect((await check([command, completed])).ok).toBe(true);
+    expect(
+      (
+        await check([
+          command,
+          {
+            type: 'item.completed',
+            item: {
+              ...command.item,
+              command: 'gh api user --jq .login',
+              aggregated_output: 'Dezintegra',
+            },
+          },
+          completed,
+        ])
+      ).ok,
+    ).toBe(true);
+    expect((await check([command, completed])).ok).toBe(false);
     expect((await check([completed])).ok).toBe(false);
     expect((await check([command, completed], { code: 1 })).ok).toBe(false);
     expect((await check([command, completed], { killedBy: 'timeout' })).ok).toBe(false);

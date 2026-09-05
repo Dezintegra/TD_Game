@@ -24,3 +24,14 @@ The supervisor SHALL record declined Codex commands as denials and pause new sta
 #### Scenario: Policy blocks a stage
 - **WHEN** a command_execution event has declined status
 - **THEN** the command and reason appear in the report diagnostics, the pause is persisted and subsequent stages are not started
+
+### Requirement: GitHub authentication readiness
+The supervisor SHALL pass existing GitHub authentication to Codex through child process environment only and verify authenticated GitHub API access before assigning tasks.
+
+#### Scenario: Separate sandbox user
+- **WHEN** the sandbox account cannot access the owner account credentials
+- **THEN** the supervisor obtains the existing GitHub token without logging or persisting it and supplies GH_TOKEN to the child while excluding unrelated secret-named variables
+
+#### Scenario: Invalid GitHub authentication
+- **WHEN** the authenticated GitHub probe fails
+- **THEN** the supervisor starts no tasks and reports the startup failure

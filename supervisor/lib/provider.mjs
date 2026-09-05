@@ -25,6 +25,8 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
     '-c',
     'approval_policy="never"',
     '-c',
+    'shell_environment_policy.ignore_default_excludes=true',
+    '-c',
     'sandbox_mode="workspace-write"',
     '-c',
     'sandbox_workspace_write.network_access=true',
@@ -34,7 +36,7 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
   if (platform === 'win32') {
     // Профиль сохраняет защиту :workspace и явно разрешает служебные записи Git.
     // Обычные writable_roots не снимают защиту .git в связанном worktree.
-    args.splice(2);
+    args.splice(4);
     const common = resolve(root, '.git');
     let gitdir = common;
     const pointer = join(cwd, '.git');
@@ -71,11 +73,16 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
       '',
       ...new Set([resolve(root), resolve(cwd)].map((p) => p.replaceAll('\\', '/'))),
     ];
-    const env = { GIT_CONFIG_COUNT: String(paths.length) };
+    const env = { GIT_CONFIG_COUNT: String(paths.length + 2) };
     paths.forEach((path, i) => {
       env[`GIT_CONFIG_KEY_${i}`] = 'safe.directory';
       env[`GIT_CONFIG_VALUE_${i}`] = path;
     });
+    // Git HTTPS использует тот же gh и GH_TOKEN, без чужого Windows keyring.
+    env['GIT_CONFIG_KEY_' + paths.length] = 'credential.https://github.com.helper';
+    env['GIT_CONFIG_VALUE_' + paths.length] = '';
+    env['GIT_CONFIG_KEY_' + (paths.length + 1)] = 'credential.https://github.com.helper';
+    env['GIT_CONFIG_VALUE_' + (paths.length + 1)] = '!gh auth git-credential';
     args.push(
       '-c',
       `shell_environment_policy.set={${Object.entries(env)

@@ -5,7 +5,14 @@ import { codexExecutionArgs, codexInvocation, readCodexAnswer } from './provider
 import { startStage } from './run-stage.mjs';
 
 /** Проверяем инструмент, а не обещание модели: текст «готов» ничего не доказывает. */
-export async function checkCodexReadiness({ config, root, spawn, killTree, start = startStage }) {
+export async function checkCodexReadiness({
+  config,
+  root,
+  env,
+  spawn,
+  killTree,
+  start = startStage,
+}) {
   const cwd = mkdtempSync(join(tmpdir(), 'td-codex-ready-'));
   try {
     const args = [
@@ -23,7 +30,8 @@ export async function checkCodexReadiness({ config, root, spawn, killTree, start
     const command = {
       ...codexInvocation(config, args),
       cwd,
-      stdin: `Проверка среды. Выполни ровно git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree. Ничего не изменяй. При отказе остановись, не пробуй обходить политику. Верни результат команды.`,
+      env,
+      stdin: `Проверка среды. Выполни двумя отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree и gh api user --jq .login. Не печатай токены и другие секреты. Ничего не изменяй. При отказе остановись, не пробуй обходить политику. Верни результат команды.`,
     };
     const run = await start({ command, timeoutMs: 120_000, spawn, killTree }).finished;
     const answer = readCodexAnswer(run, config);
@@ -45,14 +53,19 @@ export async function checkCodexReadiness({ config, root, spawn, killTree, start
         /\bgit\b.*rev-parse\s+--is-inside-work-tree/.test(item.command ?? '') &&
         item.aggregated_output?.trim() === 'true',
     );
-    const ok = answer.outcome === 'done' && !failed && proof;
+    const authenticated = commands.some(
+      (item) =>
+        /\bgh\s+api\s+user\b/.test(item.command ?? '') &&
+        /^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(item.aggregated_output?.trim() ?? ''),
+    );
+    const ok = answer.outcome === 'done' && !failed && proof && authenticated;
     return {
       ok,
       why: ok
         ? null
         : (answer.why ??
           failed?.aggregated_output ??
-          'нет успешного выполнения проверочной Git-команды'),
+          'нет успешных проверочных команд Git и GitHub'),
       run,
     };
   } finally {
