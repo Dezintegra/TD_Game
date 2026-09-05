@@ -50,6 +50,7 @@ export function createSupervisor({
   saveCodexUsage = () => {},
   onPolicyBlocked = () => {},
   getCodexEnvironment = () => undefined,
+  prepareAssignment = (assignment) => assignment,
   log = () => {},
   writeStageLog = () => {},
   readStageLog = () => null,
@@ -246,6 +247,12 @@ export function createSupervisor({
         (compatible ? assignment.sessionId : null) ?? (provider === 'claude' ? randomUUID() : null);
       let command;
       try {
+        assignment = prepareAssignment(assignment, previous);
+        if (assignment.deployment) {
+          const at = key(assignment.taskId, assignment.stage);
+          known[at] = { ...known[at], deployment: assignment.deployment };
+          saveStages(known);
+        }
         command = stageCommand({
           assignment: { ...assignment, sessionId },
           prompt: stagePrompt({
@@ -341,6 +348,7 @@ export function createSupervisor({
       known[at] = {
         sessionId,
         provider,
+        ...(assignment.deployment ? { deployment: assignment.deployment } : {}),
         ...(child.usageBaseline ? { usage: child.usageBaseline } : {}),
         startedAt: known[at]?.startedAt ?? now(),
         // Дескриптор ложится на диск ТЕМ ЖЕ действием, что и память о сессии:
@@ -895,6 +903,7 @@ function remembered(value) {
     startedAt: value?.startedAt ?? null,
     ...(value?.provider ? { provider: value.provider } : {}),
     ...(value?.usage ? { usage: value.usage } : {}),
+    ...(value?.deployment ? { deployment: value.deployment } : {}),
   };
   return value?.live ? { ...kept, live: value.live } : kept;
 }
