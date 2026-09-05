@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
+import { removeWorktree } from './remove-worktree.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 
@@ -541,12 +542,7 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
     },
 
     removeWorktree(path) {
-      const result = run(['worktree', 'remove', path, '--force']);
-      if (result.code === 0) return { ok: true };
-      // Каталога может уже не быть — тогда убирать нечего, и это не беда.
-      if (/not a working tree|no such file|is not a valid/i.test(result.stderr))
-        return { ok: true };
-      return { ok: false, why: result.stderr.trim() };
+      return removeWorktree({ root, path, run, worktreeDir: config.worktreeDir });
     },
 
     deleteBranch(branch) {
