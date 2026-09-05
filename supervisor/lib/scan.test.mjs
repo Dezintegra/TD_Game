@@ -406,6 +406,38 @@ describe('пакетная выкладка', () => {
   const three = ['0002-a', '0003-b', '0004-c'];
   const registry = { entries: three.map((id) => entry(id)) };
 
+  it.each(['done', 'failed'])('отчёт %s удерживает весь пакет до свежего снимка', (outcome) => {
+    const result = run({
+      tasks: three.map((id) => deploying(id)),
+      registry,
+      reports: [{ taskId: three[0], stage: 'deploy', outcome, batch: three }],
+    });
+    expect(kinds(result)).toEqual(['transfer-report']);
+  });
+
+  it('отчёт пакета не задерживает независимую выкладку', () => {
+    const result = run({
+      tasks: [...three, '0005-d'].map((id) => deploying(id)),
+      registry: { entries: [...registry.entries, entry('0005-d')] },
+      reports: [{ taskId: three[0], stage: 'deploy', outcome: 'done', batch: three }],
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([
+      expect.objectContaining({ taskId: '0005-d', stage: 'deploy', batch: ['0005-d'] }),
+    ]);
+  });
+
+  it('после переноса отчёта свежий снимок разрешает уборку', () => {
+    const result = run({
+      tasks: three.map((id) => deploying(id, { status: 'cleanup' })),
+      registry,
+      reports: [],
+    });
+    expect(result.actions.filter((action) => action.kind === 'cleanup')).toEqual(
+      three.map((taskId) => ({ kind: 'cleanup', taskId })),
+    );
+    expect(kinds(result)).not.toContain('continue-stage');
+  });
+
   it('три задачи в выкладке дают одну сессию с перечнем из трёх', () => {
     const result = run({ tasks: three.map((id) => deploying(id)), registry });
     const issued = result.actions.filter((action) => action.kind === 'continue-stage');
