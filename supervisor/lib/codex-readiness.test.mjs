@@ -17,6 +17,10 @@ const command = (text, output, over = {}) => ({
 });
 const git = command('git rev-parse --is-inside-work-tree', 'true\n');
 const github = command('gh api user --jq .login', 'Dezintegra');
+const push = command(
+  'git push --dry-run origin HEAD:refs/heads/codex/readiness',
+  'Everything up-to-date',
+);
 const ssh = command(
   'ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -- dezintegra "printf td-codex-ssh-ready"',
   'td-codex-ssh-ready',
@@ -25,10 +29,12 @@ const check = (events, over = {}, env = {}) =>
   checkCodexReadiness({
     config: {},
     root: '/repo',
-    env,
+    env: { GH_TOKEN: 'test-token', ...env },
     start: ({ command: probe, timeoutMs }) => {
       expect(timeoutMs).toBe(120000);
       expect(probe.args).toContain('--ephemeral');
+      expect(probe.args.join()).not.toContain('test-token');
+      expect(probe.stdin).toContain('push --dry-run');
       expect(probe.stdin).toContain('rev-parse');
       expect(probe.stdin).toContain(`-- ${env.TD_DEPLOY_HOST ?? 'dezintegra'} `);
       expect(probe.stdin).toContain('BatchMode=yes');
@@ -44,9 +50,9 @@ const check = (events, over = {}, env = {}) =>
   });
 describe('проверка готовности Codex', () => {
   it('принимает только все успешные команды и завершённый процесс', async () => {
-    const events = [git, github, ssh, completed];
+    const events = [git, github, push, ssh, completed];
     expect((await check(events)).ok).toBe(true);
-    for (const missing of [git, github, ssh])
+    for (const missing of [git, github, push, ssh])
       expect((await check(events.filter((event) => event !== missing))).ok).toBe(false);
     expect((await check([completed])).ok).toBe(false);
     expect((await check(events, { code: 1 })).ok).toBe(false);
@@ -73,16 +79,16 @@ describe('проверка готовности Codex', () => {
       command('echo td-codex-ssh-ready', 'td-codex-ssh-ready'),
       command(ssh.item.command, ''),
     ])
-      expect((await check([git, github, event, completed])).ok).toBe(false);
+      expect((await check([git, github, push, event, completed])).ok).toBe(false);
   });
   it('проверяет выбранный TD_DEPLOY_HOST, а не другой доступный сервер', async () => {
     const env = { TD_DEPLOY_HOST: 'deploy@example.org' };
-    expect((await check([git, github, ssh, completed], {}, env)).ok).toBe(false);
+    expect((await check([git, github, push, ssh, completed], {}, env)).ok).toBe(false);
     const chosen = command(
       ssh.item.command.replace('dezintegra', env.TD_DEPLOY_HOST),
       'td-codex-ssh-ready',
     );
-    expect((await check([git, github, chosen, completed], {}, env)).ok).toBe(true);
+    expect((await check([git, github, push, chosen, completed], {}, env)).ok).toBe(true);
   });
   it.each(['', '-F', 'host; whoami', '$(whoami)', 'host\ntrue'])(
     'не вставляет некорректный host в команду: %s',
@@ -90,4 +96,15 @@ describe('проверка готовности Codex', () => {
       expect(await check([], {}, { TD_DEPLOY_HOST: host })).toMatchObject({ ok: false, run: null });
     },
   );
+});
+
+it('отклоняет сбой Git push даже при успешных GitHub API и SSH', async () => {
+  const failure = command(push.item.command, 'authentication failed', {
+    exit_code: 128,
+    status: 'failed',
+  });
+  expect(await check([git, github, failure, ssh, completed])).toMatchObject({
+    ok: false,
+    why: 'authentication failed',
+  });
 });

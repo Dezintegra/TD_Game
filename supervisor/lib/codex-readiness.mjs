@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { codexExecutionArgs, codexInvocation, readCodexAnswer } from './provider.mjs';
 import { startStage } from './run-stage.mjs';
+import { codexGitEnvironment } from './codex-environment.mjs';
 
 /** Проверяем инструмент, а не обещание модели: текст «готов» ничего не доказывает. */
 export async function checkCodexReadiness({
@@ -17,6 +18,10 @@ export async function checkCodexReadiness({
   if (!/^[a-zA-Z0-9_[\]][a-zA-Z0-9_.@:[\]-]*$/.test(host))
     return { ok: false, why: 'TD_DEPLOY_HOST: требуется SSH-псевдоним или адрес', run: null };
   const ssh = `ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -- ${host} "printf td-codex-ssh-ready"`;
+  const remote = config.remote ?? 'origin';
+  if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(remote))
+    return { ok: false, why: 'remote: требуется имя Git remote', run: null };
+  const push = `git -C ${JSON.stringify(root)} push --dry-run ${remote} HEAD:refs/heads/codex/readiness`;
   const cwd = mkdtempSync(join(tmpdir(), 'td-codex-ready-'));
   try {
     const args = [
@@ -34,8 +39,8 @@ export async function checkCodexReadiness({
     const command = {
       ...codexInvocation(config, args),
       cwd,
-      env,
-      stdin: `Проверка среды. Выполни тремя отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree; gh api user --jq .login; ${ssh}. SSH проверяет только соединение с сервером выкладки. Не печатай токены и другие секреты. Ничего не изменяй. При ошибке или отказе остановись, не пробуй альтернативы, не меняй настройки и права доступа. Верни результат команды.`,
+      env: codexGitEnvironment(env, root, cwd),
+      stdin: `Проверка среды. Выполни четырьмя отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree; gh api user --jq .login; ${push}; ${ssh}. Dry-run проверяет отправку Git без записи удалённых refs; SSH проверяет только соединение с сервером выкладки. Не печатай окружение, git config, токены и другие секреты. Ничего не изменяй. При ошибке или отказе остановись, не пробуй альтернативы, не меняй настройки и права доступа. Верни результат команды.`,
     };
     const run = await start({ command, timeoutMs: 120_000, spawn, killTree }).finished;
     const answer = readCodexAnswer(run, config);
@@ -68,14 +73,20 @@ export async function checkCodexReadiness({
         item.command.includes(`-- ${host} `) &&
         item.aggregated_output?.trim() === 'td-codex-ssh-ready',
     );
-    const ok = answer.outcome === 'done' && !failed && proof && authenticated && connected;
+    const pushReady = commands.some(
+      (item) =>
+        /\bgit\b.*push\s+--dry-run\b/.test(item.command ?? '') &&
+        item.command.includes(`${remote} HEAD:refs/heads/codex/readiness`),
+    );
+    const ok =
+      answer.outcome === 'done' && !failed && proof && authenticated && connected && pushReady;
     return {
       ok,
       why: ok
         ? null
         : (answer.why ??
           failed?.aggregated_output ??
-          'нет успешных проверочных команд Git, GitHub и SSH'),
+          'нет успешных проверочных команд Git, git push --dry-run, GitHub и SSH'),
       run,
     };
   } finally {
