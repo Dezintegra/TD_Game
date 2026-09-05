@@ -81,6 +81,9 @@ export function stagePrompt({
         stage: assignment.stage,
         branch: assignment.branch ?? null,
         worktree: assignment.path ?? null,
+        ...(assignment.deploymentRevision
+          ? { deploymentRevision: assignment.deploymentRevision }
+          : {}),
         continuation: Boolean(assignment.continuation),
         reason: assignment.reason ?? null,
         // Перечень пакета выкладки — идентификаторами, как в отчёте: по ним

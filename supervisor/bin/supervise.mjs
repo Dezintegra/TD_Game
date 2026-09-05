@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
+import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -393,6 +394,8 @@ let codexEnvironment;
 let codexReady = false;
 const supervisor = createSupervisor({
   getCodexEnvironment: () => codexEnvironment,
+  prepareAssignment: (assignment, previous) =>
+    prepareDeploySnapshot(root, config, assignment, previous),
   config,
   root,
   home,

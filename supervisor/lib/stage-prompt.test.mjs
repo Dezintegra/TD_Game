@@ -29,6 +29,15 @@ const assignment = {
 };
 
 describe('состав', () => {
+  it('передаёт закреплённую ревизию снимка выкладки', () => {
+    const deploymentRevision = 'a'.repeat(40);
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'deploy', branch: null, deploymentRevision },
+      task,
+    });
+    expect(text).toContain(`"deploymentRevision": "${deploymentRevision}"`);
+    expect(text).toContain('"branch": null');
+  });
   const text = stagePrompt({ assignment, task, journal: 'вердикт аудита: пропущено' });
 
   it('называет задачу, этап, ветку и дерево', () => {

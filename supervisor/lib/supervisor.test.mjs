@@ -75,6 +75,7 @@ function harness(over = {}) {
     saveCodexUsage: over.saveCodexUsage,
     onPolicyBlocked: over.onPolicyBlocked,
     getCodexEnvironment: over.getCodexEnvironment,
+    prepareAssignment: over.prepareAssignment,
     log: (line) => logged.push(line),
     // Запись лога этапа собирается так же, как журнал цикла, и по той же
     // причине: умолчание в `createSupervisor` — пустая функция, и без этого
@@ -127,6 +128,45 @@ const envelope = (over = {}) => ({
 });
 
 describe('порождение', () => {
+  it('сохраняет снимок до spawn и передаёт подготовленный путь', () => {
+    const deployment = { path: '.pipeline/deploy-checkouts/deploy-test', revision: 'a'.repeat(40) };
+    let observed;
+    let h;
+    h = harness({
+      prepareAssignment: (a, previous) => {
+        observed = previous;
+        return {
+          ...a,
+          path: deployment.path,
+          branch: null,
+          deployment,
+          deploymentRevision: deployment.revision,
+        };
+      },
+      onSpawn: ({ options }) => {
+        expect(h.saved.at(-1)['0001-one:deploy'].deployment).toEqual(deployment);
+        expect(options.cwd.replaceAll('\\', '/')).toContain(deployment.path);
+      },
+    });
+    expect(h.supervisor.spawnStage(assignment({ stage: 'deploy' })).ok).toBe(true);
+    expect(observed).toBeUndefined();
+    expect(h.saved.at(-1)['0001-one:deploy'].deployment).toEqual(deployment);
+  });
+
+  it('ошибка подготовки не порождает исполнителя', () => {
+    const h = harness({
+      prepareAssignment: () => {
+        throw new Error('снимок изменён');
+      },
+    });
+    expect(h.supervisor.spawnStage(assignment({ stage: 'deploy' }))).toEqual({
+      ok: false,
+      reason: 'not-born',
+      why: 'снимок изменён',
+    });
+    expect(h.children).toHaveLength(0);
+  });
+
   it('этап становится видимым как идущий', () => {
     const { supervisor } = harness();
     expect(supervisor.spawnStage(assignment()).ok).toBe(true);
