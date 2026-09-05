@@ -43,7 +43,11 @@ describe('выбор исполнителя', () => {
     expect(command.args).not.toContain('--settings');
     expect(command.args).not.toContain('unused');
     expect(command.args.at(-1)).toBe('-');
-    expect(command.args).toContain('sandbox_mode="workspace-write"');
+    expect(command.args).toContain(
+      process.platform === 'win32'
+        ? 'default_permissions="td-pipeline"'
+        : 'sandbox_mode="workspace-write"',
+    );
   });
   it('продолжает конкретную сессию и снова передаёт ограничения', () => {
     const command = stageCommand({
@@ -153,4 +157,18 @@ it('прошлый usage не подтверждает расход нового
     readCodexAnswer(run([...events, { type: 'turn.started' }, { type: 'turn.completed' }]), config)
       .outcome,
   ).toBe('failed');
+});
+
+it('включает Windows sandbox и доверяет только двум точным Git-каталогам', async () => {
+  const { codexExecutionArgs } = await import('./provider.mjs');
+  const args = codexExecutionArgs({}, '/main', '/tree', 'win32');
+  expect(args).toContain('windows.sandbox="elevated"');
+  const env = args.find((arg) => arg.startsWith('shell_environment_policy.set='));
+  expect(env).toContain('GIT_CONFIG_COUNT="3"');
+  expect(env).toContain('GIT_CONFIG_VALUE_0=""');
+  expect(env).not.toContain('*');
+  expect(codexExecutionArgs({}, '/main', '/tree', 'linux').join()).not.toContain('windows.sandbox');
+  expect(() =>
+    codexExecutionArgs({ codexWindowsSandbox: 'disabled' }, '/main', '/tree', 'win32'),
+  ).toThrow('codexWindowsSandbox');
 });

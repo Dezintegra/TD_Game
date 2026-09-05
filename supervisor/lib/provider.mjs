@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export function providerOf(config) {
@@ -20,15 +20,8 @@ export function codexInvocation(config, args) {
   };
 }
 
-export function codexStageCommand({ assignment, prompt, config, root, home }) {
-  const skillDir = isAbsolute(config.skillsDir)
-    ? config.skillsDir
-    : resolve(home, config.skillsDir);
-  const rules = readFileSync(join(skillDir, `${assignment.stage}.md`), 'utf8');
+export function codexExecutionArgs(config, root, cwd, platform = process.platform) {
   const args = [
-    'exec',
-    '--ignore-user-config',
-    '--json',
     '-c',
     'approval_policy="never"',
     '-c',
@@ -38,12 +31,74 @@ export function codexStageCommand({ assignment, prompt, config, root, home }) {
     '-c',
     `sandbox_workspace_write.writable_roots=${JSON.stringify([join(root, '.git')])}`,
   ];
+  if (platform === 'win32') {
+    // Профиль сохраняет защиту :workspace и явно разрешает служебные записи Git.
+    // Обычные writable_roots не снимают защиту .git в связанном worktree.
+    args.splice(2);
+    const common = resolve(root, '.git');
+    let gitdir = common;
+    const pointer = join(cwd, '.git');
+    try {
+      if (statSync(pointer).isFile()) {
+        const match = /^gitdir:\s*(.+)\s*$/m.exec(readFileSync(pointer, 'utf8'));
+        if (!match) throw new Error('Некорректный gitdir');
+        gitdir = resolve(cwd, match[1].trim());
+        const subpath = relative(common, gitdir);
+        if (subpath.startsWith('..') || isAbsolute(subpath))
+          throw new Error('gitdir назначенного дерева выходит за общую .git');
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const filesystem = [...new Set([common, gitdir])]
+      .map((path) => JSON.stringify(path.replaceAll('\\', '/')) + '="write"')
+      .join(',');
+    args.push(
+      '-c',
+      'default_permissions="td-pipeline"',
+      '-c',
+      'permissions={td-pipeline={extends=":workspace",filesystem={' +
+        filesystem +
+        '},network={enabled=true}}}',
+    );
+    const sandbox = config.codexWindowsSandbox ?? 'elevated';
+    if (!['elevated', 'unelevated'].includes(sandbox))
+      throw new Error('codexWindowsSandbox: требуется elevated или unelevated');
+    args.push('-c', `windows.sandbox=${JSON.stringify(sandbox)}`);
+    // Sandbox использует другого Windows-пользователя. Доверяем только деревьям
+    // назначения, в окружении дочерней команды, не меняя глобальный Git config.
+    const paths = [
+      '',
+      ...new Set([resolve(root), resolve(cwd)].map((p) => p.replaceAll('\\', '/'))),
+    ];
+    const env = { GIT_CONFIG_COUNT: String(paths.length) };
+    paths.forEach((path, i) => {
+      env[`GIT_CONFIG_KEY_${i}`] = 'safe.directory';
+      env[`GIT_CONFIG_VALUE_${i}`] = path;
+    });
+    args.push(
+      '-c',
+      `shell_environment_policy.set={${Object.entries(env)
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .join(',')}}`,
+    );
+  }
+  return args;
+}
+
+export function codexStageCommand({ assignment, prompt, config, root, home }) {
+  const skillDir = isAbsolute(config.skillsDir)
+    ? config.skillsDir
+    : resolve(home, config.skillsDir);
+  const rules = readFileSync(join(skillDir, `${assignment.stage}.md`), 'utf8');
+  const cwd = assignment.path ? resolve(root, assignment.path) : root;
+  const args = ['exec', '--ignore-user-config', '--json', ...codexExecutionArgs(config, root, cwd)];
   if (config.codexModel) args.push('--model', config.codexModel);
   if (assignment.continuation && assignment.sessionId) args.push('resume', assignment.sessionId);
   args.push('-');
   return {
     ...codexInvocation(config, args),
-    cwd: assignment.path ? resolve(root, assignment.path) : root,
+    cwd,
     stdin: `Правила автономного этапа:\n${rules}\n\nРабочее дерево уже назначено супервизором; повторно спрашивать о его создании не нужно. Выполни только назначенный этап. Не вызывай интерактивные вопросы: если нужен ответ человека, верни его в JSON-отчёте по правилам этапа.\n\n${prompt}`,
   };
 }
