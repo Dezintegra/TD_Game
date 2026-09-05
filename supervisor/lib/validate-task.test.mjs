@@ -48,6 +48,25 @@ describe('поля возврата из ошибки', () => {
   });
 });
 
+describe('счёт отказов сервера и расход задачи', () => {
+  it('запись с apiErrors и расходом годна', () => {
+    // Обе величины код пишет, а схемы их не знали: apiErrors — с 03.09.2026
+    // (задача 0220), расход — с этого изменения. При additionalProperties:
+    // false такая запись у файлового хранилища отвергалась бы молча.
+    const task = {
+      ...feature(),
+      spentUsd: 12.5,
+      attempts: { continuations: 0, cycleFailures: 0, apiErrors: 2 },
+    };
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('отрицательный расход отвергается', () => {
+    const task = { ...feature(), spentUsd: -1 };
+    expect(validateTask(task, schema)).toHaveLength(1);
+  });
+});
+
 describe('обязательные поля', () => {
   it('пропущенное поле названо по имени', () => {
     const task = feature();

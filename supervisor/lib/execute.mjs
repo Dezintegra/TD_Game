@@ -1,5 +1,6 @@
 import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
 import {
+  addSpent,
   applyTransition,
   claimTask,
   countApiError,
@@ -147,6 +148,11 @@ async function transferReport(action, io) {
   // от неё вывод о позапрошлом падении.
   if (verdict.status === 'postmortem') io.forgetSession?.(action.taskId, 'postmortem');
 
+  // Расход прибавляется на ЛЮБОМ исходе отчёта, включая возврат и остановку:
+  // сессия стоила денег независимо от того, чем кончилась, а вся мера затеяна
+  // ровно против кругов, каждый из которых чем-то кончался.
+  next = addSpent(next, report.costUsd);
+
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без
   // номера pull request задача висела бы в ожидании проверок вечно, потому
@@ -168,6 +174,10 @@ async function transferReport(action, io) {
     sourceStage: task.status,
     // Разбор, назвавший причину конвейерной, заводит конвейерные заявки.
     pipelineCause: pipelineCause(report),
+    // Части, рождённые дроблением, анализ на дробность уже прошли — в лице
+    // задачи, которая их и породила, — и потому идут из очереди сразу
+    // в проработку.
+    decomposed: report.outcome === 'split',
   });
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
@@ -244,6 +254,17 @@ async function transferReport(action, io) {
     next = relate(next, item.taskId);
   }
 
+  // Пакет выкладки разносится ДО записи ведущей и по той же причине, что
+  // заявки: неудача на середине не должна оставлять отчёт непринятым при
+  // уже сдвинутой ведущей. Задачи, уже переехавшие прошлым заходом,
+  // разноска узнаёт по состоянию и пропускает — перенос идемпотентен.
+  if (action.stage === 'deploy' && Array.isArray(report.batch)) {
+    const spread = await spreadBatch(task, report, io);
+    if (!spread.ok) return { result: 'failed', why: spread.why, created, amended };
+    for (const id of spread.moved) next = relate(next, id);
+    plan.notes = [...(plan.notes ?? []), ...spread.notes];
+  }
+
   // Вопрос записывается ТЕМ ЖЕ действием, что и переход в ожидание.
   // Схема задачи требует поля `question` при этом состоянии, а без записи
   // вопроса у ожидания нет выхода вовсе.
@@ -309,6 +330,91 @@ async function transferReport(action, io) {
     amended,
     rejected: [...plan.rejected, ...facts.rejected],
   };
+}
+
+/**
+ * Разнести отчёт пакетной выкладки по задачам пакета.
+ *
+ * Отчёт один — ведущей, — а задач в пакете много, и о них говорят два
+ * перечня: `deployed` (код выложен → `cleanup`) и `skipped` (`{ taskId, why }`,
+ * из пакета исключена → `failed` с причиной). Исход `outcome` относится
+ * к ведущей и разбирается общим порядком; здесь двигаются только прочие.
+ *
+ * Отчёт властен ровно над своим пакетом — перечнем из назначения, который
+ * супервизор вернул вместе с отчётом. Идентификатор не из пакета не двигает
+ * ничего: сессия не откроет доску, и назвать чужую задачу может только
+ * по ошибке. Задача пакета, не названная ни в одном перечне, остаётся
+ * в `deploy` и попадёт в следующий пакет — молча увести её в уборку нельзя:
+ * сессия могла пропустить её по делу, а не по забывчивости. Оба случая
+ * ложатся записью в журнал ведущей.
+ *
+ * Каждая задача уезжает своим коммитом, и неудача любой из них возвращает
+ * неудачу целиком: ведущая и отчёт остаются на месте, следующий оборот
+ * начинает заново, а уже переехавших узнаёт по состоянию.
+ */
+async function spreadBatch(lead, report, io) {
+  const batch = report.batch.filter((id) => id !== lead.id);
+  const deployed = new Set(Array.isArray(report.deployed) ? report.deployed : []);
+  const skipped = new Map(
+    (Array.isArray(report.skipped) ? report.skipped : [])
+      .filter((item) => item && typeof item.taskId === 'string')
+      .map((item) => [item.taskId, String(item.why ?? '').trim() || 'причина не названа']),
+  );
+
+  const notes = [];
+  for (const id of [...deployed, ...skipped.keys()]) {
+    if (id !== lead.id && !batch.includes(id)) {
+      notes.push(`Отчёт назвал задачу ${id}, которой в пакете не было: она не тронута.`);
+    }
+  }
+
+  const moved = [];
+  for (const id of batch) {
+    const member = io.readTask(id);
+    if (!member) {
+      notes.push(`Задача ${id} из пакета в бэклоге не найдена.`);
+      continue;
+    }
+    // Уже переехала прошлым заходом переноса — либо её увёл человек.
+    // И то и другое не наше дело: двигаем только стоящих в выкладке.
+    if (member.status !== 'deploy') continue;
+
+    const to = deployed.has(id) ? 'cleanup' : skipped.has(id) ? 'failed' : null;
+    if (!to) {
+      notes.push(`Задача ${id} из пакета отчётом не названа: остаётся в выкладке.`);
+      continue;
+    }
+
+    const problem = to === 'failed' ? skipped.get(id) : undefined;
+    const what =
+      to === 'cleanup'
+        ? `Выложена пакетом с ${lead.id}. ${report.summary ?? ''}`.trim()
+        : `Исключена из пакета выкладки ${lead.id}.`;
+    const shifted = applyTransition(member, { status: to, note: problem ?? what, now: io.now });
+    if (!shifted.task) return { ok: false, why: `${id}: ${shifted.problems.join('; ')}` };
+
+    // Дошедшая до уборки задача счётчиков не несёт, как и ведущая: прошлые
+    // заминки этапа больше не в счёт. Исключённой их обнулил сам переход
+    // в сквозное состояние.
+    const settled = to === 'cleanup' ? resetAttempts(shifted.task) : shifted.task;
+    const push = await io.saveTask(
+      settled,
+      {
+        at: io.now,
+        from: 'deploy',
+        to,
+        what,
+        problem,
+        links: report.links ?? {},
+        source: 'agent',
+      },
+      `chore(backlog): ${id} deploy → ${to} (пакет ${lead.id})`,
+    );
+    if (!push.ok) return { ok: false, why: `${id}: ${push.outcome}`, moved, notes };
+    moved.push(id);
+  }
+
+  return { ok: true, moved, notes };
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
@@ -461,6 +567,27 @@ function assignmentFor(action, io, task, branchHint) {
     task,
     journal: io.readJournal(action.taskId),
     board: io.boardDigest(),
+    // Пакет выкладки: выписки задач, которые сессия выкладывает вместе
+    // с ведущей. Перечень фиксируется здесь, в момент выдачи сессии, и это
+    // единственный источник правды о составе пакета — доску сессия не откроет,
+    // а задача, пришедшая в `deploy` позже, останется ждать следующего.
+    batch: action.batch ? action.batch.map((id) => batchDigest(io.readTask(id), id)) : null,
+  };
+}
+
+/**
+ * Что о задаче пакета нужно сессии выкладки: номер pull request, чтобы
+ * проверить вливание, имя изменения — чтобы назвать его в журнале.
+ * Задачи, которой бэклог уже не знает, выписка не скрывает: сессия обязана
+ * назвать её в отчёте исключённой, а не промолчать.
+ */
+function batchDigest(task, id) {
+  if (!task) return { id, title: null, pr: null, change: null, missing: true };
+  return {
+    id: task.id,
+    title: task.title ?? null,
+    pr: task.links?.pr ?? null,
+    change: task.links?.change ?? null,
   };
 }
 
@@ -649,6 +776,43 @@ function apiErrorRecord(stage, why) {
     'Состояние задачи не изменилось. Как только сервер ответит, этап пойдёт ' +
     'заново с прежним счётом попыток.\n'
   );
+}
+
+/**
+ * Отправить разросшуюся задачу на повторный анализ дробности.
+ *
+ * Не в разбор ошибки: задача не сломана. Разбор читает лог упавшего этапа
+ * и ищет поломку, а тут поломки нет — работа выросла, и лог последнего этапа
+ * про это не скажет ничего. 04.09.2026 задача 0216 прошла двенадцать этапов
+ * за $76,01, расширившись по дороге с проработки на имплементацию.
+ *
+ * Признак дробления снимается, и без этого весь ход бессмыслен: анализ
+ * пропустился бы ровно в том случае, ради которого затеян.
+ */
+async function decomposeAgain(action, io) {
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+
+  const moved = applyTransition(task, {
+    status: 'decompose',
+    note: action.reason,
+    now: io.now,
+  });
+  if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  const push = await io.saveTask(
+    { ...moved.task, decomposed: false },
+    {
+      at: io.now,
+      from: task.status,
+      to: 'decompose',
+      problem: `${action.reason}. Метка о проведённом дроблении снята: анализ идёт заново.`,
+    },
+    `chore(backlog): ${task.id} ${task.status} → decompose (предел ресурсов)`,
+  );
+  return push.ok
+    ? { result: 'done', status: 'decompose' }
+    : { result: 'failed', why: push.outcome };
 }
 
 /** Разобрать ответ владельца продукта и вернуть задачу в работу. */
@@ -934,6 +1098,7 @@ const HANDLERS = {
   'start-stage': startStage,
   'note-orphan': noteOrphan,
   'note-api-error': noteApiError,
+  'decompose-again': decomposeAgain,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
   'return-task': returnTask,

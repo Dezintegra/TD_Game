@@ -1,6 +1,8 @@
+import { recordTokenUsage, taskTokens } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
 import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
 import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
+import { providerOf, readCodexAnswer, codexDenial } from './provider.mjs';
 import { readAnswer, startStage as spawnStageProcess } from './run-stage.mjs';
 import { parseReport } from './parse-report.mjs';
 import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
@@ -43,6 +45,10 @@ export function createSupervisor({
   nowMs = () => Date.now(),
   saveStages = () => {},
   stages = {},
+  codexUsage = {},
+  saveCodexUsage = () => {},
+  onPolicyBlocked = () => {},
+  getCodexEnvironment = () => undefined,
   log = () => {},
   writeStageLog = () => {},
   readStageLog = () => null,
@@ -53,6 +59,7 @@ export function createSupervisor({
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
+  let policyBlocked = false;
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
   /**
@@ -100,6 +107,7 @@ export function createSupervisor({
   adoptOrphans();
 
   return {
+    codexUsage,
     reports,
     orphanOutcomes,
     apiFailures,
@@ -152,7 +160,12 @@ export function createSupervisor({
     ],
 
     /** Идентификатор сессии прошлого захода на этот этап, если он был. */
-    lastSession: (taskId, stage) => known[key(taskId, stage)]?.sessionId ?? null,
+    lastSession: (taskId, stage) => {
+      const saved = known[key(taskId, stage)];
+      return (saved?.provider ?? 'claude') === providerOf(config)
+        ? (saved?.sessionId ?? null)
+        : null;
+    },
 
     /**
      * Когда на этот этап зашли ПЕРВЫЙ раз.
@@ -200,6 +213,12 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
+      if (policyBlocked)
+        return {
+          ok: false,
+          reason: 'busy',
+          why: 'Codex остановлен отказом политики; требуется диагностика',
+        };
       if (children.has(assignment.taskId)) {
         return { ok: false, reason: 'busy', why: 'по этой задаче уже идёт этап' };
       }
@@ -219,26 +238,35 @@ export function createSupervisor({
 
       // Идентификатор выдаётся заранее, а не берётся из ответа: тогда
       // возобновлять есть что даже после падения супервизора.
-      const sessionId = assignment.sessionId ?? randomUUID();
-      const command = stageCommand({
-        assignment: { ...assignment, sessionId },
-        prompt: stagePrompt({
-          assignment,
-          task: assignment.task,
-          journal: assignment.journal,
-          board: assignment.board,
-          // Разбору дают лог того этапа, из которого задача упала. Его имя
-          // хранит сама задача — состоянием возврата, — и потому спрашивается
-          // здесь, а не угадывается по журналу.
-          stageLog:
-            assignment.stage === 'postmortem'
-              ? readStageLog(assignment.taskId, assignment.task?.returnTo)
-              : null,
-        }),
-        config,
-        root,
-        home,
-      });
+      const provider = providerOf(config);
+      const previous = known[key(assignment.taskId, assignment.stage)];
+      const compatible = (previous?.provider ?? 'claude') === provider;
+      const sessionId =
+        (compatible ? assignment.sessionId : null) ?? (provider === 'claude' ? randomUUID() : null);
+      let command;
+      try {
+        command = stageCommand({
+          assignment: { ...assignment, sessionId },
+          prompt: stagePrompt({
+            assignment,
+            task: assignment.task,
+            journal: assignment.journal,
+            board: assignment.board,
+            // Разбору дают лог того этапа, из которого задача упала. Его имя
+            // хранит сама задача — состоянием возврата, — и потому спрашивается
+            // здесь, а не угадывается по журналу.
+            stageLog:
+              assignment.stage === 'postmortem'
+                ? readStageLog(assignment.taskId, assignment.task?.returnTo)
+                : null,
+          }),
+          config,
+          root,
+          home,
+        });
+      } catch (error) {
+        return { ok: false, reason: 'not-born', why: error.message };
+      }
 
       // Дескриптор заводится ДО порождения: обработчики событий пишут
       // в него ходы и последнее действие, а пульс их оттуда читает.
@@ -247,6 +275,10 @@ export function createSupervisor({
         taskId: assignment.taskId,
         stage: assignment.stage,
         sessionId,
+        usageBaseline:
+          compatible && assignment.continuation && previous?.sessionId === sessionId
+            ? previous?.usage
+            : null,
         startedAt: now(),
         startedMs: nowMs(),
         timeoutMs,
@@ -257,11 +289,19 @@ export function createSupervisor({
         steps: 0,
         last: null,
         handle: null,
+        // Перечень пакета выкладки — идентификаторами. Хранится у ребёнка,
+        // чтобы вернуться вместе с отчётом: перенос сверяет названных в отчёте
+        // с этим перечнем, а не с колонкой доски, — состав пакета зафиксирован
+        // в момент выдачи сессии, и свежая карточка в него не входит.
+        batch: Array.isArray(assignment.batch)
+          ? assignment.batch.map((item) => (typeof item === 'string' ? item : item.id))
+          : null,
       };
 
       try {
         child.handle = spawnStageProcess({
-          command,
+          command:
+            providerOf(config) === 'codex' ? { ...command, env: getCodexEnvironment() } : command,
           timeoutMs,
           spawn,
           killTree,
@@ -297,6 +337,8 @@ export function createSupervisor({
       const at = key(assignment.taskId, assignment.stage);
       known[at] = {
         sessionId,
+        provider,
+        ...(child.usageBaseline ? { usage: child.usageBaseline } : {}),
         startedAt: known[at]?.startedAt ?? now(),
         // Дескриптор ложится на диск ТЕМ ЖЕ действием, что и память о сессии:
         // обе записи об одном процессе, и разъехаться им нельзя. Отдельный
@@ -372,6 +414,34 @@ export function createSupervisor({
    * и длительность, и стоимость, и отказы.
    */
   function watch(child, event, line) {
+    if (providerOf(config) === 'codex') {
+      const denial = codexDenial(event);
+      if (denial && !policyBlocked) {
+        policyBlocked = true;
+        const why = `${child.taskId}:${child.stage}: ${denial.reason}`;
+        say.line(TAG.error, `ПАУЗА: отказ политики Codex; ${why}`);
+        onPolicyBlocked(why);
+      }
+      if (event?.type === 'thread.started' && event.thread_id) {
+        child.sessionId = event.thread_id;
+        const at = key(child.taskId, child.stage);
+        if (known[at]) {
+          known[at].sessionId = event.thread_id;
+          saveStages(known);
+        }
+      }
+      if (
+        event?.type === 'turn.completed' &&
+        recordTokenUsage(codexUsage, child.taskId, child.sessionId, event.usage)
+      )
+        saveCodexUsage(codexUsage);
+      if (event?.type === 'item.completed') {
+        child.steps += 1;
+        child.last = clip(event.item?.text ?? event.item?.command ?? event.item?.type, 160);
+        say.line(TAG.stage, `${child.taskId} ${child.last}`);
+      }
+      return;
+    }
     if (event?.type === 'result') return;
     if (event?.type === 'assistant') child.steps += 1;
 
@@ -645,7 +715,22 @@ export function createSupervisor({
     children.delete(child.taskId);
     stopPulse();
 
-    const answer = readAnswer(run);
+    const answer =
+      providerOf(config) === 'codex'
+        ? readCodexAnswer(run, config, child.usageBaseline)
+        : readAnswer(run);
+    if (providerOf(config) === 'codex')
+      recordTokenUsage(
+        codexUsage,
+        child.taskId,
+        answer.sessionId ?? child.sessionId,
+        answer.usageTotals,
+      );
+    if (providerOf(config) === 'codex') {
+      if (answer.usageTotals) saveCodexUsage(codexUsage);
+      answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${config.codexMaxTaskTokens ?? 'без лимита'} токенов задачи${answer.usage ? '' : '; расход текущего запуска неизвестен'}`;
+      log(answer.tokenBudget);
+    }
     // Отчёт разбирается ЗДЕСЬ, а не там, где он применяется, — потому что
     // ниже по этой функции три досрочных возврата, а лог обязан лечь на диск
     // раньше каждого из них: как раз в тех случаях, ради которых лог и пишут,
@@ -680,7 +765,9 @@ export function createSupervisor({
         `${answer.why ? ` — ${answer.why}` : ''}` +
         `, ${humanDuration(nowMs() - child.startedMs)}` +
         `, ходов ${answer.turns ?? '—'}` +
-        `, стоимость ${answer.cost != null ? `$${answer.cost.toFixed(2)}` : '—'}` +
+        (answer.tokenBudget
+          ? `, ${answer.tokenBudget}`
+          : `, стоимость ${answer.cost != null ? `$${answer.cost.toFixed(2)}` : '—'}`) +
         `, отказов ${answer.denials.length}`,
     );
 
@@ -696,6 +783,7 @@ export function createSupervisor({
     if (known[at]) {
       const kept = { ...known[at] };
       delete kept.live;
+      if (answer.usageTotals) kept.usage = answer.usageTotals;
       known[at] = answer.sessionId ? { ...kept, sessionId: answer.sessionId } : kept;
       saveStages(known);
     }
@@ -705,7 +793,12 @@ export function createSupervisor({
     // рождении, ей вернут. 03.09.2026 без этого 0153 и 0165 потеряли все свои
     // продолжения за полчаса чужой перегрузки.
     if (answer.outcome === 'api-error') {
-      apiFailures.push({ taskId: child.taskId, stage: child.stage, why: answer.why });
+      apiFailures.push({
+        taskId: child.taskId,
+        stage: child.stage,
+        why: answer.why,
+        costUsd: answer.cost ?? 0,
+      });
       log(`этап ${child.taskId}:${child.stage} лёг на отказе сервера: ${answer.why}`);
       return;
     }
@@ -758,7 +851,24 @@ export function createSupervisor({
 
     // Отказы едут ВМЕСТЕ с отчётом: судить их будет перенос, и своего
     // источника у него нет — процесс к тому времени давно закрыт.
-    reports.push({ ...parsed.report, taskId: child.taskId, denials: answer.denials });
+    // Стоимость едет ВМЕСТЕ с отчётом по той же причине, что и отказы: своего
+    // источника у переноса нет, процесс к тому времени закрыт. Отдельная
+    // очередь дала бы ещё одну запись на доску по каждому этапу — лишнее
+    // обращение к Trello на каждый шаг ради числа, которое едет рядом даром.
+    //
+    // Отсутствие стоимости в ответе — ноль, а не беда: ответ без неё законен,
+    // и ронять из-за этого перенос отчёта нечем оправдать.
+    reports.push({
+      ...parsed.report,
+      taskId: child.taskId,
+      denials: answer.denials,
+      costUsd: answer.cost ?? 0,
+      // Перечень пакета едет с отчётом по той же причине, что отказы
+      // и стоимость: у переноса своего источника нет. Сессия перечня
+      // не пишет — отчёт властен только над своим пакетом, и что это
+      // за пакет, знает породивший, а не порождённый.
+      ...(child.batch ? { batch: child.batch } : {}),
+    });
     log(`этап ${child.taskId}:${child.stage} закончен с исходом ${parsed.report.outcome}`);
   }
 }
@@ -780,6 +890,8 @@ function remembered(value) {
   const kept = {
     sessionId: value?.sessionId ?? null,
     startedAt: value?.startedAt ?? null,
+    ...(value?.provider ? { provider: value.provider } : {}),
+    ...(value?.usage ? { usage: value.usage } : {}),
   };
   return value?.live ? { ...kept, live: value.live } : kept;
 }
@@ -836,7 +948,9 @@ function renderLog(child, run, answer, parsed) {
     `ответ сессии:  ${answer.outcome}${answer.why ? ` (${answer.why})` : ''}`,
     `исход отчёта:  ${reportOutcome(child, answer, parsed)}`,
     `ходов:         ${answer.turns ?? '—'}`,
-    `стоимость:     ${answer.cost ?? '—'}`,
+    answer.tokenBudget
+      ? `токены:        ${answer.tokenBudget}`
+      : `стоимость:     ${answer.cost ?? '—'}`,
     `отказов:       ${answer.denials.length}`,
   ];
   return [

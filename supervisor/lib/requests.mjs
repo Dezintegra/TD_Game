@@ -91,7 +91,7 @@ export function nextId(existingIds, title) {
  */
 export function taskFromRequest(
   request,
-  { id, now, sourceId, mayQueue = false, pipelineByDefault = false },
+  { id, now, sourceId, mayQueue = false, pipelineByDefault = false, decomposed = false },
 ) {
   const problems = [];
 
@@ -170,6 +170,14 @@ export function taskFromRequest(
     history: [],
     links: { change: null, pr: null, run: null, related: sourceId ? [sourceId] : [] },
     attempts: { continuations: 0, cycleFailures: 0 },
+    // Часть, рождённая дроблением, анализ на дробность уже прошла — в лице
+    // задачи, которая её и породила. Без признака каждая часть шла бы
+    // разбираться на дробность заново, сессия за сессией на вопрос
+    // с известным ответом.
+    //
+    // Ставится он ТОЛЬКО заявкам дробления: заявка разбора или аудита —
+    // это находка по дороге, и её дробность никто не смотрел.
+    decomposed: Boolean(decomposed) && type === 'feature',
   };
 
   // Признак едет дальше самой задачей: хранилище ставит такую задачу
@@ -209,7 +217,7 @@ export function taskFromRequest(
  */
 export function planRequests(
   requests,
-  { existingIds, now, sourceId, sourceStage = null, pipelineCause = false },
+  { existingIds, now, sourceId, sourceStage = null, pipelineCause = false, decomposed = false },
 ) {
   const planned = [];
   const rejected = [];
@@ -233,6 +241,7 @@ export function planRequests(
       sourceId,
       mayQueue,
       pipelineByDefault,
+      decomposed,
     });
     if (!task) {
       rejected.push({ request, problems });

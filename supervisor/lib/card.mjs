@@ -121,7 +121,13 @@ export function withExpectation(human, task) {
  * называть одно и то же одним и тем же местом.
  */
 export const labelKeysOf = (task) =>
-  [task?.type, task?.type === 'run' ? (task.run?.kind ?? null) : null].filter(Boolean);
+  [
+    task?.type,
+    task?.type === 'run' ? (task.run?.kind ?? null) : null,
+    // Без этой строки метка не уехала бы на заведённую дроблением карточку,
+    // и она пошла бы на анализ дробности, который для неё только что провели.
+    task?.decomposed ? 'decomposed' : null,
+  ].filter(Boolean);
 
 /**
  * Название карточки без служебного префикса с идентификатором.
@@ -164,6 +170,11 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     returnTo: meta?.returnTo ?? null,
     links: { change: null, pr: null, run: null, related: [], ...(meta?.links ?? {}) },
     attempts: { continuations: 0, cycleFailures: 0, ...(meta?.attempts ?? {}) },
+    // Дробление уже проводили — этап анализа задача пропускает. Признак
+    // читается ТОЛЬКО из метки и в машинный блок не пишется: два хранилища
+    // одного значения расходятся молча, и по той же причине состояние живёт
+    // только колонкой, а тип — только меткой.
+    decomposed: labels.flags.includes('decomposed'),
     history: [],
   };
 
@@ -203,7 +214,7 @@ function labelKeys(idLabels, labelKeyById) {
   return {
     types: keys.filter((key) => ['feature', 'run', 'note'].includes(key)),
     runKinds: keys.filter((key) => ['arena', 'perf', 'bench-tick'].includes(key)),
-    flags: keys.filter((key) => ['unparsed', 'overdue'].includes(key)),
+    flags: keys.filter((key) => ['unparsed', 'overdue', 'decomposed'].includes(key)),
   };
 }
 

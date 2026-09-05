@@ -8,6 +8,7 @@ import {
   NEEDS_WORKTREE,
   ROUTES,
   STATES,
+  STATE_CLASS,
   canTransition,
   isExclusive,
   isResource,
@@ -259,21 +260,14 @@ const uncoveredMergeCommands = (permissions) =>
  * Этапы, чьи команды закрыты ОСОЗНАННО, — с причиной и с тем, чем закрытие
  * снимается.
  *
- * Реестр нужен потому, что сторож без него покраснел бы сразу и навсегда:
- * выкладка с `ssh` закрыта решением о том, что боевой сервер — дело человека
- * (`$pnpmNote` в `stage-settings.json`). А красный набор не влить — и вместе
- * со сторожем пропала бы первая половина изменения, та самая, которая
- * прекращает сжигать по две сессии на задачу.
- *
- * Замолчать беду реестром нельзя: он краснеет в обе стороны. Развилка
- * владельца продукта — открыть команды или вывести `deploy` из автомата —
- * от записи не решается, а становится видимой и снимается одной строкой.
+ * Реестр заведён, когда выкладка с `ssh` была закрыта решением о том, что
+ * боевой сервер — дело человека, а сторож без записи покраснел бы сразу
+ * и навсегда. 04.09.2026 владелец продукта открыл команды выкладки
+ * (задача 0117, пакетная выкладка), и реестр опустел — но остаётся: он
+ * краснеет в обе стороны, и следующее осознанное закрытие любого этапа
+ * записывается сюда одной строкой, а не выключением сторожа.
  */
-const DELIBERATELY_CLOSED = {
-  deploy:
-    'боевой сервер — решение человека ($pnpmNote в stage-settings.json). ' +
-    'Снимается задачей 0117: разрешить конвейеру команды выкладки',
-};
+const DELIBERATELY_CLOSED = {};
 
 /**
  * Что в скилле этапа считать гейтируемым: программы, чей запуск решают правила
@@ -288,7 +282,7 @@ const DELIBERATELY_CLOSED = {
  * это его предмет.
  */
 const GATED_PROGRAMS = {
-  deploy: ['ssh', 'node scripts/deploy.mjs'],
+  deploy: ['ssh', 'node scripts/deploy.mjs', 'pnpm e2e:perf'],
 };
 
 /**
@@ -330,6 +324,19 @@ const FALSE_GROUND =
 const traceFormula = (text) => text.match(/След объявлен поимённо:[\s\S]*?(?=\n\n)/)?.[0] ?? null;
 
 describe('этапы и скиллы', () => {
+  it('всякому ресурсному состоянию положена сессия', () => {
+    // Состояние, объявленное ресурсным, но забытое в NEEDS_SESSION, тратит
+    // место в квоте и НЕ получает сессии никогда: сканер выдаёт её только
+    // по этому перечню. Задача встаёт в колонке навсегда и молча — ни отказа,
+    // ни записи в журнал, ни строки в консоли.
+    //
+    // Щель найдена пробой при заведении этапа декомпозиции: снятие состояния
+    // из перечня не покраснило ни одного теста.
+    const resource = STATES.filter((state) => STATE_CLASS[state] === 'resource');
+    const forgotten = resource.filter((state) => !NEEDS_SESSION.includes(state));
+    expect(forgotten).toEqual([]);
+  });
+
   it('у каждого этапа с сессией есть скилл', () => {
     // Сессия-исполнитель читает указания своего этапа из
     // `skills/<этап>.md` и без них не знает, что делать. Расхождение
@@ -570,21 +577,33 @@ describe('этапы и скиллы', () => {
     expect(stale).toEqual([]);
   });
 
-  it('открытие закрытого этапа требует снять запись о нём', () => {
-    // Проба на порчу первого рода — на выдуманной настройке, а не правкой
-    // `stage-settings.json`: открывать команды выкладки здесь нельзя, это
-    // решение владельца продукта (задача 0117).
+  it('шаблон разрешений открывает выкладку целиком, и закрытой она не числится', () => {
+    // Команды выкладки открыты решением владельца продукта 04.09.2026
+    // (задача 0117): конвейер выкладывает сам, пакетом. Запись о закрытом
+    // этапе при этом снята — оставь её, и сторож «закрытый этап действительно
+    // не покрыт» покраснел бы, назвав запись устаревшей.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    expect(uncoveredForStage(settings.permissions, 'deploy')).toEqual([]);
+    expect('deploy' in DELIBERATELY_CLOSED).toBe(false);
+  });
+
+  it('выдуманная настройка с открытыми командами выкладки не держит ничего', () => {
+    // Проба на выдуманной настройке, а не на шаблоне: сторож покрытия
+    // считает по правилам, а не по имени файла.
     const opened = {
       allow: [
         'Bash(ssh:*)',
         'PowerShell(ssh:*)',
         'Bash(node scripts/deploy.mjs:*)',
         'PowerShell(node scripts/deploy.mjs:*)',
+        'Bash(pnpm e2e:perf:*)',
+        'PowerShell(pnpm e2e:perf:*)',
       ],
       deny: [],
     };
     expect(uncoveredForStage(opened, 'deploy')).toEqual([]);
-    expect('deploy' in DELIBERATELY_CLOSED).toBe(true);
   });
 
   it('правило на одну приставку выкладки из двух этап не открывает', () => {
@@ -599,6 +618,8 @@ describe('этапы и скиллы', () => {
         'PowerShell(ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra:*)',
         'Bash(node scripts/deploy.mjs:*)',
         'PowerShell(node scripts/deploy.mjs:*)',
+        'Bash(pnpm e2e:perf:*)',
+        'PowerShell(pnpm e2e:perf:*)',
       ],
       deny: [],
     };
@@ -683,6 +704,37 @@ describe('этапы и скиллы', () => {
       (stage) => !readFileSync(`${dir}${stage}.md`, 'utf8').includes('`area: "pipeline"`'),
     );
     expect(silent).toEqual([]);
+  });
+
+  it('разбор и анализ знают правило дробления одной меркой', () => {
+    // Мерка обязана быть одна на оба этапа и проверяемая, а не «на глаз»:
+    // «большой задачу» две сессии подряд назовут по-разному. Расхождение
+    // здесь дорого — 04.09.2026 задача 0216 расползлась с проработки
+    // на имплементацию и после шести кругов и $76,01 не влила ни строки.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const splitting = ['triage', 'decompose'];
+    const silent = splitting.filter((stage) => {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      return !text.includes('вливать порознь') && !text.includes('влить отдельным pull request');
+    });
+    expect(silent).toEqual([]);
+
+    // Анализ обязан назвать и ход: заявки плюс исход `split`. Правило
+    // без хода — пожелание, а не правило.
+    const decompose = readFileSync(`${dir}decompose.md`, 'utf8');
+    expect(decompose).toContain('`split`');
+    expect(decompose).toContain('не меньше двух');
+  });
+
+  it('анализ знает случай упора в потолок и не решает его сам', () => {
+    // Повторный анализ, признавший работу неделимой, обязан звать владельца:
+    // поднять потолок или остановить — это про цену работы против её
+    // ценности, и из кода такое не выводится. Скилл, не знающий этого случая,
+    // отправит задачу в проработку по второму кругу за те же деньги.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const text = readFileSync(`${dir}decompose.md`, 'utf8');
+    expect(text).toContain('потолок');
+    expect(text).toContain('`question`');
   });
 
   it('скилл разбора требует вердикт о причине и объясняет fixedBy', () => {

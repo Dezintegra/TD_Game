@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { codexChildEnvironment } from '../lib/codex-environment.mjs';
+import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
+import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -21,6 +24,7 @@ import {
   refreshLock,
   shouldPause,
 } from '../lib/lock.mjs';
+import { codexProbeCommand, providerOf, readCodexAnswer } from '../lib/provider.mjs';
 import { judgeProbe, shouldProbe } from '../lib/api-health.mjs';
 import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
 import { checkEnvironment } from '../lib/environment.mjs';
@@ -107,7 +111,11 @@ function configPath() {
 function loadConfig() {
   const path = configPath();
   const project = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
-  return resolveConfig(project);
+  const provider = process.argv
+    .slice(2)
+    .find((arg) => arg.startsWith('--provider='))
+    ?.slice('--provider='.length);
+  return resolveConfig({ ...project, ...(provider ? { provider } : {}) });
 }
 
 /**
@@ -140,6 +148,16 @@ function loadConfig() {
  * @returns {{ ok: boolean, status: string|number|null }}
  */
 function probeApi() {
+  if (providerOf(config) === 'codex') {
+    const command = codexProbeCommand(config);
+    const dir = mkdtempSync(join(tmpdir(), 'td-probe-'));
+    try {
+      const answer = readCodexAnswer(runCommand(command.args, command.program, dir));
+      return { ok: answer.outcome === 'done', status: answer.why };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
   const args = ['-p', 'скажи: готов', '--output-format', 'json', '--max-turns', '1'];
   if (config.apiProbeModel) args.push('--model', config.apiProbeModel);
   const run = runCommand(args, config.claudeCommand, mkdtempSync(join(tmpdir(), 'td-probe-')));
@@ -371,7 +389,10 @@ async function openBacklog({ mayWrite }) {
   };
 }
 
+let codexEnvironment;
+let codexReady = false;
 const supervisor = createSupervisor({
+  getCodexEnvironment: () => codexEnvironment,
   config,
   root,
   home,
@@ -387,6 +408,13 @@ const supervisor = createSupervisor({
   supervisorPid: process.pid,
   saveStages,
   stages: readStages(root, config),
+  codexUsage: providerOf(config) === 'codex' ? readTokenLedger(root, config) : {},
+  saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
+  onPolicyBlocked: (why) => {
+    ensureLocal();
+    writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
+    note(`Конвейер на паузе: ${why}. Новые этапы не выдаются.`, TAG.error);
+  },
   say,
   log: (line) => note(line, null),
   writeStageLog: (taskId, stage, text) => {
@@ -460,6 +488,8 @@ async function turn() {
   // до сканирования, а лишнее обращение к доске под лежачим сервером
   // ничего не даёт.
   const mayWrite = !flags.includes('--dry-run') && !paused && !apiPaused;
+  if (mayWrite && providerOf(config) === 'codex' && !codexReady && !(await prepareCodex()))
+    return 'paused';
 
   const backlog = await openBacklog({ mayWrite });
   if (!backlog.ok) {
@@ -495,10 +525,12 @@ async function turn() {
     // ничего не дал.
     orphans: supervisor.orphanOutcomes,
     apiFailures: supervisor.apiFailures,
+    codexUsage: supervisor.codexUsage,
     answers: readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.
-    permissions: readPermissions(home, config),
+    permissions: providerOf(config) === 'claude' ? readPermissions(home, config) : null,
+    ...(providerOf(config) === 'codex' ? { stageCommands: {} } : {}),
     paused,
     apiPaused,
     draining,
@@ -667,7 +699,7 @@ function greet() {
     ['оборот раз в', humanDuration(config.cycleMinutes * 60000)],
     ['этапов разом', config.maxConcurrent],
     ['пульс этапа раз в', humanDuration(config.pulseSeconds * 1000)],
-    ['вывод этапа', config.stageOutputFormat],
+    ['вывод этапа', providerOf(config) === 'codex' ? 'Codex JSONL' : config.stageOutputFormat],
     flags.includes('--dry-run') && ['режим', 'ТЕНЬ: считаем и печатаем, мира не трогаем'],
     isPaused(root, config) && ['режим', 'ПАУЗА человека: новой работы не берём'],
     isApiPaused(root, config) && ['режим', 'ПАУЗА сервера: пробуем по расписанию'],
@@ -709,6 +741,32 @@ const OUTCOME = {
 };
 
 /** Бесконечный цикл с рубильником паузы и сторожем неудач. */
+async function prepareCodex() {
+  note('Проверяю Git и авторизацию GitHub в Codex перед выдачей задач', TAG.cycle);
+  try {
+    codexEnvironment = codexChildEnvironment();
+    const readiness = await checkCodexReadiness({
+      env: codexEnvironment,
+      config,
+      root,
+      spawn,
+      killTree: createKillTree((program, args) => runCommand(args, program)),
+    });
+    ensureLocal();
+    writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
+    if (!readiness.ok) throw new Error(readiness.why);
+    codexReady = true;
+    note('Codex: Git и авторизация GitHub проверены', TAG.cycle);
+    return true;
+  } catch (error) {
+    const why = 'Проверка Codex не прошла: ' + error.message;
+    ensureLocal();
+    writeFileSync(local('pause'), why + '\n');
+    note('КОНВЕЙЕР НЕ ЗАПУЩЕН: ' + why, TAG.error);
+    return false;
+  }
+}
+
 async function loop() {
   const budgets = budgetsAgree(config);
   if (!budgets.ok) note(budgets.why, TAG.warn);
@@ -716,6 +774,16 @@ async function loop() {
 
   note(`супервизор запущен, процесс ${process.pid}, корень ${root}`, null);
   greet();
+  if (
+    providerOf(config) === 'codex' &&
+    !flags.includes('--dry-run') &&
+    !isPaused(root, config) &&
+    !(await prepareCodex())
+  ) {
+    releaseLock();
+    process.exitCode = 1;
+    return;
+  }
 
   let turns = 0;
   let stopping = false;

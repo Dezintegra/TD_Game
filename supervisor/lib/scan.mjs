@@ -1,4 +1,6 @@
+import { taskTokens } from './token-budget.mjs';
 import {
+  CROSSCUT,
   NEEDS_SESSION,
   NEEDS_WORKTREE,
   canTransition,
@@ -38,6 +40,7 @@ export const ACTIONS = [
   // тогда запись успевает уехать в промпт продолжателя.
   'note-orphan',
   'note-api-error',
+  'decompose-again',
   'continue-stage', // подхватить этап за уснувшей сессией
   'fail-stage', // сдаться: продолжения исчерпаны, нужен человек
   'start-stage', // взять задачу в работу
@@ -89,7 +92,13 @@ function byPriorityThenAge(a, b) {
  * кончился.
  */
 function firstStage(task) {
-  return { feature: 'design', run: 'benchmark', note: 'triage' }[task.type];
+  // Правка задача типа `feature` начинается анализом на дробность — кроме
+  // карточек, рождённых дроблением: для них этот ответ уже получен и записан
+  // меткой. Без исключения каждая часть разбитой задачи проходила бы разбор
+  // на дробность, которую для неё только что и проделали, — сессия за сессией
+  // на вопрос с известным ответом.
+  if (task.type === 'feature') return task.decomposed ? 'design' : 'decompose';
+  return { run: 'benchmark', note: 'triage' }[task.type];
 }
 
 /**
@@ -444,6 +453,18 @@ export function scan(state) {
     // Живой процесс на этом самом этапе — работа идёт, вмешиваться незачем.
     if (isRunning(task.id, task.status)) continue;
 
+    // Выкладка идёт пакетом: одна сессия на все задачи `deploy`, и пока она
+    // идёт, остальные ждут её конца. Ждут не из тесноты, а потому что их
+    // предмет — тот же `origin/main` — уже выкладывается; отсюда и своя
+    // запись, а не «свободных мест нет».
+    if (task.status === 'deploy') {
+      const deploying = running.find((item) => item.stage === 'deploy');
+      if (deploying) {
+        notes.push(`задача ${task.id} ждёт: идёт пакетная выкладка ${deploying.taskId}`);
+        continue;
+      }
+    }
+
     // Команды этапа не покрыты правилами: сессию не выдаём. Причина уже
     // названа выше, при счёте удержанных. Проверка стоит ПЕРЕД разбором
     // пределов нарочно: удержание не тратит продолжение и не уводит задачу
@@ -480,6 +501,44 @@ export function scan(state) {
       continue;
     }
 
+    // Потолок стоимости. Он стоит рядом с прочими пределами, но считает
+    // не попытки, а расход ресурсов, — и потому ловит беду, у которой своего счётчика
+    // нет вовсе. 04.09.2026 задача 0216 прошла двенадцать этапов и сожгла $76,
+    // не упершись ни в один предел: все три считают попытки, а она исправно
+    // проходила этап за этапом.
+    //
+    // Сквозные состояния потолку не подлежат. Задача, упёршаяся в него,
+    // обязана быть разобрана, а разбор — тоже сессия; проверять его тем же
+    // потолком значило бы запретить разбирать ровно те задачи, ради которых
+    // потолок и заведён.
+    const tokens = config.provider === 'codex';
+    const limit = tokens ? config.codexMaxTaskTokens : config.maxTaskCostUsd;
+    const spent = tokens
+      ? taskTokens(state.codexUsage ?? {}, task.id)
+      : Number.isFinite(task.spentUsd)
+        ? task.spentUsd
+        : 0;
+    // Само состояние анализа потолком не сторожится, иначе задача,
+    // отправленная в него потолком, не смогла бы пройти тот единственный
+    // этап, ради которого её туда и отправили. Исключение того же рода,
+    // что у сквозных состояний, и по той же причине.
+    const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
+    if (capped && limit != null && spent >= limit) {
+      // Числа в причине обязательны: по ним человек выбирает между двумя
+      // выходами — поднять потолок или раздробить задачу, — а «предел
+      // исчерпан» без величин не даёт выбрать ничего.
+      const why =
+        (tokens
+          ? `израсходовано ${spent} токенов при бюджете ${limit}: `
+          : `истрачено $${spent.toFixed(2)} при потолке $${limit}: `) +
+        'задача разрослась, нужен повторный анализ на дробность';
+      notes.push(`задача ${task.id}: ${why}`);
+      // В анализ, а не в разбор ошибки. Задача не сломана — она разрослась,
+      // и лог последнего этапа про это не скажет ничего.
+      actions.push({ kind: 'decompose-again', taskId: task.id, stage: task.status, reason: why });
+      continue;
+    }
+
     // Причина названа уровнем поломки, а не последствием. «Продолжения
     // исчерпаны» здесь было бы прямой ложью: сессии не было ни одной,
     // и разбор, поверив, пошёл бы читать её лог, которого нет.
@@ -508,15 +567,40 @@ export function scan(state) {
   // при исправной работе означает беду, обязана быть редкой, иначе её
   // перестают читать.
   let free = Math.max(0, config.maxConcurrent - running.length);
+
+  // Задачи `deploy` сворачиваются в пакет: сессию получает одна — ведущая,
+  // старшая по приоритету и возрасту, — а перечень остальных едет с ней
+  // в назначении. Предмет у них один, выложенный `origin/main`, и пятнадцать
+  // сессий по цене выкладки дали бы ровно то, что даёт одна (04.09.2026,
+  // пятнадцать карточек в «Выкладке»). Перечень складывается ЗДЕСЬ, из уже
+  // отобранных задач: удержанная, исчерпавшая пределы или ждущая оборота
+  // в пакет не попадает — решение по ней принято выше, по общим правилам.
+  const deploying = waitingForSession.filter((task) => task.status === 'deploy');
+  deploying.sort(byPriorityThenAge);
+  const batchOf = new Map();
+  if (deploying.length > 0) {
+    const [lead, ...rest] = deploying;
+    batchOf.set(
+      lead.id,
+      deploying.map((task) => task.id),
+    );
+    for (const other of rest) {
+      notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
+    }
+  }
+  const eligible = waitingForSession.filter(
+    (task) => task.status !== 'deploy' || batchOf.has(task.id),
+  );
+
   // Слив перед самообновлением: новый код супервизора уже на диске, и он
   // перезапустится, как только не останется ни этапов, ни отчётов. Выдавать
   // сессии сейчас значило бы никогда этого не дождаться: при двух местах
   // и сотне задач в очереди тихий момент сам не наступает. Идущее
   // доделывается, отчёты переносятся, опросы идут — не берётся только новое.
-  if (state.draining && waitingForSession.length > 0) {
+  if (state.draining && eligible.length > 0) {
     notes.push('самообновление ждёт тишины: сессий не выдаём, идущее доделываем');
   }
-  for (const task of [...waitingForSession].sort(byPriorityThenAge)) {
+  for (const task of [...eligible].sort(byPriorityThenAge)) {
     if (state.draining) continue;
     if (free === 0) {
       notes.push(`задача ${task.id} ждёт сессию: свободных мест нет`);
@@ -527,6 +611,9 @@ export function scan(state) {
       taskId: task.id,
       stage: task.status,
       reason: 'этапу нужна сессия, живого процесса нет',
+      // Перечень пакета есть только у ведущей выкладки; прочим действиям
+      // поле не нужно, и его нет вовсе — отсутствие и есть «не пакет».
+      ...(batchOf.has(task.id) ? { batch: batchOf.get(task.id) } : {}),
     });
     free -= 1;
   }

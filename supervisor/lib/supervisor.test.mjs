@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
@@ -50,6 +51,7 @@ function harness(over = {}) {
   const supervisor = createSupervisor({
     config: { ...config, ...over.config },
     root: '/repo',
+    home: over.home,
     spawn,
     killTree: (pid) => killed.push(pid),
     // Опрос системы подставной: живых процессов проверки не поднимают.
@@ -68,6 +70,9 @@ function harness(over = {}) {
     nowMs: over.nowMs ?? (() => 1_000_000),
     saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
     stages: over.stages ?? {},
+    codexUsage: over.codexUsage ?? {},
+    saveCodexUsage: over.saveCodexUsage,
+    onPolicyBlocked: over.onPolicyBlocked,
     log: (line) => logged.push(line),
     // Запись лога этапа собирается так же, как журнал цикла, и по той же
     // причине: умолчание в `createSupervisor` — пустая функция, и без этого
@@ -718,6 +723,43 @@ describe('этап кончился', () => {
   });
 });
 
+describe('пакет выкладки едет вместе с отчётом', () => {
+  // У переноса своего источника нет, а сверять названных в отчёте он обязан
+  // с перечнем из назначения, а не с колонкой доски: состав пакета
+  // зафиксирован в момент выдачи сессии, и свежая карточка в него не входит.
+  const deploying = assignment({
+    stage: 'deploy',
+    batch: [
+      { id: '0001-one', title: 'ведущая', pr: 1 },
+      { id: '0002-two', title: 'вторая', pr: 2 },
+    ],
+  });
+  const deployed = JSON.stringify({ ...report, stage: 'deploy' });
+
+  it('перечень возвращается идентификаторами', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(deploying);
+    await answer(envelope({ result: deployed }));
+    expect(supervisor.reports[0].batch).toEqual(['0001-one', '0002-two']);
+  });
+
+  it('перечень из отчёта сессии не берётся: он властен только над своим пакетом', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(deploying);
+    await answer(
+      envelope({ result: JSON.stringify({ ...report, stage: 'deploy', batch: ['0009-stray'] }) }),
+    );
+    expect(supervisor.reports[0].batch).toEqual(['0001-one', '0002-two']);
+  });
+
+  it('без пакета поля нет', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope());
+    expect(supervisor.reports[0]).not.toHaveProperty('batch');
+  });
+});
+
 describe('отказанные действия едут вместе с отчётом', () => {
   // Прежде отчёт при непустом перечне отказов не принимался вовсе. Мерка
   // оказалась слишком грубой: вечер 31.08.2026 дал шесть отброшенных отчётов
@@ -786,6 +828,23 @@ describe('этап не дошёл до отчёта', () => {
     supervisor.spawnStage(assignment());
     await answer(envelope(), 1);
     expect(supervisor.reports).toEqual([]);
+  });
+
+  it('отчёт несёт стоимость этапа: без неё расход задачи не посчитать', async () => {
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    await answer(envelope({ total_cost_usd: 3.25 }));
+    expect(supervisor.reports[0].costUsd).toBe(3.25);
+  });
+
+  it('ответ без стоимости даёт ноль, а не роняет перенос', () => {
+    // Ответ без неё законен, и ронять из-за этого отчёт нечем оправдать.
+    const { supervisor, answer } = harness();
+    supervisor.spawnStage(assignment());
+    return answer(envelope()).then(() => {
+      expect(supervisor.reports).toHaveLength(1);
+      expect(supervisor.reports[0].costUsd).toBe(0);
+    });
   });
 
   it('отказ сервера модели уходит в свою очередь, а не в отчёты', async () => {
@@ -1053,4 +1112,139 @@ describe('остановка', () => {
     expect(killed).toEqual([]);
     expect(saved).toEqual([]);
   });
+});
+
+describe('сессии разных исполнителей', () => {
+  const codexHome = fileURLToPath(new URL('..', import.meta.url));
+  it('не возобновляет Claude в Codex и сохраняет thread.started сразу', async () => {
+    const h = harness({
+      home: codexHome,
+      config: { provider: 'codex', maxTaskCostUsd: null },
+      stages: { '0001-one:design': { sessionId: 'old-claude', startedAt: NOW } },
+    });
+    expect(h.supervisor.lastSession('0001-one', 'design')).toBeNull();
+    expect(
+      h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'old-claude' })).ok,
+    ).toBe(true);
+    expect(h.saved.at(-1)['0001-one:design'].sessionId).toBeNull();
+    h.children[0].stdout.emit(
+      'data',
+      JSON.stringify({ type: 'thread.started', thread_id: 'new-codex' }) + '\n',
+    );
+    expect(h.saved.at(-1)['0001-one:design']).toMatchObject({
+      sessionId: 'new-codex',
+      provider: 'codex',
+    });
+    h.children[0].stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: JSON.stringify(report) },
+      }) + '\n',
+    );
+    await h.answer({
+      type: 'turn.completed',
+      usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+    });
+    expect(h.supervisor.reports[0]).toMatchObject(report);
+    expect(h.supervisor.lastSession('0001-one', 'design')).toBe('new-codex');
+  });
+  it('не отдаёт идентификатор Codex исполнителю Claude после перезапуска', () => {
+    const h = harness({
+      stages: { '0001-one:design': { provider: 'codex', sessionId: 'old-codex' } },
+    });
+    expect(h.supervisor.lastSession('0001-one', 'design')).toBeNull();
+  });
+});
+
+it('помнит накопительный расход Codex после перезапуска', async () => {
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: {
+      provider: 'codex',
+      maxTaskCostUsd: 25,
+      codexMaxTaskTokens: 25_000_000,
+    },
+    stages: {
+      '0001-one:design': {
+        provider: 'codex',
+        sessionId: 'thread',
+        usage: { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 100 },
+      },
+    },
+  });
+  expect(h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' })).ok).toBe(
+    true,
+  );
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(report) },
+    }) + '\n',
+  );
+  await h.answer({
+    type: 'turn.completed',
+    usage: { input_tokens: 2000, cached_input_tokens: 400, output_tokens: 200 },
+  });
+  expect(h.supervisor.codexUsage['0001-one'].thread).toBe(2200);
+  expect(h.supervisor.reports[0].costUsd).toBe(0);
+  expect(h.saved.at(-1)['0001-one:design'].usage.input_tokens).toBe(2000);
+});
+
+it('расход сохраняется до разбора отчёта и не исчезает при забывании сессии', async () => {
+  const snapshots = [];
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: { provider: 'codex' },
+    codexUsage: { '0001-one': { previous: 500 } },
+    saveCodexUsage: (value) => snapshots.push(JSON.parse(JSON.stringify(value))),
+  });
+  h.supervisor.spawnStage(assignment());
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({ type: 'thread.started', thread_id: 'new' }) + '\n',
+  );
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 100 },
+    }) + '\n',
+  );
+  expect(snapshots.at(-1)['0001-one']).toEqual({ previous: 500, new: 1100 });
+  await h.answer({ type: 'turn.failed', error: { message: 'failed after usage' } });
+  expect(h.supervisor.reports).toEqual([]);
+  h.supervisor.forgetSession('0001-one', 'design');
+  expect(h.supervisor.codexUsage['0001-one']).toEqual({ previous: 500, new: 1100 });
+  expect(snapshots.every((value) => value['0001-one'].new === 1100)).toBe(true);
+});
+
+it('отказ Codex немедленно запрещает новые этапы и сохраняет сигнал паузы', async () => {
+  const paused = [];
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: { provider: 'codex' },
+    onPolicyBlocked: (why) => paused.push(why),
+  });
+  expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+  const denial = {
+    type: 'item.completed',
+    item: {
+      type: 'command_execution',
+      status: 'declined',
+      command: 'git status',
+      aggregated_output: 'blocked by policy',
+    },
+  };
+  h.children[0].stdout.emit('data', JSON.stringify(denial) + '\n');
+  expect(paused).toHaveLength(1);
+  expect(paused[0]).toContain('0001-one:design');
+  expect(h.supervisor.spawnStage(assignment({ taskId: '0002-two' })).ok).toBe(false);
+  await h.answer({
+    type: 'turn.completed',
+    usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+  });
+  expect(h.wrote[0].text).toContain('blocked by policy');
+  expect(finishedLine(h.said).text).toContain('отказов 1');
 });
