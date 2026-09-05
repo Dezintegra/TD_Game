@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
@@ -50,6 +51,7 @@ function harness(over = {}) {
   const supervisor = createSupervisor({
     config: { ...config, ...over.config },
     root: '/repo',
+    home: over.home,
     spawn,
     killTree: (pid) => killed.push(pid),
     // Опрос системы подставной: живых процессов проверки не поднимают.
@@ -68,6 +70,8 @@ function harness(over = {}) {
     nowMs: over.nowMs ?? (() => 1_000_000),
     saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
     stages: over.stages ?? {},
+    codexUsage: over.codexUsage ?? {},
+    saveCodexUsage: over.saveCodexUsage,
     log: (line) => logged.push(line),
     // Запись лога этапа собирается так же, как журнал цикла, и по той же
     // причине: умолчание в `createSupervisor` — пустая функция, и без этого
@@ -1107,4 +1111,110 @@ describe('остановка', () => {
     expect(killed).toEqual([]);
     expect(saved).toEqual([]);
   });
+});
+
+describe('сессии разных исполнителей', () => {
+  const codexHome = fileURLToPath(new URL('..', import.meta.url));
+  it('не возобновляет Claude в Codex и сохраняет thread.started сразу', async () => {
+    const h = harness({
+      home: codexHome,
+      config: { provider: 'codex', maxTaskCostUsd: null },
+      stages: { '0001-one:design': { sessionId: 'old-claude', startedAt: NOW } },
+    });
+    expect(h.supervisor.lastSession('0001-one', 'design')).toBeNull();
+    expect(
+      h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'old-claude' })).ok,
+    ).toBe(true);
+    expect(h.saved.at(-1)['0001-one:design'].sessionId).toBeNull();
+    h.children[0].stdout.emit(
+      'data',
+      JSON.stringify({ type: 'thread.started', thread_id: 'new-codex' }) + '\n',
+    );
+    expect(h.saved.at(-1)['0001-one:design']).toMatchObject({
+      sessionId: 'new-codex',
+      provider: 'codex',
+    });
+    h.children[0].stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: JSON.stringify(report) },
+      }) + '\n',
+    );
+    await h.answer({
+      type: 'turn.completed',
+      usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+    });
+    expect(h.supervisor.reports[0]).toMatchObject(report);
+    expect(h.supervisor.lastSession('0001-one', 'design')).toBe('new-codex');
+  });
+  it('не отдаёт идентификатор Codex исполнителю Claude после перезапуска', () => {
+    const h = harness({
+      stages: { '0001-one:design': { provider: 'codex', sessionId: 'old-codex' } },
+    });
+    expect(h.supervisor.lastSession('0001-one', 'design')).toBeNull();
+  });
+});
+
+it('помнит накопительный расход Codex после перезапуска', async () => {
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: {
+      provider: 'codex',
+      maxTaskCostUsd: 25,
+      codexMaxTaskTokens: 25_000_000,
+    },
+    stages: {
+      '0001-one:design': {
+        provider: 'codex',
+        sessionId: 'thread',
+        usage: { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 100 },
+      },
+    },
+  });
+  expect(h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' })).ok).toBe(
+    true,
+  );
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(report) },
+    }) + '\n',
+  );
+  await h.answer({
+    type: 'turn.completed',
+    usage: { input_tokens: 2000, cached_input_tokens: 400, output_tokens: 200 },
+  });
+  expect(h.supervisor.codexUsage['0001-one'].thread).toBe(2200);
+  expect(h.supervisor.reports[0].costUsd).toBe(0);
+  expect(h.saved.at(-1)['0001-one:design'].usage.input_tokens).toBe(2000);
+});
+
+it('расход сохраняется до разбора отчёта и не исчезает при забывании сессии', async () => {
+  const snapshots = [];
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: { provider: 'codex' },
+    codexUsage: { '0001-one': { previous: 500 } },
+    saveCodexUsage: (value) => snapshots.push(JSON.parse(JSON.stringify(value))),
+  });
+  h.supervisor.spawnStage(assignment());
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({ type: 'thread.started', thread_id: 'new' }) + '\n',
+  );
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 100 },
+    }) + '\n',
+  );
+  expect(snapshots.at(-1)['0001-one']).toEqual({ previous: 500, new: 1100 });
+  await h.answer({ type: 'turn.failed', error: { message: 'failed after usage' } });
+  expect(h.supervisor.reports).toEqual([]);
+  h.supervisor.forgetSession('0001-one', 'design');
+  expect(h.supervisor.codexUsage['0001-one']).toEqual({ previous: 500, new: 1100 });
+  expect(snapshots.every((value) => value['0001-one'].new === 1100)).toBe(true);
 });

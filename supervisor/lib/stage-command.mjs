@@ -1,4 +1,5 @@
 import { isAbsolute, join, resolve } from 'node:path';
+import { codexStageCommand, providerOf } from './provider.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 
 /**
@@ -35,6 +36,8 @@ export function stageCommand({ assignment, prompt, config, root, home = root }) 
   // Искать сначала у себя, а не нашлось — в корне, намеренно НЕ делается:
   // молчаливый выбор одного пути из двух превращает опечатку в имени файла
   // в работу по чужим правилам, а такую беду ничем не заметить.
+  if (providerOf(config) === 'codex')
+    return codexStageCommand({ assignment, prompt, config, root, home });
   const own = (path) => (isAbsolute(path) ? path : resolve(home, path));
 
   // Промпт уезжает в стандартный ввод, а не в аргумент. Причина не в красоте:

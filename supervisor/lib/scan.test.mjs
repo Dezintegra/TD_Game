@@ -1182,3 +1182,36 @@ describe('порядок действий', () => {
     expect(kinds(result)).toEqual(['push-tail', 'start-stage']);
   });
 });
+
+it('явное отключение денежного потолка не означает потолок в ноль', () => {
+  const result = run({
+    config: { ...config, maxTaskCostUsd: null },
+    tasks: [task({ status: 'implement', spentUsd: 100 })],
+    registry: { entries: [entry('0001-one')] },
+  });
+  expect(kinds(result)).toContain('continue-stage');
+  expect(kinds(result)).not.toContain('decompose-again');
+});
+
+describe('бюджет тяжести Codex', () => {
+  const check = (tokens, status = 'implement', limit = 100) =>
+    run({
+      config: { ...config, provider: 'codex', codexMaxTaskTokens: limit },
+      tasks: [task({ status, spentUsd: 999 })],
+      registry: { entries: [entry('0001-one')] },
+      codexUsage: { '0001-one': { first: tokens - 10, resumed: 10 } },
+    });
+  it('суммирует сессии и отправляет на дробление ровно на границе', () => {
+    expect(kinds(check(99))).toContain('continue-stage');
+    const result = check(100);
+    expect(result.actions.find((a) => a.kind === 'decompose-again').reason).toContain(
+      '100 токенов при бюджете 100',
+    );
+    expect(kinds(result)).not.toContain('continue-stage');
+  });
+  it('допускает анализ и восстановление; null отключает только этот бюджет', () => {
+    for (const status of ['decompose', 'postmortem'])
+      expect(kinds(check(101, status))).not.toContain('decompose-again');
+    expect(kinds(check(101, 'implement', null))).toContain('continue-stage');
+  });
+});
