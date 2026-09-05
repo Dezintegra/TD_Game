@@ -745,7 +745,7 @@ const OUTCOME = {
 
 /** Бесконечный цикл с рубильником паузы и сторожем неудач. */
 async function prepareCodex() {
-  note('Проверяю Git и авторизацию GitHub в Codex перед выдачей задач', TAG.cycle);
+  note('Проверяю Git, GitHub, SSH и дочерние процессы Node в Codex перед выдачей задач', TAG.cycle);
   try {
     codexEnvironment = codexChildEnvironment();
     const readiness = await checkCodexReadiness({
@@ -759,7 +759,7 @@ async function prepareCodex() {
     writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
     if (!readiness.ok) throw new Error(readiness.why);
     codexReady = true;
-    note('Codex: Git, авторизация GitHub и соединение SSH проверены', TAG.cycle);
+    note('Codex: Git, GitHub, SSH и дочерние процессы Node проверены', TAG.cycle);
     return true;
   } catch (error) {
     const why = 'Проверка Codex не прошла: ' + error.message;
