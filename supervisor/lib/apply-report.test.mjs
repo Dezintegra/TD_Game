@@ -220,6 +220,21 @@ describe('работа разнесена по карточкам', () => {
   const fresh = (over = {}) =>
     task({ status: 'decompose', links: { change: null, pr: null, run: null }, ...over });
 
+  it('неделимая задача после done идёт в проработку', () => {
+    const report = {
+      stage: 'decompose',
+      outcome: 'done',
+      summary: 'Исправление и проверка неделимы: отдельное вливание оставит CI красным.',
+      requests: [],
+    };
+    expect(applyReport(fresh(), report)).toMatchObject({
+      status: 'design',
+      returnTo: null,
+      problems: [],
+      note: report.summary,
+    });
+  });
+
   it('дробление на две части закрывает задачу и называет причину', () => {
     const verdict = applyReport(fresh(), split());
     expect(verdict.status).toBe('closed');

@@ -59,6 +59,8 @@ function afterDone(task) {
   switch (task.status) {
     case 'triage':
       return 'closed';
+    case 'decompose':
+      return 'design';
     case 'design':
       return 'audit';
     case 'audit':
