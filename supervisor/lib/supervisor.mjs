@@ -7,6 +7,7 @@ import { readAnswer, startStage as spawnStageProcess } from './run-stage.mjs';
 import { parseReport } from './parse-report.mjs';
 import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
+import { codexGitEnvironment } from './codex-environment.mjs';
 
 /**
  * Хозяйство идущих этапов.
@@ -301,7 +302,9 @@ export function createSupervisor({
       try {
         child.handle = spawnStageProcess({
           command:
-            providerOf(config) === 'codex' ? { ...command, env: getCodexEnvironment() } : command,
+            providerOf(config) === 'codex'
+              ? { ...command, env: codexGitEnvironment(getCodexEnvironment(), root, command.cwd) }
+              : command,
           timeoutMs,
           spawn,
           killTree,
