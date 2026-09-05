@@ -49,7 +49,7 @@ export function clipMiddle(text, head, tail) {
  *
  * @param {object} params
  * @param {object} params.assignment `taskId`, `stage`, `branch`, `path`,
- *                                   `continuation`, `reason`
+ *                                   `continuation`, `reason`, `batch`
  * @param {object} params.task       задача из бэклога
  * @param {string} params.journal    журнал задачи
  * @param {object[]} params.board    опись доски: по строке на задачу
@@ -65,6 +65,8 @@ export function stagePrompt({
   stageLog = null,
 }) {
   const lines = [];
+  const batch =
+    Array.isArray(assignment.batch) && assignment.batch.length > 0 ? assignment.batch : null;
 
   lines.push(
     `Ты — сессия-исполнитель конвейера. Делаешь ровно один переход состояния: ` +
@@ -81,12 +83,34 @@ export function stagePrompt({
         worktree: assignment.path ?? null,
         continuation: Boolean(assignment.continuation),
         reason: assignment.reason ?? null,
+        // Перечень пакета выкладки — идентификаторами, как в отчёте: по ним
+        // сессия называет выложенных и исключённых. Поле есть только
+        // у пакетного этапа; прочим оно ни к чему, и его нет вовсе.
+        ...(batch ? { batch: batch.map((item) => item.id) } : {}),
       },
       null,
       2,
     ),
     '```',
   );
+
+  // Выписки задач пакета — отдельным разделом, а не только идентификаторами:
+  // сессии нужен номер pull request каждой, чтобы проверить вливание,
+  // а открывать бэклог ей нельзя.
+  if (batch) {
+    lines.push(
+      '',
+      '## Пакет выкладки',
+      '',
+      'Эти задачи выкладываются вместе с назначенной, одной выкладкой одного',
+      '`origin/main`. По каждой проверь вливание и назови её в отчёте —',
+      'в `deployed` либо в `skipped` с причиной.',
+      '',
+      '```json',
+      JSON.stringify(batch, null, 2),
+      '```',
+    );
+  }
 
   // Продолжение называется первой же строкой после назначения, а не мелким
   // полем. Возобновлённая сессия помнит свой ход мысли, но не знает, что её

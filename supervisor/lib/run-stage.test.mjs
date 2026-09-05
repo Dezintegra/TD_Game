@@ -467,3 +467,16 @@ describe('снятие поддерева', () => {
     expect(run).not.toHaveBeenCalled();
   });
 });
+
+it('передаёт авторизацию окружением, не добавляя её к аргументам', () => {
+  const command = {
+    program: 'codex',
+    args: ['exec'],
+    cwd: '/repo',
+    env: { GH_TOKEN: 'test-only-token' },
+  };
+  const h = harness({ command });
+  expect(h.spawned[0].options.env).toEqual(command.env);
+  expect(h.spawned[0].list).toEqual(['exec']);
+  h.child.emit('close', 0);
+});
