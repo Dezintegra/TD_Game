@@ -383,6 +383,7 @@ async function openBacklog({ mayWrite }) {
     invalid,
     marked,
     store,
+    closedDependencyIds: store.closedDependencyIds(),
     notes: [
       ...adopted.problems,
       ...(adopted.adopted.length > 0 ? [`выданы номера: ${adopted.adopted.join(', ')}`] : []),
@@ -523,6 +524,7 @@ async function turn() {
 
   const state = {
     tasks: backlog.tasks,
+    closedDependencyIds: backlog.closedDependencyIds ?? [],
     invalid: backlog.invalid,
     marked: backlog.marked ?? [],
     registry,

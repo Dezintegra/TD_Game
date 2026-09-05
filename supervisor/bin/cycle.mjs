@@ -116,7 +116,11 @@ async function openBacklog(config) {
   }
 
   const store = createTrelloBacklog({ trello, config, snapshot: board, machine: hostname() });
-  return { ok: true, ...sortCards(store.parsedCards()) };
+  return {
+    ok: true,
+    ...sortCards(store.parsedCards()),
+    closedDependencyIds: store.closedDependencyIds(),
+  };
 }
 
 async function main() {
@@ -135,6 +139,7 @@ async function main() {
 
   const decision = scan({
     tasks: backlog.tasks,
+    closedDependencyIds: backlog.closedDependencyIds ?? [],
     invalid: backlog.invalid,
     marked: backlog.marked ?? [],
     registry,

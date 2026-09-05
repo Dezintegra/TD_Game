@@ -1,3 +1,4 @@
+import { pendingDependencies } from './dependencies.mjs';
 import { taskTokens } from './token-budget.mjs';
 import {
   CROSSCUT,
@@ -387,6 +388,15 @@ export function scan(state) {
   // нет, этап не кончается, место не освобождается. Сегодня оно освобождается
   // хотя бы через полчаса падением, то есть лечение вышло бы хуже болезни.
   const held = new Map();
+  // Проверяем до квот и пределов попыток: ожидание не является запуском.
+  for (const task of tasks) {
+    if (task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (isRunning(task.id) || hasReport(task.id)) continue;
+    const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? []);
+    if (pending.length === 0) continue;
+    held.set(task.id, pending);
+    notes.push(`задача ${task.id} ждёт зависимостей: ${pending.join(', ')}`);
+  }
   for (const task of tasks) {
     if (!NEEDS_SESSION.includes(task.status)) continue;
     // Живой этап удержание не касается: он уже идёт, и командам его сессии
@@ -626,7 +636,9 @@ export function scan(state) {
   }
 
   // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
-  const queue = tasks.filter((task) => task.status === 'new').sort(byPriorityThenAge);
+  const queue = tasks
+    .filter((task) => task.status === 'new' && !held.has(task.id))
+    .sort(byPriorityThenAge);
 
   // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
   const runWaiting = queue.some((task) => task.type === 'run');

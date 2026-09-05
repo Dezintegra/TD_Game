@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { hasWork, scan } from './scan.mjs';
 // resolveConfig уже импортирован выше — здесь он нужен и проверкам настройки.
@@ -1245,5 +1245,104 @@ describe('бюджет тяжести Codex', () => {
     for (const status of ['decompose', 'postmortem'])
       expect(kinds(check(101, status))).not.toContain('decompose-again');
     expect(kinds(check(101, 'implement', null))).toContain('continue-stage');
+  });
+});
+
+describe('зависимости карточек', () => {
+  it.each(['new', 'failed', 'cleanup', 'implement', 'candidate'])(
+    'ждёт предшественника в %s без изменения попыток',
+    (status) => {
+      const dependent = task({
+        dependsOn: ['0002-base'],
+        attempts: { continuations: 3, cycleFailures: 2 },
+      });
+      const before = JSON.parse(JSON.stringify(dependent));
+      for (let i = 0; i < 3; i++) {
+        const result = run({ tasks: [dependent, task({ id: '0002-base', status })] });
+        expect(result.actions.filter((a) => a.taskId === dependent.id)).toEqual([]);
+        expect(result.notes.join()).toContain('0002-base');
+      }
+      expect(dependent).toEqual(before);
+    },
+  );
+
+  it('запускает только после закрытия всех предшественников', () => {
+    const dependent = task({ dependsOn: ['0002-base', '0003-base'] });
+    const base = task({ id: '0002-base', status: 'closed' });
+    expect(run({ tasks: [dependent, base] }).actions).toEqual([]);
+    expect(
+      run({ tasks: [dependent, base, task({ id: '0003-base', status: 'closed' })] }).actions,
+    ).toContainEqual({ kind: 'start-stage', taskId: dependent.id, stage: 'decompose' });
+  });
+
+  it('использует подтверждённые архивные закрытия', () => {
+    expect(
+      run({ tasks: [task({ dependsOn: ['0002-base'] })], closedDependencyIds: ['0002-base'] })
+        .actions,
+    ).toContainEqual({ kind: 'start-stage', taskId: '0001-one', stage: 'decompose' });
+  });
+
+  it.each([null, '0002-base', [42], ['0001-one'], ['0002-base', '0002-base']])(
+    'не запускает при неверном dependsOn %j',
+    (dependsOn) => {
+      expect(run({ tasks: [task({ dependsOn })] }).actions).toEqual([]);
+    },
+  );
+
+  it('цикл зависимостей не расходует попытки и не удерживает готовую задачу', () => {
+    const result = run({
+      tasks: [
+        task({ dependsOn: ['0002-base'] }),
+        task({ id: '0002-base', dependsOn: ['0001-one'] }),
+        task({ id: '0003-ready' }),
+      ],
+    });
+    expect(result.actions).toEqual([
+      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    ]);
+  });
+
+  it('заблокированный прогон не удерживает готовую правку', () => {
+    const result = run({
+      tasks: [task({ type: 'run', dependsOn: ['0002-base'] }), task({ id: '0003-ready' })],
+    });
+    expect(result.actions).toEqual([
+      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    ]);
+  });
+
+  it('удерживает продолжение до проверки исчерпанных попыток и освобождает квоту', () => {
+    const result = run({
+      tasks: [
+        task({
+          status: 'design',
+          dependsOn: ['0002-base'],
+          attempts: { continuations: 999, spawnFailures: 999 },
+        }),
+        task({ id: '0003-ready' }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+    });
+    expect(result.actions).toEqual([
+      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    ]);
+  });
+
+  it('не прерывает живой этап и принимает отчёт', () => {
+    const dependent = task({ status: 'design', dependsOn: ['0002-base'] });
+    expect(
+      run({ tasks: [dependent], running: [{ taskId: dependent.id, stage: 'design' }] }).actions,
+    ).toEqual([]);
+    expect(
+      run({
+        tasks: [dependent],
+        reports: [{ taskId: dependent.id, stage: 'design', outcome: 'done' }],
+      }).actions,
+    ).toContainEqual({
+      kind: 'transfer-report',
+      taskId: dependent.id,
+      stage: 'design',
+      outcome: 'done',
+    });
   });
 });
