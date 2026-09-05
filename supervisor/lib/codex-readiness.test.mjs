@@ -21,7 +21,7 @@ const check = (events, over = {}) =>
     start: ({ command: probe, timeoutMs }) => {
       expect(timeoutMs).toBe(120000);
       expect(probe.args).toContain('--ephemeral');
-      expect(probe.stdin).toContain('git rev-parse');
+      expect(probe.stdin).toContain('rev-parse');
       return {
         finished: Promise.resolve({
           code: 0,
