@@ -24,6 +24,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: затронутые области
+    runs-on: ubuntu-latest
+    outputs:
+      game: ${{ steps.detect.outputs.game }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: detect
+        run: node scripts/ci-affected.mjs
+
   static:
     name: формат и линт
     runs-on: ubuntu-latest
@@ -48,6 +63,8 @@ jobs:
 
   typecheck:
     name: типы
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.game != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,6 +83,8 @@ jobs:
 
   test:
     name: быстрые тесты
+    needs: changes
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,24 +96,24 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Отдельная сборка здесь больше не нужна: корневой `pnpm test`
-      # с разделения наборов зовёт turbo, а у задачи `test` объявлено
-      # `dependsOn: ["^build"]`, так что зависимости соберутся сами.
-      # Прежде команда звала vitest напрямую и не собирала ничего,
-      # а пакеты экспортируются только из `dist` — отсюда и была
-      # обязательная строка `pnpm build` перед прогоном.
-      - run: pnpm test
+      # Служебные тесты читают также инструкции и документы, поэтому
+      # остаются обязательными даже без изменений игрового кода.
+      - run: pnpm test:scripts
+      - run: pnpm test:pipeline
+      - run: pnpm exec turbo run test --concurrency=3
+        if: ${{ needs.changes.result != 'success' || needs.changes.outputs.game != 'false' }}
 
   # Матчевый набор отдельной задачей, а не следом за быстрым. Он идёт
   # минут пятнадцать, и приклеить его к быстрому — значит отложить
   # ответ «сломано ли что-то очевидное» на эти же пятнадцать минут.
   # Здесь же он просто занимает свой runner параллельно.
   #
-  # На рабочей машине этот набор запускают по решению человека, а в CI
-  # ждать некому: пропущенная регрессия в поведении противника стоит
-  # дороже, чем занятый runner.
+  # Служебные правки не меняют игру. Пропуск разрешает только полный
+  # diff известных служебных путей; ошибка определения включает набор.
   match:
     name: матчевые тесты
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.game != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -109,6 +128,8 @@ jobs:
 
   build:
     name: сборка
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.game != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +144,8 @@ jobs:
 
   e2e:
     name: сквозные проверки
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.game != 'false') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
