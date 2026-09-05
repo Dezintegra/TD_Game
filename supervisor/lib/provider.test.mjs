@@ -172,3 +172,20 @@ it('включает Windows sandbox и доверяет только двум �
     codexExecutionArgs({ codexWindowsSandbox: 'disabled' }, '/main', '/tree', 'win32'),
   ).toThrow('codexWindowsSandbox');
 });
+
+it('считает declined отдельным отказом, даже когда модель завершила ответ', () => {
+  const denied = {
+    type: 'item.completed',
+    item: {
+      type: 'command_execution',
+      status: 'declined',
+      command: 'git status',
+      aggregated_output: 'blocked by policy',
+      exit_code: -1,
+    },
+  };
+  const answer = readCodexAnswer(run([denied, ...events]));
+  expect(answer.denials).toEqual([
+    { tool_name: 'shell', tool_input: { command: 'git status' }, reason: 'blocked by policy' },
+  ]);
+});

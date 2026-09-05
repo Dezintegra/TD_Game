@@ -104,6 +104,15 @@ export function codexStageCommand({ assignment, prompt, config, root, home }) {
 }
 
 /** Разбираем только протокол событий; текст ответа не доказывает завершение. */
+export function codexDenial(event) {
+  if (event?.type !== 'item.completed' || event.item?.status !== 'declined') return null;
+  return {
+    tool_name: event.item.type === 'command_execution' ? 'shell' : event.item.type,
+    tool_input: { command: event.item.command ?? JSON.stringify(event.item.changes ?? []) },
+    reason: event.item.aggregated_output || 'Codex: blocked by policy',
+  };
+}
+
 export function readCodexAnswer(run, config = {}, previousUsage = null) {
   const answer = {
     envelope: null,
@@ -128,6 +137,8 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
       continue;
     }
     if (!event || typeof event !== 'object') continue;
+    const denial = codexDenial(event);
+    if (denial) answer.denials.push(denial);
     if (event.item && event.item.type !== 'agent_message' && event.item.type !== 'reasoning')
       toolsUsed = true;
     if (event.type === 'thread.started') answer.sessionId = event.thread_id ?? null;

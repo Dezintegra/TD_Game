@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -405,6 +406,11 @@ const supervisor = createSupervisor({
   stages: readStages(root, config),
   codexUsage: providerOf(config) === 'codex' ? readTokenLedger(root, config) : {},
   saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
+  onPolicyBlocked: (why) => {
+    ensureLocal();
+    writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
+    note(`Конвейер на паузе: ${why}. Новые этапы не выдаются.`, TAG.error);
+  },
   say,
   log: (line) => note(line, null),
   writeStageLog: (taskId, stage, text) => {
@@ -736,6 +742,26 @@ async function loop() {
 
   note(`супервизор запущен, процесс ${process.pid}, корень ${root}`, null);
   greet();
+  if (providerOf(config) === 'codex' && !flags.includes('--dry-run') && !isPaused(root, config)) {
+    note('Проверяю выполнение Git-команды в Codex перед выдачей задач', TAG.cycle);
+    try {
+      const readiness = await checkCodexReadiness({
+        config,
+        root,
+        spawn,
+        killTree: createKillTree((program, args) => runCommand(args, program)),
+      });
+      ensureLocal();
+      writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
+      if (!readiness.ok) throw new Error(readiness.why);
+      note('Codex: проверочная Git-команда выполнена успешно', TAG.cycle);
+    } catch (error) {
+      note(`КОНВЕЙЕР НЕ ЗАПУЩЕН: проверка Codex не прошла: ${error.message}`, TAG.error);
+      releaseLock();
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   let turns = 0;
   let stopping = false;

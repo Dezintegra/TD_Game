@@ -72,6 +72,7 @@ function harness(over = {}) {
     stages: over.stages ?? {},
     codexUsage: over.codexUsage ?? {},
     saveCodexUsage: over.saveCodexUsage,
+    onPolicyBlocked: over.onPolicyBlocked,
     log: (line) => logged.push(line),
     // Запись лога этапа собирается так же, как журнал цикла, и по той же
     // причине: умолчание в `createSupervisor` — пустая функция, и без этого
@@ -1217,4 +1218,33 @@ it('расход сохраняется до разбора отчёта и не
   h.supervisor.forgetSession('0001-one', 'design');
   expect(h.supervisor.codexUsage['0001-one']).toEqual({ previous: 500, new: 1100 });
   expect(snapshots.every((value) => value['0001-one'].new === 1100)).toBe(true);
+});
+
+it('отказ Codex немедленно запрещает новые этапы и сохраняет сигнал паузы', async () => {
+  const paused = [];
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: { provider: 'codex' },
+    onPolicyBlocked: (why) => paused.push(why),
+  });
+  expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+  const denial = {
+    type: 'item.completed',
+    item: {
+      type: 'command_execution',
+      status: 'declined',
+      command: 'git status',
+      aggregated_output: 'blocked by policy',
+    },
+  };
+  h.children[0].stdout.emit('data', JSON.stringify(denial) + '\n');
+  expect(paused).toHaveLength(1);
+  expect(paused[0]).toContain('0001-one:design');
+  expect(h.supervisor.spawnStage(assignment({ taskId: '0002-two' })).ok).toBe(false);
+  await h.answer({
+    type: 'turn.completed',
+    usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+  });
+  expect(h.wrote[0].text).toContain('blocked by policy');
+  expect(finishedLine(h.said).text).toContain('отказов 1');
 });
