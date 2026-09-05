@@ -25,6 +25,7 @@ import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { releasePerfLock } from './perf-lock.mjs';
 import { preparePerfPackages } from './perf-prepare.mjs';
+import { perfServiceSpecs, startPerfServices } from './perf-services.mjs';
 import {
   BUSY_LIMIT,
   die,
@@ -103,9 +104,11 @@ const portFree = (port) =>
 step('Смотрю, свободны ли порты');
 const clientPort = Number(process.env['CLIENT_PORT'] ?? 5173);
 const serverPort = Number(process.env['PORT'] ?? 3001);
+const metricsPort = Number(process.env['COMPUTER_METRICS_PORT'] ?? serverPort + 1);
 const taken = [];
 if (!(await portFree(clientPort))) taken.push(`клиентский ${clientPort} (CLIENT_PORT)`);
 if (!(await portFree(serverPort))) taken.push(`серверный ${serverPort} (PORT)`);
+if (!(await portFree(metricsPort))) taken.push(`метрики ${metricsPort} (COMPUTER_METRICS_PORT)`);
 
 if (taken.length > 0) {
   die(
@@ -167,23 +170,37 @@ rmSync(measurementsPath, { force: true });
 // в конце.
 const sampling = startBusySampling();
 
-const status = await new Promise((resolve) => {
-  const child = spawn(
-    'pnpm',
-    ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
-    {
-      stdio: 'inherit',
-      shell: true,
-      cwd: repoRoot,
-      env: { ...process.env, PERF_OUT: measurementsPath },
-    },
-  );
+let services;
+let status;
+try {
+  if (process.platform === 'win32') services = await startPerfServices(perfServiceSpecs(repoRoot));
+  status = await new Promise((resolve) => {
+    const child = spawn(
+      'pnpm',
+      ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
+      {
+        stdio: 'inherit',
+        shell: true,
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PERF_OUT: measurementsPath,
+          ...(services ? { PERF_MANAGED_SERVICES: '1' } : {}),
+        },
+      },
+    );
 
-  // Не запустился вовсе — это не «замер провалился», но и не успех.
-  // Ниже такой прогон отсеется по отсутствию чисел.
-  child.on('error', () => resolve(1));
-  child.on('close', (code) => resolve(code ?? 1));
-});
+    // Не запустился вовсе — это не «замер провалился», но и не успех.
+    // Ниже такой прогон отсеется по отсутствию чисел.
+    child.on('error', () => resolve(1));
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+} catch (error) {
+  warn(`не удалось запустить замер: ${error.message}`);
+  status = 1;
+} finally {
+  await services?.stop();
+}
 
 const load = sampling.stop();
 
