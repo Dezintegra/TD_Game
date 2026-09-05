@@ -903,6 +903,7 @@ function remembered(value) {
     startedAt: value?.startedAt ?? null,
     ...(value?.provider ? { provider: value.provider } : {}),
     ...(value?.usage ? { usage: value.usage } : {}),
+    ...(value?.deployment ? { deployment: value.deployment } : {}),
   };
   return value?.live ? { ...kept, live: value.live } : kept;
 }

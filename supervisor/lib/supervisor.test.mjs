@@ -167,6 +167,25 @@ describe('порождение', () => {
     expect(h.children).toHaveLength(0);
   });
 
+  it('снимок несостоявшегося запуска переживает перезапуск супервизора', () => {
+    const deployment = { path: '.pipeline/deploy-checkouts/deploy-test', revision: 'b'.repeat(40) };
+    const first = harness({
+      stillborn: true,
+      prepareAssignment: (a) => ({ ...a, deployment }),
+    });
+    expect(first.supervisor.spawnStage(assignment({ stage: 'deploy' })).ok).toBe(false);
+    let previous;
+    const second = harness({
+      stages: first.saved.at(-1),
+      prepareAssignment: (a, saved) => {
+        previous = saved;
+        return { ...a, deployment: saved.deployment };
+      },
+    });
+    expect(second.supervisor.spawnStage(assignment({ stage: 'deploy' })).ok).toBe(true);
+    expect(previous.deployment).toEqual(deployment);
+  });
+
   it('этап становится видимым как идущий', () => {
     const { supervisor } = harness();
     expect(supervisor.spawnStage(assignment()).ok).toBe(true);
