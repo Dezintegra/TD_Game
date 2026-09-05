@@ -25,7 +25,7 @@ const push = command(
   'Everything up-to-date',
 );
 const ssh = command(
-  'ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -- dezintegra "printf td-codex-ssh-ready"',
+  'node deploy-remote.mjs --host dezintegra -- "printf td-codex-ssh-ready"',
   'td-codex-ssh-ready',
 );
 const node = command('node codex-node-probe.mjs', 'td-codex-processes-ready');
@@ -40,9 +40,9 @@ const check = (events, over = {}, env = {}) =>
       expect(probe.args.join()).not.toContain('test-token');
       expect(probe.stdin).toContain('push --dry-run');
       expect(probe.stdin).toContain('rev-parse');
-      expect(probe.stdin).toContain(`-- ${env.TD_DEPLOY_HOST ?? 'dezintegra'} `);
-      expect(probe.stdin).toContain('BatchMode=yes');
-      expect(probe.stdin).toContain('StrictHostKeyChecking=yes');
+      expect(probe.stdin).toContain(`--host ${env.TD_DEPLOY_HOST ?? 'dezintegra'} --`);
+      expect(probe.stdin).toContain('deploy-remote.mjs');
+      expect(probe.env.TD_DEPLOY_SSH_CONFIG).toBe(env.TD_DEPLOY_SSH_CONFIG);
       return {
         finished: Promise.resolve({
           code: 0,

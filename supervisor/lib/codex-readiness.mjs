@@ -1,6 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { deploySshOptions } from '../../scripts/deploy-ssh.mjs';
 import { codexExecutionArgs, codexInvocation, readCodexAnswer } from './provider.mjs';
 import { startStage } from './run-stage.mjs';
 import { codexGitEnvironment } from './codex-environment.mjs';
@@ -17,7 +19,13 @@ export async function checkCodexReadiness({
   const host = env?.TD_DEPLOY_HOST ?? 'dezintegra';
   if (!/^[a-zA-Z0-9_[\]][a-zA-Z0-9_.@:[\]-]*$/.test(host))
     return { ok: false, why: 'TD_DEPLOY_HOST: требуется SSH-псевдоним или адрес', run: null };
-  const ssh = `ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -- ${host} "printf td-codex-ssh-ready"`;
+  try {
+    deploySshOptions(env);
+  } catch (error) {
+    return { ok: false, why: error.message, run: null };
+  }
+  const remoteScript = fileURLToPath(new URL('../../scripts/deploy-remote.mjs', import.meta.url));
+  const ssh = `node ${JSON.stringify(remoteScript)} --host ${host} -- "printf td-codex-ssh-ready"`;
   const remote = config.remote ?? 'origin';
   if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(remote))
     return { ok: false, why: 'remote: требуется имя Git remote', run: null };
@@ -72,8 +80,8 @@ export async function checkCodexReadiness({
     );
     const connected = commands.some(
       (item) =>
-        /\bssh\s/.test(item.command ?? '') &&
-        item.command.includes(`-- ${host} `) &&
+        /\bnode\b.*deploy-remote\.mjs/.test(item.command ?? '') &&
+        item.command.includes(`--host ${host} --`) &&
         item.aggregated_output?.trim() === 'td-codex-ssh-ready',
     );
     const pushReady = commands.some(

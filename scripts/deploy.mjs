@@ -17,6 +17,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deploySshHost, deploySshOptions } from './deploy-ssh.mjs';
 
 // ── Ключи ────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -44,7 +45,8 @@ const flag = (name, fallback) => {
   return at !== -1 && argv[at + 1] ? argv[at + 1] : fallback;
 };
 
-const host = flag('--host', process.env.TD_DEPLOY_HOST ?? 'dezintegra');
+const host = deploySshHost(flag('--host', process.env.TD_DEPLOY_HOST ?? 'dezintegra'));
+const sshOptions = deploySshOptions();
 const remoteDir = flag('--dir', 'td');
 const dirty = argv.includes('--dirty');
 const noCache = argv.includes('--no-cache');
@@ -79,7 +81,7 @@ try {
 }
 
 step(`Проверяю связь с сервером «${host}»`);
-const reach = spawnSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, 'true'], {
+const reach = spawnSync('ssh', [...sshOptions, '--', host, 'true'], {
   stdio: 'ignore',
 });
 if (reach.status !== 0) {
@@ -155,7 +157,7 @@ try {
   note('архив готов');
 
   step('Заливаю на сервер');
-  run('scp', ['-o', 'BatchMode=yes', '-q', tarball, `${host}:~/td-src.tar`]);
+  run('scp', [...sshOptions, '-q', tarball, `${host}:~/td-src.tar`]);
   note('залито');
 
   // ── Раскладка на сервере ───────────────────────────────────────────
@@ -196,7 +198,7 @@ try {
   ].join('\n');
 
   step('Собираю и поднимаю на сервере (это самая долгая часть)');
-  run('ssh', ['-o', 'BatchMode=yes', host, remoteScript]);
+  run('ssh', [...sshOptions, '--', host, remoteScript]);
 
   // ── Проверка ───────────────────────────────────────────────────────
   //
@@ -206,24 +208,24 @@ try {
   // у серверного .env: он там единственный источник правды.
   step('Проверяю, что игра отвечает');
   const domain = capture('ssh', [
-    '-o',
-    'BatchMode=yes',
+    ...sshOptions,
+    '--',
     host,
     `sh -c '. ~/${remoteDir}/.env && printf %s "$TD_DOMAIN"'`,
   ]);
   if (!domain) die(`в ~/${remoteDir}/.env на сервере не задан TD_DOMAIN`);
 
   const health = capture('ssh', [
-    '-o',
-    'BatchMode=yes',
+    ...sshOptions,
+    '--',
     host,
     `curl -fsS --retry 10 --retry-delay 2 --retry-all-errors https://${domain}/health`,
   ]);
   note(`сервер отвечает: ${health}`);
 
   const page = capture('ssh', [
-    '-o',
-    'BatchMode=yes',
+    ...sshOptions,
+    '--',
     host,
     `curl -s -o /dev/null -w '%{http_code}' https://${domain}/`,
   ]);
