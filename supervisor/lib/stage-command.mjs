@@ -1,6 +1,7 @@
 import { isAbsolute, join, resolve } from 'node:path';
 import { codexStageCommand, providerOf } from './provider.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
+import { modelForStage } from './stage-model.mjs';
 
 /**
  * Из чего складывается запуск этапа.
@@ -94,9 +95,8 @@ export function stageCommand({ assignment, prompt, config, root, home = root }) 
   // человека, а человеческие — в конвейер.
   if (config.stageSettings) args.push('--settings', own(config.stageSettings));
 
-  // Модель называется, только если проект её назвал. Умолчания здесь нет
-  // намеренно: угаданная модель — это чужой выбор цены и качества.
-  if (config.stageModel) args.push('--model', config.stageModel);
+  const model = modelForStage(config, 'claude', assignment.stage);
+  if (model) args.push('--model', model);
 
   return {
     program: config.claudeCommand,
