@@ -257,8 +257,8 @@ describe('непокрытые команды этапа', () => {
   /** Та же настройка, но с открытыми командами выкладки. */
   const opened = {
     allow: [
-      'Bash(ssh:*)',
-      'PowerShell(ssh:*)',
+      'Bash(node scripts/deploy-remote.mjs:*)',
+      'PowerShell(node scripts/deploy-remote.mjs:*)',
       'Bash(node scripts/deploy.mjs:*)',
       'PowerShell(node scripts/deploy.mjs:*)',
       'Bash(pnpm e2e:perf:*)',
@@ -281,7 +281,7 @@ describe('непокрытые команды этапа', () => {
     expect(kinds(result)).not.toContain('continue-stage');
     expect(kinds(result)).not.toContain('fail-stage');
     expect(result.notes.join()).toContain('ждёт починок конвейера');
-    expect(result.notes.join()).toContain('dezintegra "true"');
+    expect(result.notes.join()).toContain('node scripts/deploy-remote.mjs "true"');
   });
 
   it('удержание не уводит в ошибку и при исчерпанных продолжениях', () => {
