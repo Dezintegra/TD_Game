@@ -2,6 +2,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   symlinkSync,
   writeFileSync,
   existsSync,
@@ -110,10 +111,15 @@ describe('install snapshot', () => {
   });
 
   it('rejects a junction outside its root before writing there', () => {
-    const { cwd } = fixture();
+    // Без завершающего слеша Git игнорирует и symlink на POSIX, и junction на Windows.
+    const { cwd, git } = fixture('.pnpm-store/\nnode_modules/\n.matchlog\n');
     const outside = mkdtempSync(join(base, 'outside-'));
     symlinkSync(outside, join(cwd, '.matchlog'), process.platform === 'win32' ? 'junction' : 'dir');
-    expect(check(cwd).error).toContain('Path escapes workspace');
+    expect(git('status', '--porcelain', '--untracked-files=all').stdout).toBe('');
+    const result = check(cwd);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('Path escapes workspace');
+    expect(readdirSync(outside)).toEqual([]);
   });
 
   it('does not accept a Git diagnostic as an empty clean status', () => {
