@@ -23,6 +23,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
+import { releasePerfLock } from './perf-lock.mjs';
 import {
   BUSY_LIMIT,
   die,
@@ -127,9 +128,9 @@ writeFileSync(
 // заблокировал бы соседние деревья на четверть часа впустую.
 const release = () => {
   try {
-    rmSync(lockPath, { force: true });
-  } catch {
-    // Уже удалён — значит цель достигнута.
+    releasePerfLock(lockPath);
+  } catch (error) {
+    warn(`не удалось освободить замок: ${error.message}`);
   }
 };
 process.on('exit', release);
