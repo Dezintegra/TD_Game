@@ -67,28 +67,6 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
     if (!['elevated', 'unelevated'].includes(sandbox))
       throw new Error('codexWindowsSandbox: требуется elevated или unelevated');
     args.push('-c', `windows.sandbox=${JSON.stringify(sandbox)}`);
-    // Sandbox использует другого Windows-пользователя. Доверяем только деревьям
-    // назначения, в окружении дочерней команды, не меняя глобальный Git config.
-    const paths = [
-      '',
-      ...new Set([resolve(root), resolve(cwd)].map((p) => p.replaceAll('\\', '/'))),
-    ];
-    const env = { GIT_CONFIG_COUNT: String(paths.length + 2) };
-    paths.forEach((path, i) => {
-      env[`GIT_CONFIG_KEY_${i}`] = 'safe.directory';
-      env[`GIT_CONFIG_VALUE_${i}`] = path;
-    });
-    // Git HTTPS использует тот же gh и GH_TOKEN, без чужого Windows keyring.
-    env['GIT_CONFIG_KEY_' + paths.length] = 'credential.https://github.com.helper';
-    env['GIT_CONFIG_VALUE_' + paths.length] = '';
-    env['GIT_CONFIG_KEY_' + (paths.length + 1)] = 'credential.https://github.com.helper';
-    env['GIT_CONFIG_VALUE_' + (paths.length + 1)] = '!gh auth git-credential';
-    args.push(
-      '-c',
-      `shell_environment_policy.set={${Object.entries(env)
-        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-        .join(',')}}`,
-    );
   }
   return args;
 }

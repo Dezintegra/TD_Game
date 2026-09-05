@@ -159,14 +159,12 @@ it('прошлый usage не подтверждает расход нового
   ).toBe('failed');
 });
 
-it('включает Windows sandbox и доверяет только двум точным Git-каталогам', async () => {
+it('включает Windows sandbox без Git-авторизации в argv', async () => {
   const { codexExecutionArgs } = await import('./provider.mjs');
   const args = codexExecutionArgs({}, '/main', '/tree', 'win32');
   expect(args).toContain('windows.sandbox="elevated"');
-  const env = args.find((arg) => arg.startsWith('shell_environment_policy.set='));
-  expect(env).toContain('GIT_CONFIG_COUNT="5"');
-  expect(env).toContain('GIT_CONFIG_VALUE_0=""');
-  expect(env).not.toContain('*');
+  expect(args.join()).not.toContain('GIT_CONFIG');
+  expect(args.join()).not.toContain('credential');
   expect(codexExecutionArgs({}, '/main', '/tree', 'linux').join()).not.toContain('windows.sandbox');
   expect(() =>
     codexExecutionArgs({ codexWindowsSandbox: 'disabled' }, '/main', '/tree', 'win32'),

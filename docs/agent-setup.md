@@ -174,9 +174,17 @@ GitHub-авторизация sandbox передаётся как GH_TOKEN в о
 супервизор берёт существующий GH_TOKEN/GITHUB_TOKEN или ответ gh auth token.
 Значение не записывается в конфиг, аргументы или журналы. Другие переменные
 с названиями секретов (включая Trello) из окружения Codex исключаются.
-Git HTTPS для github.com использует gh auth git-credential через временную
-настройку окружения. Перед выдачей задач проба проверяет также gh api user.
+Git HTTPS для github.com получает Authorization через GIT_CONFIG_COUNT,
+GIT_CONFIG_KEY_n и GIT_CONFIG_VALUE_n в окружении каждого процесса Codex.
+Заголовок ограничен https://github.com/, credential helper отключён для этого
+хоста. Прежний helper через sh.exe работал в elevated, но падал на signal pipe
+в unelevated; теперь авторизация Git не требует запуска MSYS-оболочки.
+Точные safe.directory основного и назначенного дерева задаются там же.
+Окружения этапов независимы; личный Git config и PATH не меняются.
+Не выводите git config --list или окружение: они могут содержать заголовок.
+Переменные Git trace/curl verbose не наследуются этой средой.
 
-Git push --dry-run из sandbox к ветке исправления также проверен 05.09.2026:
-код 0, Everything up-to-date. Для Git credential helper в окружение Windows
-добавляется bin установленного Git с sh.exe; системный PATH не меняется.
+Перед выдачей задач проба проверяет также gh api user и git push --dry-run
+в refs/heads/codex/readiness через настроенный remote. Ветка не создаётся
+и не изменяется. Успешный доступ к API при ошибке dry-run не разрешает старт:
+так выявляются ошибки Git-авторизации до захвата карточек.

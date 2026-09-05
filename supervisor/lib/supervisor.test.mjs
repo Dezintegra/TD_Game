@@ -31,7 +31,8 @@ function harness(over = {}) {
   const logged = [];
   const saved = [];
 
-  const spawn = () => {
+  const spawn = (program, args, options) => {
+    over.onSpawn?.({ program, args, options });
     if (over.spawnThrows) throw new Error(over.spawnThrows);
     const child = new EventEmitter();
     // Номер процесса — признак рождения. Подставной `spawn` умеет и не давать
@@ -73,6 +74,7 @@ function harness(over = {}) {
     codexUsage: over.codexUsage ?? {},
     saveCodexUsage: over.saveCodexUsage,
     onPolicyBlocked: over.onPolicyBlocked,
+    getCodexEnvironment: over.getCodexEnvironment,
     log: (line) => logged.push(line),
     // Запись лога этапа собирается так же, как журнал цикла, и по той же
     // причине: умолчание в `createSupervisor` — пустая функция, и без этого
@@ -1247,4 +1249,33 @@ it('отказ Codex немедленно запрещает новые этап
   });
   expect(h.wrote[0].text).toContain('blocked by policy');
   expect(finishedLine(h.said).text).toContain('отказов 1');
+});
+
+it('передаёт Git-авторизацию рабочему Codex окружением, а Claude оставляет прежним', async () => {
+  for (const provider of ['codex', 'claude']) {
+    const calls = [];
+    const env = { GH_TOKEN: 'test-token' };
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider },
+      getCodexEnvironment: () => env,
+      onSpawn: (call) => calls.push(call),
+    });
+    expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+    const call = calls[0];
+    expect(call.args.join()).not.toContain('test-token');
+    expect(call.args.join()).not.toContain('AUTHORIZATION');
+    if (provider === 'codex') {
+      expect(call.options.env.GIT_CONFIG_COUNT).toBe('6');
+      expect(call.options.env.GIT_CONFIG_VALUE_2.replaceAll('\\', '/')).toContain(
+        '/repo/.claude/worktrees/0001-one',
+      );
+      expect(call.options.env.GIT_CONFIG_VALUE_5).toMatch(/^AUTHORIZATION: basic /);
+    } else expect(call.options.env).toBeUndefined();
+    expect(env).toEqual({ GH_TOKEN: 'test-token' });
+    await h.answer(envelope());
+    expect(
+      JSON.stringify(h.wrote) + JSON.stringify(h.logged) + JSON.stringify(h.said),
+    ).not.toContain('test-token');
+  }
 });
