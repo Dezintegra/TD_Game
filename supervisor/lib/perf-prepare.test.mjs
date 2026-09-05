@@ -2,12 +2,22 @@ import { expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { preparePerfPackages } from '../../scripts/perf-prepare.mjs';
 
-it('собирает только библиотеки в назначенном дереве с одним процессом', () => {
+it('собирает библиотеки и службы в назначенном дереве с одним процессом', () => {
   const run = vi.fn(() => ({ status: 0 }));
   preparePerfPackages('/assigned', run);
   expect(run).toHaveBeenCalledWith(
     'pnpm',
-    ['--filter', './packages/**', '--workspace-concurrency=1', '-r', 'build'],
+    [
+      '--filter',
+      './packages/**',
+      '--filter',
+      '@td/server',
+      '--filter',
+      '@td/computer',
+      '--workspace-concurrency=1',
+      '-r',
+      'build',
+    ],
     { cwd: '/assigned', shell: process.platform === 'win32', stdio: 'inherit' },
   );
 });

@@ -1,10 +1,20 @@
 import { spawnSync } from 'node:child_process';
 
-/** Свежему дереву нужны dist библиотек для dev-серверов; полный build игры не нужен. */
+/** Замер запускает собранные службы без watch; клиентскую сборку готовит Vite. */
 export function preparePerfPackages(cwd, run = spawnSync) {
   const result = run(
     'pnpm',
-    ['--filter', './packages/**', '--workspace-concurrency=1', '-r', 'build'],
+    [
+      '--filter',
+      './packages/**',
+      '--filter',
+      '@td/server',
+      '--filter',
+      '@td/computer',
+      '--workspace-concurrency=1',
+      '-r',
+      'build',
+    ],
     {
       cwd,
       shell: process.platform === 'win32',
