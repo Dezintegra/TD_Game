@@ -33,6 +33,11 @@ The Codex adapter SHALL require a successful terminal event and process exit for
 - **WHEN** Codex is selected with a positive dollar cap and no explicit token prices
 - **THEN** startup explains the missing configuration and starts no stages
 
+
+#### Scenario: ChatGPT subscription
+- **WHEN** Codex runs with its default subscription configuration
+- **THEN** no dollar cap is applied to Codex, while the Claude dollar cap remains unchanged
+
 ### Requirement: Discoverable project guidance
 The repository SHALL expose project instructions and six OpenSpec skills to Codex while retaining Claude support.
 

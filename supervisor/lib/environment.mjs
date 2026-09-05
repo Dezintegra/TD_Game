@@ -54,7 +54,7 @@ export function checkEnvironment({
     !validTokenPrices(config.codexTokenPrices)
   ) {
     fatal =
-      'Codex: укажите codexTokenPrices (input, cachedInput, output за миллион токенов) для денежного лимита или явно maxTaskCostUsd=null для работы без него.';
+      'Codex: укажите codexTokenPrices (input, cachedInput, output за миллион токенов) для денежного лимита или явно codexMaxTaskCostUsd=null для работы без него.';
   }
   if (provider === 'codex')
     rows.push(['разрешения Codex', 'workspace-write, сеть включена, подтверждения never']);

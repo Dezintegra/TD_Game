@@ -106,12 +106,12 @@ describe('предпроверка Codex', () => {
       run: () => ({ code: 0, stdout: 'version' }),
     });
   it('не снимает денежный потолок молча', () => {
-    expect(inspect().fatal).toContain('codexTokenPrices');
+    expect(inspect({ maxTaskCostUsd: 25 }).fatal).toContain('codexTokenPrices');
     expect(inspect({ codexTokenPrices: prices }).fatal).toBeNull();
     expect(inspect({ maxTaskCostUsd: null }).fatal).toBeNull();
-    expect(inspect({ codexTokenPrices: { ...prices, output: -1 } }).fatal).toContain(
-      'codexTokenPrices',
-    );
+    expect(
+      inspect({ maxTaskCostUsd: 25, codexTokenPrices: { ...prices, output: -1 } }).fatal,
+    ).toContain('codexTokenPrices');
   });
 });
 
@@ -145,4 +145,12 @@ it('накопительный usage после resume не считает пр�
 
 it('посторонний JSON null в потоке не роняет супервизор', () => {
   expect(readCodexAnswer({ ...run(), stdout: 'null\n' + run().stdout }).outcome).toBe('done');
+});
+
+it('подписка Codex не выключает долларовый лимит Claude', () => {
+  expect(resolveConfig({ provider: 'codex' }).config.maxTaskCostUsd).toBeNull();
+  expect(resolveConfig({ provider: 'claude' }).config.maxTaskCostUsd).toBe(25);
+  expect(resolveConfig({ provider: 'codex', codexMaxTaskCostUsd: 10 }).config.maxTaskCostUsd).toBe(
+    10,
+  );
 });

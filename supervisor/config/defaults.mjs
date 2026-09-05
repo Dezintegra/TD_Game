@@ -37,6 +37,8 @@ export const DEFAULTS = {
   codexCommand: 'codex',
   codexModel: null,
   codexTokenPrices: null,
+  // Codex используется по подписке; долларовый потолок включают отдельно.
+  codexMaxTaskCostUsd: null,
   claudeCommand: 'claude',
 
   /**
@@ -538,6 +540,7 @@ export function resolveConfig(projectConfig = {}) {
     // но своя подпись входит в список всегда.
     ourAuthors: [...new Set([author.name, ...(projectConfig.ourAuthors ?? [])])],
   };
+  if (config.provider === 'codex') config.maxTaskCostUsd = config.codexMaxTaskCostUsd;
   const missing = REQUIRED.filter((path) => pick(config, path) === undefined);
   return { config, missing };
 }
