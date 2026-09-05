@@ -614,9 +614,14 @@ export function summariseChecks(json) {
     return { state: 'pending', why: `идут: ${unfinished.map((c) => c.name).join(', ')}` };
   }
 
-  const failed = checks.filter((check) => check.conclusion !== 'SUCCESS');
+  // Условные игровые задания завершаются SKIPPED: GitHub считает это
+  // штатным пропуском. Ошибка определения областей остаётся FAILURE.
+  const failed = checks.filter((check) => !['SUCCESS', 'SKIPPED'].includes(check.conclusion));
   if (failed.length > 0) {
     return { state: 'failure', failed: failed.map((check) => check.name).join(', ') };
+  }
+  if (!checks.some((check) => check.conclusion === 'SUCCESS')) {
+    return { state: 'pending', why: 'все проверки пропущены' };
   }
   return { state: 'success' };
 }
