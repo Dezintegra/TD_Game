@@ -756,7 +756,7 @@ async function prepareCodex() {
     writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
     if (!readiness.ok) throw new Error(readiness.why);
     codexReady = true;
-    note('Codex: Git и авторизация GitHub проверены', TAG.cycle);
+    note('Codex: Git, авторизация GitHub и соединение SSH проверены', TAG.cycle);
     return true;
   } catch (error) {
     const why = 'Проверка Codex не прошла: ' + error.message;
