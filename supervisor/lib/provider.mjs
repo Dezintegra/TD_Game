@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { modelForStage } from './stage-model.mjs';
 
 export function providerOf(config) {
   const provider = config.provider ?? 'claude';
@@ -78,7 +79,8 @@ export function codexStageCommand({ assignment, prompt, config, root, home }) {
   const rules = readFileSync(join(skillDir, `${assignment.stage}.md`), 'utf8');
   const cwd = assignment.path ? resolve(root, assignment.path) : root;
   const args = ['exec', '--ignore-user-config', '--json', ...codexExecutionArgs(config, root, cwd)];
-  if (config.codexModel) args.push('--model', config.codexModel);
+  const model = modelForStage(config, 'codex', assignment.stage);
+  if (model) args.push('--model', model);
   if (assignment.continuation && assignment.sessionId) args.push('resume', assignment.sessionId);
   args.push('-');
   return {
@@ -211,7 +213,8 @@ export function codexProbeCommand(config) {
     '-c',
     'approval_policy="never"',
   ];
-  if (config.codexModel) args.push('--model', config.codexModel);
+  const model = modelForStage(config, 'codex', 'default');
+  if (model) args.push('--model', model);
   args.push('Ответь одним словом: готов. Не вызывай инструменты.');
   return codexInvocation(config, args);
 }

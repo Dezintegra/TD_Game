@@ -6,6 +6,7 @@ import { deploySshOptions } from '../../scripts/deploy-ssh.mjs';
 import { codexExecutionArgs, codexInvocation, readCodexAnswer } from './provider.mjs';
 import { startStage } from './run-stage.mjs';
 import { codexGitEnvironment } from './codex-environment.mjs';
+import { modelForStage } from './stage-model.mjs';
 
 /** Проверяем инструмент, а не обещание модели: текст «готов» ничего не доказывает. */
 export async function checkCodexReadiness({
@@ -45,7 +46,8 @@ export async function checkCodexReadiness({
       '-c',
       'project_doc_max_bytes=0',
     ];
-    if (config.codexModel) args.push('--model', config.codexModel);
+    const model = modelForStage(config, 'codex', 'deploy');
+    if (model) args.push('--model', model);
     args.push('-');
     const command = {
       ...codexInvocation(config, args),
