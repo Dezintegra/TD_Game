@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execute } from './execute.mjs';
+import { reconcile } from './reconcile.mjs';
+import { repairWorld } from './repair.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 
@@ -1494,6 +1496,188 @@ describe('остановка задачи', () => {
     // а не в разбор.
     expect(moved.returnTo).toBe('implement');
   });
+});
+
+describe('уборка после потери записи реестра', () => {
+  const id = '0001-one';
+  const branch = `worktree-${id}`;
+  const path = `.claude/worktrees/${id}`;
+  const sweep = { kind: 'cleanup', taskId: id };
+
+  function world({
+    owner = 'станция-1',
+    present = true,
+    pr = 50,
+    state = 'merged',
+    ownCommits = 0,
+  } = {}) {
+    const io = fakeIo({ tasks: [task({ status: 'cleanup', owner, links: { pr } })] });
+    const registry = new Map();
+    const resources = new Set(present ? ['tree', 'local', 'remote'] : []);
+    const failures = new Set();
+    const calls = [];
+    io.registryEntry = (taskId) => registry.get(taskId) ?? null;
+    io.upsertRegistry = (entry) => {
+      calls.push('register');
+      registry.set(entry.taskId, entry);
+    };
+    io.dropRegistry = (taskId) => {
+      expect(resources.size).toBe(0);
+      calls.push('drop');
+      registry.delete(taskId);
+    };
+    io.worktreePathFor = () => path;
+    io.addWorktree = () => {
+      throw new Error('cleanup не должен создавать дерево');
+    };
+    io.readPr = (number) => {
+      calls.push(['pr', number]);
+      return { state };
+    };
+    io.ownCommits = (name) => {
+      calls.push(['ownCommits', name]);
+      return ownCommits;
+    };
+    for (const [method, resource, argument] of [
+      ['removeWorktree', 'tree', path],
+      ['deleteBranch', 'local', branch],
+      ['deleteRemoteBranch', 'remote', branch],
+    ]) {
+      io[method] = (value) => {
+        expect(value).toBe(argument);
+        expect(registry.has(id)).toBe(true);
+        calls.push(resource);
+        if (failures.has(resource)) return { ok: false, why: `занят ${resource}` };
+        resources.delete(resource);
+        return { ok: true };
+      };
+    }
+    const saveTask = io.saveTask.bind(io);
+    io.saveTask = (...args) => {
+      if (args[0].status === 'closed') {
+        expect(resources.size).toBe(0);
+        expect(registry.size).toBe(0);
+        calls.push('closed');
+      }
+      return saveTask(...args);
+    };
+    const repair = () => {
+      const result = reconcile({
+        registry: { entries: [...registry.values()] },
+        worktrees: resources.has('tree') ? [{ branch, path: `C:/repo/${path}` }] : [],
+        tasks: [...io.tasks.values()],
+        machine: io.machine,
+      });
+      repairWorld(result.repairs, io);
+      return result.repairs;
+    };
+    expect(registry.size).toBe(0);
+    return { io, registry, resources, failures, calls, repair };
+  }
+
+  function adopt(world) {
+    expect(world.repair().map((item) => item.kind)).toEqual(['adopt-worktree']);
+    expect(world.registry.get(id)).toEqual({
+      taskId: id,
+      branch,
+      path,
+      stage: 'cleanup',
+      sessionTitle: `pipeline:${id}:cleanup`,
+      lastSeenAt: NOW,
+    });
+    expect(world.repair()).toEqual([]);
+  }
+
+  it.each(['станция-1', null])(
+    'восстанавливает запись и убирает ресурсы, владелец %s',
+    async (owner) => {
+      const w = world({ owner });
+      adopt(w);
+      expect(w.io.tasks.get(id).owner).toBe(owner);
+      const [result] = await execute([sweep], w.io);
+      expect(result).toMatchObject({ result: 'done', status: 'closed' });
+      expect(w.calls).toEqual([
+        'register',
+        ['pr', 50],
+        'tree',
+        'local',
+        'remote',
+        'drop',
+        'closed',
+      ]);
+      expect(w.io.tasks.get(id).status).toBe('closed');
+      expect(w.io.spawned).toEqual([]);
+    },
+  );
+
+  it('отсутствующее дерево не создаётся, пустая уборка закрывается', async () => {
+    const w = world({ present: false });
+    expect(w.repair()).toEqual([]);
+    await execute([sweep], w.io);
+    expect(w.io.tasks.get(id).status).toBe('closed');
+    expect(w.calls).toEqual([['pr', 50], 'closed']);
+  });
+
+  it('починка не присваивает и не удаляет чужое дерево', () => {
+    const w = world({ owner: 'станция-2' });
+    expect(w.repair().map((item) => item.kind)).toEqual(['report-orphan']);
+    expect(w.registry.size).toBe(0);
+    expect(w.calls).toEqual([]);
+    expect(w.resources.size).toBe(3);
+    expect(w.io.tasks.get(id).owner).toBe('станция-2');
+  });
+
+  it.each([
+    { state: 'open', status: 'postmortem' },
+    { state: 'unknown', status: 'cleanup' },
+  ])('PR $state не позволяет удалить восстановленное дерево', async ({ state, status }) => {
+    const w = world({ state });
+    adopt(w);
+    await execute([sweep], w.io);
+    expect(w.io.tasks.get(id).status).toBe(status);
+    expect(w.registry.has(id)).toBe(true);
+    expect(w.resources.size).toBe(3);
+    expect(w.calls).toEqual(['register', ['pr', 50]]);
+  });
+
+  it.each([0, 2, null])('без PR проверяет собственные коммиты: %s', async (ownCommits) => {
+    const w = world({ pr: null, ownCommits });
+    adopt(w);
+    await execute([sweep], w.io);
+    expect(w.calls).toContainEqual(['ownCommits', branch]);
+    expect(w.io.tasks.get(id).status).toBe(ownCommits === 0 ? 'closed' : 'postmortem');
+    expect(w.registry.has(id)).toBe(ownCommits !== 0);
+    expect(w.resources.size).toBe(ownCommits === 0 ? 0 : 3);
+    if (ownCommits !== 0)
+      expect(w.calls).toEqual(['register', ['pr', null], ['ownCommits', branch]]);
+  });
+
+  it.each(['tree', 'local', 'remote'])(
+    'отказ удаления %s сохраняет запись и cleanup',
+    async (resource) => {
+      const w = world();
+      adopt(w);
+      const entry = w.registry.get(id);
+      w.failures.add(resource);
+      const [result] = await execute([sweep], w.io);
+      expect(result).toMatchObject({ result: 'skipped' });
+      expect(result.why).toContain(`занят ${resource}`);
+      expect(w.registry.get(id)).toBe(entry);
+      expect(w.io.tasks.get(id).status).toBe('cleanup');
+      expect(w.resources).toEqual(new Set([resource]));
+      expect(w.calls).not.toContain('closed');
+      expect(w.calls).not.toContain('drop');
+      if (resource === 'tree') {
+        w.failures.clear();
+        expect(w.repair()).toEqual([]);
+        const [retry] = await execute([sweep], w.io);
+        expect(retry).toMatchObject({ result: 'done', status: 'closed' });
+        expect(w.io.tasks.get(id).status).toBe('closed');
+        expect(w.registry.size).toBe(0);
+        expect(w.resources.size).toBe(0);
+      }
+    },
+  );
 });
 
 describe('уборка', () => {
