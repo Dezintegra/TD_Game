@@ -66,10 +66,25 @@ function evidenceFor(task, stage, io) {
 }
 
 /** Перенести отчёт сессии в бэклог. */
-async function transferReport(action, io) {
+async function transferReport(action, io, context) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
+  const hasUpdates = Object.hasOwn(report, 'dependencyUpdates');
+  if (hasUpdates && !Array.isArray(report.dependencyUpdates))
+    return { result: 'failed', why: 'dependencyUpdates: ожидается массив' };
+  const updates = report.dependencyUpdates ?? [];
+  if (
+    updates.length &&
+    (report.taskId !== task.id ||
+      report.taskId !== action.taskId ||
+      report.stage !== action.stage ||
+      report.stage !== task.status)
+  )
+    return {
+      result: 'failed',
+      why: 'dependencyUpdates: личность или этап отчёта не совпадают с источником',
+    };
 
   // Отказанные действия судят ЗДЕСЬ, а не в супервизоре, и после разбора
   // отчёта, а не до него. До разбора неизвестны ни исход, ни ссылки — то
@@ -87,6 +102,7 @@ async function transferReport(action, io) {
       : { verdict: 'passing', why: null };
 
   if (trust.verdict === 'undermining') {
+    if (updates.length) return { result: 'failed', why: trust.why };
     // Отчёт при этом не пропадает. Основание записано ценой: 31.08.2026
     // задача 0006 ушла в ошибку с полностью снятыми числами шестидесяти
     // матчей, и числа эти остались лежать в логе, которого не прочитал никто.
@@ -113,8 +129,33 @@ async function transferReport(action, io) {
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
+  if (updates.length && verdict.problems?.length)
+    return { result: 'failed', why: verdict.problems.join('; ') };
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  // Все адресаты проверяются до первой записи. Неудача сохраняет весь отчёт для повтора.
+  const dependencyNotes = [];
+  if (updates.length) {
+    if (!io.planTaskDependencyUpdates || !io.appendTaskDependencies)
+      return { result: 'failed', why: 'адаптер не поддерживает dependencyUpdates' };
+    try {
+      const planned = await io.planTaskDependencyUpdates(updates, task.id);
+      if (!planned.ok) return { result: 'failed', why: planned.why };
+      for (const update of updates) {
+        const saved = await io.appendTaskDependencies(update, {
+          ...context,
+          sourceId: task.id,
+          updates,
+        });
+        if (!saved.ok)
+          return { result: 'failed', why: saved.why ?? `${update.taskId}: ${saved.outcome}` };
+        dependencyNotes.push(`Зависимости ${update.taskId} подтверждены: ${update.reason}`);
+      }
+    } catch (error) {
+      return { result: 'failed', why: `dependencyUpdates: ${error.message}` };
+    }
+  }
 
   // Остановленная задача счётчиков больше не считает: их обнулил сам переход
   // в сквозное состояние, и наращивать возвраты поверх обнулённого значило бы
@@ -306,7 +347,7 @@ async function transferReport(action, io) {
       // ровно тем, против чего написан третий предохранитель исхода.
       what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
       links: report.links ?? {},
-      decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
+      decisions: [...(report.decisions ?? []), ...dependencyNotes, ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
       denials,
       denialsNote,

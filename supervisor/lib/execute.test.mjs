@@ -368,6 +368,193 @@ function fakeIo(over = {}) {
 
 const startAction = { kind: 'start-stage', taskId: '0001-one', stage: 'design' };
 
+function dependencyReportWorld() {
+  const f = dependencyFixture();
+  const sourceId = '0001-source';
+  f.cards.push({
+    ...f.cards[0],
+    id: 'card-source',
+    name: `${sourceId} · Source`,
+    idList: 'list-implement',
+    desc: joinDescription('Source', { id: sourceId, owner: 'B' }),
+    idMembers: ['me'],
+  });
+  const store = f.store('B');
+  const state = {
+    report: {
+      taskId: sourceId,
+      stage: 'implement',
+      outcome: 'done',
+      summary: 'Готово',
+      dependencyUpdates: [f.update],
+    },
+    forgotten: 0,
+  };
+  const io = {
+    ...fakeIo(),
+    ...store,
+    machine: 'B',
+    readReport: () => state.report,
+    removeReport: () => {
+      state.report = null;
+    },
+    forgetSession: () => {
+      state.forgotten++;
+    },
+  };
+  const action = { kind: 'transfer-report', taskId: sourceId, stage: 'implement' };
+  return { ...f, fixture: f, io, state, action, sourceId };
+}
+
+describe('перенос отчёта с dependencyUpdates', () => {
+  it('подтверждает адресата до записи источника и перечисляет основание в журнале', async () => {
+    const f = dependencyReportWorld();
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+    const puts = f.calls.filter((call) => call.method === 'PUT');
+    expect(puts.map((call) => call.path)).toEqual(['cards/card-target', 'cards/card-source']);
+    expect(f.cards[0].idList).toBe('list-new');
+    expect(f.state.report).toBeNull();
+    expect(
+      f.calls.find((call) => call.path === 'cards/card-source/actions/comments').body.text,
+    ).toContain(f.update.reason);
+  });
+  it.each(['confirm', 'put-response', 'put-throw'])(
+    'сохранённый PUT и сбой %s не позволяют старым действиям стереть запись',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      let wrote = false;
+      f.fixture.hook = (method, path, body) => {
+        if (method === 'PUT' && path === 'cards/card-target') {
+          wrote = true;
+          Object.assign(f.cards[0], body);
+          if (mode === 'put-throw') throw new Error('lost PUT');
+          if (mode === 'put-response') return { ok: false, why: 'lost PUT' };
+        }
+        if (wrote && mode === 'confirm' && method === 'GET' && path === 'cards/card-target')
+          return { ok: false, why: 'readback failed' };
+      };
+      const beforeSource = f.cards[1].desc;
+      const results = await execute(
+        [
+          f.action,
+          { kind: 'start-stage', taskId: f.update.taskId, stage: 'design' },
+          { kind: 'fail-stage', taskId: f.update.taskId, stage: 'design' },
+        ],
+        f.io,
+      );
+      expect(results.map((item) => item.result)).toEqual(['failed', 'skipped', 'skipped']);
+      expect(results[0].why).toContain(f.update.taskId);
+      expect(splitDescription(f.cards[0].desc).meta.dependencyResults).toEqual(
+        f.update.dependencyResults,
+      );
+      expect(f.io.readTask(f.update.taskId).dependsOn).toBeUndefined();
+      expect(f.io.spawned).toEqual([]);
+      expect(f.cards[1].desc).toBe(beforeSource);
+      expect(f.state.report).not.toBeNull();
+      expect(f.state.forgotten).toBe(0);
+      expect(f.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+      expect(f.cards[0].idMembers).toEqual([]);
+    },
+  );
+  it('исключение адаптера после callback тоже сохраняет инвалидацию', async () => {
+    const f = dependencyReportWorld();
+    f.io.appendTaskDependencies = async (update, context) => {
+      context.invalidate(update.taskId);
+      throw new Error('adapter failed');
+    };
+    expect(
+      await execute(
+        [f.action, { kind: 'start-stage', taskId: f.update.taskId, stage: 'design' }],
+        f.io,
+      ),
+    ).toMatchObject([{ result: 'failed' }, { result: 'skipped' }]);
+    expect(f.state.report).not.toBeNull();
+  });
+  it.each(['taskId', 'stage', 'outcome', 'trust'])(
+    'негодный отчёт (%s) не обращается к адресатам',
+    async (field) => {
+      const f = dependencyReportWorld();
+      if (field === 'taskId') f.state.report.taskId = '0009-wrong';
+      if (field === 'stage') f.state.report.stage = 'audit';
+      if (field === 'outcome') f.state.report.outcome = 'unknown';
+      if (field === 'trust') f.state.report.denials = [{ tool_name: 'AskUserQuestion', tool_input: {} }];
+      const result = await execute([f.action], f.io);
+      expect(result[0].result).toBe('failed');
+      expect(f.calls).toEqual([]);
+      expect(f.state.report).not.toBeNull();
+    },
+  );
+  it('все адресаты валидируются до записи и до requests/amendments', async () => {
+    const f = dependencyReportWorld();
+    f.state.report.dependencyUpdates.push({ ...f.update, taskId: '0009-missing' });
+    f.state.report.requests = [
+      { type: 'note', title: 'New', description: 'Details', priority: 10 },
+    ];
+    f.state.report.amendments = [{ taskId: f.update.taskId, facts: 'Facts' }];
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'failed' }]);
+    expect(f.calls.every((call) => call.method === 'GET')).toBe(true);
+    expect(f.state.forgotten).toBe(0);
+  });
+  it.each(['absent', 'empty'])('поле %s не добавляет IO обработчика', async (mode) => {
+    const f = dependencyReportWorld();
+    if (mode === 'absent') delete f.state.report.dependencyUpdates;
+    else f.state.report.dependencyUpdates = [];
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+    expect(f.calls.every((call) => call.path.startsWith('cards/card-source'))).toBe(true);
+  });
+  it('null и неподдерживаемый адаптер отказывают явно', async () => {
+    const f = dependencyReportWorld();
+    f.state.report.dependencyUpdates = null;
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'failed' }]);
+    f.state.report.dependencyUpdates = [f.update];
+    delete f.io.appendTaskDependencies;
+    expect(await execute([f.action], f.io)).toMatchObject([
+      { result: 'failed', why: expect.stringContaining('не поддерживает') },
+    ]);
+    expect(f.calls).toEqual([]);
+  });
+  it.each(['failed', 'question'])(
+    'законный исход %s допускает поручение адресату failed',
+    async (outcome) => {
+      const f = dependencyReportWorld();
+      f.cards[0].idList = 'list-failed';
+      f.state.report.outcome = outcome;
+      expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+      expect(f.cards[0].idList).toBe('list-failed');
+    },
+  );
+  it('частичный успех и no-op инвалидируют адресата до следующего сканирования', async () => {
+    const f = dependencyReportWorld();
+    f.cards.push({
+      ...f.cards[0],
+      id: 'second',
+      name: '0005-second · Second',
+      idMembers: ['me'],
+      desc: joinDescription('Second', { id: '0005-second' }),
+    });
+    f.state.report.dependencyUpdates.push({ ...f.update, taskId: '0005-second' });
+    expect(
+      await execute(
+        [f.action, { kind: 'fail-stage', taskId: f.update.taskId, stage: 'design' }],
+        f.io,
+      ),
+    ).toMatchObject([{ result: 'failed' }, { result: 'skipped' }]);
+    expect(f.state.report).not.toBeNull();
+    f.cards[2].idMembers = [];
+    f.calls.length = 0;
+    expect(
+      await execute(
+        [f.action, { kind: 'start-stage', taskId: f.update.taskId, stage: 'design' }],
+        f.io,
+      ),
+    ).toMatchObject([{ result: 'done' }, { result: 'skipped' }]);
+    expect(f.calls.filter((call) => call.method === 'PUT').map((call) => call.path)).toEqual([
+      'cards/second',
+      'cards/card-source',
+    ]);
+  });
+});
+
 describe('исход осиротевшего этапа', () => {
   const noteAction = { kind: 'note-orphan', taskId: '0001-one', stage: 'implement' };
 
