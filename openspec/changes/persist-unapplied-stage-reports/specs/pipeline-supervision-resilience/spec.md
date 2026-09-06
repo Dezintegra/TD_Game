@@ -54,6 +54,12 @@ Before its first external mutation, report delivery SHALL persist a stable plan 
 - **WHEN** a board effect succeeds but the process stops before saving its local progress
 - **THEN** restart recognizes that effect by its operation identity and does not apply it twice
 
+#### Scenario: Batch member moved before its journal failed
+- **WHEN** a batch member's PUT and operation receipt succeed, its journal write fails, and the supervisor restarts while the lead remains in deploy
+- **THEN** retry reconciles the member's receipts even though it has left deploy and delivers its missing journal parts exactly once without repeating its transition or accounting
+- **AND** delivery proceeds to the remaining members and then the lead; the report stays pending until all planned effects are confirmed
+- **AND** a further restart causes no board effects, new stage session or continuation charge
+
 #### Scenario: Requests amendments and batch fail partway
 - **WHEN** delivery creates a request, posts an amendment or updates a batch member and then fails
 - **THEN** retry reconciles each completed effect and completes the remainder without duplicate cards, comments or accounting
