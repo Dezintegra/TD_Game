@@ -912,6 +912,89 @@ describe('этапы и скиллы', () => {
     expect(text).not.toContain('git -C <дерево> merge --ff-only origin/main');
   });
 
+  // Команды считаются только внутри исполняемых блоков шага подготовки:
+  // упоминание статуса в запретах не защищает от грязи после установки.
+  function deployCleanlinessErrors(text) {
+    const steps = [...text.matchAll(/^\d+\. \*\*[^\n]+[\s\S]*?(?=^\d+\. \*\*|^## |$(?![\s\S]))/gm)];
+    const preparation = steps.find((step) => step[0].includes('**Проверь совпадение дерева'));
+    const measurement = steps.find((step) => step[0].includes('**Замерь кадры'));
+    if (!preparation || !measurement || preparation.index >= measurement.index)
+      return ['deploy.md: подготовка должна предшествовать замеру'];
+    const body = preparation[0];
+    const commands = [...body.matchAll(/```powershell\s*\n([\s\S]*?)```/g)]
+      .flatMap((block) => block[1].split('\n'))
+      .map((line) => line.replace(/\s+#.*$/, '').trim())
+      .filter((line) => /^(git .* status --porcelain|pnpm install)/.test(line));
+    const errors = [];
+    if (
+      JSON.stringify(commands) !==
+      JSON.stringify([
+        'git -C <дерево> status --porcelain',
+        'pnpm install --frozen-lockfile',
+        'git -C <дерево> status --porcelain',
+      ])
+    )
+      errors.push(
+        'deploy.md: нужен порядок исходный статус → установка → повторный статус до замера',
+      );
+    const prose = body.replace(/```[\s\S]*?```/g, '').replace(/\s+/g, ' ');
+    for (const condition of [
+      'Ошибка установки',
+      'Непустой вывод статуса',
+      'Ошибка проверки статуса',
+    ]) {
+      const start = prose.indexOf(condition);
+      const sentence = start < 0 ? '' : prose.slice(start).split('.')[0];
+      if (
+        !sentence.includes('`failed`') ||
+        !sentence.includes('до замера и выкладки') ||
+        (condition !== 'Непустой вывод статуса' && !sentence.includes('ненулевой код возврата'))
+      )
+        errors.push(`deploy.md: отсутствует условие остановки: ${condition}`);
+    }
+    if (!prose.includes('Не исправляй снимок, не меняй закреплённый хеш и не чисти файлы'))
+      errors.push('deploy.md: отсутствует запрет исправления снимка');
+    return errors;
+  }
+
+  it('выкладка повторяет статус после установки до замера', () => {
+    expect(deployCleanlinessErrors(skillText('deploy'))).toEqual([]);
+  });
+
+  it('сторож порядка обнаруживает удаление и перенос повторного статуса', () => {
+    const text = skillText('deploy');
+    const block = '   ```powershell\n   git -C <дерево> status --porcelain\n   ```';
+    expect(text).toContain(block);
+    const removed = text.replace(block, '');
+    const beforeInstall = removed.replace(
+      '   ```powershell\n   pnpm install',
+      `${block}\n\n   \`\`\`powershell\n   pnpm install`,
+    );
+    const afterMeasurement = removed.replace(
+      '8. **Замерь кадры один раз.**',
+      `8. **Замерь кадры один раз.**\n\n${block}`,
+    );
+    for (const damaged of [removed, beforeInstall, afterMeasurement]) {
+      expect(deployCleanlinessErrors(damaged)).toContain(
+        'deploy.md: нужен порядок исходный статус → установка → повторный статус до замера',
+      );
+    }
+  });
+
+  it.each(['Ошибка установки', 'Непустой вывод статуса', 'Ошибка проверки статуса'])(
+    'сторож обнаруживает удалённое условие: %s',
+    (condition) => {
+      const text = skillText('deploy');
+      const damaged = text
+        .split('\n')
+        .filter((line) => !line.includes(condition))
+        .join('\n');
+      expect(deployCleanlinessErrors(damaged)).toContain(
+        `deploy.md: отсутствует условие остановки: ${condition}`,
+      );
+    },
+  );
+
   it('этапы с собственным коммитом в следе называют цену коммита слияния', () => {
     // Отчёт `done` без следа приёмка отменяет, а следом проработке,
     // имплементации и доработке объявлен коммит в ветке. Коммит слияния —
