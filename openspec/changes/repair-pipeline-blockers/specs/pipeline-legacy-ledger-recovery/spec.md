@@ -28,3 +28,23 @@ task-to-session-number format with `legacy-unknown` retained.
 #### Scenario: Ambiguous evidence
 - **WHEN** evidence cannot be uniquely attributed to a task and session
 - **THEN** recovery leaves the ledger unchanged and reports it unresolved.
+
+### Requirement: Runtime Codex accounting uses local session evidence
+The supervisor SHALL obtain Codex cumulative evidence only from an injected
+host-side reader of local session JSONL after the child finishes. It SHALL bind
+the session and current completed turn to the persisted launch identity, defer
+raw streamed usage until that evidence arrives, and preserve `unfinished-launch`
+or an unknown reason when evidence is missing, stale, foreign, malformed, or
+ambiguous. It SHALL not treat stdout `token_usage_record` text as evidence.
+
+#### Scenario: Durable current-turn evidence supersedes resumed raw total
+- **WHEN** a resumed child reports raw usage 421689 while local JSONL proves
+  the completed thread cumulative total 2007334 from a prior 1585645 snapshot
+- **THEN** the persisted session total is 2007334 and the launch is complete
+  without a decreased-usage reason.
+
+#### Scenario: Evidence is not conclusive
+- **WHEN** the injected reader reports missing, stale, foreign, malformed, or
+  conflicting current-turn evidence
+- **THEN** the launch remains incomplete or unknown and raw streaming does not
+  make the session complete.

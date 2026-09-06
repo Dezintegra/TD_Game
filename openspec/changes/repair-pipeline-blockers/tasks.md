@@ -12,3 +12,7 @@
 
 - [x] 3.1 Update the Windows stage-model readiness mock for sandbox warmup, after verifying the needed upstream test-only change.
 - [x] 3.2 Preserve newest full journal records in stage prompts with an omission marker and a large-journal P1/owner-response test.
+
+## 4. Runtime Codex evidence adapter
+
+- [ ] 4.1 Connect createSupervisor to an injected host reader of attributable completed-session JSONL evidence and persist only its durable cumulative snapshot after child completion.

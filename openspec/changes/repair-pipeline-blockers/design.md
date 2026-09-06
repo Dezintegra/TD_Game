@@ -22,6 +22,10 @@ supervisor, alter game behaviour, or change non-journal clipping.
 - Recovery parsing and merge policy are testable library code; the CLI is a thin
   filesystem adapter. Evidence must match task/session identity and monotonically
   raise totals, otherwise it remains in the report.
+- Runtime accounting receives the same local JSONL evidence through an injected
+  host callback after a child exits. Stdout remains a transport for the final
+  report only: it cannot prove Codex token usage. Raw streamed totals stay
+  unfinished until the callback proves the completed current turn.
 - Journal context is built from complete tail entries and marks omitted history;
   raw string tail clipping can split the newest verdict.
 - Only the PR readiness-test semantics are copied after verification; no archived
