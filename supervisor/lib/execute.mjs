@@ -178,6 +178,14 @@ async function transferReport(action, io) {
     // в проработку.
     decomposed: report.outcome === 'split',
   });
+  // Частичный план не доказывает завершение разделения: иначе потерянная
+  // часть исчезнет из ожиданий всех потребителей закрытого родителя.
+  if (report.outcome === 'split' && verdict.status === 'closed' && plan.rejected.length > 0) {
+    return {
+      result: 'failed',
+      why: `декомпозиция не сохранена: ${plan.rejected.flatMap((bad) => bad.problems).join('; ')}`,
+    };
+  }
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
@@ -232,6 +240,12 @@ async function transferReport(action, io) {
     if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
     created.push(born.id);
     next = relate(next, born.id);
+  }
+
+  // Части — отдельная связь, не общий related с замечаниями и прогонами.
+  // Сохраняем её вместе с закрытием, только после создания всех частей.
+  if (report.outcome === 'split' && verdict.status === 'closed') {
+    next = { ...next, splitInto: [...created] };
   }
 
   // Дополнения уезжают тем же порядком и по той же причине: до смены

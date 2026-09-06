@@ -1256,12 +1256,12 @@ describe('возврат из ошибки по вине конвейера', ()
     expect(result.notes.join()).toContain('0091-fix (не разобрана)');
   });
 
-  it('починки, которой нет нигде, не ждут: она закрыта и убрана', () => {
-    // Идентификатор проверен при разборе, и исчезнуть иначе он не мог.
+  it('исчезновение починки не доказывает завершение', () => {
     const result = run({
       tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 })],
     });
-    expect(result.actions).toContainEqual({ ...returned, fixedBy: ['0091-fix'] });
+    expect(kinds(result)).not.toContain('return-task');
+    expect(result.notes.join()).toContain('нет подтверждения закрытия');
   });
 
   it('причина в задаче или без вердикта — конвейер не трогает', () => {
