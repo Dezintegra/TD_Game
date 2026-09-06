@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { hasWork, scan } from './scan.mjs';
 import { migrateTokenLedger, beginTokenLaunch } from './token-budget.mjs';
@@ -506,6 +506,105 @@ describe('пакетная выкладка', () => {
     });
     const [issued] = result.actions.filter((action) => action.kind === 'continue-stage');
     expect(issued).not.toHaveProperty('batch');
+  });
+});
+
+describe('исключительные продолжения', () => {
+  const roomy = { ...config, maxConcurrent: 2 };
+  const deploy = (id = '0001-deploy', over = {}) =>
+    task({ id, status: 'deploy', links: { pr: 7 }, ...over });
+  const localBenchmark = (id, over = {}) =>
+    task({
+      id,
+      type: 'run',
+      status: 'benchmark',
+      run: { kind: 'fps', expectation: 'ровно' },
+      ...over,
+    });
+  const ordinary = (id = '0009-design') => task({ id, status: 'design' });
+
+  it('две готовые исключительные задачи оставляет одной по приоритету на весь оборот', () => {
+    const result = run({
+      config: roomy,
+      tasks: [
+        localBenchmark('0002-slower', { priority: 20 }),
+        localBenchmark('0001-first', { priority: 10 }),
+      ],
+      registry: { entries: [entry('0002-slower'), entry('0001-first')] },
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([
+      expect.objectContaining({ taskId: '0001-first', stage: 'benchmark' }),
+    ]);
+  });
+
+  it('живой deploy не подпитывает обычное продолжение', () => {
+    const result = run({
+      config: roomy,
+      tasks: [deploy(), ordinary()],
+      registry: { entries: [entry('0001-deploy'), entry('0009-design')] },
+      running: [{ taskId: '0001-deploy', stage: 'deploy' }],
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([]);
+  });
+
+  it('готовый deploy ждёт тишины, не продолжая обычную задачу', () => {
+    const result = run({
+      config: roomy,
+      tasks: [deploy(), ordinary()],
+      registry: { entries: [entry('0001-deploy'), entry('0009-design')] },
+      running: [{ taskId: '0009-design', stage: 'design' }],
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([]);
+  });
+
+  it('held deploy не резервирует тишину, и готовая обычная задача продолжается', () => {
+    const result = run({
+      config: { ...roomy, provider: 'codex', codexMaxTaskTokens: 100 },
+      tasks: [deploy(), ordinary()],
+      registry: { entries: [entry('0001-deploy'), entry('0009-design')] },
+      codexUsage: migrateTokenLedger({ '0001-deploy': { old: 1 } }),
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'continue-stage',
+        taskId: '0009-design',
+        stage: 'design',
+      }),
+    );
+  });
+
+  it('foreign benchmark не считается исключительным и не задерживает обычное продолжение', () => {
+    const result = run({
+      config: roomy,
+      tasks: [
+        task({ id: '0001-arena', type: 'run', status: 'benchmark', run: { kind: 'arena' } }),
+        ordinary(),
+      ],
+      registry: { entries: [entry('0009-design')] },
+      running: [{ taskId: '0001-arena', stage: 'benchmark' }],
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'continue-stage',
+        taskId: '0009-design',
+        stage: 'design',
+      }),
+    );
+  });
+
+  it('batch deploy остаётся одним исключительным продолжением', () => {
+    const result = run({
+      config: roomy,
+      tasks: [deploy('0001-deploy'), deploy('0002-deploy'), localBenchmark('0003-perf')],
+      registry: { entries: [entry('0001-deploy'), entry('0002-deploy'), entry('0003-perf')] },
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([
+      expect.objectContaining({
+        taskId: '0001-deploy',
+        stage: 'deploy',
+        batch: ['0001-deploy', '0002-deploy'],
+      }),
+    ]);
   });
 });
 
@@ -1319,4 +1418,138 @@ describe('бюджет тяжести Codex', () => {
       }
     },
   );
+
+  it('не отдаёт слот двум удержанным legacy-задачам без живого процесса', () => {
+    const ledger = migrateTokenLedger({
+      '0012-design': { old: 10 },
+      '0236-deploy': { old: 10 },
+    });
+    const result = run({
+      config: { ...config, provider: 'codex', codexMaxTaskTokens: 100, maxConcurrent: 1 },
+      tasks: [
+        task({ id: '0012-design', status: 'design' }),
+        task({ id: '0236-deploy', status: 'deploy' }),
+        task({ id: '0237-new', status: 'new' }),
+      ],
+      registry: { entries: [entry('0012-design'), entry('0236-deploy')] },
+      codexUsage: ledger,
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'start-stage', taskId: '0237-new' }),
+    );
+  });
+
+  it('живой deploy удерживает исключительность и при legacy-unknown', () => {
+    const result = run({
+      config: { ...config, provider: 'codex', codexMaxTaskTokens: 100, maxConcurrent: 2 },
+      tasks: [
+        task({ id: '0236-deploy', status: 'deploy' }),
+        task({ id: '0237-new', status: 'new' }),
+      ],
+      registry: { entries: [entry('0236-deploy')] },
+      running: [{ taskId: '0236-deploy', stage: 'deploy' }],
+      codexUsage: migrateTokenLedger({ '0236-deploy': { old: 10 } }),
+    });
+    expect(kinds(result)).not.toContain('start-stage');
+    expect(result.notes.join()).toContain('исключительный этап');
+  });
+});
+
+describe('зависимости карточек', () => {
+  it.each(['new', 'failed', 'cleanup', 'implement', 'candidate'])(
+    'ждёт предшественника в %s без изменения попыток',
+    (status) => {
+      const dependent = task({
+        dependsOn: ['0002-base'],
+        attempts: { continuations: 3, cycleFailures: 2 },
+      });
+      const before = JSON.parse(JSON.stringify(dependent));
+      for (let i = 0; i < 3; i++) {
+        const result = run({ tasks: [dependent, task({ id: '0002-base', status })] });
+        expect(result.actions.filter((a) => a.taskId === dependent.id)).toEqual([]);
+        expect(result.notes.join()).toContain('0002-base');
+      }
+      expect(dependent).toEqual(before);
+    },
+  );
+
+  it('запускает только после закрытия всех предшественников', () => {
+    const dependent = task({ dependsOn: ['0002-base', '0003-base'] });
+    const base = task({ id: '0002-base', status: 'closed' });
+    expect(run({ tasks: [dependent, base] }).actions).toEqual([]);
+    expect(
+      run({ tasks: [dependent, base, task({ id: '0003-base', status: 'closed' })] }).actions,
+    ).toContainEqual({ kind: 'start-stage', taskId: dependent.id, stage: 'decompose' });
+  });
+
+  it('использует подтверждённые архивные закрытия', () => {
+    expect(
+      run({ tasks: [task({ dependsOn: ['0002-base'] })], closedDependencyIds: ['0002-base'] })
+        .actions,
+    ).toContainEqual({ kind: 'start-stage', taskId: '0001-one', stage: 'decompose' });
+  });
+
+  it.each([null, '0002-base', [42], ['0001-one'], ['0002-base', '0002-base']])(
+    'не запускает при неверном dependsOn %j',
+    (dependsOn) => {
+      expect(run({ tasks: [task({ dependsOn })] }).actions).toEqual([]);
+    },
+  );
+
+  it('цикл зависимостей не расходует попытки и не удерживает готовую задачу', () => {
+    const result = run({
+      tasks: [
+        task({ dependsOn: ['0002-base'] }),
+        task({ id: '0002-base', dependsOn: ['0001-one'] }),
+        task({ id: '0003-ready' }),
+      ],
+    });
+    expect(result.actions).toEqual([
+      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    ]);
+  });
+
+  it('заблокированный прогон не удерживает готовую правку', () => {
+    const result = run({
+      tasks: [task({ type: 'run', dependsOn: ['0002-base'] }), task({ id: '0003-ready' })],
+    });
+    expect(result.actions).toEqual([
+      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    ]);
+  });
+
+  it('удерживает продолжение до проверки исчерпанных попыток и освобождает квоту', () => {
+    const result = run({
+      tasks: [
+        task({
+          status: 'design',
+          dependsOn: ['0002-base'],
+          attempts: { continuations: 999, spawnFailures: 999 },
+        }),
+        task({ id: '0003-ready' }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+    });
+    expect(result.actions).toEqual([
+      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    ]);
+  });
+
+  it('не прерывает живой этап и принимает отчёт', () => {
+    const dependent = task({ status: 'design', dependsOn: ['0002-base'] });
+    expect(
+      run({ tasks: [dependent], running: [{ taskId: dependent.id, stage: 'design' }] }).actions,
+    ).toEqual([]);
+    expect(
+      run({
+        tasks: [dependent],
+        reports: [{ taskId: dependent.id, stage: 'design', outcome: 'done' }],
+      }).actions,
+    ).toContainEqual({
+      kind: 'transfer-report',
+      taskId: dependent.id,
+      stage: 'design',
+      outcome: 'done',
+    });
+  });
 });

@@ -33,6 +33,8 @@ import { codexGitEnvironment } from './codex-environment.mjs';
 export function createSupervisor({
   config,
   root,
+  readCodexEvidence = null,
+  initialize = true,
   /** Каталог самого инструмента. От него считаются его собственные пути. */
   home = root,
   spawn,
@@ -118,7 +120,7 @@ export function createSupervisor({
 
   const key = (taskId, stage) => `${taskId}:${stage}`;
 
-  adoptOrphans();
+  if (initialize) adoptOrphans();
 
   return {
     get codexUsage() {
@@ -135,6 +137,7 @@ export function createSupervisor({
     reports,
     orphanOutcomes,
     apiFailures,
+    initialize: adoptOrphans,
 
     /**
      * Обойти сирот: кто кончился, кто оказался посторонним, кто пережил срок.
@@ -314,6 +317,7 @@ export function createSupervisor({
       const child = {
         taskId: assignment.taskId,
         stage: assignment.stage,
+        path: assignment.path,
         sessionId,
         launchId: provider === 'codex' ? randomUUID() : null,
         usageOrdinal: 0,
@@ -525,7 +529,7 @@ export function createSupervisor({
           persistUsage(child.taskId, (next) => {
             if (event.type === 'thread.started')
               bindTokenSession(next, child.taskId, child.launchId, event.thread_id);
-            else
+            else if (!readCodexEvidence)
               observeTokenUsage(
                 next,
                 child.taskId,
@@ -837,12 +841,23 @@ export function createSupervisor({
     children.delete(child.taskId);
     stopPulse();
 
+    let durableEvidence = null;
+    if (providerOf(config) === 'codex' && readCodexEvidence) {
+      try {
+        durableEvidence = readCodexEvidence(child);
+      } catch (error) {
+        durableEvidence = { ok: false, reason: `evidence-reader-error: ${error.message}` };
+      }
+    }
+
     const answer =
       providerOf(config) === 'codex'
         ? readCodexAnswer(run, config, {
             ledger: codexUsage,
             taskId: child.taskId,
             launchId: child.launchId,
+            deferUsage: Boolean(readCodexEvidence),
+            durableEvidence,
           })
         : readAnswer(run);
     if (providerOf(config) === 'codex') {

@@ -14,10 +14,26 @@
  * промпт. Здесь только то, что меняется от задачи к задаче.
  */
 
-/** Обрезать длинное, назвав обрезанное вслух. Молчаливая обрезка обманывает. */
-function clip(text, limit) {
+// Для журнала важнее последний вердикт, чем начало давней переписки. Берём
+// хвост по целым строкам: так свежая запись не начинается посередине слова.
+function clipJournal(text, limit) {
   if (!text || text.length <= limit) return text ?? '';
-  return `${text.slice(0, limit)}\n\n[…обрезано, целиком — в журнале задачи…]`;
+  const marker = '[…ранняя часть журнала пропущена; целиком — в журнале задачи…]';
+  const room = limit - marker.length - 2;
+  if (room <= 0) return marker.slice(-Math.max(0, limit));
+  const lines = text.split('\n');
+  const kept = [];
+  let size = 0;
+  for (const line of lines.reverse()) {
+    const next = line.length + (kept.length ? 1 : 0);
+    if (size + next > room) {
+      if (kept.length === 0) kept.unshift(line.slice(-room));
+      break;
+    }
+    kept.unshift(line);
+    size += next;
+  }
+  return `${marker}\n\n${kept.join('\n')}`;
 }
 
 /**
@@ -134,7 +150,7 @@ export function stagePrompt({
   // Журнал читается обязательно: там лежит вердикт аудита, а аудит мог
   // пропустить предложение с оговорками, и оговорки эти нигде больше
   // не записаны.
-  lines.push('', '## Журнал задачи', '', clip(journal, journalLimit) || '_пусто_');
+  lines.push('', '## Журнал задачи', '', clipJournal(journal, journalLimit) || '_пусто_');
 
   // Лог упавшего этапа — то единственное, чего нет ни у кого, кроме разбора,
   // и ради чего разбор затеян. Он приходит выдержкой, а не путём к файлу:

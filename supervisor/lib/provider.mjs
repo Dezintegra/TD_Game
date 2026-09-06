@@ -153,7 +153,8 @@ export function readCodexAnswer(run, config = {}, context = {}) {
     if (event.type === 'turn.completed') {
       terminal = event;
       answer.turns += 1;
-      observeTokenUsage(ledger, taskId, launchId, answer.turns, event.usage);
+      if (!context.deferUsage)
+        observeTokenUsage(ledger, taskId, launchId, answer.turns, event.usage);
     }
     if (event.type === 'turn.failed') {
       terminal = event;
@@ -162,13 +163,25 @@ export function readCodexAnswer(run, config = {}, context = {}) {
     if (event.type === 'error') error = event.message ?? 'Codex error';
   }
   answer.envelope = terminal;
+  const durable = context.durableEvidence;
+  let durableReason = null;
+  if (context.deferUsage) {
+    if (durable?.ok && answer.turns === 1 && terminal?.type === 'turn.completed') {
+      observeTokenUsage(ledger, taskId, launchId, 1, durable.snapshot);
+    } else {
+      durableReason =
+        durable?.reason ??
+        (answer.turns === 1 ? 'missing-durable-evidence' : 'ambiguous-durable-turns');
+    }
+  }
   completeTokenLaunch(
     ledger,
     taskId,
     launchId,
-    terminal?.type !== 'turn.completed' || run.code !== 0 || run.killedBy || run.error || error
-      ? 'unreported-tail'
-      : null,
+    durableReason ??
+      (terminal?.type !== 'turn.completed' || run.code !== 0 || run.killedBy || run.error || error
+        ? 'unreported-tail'
+        : null),
   );
   const launch = ledger.tasks[taskId].launches[launchId];
   const session = ledger.tasks[taskId].sessions[launch.sessionId];
