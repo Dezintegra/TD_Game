@@ -14,6 +14,7 @@ import { journalBody } from './journal.mjs';
 import { nextId } from './requests.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { planDependencyUpdates } from './dependency-updates.mjs';
+import { pendingDependencies } from './dependencies.mjs';
 
 /**
  * Бэклог, живущий карточками доски Trello.
@@ -83,14 +84,9 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   /** Карточка задачи вместе с разобранным человеческим текстом. */
   const cardOf = (id) => byId.get(id)?.card ?? null;
 
-  /**
-   * Чьё имя стоит в служебной отметке владельца.
-   *
-   * Читается из снимка, снятого в начале оборота, — то есть из состояния
-   * ДО любой нашей правки. Именно этим он и ценен: после захвата отметка
-   * уже наша, и отличить свой прошлый заход от чужого будет нечем.
-   */
-  const ownerOf = (id) => byId.get(id)?.task?.owner ?? null;
+  // Исходный блок нужен для проверки основания старта и сохранения неизвестных полей.
+  const rawById = new Map(cards.map((raw) => [splitDescription(raw.desc ?? '').meta?.id, raw]));
+  const startBases = new Map();
 
   /**
    * Опубликовать запись журнала комментариями.
@@ -180,6 +176,16 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     const end = desc.indexOf('-->', start);
     return `${desc.slice(0, start)}\n${JSON.stringify(meta)}\n${desc.slice(end)}`;
   }
+  function overlayMeta(base, changes) {
+    const merged = { ...base };
+    for (const [key, value] of Object.entries(changes)) {
+      merged[key] =
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? overlayMeta(base?.[key], value)
+          : value;
+    }
+    return merged;
+  }
   function preserved(raw) {
     return Object.fromEntries(
       ['id', 'idBoard', 'name', 'idList', 'idLabels', 'idMembers', 'pos', 'closed'].map((key) => [
@@ -197,7 +203,53 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   function publish(raw) {
     const item = parse(raw);
     byId.set(item.task.id, item);
+    rawById.set(item.task.id, raw);
     return item.task;
+  }
+
+  async function readStartTask(task, { evidence = {} } = {}) {
+    try {
+      const basis = rawById.get(task.id);
+      if (!basis) return failed(`${task.id}: нет основания старта`);
+      const board = await freshCards();
+      if (!board.ok) return board;
+      const fresh = await resolveFresh(task.id, board, basis.id);
+      if (!fresh.ok) return fresh;
+      const graph = board.records.map((item) => (item.id === task.id ? record(fresh.raw) : item));
+      const active = graph.filter((item) => !item.archived && item.valid);
+      const records = graph.filter((item) => item.archived || !item.valid);
+      const archivedClosed = records
+        .filter((item) => item.archived && item.valid && item.status === 'closed')
+        .map((item) => item.id);
+      const pending = pendingDependencies(fresh.item.task, active, archivedClosed, {
+        records,
+        evidence,
+        mainBranch: config.mainBranch,
+      });
+      // Назначение добавил acquire; остальные поля обязаны соответствовать снимку.
+      const basisFields = preserved(basis);
+      const freshFields = preserved(fresh.raw);
+      delete basisFields.idMembers;
+      delete freshFields.idMembers;
+      // Старые снимки не запрашивали idBoard; свежая адресация проверила его отдельно.
+      if (basis.idBoard === undefined) delete freshFields.idBoard;
+      if (basis.idBoard === undefined) delete basisFields.idBoard;
+      if (
+        !isDeepStrictEqual(basisFields, freshFields) ||
+        !sameDescription(basis.desc, fresh.raw.desc) ||
+        !isDeepStrictEqual(task, parse(basis).task)
+      )
+        return failed(
+          `${task.id}: основание старта изменилось${pending.length ? `; ${pending.join('; ')}` : ''}`,
+        );
+      if (pending.length) return failed(`${task.id}: ${pending.join('; ')}`);
+      if (!isDeepStrictEqual(fresh.raw.idMembers, [meId]))
+        return failed(`${task.id}: захват старта изменился`);
+      startBases.set(task.id, fresh.raw);
+      return { ok: true, task: publish(fresh.raw) };
+    } catch (error) {
+      return failed(`${task.id}: свежее чтение старта: ${error.message}`);
+    }
   }
 
   async function planTaskDependencyUpdates(updates, sourceId) {
@@ -307,6 +359,8 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     readTask: (id) => byId.get(id)?.task ?? null,
     planTaskDependencyUpdates,
     appendTaskDependencies,
+    requiresFreshStart: true,
+    readStartTask,
 
     /**
      * Все занятые идентификаторы.
@@ -367,7 +421,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         // Название пересобирается из очищенного: иначе служебный префикс
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),
-        desc: joinDescription(card.human, metaOf(task)),
+        desc: startBases.has(task.id)
+          ? withMeta(
+              startBases.get(task.id).desc,
+              overlayMeta(splitDescription(startBases.get(task.id).desc).meta, metaOf(task)),
+            )
+          : joinDescription(card.human, metaOf(task)),
       });
       if (!moved.ok) return failure(moved);
 
@@ -553,14 +612,14 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       if (!me.ok) return me;
 
       const taken = await trello.post(`cards/${card.id}/idMembers`, { value: me.id });
-      if (taken.ok) return { ok: true, outcome: 'ours' };
+      if (taken.ok) return { ok: true, outcome: 'ours', newClaim: true };
 
       // Единственный отказ, который бедой не является: задачу уже заняли.
       //
       // Но «заняли» — это две разные вещи, и различить их обязательно.
       // Участник доски один на все станции, поэтому само назначение
       // не говорит, кто держит задачу; говорит служебная отметка владельца,
-      // прочитанная ДО этой попытки. Наше имя в ней означает собственный
+      // прочитанная ЗАНОВО после этой попытки. Наше имя в ней означает собственный
       // недоведённый захват: этап оборвался, назначение осталось, — и брать
       // такую задачу заново законно, это ровно то, ради чего конвейер её
       // и захватывал.
@@ -569,8 +628,20 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       // конвейер не мог, а её состояние занимало единственное место
       // исполнителя, и весь бэклог стоял за ней с 31.08.2026.
       if (/already on the card/i.test(taken.why ?? '')) {
-        const holder = ownerOf(task.id);
-        if (machine && holder === machine) return { ok: true, outcome: 'ours' };
+        if (!machine)
+          return { ok: false, outcome: 'taken', why: 'задача уже назначена исполнителю' };
+        let fresh;
+        try {
+          const board = await freshCards();
+          if (!board.ok) return board;
+          fresh = await resolveFresh(task.id, board, card.id);
+        } catch (error) {
+          return failed(`${task.id}: проверка прежнего захвата: ${error.message}`);
+        }
+        if (!fresh.ok) return fresh;
+        const holder = fresh.item.task.owner;
+        if (holder === machine && isDeepStrictEqual(fresh.raw.idMembers, [me.id]))
+          return { ok: true, outcome: 'ours', newClaim: false };
         return {
           ok: false,
           outcome: 'taken',

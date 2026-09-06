@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execute } from './execute.mjs';
+import { dependencyFixture } from './dependency-updates-fixture.mjs';
+import { joinDescription, splitDescription } from './card.mjs';
 import { reconcile } from './reconcile.mjs';
 import { repairWorld } from './repair.mjs';
 import { journalAppendix } from './journal.mjs';
@@ -15,6 +17,107 @@ import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from '
  */
 
 const NOW = '2026-08-26T12:00:00+03:00';
+
+describe('свежесть Trello-start между станциями', () => {
+  const action = { kind: 'start-stage', taskId: '0003-consumer', stage: 'design' };
+  const compose = (store) => ({ ...fakeIo(), ...store, machine: 'B' });
+  it('станция B не стирает подтверждённое дополнение A старым снимком', async () => {
+    const f = dependencyFixture();
+    const a = f.store('A');
+    const b = compose(f.store('B'));
+    expect(await a.appendTaskDependencies(f.update, f.context)).toMatchObject({ ok: true });
+    const saved = f.cards[0].desc;
+    f.calls.length = 0;
+    const results = await execute(
+      [action, { kind: 'fail-stage', taskId: action.taskId, stage: 'design' }],
+      b,
+    );
+    expect(results.map((item) => item.result)).toEqual(['skipped', 'skipped']);
+    expect(results[0].why).toContain('основание старта изменилось');
+    expect(b.spawned).toEqual([]);
+    expect(b.steps).toEqual([]);
+    expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+    expect(f.cards[0].desc).toBe(saved);
+    expect(f.cards[0].idMembers).toEqual([]);
+    expect(f.calls.findIndex((call) => call.method === 'POST')).toBeLessThan(
+      f.calls.findIndex((call) => call.path === 'boards/b/cards'),
+    );
+  });
+  it('неизменный разрешённый старт сохраняет неизвестные ключи и запускается', async () => {
+    const f = dependencyFixture();
+    const before = splitDescription(f.cards[0].desc);
+    const io = compose(f.store('B'));
+    expect(await execute([action], io)).toMatchObject([{ result: 'done' }]);
+    expect(io.spawned).toHaveLength(1);
+    const after = splitDescription(f.cards[0].desc);
+    expect(after.meta.extra).toEqual(before.meta.extra);
+    expect(after.human).toBe(before.human);
+    expect(after.meta.owner).toBe('B');
+  });
+  it('неизменный PR без доказательства текущего цикла удерживает старт', async () => {
+    const f = dependencyFixture();
+    await f.store().appendTaskDependencies(f.update, f.context);
+    f.cards.push({
+      ...f.cards[0],
+      id: 'producer',
+      name: '0002-producer · Producer',
+      idList: 'list-closed',
+      desc: joinDescription('Producer', { id: '0002-producer', links: { pr: 42 } }),
+    });
+    const io = compose(f.store('B'));
+    f.calls.length = 0;
+    expect(await execute([action], io)).toMatchObject([
+      { result: 'skipped', why: expect.stringContaining('доказательства') },
+    ]);
+    expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+    expect(io.spawned).toEqual([]);
+  });
+  it.each([false, true])(
+    'ошибка чтения освобождает только новый захват; восстановление=%s',
+    async (recovery) => {
+      const f = dependencyFixture();
+      if (recovery) {
+        const before = splitDescription(f.cards[0].desc);
+        f.cards[0].desc = joinDescription(before.human, { ...before.meta, owner: 'B' });
+        f.cards[0].idMembers = ['me'];
+      }
+      const io = compose(f.store('B'));
+      let boards = 0;
+      f.hook = (method, path) => {
+        if (path === 'boards/b/cards' && ++boards === (recovery ? 2 : 1))
+          return { ok: false, why: 'fresh read unavailable' };
+      };
+      expect(await execute([action], io)).toMatchObject([
+        { result: 'skipped', why: expect.stringContaining('unavailable') },
+      ]);
+      expect(io.spawned).toEqual([]);
+      expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+      expect(f.cards[0].idMembers).toEqual(recovery ? ['me'] : []);
+    },
+  );
+  it('прежний владелец проверяется заново, а не по старому Map', async () => {
+    const f = dependencyFixture();
+    const before = splitDescription(f.cards[0].desc);
+    f.cards[0].desc = joinDescription(before.human, { ...before.meta, owner: 'B' });
+    f.cards[0].idMembers = ['me'];
+    const io = compose(f.store('B'));
+    f.cards[0].desc = joinDescription(before.human, { ...before.meta, owner: 'A' });
+    expect(await execute([action], io)).toMatchObject([{ result: 'raced' }]);
+    expect(f.calls.some((call) => ['PUT', 'DELETE'].includes(call.method))).toBe(false);
+  });
+  it('явно сообщает ошибку освобождения нового захвата', async () => {
+    const f = dependencyFixture();
+    const io = compose(f.store('B'));
+    f.hook = (method, path) => {
+      if (path === 'boards/b/cards' || method === 'DELETE')
+        return { ok: false, why: 'unavailable' };
+    };
+    expect(await execute([action], io)).toMatchObject([
+      { result: 'failed', why: expect.stringContaining('освобождение') },
+    ]);
+    expect(io.spawned).toEqual([]);
+  });
+});
 
 const task = (over = {}) => ({
   id: '0001-one',

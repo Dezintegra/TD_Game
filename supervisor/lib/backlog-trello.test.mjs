@@ -559,10 +559,18 @@ describe('захват задачи назначением исполнител�
   const task = { id: '0031-proba', title: 'Проба пера' };
 
   /** Клиент, отвечающий на вопрос «кто я» и на назначение. */
-  const withMe = (assign) =>
+  const withMe = (assign, owner = null) =>
     fakeTrello({
       'members/me': { ok: true, data: { id: 'me-1' } },
       'cards/card-1/idMembers': assign,
+      'boards/b/cards': {
+        ok: true,
+        data: [card({ idBoard: 'b', idMembers: ['me-1'], meta: { owner } })],
+      },
+      'cards/card-1': {
+        ok: true,
+        data: card({ idBoard: 'b', idMembers: ['me-1'], meta: { owner } }),
+      },
     });
 
   it('назначает исполнителя карточке', async () => {
@@ -597,24 +605,14 @@ describe('захват задачи назначением исполнител�
     // не было, задача 0016 висела с 28.08.2026 неберущейся — и своим
     // состоянием занимала единственное место исполнителя, останавливая
     // весь бэклог.
-    const trello = withMe({
-      ok: false,
-      kind: 'refused',
-      status: 400,
-      why: 'member is already on the card',
-    });
+    const trello = withMe({ ok: false, why: 'member is already on the card' }, 'станция-1');
     const store = backlog({ cards: [card({ meta: { owner: 'станция-1' } })] }, trello, 'станция-1');
 
     expect(await store.acquire(task)).toMatchObject({ ok: true, outcome: 'ours' });
   });
 
   it('чужой захват остаётся чужим, и хозяин называется', async () => {
-    const trello = withMe({
-      ok: false,
-      kind: 'refused',
-      status: 400,
-      why: 'member is already on the card',
-    });
+    const trello = withMe({ ok: false, why: 'member is already on the card' }, 'станция-2');
     const store = backlog({ cards: [card({ meta: { owner: 'станция-2' } })] }, trello, 'станция-1');
 
     const result = await store.acquire(task);

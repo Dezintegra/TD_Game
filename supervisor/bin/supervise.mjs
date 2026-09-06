@@ -614,6 +614,7 @@ async function turn() {
         reports: supervisor.reports,
       }),
       ...(backlog.store ?? {}),
+      dependencyEvidence: state.dependencyEvidence ?? {},
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),
