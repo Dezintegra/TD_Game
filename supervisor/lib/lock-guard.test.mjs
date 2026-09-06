@@ -22,4 +22,15 @@ describe('короткий guard supervisor lock', () => {
     expect(underLockGuard(lock, () => writeFileSync(lock, 'нельзя'))).toMatchObject({ ok: false });
     expect(existsSync(lock)).toBe(false);
   });
+
+  it('создаёт отсутствующий вложенный local directory до первого atomic claim', () => {
+    const local = join(mkdtempSync(join(tmpdir(), 'lock-guard-')), 'fresh', '.pipeline');
+    const lock = join(local, 'supervisor.lock');
+    expect(existsSync(local)).toBe(false);
+    const guard = claimLockGuard(lock, 101);
+    expect(guard).not.toBeNull();
+    expect(existsSync(local)).toBe(true);
+    expect(existsSync(guard.path)).toBe(true);
+    releaseLockGuard(guard);
+  });
 });

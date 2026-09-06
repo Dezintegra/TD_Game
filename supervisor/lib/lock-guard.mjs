@@ -1,4 +1,13 @@
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname } from 'node:path';
 
 /**
  * Короткий сериализатор операций над supervisor.lock.
@@ -11,6 +20,9 @@ export function claimLockGuard(lockPath, pid = process.pid) {
   const path = `${lockPath}.guard`;
   const token = JSON.stringify({ pid, claimedAt: new Date().toISOString() });
   try {
+    // Первый запуск ещё не создавал `.pipeline`: guard должен суметь стать
+    // именно первым атомарным файлом, а не принять ENOENT за занятой lock.
+    mkdirSync(dirname(path), { recursive: true });
     const descriptor = openSync(path, 'wx');
     writeFileSync(descriptor, token);
     closeSync(descriptor);
