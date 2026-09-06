@@ -1392,12 +1392,23 @@ describe('бюджет тяжести Codex', () => {
     }
   });
 
-  it.each(['unfinished-launch', 'storage-error'])(
+  it.each(['unfinished-launch', 'storage-error', 'decreased-usage', 'invalid-usage'])(
     'не выдаёт запуск при %s после смены этапа',
     (unknown) => {
       const ledger = migrateTokenLedger({});
       if (unknown === 'unfinished-launch') beginTokenLaunch(ledger, '0001-one', 'persisted');
-      else ledger.writeErrors = ['0001-one'];
+      else if (unknown === 'storage-error') ledger.writeErrors = ['0001-one'];
+      else
+        ledger.tasks['0001-one'] = {
+          sessions: {
+            persisted: {
+              knownTokens: 10,
+              snapshot: { input_tokens: 9, output_tokens: 1 },
+              reasons: [unknown],
+            },
+          },
+          launches: {},
+        };
       for (const status of ['design', 'audit', 'implement', 'revise']) {
         const state = {
           tasks: [task({ status })],
