@@ -423,7 +423,28 @@ export function scan(state) {
   // семнадцать задач — парами, в одну и ту же секунду.
   //
   // Плата за простоту названа честно: прогоны арены идут по очереди.
-  const engaged = tasks.filter((task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id));
+  // Неполный реестр Codex удерживает именно ВЫДАЧУ следующей сессии ниже,
+  // однако раньше такая неподвижная задача всё равно съедала слот здесь.
+  // Получалась ловушка: две старые задачи без живых процессов удерживали
+  // всю машину навсегда. Живой процесс исключать нельзя даже при неизвестном
+  // расходе: он действительно работает, а живой deploy всё ещё требует тишины.
+  const tokenHeld = new Set(
+    tasks
+      .filter((task) => {
+        if (!NEEDS_SESSION.includes(task.status) || isRunning(task.id, task.status)) return false;
+        const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
+        return (
+          config.provider === 'codex' &&
+          capped &&
+          config.codexMaxTaskTokens != null &&
+          !taskTokenStatus(state.codexUsage ?? {}, task.id).complete
+        );
+      })
+      .map((task) => task.id),
+  );
+  const engaged = tasks.filter(
+    (task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id) && !tokenHeld.has(task.id),
+  );
   let busy = engaged.length >= config.maxConcurrent;
 
   // Исключительный этап — замер кадров и выкладка — требует тишины на машине

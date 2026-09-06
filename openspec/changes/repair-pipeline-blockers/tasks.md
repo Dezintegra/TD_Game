@@ -1,6 +1,6 @@
 ## 1. Scheduler and provider resilience
 
-- [ ] 1.1 Release capacity and deploy exclusivity held only by non-live incomplete-ledger tasks, with scheduler cases for two held tasks, held deploy, and live sessions.
+- [x] 1.1 Release capacity and deploy exclusivity held only by non-live incomplete-ledger tasks, with scheduler cases for two held tasks, held deploy, and live sessions.
 - [ ] 1.2 Load the Codex ledger independently of provider and cover provider round-trip plus orphan adoption without loss of unrelated tasks.
 
 ## 2. Conservative legacy ledger recovery

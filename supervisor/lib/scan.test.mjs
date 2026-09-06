@@ -1319,4 +1319,37 @@ describe('бюджет тяжести Codex', () => {
       }
     },
   );
+
+  it('не отдаёт слот двум удержанным legacy-задачам без живого процесса', () => {
+    const ledger = migrateTokenLedger({
+      '0012-design': { old: 10 },
+      '0236-deploy': { old: 10 },
+    });
+    const result = run({
+      config: { ...config, provider: 'codex', codexMaxTaskTokens: 100, maxConcurrent: 1 },
+      tasks: [
+        task({ id: '0012-design', status: 'design' }),
+        task({ id: '0236-deploy', status: 'deploy' }),
+        task({ id: '0237-new', status: 'new' }),
+      ],
+      registry: { entries: [entry('0012-design'), entry('0236-deploy')] },
+      codexUsage: ledger,
+    });
+    expect(result.actions).toContainEqual(expect.objectContaining({ kind: 'start-stage', taskId: '0237-new' }));
+  });
+
+  it('живой deploy удерживает исключительность и при legacy-unknown', () => {
+    const result = run({
+      config: { ...config, provider: 'codex', codexMaxTaskTokens: 100, maxConcurrent: 2 },
+      tasks: [
+        task({ id: '0236-deploy', status: 'deploy' }),
+        task({ id: '0237-new', status: 'new' }),
+      ],
+      registry: { entries: [entry('0236-deploy')] },
+      running: [{ taskId: '0236-deploy', stage: 'deploy' }],
+      codexUsage: migrateTokenLedger({ '0236-deploy': { old: 10 } }),
+    });
+    expect(kinds(result)).not.toContain('start-stage');
+    expect(result.notes.join()).toContain('исключительный этап');
+  });
 });
