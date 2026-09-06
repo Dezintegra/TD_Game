@@ -12,6 +12,8 @@ import {
 import { findAnswer, joinJournalParts, splitJournalEntry } from './comments.mjs';
 import { journalBody } from './journal.mjs';
 import { nextId } from './requests.mjs';
+import { hasReceipt, withReceipt, partReceipt, readReceiptComments } from './report-receipts.mjs';
+import { isDeepStrictEqual } from 'node:util';
 
 /**
  * Бэклог, живущий карточками доски Trello.
@@ -102,13 +104,20 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
    * а разница между «так решила сессия» и «так распорядился конвейер»
    * читающему доску нужна постоянно.
    */
-  async function comment(cardId, text, source) {
+  async function comment(cardId, text, source, operation) {
+    const key = operation?.key;
+    const suffixLength = key ? partReceipt(key, 999999).length : 0;
     const parts = splitJournalEntry(text, {
       marker: mark,
       source,
-      limit: trelloConfig.maxTextLength,
+      limit: trelloConfig.maxTextLength - suffixLength,
     });
-    for (const part of parts) {
+    const existing = key ? await readReceiptComments(trello, cardId) : { ok: true, comments: [] };
+    if (!existing.ok) return existing;
+    for (const [index, body] of parts.entries()) {
+      const suffix = key ? partReceipt(key, index) : '';
+      if (key && existing.comments.some((item) => item.endsWith(suffix))) continue;
+      const part = body + suffix;
       const posted = await trello.post(`cards/${cardId}/actions/comments`, { text: part });
       if (!posted.ok) return posted;
     }
@@ -184,8 +193,8 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * неприятно, но не опасно: состояние верно, а пропавшую запись видно
      * по дыре в истории карточки.
      */
-    async saveTask(task, entry) {
-      const card = cardOf(task.id);
+    async saveTask(task, entry, message, _extraPaths = [], operation) {
+      let card = cardOf(task.id);
       if (!card) {
         return { ok: false, outcome: 'failed', why: `карточки задачи ${task.id} нет` };
       }
@@ -195,14 +204,55 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };
       }
 
-      const moved = await trello.put(`cards/${card.id}`, {
-        idList,
-        // Название пересобирается из очищенного: иначе служебный префикс
-        // припишется поверх прежнего и будет расти с каждым переходом.
-        name: nameWithId(task.id, titleOf(card.name) || task.title),
-        desc: joinDescription(card.human, metaOf(task)),
-      });
-      if (!moved.ok) return failure(moved);
+      let current = byId.get(task.id).task;
+      if (operation?.key) {
+        const fresh = await trello.get(`cards/${card.id}`, {
+          fields: 'id,name,desc,idList,idLabels,pos,closed',
+        });
+        if (!fresh.ok) return failure(fresh);
+        const parsedCard = parseCard(fresh.data, { stateByList, labelKeyById });
+        current = parsedCard.task;
+        card = parsedCard.card;
+        byId.set(task.id, parsedCard);
+        if (
+          !hasReceipt(current, operation.key) &&
+          (fresh.data.closed ||
+            current.status !== operation.expected?.status ||
+            !isDeepStrictEqual(metaOf(current), metaOf(operation.expected ?? {})))
+        )
+          return {
+            ok: false,
+            outcome: 'conflict',
+            why: `report delivery conflicts with ${task.id}`,
+          };
+      }
+      const settled = operation?.key
+        ? withReceipt(task, operation.key, current)
+        : {
+            ...task,
+            ...(current.reportReceipts ? { reportReceipts: current.reportReceipts } : {}),
+          };
+      const desc = joinDescription(card.human, metaOf(settled));
+      if (operation?.key && desc.length > trelloConfig.maxTextLength)
+        return {
+          ok: false,
+          outcome: 'failed',
+          why: `report receipts exceed description limit for ${task.id}`,
+        };
+      if (!operation?.key || !hasReceipt(current, operation.key)) {
+        const moved = await trello.put(`cards/${card.id}`, {
+          idList,
+          // Название пересобирается из очищенного: иначе служебный префикс
+          // припишется поверх прежнего и будет расти с каждым переходом.
+          name: nameWithId(task.id, titleOf(card.name) || task.title),
+          desc,
+        });
+        if (!moved.ok) return failure(moved);
+        byId.set(task.id, {
+          task: settled,
+          card: { ...card, name: nameWithId(task.id, titleOf(card.name) || task.title) },
+        });
+      }
 
       // Источник берётся из самой записи: переход состояния бывает и делом
       // сессии — тогда в записи её отчёт, — и распоряжением супервизора.
@@ -210,6 +260,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         card.id,
         `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}`,
         entry.source,
+        operation,
       );
       if (!written.ok) return failure(written);
 

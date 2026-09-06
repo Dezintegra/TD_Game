@@ -4,6 +4,8 @@ import { pushMain } from './push-discipline.mjs';
 import { removeWorktree } from './remove-worktree.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
+import { hasReceipt, withReceipt, partReceipt } from './report-receipts.mjs';
+import { isDeepStrictEqual } from 'node:util';
 
 /**
  * Переходник к настоящему миру: файлы, git, деревья.
@@ -84,15 +86,38 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * @param {object} entry запись журнала об этом переходе
      * @param {string} message сообщение коммита — доске оно не нужно
      */
-    saveTask(task, entry, message, extraPaths = []) {
-      const appendix = journalAppendix(task, this.readJournal(task.id), entry);
+    saveTask(task, entry, message, extraPaths = [], operation) {
+      const current = operation?.key ? this.readTask(task.id) : null;
+      if (
+        operation?.key &&
+        !hasReceipt(current, operation.key) &&
+        !isDeepStrictEqual(current, operation.expected)
+      ) {
+        return { ok: false, outcome: 'conflict', why: `report delivery conflicts with ${task.id}` };
+      }
+      const journal = this.readJournal(task.id);
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      const appendix = journalAppendix(task, journal, entry);
       // Попутные пути — файл вопросов, например. Они обязаны уехать ТЕМ ЖЕ
       // коммитом: разъехавшись, задача в ожидании осталась бы без вопроса
       // либо вопрос без задачи.
       const paths = [taskPath(task.id), journalPath(task.id), ...extraPaths];
 
-      this.writeTask(task);
-      this.appendJournal(task.id, appendix);
+      if (!operation?.key || !hasReceipt(current, operation.key)) {
+        this.writeTask(operation?.key ? withReceipt(task, operation.key, current) : task);
+      }
+      if (!operation?.key || !journal.includes(suffix))
+        this.appendJournal(task.id, appendix + suffix);
+
+      if (operation?.key && run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome, paths };
+      }
 
       const push = this.commitAndPush(paths, message);
       // Неудача ДО коммита прибирается сразу: иначе один сорвавшийся `add`

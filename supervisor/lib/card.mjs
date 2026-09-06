@@ -157,6 +157,8 @@ export function parseCard(card, { stateByList, labelKeyById }) {
 
   const task = {
     id: meta?.id ?? null,
+    ...(Object.hasOwn(meta ?? {}, 'spentUsd') ? { spentUsd: meta.spentUsd } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'reportReceipts') ? { reportReceipts: meta.reportReceipts } : {}),
     type: labels.types[0] ?? null,
     title: titleOf(card.name),
     description: human,
@@ -232,6 +234,8 @@ function labelKeys(idLabels, labelKeyById) {
 export function metaOf(task) {
   return {
     id: task.id,
+    ...(Object.hasOwn(task, 'spentUsd') ? { spentUsd: task.spentUsd } : {}),
+    ...(Object.hasOwn(task, 'reportReceipts') ? { reportReceipts: task.reportReceipts } : {}),
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
     ...(Object.hasOwn(task, 'dependencyResults')
       ? { dependencyResults: task.dependencyResults }
