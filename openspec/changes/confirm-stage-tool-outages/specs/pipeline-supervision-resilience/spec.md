@@ -33,6 +33,16 @@ The supervisor SHALL durably retain a confirmed stop in the report delivery stor
 - **WHEN** commands cannot report HEAD or remote ancestry during an outage
 - **THEN** Git state is retained as unknown with available earlier revision evidence, and no cleanup or successful-delivery assumption follows
 
+#### Scenario: Confirmed failed retains addressed instructions without delivering them
+- **WHEN** a failed report containing dependencyUpdates is independently classified as a confirmed infrastructure stop
+- **THEN** diagnosing, hold, infrastructure settlement and restart SHALL preserve its complete payload without planning, claiming, writing or confirming addressed dependency updates
+- **AND** settlement SHALL record that the instructions were retained as diagnostic material and not executed, preserve that material before active-envelope acknowledgement, and MUST NOT fabricate recipient delivery receipts or automatically replay those instructions after recovery
+
+#### Scenario: Ordinary failed preserves confirmed addressed delivery
+- **WHEN** healthy or inconclusive diagnostics leave an otherwise accepted failed report with dependencyUpdates on the ordinary path
+- **THEN** the supervisor SHALL retain the addressed-delivery validation, fresh reads, claims and action invalidation rules, and independently confirm all requested additions before the source transition or pending-report removal
+- **AND** failed confirmation SHALL retain the ordinary report for replay; an already started ordinary delivery plan SHALL remain ordinary after restart or migration and finish its partially delivered instructions without duplicate additions
+
 ### Requirement: Infrastructure retry is settled once after recovery
 
 After manual pause removal the supervisor SHALL require fresh successful diagnostics in the retained context before granting one retry of the same stage. A failed or inconclusive recovery probe SHALL retain the hold and reassert pause. Settlement SHALL use the report store's durable plan and recipient receipts, preserve actual usage and all unrelated attempt counters, and refund only the continuation actually charged to the affected launch, at most once. Initial launches SHALL receive no refund. The retry entitlement SHALL survive restart, bypass continuation exhaustion for its single replacement launch, and not charge that replacement as an additional continuation. Claiming the entitlement SHALL bind a new launch identity durably before spawning and SHALL prevent duplicate retries after an uncertain spawn or restart. Report trust, token-budget and ownership constraints SHALL still apply. The retry prompt SHALL contain the original result and work evidence and require inspection before repeating effects.
