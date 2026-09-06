@@ -49,6 +49,11 @@ After manual pause removal the supervisor SHALL require fresh successful diagnos
 - **WHEN** pause is removed but recovery diagnostics fail or lack evidence
 - **THEN** no retry starts, the original result remains held and pause is reasserted
 
+#### Scenario: Continuations exhausted while capacity is occupied
+- **WHEN** ordinary continuations are exhausted and all process slots are occupied
+- **THEN** an ordinary stage without an infrastructure hold or retry entitlement follows the existing exhaustion failure path regardless of occupied capacity
+- **AND** a confirmed infrastructure-held stage remains held without exhaustion failure; after recovery its single replacement waits for capacity and exclusivity, starts once without another continuation charge, and consumes the entitlement
+
 #### Scenario: Restart after retry spawn
 - **WHEN** the replacement process started and the supervisor restarts before acknowledging the retry handoff
 - **THEN** its persisted launch identity is adopted or reconciled and a second replacement is not spawned
@@ -65,3 +70,7 @@ An infrastructure hold on deploy SHALL cover the original trusted lead, all assi
 #### Scenario: Successful deploy report is partially transferred
 - **WHEN** a successful deploy report has pending member journal operations
 - **THEN** delivery resumes from its receipts without running deploy again or merging new members into that batch
+
+#### Scenario: Healthy tools do not establish the deployment effect
+- **WHEN** deploy diagnostics are healthy and a retry entitlement exists but the remote revision and prior effects have not been verified
+- **THEN** the assigned batch remains held and no replacement deploy process is spawned
