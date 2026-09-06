@@ -80,7 +80,7 @@ it.each(['win32', 'linux'])(
     expect(
       launched.map((command) => command.args.find((arg) => arg === 'sandbox' || arg === 'exec')),
     ).toEqual(platform === 'win32' ? ['sandbox', 'exec'] : ['exec']);
-    for (const command of launched.filter((command) => command.args.includes('sandbox'))
+    for (const command of launched.filter((command) => command.args.includes('sandbox')))
       expect(command.args).not.toContain('--model');
     const probes = launched.filter((command) => command.args.includes('exec'));
     expect(probes).toHaveLength(1);
