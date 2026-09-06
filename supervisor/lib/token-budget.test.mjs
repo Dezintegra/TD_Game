@@ -4,8 +4,6 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import {
   readTokenLedger,
-  recordTokenUsage,
-  taskTokens,
   writeTokenLedger,
   emptyTokenSession,
   tokenLaunch,
@@ -13,7 +11,6 @@ import {
   launchTokenUsage,
   normalizeTokenUsage,
   migrateTokenLedger,
-  readTokenLedgerV2,
   commitTokenLedger,
 } from './token-budget.mjs';
 
@@ -42,7 +39,7 @@ it('v2 переживает round-trip, а ошибка до rename оставл
   const root = mkdtempSync(join(tmpdir(), 'td-tokens-v2-'));
   const config = { paths: { local: '.pipeline' } };
   try {
-    const ledger = readTokenLedgerV2(root, config);
+    const ledger = readTokenLedger(root, config);
     writeTokenLedger(root, config, ledger);
     const update = (next) => {
       next.tasks.a = { sessions: { s: emptyTokenSession() }, launches: { l: tokenLaunch('s') } };
@@ -53,15 +50,15 @@ it('v2 переживает round-trip, а ошибка до rename оставл
       }),
     ).toThrow('rename failed');
     expect(ledger).toEqual({ version: 2, tasks: {} });
-    expect(readTokenLedgerV2(root, config)).toEqual(ledger);
+    expect(readTokenLedger(root, config)).toEqual(ledger);
     const save = (next) => writeTokenLedger(root, config, next);
     expect(commitTokenLedger(ledger, update, save)).toBe(true);
     expect(commitTokenLedger(ledger, update, save)).toBe(false);
-    expect(readTokenLedgerV2(root, config)).toEqual(ledger);
+    expect(readTokenLedger(root, config)).toEqual(ledger);
     writeFileSync(join(root, '.pipeline/codex-usage.json'), '');
-    expect(() => readTokenLedgerV2(root, config)).toThrow();
+    expect(() => readTokenLedger(root, config)).toThrow();
     writeFileSync(join(root, '.pipeline/codex-usage.json'), '{bad');
-    expect(() => readTokenLedgerV2(root, config)).toThrow();
+    expect(() => readTokenLedger(root, config)).toThrow();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -122,37 +119,4 @@ it('reducer проверяет целые и безопасную сумму, к
   const conflict = reduceTokenObservation(first.session, first.launch, 1, snapshots[1]);
   expect(conflict.session.knownTokens).toBe(1100);
   expect(conflict.session.reasons).toContain('conflicting-observation');
-});
-
-it('суммирует сессии, учитывает кэш один раз и переживает перезапуск без двойного учёта', () => {
-  const root = mkdtempSync(join(tmpdir(), 'td-tokens-'));
-  const config = { paths: { local: '.pipeline' } };
-  try {
-    const ledger = readTokenLedger(root, config);
-    const usage = { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 100 };
-    recordTokenUsage(ledger, 'task', 'session1', usage);
-    writeTokenLedger(root, config, ledger);
-    const restarted = readTokenLedger(root, config);
-    expect(recordTokenUsage(restarted, 'task', 'session1', usage)).toBe(false);
-    expect(recordTokenUsage(restarted, 'task', 'session1', { ...usage, input_tokens: 500 })).toBe(
-      false,
-    );
-    recordTokenUsage(restarted, 'task', 'session1', { ...usage, input_tokens: 2000 });
-    recordTokenUsage(restarted, 'task', 'session2', usage);
-    expect(taskTokens(restarted, 'task')).toBe(3200);
-    expect(taskTokens(restarted, 'another')).toBe(0);
-    writeTokenLedger(root, config, restarted);
-    expect(readTokenLedger(root, config)).toEqual(restarted);
-    writeFileSync(join(root, '.pipeline/codex-usage.json'), '{"task":{"s":-1}}');
-    expect(() => readTokenLedger(root, config)).toThrow('счётчик');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-it('не выдаёт отсутствие или испорченный usage за известный расход', () => {
-  const ledger = {};
-  for (const usage of [null, {}, { input_tokens: -1, output_tokens: 1 }])
-    expect(recordTokenUsage(ledger, 'task', 's', usage)).toBe(false);
-  expect(ledger).toEqual({});
 });

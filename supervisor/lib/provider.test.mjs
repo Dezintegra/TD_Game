@@ -4,6 +4,7 @@ import { resolveConfig } from '../config/defaults.mjs';
 import { stageCommand } from './stage-command.mjs';
 import { checkEnvironment } from './environment.mjs';
 import { providerOf, readCodexAnswer } from './provider.mjs';
+import { beginTokenLaunch } from './token-budget.mjs';
 
 const home = fileURLToPath(new URL('..', import.meta.url));
 const config = resolveConfig({ provider: 'codex' }).config;
@@ -126,6 +127,7 @@ it('отказ API до работы сохраняет попытку, посл
 
 it('накопительный usage после resume не считает прошлый заход второй раз', () => {
   const first = readCodexAnswer(run(), config);
+  beginTokenLaunch(first.usageLedger, 'answer', 'resume', 'thread-1');
   const second = readCodexAnswer(
     run([
       ...events.slice(0, -1),
@@ -135,7 +137,7 @@ it('накопительный usage после resume не считает пр�
       },
     ]),
     config,
-    first.usageTotals,
+    { ledger: first.usageLedger, launchId: 'resume' },
   );
   expect(second.cost).toBeNull();
   expect(second.usage).toEqual(first.usage);
@@ -157,6 +159,33 @@ it('прошлый usage не подтверждает расход нового
     readCodexAnswer(run([...events, { type: 'turn.started' }, { type: 'turn.completed' }]), config)
       .outcome,
   ).toBe('failed');
+});
+
+it('согласует все completed, resume и уменьшение без отрицательного расхода', () => {
+  const completed = (input_tokens, output_tokens) => ({
+    type: 'turn.completed',
+    usage: { input_tokens, output_tokens },
+  });
+  const first = readCodexAnswer(
+    run([...events.slice(0, -1), completed(1000, 100), completed(1600, 140)]),
+    config,
+  );
+  expect(first.usage).toEqual({ input_tokens: 1600, output_tokens: 140 });
+  expect(first.usageLedger.tasks.answer.sessions['thread-1'].knownTokens).toBe(1740);
+  beginTokenLaunch(first.usageLedger, 'answer', 'resume', 'thread-1');
+  const resumed = readCodexAnswer(run([...events.slice(0, -1), completed(2000, 180)]), config, {
+    ledger: first.usageLedger,
+    launchId: 'resume',
+  });
+  expect(resumed.usage).toEqual({ input_tokens: 400, output_tokens: 40 });
+  beginTokenLaunch(resumed.usageLedger, 'answer', 'smaller', 'thread-1');
+  const smaller = readCodexAnswer(run([...events.slice(0, -1), completed(500, 40)]), config, {
+    ledger: resumed.usageLedger,
+    launchId: 'smaller',
+  });
+  expect(smaller.usage).toBeNull();
+  expect(smaller.usageLedger.tasks.answer.sessions['thread-1'].knownTokens).toBe(2180);
+  expect(smaller.usageReasons).toContain('decreased-usage');
 });
 
 it('включает Windows sandbox без Git-авторизации в argv', async () => {

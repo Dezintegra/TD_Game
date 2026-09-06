@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { taskTokens } from './token-budget.mjs';
 import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
@@ -1226,7 +1227,39 @@ describe('сессии разных исполнителей', () => {
   });
 });
 
-it('помнит накопительный расход Codex после перезапуска', async () => {
+it('watch и finish учитывают 1740, а resume использует реестр после забывания этапа', async () => {
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: { provider: 'codex' },
+  });
+  const emit = (event) => h.children.at(-1).stdout.emit('data', JSON.stringify(event) + '\n');
+  h.supervisor.spawnStage(assignment());
+  const launchId = h.saved.at(-1)['0001-one:design'].live.launchId;
+  expect(launchId).toBeTruthy();
+  emit({ type: 'thread.started', thread_id: 'thread' });
+  emit({ type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 100 } });
+  emit({ type: 'turn.completed', usage: { input_tokens: 1600, output_tokens: 140 } });
+  expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(1740);
+  h.children.at(-1).emit('close', 0);
+  await sleep(0);
+  expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(1740);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.reasons).toEqual([]);
+  h.supervisor.forgetSession('0001-one', 'design');
+  expect(h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' })).ok).toBe(
+    true,
+  );
+  const resumed = h.saved.at(-1)['0001-one:design'].live.launchId;
+  expect(resumed).not.toBe(launchId);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].launches[resumed].baseline).toEqual({
+    input_tokens: 1600,
+    output_tokens: 140,
+  });
+  emit({ type: 'thread.started', thread_id: 'thread' });
+  await h.answer({ type: 'turn.completed', usage: { input_tokens: 2000, output_tokens: 180 } });
+  expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(2180);
+});
+
+it('не подменяет отсутствующий долговечный baseline памятью этапа', async () => {
   const h = harness({
     home: fileURLToPath(new URL('..', import.meta.url)),
     config: {
@@ -1256,16 +1289,19 @@ it('помнит накопительный расход Codex после пер
     type: 'turn.completed',
     usage: { input_tokens: 2000, cached_input_tokens: 400, output_tokens: 200 },
   });
-  expect(h.supervisor.codexUsage['0001-one'].thread).toBe(2200);
-  expect(h.supervisor.reports[0].costUsd).toBe(0);
-  expect(h.saved.at(-1)['0001-one:design'].usage.input_tokens).toBe(2000);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.knownTokens).toBe(2200);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.reasons).toContain(
+    'missing-baseline',
+  );
+  expect(h.supervisor.reports).toEqual([]);
+  expect(h.saved.at(-1)['0001-one:design'].usage).toBeUndefined();
 });
 
 it('расход сохраняется до разбора отчёта и не исчезает при забывании сессии', async () => {
   const snapshots = [];
   const h = harness({
     home: fileURLToPath(new URL('..', import.meta.url)),
-    config: { provider: 'codex' },
+    config: { provider: 'codex', codexMaxTaskTokens: null },
     codexUsage: { '0001-one': { previous: 500 } },
     saveCodexUsage: (value) => snapshots.push(JSON.parse(JSON.stringify(value))),
   });
@@ -1281,12 +1317,13 @@ it('расход сохраняется до разбора отчёта и не
       usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 100 },
     }) + '\n',
   );
-  expect(snapshots.at(-1)['0001-one']).toEqual({ previous: 500, new: 1100 });
+  expect(snapshots.at(-1).tasks['0001-one'].sessions.previous.knownTokens).toBe(500);
+  expect(snapshots.at(-1).tasks['0001-one'].sessions.new.knownTokens).toBe(1100);
   await h.answer({ type: 'turn.failed', error: { message: 'failed after usage' } });
   expect(h.supervisor.reports).toEqual([]);
   h.supervisor.forgetSession('0001-one', 'design');
-  expect(h.supervisor.codexUsage['0001-one']).toEqual({ previous: 500, new: 1100 });
-  expect(snapshots.every((value) => value['0001-one'].new === 1100)).toBe(true);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.new.knownTokens).toBe(1100);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.previous.knownTokens).toBe(500);
 });
 
 it('отказ Codex немедленно запрещает новые этапы и сохраняет сигнал паузы', async () => {

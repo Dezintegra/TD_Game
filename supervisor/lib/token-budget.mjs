@@ -59,6 +59,15 @@ export function reduceTokenObservation(session, launch, ordinal, usage) {
     reason(nextLaunch, 'invalid-usage');
   } else {
     const prior = session.snapshot;
+    if (
+      prior?.cached_input_tokens != null &&
+      snapshot.cached_input_tokens != null &&
+      snapshot.cached_input_tokens < prior.cached_input_tokens
+    ) {
+      nextSession.diagnostics ??= [];
+      if (!nextSession.diagnostics.includes('decreased-cache'))
+        nextSession.diagnostics.push('decreased-cache');
+    }
     if (prior && ['input_tokens', 'output_tokens'].some((key) => snapshot[key] < prior[key])) {
       reason(nextSession, 'decreased-usage');
       reason(nextLaunch, 'decreased-usage');
@@ -74,62 +83,43 @@ export function reduceTokenObservation(session, launch, ordinal, usage) {
 }
 
 export function launchTokenUsage(session, launch) {
-  if (session.reasons.length || launch.reasons.length || !launch.baseline || !session.snapshot)
-    return null;
+  const snapshot = launchTokenSnapshot(launch);
+  if (session.reasons.length || launch.reasons.length || !launch.baseline || !snapshot) return null;
   const usage = {};
   for (const key of ['input_tokens', 'output_tokens']) {
-    usage[key] = session.snapshot[key] - launch.baseline[key];
+    usage[key] = snapshot[key] - launch.baseline[key];
     if (usage[key] < 0) return null;
   }
   // Кэш входит в input; его падение не портит известную разность input/output.
-  if (session.snapshot.cached_input_tokens != null)
+  if (snapshot.cached_input_tokens != null)
     usage.cached_input_tokens = Math.max(
       0,
-      session.snapshot.cached_input_tokens - (launch.baseline.cached_input_tokens ?? 0),
+      snapshot.cached_input_tokens - (launch.baseline.cached_input_tokens ?? 0),
     );
   return usage;
 }
 
-// CLI reports cumulative input (including cache) and output for each session.
-// Keep maxima independently of reports and session lifecycle: retries are idempotent.
-export function recordTokenUsage(ledger, taskId, sessionId, usage) {
-  if (!sessionId || !usage) return false;
-  if (
-    !['input_tokens', 'output_tokens'].every(
-      (key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0,
-    )
-  )
-    return false;
-  const total = usage.input_tokens + usage.output_tokens;
-  if (!Number.isSafeInteger(total)) return false;
-  const sessions = ledger[taskId] ?? {};
-  if (total <= (sessions[sessionId] ?? -1)) return false;
-  ledger[taskId] = { ...sessions, [sessionId]: total };
-  return true;
+export function launchTokenSnapshot(launch) {
+  const ordinals = Object.keys(launch.observations)
+    .map(Number)
+    .sort((a, b) => b - a);
+  for (const ordinal of ordinals) {
+    const snapshot = normalizeTokenUsage(launch.observations[ordinal]);
+    if (snapshot) return snapshot;
+  }
+  return null;
 }
 
 export function taskTokens(ledger, taskId) {
-  return Object.values(ledger[taskId] ?? {}).reduce((sum, tokens) => sum + tokens, 0);
-}
-
-export function readTokenLedger(root, config) {
-  const path = join(root, config.paths.local, 'codex-usage.json');
-  if (!existsSync(path)) return {};
-  const ledger = JSON.parse(readFileSync(path, 'utf8'));
-  const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
-  if (
-    !object(ledger) ||
-    !Object.values(ledger).every(
-      (sessions) =>
-        object(sessions) &&
-        Object.values(sessions).every((tokens) => Number.isSafeInteger(tokens) && tokens >= 0),
-    )
-  )
-    throw new Error(`Повреждён счётчик токенов: ${path}`);
-  return ledger;
+  const data = ledger.version === 2 ? ledger : migrateTokenLedger(ledger);
+  return Object.values(data.tasks[taskId]?.sessions ?? {}).reduce(
+    (sum, session) => sum + session.knownTokens,
+    0,
+  );
 }
 
 export function writeTokenLedger(root, config, ledger) {
+  migrateTokenLedger(ledger);
   const dir = join(root, config.paths.local);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, 'codex-usage.json');
@@ -205,9 +195,76 @@ export function migrateTokenLedger(data) {
   return ledger;
 }
 
-export function readTokenLedgerV2(root, config) {
+export function readTokenLedger(root, config) {
   const path = join(root, config.paths.local, 'codex-usage.json');
   return migrateTokenLedger(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {});
+}
+
+export function beginTokenLaunch(ledger, taskId, launchId, sessionId = null) {
+  const task = (ledger.tasks[taskId] ??= { sessions: {}, launches: {} });
+  if (Object.hasOwn(task.launches, launchId)) return;
+  const baseline = sessionId
+    ? (task.sessions[sessionId]?.snapshot ?? null)
+    : { input_tokens: 0, output_tokens: 0 };
+  task.launches[launchId] = tokenLaunch(sessionId, baseline);
+  if (sessionId && !baseline) reason(task.launches[launchId], 'missing-baseline');
+}
+
+export function bindTokenSession(ledger, taskId, launchId, sessionId) {
+  const task = ledger.tasks[taskId];
+  const launch = task.launches[launchId];
+  if (typeof sessionId !== 'string' || !sessionId) {
+    reason(launch, 'unknown-session');
+    return;
+  }
+  if (launch.sessionId && launch.sessionId !== sessionId) {
+    reason(launch, 'changed-session');
+    return;
+  }
+  // thread.started с уже известным thread не доказывает новый нулевой накопитель.
+  if (!launch.sessionId && task.sessions[sessionId])
+    launch.baseline = task.sessions[sessionId].snapshot;
+  launch.sessionId = sessionId;
+  if (!Object.hasOwn(task.sessions, sessionId)) task.sessions[sessionId] = emptyTokenSession();
+}
+
+export function observeTokenUsage(ledger, taskId, launchId, ordinal, usage) {
+  const task = ledger.tasks[taskId];
+  const launch = task.launches[launchId];
+  if (!launch.sessionId) {
+    reason(launch, 'unknown-session');
+    launch.observations[ordinal] = normalizeTokenUsage(usage) ?? { unknown: 'invalid-usage' };
+    return;
+  }
+  const session = task.sessions[launch.sessionId] ?? emptyTokenSession();
+  const next = reduceTokenObservation(session, launch, ordinal, usage);
+  task.sessions[launch.sessionId] = next.session;
+  task.launches[launchId] = next.launch;
+}
+
+export function completeTokenLaunch(ledger, taskId, launchId, unknown = null) {
+  const task = ledger.tasks[taskId];
+  const launch = task.launches[launchId];
+  launch.completed = true;
+  if (!Object.keys(launch.observations).length) reason(launch, 'missing-usage');
+  if (!launch.sessionId) reason(launch, 'unknown-session');
+  if (unknown) reason(launch, unknown);
+  const session = task.sessions[launch.sessionId];
+  if (session) for (const value of launch.reasons) reason(session, value);
+}
+
+export function taskTokenStatus(ledger, taskId) {
+  const data = ledger.version === 2 ? ledger : migrateTokenLedger(ledger);
+  const task = data.tasks[taskId];
+  const reasons = new Set();
+  if (ledger.writeErrors?.includes(taskId)) reasons.add('storage-error');
+  for (const session of Object.values(task?.sessions ?? {}))
+    for (const value of session.reasons) reasons.add(value);
+  for (const launch of Object.values(task?.launches ?? {})) {
+    for (const value of launch.reasons) reasons.add(value);
+    if (!launch.completed) reasons.add('unfinished-launch');
+  }
+  return { complete: reasons.size === 0, reasons: [...reasons] };
 }
 
 // Сначала сохраняем копию целиком; неудачная запись не делает retry пустой операцией.

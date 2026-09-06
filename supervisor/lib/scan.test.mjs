@@ -1231,7 +1231,26 @@ describe('бюджет тяжести Codex', () => {
       config: { ...config, provider: 'codex', codexMaxTaskTokens: limit },
       tasks: [task({ status, spentUsd: 999 })],
       registry: { entries: [entry('0001-one')] },
-      codexUsage: { '0001-one': { first: tokens - 10, resumed: 10 } },
+      codexUsage: {
+        version: 2,
+        tasks: {
+          '0001-one': {
+            sessions: {
+              first: {
+                knownTokens: tokens - 10,
+                snapshot: { input_tokens: tokens - 10, output_tokens: 0 },
+                reasons: [],
+              },
+              resumed: {
+                knownTokens: 10,
+                snapshot: { input_tokens: 10, output_tokens: 0 },
+                reasons: [],
+              },
+            },
+            launches: {},
+          },
+        },
+      },
     });
   it('суммирует сессии и отправляет на дробление ровно на границе', () => {
     expect(kinds(check(99))).toContain('continue-stage');
