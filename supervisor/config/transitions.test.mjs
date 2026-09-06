@@ -1,0 +1,1218 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { OUTCOMES } from '../lib/apply-report.mjs';
+import { STAGE_COMMANDS, uncoveredForStage } from './permissions.mjs';
+import {
+  NEEDS_SESSION,
+  NEEDS_WORKTREE,
+  ROUTES,
+  STATES,
+  STATE_CLASS,
+  canTransition,
+  isExclusive,
+  isResource,
+  isWaiting,
+  stateClass,
+} from './transitions.mjs';
+
+/**
+ * Проверки автомата состояний.
+ *
+ * Здесь ловится ровно то, что дороже всего заметить в живом конвейере:
+ * переход, которого не должно быть, и цена состояния, посчитанная неверно.
+ * Первое пустило бы задачу мимо проверки, второе заняло бы машину замером
+ * посреди чужой работы.
+ */
+
+const task = (over = {}) => ({
+  id: '0001-example',
+  type: 'feature',
+  status: 'new',
+  returnTo: null,
+  ...over,
+});
+
+describe('маршруты', () => {
+  it('доработка идёт полным путём', () => {
+    const path = [
+      ['new', 'design'],
+      ['design', 'audit'],
+      ['audit', 'implement'],
+      ['implement', 'pr'],
+      ['pr', 'review'],
+      ['review', 'deploy'],
+      ['deploy', 'cleanup'],
+      ['cleanup', 'closed'],
+    ];
+    for (const [from, to] of path) {
+      expect(canTransition(task({ status: from }), to).ok, `${from} → ${to}`).toBe(true);
+    }
+  });
+
+  it('кандидат одобряется переходом в очередь', () => {
+    // Переход объявлен, хотя выполняет его человек мышью. Не объяви его —
+    // карточка, перетащенная в «Заведено», вернулась бы обратно: конвейер
+    // возвращает всё, чего нет в таблице. Шлюз не просто не работал бы,
+    // а отменял бы одобрение.
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'new').ok).toBe(true);
+    expect(canTransition(task({ type: 'note', status: 'candidate' }), 'new').ok).toBe(true);
+  });
+
+  it('кандидата нельзя протащить мимо очереди', () => {
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'design').ok).toBe(false);
+    expect(canTransition(task({ type: 'feature', status: 'candidate' }), 'implement').ok).toBe(
+      false,
+    );
+  });
+
+  it('прогон кандидатом не бывает', () => {
+    expect(canTransition(task({ type: 'run', status: 'candidate' }), 'new').ok).toBe(false);
+  });
+
+  it('прогон не заходит в проработку', () => {
+    expect(canTransition(task({ type: 'run', status: 'new' }), 'design').ok).toBe(false);
+    expect(canTransition(task({ type: 'run', status: 'new' }), 'benchmark').ok).toBe(true);
+  });
+
+  it('замер отдаёт прогон толкованию, а закрыть его сам не вправе', () => {
+    const measured = task({ type: 'run', status: 'benchmark' });
+    expect(canTransition(measured, 'interpret').ok).toBe(true);
+    expect(canTransition(measured, 'closed').ok).toBe(false);
+  });
+
+  it('толкование закрывает прогон', () => {
+    expect(canTransition(task({ type: 'run', status: 'interpret' }), 'closed').ok).toBe(true);
+  });
+
+  it('доработка толкования не знает: её замер ведёт к проверкам', () => {
+    // Толкование объявлено только на маршруте прогона. У доработки замер —
+    // одна из проверок перед ревью, и читает её ревьюер.
+    const measured = task({ type: 'feature', status: 'benchmark' });
+    expect(canTransition(measured, 'interpret').ok).toBe(false);
+    expect(canTransition(measured, 'pr').ok).toBe(true);
+  });
+
+  it('замечание разбирается и закрывается', () => {
+    expect(canTransition(task({ type: 'note', status: 'new' }), 'triage').ok).toBe(true);
+    expect(canTransition(task({ type: 'note', status: 'triage' }), 'closed').ok).toBe(true);
+  });
+
+  it('через ступень перепрыгнуть нельзя', () => {
+    const verdict = canTransition(task({ status: 'design' }), 'pr');
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toContain('«audit»');
+  });
+
+  it('аудит с замечаниями возвращает в проработку', () => {
+    expect(canTransition(task({ status: 'audit' }), 'design').ok).toBe(true);
+  });
+
+  it('доработка ведёт в ожидание проверок, а не сразу в ревью', () => {
+    expect(canTransition(task({ status: 'revise' }), 'pr').ok).toBe(true);
+    expect(canTransition(task({ status: 'revise' }), 'review').ok).toBe(false);
+  });
+
+  it('проработка доработки ведёт и в уборку: предмет задачи снят', () => {
+    // Второй конец проработки. Задача, чей предмет снят до начала работы,
+    // проектировать нечего, и вести её дальше по маршруту не за чем.
+    // Идёт она именно в уборку, а не в «Закрыто»: дерево заведено ей
+    // до первой сессии, а удаляет конвейер только из `cleanup`.
+    expect(canTransition(task({ status: 'design' }), 'cleanup').ok).toBe(true);
+    expect(canTransition(task({ status: 'design' }), 'audit').ok).toBe(true);
+  });
+
+  it('прогон и замечание в уборку из проработки не ходят', () => {
+    // У обоих типов проработки нет вовсе, и ход обязан упереться в таблицу,
+    // а не обойти её. У замечания первая сессия — разбор, закрывающий задачу
+    // штатно; у прогона — замер, которому вердикт выносить запрещено.
+    expect(canTransition(task({ type: 'run', status: 'design' }), 'cleanup').ok).toBe(false);
+    expect(canTransition(task({ type: 'note', status: 'design' }), 'cleanup').ok).toBe(false);
+  });
+
+  it('несуществующее состояние отвергается', () => {
+    expect(canTransition(task(), 'почти-готово').ok).toBe(false);
+  });
+});
+
+describe('сквозные состояния', () => {
+  it('ошибка достижима из любого рабочего состояния', () => {
+    for (const status of ['design', 'implement', 'benchmark', 'review', 'deploy']) {
+      expect(canTransition(task({ status }), 'failed').ok, status).toBe(true);
+    }
+  });
+
+  it('ожидание ответа достижимо из любого рабочего состояния', () => {
+    for (const status of ['triage', 'design', 'implement']) {
+      expect(canTransition(task({ status }), 'awaiting-po').ok, status).toBe(true);
+    }
+  });
+
+  it('возврат из ожидания ведёт в сохранённое состояние', () => {
+    const waiting = task({ status: 'awaiting-po', returnTo: 'design' });
+    expect(canTransition(waiting, 'design').ok).toBe(true);
+    expect(canTransition(waiting, 'implement').ok).toBe(false);
+  });
+
+  it('из ошибки конвейер сам не поднимает, кроме сохранённого состояния', () => {
+    const failed = task({ status: 'failed', returnTo: 'implement' });
+    expect(canTransition(failed, 'implement').ok).toBe(true);
+    expect(canTransition(failed, 'review').ok).toBe(false);
+  });
+
+  it('разбор ошибки достижим из любого рабочего состояния', () => {
+    for (const status of ['triage', 'design', 'implement', 'benchmark', 'review', 'cleanup']) {
+      expect(canTransition(task({ status }), 'postmortem').ok, status).toBe(true);
+    }
+  });
+
+  it('из разбора ошибки выход только в ошибку', () => {
+    // Вход в разбор открыт отовсюду, а выход держится тем, что `postmortem`
+    // не объявлен ни в одном маршруте: разрешённым остаётся лишь сквозной
+    // переход в `failed`. Поднимает задачу человек, и делает это из ошибки.
+    const analysed = task({ status: 'postmortem', returnTo: 'implement' });
+    expect(canTransition(analysed, 'failed').ok).toBe(true);
+    expect(canTransition(analysed, 'implement').ok).toBe(false);
+    expect(canTransition(analysed, 'closed').ok).toBe(false);
+  });
+
+  it('разбор разбора не назначается', () => {
+    expect(canTransition(task({ status: 'postmortem' }), 'postmortem').ok).toBe(false);
+  });
+
+  it('закрытая задача не оживает', () => {
+    expect(canTransition(task({ status: 'closed' }), 'design').ok).toBe(false);
+  });
+
+  it('из ошибки задачу закрывают, и это объявлено всем трём типам', () => {
+    // Ход человека, а не конвейера: задача, потерявшая предмет уже после
+    // остановки, прежде оставалась в «Ошибке» навсегда — единственный выход
+    // оттуда вёл в упавший этап, то есть в новое падение.
+    for (const type of ['feature', 'run', 'note']) {
+      expect(canTransition(task({ type, status: 'failed' }), 'closed').ok, type).toBe(true);
+    }
+  });
+
+  it('закрытие из ошибки не открывает дороги обратно в работу', () => {
+    // Объявлен ровно один выход. Возврат в сохранённое состояние остался
+    // прежним ходом человека, а любое другое рабочее состояние из «Ошибки»
+    // по-прежнему недостижимо.
+    const failed = task({ status: 'failed', returnTo: 'implement' });
+    expect(canTransition(failed, 'design').ok).toBe(false);
+    expect(canTransition(failed, 'cleanup').ok).toBe(false);
+    expect(canTransition(failed, 'implement').ok).toBe(true);
+  });
+
+  it('закрытая задача не закрывается второй раз и никуда не идёт', () => {
+    // Обратная сторона нового маршрута: `failed: ['closed']` объявлен
+    // у всех трёх типов, а `closed` остаётся концом пути.
+    for (const type of ['feature', 'run', 'note']) {
+      const closed = task({ type, status: 'closed', returnTo: 'implement' });
+      expect(canTransition(closed, 'closed').ok, type).toBe(false);
+      expect(canTransition(closed, 'cleanup').ok, type).toBe(false);
+      expect(canTransition(closed, 'implement').ok, type).toBe(false);
+    }
+  });
+});
+
+describe('цена состояния', () => {
+  it('проработка и имплементация занимают квоту', () => {
+    expect(isResource(task({ status: 'design' }))).toBe(true);
+    expect(isResource(task({ status: 'implement' }))).toBe(true);
+  });
+
+  it('ожидание проверок квоту не занимает', () => {
+    expect(isWaiting(task({ status: 'pr' }))).toBe(true);
+    expect(isResource(task({ status: 'pr' }))).toBe(false);
+  });
+
+  it('ревью считается отдельной квотой', () => {
+    expect(stateClass(task({ status: 'review' }))).toBe('review');
+    expect(isResource(task({ status: 'review' }))).toBe(false);
+  });
+
+  it('арена считается на чужом железе и машину не занимает', () => {
+    const arena = task({ type: 'run', status: 'benchmark', run: { kind: 'arena' } });
+    expect(isWaiting(arena)).toBe(true);
+    expect(isExclusive(arena)).toBe(false);
+  });
+
+  it('замер кадров требует тишины на машине', () => {
+    const perf = task({ type: 'run', status: 'benchmark', run: { kind: 'perf' } });
+    expect(isExclusive(perf)).toBe(true);
+  });
+
+  it('выкладка требует тишины на машине', () => {
+    expect(isExclusive(task({ status: 'deploy' }))).toBe(true);
+  });
+});
+
+/**
+ * Непокрытые команды вливания. Мерка и сам перечень переехали в код
+ * инструмента (`config/permissions.mjs`): её читает и сканер, а вторая копия
+ * разошлась бы с первой молча. Здесь остаётся короткое имя, чтобы пробы
+ * на порчу ниже читались прежним образом.
+ */
+const uncoveredMergeCommands = (permissions) =>
+  uncoveredForStage(permissions, 'review', STAGE_COMMANDS);
+
+/**
+ * Этапы, чьи команды закрыты ОСОЗНАННО, — с причиной и с тем, чем закрытие
+ * снимается.
+ *
+ * Реестр заведён, когда выкладка с `ssh` была закрыта решением о том, что
+ * боевой сервер — дело человека, а сторож без записи покраснел бы сразу
+ * и навсегда. 04.09.2026 владелец продукта открыл команды выкладки
+ * (задача 0117, пакетная выкладка), и реестр опустел — но остаётся: он
+ * краснеет в обе стороны, и следующее осознанное закрытие любого этапа
+ * записывается сюда одной строкой, а не выключением сторожа.
+ */
+const DELIBERATELY_CLOSED = {};
+
+/**
+ * Что в скилле этапа считать гейтируемым: программы, чей запуск решают правила
+ * разрешений. Объявляется по этапу, а не общим списком, потому что «стерегомое»
+ * зависит от того, чем этап занят.
+ *
+ * У `review` таких программ не объявлено, и это нарочно: его перечень —
+ * осознанно короткая выборка из скилла (`gh pr checks` шага 2 в неё не входит),
+ * а весь путь ревью покрыт одним приставочным правилом `gh pr:*`, при котором
+ * выборка и полный перечень неразличимы. Перекраивать выборку здесь нельзя
+ * и по второй причине: её заводит незаархивированное `undraft-before-merge`,
+ * это его предмет.
+ */
+const GATED_PROGRAMS = {
+  deploy: ['ssh', 'node scripts/deploy-remote.mjs', 'node scripts/deploy.mjs', 'pnpm e2e:perf'],
+};
+
+/**
+ * Начало команды, по которому её ищут в скилле: доводы отброшены.
+ *
+ * Доводом здесь считается место-заполнитель (`<хеш>`) и голое число (`1`
+ * вместо номера pull request) — ровно то, чем объявленная команда отличается
+ * от строки скилла. Всё прочее — `-o BatchMode=yes`, имя хоста, тело в
+ * кавычках — часть команды и сверяется дословно: приставки у выкладки две,
+ * и обрезать их до `ssh` значило бы потерять ту самую разницу, ради которой
+ * перечень и полон.
+ */
+const skillPrefix = (command) => {
+  const words = command.split(' ');
+  const argument = words.findIndex((word) => word.startsWith('<') || /^\d+$/.test(word));
+  return (argument === -1 ? words : words.slice(0, argument)).join(' ');
+};
+
+const skillText = (stage) =>
+  readFileSync(fileURLToPath(new URL(`../skills/${stage}.md`, import.meta.url)), 'utf8');
+
+/**
+ * Семья формулировок ложного довода «составную команду не покрывает никакое
+ * правило разрешений». Применяется к тексту, нормализованному по пробелам.
+ *
+ * Флага `g` здесь нет намеренно: с ним `test` таскает за собой `lastIndex`
+ * и на втором вызове с той же строкой отвечает иначе, чем на первом.
+ */
+const FALSE_GROUND =
+  /(?:составн[а-яё]*|конвейер[а-яё]*)[^.]{0,200}?не\s+(?:покрыва[а-яё]+|покрыт[а-яё]*|разреша[а-яё]+|разрешить)\s+(?:заранее\s+)?никак[а-яё]+\s+правил[а-яё]+/i;
+
+/**
+ * Однострочная формула следа из скилла — абзац после «След объявлен поимённо».
+ *
+ * Она живёт десятью копиями, по одной на скилл, и сверяется целым абзацем,
+ * а не отдельным словом: слово `pull request` встречается в скиллах и вне
+ * формулы, и поиск по всему тексту зеленел бы на разъехавшейся копии.
+ */
+const traceFormula = (text) => text.match(/След объявлен поимённо:[\s\S]*?(?=\n\n)/)?.[0] ?? null;
+
+describe('этапы и скиллы', () => {
+  it('всякому ресурсному состоянию положена сессия', () => {
+    // Состояние, объявленное ресурсным, но забытое в NEEDS_SESSION, тратит
+    // место в квоте и НЕ получает сессии никогда: сканер выдаёт её только
+    // по этому перечню. Задача встаёт в колонке навсегда и молча — ни отказа,
+    // ни записи в журнал, ни строки в консоли.
+    //
+    // Щель найдена пробой при заведении этапа декомпозиции: снятие состояния
+    // из перечня не покраснило ни одного теста.
+    const resource = STATES.filter((state) => STATE_CLASS[state] === 'resource');
+    const forgotten = resource.filter((state) => !NEEDS_SESSION.includes(state));
+    expect(forgotten).toEqual([]);
+  });
+
+  it('у каждого этапа с сессией есть скилл', () => {
+    // Сессия-исполнитель читает указания своего этапа из
+    // `skills/<этап>.md` и без них не знает, что делать. Расхождение
+    // скиллов с кодом — самая частая беда этого конвейера: этап,
+    // объявленный в таблице, но не описанный, обнаружится только тогда,
+    // когда задача до него дойдёт, — то есть в проде и молча.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const missing = NEEDS_SESSION.filter((stage) => !existsSync(`${dir}${stage}.md`));
+    expect(missing).toEqual([]);
+  });
+
+  it('ни один скилл не посылает исполнителя за слотом или отчётом на диск', () => {
+    // Слоты и каталог отчётов удалены вместе с прежним устройством: работа
+    // приходит промптом, отчёт возвращается сообщением. Забытое упоминание
+    // страшнее мёртвой ссылки — сессия честно пойдёт искать файл, не найдёт
+    // и решит, что назначения нет. Такое уже было с выпиской задачи после
+    // переезда бэклога на доску: файл остался на месте, но устарел, и сессия
+    // читала позавчерашнюю картину молча.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const guilty = [];
+    for (const stage of NEEDS_SESSION) {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      for (const banned of ['.pipeline/slots', '.pipeline/reports', 'set_session_title']) {
+        if (text.includes(banned)) guilty.push(`${stage}.md: ${banned}`);
+      }
+    }
+    expect(guilty).toEqual([]);
+  });
+
+  it('ни один скилл не показывает коммит многострочной строкой', () => {
+    // Переводы строк внутри команды разбор разрешений видит как несколько
+    // команд: приставке `git commit` отвечает только первая, остальные —
+    // строки самого сообщения — отказываются. Коммит при этом не ложится,
+    // а без коммита у коммитящего этапа нет следа — и отчёт не применяется.
+    //
+    // Пример в скилле здесь опаснее умолчания: 31.08.2026 задача 0011
+    // дважды сделала работу и дважды лишилась отчёта, набирая тело коммита
+    // через `@'` … `'@` — форму, которую предписывают общие указания
+    // по PowerShell. Скилл этапа обязан её перебить.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const guilty = [];
+    for (const stage of NEEDS_SESSION) {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      if (/git\s[^\n]*commit[^\n]*-m\s+@'/.test(text)) guilty.push(`${stage}.md`);
+    }
+    expect(guilty).toEqual([]);
+  });
+
+  it('правила разрешений не пишутся в форме, которая молча не работает', () => {
+    // Хвост правила — `путь/*`, а не `путь/:*`. Форма с двоеточием внутри
+    // пути не совпадает ни с чем, и правило просто не срабатывает: задача
+    // 0016 получила четыре отказа подряд при стоявшем `Bash(node .matchlog/:*)`
+    // и прошла без единого, едва форму заменили. Двоеточие остаётся верным
+    // там, где отделяет команду от любых аргументов (`gh pr:*`).
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    const rules = [...settings.permissions.allow, ...settings.permissions.deny];
+    expect(rules.filter((rule) => /\/:\*\)/.test(rule))).toEqual([]);
+  });
+
+  it('служебный каталог конвейера открыт чтением, и не мнимой формой', () => {
+    // Этап живёт в своём дереве, а реестр деревьев — в `.pipeline` основного,
+    // то есть вне его рабочего каталога. Список `allow` этой границы не двигает:
+    // проба 01.09.2026 показала, что с `Read(.pipeline/**)` отказ повторяется
+    // слово в слово, а с `additionalDirectories` его нет вовсе. Цена вопроса
+    // измерена — четыре этапа аудита подряд встали на одном и том же файле.
+    //
+    // Путей два, и оба нужны: относительный считается от рабочего каталога,
+    // а он у этапов разный — корень у безместных, дерево тремя уровнями ниже
+    // у прочих.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    expect(settings.permissions.additionalDirectories).toContain('.pipeline');
+    expect(settings.permissions.additionalDirectories).toContain('../../../.pipeline');
+
+    const rules = [...settings.permissions.allow, ...settings.permissions.deny];
+    expect(rules.filter((rule) => /^Read\(\.pipeline/.test(rule))).toEqual([]);
+  });
+
+  it('удаление файлов правилами не выписывается: оно всё равно не пройдёт', () => {
+    // Проверено 31.08.2026 тремя пробами: с шаблоном, без перекрывающего
+    // запрета и с точным совпадением команды — отказ во всех трёх. Правило
+    // на удаление создаёт вид надёжности, а запрет вида `.matchlog/*` вдобавок
+    // перекрывает собственные разрешения и отнимает у этапа отчёт.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    const rules = [...settings.permissions.allow, ...settings.permissions.deny];
+    expect(rules.filter((rule) => /Remove-Item|rm -rf/.test(rule))).toEqual([]);
+  });
+
+  it('перечень сценариев открыт точной формой, а не с любым доводом', () => {
+    // Разница между `pnpm run` и `pnpm run:*` — один символ, а последствие
+    // разное. Без доводов команда печатает перечень сценариев и не исполняет
+    // ничего; хвост `:*` означает «с любыми доводами», а довод здесь — имя
+    // сценария. Широкая форма открыла бы разом `pnpm run verify`,
+    // `pnpm run test:match`, `pnpm run balance:run` и `pnpm run deploy` —
+    // то, что правила 6 и 8 проекта закрыли осознанно.
+    //
+    // Сторож нужен потому, что расширение стоит одного символа, а заметят
+    // его не раньше, чем этап что-нибудь выложит на боевой сервер.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    const rules = [...settings.permissions.allow, ...settings.permissions.deny];
+
+    expect(rules.filter((rule) => /\(pnpm run[\s:]/.test(rule))).toEqual([]);
+    for (const shell of ['Bash', 'PowerShell']) {
+      expect(settings.permissions.allow).toContain(`${shell}(pnpm run)`);
+    }
+  });
+
+  it('подъём и снятие конвейера закрыты в обеих оболочках', () => {
+    // Запрет живёт не ради сегодняшнего дня — сегодня ни одно разрешение
+    // с этими формами не совпадает. Он ради того дня, когда правило расширят
+    // до `node supervisor/bin/*`, как просит заголовок задачи 0130.
+    //
+    // Опаснее подъёма здесь `--stop`: пускатель снимает поддерево процессов,
+    // а этап — потомок супервизора, то есть снимает себя на полуслове.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    const forms = ['supervise.mjs', 'launch.mjs --stop', 'launch.mjs --shadow'];
+    const missing = [];
+    for (const form of forms) {
+      for (const shell of ['Bash', 'PowerShell']) {
+        const rule = `${shell}(node supervisor/bin/${form}:*)`;
+        if (!settings.permissions.deny.includes(rule)) missing.push(rule);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it('команды вливания покрыты правилами в обеих оболочках', () => {
+    // Ревью доводит изменение до `main` тремя командами, и отказ на любой
+    // из них случается там, где человека рядом нет. 03.09.2026 задача 0130
+    // встала на `gh pr merge`, отбитом черновым статусом; лечение потребовало
+    // `gh pr ready`, которую скилл не называл, а правила покрывали попутно —
+    // широким `gh pr:*`.
+    //
+    // Попутное покрытие теряется молча: сузив `gh pr:*` до перечня подкоманд,
+    // автор правки не узнает, что вывел `gh pr ready` из-под разрешений.
+    // Узнает об этом ревью — отказом посреди вливания.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    expect(uncoveredMergeCommands(settings.permissions)).toEqual([]);
+  });
+
+  it('сужение широкого правила выводит команду из-под разрешений заметно', () => {
+    // Проба на порчу, прогоняемая набором, а не руками: сторож, который
+    // не краснеет на сломанной настройке, — украшение. Правило сужено до
+    // `gh pr merge:*`, и `gh pr ready` обязана числиться непокрытой.
+    const narrowed = {
+      allow: ['Bash(gh pr merge:*)', 'PowerShell(gh pr merge:*)'],
+      deny: [],
+    };
+    expect(uncoveredMergeCommands(narrowed)).toContain('Bash: gh pr ready 1');
+    expect(uncoveredMergeCommands(narrowed)).toContain('PowerShell: gh pr ready 1');
+  });
+
+  it('запрет, совпавший с приставкой разрешения, считается непокрытием', () => {
+    // Разрешение при перекрывающем запрете не работает, а выглядит рабочим.
+    // Так `.matchlog/*` перекрывал уборку собственного подкаталога и отнимал
+    // у этапа прогона отчёт.
+    const shadowed = {
+      allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'],
+      deny: ['Bash(gh pr ready:*)'],
+    };
+    expect(uncoveredMergeCommands(shadowed)).toEqual(['Bash: gh pr ready 1']);
+  });
+
+  it('сужение до точных правил без хвоста выводит из-под разрешений все три команды', () => {
+    // Третья проба на порчу — и единственная, задевающая точную форму: обе
+    // соседние сужают правило хвостом `:*`, то есть остаются приставочными.
+    //
+    // Правила без хвоста среда толкует точным совпадением команды, а у всех
+    // трёх команд вливания есть доводы — номер pull request и ключи. Значит
+    // такая настройка отказывает каждой из них, и сторож обязан назвать все
+    // шесть: три команды на две оболочки. Ровно этой настройки сторож
+    // и не ловил, пока хвост отбрасывался безусловно.
+    const exactly = {
+      allow: [
+        'Bash(gh pr view)',
+        'Bash(gh pr ready)',
+        'Bash(gh pr merge)',
+        'PowerShell(gh pr view)',
+        'PowerShell(gh pr ready)',
+        'PowerShell(gh pr merge)',
+      ],
+      deny: [],
+    };
+    // Длина, а не вхождение одной строки: список из пяти означал бы, что одна
+    // оболочка прочтена иначе, — а такую разницу надо видеть, а не проглядеть.
+    expect(uncoveredMergeCommands(exactly)).toHaveLength(6);
+  });
+
+  it('запрет точной формы, дословно равный команде, гасит её разрешение', () => {
+    // Три пробы выше задевают точную форму только в `allow`, а мерка объявлена
+    // общей для обоих списков. Пока запреты ничем не проверены, утверждение
+    // «запреты меряются той же меркой, а не строже» держится на честном слове.
+    //
+    // Здесь тело запрета совпадает с командой вливания дословно: среда её
+    // отобьёт, значит и сторож обязан назвать её непокрытой, невзирая
+    // на широкое разрешение рядом.
+    const deniedExactly = {
+      allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'],
+      deny: ['Bash(gh pr ready 1)'],
+    };
+    // Одна строка, а не две: правило `Bash(...)` о правах в PowerShell
+    // не говорит ничего, и та же команда под другой оболочкой остаётся покрытой.
+    expect(uncoveredMergeCommands(deniedExactly)).toEqual(['Bash: gh pr ready 1']);
+  });
+
+  it('команды каждого этапа покрыты правилами либо этап числится закрытым', () => {
+    // Сторож стоит по обе стороны от одной развилки. Слева — регресс: правило
+    // сузили, покрытие потерялось, и заметить это можно было бы только отказом
+    // посреди работы. Справа — устаревшая запись: команды открыли, а сканер
+    // по-прежнему держит задачи этапа, и починка голодает позади них.
+    //
+    // Реестр не способ замолчать беду: запись обязана называть причину
+    // закрытия и то, чем оно снимается. Сегодня закрытых этапов ровно один.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+
+    const lost = [];
+    const stale = [];
+    for (const stage of Object.keys(STAGE_COMMANDS)) {
+      const uncovered = uncoveredForStage(settings.permissions, stage);
+      if (uncovered.length > 0 && !(stage in DELIBERATELY_CLOSED)) lost.push(...uncovered);
+      if (uncovered.length === 0 && stage in DELIBERATELY_CLOSED) stale.push(stage);
+    }
+
+    expect(lost).toEqual([]);
+    expect(stale).toEqual([]);
+  });
+
+  it('шаблон разрешений открывает выкладку целиком, и закрытой она не числится', () => {
+    // Команды выкладки открыты решением владельца продукта 04.09.2026
+    // (задача 0117): конвейер выкладывает сам, пакетом. Запись о закрытом
+    // этапе при этом снята — оставь её, и сторож «закрытый этап действительно
+    // не покрыт» покраснел бы, назвав запись устаревшей.
+    const settings = JSON.parse(
+      readFileSync(fileURLToPath(new URL('./stage-settings.json', import.meta.url)), 'utf8'),
+    );
+    expect(uncoveredForStage(settings.permissions, 'deploy')).toEqual([]);
+    expect('deploy' in DELIBERATELY_CLOSED).toBe(false);
+  });
+
+  it('выдуманная настройка с открытыми командами выкладки не держит ничего', () => {
+    // Проба на выдуманной настройке, а не на шаблоне: сторож покрытия
+    // считает по правилам, а не по имени файла.
+    const opened = {
+      allow: [
+        'Bash(node scripts/deploy-remote.mjs:*)',
+        'PowerShell(node scripts/deploy-remote.mjs:*)',
+        'Bash(node scripts/deploy.mjs:*)',
+        'PowerShell(node scripts/deploy.mjs:*)',
+        'Bash(pnpm e2e:perf:*)',
+        'PowerShell(pnpm e2e:perf:*)',
+      ],
+      deny: [],
+    };
+    expect(uncoveredForStage(opened, 'deploy')).toEqual([]);
+  });
+
+  it('частичные разрешения удалённых проверок не открывают весь этап', () => {
+    const checks = STAGE_COMMANDS.deploy.slice(0, 3);
+    const halfOpen = {
+      allow: [
+        ...checks.flatMap((command) => [`Bash(${command})`, `PowerShell(${command})`]),
+        'Bash(node scripts/deploy.mjs:*)',
+        'PowerShell(node scripts/deploy.mjs:*)',
+        'Bash(pnpm e2e:perf:*)',
+        'PowerShell(pnpm e2e:perf:*)',
+      ],
+      deny: [],
+    };
+    const step7 = STAGE_COMMANDS.deploy[3];
+    expect(uncoveredForStage(halfOpen, 'deploy')).toEqual([
+      `Bash: ${step7}`,
+      `PowerShell: ${step7}`,
+    ]);
+  });
+
+  it('каждая объявленная команда этапа встречается в его скилле', () => {
+    // Прямая сверка. Без неё скилл поменяет команду, сторож продолжит сверять
+    // прежнюю строку и зеленеть на настройке, которой в действительности
+    // не соответствует ничего, — то есть станет украшением.
+    const stray = [];
+    for (const [stage, commands] of Object.entries(STAGE_COMMANDS)) {
+      const text = skillText(stage);
+      for (const command of commands) {
+        if (!text.includes(skillPrefix(command))) stray.push(`${stage}.md: ${command}`);
+      }
+    }
+    expect(stray).toEqual([]);
+  });
+
+  it('каждая гейтируемая строка скилла объявлена в перечне команд этапа', () => {
+    // Обратная сверка, и она ловит сегодняшнюю беду: скилл прирастёт шестой
+    // `ssh`-строкой с новой приставкой, перечень останется впятером, сторож
+    // промолчит — а этап умрёт посреди выкладки молчаливым отказом.
+    //
+    // Стерегомой считается строка скилла, НАЧИНАЮЩАЯСЯ с объявленной
+    // программы: так в счёт идут вызовы из блоков кода, а упоминания в прозе
+    // («`ssh` вызывай только с `-o BatchMode=yes`») — нет.
+    const unclaimed = [];
+    for (const [stage, programs] of Object.entries(GATED_PROGRAMS)) {
+      const prefixes = STAGE_COMMANDS[stage].map(skillPrefix);
+      const called = new RegExp(
+        `^\\s*(${programs.map((name) => name.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('|')})(\\s|$)`,
+      );
+      for (const line of skillText(stage).split('\n')) {
+        const call = line.trim();
+        if (!called.test(call)) continue;
+        if (!prefixes.some((prefix) => call.startsWith(prefix))) {
+          unclaimed.push(`${stage}.md: ${call}`);
+        }
+      }
+    }
+    expect(unclaimed).toEqual([]);
+  });
+
+  it('запрет точной формы, короче команды, её разрешения не гасит', () => {
+    // Единственная проба, краснеющая на возврате приставочной мерки для
+    // запретов: тело `gh pr merge` лишь начинает `gh pr merge 1 --merge`,
+    // и прежний безусловный разбор счёл бы команду запрещённой.
+    //
+    // Ложная тревога здесь дороже молчания. Сторож, объявивший непокрытой
+    // команду, которую среда пропускает, лечится единственным доступным
+    // способом — ослаблением настройки ради успокоения теста.
+    const denyShorter = {
+      allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'],
+      deny: ['Bash(gh pr merge)'],
+    };
+    expect(uncoveredMergeCommands(denyShorter)).toEqual([]);
+  });
+
+  it('этапы, подающие заявки, знают признак причины в конвейере', () => {
+    // Заявка с `area: "pipeline"` минует кандидатов с любого этапа. Скилл,
+    // не знающий признака, заведёт починку конвейера кандидатом — и она
+    // будет ждать человека, пока та же причина роняет следующие задачи;
+    // 02.09.2026 так простояли четыре починки.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const requesting = [
+      'design',
+      'audit',
+      'implement',
+      'revise',
+      'review',
+      'interpret',
+      'triage',
+      'postmortem',
+    ];
+    const silent = requesting.filter(
+      (stage) => !readFileSync(`${dir}${stage}.md`, 'utf8').includes('`area: "pipeline"`'),
+    );
+    expect(silent).toEqual([]);
+  });
+
+  it('разбор и анализ знают правило дробления одной меркой', () => {
+    // Мерка обязана быть одна на оба этапа и проверяемая, а не «на глаз»:
+    // «большой задачу» две сессии подряд назовут по-разному. Расхождение
+    // здесь дорого — 04.09.2026 задача 0216 расползлась с проработки
+    // на имплементацию и после шести кругов и $76,01 не влила ни строки.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const splitting = ['triage', 'decompose'];
+    const silent = splitting.filter((stage) => {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      return !text.includes('вливать порознь') && !text.includes('влить отдельным pull request');
+    });
+    expect(silent).toEqual([]);
+
+    // Анализ обязан назвать и ход: заявки плюс исход `split`. Правило
+    // без хода — пожелание, а не правило.
+    const decompose = readFileSync(`${dir}decompose.md`, 'utf8');
+    expect(decompose).toContain('`split`');
+    expect(decompose).toContain('не меньше двух');
+  });
+
+  it('анализ знает случай упора в потолок и не решает его сам', () => {
+    // Повторный анализ, признавший работу неделимой, обязан звать владельца:
+    // поднять потолок или остановить — это про цену работы против её
+    // ценности, и из кода такое не выводится. Скилл, не знающий этого случая,
+    // отправит задачу в проработку по второму кругу за те же деньги.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const text = readFileSync(`${dir}decompose.md`, 'utf8');
+    expect(text).toContain('потолок');
+    expect(text).toContain('`question`');
+  });
+
+  it('скилл разбора требует вердикт о причине и объясняет fixedBy', () => {
+    // По `causedBy` супервизор решает, возвращать ли задачу из ошибки сам.
+    // Отчёт без него применяется как «причина в задаче» — то есть разбор,
+    // не знающий поля, вернул бы конвейер к подъёму задач человеком молча.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const text = readFileSync(`${dir}postmortem.md`, 'utf8');
+    expect(text).toContain('`causedBy`');
+    expect(text).toContain('`fixedBy`');
+    expect(text).toContain('"causedBy": "pipeline"');
+    expect(text).toContain('"causedBy": "task"');
+  });
+
+  it('скилл прогона называет разрешённое ожидание и не показывает циклов', () => {
+    // Ждать чужой прогон этапу надо всегда, а разрешённая форма ровно одна —
+    // `gh run watch <id> --exit-status`. Не назови её скилл — сессия придумает
+    // своё: за вечер 31.08.2026 придумались цикл на `while`, цикл на `for`
+    // с `seq` и фоновая задача с чтением файла вывода. Все три получили отказ,
+    // и все три оставили этап без ответа о прогоне — то есть без его номера,
+    // а номер и есть след замера. Отчёт без следа не применяется, и замер
+    // по пять долларов и четыре минуты чужого железа пропадает целиком.
+    //
+    // Пример опаснее умолчания: показанный в скилле цикл сессия перепишет
+    // буквально. Поэтому запрет здесь сформулирован без образцов кода,
+    // а сторож ловит именно образцы.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const text = readFileSync(`${dir}benchmark.md`, 'utf8');
+    expect(text).toContain('gh run watch <id> --exit-status');
+    expect(text.match(/while \(|for i in/g) ?? []).toEqual([]);
+  });
+
+  it('этапы, которые коммитят, называют повторный -m прямо', () => {
+    // Запрет без замены не работает: тело коммита требуется правилами
+    // проекта, и, лишившись одного способа, сессия придумает свой.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const silent = ['design', 'implement', 'revise'].filter((stage) => {
+      const text = readFileSync(`${dir}${stage}.md`, 'utf8');
+      return !text.includes('повторными `-m`');
+    });
+    expect(silent).toEqual([]);
+  });
+
+  it('все десять копий формулы следа называют pull request у имплементации', () => {
+    // След имплементации — коммит ЛИБО впервые открытый pull request:
+    // задача, вся правка которой внесена проработкой, законна, а открыть
+    // черновой PR ей всё равно обязательно. Копия, отставшая от этого,
+    // велит сессии отчитаться `failed` там, где приёмка приняла бы `done`,
+    // — то есть выбрасывает правильно сделанную работу.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const guilty = [];
+    for (const stage of NEEDS_SESSION) {
+      const formula = traceFormula(readFileSync(`${dir}${stage}.md`, 'utf8'));
+      if (!formula) {
+        guilty.push(`${stage}.md: формулы следа нет вовсе`);
+      } else if (!formula.includes('pull request')) {
+        guilty.push(`${stage}.md: pull request не назван`);
+      }
+    }
+    expect(guilty).toEqual([]);
+  });
+
+  it('скилл проработки называет каждый исход отчёта и обязательное доказательство', () => {
+    // Исход, которого скилл не называет, для сессии не существует: она читает
+    // свой файл, а не код супервизора. Задача с доказанно снятым предметом
+    // при таком умолчании пойдёт прежним путём — либо в изменение ни о чём,
+    // либо в ложную «Ошибку», — то есть ровно туда, откуда её этот ход
+    // и выводит.
+    //
+    // Перечень берётся из кода, а не переписывается сюда списком: вторая
+    // копия разошлась бы с первой молча, и сторож зеленел бы на скилле,
+    // не знающем нового исхода.
+    //
+    // Слово `evidence` сверяется отдельно от исходов: без него `moot`
+    // остаётся объявленным, но неисполнимым — отчёт без доказательства
+    // не применяется вовсе, и заход пропадает целиком.
+    const text = skillText('design');
+    const missing = [...OUTCOMES, 'evidence'].filter((mark) => !text.includes(`\`${mark}\``));
+    expect(missing.map((mark) => `design.md: ${mark}`)).toEqual([]);
+  });
+
+  it('скилл проработки называет случай, когда дельты не будет', () => {
+    // Задача, не меняющая ни одного требования, законна, и валидатор такое
+    // изменение отвергает — а сессия, не знающая об этом случае, лечит
+    // красноту единственным доступным ей способом: пишет требование ради
+    // прохождения проверки. Оно уезжает в `openspec/specs/` навсегда, где
+    // читается как норма, которой никто не заказывал. Так задача 0165
+    // получила требование на сорок три строки о примечании в файле настроек
+    // при постановке, прямо говорившей «дельту заводить не нужно».
+    //
+    // Сторож требует именно заголовок раздела: он же и есть то, что аудит
+    // ищет в предложении, — а признак без места, куда его писать, сессия
+    // исполнить не сможет.
+    expect(skillText('design')).toContain('## Почему дельты нет');
+  });
+
+  it('ни один скилл не гоняет валидатор по всем изменениям разом', () => {
+    // `openspec validate --changes` проверяет все тридцать восемь открытых
+    // изменений сразу. Чинить чужие поломки этапу запрещено, значит польза
+    // от такого прогона одна — назвать их в отчёте; а цена появилась вместе
+    // с законно бездельтовым изменением: одно такое делает общий прогон
+    // красным у ВСЕХ сессий, и красноту эту никто из них снять не вправе.
+    // Дальше сессия либо встаёт, либо привыкает не смотреть на валидатор —
+    // и оба исхода хуже, чем непойманная чужая поломка, которую поймает
+    // аудит того самого изменения.
+    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
+    const guilty = NEEDS_SESSION.filter((stage) =>
+      readFileSync(`${dir}${stage}.md`, 'utf8').includes('openspec validate --changes'),
+    );
+    expect(guilty).toEqual([]);
+  });
+
+  it('проработка и аудит называют законную ошибку валидатора дословно', () => {
+    // Красный валидатор на бездельтовом изменении законен, и оба этапа
+    // обязаны узнавать этот случай по тексту ошибки, а не по пересказу.
+    // Проработка, не узнав его, полезет чинить красноту требованием
+    // ради проверки; аудит, не узнав, вернёт задачу замечанием — и оба
+    // сожгут заход на беду, которой нет.
+    //
+    // Сверяется дословная строка, а не «есть слово delta»: пересказ вроде
+    // «валидатор ругается на отсутствие дельт» сессия примет за описание
+    // ЛЮБОЙ ошибки про дельты и спишет на этот случай поломанную разметку.
+    const guilty = ['design', 'audit'].filter(
+      (stage) => !skillText(stage).includes('Change must have at least one delta'),
+    );
+    expect(guilty).toEqual([]);
+  });
+
+  it('этапы, освежающие базу, подтягивают свежую главную ветку', () => {
+    // Дерево задачи заводится при захвате и больше не обновляется, поэтому
+    // проверка пересечений идёт на базе тех суток. Каталога чужого изменения,
+    // влитого позже, в дереве нет вовсе, и пропуск выглядит как чистая
+    // проверка: 04.09.2026 задача 0190 пришла на аудит с деревом на пять
+    // коммитов позади и не увидела write-covered-commands-in-tasks.
+    //
+    // У пишущих код этапов цена та же, но платится позже: код пишется
+    // не в ту базу, в которую поедет, и расхождение всплывает конфликтом
+    // у ревью — когда правка уже написана и проверена.
+    //
+    // Заголовок нарочно не называет этапов поимённо: перечень живёт
+    // в массиве ниже, и заголовок, повторяющий его своими словами,
+    // разъезжается с ним при первом же расширении, а vitest печатает
+    // именно заголовок.
+    //
+    // Мерка — строка целиком, вместе с ключом `-C`. Обрезать её до слова
+    // `merge` нельзя: в скилле проработки оно уже стоит шагом 10, разбором
+    // голой формы, и сторож по одному слову зеленел бы при полностью
+    // пропавшем правиле.
+    //
+    // Выкладки в перечне нет по существу, а не по недосмотру. Её освежение
+    // служит другой цели: дерево обязано СОВПАДАТЬ с ревизией, которая уедет
+    // ключом `--ref`, потому что замер поднимает клиент и сервер из дерева,
+    // а файлы сборки дописываются в архив тоже из дерева. Свежесть базы там
+    // не цель, а средство, и стоит освежение своим порядком и своей формой.
+    // Стережёт его собственная проверка — «выкладка приводит дерево
+    // к выкладываемой ревизии» в этом же файле.
+    //
+    // Дописать `deploy` сюда пятым охраной НЕ станет, и это главное, ради
+    // чего абзац написан. Запасная форма шага 6 `deploy.md` записана дословно
+    // той же строкой, какую мерит этот сторож, поэтому дописывание зеленеет
+    // немедленно — без единой правки скилла — и стережёт одну треть шага:
+    // основная перемотка и проверка `diff --stat` остаются открытыми.
+    const guilty = ['design', 'audit', 'implement', 'revise'].filter(
+      (stage) => !skillText(stage).includes('git -C <дерево> merge origin/main'),
+    );
+    expect(guilty.map((stage) => `${stage}.md: git -C <дерево> merge origin/main`)).toEqual([]);
+  });
+
+  it('выкладка проверяет закреплённый снимок без слияния исторической ветки', () => {
+    const text = skillText('deploy');
+    const marks = [
+      'git -C <дерево> rev-parse HEAD',
+      'git -C <дерево> diff --stat <deploymentRevision> HEAD',
+      'замер меряет дерево, а не ревизию',
+      'файлы сборки всегда берутся из дерева',
+      'pnpm install --frozen-lockfile',
+    ];
+    expect(marks.filter((mark) => !text.includes(mark))).toEqual([]);
+    expect(text).not.toContain('git -C <дерево> merge origin/main');
+    expect(text).not.toContain('git -C <дерево> merge --ff-only origin/main');
+  });
+
+  it('этапы с собственным коммитом в следе называют цену коммита слияния', () => {
+    // Отчёт `done` без следа приёмка отменяет, а следом проработке,
+    // имплементации и доработке объявлен коммит в ветке. Коммит слияния —
+    // тоже коммит: этап, не сделавший ничего сверх освежения базы, предъявил
+    // бы его и прошёл приёмку, ничего не сделав. По одному лишь наличию
+    // коммита это не проверяется, поэтому мерка называется словами — там,
+    // где сессия читает про освежение.
+    //
+    // Мерка — подстрока, которую нельзя выполнить случайно: пересказ вроде
+    // «слияние следом не считай» её не даст, а дословная фраза стоит ровно
+    // в том абзаце, ради которого заведена.
+    //
+    // Перечень закрыт тремя этапами по существу, а не по недосмотру, —
+    // и дописывать в него четвёртого «для единообразия» не надо:
+    //
+    // - `audit` базу освежает, но следом ему объявлена ветка без хвоста,
+    //   а не коммит. Отчёт `done` проходит там приёмку и вовсе без единого
+    //   коммита, значит коммит слияния дыры не открывает;
+    // - `deploy` освежает базу своим порядком и своей формой, но следа ему
+    //   не положено вовсе — предъявлять коммит слияния как след некуда.
+    const guilty = ['design', 'implement', 'revise'].filter(
+      (stage) => !skillText(stage).includes('Коммит слияния следом этапа не считается'),
+    );
+    expect(guilty.map((stage) => `${stage}.md: Коммит слияния следом этапа не считается`)).toEqual(
+      [],
+    );
+  });
+
+  it('ревью главную ветку в дерево не подтягивает', () => {
+    // Обратный сторож нужен наравне с прямым, и по совсем другой причине.
+    // Пропажа прямого правила видна хотя бы конфликтом у ревью; пропажа
+    // запрета не проявляется ничем: подтянувшее ревью выглядит работающим
+    // до того дня, когда влитый им непроверенный коммит уронит главную
+    // ветку.
+    //
+    // Вердикт ревью стоит на зелени, снятой у вершины ветки. Слияние делает
+    // новую вершину, которую не проверял никто, и вливание пошло бы на ней —
+    // снялся бы первый из трёх предохранителей, в обмен на которые конвейеру
+    // отдано право вливать без человека.
+    //
+    // Мерка — та же строка слияния, что и у прямого сторожа, но с обратным
+    // знаком. Расчёт `merge-tree` шага 4 под неё не попадает: там другая
+    // подкоманда, и дерева она не трогает вовсе — ровно поэтому ревью
+    // и получает свежесть главной ею, а не слиянием.
+    const text = skillText('review');
+    expect(text.includes('git -C <дерево> merge origin/main'), 'review.md: строка слияния').toBe(
+      false,
+    );
+    // Запрет обязан стоять словами, а не держаться на отсутствии строки:
+    // молчание правил исполнитель вправе прочесть как разрешение, а правка
+    // «за компанию» — привести ревью к виду четырёх освежающих этапов.
+    expect(
+      text.includes('Подтягивать главную ветку в дерево'),
+      'review.md: запрет не назван словами',
+    ).toBe(true);
+  });
+
+  it('ответ о поведении openspec archive назван с версией и датой пробы', () => {
+    // Утверждение о поведении СТОРОННЕГО инструмента живёт ровно до его
+    // обновления, и без версии читатель не знает, к чему ответ относится:
+    // «команда срабатывает» верно для 1.6.0 и неизвестно для 2.0.0.
+    // Сторож проверяет поэтому не текст ответа, а обязанность называть
+    // рядом с ним версию и дату — сам ответ волен меняться с каждой пробой.
+    //
+    // Заодно ловится возврат прежней оговорки «проба не ставилась»:
+    // она правдива только до пробы, а после неё превращается в ложь,
+    // которую читатель обнаружит в тот единственный миг, когда архивация
+    // ему нужна. Поставить пробу заново дешевле, чем убрать эту ложь.
+    //
+    // Окно — две тысячи знаков после первого упоминания ключа: ответ обязан
+    // стоять рядом с ним, а не в другом конце файла, где его никто не свяжет
+    // с командой. Размер выбран так, чтобы окно кончалось раньше ближайшей
+    // посторонней даты в обоих файлах (в скилле она в полутора тысячах
+    // знаков дальше, в памятке — вдвое дальше): иначе сторож зеленел бы
+    // на чужой дате, приняв её за дату пробы.
+    const near = (text) => {
+      const at = text.indexOf('--skip-specs');
+      return at < 0 ? null : text.slice(at, at + 2000);
+    };
+    // Памятка проекта лежит вне каталога инструмента и читается прямо,
+    // без проверки на существование. Проверка эта была бы вредна: не найдя
+    // файла, сторож молча ужался бы до одного источника и остался зелёным —
+    // ровно тем декоративным тестом, против которого заведена задача 0021.
+    // Пусть уж падает чтением: ответ обязан стоять в обоих местах,
+    // и расхождение двух записей хуже отсутствия одной.
+    const claudeMd = fileURLToPath(new URL('../../CLAUDE.md', import.meta.url));
+    const sources = [
+      ['скилл проработки', skillText('design')],
+      ['памятка проекта', readFileSync(claudeMd, 'utf8')],
+    ];
+
+    // Версию от даты отличает соседство с именем инструмента, а не форма
+    // числа. Шаблону «цифры через точки» удовлетворяет и сама дата пробы
+    // «03.09.2026», поэтому сторож, спрашивающий одну лишь форму, зеленел бы
+    // на тексте, из которого версию убрали, а дату оставили, — то есть ровно
+    // в том случае, ради которого заведён. Проверено порчей 04.09.2026:
+    // с «1.6.0», убранным из скилла, падает именно эта проверка, а соседняя
+    // проверка даты остаётся зелёной.
+    const version = /OpenSpec\s+\d+\.\d+\.\d+/;
+
+    for (const [name, text] of sources) {
+      const window = near(text);
+      expect(window, `${name}: ключ --skip-specs не упомянут вовсе`).not.toBeNull();
+      expect(window, `${name}: рядом с --skip-specs нет версии OpenSpec`).toMatch(version);
+      expect(window, `${name}: рядом с --skip-specs нет даты пробы`).toMatch(/\d{2}\.\d{2}\.\d{4}/);
+      expect(window, `${name}: вернулась оговорка о непоставленной пробе`).not.toContain(
+        'не ставилась',
+      );
+    }
+  });
+
+  it('сторож формулы падает на прежней её редакции', () => {
+    // Сторож, который зеленеет на чём угодно, — не сторож. Прежняя формула
+    // объявляла след имплементации одним лишь коммитом; проверяем, что она
+    // не прошла бы.
+    const previous = [
+      'След объявлен поимённо:',
+      'проработке, имплементации и доработке — коммит в ветке без хвоста;',
+      'аудиту и ревью — ветка без хвоста; замеру — новый номер прогона;',
+      '',
+      'Поля:',
+    ].join('\n');
+    expect(traceFormula(previous)).not.toBeNull();
+    expect(traceFormula(previous)).not.toContain('pull request');
+  });
+
+  it('скилл проработки называет форму команд, годную для списка задач', () => {
+    // Команда, выписанная в `tasks.md` голой, достаётся этапу, которому
+    // голая приставка недоступна: `git merge` не покрыт ни одним правилом,
+    // а склеивать `cd` с командой исполнителю запрещено. Отказ прилетает
+    // не человеку, а сессии — и та идёт дальше, считая шаг сделанным.
+    // Живой случай был один: шаг 2 изменения point-the-form-note-at-a-live-rule.
+    //
+    // Сверяются две подстроки, и обе взяты из самого пункта: форма, которую
+    // сессия перепишет буквально, и оговорка о том, где живёт перечень
+    // покрытого, — без неё правило вырождается в «пиши как-нибудь иначе».
+    // Путь `supervisor/config/stage-settings.json` для сверки НЕ годится:
+    // он стоит в этом же файле по другому поводу — в пункте про заявку
+    // с `area: "pipeline"`, — и сторож зеленел бы, даже если весь новый
+    // пункт из скилла убрать.
+    const text = skillText('design');
+    const missing = ['git -C <дерево>', 'Перечень покрытого живёт'].filter(
+      (mark) => !text.includes(mark),
+    );
+    expect(missing.map((mark) => `design.md: ${mark}`)).toEqual([]);
+  });
+
+  it('каждый скилл называет строку кода в доводе и её замену', () => {
+    // Строку кода в доводе режет разбор разрешений сам по себе, без единого
+    // из четырёх знаков, которые правила перечисляли прежде: проба 04.09.2026
+    // отказала даже `node -e "1"`. Сессия читала перечень, своего случая
+    // в нём не находила и уверенно набирала команду, которая не выполнялась;
+    // на ревью задачи 0173 так пропало пять попыток подряд, после чего
+    // выражение разобрали в уме — ровно то, ради ухода от чего правила
+    // и требуют пробы.
+    //
+    // Правило живёт десятью копиями, и разъехаться им ничего не мешает:
+    // правка одного файла остальные девять не задевает. Названного в одном
+    // скилле правила для прочих не существует вовсе — этап читает свой файл,
+    // а не соседний.
+    //
+    // Мерка по существу, а не по фразе целиком: дословная сверка запретила бы
+    // редактировать абзац, не переписав тест, — и однажды тест перепишут
+    // не глядя. Подстроки три, по одной на каждую половину правила: признак
+    // строки кода, второй предохранитель и покрытая форма замены.
+    const guilty = [];
+    for (const stage of NEEDS_SESSION) {
+      const text = skillText(stage);
+      for (const mark of [
+        'node --eval',
+        'два разделителя пути подряд',
+        'node .matchlog/<имя>.mjs',
+      ]) {
+        if (!text.includes(mark)) guilty.push(`${stage}.md: ${mark}`);
+      }
+    }
+    expect(guilty).toEqual([]);
+  });
+
+  it('ложного довода о составной команде не осталось ни в одном скилле', () => {
+    // Довод «составную команду не покрывает никакое правило разрешений»
+    // опровергается одной командой: конвейер
+    // `git status --porcelain | Select-Object -First 1` проходит. Правило,
+    // опирающееся на опровержимый довод, теряет силу вместе с ним — а само
+    // правило «одна команда — один вызов» верно и нужно.
+    //
+    // Ищется СЕМЬЯ формулировок, а не подстрока. Дословная мерка
+    // «не покрывает никакое правило» находила девять мест из двадцати
+    // и создавала впечатление полноты: у одного и того же довода восемь
+    // записей, и расхождение в одно слово («не покрывает ЗАРАНЕЕ никакое
+    // правило» в benchmark.md) делает поиск слепым ровно там, где ложь
+    // и осталась бы.
+    //
+    // Текст нормализуется по пробелам: без этого перенос строки посреди
+    // фразы прячет её от любого выражения. Основы слов кончаются классом
+    // кириллицы, а не `\w`: в JavaScript `\w` — это `[A-Za-z0-9_]`,
+    // и `покрыва\w+` не ловит по-русски ничего вовсе.
+    const guilty = [];
+    for (const stage of NEEDS_SESSION) {
+      const text = skillText(stage).replace(/\s+/g, ' ');
+      const found = text.match(FALSE_GROUND);
+      if (found) guilty.push(`${stage}.md: ${found[0]}`);
+    }
+    expect(guilty).toEqual([]);
+  });
+
+  it('мерка ложного довода ловит все свои контрольные образцы', () => {
+    // Проверка на ОТСУТСТВИЕ сходится и при сломанной мерке: пустой ответ
+    // у неё тот же, что у мерки исправной, и отличить одно от другого
+    // по цвету сторожа нельзя. Первая редакция этого изменения именно так
+    // и вышла — выражение с `\w` не ловило по-русски ничего, и сторож при нём
+    // был бы зелёным навсегда, при живом доводе во всех десяти файлах.
+    //
+    // Образцов восемь, по одному на каждую живую формулировку, снятую
+    // прогоном 04.09.2026. Считаются они по совпадению целиком, а не
+    // по хвосту: при счёте по хвосту образцы 3 и 6 слились бы в один,
+    // и формулировка benchmark.md осталась бы без своего образца.
+    const samples = [
+      'составную не разрешить заранее никаким правилом',
+      'составную команду не покрывает никакое правило',
+      'составную не покрывает заранее никакое правило',
+      'составную не разрешает заранее никакое правило',
+      'конвейер из `Get-ChildItem` не покрыт никаким правилом',
+      'составным, а составную команду не покрывает заранее никакое правило',
+      'составную заранее не разрешает никакое правило',
+      'составную не разрешает никакое правило',
+    ];
+    // Щадимые — новые доводы, которыми ложный заменён, и верное утверждение
+    // benchmark.md о конкретном правиле `gh run:*`. Поймай мерка хоть один
+    // из них, правка этого же изменения её бы и покрасила.
+    const spared = [
+      'у составной команды их несколько, и хватает одного непокрытого',
+      'а разбор требует, чтобы открыто было каждое действие строки: `Get-ChildItem` не открыт ни одним правилом даже сам по себе',
+      'подстановка исполняет вложенную команду, разбор считает её отдельным действием и требует, чтобы открыто было и оно',
+      '`Get-ChildItem` не открыт ни одним правилом разрешений — ни сам по себе, ни первым звеном цепочки',
+      'цикл составной, приставок у него несколько, и `gh run:*` его не покрывает',
+    ];
+    expect(samples.filter((sample) => !FALSE_GROUND.test(sample))).toEqual([]);
+    expect(spared.filter((sample) => FALSE_GROUND.test(sample))).toEqual([]);
+  });
+
+  it('скилл проработки запрещает шаг ожидания зелёного CI', () => {
+    // Пункт «дождаться зелёного CI» неисполним по устройству, и потому его
+    // не заводят вовсе. Караулить проверки исполнителю запрещено (шаг 9
+    // implement.md), а отметить пункт честно нельзя: отметка — новый коммит,
+    // перезапускающий те самые проверки, чью зелень она фиксирует. Открытый
+    // же пункт делает исход `done` («все пункты tasks.md сделаны»)
+    // недостижимым по букве, и изменение доходит до вливания с недоделкой,
+    // которой на деле нет.
+    //
+    // Подстроки две, и вторая не для красоты: правило, ужатое до голого
+    // запрета без причины, переписывают обратно первым же, кто сочтёт его
+    // перестраховкой. Обе взяты из самого пункта и в файле больше нигде
+    // не встречаются.
+    const text = skillText('design');
+    const missing = ['шага ожидания зелёного CI', 'опрашивает проверки сам'].filter(
+      (mark) => !text.includes(mark),
+    );
+    expect(missing.map((mark) => `design.md: ${mark}`)).toEqual([]);
+  });
+
+  it('скилл ревью прощает открытый пункт ожидания CI', () => {
+    // Запрет в скилле проработки задним числом не действует, а пункт стоит
+    // в десяти уже написанных списках задач, и часть их лежит в состояниях
+    // `pr` и `deploy` прямо сейчас. Без оговорки ревьюер отличал бы недоделку
+    // от неисполнимого пункта собственным нигде не записанным рассуждением.
+    //
+    // Проверка отдельная от сторожа скилла проработки нарочно: по красному
+    // прогону должно быть видно, чьё именно правило вычистили.
+    const text = skillText('review');
+    expect(text.includes('недоделкой не считается'), 'review.md: недоделкой не считается').toBe(
+      true,
+    );
+  });
+});
+
+describe('связность таблицы', () => {
+  it('у каждого состояния объявлена цена', () => {
+    const priced = STATES.filter((status) => stateClass({ status, run: { kind: 'arena' } }));
+    expect(priced).toHaveLength(STATES.length);
+  });
+
+  it('все состояния маршрутов существуют', () => {
+    for (const [type, route] of Object.entries(ROUTES)) {
+      for (const [from, targets] of Object.entries(route)) {
+        expect(STATES, `${type}: ${from}`).toContain(from);
+        for (const to of targets) expect(STATES, `${type}: ${from} → ${to}`).toContain(to);
+      }
+    }
+  });
+
+  it('дерево нужно только тем состояниям, что правят код', () => {
+    expect(NEEDS_WORKTREE).not.toContain('benchmark');
+    expect(NEEDS_WORKTREE).not.toContain('triage');
+    // Разбор читает журнал, лог и правила конвейера — писать ему некуда
+    // и незачем. Дерево упавшей задачи он тоже не трогает: оно сохранено
+    // для человека.
+    expect(NEEDS_WORKTREE).not.toContain('postmortem');
+    // Уборка сносит дерево снаружи — из основного дерева, по пути из записи
+    // реестра, — и собственного дерева ей не нужно. Сессии ей не выдают вовсе.
+    expect(NEEDS_WORKTREE).not.toContain('cleanup');
+    expect(NEEDS_WORKTREE).toContain('implement');
+  });
+});
