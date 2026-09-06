@@ -8,6 +8,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   existsSync,
+  closeSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -254,6 +255,18 @@ function readLock() {
 function writeLock(lock) {
   ensureLocal();
   writeFileSync(lockPath(), JSON.stringify(lock, null, 2));
+}
+
+function claimLock(lock) {
+  ensureLocal();
+  try {
+    const descriptor = openSync(lockPath(), 'wx');
+    writeFileSync(descriptor, JSON.stringify(lock, null, 2));
+    closeSync(descriptor);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function releaseLock() {
@@ -981,7 +994,12 @@ if (!verdict.take) {
 } else {
   // Отметка передачи читается ДО записи своего замка: своя запись её стирает.
   const handedFrom = readLock()?.handedFrom ?? null;
-  writeLock(newLock(process.pid, startedAt));
-  if (handedFrom) note(`замок получен от процесса ${handedFrom}: продолжаю на новом коде`, null);
-  await loop();
+  if (existsSync(lockPath()) && readLock()?.pid !== process.pid) rmSync(lockPath());
+  if (!claimLock(newLock(process.pid, startedAt))) {
+    console.log('СУПЕРВИЗОР УЖЕ РАБОТАЕТ: замок занят при атомарном захвате');
+    process.exitCode = 0;
+  } else {
+    if (handedFrom) note(`замок получен от процесса ${handedFrom}: продолжаю на новом коде`, null);
+    await loop();
+  }
 }

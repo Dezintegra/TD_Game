@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -65,5 +66,26 @@ describe('recovery CLI', () => {
     const { root, sessions } = fixture();
     writeFileSync(join(root, '.pipeline', 'supervisor.lock'), JSON.stringify({ pid: process.pid }));
     expect(() => recover({ root, sessionsRoot: sessions, apply: true })).toThrow('живой процесс');
+  });
+
+  it('принимает flat ledger и main-root cwd, а entrypoint исполняется', () => {
+    const { root, sessions } = fixture();
+    const path = join(root, '.pipeline', 'codex-usage.json');
+    const json = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(path, JSON.stringify({ '0231-example': { [id]: 1585645 } }));
+    const session = join(sessions, `rollout-${id}.jsonl`);
+    writeFileSync(
+      session,
+      readFileSync(session, 'utf8').replace(
+        json.tasks['0231-example'] ? join(root, '.claude', 'worktrees', '0231-example') : '',
+        root,
+      ),
+    );
+    expect(recover({ root, sessionsRoot: sessions }).proposed).toHaveLength(1);
+    const run = spawnSync(process.execPath, ['supervisor/bin/recover-codex-ledger.mjs', '--help'], {
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('Usage:');
   });
 });

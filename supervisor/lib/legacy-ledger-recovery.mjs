@@ -20,7 +20,7 @@ const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
  * Разобрать один JSONL сеанса. Имя файла намеренно не участвует в доверии:
  * перенос или копия не должны превращаться в доказательство принадлежности.
  */
-export function sessionEvidence(text, { sessionId, cwd }) {
+export function sessionEvidence(text, { sessionId, cwd, projectRoot = null }) {
   const fail = (reason) => ({ ok: false, reason });
   const lines = String(text).split(/\r?\n/).filter(Boolean);
   const events = [];
@@ -36,20 +36,39 @@ export function sessionEvidence(text, { sessionId, cwd }) {
   const meta = metas[0].payload;
   if (!object(meta) || meta.id !== sessionId || meta.session_id !== sessionId)
     return fail('session_meta не совпадает с искомой сессией');
-  if (!cwd || pathKey(meta.cwd) !== pathKey(cwd)) return fail('cwd сессии не совпадает с задачей');
+  const actualCwd = pathKey(meta.cwd);
+  const expectedCwd = pathKey(cwd);
+  const root = pathKey(projectRoot).replace(/\/$/, '');
+  if (
+    !cwd ||
+    (actualCwd !== expectedCwd && !(root && (actualCwd === root || actualCwd.startsWith(`${root}/`))))
+  )
+    return fail('cwd сессии не совпадает с задачей');
 
-  const started = new Set();
-  const completed = new Set();
+  const turns = new Map();
+  let activeTurn = null;
   const records = new Map();
   const legacy = [];
   for (const event of events) {
     const payload = event?.payload;
     if (event?.type !== 'event_msg' && event?.type !== 'token_usage_record') continue;
-    if (payload?.type === 'task_started' && typeof payload.turn_id === 'string')
-      started.add(payload.turn_id);
-    if (payload?.type === 'task_complete' && typeof payload.turn_id === 'string')
-      completed.add(payload.turn_id);
+    if (payload?.type === 'task_started') {
+      if (typeof payload.turn_id !== 'string' || !payload.turn_id || activeTurn)
+        return fail('незавершённый turn');
+      if (turns.has(payload.turn_id)) return fail('turn запущен повторно');
+      turns.set(payload.turn_id, 'active');
+      activeTurn = payload.turn_id;
+      continue;
+    }
+    if (payload?.type === 'task_complete') {
+      if (payload.turn_id !== activeTurn || turns.get(payload.turn_id) !== 'active')
+        return fail('task_complete без активного task_started');
+      turns.set(payload.turn_id, 'completed');
+      activeTurn = null;
+      continue;
+    }
     if (event.type === 'event_msg' && payload?.type === 'token_count') {
+      if (!activeTurn) return fail('token_count вне активного turn');
       const snapshot = usage(payload.info?.total_token_usage);
       if (!snapshot) return fail('некорректный legacy token_count');
       legacy.push(snapshot);
@@ -71,23 +90,33 @@ export function sessionEvidence(text, { sessionId, cwd }) {
       thread: usage(payload.thread_token_usage),
     };
     if (!item.usage || !item.thread) return fail('некорректные числа token_usage_record');
+    if (item.turnId !== activeTurn) return fail('record вне активного turn');
     const previous = records.get(item.responseId);
     if (previous && !same(previous, item)) return fail('конфликтующий response_id');
     if (!previous) records.set(item.responseId, item);
   }
-  if (!started.size || ![...started].every((turn) => completed.has(turn)))
+  if (!turns.size || activeTurn || [...turns.values()].some((state) => state !== 'completed'))
     return fail('незавершённый turn');
 
   if (records.size) {
-    let summed = 0;
-    let previous = 0;
+    let input = 0;
+    let output = 0;
+    let previousInput = 0;
+    let previousOutput = 0;
     for (const record of records.values()) {
-      if (!started.has(record.turnId)) return fail('record без task_started');
-      summed += total(record.usage);
-      const cumulative = total(record.thread);
-      if (!Number.isSafeInteger(summed) || cumulative < previous || cumulative !== summed)
+      input += record.usage.input_tokens;
+      output += record.usage.output_tokens;
+      if (
+        !Number.isSafeInteger(input) ||
+        !Number.isSafeInteger(output) ||
+        record.thread.input_tokens < previousInput ||
+        record.thread.output_tokens < previousOutput ||
+        record.thread.input_tokens !== input ||
+        record.thread.output_tokens !== output
+      )
         return fail('непрерывность thread_token_usage не доказана');
-      previous = cumulative;
+      previousInput = record.thread.input_tokens;
+      previousOutput = record.thread.output_tokens;
     }
     return {
       ok: true,
@@ -97,7 +126,10 @@ export function sessionEvidence(text, { sessionId, cwd }) {
   }
   if (!legacy.length) return fail('нет usage evidence');
   for (let index = 1; index < legacy.length; index += 1)
-    if (total(legacy[index]) < total(legacy[index - 1]))
+    if (
+      legacy[index].input_tokens < legacy[index - 1].input_tokens ||
+      legacy[index].output_tokens < legacy[index - 1].output_tokens
+    )
       return fail('legacy token_count уменьшился');
   return { ok: true, source: 'legacy-token_count', snapshot: legacy.at(-1) };
 }

@@ -102,4 +102,17 @@ describe('доказательство legacy ledger', () => {
       .replace('total_tokens":6', 'total_tokens":4');
     expect(sessionEvidence(reset, { sessionId: id, cwd })).toMatchObject({ ok: true });
   });
+
+  it('не маскирует падение компонента суммарным ростом и соблюдает границы turn', () => {
+    const changed = trace([record('one', 10, 10), record('two', 10, 20)]).replace(
+      '"input_tokens":20,"output_tokens":0',
+      '"input_tokens":30,"output_tokens":-10',
+    );
+    expect(sessionEvidence(changed, { sessionId: id, cwd }).ok).toBe(false);
+    const afterComplete = trace([]).replace(
+      event({ type: 'task_complete', turn_id: 'turn-1' }),
+      event({ type: 'task_complete', turn_id: 'turn-1' }) + '\n' + record('late', 1, 1),
+    );
+    expect(sessionEvidence(afterComplete, { sessionId: id, cwd }).reason).toContain('активного');
+  });
 });

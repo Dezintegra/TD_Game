@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import {
   copyFileSync,
+  closeSync,
   existsSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
+  openSync,
   writeFileSync,
 } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { recoveryPlan, sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
 import { migrateTokenLedger } from '../lib/token-budget.mjs';
 
@@ -56,6 +60,26 @@ function lockStatus(path) {
   }
 }
 
+function claimRecoveryLock(path) {
+  const status = lockStatus(path);
+  if (!status.safe) throw new Error(`apply отклонён: ${status.reason}`);
+  if (existsSync(path)) rmSync(path);
+  const lock = {
+    pid: process.pid,
+    takenAt: new Date().toISOString(),
+    refreshedAt: new Date().toISOString(),
+    recovery: true,
+  };
+  try {
+    const descriptor = openSync(path, 'wx');
+    writeFileSync(descriptor, JSON.stringify(lock, null, 2));
+    closeSync(descriptor);
+    return JSON.stringify(lock, null, 2);
+  } catch (error) {
+    throw new Error(`apply отклонён: замок перехвачен (${error.code ?? error.message})`);
+  }
+}
+
 function cwdFor(root, registry, taskId) {
   const entries =
     registry.entries?.filter(
@@ -64,10 +88,11 @@ function cwdFor(root, registry, taskId) {
   const paths = entries.map((entry) => resolve(root, entry.path));
   // Обычная форма дерева известна из taskId, но имя JSONL доказательством не служит.
   paths.push(resolve(root, '.claude', 'worktrees', taskId));
+  paths.push(resolve(root));
   return [...new Set(paths)];
 }
 
-function evidenceFor({ sessionId, cwd, sessionsRoot }) {
+function evidenceFor({ sessionId, cwd, sessionsRoot, root }) {
   const suffix = `${sessionId}.jsonl`;
   const paths = filesBelow(sessionsRoot).filter((path) => path.endsWith(suffix));
   if (paths.length !== 1)
@@ -81,12 +106,19 @@ function evidenceFor({ sessionId, cwd, sessionsRoot }) {
   } catch {
     return { ok: false, reason: 'файл сессии не читается' };
   }
-  const results = cwd
-    .map((item) => sessionEvidence(text, { sessionId, cwd: item }))
-    .filter((item) => item.ok);
-  return results.length === 1
-    ? results[0]
-    : { ok: false, reason: results[0]?.reason ?? 'сессия не доказана для дерева задачи' };
+  const attempts = cwd.map((item) => sessionEvidence(text, { sessionId, cwd: item }));
+  const matching = attempts.filter((item) => item.ok);
+  if (matching.length === 1) return matching[0];
+  // Исторические deploy/decompose запуски жили под корнем этого же проекта.
+  // Граница проекта остаётся строгой и UUID из ledger уже связывает задачу с сессией.
+  const insideProject = sessionEvidence(text, { sessionId, cwd: root, projectRoot: root });
+  if (insideProject.ok) return insideProject;
+  return {
+    ok: false,
+    reason:
+      attempts.find((item) => item.reason !== 'cwd сессии не совпадает с задачей')?.reason ??
+      insideProject.reason,
+  };
 }
 
 export function recover({ root, sessionsRoot, apply = false }) {
@@ -109,7 +141,7 @@ export function recover({ root, sessionsRoot, apply = false }) {
       if (task.sessions[sessionId].reasons.includes('legacy-unknown'))
         evidence.set(
           `${taskId}:${sessionId}`,
-          evidenceFor({ sessionId, cwd: cwdFor(root, registry, taskId), sessionsRoot }),
+          evidenceFor({ sessionId, cwd: cwdFor(root, registry, taskId), sessionsRoot, root }),
         );
   const plan = recoveryPlan(ledger, evidence);
   const report = {
@@ -119,19 +151,25 @@ export function recover({ root, sessionsRoot, apply = false }) {
     applied: false,
   };
   if (!apply || !plan.proposed.length) return report;
-  const lock = lockStatus(join(root, '.pipeline', 'supervisor.lock'));
-  if (!lock.safe) throw new Error(`apply отклонён: ${lock.reason}`);
-  if (readFileSync(ledgerPath, 'utf8') !== original)
-    throw new Error('apply отклонён: реестр изменился после dry-run (optimistic concurrency)');
-  const backup = `${ledgerPath}.bak-${new Date().toISOString().replaceAll(':', '-')}`;
-  copyFileSync(ledgerPath, backup);
-  const temporary = `${ledgerPath}.tmp-${process.pid}`;
-  writeFileSync(temporary, JSON.stringify(plan.ledger, null, 2));
-  renameSync(temporary, ledgerPath);
-  return { ...report, applied: true, backup };
+  const lockPath = join(root, '.pipeline', 'supervisor.lock');
+  const claimed = claimRecoveryLock(lockPath);
+  try {
+    if (readFileSync(ledgerPath, 'utf8') !== original)
+      throw new Error('apply отклонён: реестр изменился после dry-run (optimistic concurrency)');
+    const backup = `${ledgerPath}.bak-${new Date().toISOString().replaceAll(':', '-')}`;
+    copyFileSync(ledgerPath, backup);
+    const temporary = `${ledgerPath}.tmp-${process.pid}`;
+    writeFileSync(temporary, JSON.stringify(plan.ledger, null, 2));
+    if (readFileSync(ledgerPath, 'utf8') !== original)
+      throw new Error('apply отклонён: реестр изменился перед atomic replace');
+    renameSync(temporary, ledgerPath);
+    return { ...report, applied: true, backup };
+  } finally {
+    if (existsSync(lockPath) && readFileSync(lockPath, 'utf8') === claimed) rmSync(lockPath);
+  }
 }
 
-if (import.meta.url === `file:///${process.argv[1]?.replaceAll('\\', '/')}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   if (process.argv.includes('--help')) {
     console.log(usage());
     process.exit(0);
