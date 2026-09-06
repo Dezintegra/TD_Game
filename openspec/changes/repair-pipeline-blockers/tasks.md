@@ -15,4 +15,4 @@
 
 ## 4. Runtime Codex evidence adapter
 
-- [ ] 4.1 Connect createSupervisor to an injected host reader of attributable completed-session JSONL evidence and persist only its durable cumulative snapshot after child completion.
+- [x] 4.1 Connect createSupervisor to an injected host reader of attributable completed-session JSONL evidence and persist only its durable cumulative snapshot after child completion.

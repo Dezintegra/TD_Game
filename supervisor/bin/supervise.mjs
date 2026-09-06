@@ -12,11 +12,12 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -46,6 +47,7 @@ import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
+import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
 import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -406,6 +408,14 @@ async function openBacklog({ mayWrite }) {
 
 let codexEnvironment;
 let codexReady = false;
+function sessionFiles(dir, suffix) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return sessionFiles(path, suffix);
+    return entry.isFile() && path.endsWith(suffix) ? [path] : [];
+  });
+}
 const supervisor = createSupervisor({
   getCodexEnvironment: () => codexEnvironment,
   prepareAssignment: (assignment, previous) => {
@@ -416,6 +426,21 @@ const supervisor = createSupervisor({
   },
   config,
   root,
+  readCodexEvidence: (child) => {
+    if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
+    const paths = sessionFiles(join(homedir(), '.codex', 'sessions'), `${child.sessionId}.jsonl`);
+    if (paths.length !== 1) return { ok: false, reason: 'ambiguous-session-evidence' };
+    try {
+      return sessionEvidence(readFileSync(paths[0], 'utf8'), {
+        sessionId: child.sessionId,
+        cwd: child.path ? resolve(root, child.path) : root,
+        projectRoot: root,
+        after: child.startedAt,
+      });
+    } catch {
+      return { ok: false, reason: 'malformed-session-evidence' };
+    }
+  },
   home,
   spawn,
   killTree: createKillTree((program, args) => runCommand(args, program)),

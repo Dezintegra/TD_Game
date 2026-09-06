@@ -84,6 +84,7 @@ function harness(over = {}) {
     saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
     stages: over.stages ?? {},
     codexUsage: over.codexUsage ?? {},
+    readCodexEvidence: over.readCodexEvidence,
     saveCodexUsage: over.saveCodexUsage,
     onPolicyBlocked: over.onPolicyBlocked,
     getCodexEnvironment: over.getCodexEnvironment,
@@ -118,6 +119,25 @@ function harness(over = {}) {
 
 /** Строка итога этапа из всего, что рассказчик напечатал. */
 const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
+
+it('дочерний Codex учитывает только подключённый durable cumulative snapshot', async () => {
+  const h = harness({
+    config: { provider: 'codex' },
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    readCodexEvidence: () => ({
+      ok: true,
+      snapshot: { input_tokens: 2003546, output_tokens: 3788, cached_input_tokens: 1788288 },
+    }),
+  });
+  h.supervisor.spawnStage(assignment());
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({ type: 'thread.started', thread_id: 'thread' }) + '\n',
+  );
+  await h.answer({ type: 'turn.completed', usage: { input_tokens: 421089, output_tokens: 600 } });
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.knownTokens).toBe(2007334);
+  expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(true);
+});
 
 const assignment = (over = {}) => ({
   taskId: '0001-one',

@@ -33,6 +33,7 @@ import { codexGitEnvironment } from './codex-environment.mjs';
 export function createSupervisor({
   config,
   root,
+  readCodexEvidence = null,
   /** Каталог самого инструмента. От него считаются его собственные пути. */
   home = root,
   spawn,
@@ -314,6 +315,7 @@ export function createSupervisor({
       const child = {
         taskId: assignment.taskId,
         stage: assignment.stage,
+        path: assignment.path,
         sessionId,
         launchId: provider === 'codex' ? randomUUID() : null,
         usageOrdinal: 0,
@@ -525,7 +527,7 @@ export function createSupervisor({
           persistUsage(child.taskId, (next) => {
             if (event.type === 'thread.started')
               bindTokenSession(next, child.taskId, child.launchId, event.thread_id);
-            else
+            else if (!readCodexEvidence)
               observeTokenUsage(
                 next,
                 child.taskId,
@@ -843,11 +845,34 @@ export function createSupervisor({
             ledger: codexUsage,
             taskId: child.taskId,
             launchId: child.launchId,
+            deferUsage: Boolean(readCodexEvidence),
           })
         : readAnswer(run);
     if (providerOf(config) === 'codex') {
       persistUsage(child.taskId, (next) => {
-        next.tasks[child.taskId] = answer.usageLedger.tasks[child.taskId];
+        if (!readCodexEvidence) {
+          next.tasks[child.taskId] = answer.usageLedger.tasks[child.taskId];
+          return;
+        }
+        const evidence = readCodexEvidence(child);
+        beginTokenLaunch(next, child.taskId, child.launchId, child.sessionId);
+        if (child.sessionId) bindTokenSession(next, child.taskId, child.launchId, child.sessionId);
+        const launch = next.tasks[child.taskId].launches[child.launchId];
+        const session = next.tasks[child.taskId].sessions[launch.sessionId];
+        if (evidence?.ok && session) {
+          session.knownTokens = Math.max(
+            session.knownTokens,
+            evidence.snapshot.input_tokens + evidence.snapshot.output_tokens,
+          );
+          session.snapshot = evidence.snapshot;
+          launch.completed = true;
+        } else
+          completeTokenLaunch(
+            next,
+            child.taskId,
+            child.launchId,
+            evidence?.reason ?? 'unreported-tail',
+          );
       });
       usageWriteErrors.delete(child.taskId);
       answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${config.codexMaxTaskTokens ?? 'без лимита'} токенов задачи${answer.usage ? '' : '; расход текущего запуска неизвестен'}`;

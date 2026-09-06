@@ -153,7 +153,8 @@ export function readCodexAnswer(run, config = {}, context = {}) {
     if (event.type === 'turn.completed') {
       terminal = event;
       answer.turns += 1;
-      observeTokenUsage(ledger, taskId, launchId, answer.turns, event.usage);
+      if (!context.deferUsage)
+        observeTokenUsage(ledger, taskId, launchId, answer.turns, event.usage);
     }
     if (event.type === 'turn.failed') {
       terminal = event;

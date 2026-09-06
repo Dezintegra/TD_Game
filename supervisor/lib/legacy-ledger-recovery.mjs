@@ -20,7 +20,7 @@ const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
  * Разобрать один JSONL сеанса. Имя файла намеренно не участвует в доверии:
  * перенос или копия не должны превращаться в доказательство принадлежности.
  */
-export function sessionEvidence(text, { sessionId, cwd, projectRoot = null }) {
+export function sessionEvidence(text, { sessionId, cwd, projectRoot = null, after = null }) {
   const fail = (reason) => ({ ok: false, reason });
   const lines = String(text).split(/\r?\n/).filter(Boolean);
   const events = [];
@@ -41,12 +41,14 @@ export function sessionEvidence(text, { sessionId, cwd, projectRoot = null }) {
   const root = pathKey(projectRoot).replace(/\/$/, '');
   if (
     !cwd ||
-    (actualCwd !== expectedCwd && !(root && (actualCwd === root || actualCwd.startsWith(`${root}/`))))
+    (actualCwd !== expectedCwd &&
+      !(root && (actualCwd === root || actualCwd.startsWith(`${root}/`))))
   )
     return fail('cwd сессии не совпадает с задачей');
 
   const turns = new Map();
   let activeTurn = null;
+  let lastCompleted = null;
   const records = new Map();
   const legacy = [];
   for (const event of events) {
@@ -65,6 +67,7 @@ export function sessionEvidence(text, { sessionId, cwd, projectRoot = null }) {
         return fail('task_complete без активного task_started');
       turns.set(payload.turn_id, 'completed');
       activeTurn = null;
+      lastCompleted = { turnId: payload.turn_id, at: Date.parse(event.timestamp) };
       continue;
     }
     if (event.type === 'event_msg' && payload?.type === 'token_count') {
@@ -97,6 +100,11 @@ export function sessionEvidence(text, { sessionId, cwd, projectRoot = null }) {
   }
   if (!turns.size || activeTurn || [...turns.values()].some((state) => state !== 'completed'))
     return fail('незавершённый turn');
+  if (
+    after != null &&
+    (!lastCompleted || !Number.isFinite(lastCompleted.at) || lastCompleted.at < Date.parse(after))
+  )
+    return fail('stale completed turn');
 
   if (records.size) {
     let input = 0;
@@ -118,6 +126,8 @@ export function sessionEvidence(text, { sessionId, cwd, projectRoot = null }) {
       previousInput = record.thread.input_tokens;
       previousOutput = record.thread.output_tokens;
     }
+    if (after != null && [...records.values()].at(-1).turnId !== lastCompleted.turnId)
+      return fail('evidence не принадлежит текущему turn');
     return {
       ok: true,
       source: 'token_usage_record',
