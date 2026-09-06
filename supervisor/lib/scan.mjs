@@ -163,7 +163,7 @@ export function scan(state) {
 
   notes.push(...duplicateNumbers(tasks));
 
-  if (paused) {
+  if (paused || state.reportStorageBlocked) {
     notes.push('взведён рубильник паузы: конвейер не порождает работы');
     return { actions, notes };
   }
@@ -261,6 +261,7 @@ export function scan(state) {
       taskId: report.taskId,
       stage: report.stage,
       outcome: report.outcome,
+      ...(report.reportId ? { reportId: report.reportId } : {}),
     });
   }
 
@@ -458,7 +459,11 @@ export function scan(state) {
       .map((task) => task.id),
   );
   const engaged = tasks.filter(
-    (task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id) && !tokenHeld.has(task.id),
+    (task) =>
+      NEEDS_SESSION.includes(task.status) &&
+      !held.has(task.id) &&
+      !tokenHeld.has(task.id) &&
+      (!hasReport(task.id) || isRunning(task.id)),
   );
   let busy = engaged.length >= config.maxConcurrent;
 
@@ -690,7 +695,7 @@ export function scan(state) {
 
   // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
   const queue = tasks
-    .filter((task) => task.status === 'new' && !held.has(task.id))
+    .filter((task) => task.status === 'new' && !held.has(task.id) && !hasReport(task.id))
     .sort(byPriorityThenAge);
 
   // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
@@ -739,7 +744,12 @@ export function scan(state) {
   }
 
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
-  return { actions, notes };
+  return {
+    actions: actions.filter(
+      (action) => action.kind === 'transfer-report' || !hasReport(action.taskId),
+    ),
+    notes,
+  };
 }
 
 /** Есть ли вообще работа. Ради этого ответа сканер и запускается 288 раз в сутки. */

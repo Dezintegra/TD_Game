@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { openReportStore } from './report-store.mjs';
+import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import {
   claimSupervisorLock,
   createOwnedSupervisor,
@@ -45,6 +48,27 @@ function claimArgs(state, over = {}) {
 }
 
 describe('startup под общим lock guard', () => {
+  it('не читает очередь до замка и не запускает recovery при повреждении очереди', () => {
+    const f = deliveryFixture();
+    try {
+      const state = world();
+      writeFileSync(f.queuePath, 'corrupt pending report');
+      expect(() =>
+        createOwnedSupervisor({
+          claim: () => claimSupervisorLock(claimArgs(state)),
+          createSupervisor: () => {
+            state.events.push('restore-reports');
+            openReportStore(f.queuePath);
+            state.events.push('recover-orphans');
+          },
+        }),
+      ).toThrow(f.queuePath);
+      expect(state.events).toEqual(['claim-lock', 'restore-reports']);
+      expect(readFileSync(f.queuePath, 'utf8')).toBe('corrupt pending report');
+    } finally {
+      f.cleanup();
+    }
+  });
   it('fresh startup получает lock до чтения текущего runtime ledger', () => {
     const state = world();
     const events = state.events;

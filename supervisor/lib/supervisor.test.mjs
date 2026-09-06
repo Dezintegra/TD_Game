@@ -19,6 +19,7 @@ import { resolveConfig } from '../config/defaults.mjs';
 import { TAG } from './console.mjs';
 import { scan } from './scan.mjs';
 import { parseReport } from './parse-report.mjs';
+import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 
 /**
  * Проверки хозяйства идущих этапов.
@@ -83,8 +84,12 @@ function harness(over = {}) {
     supervisorPid: over.supervisorPid ?? 777,
     now: over.now ?? (() => NOW),
     nowMs: over.nowMs ?? (() => 1_000_000),
-    saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
+    saveStages: (stages) => {
+      over.saveStages?.(stages);
+      saved.push(JSON.parse(JSON.stringify(stages)));
+    },
     stages: over.stages ?? {},
+    reportStore: over.reportStore,
     codexUsage: over.codexUsage ?? {},
     readCodexEvidence: over.readCodexEvidence,
     saveCodexUsage: over.saveCodexUsage,
@@ -386,6 +391,128 @@ const envelope = (over = {}) => ({
   session_id: 'сессия-от-приложения',
   result: JSON.stringify(report),
   ...over,
+});
+
+describe('устойчивая очередь завершений', () => {
+  it('сопоставляет старый дескриптор по полной тройке времени, станции и этапа', () => {
+    const f = deliveryFixture({ stage: 'design' });
+    try {
+      const h = harness({
+        reportStore: f.open().store,
+        machine: 'test',
+        stages: {
+          '0001-task:design': {
+            sessionId: 'old',
+            live: { pid: 900, startedAt: f.now, machine: 'test' },
+          },
+        },
+      });
+      expect(h.supervisor.orphanOutcomes).toEqual([]);
+      expect(h.supervisor.busy()).toBe(0);
+      expect(() =>
+        harness({
+          reportStore: f.open().store,
+          stages: { '0001-task:design': { sessionId: 'old', live: { pid: 900 } } },
+        }),
+      ).toThrow('неоднозначный');
+    } finally {
+      f.cleanup();
+    }
+  });
+  it('сохраняет полный отчёт до снятия live, включая паузу переноса', async () => {
+    const f = deliveryFixture({ stage: 'design' });
+    try {
+      const store = f.open().store;
+      store.acknowledge(f.entry.reportId);
+      const h = harness({
+        reportStore: store,
+        saveStages: (stages) => {
+          if (stages['0001-one:design'] && !stages['0001-one:design'].live)
+            expect(store.entries()).toHaveLength(1);
+        },
+      });
+      h.supervisor.spawnStage(assignment());
+      await h.answer(envelope({ total_cost_usd: 3 }));
+      expect(h.supervisor.reports).toHaveLength(1);
+      expect(f.open().store.entries()[0].report).toMatchObject({ ...report, costUsd: 3 });
+      expect(h.supervisor.running()).toEqual([]);
+      expect(scan({ config, reports: h.supervisor.reports, paused: true }).actions).toEqual([]);
+    } finally {
+      f.cleanup();
+    }
+  });
+  it('удерживает результат и блокирует выдачу до повторной записи', async () => {
+    const f = deliveryFixture();
+    try {
+      const store = f.open().store;
+      store.acknowledge(f.entry.reportId);
+      const accept = store.accept;
+      let broken = true;
+      store.accept = (...args) => {
+        if (broken) throw new Error('disk unavailable');
+        return accept(...args);
+      };
+      const h = harness({ reportStore: store });
+      h.supervisor.spawnStage(assignment());
+      await h.answer(envelope());
+      expect(h.supervisor.reportStorageBlocked).toBe(true);
+      expect(h.saved.at(-1)['0001-one:design'].live).toBeTruthy();
+      expect(h.supervisor.spawnStage(assignment({ taskId: '0002-other' }))).toMatchObject({
+        ok: false,
+        reason: 'busy',
+      });
+      expect(h.logged.join('\n')).toContain('disk unavailable');
+      broken = false;
+      h.supervisor.sweep();
+      expect(h.supervisor.reportStorageBlocked).toBe(false);
+      expect(h.saved.at(-1)['0001-one:design'].live).toBeUndefined();
+      expect(f.open().store.entries()).toHaveLength(1);
+    } finally {
+      f.cleanup();
+    }
+  });
+  it.each(['launch', 'other-launch', null])(
+    'восстанавливает сироту по идентичности запуска %s',
+    (launchId) => {
+      const f = deliveryFixture({ stage: 'design' });
+      try {
+        const store = f.open().store;
+        if (launchId === null) store.acknowledge(f.entry.reportId);
+        const h = harness({
+          reportStore: store,
+          machine: 'test',
+          probe: () => ({ known: true, alive: false }),
+          stages: {
+            '0001-task:design': {
+              sessionId: 'session',
+              live: { launchId: launchId ?? 'absent', pid: 900, startedAt: f.now, machine: 'test' },
+            },
+          },
+        });
+        if (launchId === 'launch') {
+          expect(h.supervisor.orphanOutcomes).toEqual([]);
+          expect(h.saved.at(-1)['0001-task:design'].live).toBeUndefined();
+          expect(store.entries()).toHaveLength(1);
+          expect(h.supervisor.busy()).toBe(0);
+        } else expect(h.supervisor.orphanOutcomes).toHaveLength(1);
+      } finally {
+        f.cleanup();
+      }
+    },
+  );
+  it('не забывает сессию в памяти, если её удаление с диска не удалось', () => {
+    let broken = true;
+    const h = harness({
+      stages: { '0001-one:design': { sessionId: 'kept' } },
+      saveStages: () => {
+        if (broken) throw new Error('disk failure');
+      },
+    });
+    expect(() => h.supervisor.forgetSession('0001-one', 'design')).toThrow('disk failure');
+    expect(h.supervisor.lastSession('0001-one', 'design')).toBe('kept');
+    broken = false;
+    expect(h.supervisor.forgetSession('0001-one', 'design')).toBe(true);
+  });
 });
 
 describe('порождение', () => {

@@ -42,6 +42,7 @@ import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
+import { openReportStore } from '../lib/report-store.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
 import {
   claimSupervisorLock,
@@ -412,6 +413,7 @@ function sessionFiles(dir, suffix) {
 }
 function createRuntimeSupervisor() {
   return createSupervisor({
+    reportStore: openReportStore(local('pending-reports.json')),
     getCodexEnvironment: () => codexEnvironment,
     prepareAssignment: (assignment, previous) => {
       const prepared = prepareDeploySnapshot(root, config, assignment, previous);
@@ -527,6 +529,10 @@ async function turn() {
   // супервизора, мог кончиться минуту назад, и место обязано освободиться
   // этим же оборотом, а не при следующем перезапуске.
   supervisor.sweep();
+  if (supervisor.reportStorageBlocked) {
+    note('Планирование остановлено: отчёт ещё не сохранён на диск.', TAG.error);
+    return 'paused';
+  }
 
   const paused = isPaused(root, config);
   const apiPaused = isApiPaused(root, config);
@@ -575,6 +581,7 @@ async function turn() {
     orphans: supervisor.orphanOutcomes,
     apiFailures: supervisor.apiFailures,
     codexUsage: supervisor.codexUsage,
+    reportStorageBlocked: supervisor.reportStorageBlocked,
     answers: readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.
@@ -612,9 +619,11 @@ async function turn() {
         run: runCommand,
         elapsed,
         reports: supervisor.reports,
+        reportStore: supervisor.reportStore,
       }),
       ...(backlog.store ?? {}),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
+      reportStorageBlocked: () => supervisor.reportStorageBlocked,
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),
       // Исход сироты и его забвение — та же пара, что чтение и снятие отчёта:
@@ -643,7 +652,13 @@ async function turn() {
     // возвращаемое здесь выбрасывалось, провалившаяся `finish-claim`
     // молчала: в журнале каждый оборот стояло «доводим взятие до конца»,
     // и ни разу — «не довели». Так и вышли двое суток простоя 31.08.2026.
-    for (const item of repairWorld(repair.repairs, io)) {
+    const pendingIds = new Set(
+      supervisor.reports.flatMap((report) => [report.taskId, ...(report.batch ?? [])]),
+    );
+    for (const item of repairWorld(
+      repair.repairs.filter((repair) => !pendingIds.has(repair.taskId)),
+      io,
+    )) {
       if (item.result === 'done') continue;
       note(`починка ${item.kind} ${item.taskId ?? ''}: ${item.why}`);
     }
@@ -969,7 +984,7 @@ async function loop() {
       enabled: config.selfUpdate !== false,
       dryRun: flags.includes('--dry-run'),
       running: supervisor.busy(),
-      pending: supervisor.reports.length,
+      pending: supervisor.reports.length + Number(supervisor.reportStorageBlocked),
     });
     if (update.verdict !== 'off' || turns === 1) note(update.notes);
     draining = update.verdict === 'wait';

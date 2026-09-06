@@ -42,6 +42,48 @@ const entry = (taskId, over = {}) => ({
 const run = (state) => scan({ config, ...state });
 const kinds = (result) => result.actions.map((action) => action.kind);
 
+describe('неподтверждённая доставка', () => {
+  it.each(['pr', 'cleanup', 'failed', 'awaiting-po', 'new'])(
+    'не даёт конкурирующих действий участнику в %s',
+    (status) => {
+      const lead = task({ status: 'deploy' });
+      const member = task({
+        id: '0002-member',
+        status,
+        returnTo: 'design',
+        recovery: { causedBy: 'pipeline', fixedBy: [] },
+      });
+      const independent = task({ id: '0003-independent', type: 'note' });
+      const report = {
+        taskId: lead.id,
+        stage: 'deploy',
+        reportId: 'pending',
+        outcome: 'done',
+        batch: [lead.id, member.id],
+      };
+      const result = run({
+        tasks: [lead, member, independent],
+        reports: [report],
+        registry: { entries: [entry(lead.id), entry(member.id)] },
+        answers: { [member.id]: true },
+        orphans: [{ taskId: member.id, stage: 'deploy' }],
+        apiFailures: [{ taskId: member.id, stage: 'deploy' }],
+      });
+      expect(result.actions.filter((action) => action.taskId === member.id)).toEqual([]);
+      expect(result.actions.find((action) => action.taskId === lead.id)).toMatchObject({
+        kind: 'transfer-report',
+        reportId: 'pending',
+      });
+      expect(result.actions.find((action) => action.taskId === independent.id)).toMatchObject({
+        kind: 'start-stage',
+      });
+    },
+  );
+  it('ошибка сохранения блокирует весь сканер', () => {
+    expect(run({ tasks: [task()], reportStorageBlocked: true }).actions).toEqual([]);
+  });
+});
+
 describe('пустая картина', () => {
   it('пустой бэклог не даёт работы', () => {
     const result = run({ tasks: [] });
@@ -1301,8 +1343,8 @@ describe('порядок действий', () => {
       reports: [{ taskId: '0001-one', stage: 'design', outcome: 'done' }],
       tails: { main: 1, branches: {} },
     });
-    // Взятия новой задачи здесь нет и быть не должно: исполнитель занят
-    // задачей 0001, и освободится он не раньше, чем её отчёт перенесут.
+    // Противоречивый снимок всё ещё называет живой процесс: квоту нельзя
+    // освободить только по отчёту, пока живость не снята супервизором.
     expect(kinds(result)).toEqual(['push-tail', 'transfer-report']);
   });
 

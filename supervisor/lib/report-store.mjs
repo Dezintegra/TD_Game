@@ -31,8 +31,7 @@ function validate(value) {
 /** Совпадение этапа не доказывает совпадение запуска после возврата задачи. */
 export function sameReportLaunch(entry, launch) {
   if (entry.taskId !== launch.taskId || entry.stage !== launch.stage) return false;
-  if (entry.launchId || launch.launchId)
-    return Boolean(entry.launchId && entry.launchId === launch.launchId);
+  if (launch.launchId) return Boolean(entry.launchId && entry.launchId === launch.launchId);
   return Boolean(
     entry.startedAt &&
     entry.machine &&

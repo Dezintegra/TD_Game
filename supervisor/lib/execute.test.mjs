@@ -24,6 +24,23 @@ it('досылает журнал передвинутого участника 
   }
 });
 
+it('повторно проверяет очередь до действий из уже устаревшего снимка', async () => {
+  const f = deliveryFixture();
+  try {
+    const opened = f.open();
+    const actions = [{ kind: 'continue-stage', taskId: f.task.id, stage: 'implement' }];
+    const result = await execute(actions, opened.io);
+    expect(result[0]).toMatchObject({ result: 'skipped', why: 'pending report owns this task' });
+    expect(opened.recipient.state().puts).toBe(0);
+    opened.io.reportStorageBlocked = () => true;
+    expect((await execute([{ ...actions[0], taskId: 'other' }], opened.io))[0].result).toBe(
+      'failed',
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
 /**
  * Проверки исполнения решений.
  *

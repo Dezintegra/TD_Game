@@ -57,7 +57,17 @@ const readJson = (path) => {
  * @param {() => number} params.elapsed сколько секунд идёт цикл
  * @param {object[]} [params.reports] отчёты, ожидающие переноса
  */
-export function createIo({ root, config, git, now, machine, run, elapsed, reports = [] }) {
+export function createIo({
+  root,
+  config,
+  git,
+  now,
+  machine,
+  run,
+  elapsed,
+  reports = [],
+  reportStore = null,
+}) {
   const local = (...parts) => join(root, config.paths.local, ...parts);
   const ensure = (dir) => mkdirSync(dir, { recursive: true });
 
@@ -66,6 +76,7 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
   const registryPath = () => local('registry.json');
 
   return {
+    reportStore,
     now,
     machine,
     taskPath,
@@ -491,10 +502,23 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * деревьев из реестра: сессия с деревом физически не могла положить
      * файл в основное. Искать больше негде, и двойников не бывает.
      */
-    readReport: (id, stage) =>
-      reports.find((report) => report.taskId === id && report.stage === stage) ?? null,
+    readReport: (id, stage, reportId) =>
+      reportStore
+        ? (reportStore
+            .entries()
+            .find((entry) =>
+              reportId ? entry.reportId === reportId : entry.taskId === id && entry.stage === stage,
+            )?.report ?? null)
+        : (reports.find((report) => report.taskId === id && report.stage === stage) ?? null),
 
-    removeReport(id, stage) {
+    removeReport(id, stage, reportId) {
+      if (reportStore) {
+        if (!reportId) throw new Error('durable report acknowledgement requires reportId');
+        const entry = reportStore.get(reportId);
+        if (entry && (entry.taskId !== id || entry.stage !== stage))
+          throw new Error('report identity mismatch');
+        return reportStore.acknowledge(reportId);
+      }
       const at = reports.findIndex((report) => report.taskId === id && report.stage === stage);
       if (at !== -1) reports.splice(at, 1);
     },

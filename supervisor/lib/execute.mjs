@@ -730,6 +730,21 @@ export async function execute(actions, io) {
   const results = [];
 
   for (const action of actions) {
+    if (io.reportStorageBlocked?.()) {
+      results.push({ action, result: 'failed', why: 'report storage blocks scheduling' });
+      break;
+    }
+    if (
+      action.kind !== 'transfer-report' &&
+      io.reportStore
+        ?.entries()
+        .some(
+          (entry) => entry.taskId === action.taskId || entry.report.batch?.includes(action.taskId),
+        )
+    ) {
+      results.push({ action, result: 'skipped', why: 'pending report owns this task' });
+      continue;
+    }
     const handler = HANDLERS[action.kind];
     if (!handler) {
       results.push({
