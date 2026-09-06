@@ -178,11 +178,19 @@ describe('журнал', () => {
   it('обрезается, и обрезка названа вслух: молчаливая обманывает', () => {
     const long = 'строка журнала\n'.repeat(2000);
     const text = stagePrompt({ assignment, task, journal: long, journalLimit: 100 });
-    expect(text).toContain('обрезано');
+    expect(text).toContain('пропущена');
     expect(text.length).toBeLessThan(long.length);
   });
 
   it('пустой показан пустым, а не отсутствующим', () => {
     expect(stagePrompt({ assignment, task, journal: '' })).toContain('_пусто_');
+  });
+
+  it('сохраняет свежие P1 и ответ владельца после большого старого журнала', () => {
+    const journal = `${'старый отчёт\n'.repeat(2000)}P1: исправить блоккер\nвладелец: принято`;
+    const text = stagePrompt({ assignment, task, journal, journalLimit: 120 });
+    expect(text).toContain('ранняя часть журнала пропущена');
+    expect(text).toContain('P1: исправить блоккер');
+    expect(text).toContain('владелец: принято');
   });
 });

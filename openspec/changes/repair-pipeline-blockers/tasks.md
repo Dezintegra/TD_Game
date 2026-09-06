@@ -11,4 +11,4 @@
 ## 3. Current execution context
 
 - [x] 3.1 Update the Windows stage-model readiness mock for sandbox warmup, after verifying the needed upstream test-only change.
-- [ ] 3.2 Preserve newest full journal records in stage prompts with an omission marker and a large-journal P1/owner-response test.
+- [x] 3.2 Preserve newest full journal records in stage prompts with an omission marker and a large-journal P1/owner-response test.
