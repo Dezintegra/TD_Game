@@ -193,4 +193,11 @@ describe('журнал', () => {
     expect(text).toContain('P1: исправить блоккер');
     expect(text).toContain('владелец: принято');
   });
+
+  it('сохраняет bounded tail единственной последней строки, даже когда она длиннее лимита', () => {
+    const journal = `${'старое\n'.repeat(100)}${'x'.repeat(400)} END-P1`;
+    const text = stagePrompt({ assignment, task, journal, journalLimit: 90 });
+    expect(text).toContain('пропущена');
+    expect(text).toContain('END-P1');
+  });
 });

@@ -20,14 +20,7 @@ import {
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  budgetsAgree,
-  countFailure,
-  lockVerdict,
-  newLock,
-  refreshLock,
-  shouldPause,
-} from '../lib/lock.mjs';
+import { budgetsAgree, countFailure, newLock, refreshLock, shouldPause } from '../lib/lock.mjs';
 import { codexProbeCommand, providerOf, readCodexAnswer } from '../lib/provider.mjs';
 import { judgeProbe, shouldProbe } from '../lib/api-health.mjs';
 import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
@@ -48,7 +41,11 @@ import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
-import { underLockGuard } from '../lib/lock-guard.mjs';
+import {
+  claimSupervisorLock,
+  createOwnedSupervisor as createAfterOwnership,
+  releaseSupervisorLock,
+} from '../lib/supervisor-startup.mjs';
 import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -273,7 +270,14 @@ function claimLock(lock) {
 }
 
 function releaseLock() {
-  if (existsSync(lockPath())) rmSync(lockPath());
+  return releaseSupervisorLock({
+    lockPath: lockPath(),
+    pid: process.pid,
+    readLock,
+    removeLock: () => {
+      if (existsSync(lockPath())) rmSync(lockPath());
+    },
+  });
 }
 
 /**
@@ -418,76 +422,79 @@ function sessionFiles(dir, suffix) {
     return entry.isFile() && path.endsWith(suffix) ? [path] : [];
   });
 }
-const supervisor = createSupervisor({
-  getCodexEnvironment: () => codexEnvironment,
-  prepareAssignment: (assignment, previous) => {
-    const prepared = prepareDeploySnapshot(root, config, assignment, previous);
-    if (providerOf(config) === 'codex')
-      prepareCodexPerfFiles(root, prepared.path ? resolve(root, prepared.path) : root);
-    return prepared;
-  },
-  config,
-  root,
-  initialize: false,
-  readCodexEvidence: (child) => {
-    if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
-    const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
-    const paths = sessionFiles(join(codexHome, 'sessions'), `${child.sessionId}.jsonl`);
-    if (paths.length !== 1) return { ok: false, reason: 'ambiguous-session-evidence' };
-    try {
-      return sessionEvidence(readFileSync(paths[0], 'utf8'), {
-        sessionId: child.sessionId,
-        cwd: child.path ? resolve(root, child.path) : root,
-        after: child.startedAt,
-      });
-    } catch {
-      return { ok: false, reason: 'malformed-session-evidence' };
-    }
-  },
-  home,
-  spawn,
-  killTree: createKillTree((program, args) => runCommand(args, program)),
-  // Опрос системы о процессе по номеру. Тем же способом, что и снятие:
-  // одной внешней командой, ответ вместо исключения.
-  probe: createProbeProcess((program, args) => runCommand(args, program)),
-  // Дескриптор живого этапа называет станцию и своего супервизора: местное
-  // хранилище состояния можно скопировать, а номер процесса с другой машины
-  // здесь не значит ничего.
-  machine: hostname(),
-  supervisorPid: process.pid,
-  saveStages,
-  stages: readStages(root, config),
-  // Сирота Codex может встретиться сразу после переключения на Claude.
-  // Пустой объект здесь при первом сохранении стёр бы весь прежний реестр.
-  codexUsage: readTokenLedger(root, config),
-  saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
-  onPolicyBlocked: (why) => {
-    ensureLocal();
-    writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
-    note(`Конвейер на паузе: ${why}. Новые этапы не выдаются.`, TAG.error);
-  },
-  say,
-  log: (line) => note(line, null),
-  writeStageLog: (taskId, stage, text) => {
-    // Вывод процесса целиком — взамен списка сессий, в котором этапы
-    // больше не видны. Взамен неравноценное: кода возврата, стоимости
-    // и перечня отказов в списке не было вовсе.
-    mkdirSync(local('logs'), { recursive: true });
-    writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
-  },
-  // Тот же лог читается обратно — разбором упавшей задачи, и только им.
-  // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
-  // без лога всё равно начинается, а сам факт его отсутствия — улика.
-  readStageLog: (taskId, stage) => {
-    if (!stage) return null;
-    const path = local('logs', `${taskId}-${stage}.log`);
-    return {
-      stage,
-      path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
-      text: existsSync(path) ? readFileSync(path, 'utf8') : null,
-    };
-  },
-});
+function createRuntimeSupervisor() {
+  return createSupervisor({
+    getCodexEnvironment: () => codexEnvironment,
+    prepareAssignment: (assignment, previous) => {
+      const prepared = prepareDeploySnapshot(root, config, assignment, previous);
+      if (providerOf(config) === 'codex')
+        prepareCodexPerfFiles(root, prepared.path ? resolve(root, prepared.path) : root);
+      return prepared;
+    },
+    config,
+    root,
+    readCodexEvidence: (child) => {
+      if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
+      const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
+      const paths = sessionFiles(join(codexHome, 'sessions'), `${child.sessionId}.jsonl`);
+      if (paths.length !== 1) return { ok: false, reason: 'ambiguous-session-evidence' };
+      try {
+        return sessionEvidence(readFileSync(paths[0], 'utf8'), {
+          sessionId: child.sessionId,
+          cwd: child.path ? resolve(root, child.path) : root,
+          after: child.startedAt,
+        });
+      } catch {
+        return { ok: false, reason: 'malformed-session-evidence' };
+      }
+    },
+    home,
+    spawn,
+    killTree: createKillTree((program, args) => runCommand(args, program)),
+    // Опрос системы о процессе по номеру. Тем же способом, что и снятие:
+    // одной внешней командой, ответ вместо исключения.
+    probe: createProbeProcess((program, args) => runCommand(args, program)),
+    // Дескриптор живого этапа называет станцию и своего супервизора: местное
+    // хранилище состояния можно скопировать, а номер процесса с другой машины
+    // здесь не значит ничего.
+    machine: hostname(),
+    supervisorPid: process.pid,
+    saveStages,
+    stages: readStages(root, config),
+    // Сирота Codex может встретиться сразу после переключения на Claude.
+    // Пустой объект здесь при первом сохранении стёр бы весь прежний реестр.
+    codexUsage: readTokenLedger(root, config),
+    saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
+    onPolicyBlocked: (why) => {
+      ensureLocal();
+      writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
+      note(`Конвейер на паузе: ${why}. Новые этапы не выдаются.`, TAG.error);
+    },
+    say,
+    log: (line) => note(line, null),
+    writeStageLog: (taskId, stage, text) => {
+      // Вывод процесса целиком — взамен списка сессий, в котором этапы
+      // больше не видны. Взамен неравноценное: кода возврата, стоимости
+      // и перечня отказов в списке не было вовсе.
+      mkdirSync(local('logs'), { recursive: true });
+      writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
+    },
+    // Тот же лог читается обратно — разбором упавшей задачи, и только им.
+    // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
+    // без лога всё равно начинается, а сам факт его отсутствия — улика.
+    readStageLog: (taskId, stage) => {
+      if (!stage) return null;
+      const path = local('logs', `${taskId}-${stage}.log`);
+      return {
+        stage,
+        path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
+        text: existsSync(path) ? readFileSync(path, 'utf8') : null,
+      };
+    },
+  });
+}
+
+let supervisor;
 
 /** Сколько задач стоит в этом состоянии. Состояние задачи и есть её колонка. */
 function counted(tasks, status) {
@@ -1013,36 +1020,32 @@ async function loop() {
 const startedAt = new Date().toISOString();
 // Собственный номер нужен переданному замку: старый процесс, перезапускаясь,
 // записывает в замок номер нового и выходит, и новому достаточно узнать себя.
-const acquired = underLockGuard(lockPath(), () => {
-  const existingLock = readLock();
-  const verdict = lockVerdict(
-    existingLock,
-    startedAt,
-    config.lockStaleMinutes,
-    isAlive,
-    process.pid,
-  );
-  if (!verdict.take) return { acquired: false, why: verdict.why };
-  const handedFrom = existingLock?.handedFrom ?? null;
-  // Переданный lock уже принадлежит новому PID: обновляем его в guard без окна.
-  if (existingLock?.pid === process.pid) {
-    writeLock(newLock(process.pid, startedAt));
-    return { acquired: true, handedFrom };
-  }
-  if (existsSync(lockPath())) rmSync(lockPath());
-  return claimLock(newLock(process.pid, startedAt))
-    ? { acquired: true, handedFrom }
-    : { acquired: false, why: 'замок занят при атомарном захвате' };
+const owned = createAfterOwnership({
+  claim: () =>
+    claimSupervisorLock({
+      lockPath: lockPath(),
+      now: startedAt,
+      staleMinutes: config.lockStaleMinutes,
+      isAlive,
+      pid: process.pid,
+      readLock,
+      writeLock,
+      removeLock: () => {
+        if (existsSync(lockPath())) rmSync(lockPath());
+      },
+      claimLock,
+    }),
+  createSupervisor: createRuntimeSupervisor,
 });
-if (!acquired.ok || !acquired.value.acquired) {
+if (!owned.ownership.acquired) {
   // Сторож будит супервизор раз в пять минут независимо от того, жив ли
   // прежний. Отсев двойного запуска — весь тут, и потому замок берётся
   // ДО первого оборота, а не внутри него: оборот может и не дойти до замка,
   // например при недоступной доске.
-  console.log(`СУПЕРВИЗОР УЖЕ РАБОТАЕТ: ${acquired.value?.why ?? acquired.reason}`);
+  console.log(`СУПЕРВИЗОР УЖЕ РАБОТАЕТ: ${owned.ownership.why}`);
 } else {
-  if (acquired.value.handedFrom)
-    note(`замок получен от процесса ${acquired.value.handedFrom}: продолжаю на новом коде`, null);
-  supervisor.initialize();
+  supervisor = owned.supervisor;
+  if (owned.ownership.handedFrom)
+    note(`замок получен от процесса ${owned.ownership.handedFrom}: продолжаю на новом коде`, null);
   await loop();
 }

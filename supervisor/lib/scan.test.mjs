@@ -509,6 +509,105 @@ describe('пакетная выкладка', () => {
   });
 });
 
+describe('исключительные продолжения', () => {
+  const roomy = { ...config, maxConcurrent: 2 };
+  const deploy = (id = '0001-deploy', over = {}) =>
+    task({ id, status: 'deploy', links: { pr: 7 }, ...over });
+  const localBenchmark = (id, over = {}) =>
+    task({
+      id,
+      type: 'run',
+      status: 'benchmark',
+      run: { kind: 'fps', expectation: 'ровно' },
+      ...over,
+    });
+  const ordinary = (id = '0009-design') => task({ id, status: 'design' });
+
+  it('две готовые исключительные задачи оставляет одной по приоритету на весь оборот', () => {
+    const result = run({
+      config: roomy,
+      tasks: [
+        localBenchmark('0002-slower', { priority: 20 }),
+        localBenchmark('0001-first', { priority: 10 }),
+      ],
+      registry: { entries: [entry('0002-slower'), entry('0001-first')] },
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([
+      expect.objectContaining({ taskId: '0001-first', stage: 'benchmark' }),
+    ]);
+  });
+
+  it('живой deploy не подпитывает обычное продолжение', () => {
+    const result = run({
+      config: roomy,
+      tasks: [deploy(), ordinary()],
+      registry: { entries: [entry('0001-deploy'), entry('0009-design')] },
+      running: [{ taskId: '0001-deploy', stage: 'deploy' }],
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([]);
+  });
+
+  it('готовый deploy ждёт тишины, не продолжая обычную задачу', () => {
+    const result = run({
+      config: roomy,
+      tasks: [deploy(), ordinary()],
+      registry: { entries: [entry('0001-deploy'), entry('0009-design')] },
+      running: [{ taskId: '0009-design', stage: 'design' }],
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([]);
+  });
+
+  it('held deploy не резервирует тишину, и готовая обычная задача продолжается', () => {
+    const result = run({
+      config: { ...roomy, provider: 'codex', codexMaxTaskTokens: 100 },
+      tasks: [deploy(), ordinary()],
+      registry: { entries: [entry('0001-deploy'), entry('0009-design')] },
+      codexUsage: migrateTokenLedger({ '0001-deploy': { old: 1 } }),
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'continue-stage',
+        taskId: '0009-design',
+        stage: 'design',
+      }),
+    );
+  });
+
+  it('foreign benchmark не считается исключительным и не задерживает обычное продолжение', () => {
+    const result = run({
+      config: roomy,
+      tasks: [
+        task({ id: '0001-arena', type: 'run', status: 'benchmark', run: { kind: 'arena' } }),
+        ordinary(),
+      ],
+      registry: { entries: [entry('0009-design')] },
+      running: [{ taskId: '0001-arena', stage: 'benchmark' }],
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'continue-stage',
+        taskId: '0009-design',
+        stage: 'design',
+      }),
+    );
+  });
+
+  it('batch deploy остаётся одним исключительным продолжением', () => {
+    const result = run({
+      config: roomy,
+      tasks: [deploy('0001-deploy'), deploy('0002-deploy'), localBenchmark('0003-perf')],
+      registry: { entries: [entry('0001-deploy'), entry('0002-deploy'), entry('0003-perf')] },
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([
+      expect.objectContaining({
+        taskId: '0001-deploy',
+        stage: 'deploy',
+        batch: ['0001-deploy', '0002-deploy'],
+      }),
+    ]);
+  });
+});
+
 describe('слив перед самообновлением', () => {
   it('сессий не выдаём, идущее доделываем, опросы идут', () => {
     // Новый код супервизора на диске; перезапуск ждёт «нет этапов и отчётов».

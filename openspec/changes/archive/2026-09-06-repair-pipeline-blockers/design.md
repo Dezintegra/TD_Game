@@ -36,6 +36,11 @@ supervisor, alter game behaviour, or change non-journal clipping.
 - [Artifacts lack identifiers] → report unresolved instead of guessing.
 - [Recovery races supervisor] → explicit apply plus live-lock rejection before write.
 - [One entry exceeds the limit] → preserve its newest bounded tail with marker.
+- [Several idle exclusives] → select only the priority/age winner; it reserves
+  the whole cycle before any second exclusive can receive a continuation.
+- [Recovery finishes between startup attempts] → acquire the shared lock before
+  constructing the stateful supervisor, so stages and the token ledger are read
+  only from the post-ownership filesystem state.
 
 ## Migration Plan
 

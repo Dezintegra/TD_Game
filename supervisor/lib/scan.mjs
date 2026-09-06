@@ -643,14 +643,18 @@ export function scan(state) {
     const task = tasks.find((candidate) => candidate.id === item.taskId);
     return task && stateClass(task) === 'exclusive';
   });
-  const readyExclusive = eligible.some((task) => stateClass(task) === 'exclusive');
+  const readyExclusives = eligible
+    .filter((task) => stateClass(task) === 'exclusive')
+    .sort(byPriorityThenAge);
   if (liveExclusive && free > 0) {
     notes.push('идёт исключительный этап: продолжения других задач не выдаются');
     eligible = [];
-  } else if (readyExclusive) {
-    // Готовая выкладка/замер ждёт тишины: не подпитываем обычные продолжения.
-    eligible =
-      running.length === 0 ? eligible.filter((task) => stateClass(task) === 'exclusive') : [];
+  } else if (readyExclusives.length > 0) {
+    // Готовая выкладка/замер ждёт тишины: не подпитываем обычные продолжения
+    // и не выдаём два исключительных продолжения, даже если свободных мест
+    // несколько. Выбранный первым по обычному приоритету этап резервирует
+    // весь оборот, чтобы следующий цикл увидел его уже живым.
+    eligible = running.length === 0 ? readyExclusives.slice(0, 1) : [];
   }
 
   // Слив перед самообновлением: новый код супервизора уже на диске, и он

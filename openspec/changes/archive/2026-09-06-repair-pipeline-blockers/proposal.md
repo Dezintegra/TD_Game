@@ -17,6 +17,9 @@ without touching the running supervisor.
 - Include Windows sandbox warmup in the stage-model readiness test.
 - Pass the newest complete journal entries to stage prompts within the existing
   size bound and mark omitted history.
+- Reserve an entire scheduler cycle for the single selected ready deploy/local
+  benchmark continuation, and construct runtime ledger/stage state only after
+  successful shared-lock ownership.
 
 ## Capabilities
 
