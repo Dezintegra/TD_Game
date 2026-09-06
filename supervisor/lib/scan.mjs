@@ -1,4 +1,4 @@
-import { taskTokens } from './token-budget.mjs';
+import { taskTokens, taskTokenStatus } from './token-budget.mjs';
 import {
   CROSSCUT,
   NEEDS_SESSION,
@@ -544,6 +544,16 @@ export function scan(state) {
       // и лог последнего этапа про это не скажет ничего.
       actions.push({ kind: 'decompose-again', taskId: task.id, stage: task.status, reason: why });
       continue;
+    }
+
+    if (tokens && capped && limit != null) {
+      const status = taskTokenStatus(state.codexUsage ?? {}, task.id);
+      if (!status.complete) {
+        notes.push(
+          `задача ${task.id}: расход Codex неизвестен (${status.reasons.join(', ')}); запуск удержан`,
+        );
+        continue;
+      }
     }
 
     // Причина названа уровнем поломки, а не последствием. «Продолжения

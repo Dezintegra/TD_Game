@@ -1,5 +1,14 @@
-import { recordTokenUsage, taskTokens } from './token-budget.mjs';
+import {
+  migrateTokenLedger,
+  commitTokenLedger,
+  beginTokenLaunch,
+  bindTokenSession,
+  observeTokenUsage,
+  completeTokenLaunch,
+  taskTokens,
+} from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
+import { CROSSCUT } from '../config/transitions.mjs';
 import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
 import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
 import { providerOf, readCodexAnswer, codexDenial } from './provider.mjs';
@@ -61,6 +70,9 @@ export function createSupervisor({
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
+  codexUsage = migrateTokenLedger(codexUsage);
+  const usageWriteErrors = new Set();
+  const pendingUsageCancellations = new Map();
   let policyBlocked = false;
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
@@ -109,7 +121,17 @@ export function createSupervisor({
   adoptOrphans();
 
   return {
-    codexUsage,
+    get codexUsage() {
+      return {
+        ...codexUsage,
+        writeErrors: [
+          ...new Set([
+            ...usageWriteErrors,
+            ...[...pendingUsageCancellations.values()].map((child) => child.taskId),
+          ]),
+        ],
+      };
+    },
     reports,
     orphanOutcomes,
     apiFailures,
@@ -217,6 +239,14 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
+      retryUsageCancellations();
+      if (
+        (usageWriteErrors.size || pendingUsageCancellations.size) &&
+        config.codexMaxTaskTokens != null &&
+        assignment.stage !== 'decompose' &&
+        !CROSSCUT.includes(assignment.stage)
+      )
+        return { ok: false, reason: 'busy', why: 'Не сохранён расход Codex; бюджет неизвестен' };
       if (policyBlocked)
         return {
           ok: false,
@@ -244,7 +274,7 @@ export function createSupervisor({
       // возобновлять есть что даже после падения супервизора.
       const provider = providerOf(config);
       const previous = known[key(assignment.taskId, assignment.stage)];
-      const compatible = (previous?.provider ?? 'claude') === provider;
+      const compatible = !previous || (previous.provider ?? 'claude') === provider;
       const sessionId =
         (compatible ? assignment.sessionId : null) ?? (provider === 'claude' ? randomUUID() : null);
       let command;
@@ -285,10 +315,8 @@ export function createSupervisor({
         taskId: assignment.taskId,
         stage: assignment.stage,
         sessionId,
-        usageBaseline:
-          compatible && assignment.continuation && previous?.sessionId === sessionId
-            ? previous?.usage
-            : null,
+        launchId: provider === 'codex' ? randomUUID() : null,
+        usageOrdinal: 0,
         startedAt: now(),
         startedMs: nowMs(),
         timeoutMs,
@@ -309,6 +337,14 @@ export function createSupervisor({
       };
 
       try {
+        // До spawn расхода ещё нет: сбой подготовки можно повторить без
+        // блокировки бюджета. Ошибки записи уже возникшего расхода сохраняем.
+        if (provider === 'codex')
+          commitTokenLedger(
+            codexUsage,
+            (next) => beginTokenLaunch(next, child.taskId, child.launchId, sessionId),
+            saveCodexUsage,
+          );
         child.handle = spawnStageProcess({
           command:
             providerOf(config) === 'codex'
@@ -324,6 +360,8 @@ export function createSupervisor({
           onStderr: (line) => say.line(TAG.warn, `${child.taskId} ⚠ ${clip(line, 200)}`),
         });
       } catch (error) {
+        if (provider === 'codex' && codexUsage.tasks[child.taskId]?.launches[child.launchId])
+          cancelUsageLaunch(child);
         return { ok: false, reason: 'not-born', why: error.message };
       }
       const handle = child.handle;
@@ -340,6 +378,7 @@ export function createSupervisor({
       // на возобновление того, чего не было, и оно умерло бы за секунды
       // с ответом «сессии с таким идентификатором нет».
       if (!handle?.pid) {
+        if (provider === 'codex') cancelUsageLaunch(child);
         return { ok: false, reason: 'not-born', why: 'процесс не родился: номера у него нет' };
       }
 
@@ -351,12 +390,14 @@ export function createSupervisor({
         sessionId,
         provider,
         ...(assignment.deployment ? { deployment: assignment.deployment } : {}),
-        ...(child.usageBaseline ? { usage: child.usageBaseline } : {}),
         startedAt: known[at]?.startedAt ?? now(),
         // Дескриптор ложится на диск ТЕМ ЖЕ действием, что и память о сессии:
         // обе записи об одном процессе, и разъехаться им нельзя. Отдельный
         // файл дал бы второе место, где можно забыть стереть.
-        live: describeLive(handle.pid, timeoutMs, assignment),
+        live: {
+          ...describeLive(handle.pid, timeoutMs, assignment),
+          ...(child.launchId ? { launchId: child.launchId } : {}),
+        },
       };
       saveStages(known);
 
@@ -420,6 +461,38 @@ export function createSupervisor({
     pulse,
   };
 
+  function persistUsage(taskId, update) {
+    try {
+      commitTokenLedger(codexUsage, update, saveCodexUsage);
+    } catch (error) {
+      usageWriteErrors.add(taskId);
+      throw error;
+    }
+  }
+
+  function cancelUsageLaunch(child) {
+    pendingUsageCancellations.set(child.launchId, child);
+    try {
+      commitTokenLedger(
+        codexUsage,
+        (next) => {
+          delete next.tasks[child.taskId].launches[child.launchId];
+        },
+        saveCodexUsage,
+      );
+      pendingUsageCancellations.delete(child.launchId);
+    } catch (error) {
+      log(`не удалось отменить учёт несостоявшегося запуска: ${error.message}`);
+    }
+  }
+
+  function retryUsageCancellations() {
+    // Отмена не восстанавливает потерянный расход живого процесса, поэтому
+    // её очередь отдельна от usageWriteErrors. Повтор нужен и до сканирования:
+    // unfinished-launch иначе не даст циклу дойти до spawnStage.
+    for (const child of pendingUsageCancellations.values()) cancelUsageLaunch(child);
+  }
+
   /**
    * Пересказать событие этапа.
    *
@@ -443,11 +516,28 @@ export function createSupervisor({
           saveStages(known);
         }
       }
+      if (event?.type === 'turn.completed') child.usageOrdinal += 1;
       if (
-        event?.type === 'turn.completed' &&
-        recordTokenUsage(codexUsage, child.taskId, child.sessionId, event.usage)
-      )
-        saveCodexUsage(codexUsage);
+        !usageWriteErrors.has(child.taskId) &&
+        (event?.type === 'thread.started' || event?.type === 'turn.completed')
+      ) {
+        try {
+          persistUsage(child.taskId, (next) => {
+            if (event.type === 'thread.started')
+              bindTokenSession(next, child.taskId, child.launchId, event.thread_id);
+            else
+              observeTokenUsage(
+                next,
+                child.taskId,
+                child.launchId,
+                child.usageOrdinal,
+                event.usage,
+              );
+          });
+        } catch (error) {
+          log(`не сохранён расход ${child.taskId}: ${error.message}`);
+        }
+      }
       if (event?.type === 'item.completed') {
         child.steps += 1;
         child.last = clip(event.item?.text ?? event.item?.command ?? event.item?.type, 160);
@@ -492,6 +582,24 @@ export function createSupervisor({
     let changed = false;
     for (const [at, value] of Object.entries(known)) {
       if (!value?.live) continue;
+      if (value.provider === 'codex') {
+        const taskId = at.slice(0, at.lastIndexOf(':'));
+        const launchId =
+          value.live.launchId ?? `legacy:${at}:${value.live.startedAt ?? value.live.pid}`;
+        try {
+          persistUsage(taskId, (next) => {
+            beginTokenLaunch(next, taskId, launchId, value.sessionId);
+            completeTokenLaunch(
+              next,
+              taskId,
+              launchId,
+              value.live.launchId ? 'stdout-unavailable' : 'missing-launch-id',
+            );
+          });
+        } catch (error) {
+          log(`не сохранён неизвестный расход сироты ${at}: ${error.message}`);
+        }
+      }
 
       if (machine && value.live.machine && value.live.machine !== machine) {
         log(
@@ -527,6 +635,7 @@ export function createSupervisor({
    * длиной в один срок этапа.
    */
   function sweep() {
+    retryUsageCancellations();
     for (const orphan of [...orphans.values()]) {
       const verdict = judgeOrphan(orphan);
 
@@ -730,17 +839,17 @@ export function createSupervisor({
 
     const answer =
       providerOf(config) === 'codex'
-        ? readCodexAnswer(run, config, child.usageBaseline)
+        ? readCodexAnswer(run, config, {
+            ledger: codexUsage,
+            taskId: child.taskId,
+            launchId: child.launchId,
+          })
         : readAnswer(run);
-    if (providerOf(config) === 'codex')
-      recordTokenUsage(
-        codexUsage,
-        child.taskId,
-        answer.sessionId ?? child.sessionId,
-        answer.usageTotals,
-      );
     if (providerOf(config) === 'codex') {
-      if (answer.usageTotals) saveCodexUsage(codexUsage);
+      persistUsage(child.taskId, (next) => {
+        next.tasks[child.taskId] = answer.usageLedger.tasks[child.taskId];
+      });
+      usageWriteErrors.delete(child.taskId);
       answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${config.codexMaxTaskTokens ?? 'без лимита'} токенов задачи${answer.usage ? '' : '; расход текущего запуска неизвестен'}`;
       log(answer.tokenBudget);
     }
@@ -796,7 +905,6 @@ export function createSupervisor({
     if (known[at]) {
       const kept = { ...known[at] };
       delete kept.live;
-      if (answer.usageTotals) kept.usage = answer.usageTotals;
       known[at] = answer.sessionId ? { ...kept, sessionId: answer.sessionId } : kept;
       saveStages(known);
     }
@@ -904,7 +1012,6 @@ function remembered(value) {
     sessionId: value?.sessionId ?? null,
     startedAt: value?.startedAt ?? null,
     ...(value?.provider ? { provider: value.provider } : {}),
-    ...(value?.usage ? { usage: value.usage } : {}),
     ...(value?.deployment ? { deployment: value.deployment } : {}),
   };
   return value?.live ? { ...kept, live: value.live } : kept;
