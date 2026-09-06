@@ -414,3 +414,20 @@ describe('разбор пачки заявок', () => {
     });
   });
 });
+
+describe('зависимости заявок', () => {
+  it('переносит список в создаваемую карточку', () => {
+    const result = taskFromRequest(request({ dependsOn: ['0002-base'] }), {
+      id: '0003-next',
+      now: NOW,
+    });
+    expect(result.problems).toEqual([]);
+    expect(result.task.dependsOn).toEqual(['0002-base']);
+    expect(validateTask(result.task, schema)).toEqual([]);
+  });
+  it('отвергает неверный список', () => {
+    expect(
+      taskFromRequest(request({ dependsOn: '0002-base' }), { id: '0003-next', now: NOW }).task,
+    ).toBeNull();
+  });
+});
