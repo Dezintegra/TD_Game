@@ -110,6 +110,9 @@ export function recoveryPlan(ledger, evidenceBySession) {
   const unresolved = [];
   for (const [taskId, task] of Object.entries(current.tasks)) {
     for (const [sessionId, session] of Object.entries(task.sessions)) {
+      // Обычный v2-снимок уже ведёт сам супервизор. Восстановитель берёт
+      // только унаследованную неизвестность, чтобы не переписывать живую историю.
+      if (!session.reasons.includes('legacy-unknown')) continue;
       const evidence = evidenceBySession.get(`${taskId}:${sessionId}`);
       if (!evidence?.ok) {
         unresolved.push({ taskId, sessionId, reason: evidence?.reason ?? 'сессия не найдена' });

@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { recoveryPlan, sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
+import { migrateTokenLedger } from '../lib/token-budget.mjs';
 
 function argument(name) {
   const index = process.argv.indexOf(name);
@@ -101,13 +102,15 @@ export function recover({ root, sessionsRoot, apply = false }) {
   } catch {
     throw new Error('реестр или registry.json повреждён');
   }
+  const normalized = migrateTokenLedger(ledger);
   const evidence = new Map();
-  for (const [taskId, task] of Object.entries(ledger.tasks ?? {}))
+  for (const [taskId, task] of Object.entries(normalized.tasks))
     for (const sessionId of Object.keys(task.sessions ?? {}))
-      evidence.set(
-        `${taskId}:${sessionId}`,
-        evidenceFor({ sessionId, cwd: cwdFor(root, registry, taskId), sessionsRoot }),
-      );
+      if (task.sessions[sessionId].reasons.includes('legacy-unknown'))
+        evidence.set(
+          `${taskId}:${sessionId}`,
+          evidenceFor({ sessionId, cwd: cwdFor(root, registry, taskId), sessionsRoot }),
+        );
   const plan = recoveryPlan(ledger, evidence);
   const report = {
     count: evidence.size,
