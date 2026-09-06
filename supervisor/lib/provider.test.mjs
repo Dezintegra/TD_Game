@@ -65,7 +65,7 @@ describe('выбор исполнителя', () => {
 
 describe('ответ Codex', () => {
   for (const text of [report, 'не JSON\nисходный текст']) {
-    it.each(['decreased-usage', 'invalid-usage', 'history', 'cached'])(
+    it.each(['decreased-usage', 'decreased-output', 'invalid-usage', 'history', 'cached'])(
       `сохраняет текст ${text} при %s`,
       (kind) => {
         const first = readCodexAnswer(run(), config);
@@ -77,7 +77,7 @@ describe('ответ Codex', () => {
             ? undefined
             : {
                 input_tokens: kind === 'decreased-usage' ? 500 : kind === 'history' ? 2000 : 1000,
-                output_tokens: 100,
+                output_tokens: kind === 'decreased-output' ? 50 : 100,
                 cached_input_tokens: 0,
               };
         const answer = readCodexAnswer(
@@ -93,7 +93,14 @@ describe('ответ Codex', () => {
         expect(answer.result).toBe(text);
         expect(answer.outcome).toBe(kind === 'cached' ? 'done' : 'failed');
         if (kind === 'cached') expect(answer.usageError).toBeNull();
-        else expect(answer.usageError).toContain(kind === 'history' ? 'legacy-unknown' : kind);
+        else
+          expect(answer.usageError).toContain(
+            kind === 'history'
+              ? 'legacy-unknown'
+              : kind === 'decreased-output'
+                ? 'decreased-usage'
+                : kind,
+          );
       },
     );
   }
@@ -127,6 +134,78 @@ describe('ответ Codex', () => {
         codexMaxTaskTokens: 25_000_000,
       }).outcome,
     ).toBe('failed');
+  });
+});
+
+describe('границы сохранения текста Codex', () => {
+  const message = (text) => ({ type: 'item.completed', item: { type: 'agent_message', text } });
+  for (const text of [report, '{сломанный JSON']) {
+    it.each([
+      null,
+      {},
+      { input_tokens: 10 },
+      { input_tokens: -1, output_tokens: 1 },
+      { input_tokens: '10', output_tokens: 1 },
+      { input_tokens: 10, output_tokens: 0.5 },
+    ])(`сохраняет ${text} при непригодном usage %j`, (usage) => {
+      const answer = readCodexAnswer(
+        run([events[0], message(text), { type: 'turn.completed', usage }]),
+        config,
+      );
+      expect(answer).toMatchObject({ result: text, outcome: 'failed' });
+      expect(answer.usageError).toContain('invalid-usage');
+    });
+  }
+
+  it.each(['missing-terminal', 'new-turn', 'turn-failed', 'error', 'exit', 'killed', 'spawn'])(
+    'текст не обходит проверку %s даже без токенового лимита',
+    (kind) => {
+      const items = [events[0], message(report), { type: 'turn.completed' }];
+      if (kind === 'missing-terminal') items.pop();
+      if (kind === 'new-turn') items.push({ type: 'turn.started' });
+      if (kind === 'turn-failed')
+        items.push({ type: 'turn.failed', error: { message: 'protocol failed' } });
+      if (kind === 'error') items.push({ type: 'error', message: 'protocol error' });
+      const answer = readCodexAnswer(
+        {
+          ...run(items, kind === 'exit' ? 1 : 0),
+          ...(kind === 'killed' ? { killedBy: 'timeout' } : {}),
+          ...(kind === 'spawn' ? { error: new Error('spawn failed') } : {}),
+        },
+        { codexMaxTaskTokens: null },
+      );
+      expect(answer.result).toBeNull();
+      expect(answer.outcome).toBe(kind === 'killed' ? 'timeout' : 'failed');
+      expect(answer.usageError).toBeTruthy();
+      if (kind === 'error') expect(answer.why).toBe('protocol error');
+    },
+  );
+
+  it('выбирает последнее сообщение текущего хода, различая пустое и отсутствующее', () => {
+    for (const text of [report, '', null]) {
+      const items = [...events, { type: 'turn.started' }];
+      if (text !== null) items.push(message('промежуточный'), message(text));
+      items.push({ type: 'turn.completed' });
+      const answer = readCodexAnswer(run(items), { codexMaxTaskTokens: null });
+      expect(answer.result).toBe(text);
+      expect(answer.outcome).toBe('done');
+      expect(answer.usageError).toContain('invalid-usage');
+    }
+  });
+
+  it('числовой расход нового thread не снимает неизвестность старого', () => {
+    const first = readCodexAnswer(
+      run([events[0], message(report), { type: 'turn.completed' }]),
+      config,
+    );
+    const answer = readCodexAnswer(
+      run([{ type: 'thread.started', thread_id: 'new' }, message(report), events.at(-1)]),
+      config,
+      { ledger: first.usageLedger, launchId: 'new' },
+    );
+    expect(answer.usage).toMatchObject({ input_tokens: 1000, output_tokens: 100 });
+    expect(answer).toMatchObject({ result: report, outcome: 'failed' });
+    expect(answer.usageError).toContain('invalid-usage');
   });
 });
 
@@ -211,6 +290,7 @@ it('согласует все completed, resume и уменьшение без �
     launchId: 'resume',
   });
   expect(resumed.usage).toEqual({ input_tokens: 400, output_tokens: 40 });
+  expect(taskTokens(resumed.usageLedger, 'answer')).toBe(2180);
   beginTokenLaunch(resumed.usageLedger, 'answer', 'smaller', 'thread-1');
   const smaller = readCodexAnswer(run([...events.slice(0, -1), completed(500, 40)]), config, {
     ledger: resumed.usageLedger,

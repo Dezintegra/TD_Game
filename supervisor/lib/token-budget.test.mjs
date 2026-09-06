@@ -50,6 +50,10 @@ it('миграция не добавляет следующий снимок к 
   expect(taskTokenStatus(ledger, 'task').reasons).toContain('legacy-unknown');
   observeTokenUsage(ledger, 'task', 'resume', 2, { input_tokens: 2000, output_tokens: 180 });
   expect(taskTokens(ledger, 'task')).toBe(2180);
+  expect(taskTokenStatus(ledger, 'task')).toEqual({
+    complete: false,
+    reasons: expect.arrayContaining(['legacy-unknown']),
+  });
   expect(
     launchTokenUsage(ledger.tasks.task.sessions.s, ledger.tasks.task.launches.resume),
   ).toBeNull();
