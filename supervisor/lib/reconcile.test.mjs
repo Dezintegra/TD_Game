@@ -67,6 +67,49 @@ describe('согласованная картина', () => {
   });
 });
 
+describe('потеря записи перед уборкой', () => {
+  it.each([MACHINE, null])('восстанавливает существующее дерево при владельце %s', (owner) => {
+    const item = task('0001-one', { status: 'cleanup', owner });
+    expect(run({ tasks: [item], worktrees: [tree(item.id)] }).repairs).toEqual([
+      { kind: 'adopt-worktree', taskId: item.id, ...tree(item.id) },
+    ]);
+    expect(item.owner).toBe(owner);
+  });
+
+  it('не создаёт отсутствующее дерево уборки', () => {
+    expect(run({ tasks: [task('0001-one', { status: 'cleanup' })] }).repairs).toEqual([]);
+  });
+
+  it('чужое дерево уборки остаётся находкой', () => {
+    expect(
+      kinds(
+        run({
+          tasks: [task('0001-one', { status: 'cleanup', owner: 'станция-2' })],
+          worktrees: [tree('0001-one')],
+        }),
+      ),
+    ).toEqual(['report-orphan']);
+  });
+
+  it('основное и ручное деревья не принимаются даже при задаче в cleanup', () => {
+    const worktrees = parseWorktrees(
+      [
+        'worktree C:/repo',
+        'branch refs/heads/worktree-0001-one',
+        '',
+        'worktree C:/repo/.claude/worktrees/manual',
+        'branch refs/heads/worktree-manual',
+      ].join('\n'),
+    );
+    expect(
+      run({
+        tasks: [task('0001-one', { status: 'cleanup' }), task('manual', { status: 'cleanup' })],
+        worktrees,
+      }).repairs,
+    ).toEqual([]);
+  });
+});
+
 describe('обрывки взятия задачи', () => {
   it('дерево без записи усыновляется', () => {
     const result = run({ tasks: [task('0001-one')], worktrees: [tree('0001-one')] });
