@@ -327,9 +327,13 @@ export function createSupervisor({
       };
 
       try {
+        // До spawn расхода ещё нет: сбой подготовки можно повторить без
+        // блокировки бюджета. Ошибки записи уже возникшего расхода сохраняем.
         if (provider === 'codex')
-          persistUsage(child.taskId, (next) =>
-            beginTokenLaunch(next, child.taskId, child.launchId, sessionId),
+          commitTokenLedger(
+            codexUsage,
+            (next) => beginTokenLaunch(next, child.taskId, child.launchId, sessionId),
+            saveCodexUsage,
           );
         child.handle = spawnStageProcess({
           command:

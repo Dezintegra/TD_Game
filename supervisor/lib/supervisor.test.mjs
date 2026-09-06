@@ -1448,6 +1448,46 @@ describe('долговечные наблюдения Codex', () => {
     },
   );
 
+  it.each(['0001-one', '0002-two'])(
+    'после сбоя записи до spawn задача %s запускается без перезапуска супервизора',
+    async (taskId) => {
+      let fail = true;
+      let writes = 0;
+      let persisted;
+      const h = harness({
+        ...options,
+        saveCodexUsage: (next) => {
+          writes += 1;
+          if (fail) throw new Error('disk unavailable');
+          persisted = JSON.parse(JSON.stringify(next));
+        },
+        onSpawn: () => {
+          expect(persisted.tasks[taskId].launches).toBeDefined();
+        },
+      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        expect(h.supervisor.spawnStage(assignment())).toMatchObject({
+          ok: false,
+          reason: 'not-born',
+          why: 'disk unavailable',
+        });
+        expect(h.children).toHaveLength(0);
+        expect(h.supervisor.busy()).toBe(0);
+        expect(h.supervisor.codexUsage.writeErrors).toEqual([]);
+        expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(true);
+      }
+      expect(writes).toBe(2);
+      fail = false;
+      expect(h.supervisor.spawnStage(assignment({ taskId })).ok).toBe(true);
+      expect(writes).toBe(3);
+      expect(h.children).toHaveLength(1);
+      emit(h, { type: 'thread.started', thread_id: 's' });
+      await h.answer(completed());
+      expect(taskTokens(persisted, taskId)).toBe(1740);
+      expect(taskTokenStatus(h.supervisor.codexUsage, taskId).complete).toBe(true);
+    },
+  );
+
   it.each(['thread.started', 'turn.completed'])(
     'finish повторяет поток после сбоя сохранения %s',
     async (failureAt) => {
@@ -1499,7 +1539,10 @@ describe('долговечные наблюдения Codex', () => {
     expect(taskTokens(disk, '0001-one')).toBe(1740);
     expect(taskTokenStatus(disk, '0001-one').reasons).toContain('unfinished-launch');
     expect(h.supervisor.spawnStage(assignment()).reason).toBe('busy');
+    expect(h.supervisor.spawnStage(assignment({ stage: 'decompose' })).reason).toBe('not-born');
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
     fail = false;
+    expect(h.supervisor.spawnStage(assignment({ taskId: '0002-two' })).reason).toBe('busy');
     expect(h.supervisor.spawnStage(assignment({ stage: 'decompose' })).ok).toBe(true);
     await h.answer(completed(0, 0));
   });
