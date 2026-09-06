@@ -736,6 +736,8 @@ export async function execute(actions, io) {
     }
     if (
       action.kind !== 'transfer-report' &&
+      // Хвост завершённого этапа должен уйти до переноса его отчёта.
+      action.kind !== 'push-tail' &&
       io.reportStore
         ?.entries()
         .some(

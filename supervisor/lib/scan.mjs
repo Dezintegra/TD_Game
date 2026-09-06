@@ -746,7 +746,11 @@ export function scan(state) {
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
   return {
     actions: actions.filter(
-      (action) => action.kind === 'transfer-report' || !hasReport(action.taskId),
+      // Досылка не меняет карточку и снимает условие, удерживающее перенос.
+      (action) =>
+        action.kind === 'transfer-report' ||
+        action.kind === 'push-tail' ||
+        !hasReport(action.taskId),
     ),
     notes,
   };

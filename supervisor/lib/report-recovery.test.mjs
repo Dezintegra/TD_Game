@@ -116,6 +116,77 @@ async function scenario(options) {
 }
 
 describe('paused completion survives full supervisor and recipient restart', () => {
+  it('досылает хвост перед однократным переносом сохранённого отчёта', async () => {
+    const s = await scenario();
+    const branch = `worktree-${s.f.task.id}`;
+    const entry = { taskId: s.f.task.id, branch, path: s.f.root };
+    let commits = 1;
+    let pushes = 0;
+    const actions = (opened, running = []) =>
+      scan({
+        config,
+        tasks: [opened.recipient.store.readTask(s.f.task.id)],
+        reports: opened.supervisor.reports,
+        registry: { entries: [entry] },
+        tails: { main: 0, branches: { [branch]: commits } },
+        running,
+      }).actions;
+    const tail = {
+      kind: 'push-tail',
+      scope: 'branch',
+      branch,
+      taskId: s.f.task.id,
+      commits: 1,
+    };
+    expect(actions(s.next)).toEqual([tail]);
+    expect(
+      actions(s.next, [{ taskId: s.f.task.id, stage: 'implement' }]).some(
+        (action) => action.kind === 'push-tail',
+      ),
+    ).toBe(false);
+    const attachPush = (opened, ok) => {
+      opened.io.registryEntry = (id) => (id === entry.taskId ? entry : null);
+      opened.io.pushBranchTail = (name, path) => {
+        expect([name, path]).toEqual([branch, s.f.root]);
+        pushes += 1;
+        if (ok) commits = 0;
+        return ok ? { ok: true } : { ok: false, why: 'push rejected' };
+      };
+    };
+    attachPush(s.next, false);
+    expect((await execute(actions(s.next), s.next.io))[0].result).toBe('failed');
+    expect(s.next.store.entries()).toHaveLength(1);
+    expect(s.next.recipient.state()).toMatchObject({ puts: 0, posts: 0 });
+
+    const final = s.restart();
+    expect(actions(final)).toEqual([tail]);
+    attachPush(final, true);
+    expect((await execute(actions(final), final.io))[0].result).toBe('done');
+    const competing = ['continue-stage', 'fail-stage', 'answer-question'].map((kind) => ({
+      kind,
+      taskId: s.f.task.id,
+      stage: 'implement',
+    }));
+    expect((await execute(competing, final.io)).map((result) => result.result)).toEqual([
+      'skipped',
+      'skipped',
+      'skipped',
+    ]);
+    expect(final.recipient.store.readTask(s.f.task.id).attempts.continuations).toBe(2);
+    expect(final.recipient.state()).toMatchObject({ puts: 0, posts: 0 });
+    const pending = actions(final);
+    expect(pending.map((action) => action.kind)).toEqual(['transfer-report']);
+    expect((await execute(pending, final.io))[0].result).toBe('done');
+    expect((await execute(pending, final.io))[0].result).toBe('skipped');
+    expect(final.recipient.store.readTask(s.f.task.id)).toMatchObject({
+      status: 'pr',
+      spentUsd: 7,
+      attempts: { continuations: 0 },
+    });
+    expect(pushes).toBe(2);
+    s.assertSettled(final, { puts: 1, posts: 1 });
+  });
+
   it.each(['none', 'before-put', 'after-put', 'after-comment', 'progress', 'acknowledge'])(
     'delivers once after %s failure',
     async (point) => {
@@ -136,7 +207,7 @@ describe('paused completion survives full supervisor and recipient restart', () 
           throw new Error('lost ack');
         };
       const result = await s.deliver(s.next);
-      expect(result.result).toBe(point === 'none' ? 'done' : 'failed');
+      expect(result.result, result.why).toBe(point === 'none' ? 'done' : 'failed');
       if (point !== 'none') expect(s.next.store.entries()).toHaveLength(1);
       const final = point === 'none' ? s.next : s.restart();
       if (point !== 'none') expect((await s.deliver(final)).result).toBe('done');
