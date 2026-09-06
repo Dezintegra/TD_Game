@@ -12,6 +12,7 @@ import {
   BlastKind,
   ENERGY_SCALE,
   FIRST_MISSILE_SIDE,
+  GENERAL_KILL_REWARD,
   GENERAL_STATS,
   GENERAL_WEAPON,
   NUKE_COOLDOWN_MAX_LEVEL,
@@ -31,6 +32,7 @@ import {
   ShotSide,
   ShotWeapon,
   StructureKind,
+  TOWER_KILL_BOUNTY_PPM,
   UNIT_SEPARATION_RADIUS,
   UNIT_STATS,
   UNIT_TYPES,
@@ -283,6 +285,67 @@ describe('баланс: дальность генерала', () => {
     const perTick = assault.cost / (shots * GENERAL_STATS.cooldownTicks);
 
     expect(perTick).toBeLessThan(BASE_INCOME_PER_TICK);
+  });
+});
+
+describe('баланс: награда постройке за убийство', () => {
+  it('на штурмовике доля даёт ровно пять единиц', () => {
+    // Пять — это число, названное владельцем продукта. Хранится оно
+    // долей, а не пятёркой, но обязано давать пятёрку именно там, где
+    // владелец его и представлял: на самой дешёвой машине.
+    expect(applyPpm(UNIT_STATS[UnitType.Assault].cost, TOWER_KILL_BOUNTY_PPM)).toBe(energy(5));
+  });
+
+  it('на Тесле та же доля даёт пятьдесят: награда следует за ценой убитого', () => {
+    // Ради этого доля и заведена долей. Плоская пятёрка сделала бы
+    // убийство Теслы за 250 равным убийству штурмовика за 25, то есть
+    // платила бы за число трупов, а не за нанесённый противнику ущерб.
+    expect(applyPpm(UNIT_STATS[UnitType.Tesla].cost, TOWER_KILL_BOUNTY_PPM)).toBe(energy(50));
+  });
+
+  it('за любое убийство постройка получает строго меньше генерала', () => {
+    // То самое различие, на котором держится плата за риск: за генерала
+    // надо стоять в пяти клетках от боя под ответным огнём, а башня стои́т
+    // в безопасности. Генералу платится полная добыча, постройке — доля.
+    //
+    // Проверяется по всей добыче поимённо, а не на одном штурмовике:
+    // сравнение долей само по себе ничего не стережёт, потому что
+    // округление вниз идёт от цены убитого, и уравнять их можно было бы
+    // на дешёвой цели незаметно для теста, глядящего в одну точку.
+    const bounties = [
+      ...UNIT_TYPES.map((unitType) => UNIT_STATS[unitType].cost),
+      ...BUILDABLE_KINDS.map((kind) => STRUCTURE_STATS[kind].cost),
+      GENERAL_KILL_REWARD,
+    ];
+
+    for (const bounty of bounties) {
+      expect(applyPpm(bounty, TOWER_KILL_BOUNTY_PPM)).toBeLessThan(bounty);
+    }
+  });
+
+  it('охота башнями невыгоднее, чем просто ждать доход', () => {
+    // Тот же сторож, что стоит над наградой генерала, и заведён он по той
+    // же причине: стоит охоте стать выгоднее позиционной борьбы — и игра
+    // превращается в ферму, где вместо наступления выгодно кормить
+    // противника целями.
+    //
+    // Запас здесь огромный: базовая башня снимает штурмовика за семь
+    // выстрелов по одному в секунду, то есть пять единиц за семь секунд —
+    // 0,71 против десяти. Это и есть заявленный при проработке порядок:
+    // семь процентов базового дохода, ощутимо для отдельной башни
+    // и незаметно для экономики матча.
+    const assault = UNIT_STATS[UnitType.Assault];
+    const reward = applyPpm(assault.cost, TOWER_KILL_BOUNTY_PPM);
+
+    for (const kind of BUILDABLE_KINDS) {
+      if (!isArmedStructure(kind)) continue;
+
+      const stats = STRUCTURE_STATS[kind];
+      const shots = Math.ceil(assault.health / stats.attack);
+      const perTick = reward / (shots * stats.cooldownTicks);
+
+      expect(perTick).toBeLessThan(BASE_INCOME_PER_TICK);
+    }
   });
 });
 

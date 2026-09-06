@@ -28,6 +28,12 @@ on:
       seconds:
         description: Ограничение матча по секундам (пусто — без ограничения)
         default: ''
+      tuning:
+        # Вход общий на все множители, а не именной под каждый: именной
+        # пришлось бы заводить заново при восьмом, и кнопка обрастала бы
+        # полями быстрее, чем игра — правилами.
+        description: 'Множители правил ключами, например: --kill-bounty 2 --income 1.5'
+        default: ''
       upload_logs:
         description: Приложить сырые логи матчей (сотни мегабайт)
         type: boolean
@@ -67,6 +73,7 @@ jobs:
           PROFILES: ${{ inputs.profiles }}
           SEED: ${{ inputs.seed }}
           SECONDS_LIMIT: ${{ inputs.seconds }}
+          TUNING: ${{ inputs.tuning }}
         run: |
           args=(run --matches "$MATCHES" --seed "$SEED")
           if [ -n "$PROFILES" ]; then
@@ -74,6 +81,14 @@ jobs:
           fi
           if [ -n "$SECONDS_LIMIT" ]; then
             args+=(--seconds "$SECONDS_LIMIT")
+          fi
+          # Строка ключей разбирается на слова `read -ra`, а не подстановкой
+          # в текст команды и не через eval: слова попадают в массив
+          # аргументов как есть, и содержимое поля остаётся данными.
+          # Неизвестный ключ арена отвергнет сама — это её работа, не наша.
+          if [ -n "$TUNING" ]; then
+            read -ra tuning_args <<< "$TUNING"
+            args+=("${tuning_args[@]}")
           fi
           node apps/arena/dist/main.js "${args[@]}"
 
@@ -83,6 +98,8 @@ jobs:
       # Сводка попадает и в файл, и на страницу прогона. Второе важнее:
       # артефакт надо скачать и открыть, а итог хочется видеть сразу.
       - name: Свести итоги
+        env:
+          TUNING: ${{ inputs.tuning }}
         run: |
           node apps/arena/dist/main.js report | tee arena-report.txt
           {
@@ -90,6 +107,12 @@ jobs:
             echo
             echo "Матчей: \`${{ inputs.matches }}\`, зерно: \`${{ inputs.seed }}\`"
             echo
+            # Без этой строки прогон с изменёнными правилами не отличить
+            # от обычного, а цифры их несравнимы.
+            if [ -n "$TUNING" ]; then
+              echo "Множители правил: \`$TUNING\`"
+              echo
+            fi
             echo '```'
             cat arena-report.txt
             echo '```'
