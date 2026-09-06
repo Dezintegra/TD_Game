@@ -20,6 +20,15 @@ After acquiring its startup and supervisor locks, the supervisor SHALL restore t
 #### Scenario: Stale live descriptor accompanies a saved report
 - **WHEN** restart sees a pending report and a live descriptor for the same completed launch
 - **THEN** recovery uses the pending result without reporting it lost, launching a continuation or compensating its usage as a lost launch
+- **AND** the stale live descriptor is cleared after verifying the saved result without waiting for a lost-orphan journal entry, while the report remains pending until delivery acknowledgement
+
+#### Scenario: Orphan has no saved result for its launch
+- **WHEN** an orphan disappears and the restored queue contains no report for that launch
+- **THEN** the existing lost-orphan journal and descriptor-retention procedure applies; a report for another launch does not count as its saved result
+
+#### Scenario: File backlog was removed
+- **WHEN** the file backlog adapter and its legacy schema have been removed and the supervisor restarts with pending reports
+- **THEN** restoration and delivery operate through the Trello adapter without restoring the removed file backlog or depending on its schema
 
 #### Scenario: Partially delivered batch
 - **WHEN** a restored deploy report has already moved some batch members but has unfinished delivery operations
