@@ -28,3 +28,12 @@ task-to-session-number format with `legacy-unknown` retained.
 #### Scenario: Ambiguous evidence
 - **WHEN** evidence cannot be uniquely attributed to a task and session
 - **THEN** recovery leaves the ledger unchanged and reports it unresolved.
+
+### Requirement: Durable thread usage controls resume accounting
+The runtime SHALL prefer attributable `token_usage_record.thread_token_usage`
+over raw resumed `turn.completed` usage, and SHALL retain unknown accounting
+when identity or response evidence conflicts.
+
+#### Scenario: Resume reports a reset process counter
+- **WHEN** a resumed process reports a smaller raw counter but matching durable thread usage
+- **THEN** the ledger records the durable cumulative thread total without a decreased-usage reason.

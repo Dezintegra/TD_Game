@@ -127,6 +127,7 @@ export function readCodexAnswer(run, config = {}, context = {}) {
   let error = null;
   let message = null;
   let toolsUsed = false;
+  const durable = [];
   for (const line of String(run.stdout ?? '').split('\n')) {
     let event;
     try {
@@ -153,13 +154,41 @@ export function readCodexAnswer(run, config = {}, context = {}) {
     if (event.type === 'turn.completed') {
       terminal = event;
       answer.turns += 1;
-      observeTokenUsage(ledger, taskId, launchId, answer.turns, event.usage);
     }
+    if (event.type === 'token_usage_record') durable.push(event.payload);
     if (event.type === 'turn.failed') {
       terminal = event;
       error = event.error?.message ?? 'Codex turn.failed';
     }
     if (event.type === 'error') error = event.message ?? 'Codex error';
+  }
+  // token_usage_record хранит накопитель thread, тогда как usage в resume
+  // бывает накопителем лишь текущего процесса. Зачёт делается после всего
+  // вывода, чтобы сырой streaming не успел пометить сессию уменьшившейся.
+  const sessionId = ledger.tasks[taskId].launches[launchId].sessionId;
+  const records = durable.filter(
+    (item) =>
+      item?.thread_id === sessionId &&
+      item?.session_id === sessionId &&
+      typeof item.response_id === 'string' &&
+      item.thread_token_usage,
+  );
+  const unique = new Set(records.map((item) => item.response_id));
+  const validDurable = records.length > 0 && unique.size === records.length;
+  if (validDurable) {
+    for (const [index, item] of records.entries())
+      observeTokenUsage(ledger, taskId, launchId, index + 1, item.thread_token_usage);
+  } else {
+    let ordinal = 0;
+    for (const line of String(run.stdout ?? '').split('\n')) {
+      try {
+        const event = JSON.parse(line.replace(/^\uFEFF/, ''));
+        if (event?.type === 'turn.completed')
+          observeTokenUsage(ledger, taskId, launchId, ++ordinal, event.usage);
+      } catch {
+        continue;
+      }
+    }
   }
   answer.envelope = terminal;
   completeTokenLaunch(

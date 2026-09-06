@@ -3,7 +3,6 @@ import {
   commitTokenLedger,
   beginTokenLaunch,
   bindTokenSession,
-  observeTokenUsage,
   completeTokenLaunch,
   taskTokens,
 } from './token-budget.mjs';
@@ -516,23 +515,13 @@ export function createSupervisor({
           saveStages(known);
         }
       }
-      if (event?.type === 'turn.completed') child.usageOrdinal += 1;
-      if (
-        !usageWriteErrors.has(child.taskId) &&
-        (event?.type === 'thread.started' || event?.type === 'turn.completed')
-      ) {
+      // Сырым turn.completed в resume нельзя портить накопитель: точный
+      // thread_token_usage зачтёт readCodexAnswer при finish.
+      if (!usageWriteErrors.has(child.taskId) && event?.type === 'thread.started') {
         try {
           persistUsage(child.taskId, (next) => {
             if (event.type === 'thread.started')
               bindTokenSession(next, child.taskId, child.launchId, event.thread_id);
-            else
-              observeTokenUsage(
-                next,
-                child.taskId,
-                child.launchId,
-                child.usageOrdinal,
-                event.usage,
-              );
           });
         } catch (error) {
           log(`не сохранён расход ${child.taskId}: ${error.message}`);

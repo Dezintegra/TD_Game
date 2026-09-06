@@ -7,6 +7,7 @@
 
 - [ ] 2.1 Implement evidence normalization and monotonic recovery planning for legacy ledger entries, session JSONL, and trustworthy stage logs.
 - [ ] 2.2 Add the dry-run-first recovery CLI with live-lock refusal, backup, atomic apply, unresolved report, fixtures, and operator documentation.
+- [ ] 2.3 Reconcile runtime resume accounting from attributable `token_usage_record.thread_token_usage` without accepting raw reset counters.
 
 ## 3. Current execution context
 
