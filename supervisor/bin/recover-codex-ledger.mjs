@@ -14,6 +14,7 @@ import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { recoveryPlan, sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
 import { migrateTokenLedger } from '../lib/token-budget.mjs';
+import { underLockGuard } from '../lib/lock-guard.mjs';
 
 function argument(name) {
   const index = process.argv.indexOf(name);
@@ -152,7 +153,9 @@ export function recover({ root, sessionsRoot, apply = false }) {
   };
   if (!apply || !plan.proposed.length) return report;
   const lockPath = join(root, '.pipeline', 'supervisor.lock');
-  const claimed = claimRecoveryLock(lockPath);
+  const guarded = underLockGuard(lockPath, () => claimRecoveryLock(lockPath));
+  if (!guarded.ok) throw new Error(`apply отклонён: ${guarded.reason}`);
+  const claimed = guarded.value;
   try {
     if (readFileSync(ledgerPath, 'utf8') !== original)
       throw new Error('apply отклонён: реестр изменился после dry-run (optimistic concurrency)');
@@ -165,7 +168,9 @@ export function recover({ root, sessionsRoot, apply = false }) {
     renameSync(temporary, ledgerPath);
     return { ...report, applied: true, backup };
   } finally {
-    if (existsSync(lockPath) && readFileSync(lockPath, 'utf8') === claimed) rmSync(lockPath);
+    underLockGuard(lockPath, () => {
+      if (existsSync(lockPath) && readFileSync(lockPath, 'utf8') === claimed) rmSync(lockPath);
+    });
   }
 }
 

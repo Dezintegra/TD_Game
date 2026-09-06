@@ -48,6 +48,7 @@ import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
+import { underLockGuard } from '../lib/lock-guard.mjs';
 import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -427,6 +428,7 @@ const supervisor = createSupervisor({
   },
   config,
   root,
+  initialize: false,
   readCodexEvidence: (child) => {
     if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
     const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
@@ -1011,33 +1013,36 @@ async function loop() {
 const startedAt = new Date().toISOString();
 // Собственный номер нужен переданному замку: старый процесс, перезапускаясь,
 // записывает в замок номер нового и выходит, и новому достаточно узнать себя.
-const existingLock = readLock();
-const verdict = lockVerdict(existingLock, startedAt, config.lockStaleMinutes, isAlive, process.pid);
-if (!verdict.take) {
+const acquired = underLockGuard(lockPath(), () => {
+  const existingLock = readLock();
+  const verdict = lockVerdict(
+    existingLock,
+    startedAt,
+    config.lockStaleMinutes,
+    isAlive,
+    process.pid,
+  );
+  if (!verdict.take) return { acquired: false, why: verdict.why };
+  const handedFrom = existingLock?.handedFrom ?? null;
+  // Переданный lock уже принадлежит новому PID: обновляем его в guard без окна.
+  if (existingLock?.pid === process.pid) {
+    writeLock(newLock(process.pid, startedAt));
+    return { acquired: true, handedFrom };
+  }
+  if (existsSync(lockPath())) rmSync(lockPath());
+  return claimLock(newLock(process.pid, startedAt))
+    ? { acquired: true, handedFrom }
+    : { acquired: false, why: 'замок занят при атомарном захвате' };
+});
+if (!acquired.ok || !acquired.value.acquired) {
   // Сторож будит супервизор раз в пять минут независимо от того, жив ли
   // прежний. Отсев двойного запуска — весь тут, и потому замок берётся
   // ДО первого оборота, а не внутри него: оборот может и не дойти до замка,
   // например при недоступной доске.
-  console.log(`СУПЕРВИЗОР УЖЕ РАБОТАЕТ: ${verdict.why}`);
+  console.log(`СУПЕРВИЗОР УЖЕ РАБОТАЕТ: ${acquired.value?.why ?? acquired.reason}`);
 } else {
-  // Отметка передачи читается ДО записи своего замка: своя запись её стирает.
-  const handedFrom = existingLock?.handedFrom ?? null;
-  // Переданный замок уже принадлежит этому PID. Перезаписываем его на месте:
-  // `wx` здесь неизбежно отказал бы, а снятие создало бы окно для сторожа.
-  const acquired =
-    existingLock?.pid === process.pid
-      ? (writeLock(newLock(process.pid, startedAt)), true)
-      : (() => {
-          const before = existsSync(lockPath()) ? readFileSync(lockPath(), 'utf8') : null;
-          if (before != null && before !== JSON.stringify(existingLock, null, 2)) return false;
-          if (before != null) rmSync(lockPath());
-          return claimLock(newLock(process.pid, startedAt));
-        })();
-  if (!acquired) {
-    console.log('СУПЕРВИЗОР УЖЕ РАБОТАЕТ: замок занят при атомарном захвате');
-    process.exitCode = 0;
-  } else {
-    if (handedFrom) note(`замок получен от процесса ${handedFrom}: продолжаю на новом коде`, null);
-    await loop();
-  }
+  if (acquired.value.handedFrom)
+    note(`замок получен от процесса ${acquired.value.handedFrom}: продолжаю на новом коде`, null);
+  supervisor.initialize();
+  await loop();
 }

@@ -34,6 +34,7 @@ export function createSupervisor({
   config,
   root,
   readCodexEvidence = null,
+  initialize = true,
   /** Каталог самого инструмента. От него считаются его собственные пути. */
   home = root,
   spawn,
@@ -119,7 +120,7 @@ export function createSupervisor({
 
   const key = (taskId, stage) => `${taskId}:${stage}`;
 
-  adoptOrphans();
+  if (initialize) adoptOrphans();
 
   return {
     get codexUsage() {
@@ -136,6 +137,7 @@ export function createSupervisor({
     reports,
     orphanOutcomes,
     apiFailures,
+    initialize: adoptOrphans,
 
     /**
      * Обойти сирот: кто кончился, кто оказался посторонним, кто пережил срок.
