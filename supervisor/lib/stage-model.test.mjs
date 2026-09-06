@@ -61,16 +61,30 @@ it('проба сервера Codex использует Sol', () => {
   expect(resolveConfig(project).config.apiProbeModel).toBe('claude-opus-5');
 });
 
-it('проверка готовности выкладки Codex использует Terra', async () => {
-  let launched;
-  await checkCodexReadiness({
-    config: resolveConfig(project).config,
-    root: '/repo',
-    env: { GH_TOKEN: 'test-token' },
-    start: ({ command }) => {
-      launched = command;
-      return { finished: Promise.resolve({ code: 1, stdout: '' }) };
-    },
-  });
-  expect(modelFlag(launched)).toBe('gpt-5.6-terra');
-});
+it.each(['win32', 'linux'])(
+  'проверка готовности выкладки Codex использует Terra: %s',
+  async (platform) => {
+    const launched = [];
+    await checkCodexReadiness({
+      platform,
+      config: resolveConfig(project).config,
+      root: '/repo',
+      env: { GH_TOKEN: 'test-token' },
+      start: ({ command }) => {
+        launched.push(command);
+        if (command.args.includes('sandbox'))
+          return { finished: Promise.resolve({ code: 0, stdout: 'td-workspace-ready' }) };
+        return { finished: Promise.resolve({ code: 1, stdout: '' }) };
+      },
+    });
+    expect(
+      launched.map((command) => command.args.find((arg) => arg === 'sandbox' || arg === 'exec')),
+    ).toEqual(platform === 'win32' ? ['sandbox', 'exec'] : ['exec']);
+    for (const command of launched.filter((command) => command.args.includes('sandbox'))
+      expect(command.args).not.toContain('--model');
+    const probes = launched.filter((command) => command.args.includes('exec'));
+    expect(probes).toHaveLength(1);
+    expect(probes[0].args.filter((arg) => arg === '--model')).toHaveLength(1);
+    expect(modelFlag(probes[0])).toBe('gpt-5.6-terra');
+  },
+);
