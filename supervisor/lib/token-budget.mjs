@@ -136,3 +136,87 @@ export function writeTokenLedger(root, config, ledger) {
   writeFileSync(path + '.tmp', JSON.stringify(ledger, null, 2));
   renameSync(path + '.tmp', path);
 }
+
+const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
+const nonnegative = (value) => Number.isSafeInteger(value) && value >= 0;
+const reasonsValid = (value) =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+const snapshotValid = (value) =>
+  value === null || (object(value) && normalizeTokenUsage(value) !== null);
+
+export function migrateTokenLedger(data) {
+  const invalid = () => {
+    throw new Error('Повреждён счётчик токенов или неизвестна версия');
+  };
+  if (!object(data)) return invalid();
+  if ('version' in data) {
+    if (data.version !== 2 || !object(data.tasks)) return invalid();
+    for (const task of Object.values(data.tasks)) {
+      if (!object(task) || !object(task.sessions) || !object(task.launches)) return invalid();
+      for (const session of Object.values(task.sessions)) {
+        if (
+          !object(session) ||
+          !nonnegative(session.knownTokens) ||
+          !snapshotValid(session.snapshot) ||
+          !reasonsValid(session.reasons) ||
+          (session.snapshot &&
+            session.knownTokens < session.snapshot.input_tokens + session.snapshot.output_tokens)
+        )
+          return invalid();
+      }
+      for (const launch of Object.values(task.launches)) {
+        if (
+          !object(launch) ||
+          !(launch.sessionId === null || typeof launch.sessionId === 'string') ||
+          !snapshotValid(launch.baseline) ||
+          !object(launch.observations) ||
+          !reasonsValid(launch.reasons) ||
+          typeof launch.completed !== 'boolean'
+        )
+          return invalid();
+        for (const [ordinal, observation] of Object.entries(launch.observations)) {
+          if (
+            !/^[1-9][0-9]*$/.test(ordinal) ||
+            !Number.isSafeInteger(Number(ordinal)) ||
+            !(
+              object(observation) &&
+              (normalizeTokenUsage(observation) || observation.unknown === 'invalid-usage')
+            )
+          )
+            return invalid();
+        }
+      }
+    }
+    return globalThis.structuredClone(data);
+  }
+  const ledger = { version: 2, tasks: {} };
+  for (const [taskId, sessions] of Object.entries(data)) {
+    if (!object(sessions) || !Object.values(sessions).every(nonnegative)) return invalid();
+    ledger.tasks[taskId] = {
+      sessions: Object.fromEntries(
+        Object.entries(sessions).map(([id, knownTokens]) => [
+          id,
+          { knownTokens, snapshot: null, reasons: ['legacy-unknown'] },
+        ]),
+      ),
+      launches: {},
+    };
+  }
+  return ledger;
+}
+
+export function readTokenLedgerV2(root, config) {
+  const path = join(root, config.paths.local, 'codex-usage.json');
+  return migrateTokenLedger(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {});
+}
+
+// Сначала сохраняем копию целиком; неудачная запись не делает retry пустой операцией.
+export function commitTokenLedger(ledger, update, save) {
+  const next = globalThis.structuredClone(ledger);
+  update(next);
+  migrateTokenLedger(next);
+  if (JSON.stringify(next) === JSON.stringify(ledger)) return false;
+  save(next);
+  Object.assign(ledger, next);
+  return true;
+}

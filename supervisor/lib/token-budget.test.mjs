@@ -12,7 +12,60 @@ import {
   reduceTokenObservation,
   launchTokenUsage,
   normalizeTokenUsage,
+  migrateTokenLedger,
+  readTokenLedgerV2,
+  commitTokenLedger,
 } from './token-budget.mjs';
+
+it('v2 переносит каждую старую сумму с legacy-unknown и проверяет схему', () => {
+  const ledger = migrateTokenLedger({ a: { s: 1740, t: 0 }, b: { u: 320 } });
+  expect(ledger.tasks.a.sessions.s).toEqual({
+    knownTokens: 1740,
+    snapshot: null,
+    reasons: ['legacy-unknown'],
+  });
+  expect(ledger.tasks.a.sessions.t.knownTokens).toBe(0);
+  expect(ledger.tasks.b.sessions.u.knownTokens).toBe(320);
+  expect(migrateTokenLedger(ledger)).toEqual(ledger);
+  expect(migrateTokenLedger({})).toEqual({ version: 2, tasks: {} });
+  for (const data of [
+    null,
+    [],
+    { version: 3, tasks: {} },
+    { a: { s: -1 } },
+    { version: 2, tasks: { a: { sessions: {}, launches: { l: {} } } } },
+  ])
+    expect(() => migrateTokenLedger(data)).toThrow('счётчик');
+});
+
+it('v2 переживает round-trip, а ошибка до rename оставляет память и файл для повтора', () => {
+  const root = mkdtempSync(join(tmpdir(), 'td-tokens-v2-'));
+  const config = { paths: { local: '.pipeline' } };
+  try {
+    const ledger = readTokenLedgerV2(root, config);
+    writeTokenLedger(root, config, ledger);
+    const update = (next) => {
+      next.tasks.a = { sessions: { s: emptyTokenSession() }, launches: { l: tokenLaunch('s') } };
+    };
+    expect(() =>
+      commitTokenLedger(ledger, update, () => {
+        throw new Error('rename failed');
+      }),
+    ).toThrow('rename failed');
+    expect(ledger).toEqual({ version: 2, tasks: {} });
+    expect(readTokenLedgerV2(root, config)).toEqual(ledger);
+    const save = (next) => writeTokenLedger(root, config, next);
+    expect(commitTokenLedger(ledger, update, save)).toBe(true);
+    expect(commitTokenLedger(ledger, update, save)).toBe(false);
+    expect(readTokenLedgerV2(root, config)).toEqual(ledger);
+    writeFileSync(join(root, '.pipeline/codex-usage.json'), '');
+    expect(() => readTokenLedgerV2(root, config)).toThrow();
+    writeFileSync(join(root, '.pipeline/codex-usage.json'), '{bad');
+    expect(() => readTokenLedgerV2(root, config)).toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // Синтетический fixture по producer ThreadTokenUsage.total в Codex rust-v0.146.0:
 // codex-rs/exec/src/event_processor_with_jsonl_output.rs (usage_from_last_total).
