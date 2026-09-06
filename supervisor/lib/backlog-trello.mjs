@@ -1,3 +1,4 @@
+import { checkCard } from './validate-card.mjs';
 import {
   joinDescription,
   labelKeysOf,
@@ -514,6 +515,16 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
 
     /** Разобранные карточки — для сканера и для проверки при чтении. */
     parsedCards: () => parsed,
+
+    // Архивирование не доказывает успех: нужна проверенная карточка в «Закрыто».
+    closedDependencyIds: () =>
+      cards
+        .filter((card) => card.closed)
+        .map((card) => parseCard(card, { stateByList, labelKeyById }))
+        .filter(
+          (item) => item.task.id && item.task.status === 'closed' && checkCard(item).length === 0,
+        )
+        .map((item) => item.task.id),
 
     /**
      * Дать номера карточкам, заведённым человеком.

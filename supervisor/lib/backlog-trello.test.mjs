@@ -607,3 +607,23 @@ describe('снятие захвата', () => {
     expect(put.body.idList).toBeUndefined();
   });
 });
+
+describe('архивные предшественники', () => {
+  it('подтверждает только проверенные архивные карточки в closed', () => {
+    const store = backlog({
+      cards: [
+        card({ closed: true, idList: 'list-closed' }),
+        card({ id: 'card-2', closed: true, meta: { id: '0032-failed' }, idList: 'list-failed' }),
+        card({
+          id: 'card-3',
+          closed: true,
+          meta: { id: '0033-broken' },
+          idList: 'list-closed',
+          idLabels: [],
+        }),
+      ],
+    });
+    expect(store.closedDependencyIds()).toEqual(['0031-proba']);
+    expect(store.parsedCards()).toEqual([]);
+  });
+});
