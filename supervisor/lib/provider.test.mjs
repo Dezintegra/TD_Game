@@ -64,6 +64,39 @@ describe('выбор исполнителя', () => {
 });
 
 describe('ответ Codex', () => {
+  for (const text of [report, 'не JSON\nисходный текст']) {
+    it.each(['decreased-usage', 'invalid-usage', 'history', 'cached'])(
+      `сохраняет текст ${text} при %s`,
+      (kind) => {
+        const first = readCodexAnswer(run(), config);
+        if (kind === 'history')
+          first.usageLedger.tasks.answer.sessions['thread-1'].reasons.push('legacy-unknown');
+        beginTokenLaunch(first.usageLedger, 'answer', 'next', 'thread-1');
+        const usage =
+          kind === 'invalid-usage'
+            ? undefined
+            : {
+                input_tokens: kind === 'decreased-usage' ? 500 : kind === 'history' ? 2000 : 1000,
+                output_tokens: 100,
+                cached_input_tokens: 0,
+              };
+        const answer = readCodexAnswer(
+          run([
+            events[0],
+            events[1],
+            { type: 'item.completed', item: { type: 'agent_message', text } },
+            { type: 'turn.completed', usage },
+          ]),
+          config,
+          { ledger: first.usageLedger, launchId: 'next' },
+        );
+        expect(answer.result).toBe(text);
+        expect(answer.outcome).toBe(kind === 'cached' ? 'done' : 'failed');
+        if (kind === 'cached') expect(answer.usageError).toBeNull();
+        else expect(answer.usageError).toContain(kind === 'history' ? 'legacy-unknown' : kind);
+      },
+    );
+  }
   it('читает терминальное событие и возвращает токены без долларовой оценки', () => {
     expect(readCodexAnswer(run(), config)).toMatchObject({
       outcome: 'done',

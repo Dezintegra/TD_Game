@@ -6,6 +6,7 @@ import {
   observeTokenUsage,
   completeTokenLaunch,
   taskTokens,
+  taskTokenStatus,
 } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
 import { CROSSCUT } from '../config/transitions.mjs';
@@ -861,11 +862,29 @@ export function createSupervisor({
           })
         : readAnswer(run);
     if (providerOf(config) === 'codex') {
-      persistUsage(child.taskId, (next) => {
-        next.tasks[child.taskId] = answer.usageLedger.tasks[child.taskId];
-      });
-      usageWriteErrors.delete(child.taskId);
-      answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${config.codexMaxTaskTokens ?? 'без лимита'} токенов задачи${answer.usage ? '' : '; расход текущего запуска неизвестен'}`;
+      let storageError = null;
+      try {
+        persistUsage(child.taskId, (next) => {
+          next.tasks[child.taskId] = answer.usageLedger.tasks[child.taskId];
+        });
+        usageWriteErrors.delete(child.taskId);
+      } catch (error) {
+        storageError = `не удалось сохранить расход Codex: ${error.message}`;
+      }
+      const status = taskTokenStatus(
+        { ...codexUsage, writeErrors: [...usageWriteErrors] },
+        child.taskId,
+      );
+      const reasons = [...new Set([...answer.usageStatus.reasons, ...status.reasons])];
+      answer.usageError = reasons.length
+        ? `Codex: полнота расхода задачи неизвестна (${reasons.join(', ')})`
+        : null;
+      if (storageError) answer.usageError = `${answer.usageError}; ${storageError}`;
+      if (answer.usageError && config.codexMaxTaskTokens != null && answer.outcome === 'done') {
+        answer.outcome = 'failed';
+        answer.why = answer.usageError;
+      }
+      answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${config.codexMaxTaskTokens ?? 'без лимита'} токенов задачи; расход текущего запуска ${answer.usage ? 'известен' : 'неизвестен'}${answer.usageError ? `; ${answer.usageError}` : '; учёт задачи полный'}`;
       log(answer.tokenBudget);
     }
     // Отчёт разбирается ЗДЕСЬ, а не там, где он применяется, — потому что
@@ -889,12 +908,15 @@ export function createSupervisor({
     // отойдя на час. В журнале этапа то же самое есть подробнее, но журнал
     // надо открыть, а строку видно сразу.
     //
-    // Значений в ней два, и метку выбирает ИСХОД ОТЧЁТА, а не ответ процесса.
+    // Значений в ней два: метку выбирает исход отчёта после допуска ответа.
     // Спокойная зелёная причитается этапу, который отчитался `done`, а не
     // процессу, который просто не упал: человек читает консоль полосой
     // и различает строки цветом раньше, чем словами. Отчёт о чужом этапе
     // спокойным не считается — он к задаче не применялся вовсе.
-    const reportedDone = parsed.report?.stage === child.stage && parsed.report.outcome === 'done';
+    const reportedDone =
+      answer.outcome === 'done' &&
+      parsed.report?.stage === child.stage &&
+      parsed.report.outcome === 'done';
     say.line(
       reportedDone ? TAG.stage : TAG.warn,
       `${child.taskId} ${child.stage} завершён: ответ ${answer.outcome}` +
@@ -940,7 +962,9 @@ export function createSupervisor({
     }
 
     if (answer.outcome !== 'done') {
-      log(`этап ${child.taskId}:${child.stage} не доведён: ${answer.why}`);
+      log(
+        `этап ${child.taskId}:${child.stage} не доведён: ${answer.why}; исход отчёта ${reportOutcome(child, answer, parsed)}`,
+      );
       return;
     }
 
@@ -1043,10 +1067,11 @@ function remembered(value) {
  * отчёт там, где его не начинали писать.
  */
 function reportOutcome(child, answer, parsed) {
+  const notApplied = answer.outcome !== 'done' ? `; не применён: ${answer.why}` : '';
   if (!parsed.report) {
     return answer.result == null
       ? 'отчёта нет — сессия ответа не оставила'
-      : `отчёта нет — ${parsed.why}`;
+      : `отчёта нет — ${parsed.why}${notApplied}`;
   }
   // Отчёт о чужом этапе к задаче не применялся вовсе, и слова «не применён»
   // здесь обязательны: без них шапка сообщала бы исход, которого задача
@@ -1054,10 +1079,10 @@ function reportOutcome(child, answer, parsed) {
   if (parsed.report.stage !== child.stage) {
     return (
       `${parsed.report.outcome} (отчёт об этапе «${parsed.report.stage}», ` +
-      `а шёл «${child.stage}» — не применён)`
+      `а шёл «${child.stage}» — не применён${answer.outcome !== 'done' ? `: ${answer.why}` : ''})`
     );
   }
-  return parsed.report.outcome;
+  return `${parsed.report.outcome}${notApplied}`;
 }
 
 /**
@@ -1094,6 +1119,7 @@ function renderLog(child, run, answer, parsed) {
     '',
     '--- отказанные действия ---',
     JSON.stringify(answer.denials, null, 2),
+    ...(answer.result == null ? [] : ['', '--- итоговый текст ---', answer.result]),
     '',
     '--- stdout ---',
     run.stdout ?? '',

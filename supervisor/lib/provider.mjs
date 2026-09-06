@@ -11,6 +11,7 @@ import {
   completeTokenLaunch,
   launchTokenUsage,
   launchTokenSnapshot,
+  taskTokenStatus,
 } from './token-budget.mjs';
 
 export function providerOf(config) {
@@ -189,8 +190,10 @@ export function readCodexAnswer(run, config = {}, context = {}) {
   answer.usage = session ? launchTokenUsage(session, launch) : null;
   answer.usageLedger = ledger;
   answer.usageReasons = [...new Set([...(session?.reasons ?? []), ...launch.reasons])];
-  if (answer.usageReasons.includes('decreased-usage'))
-    error ??= 'Codex usage уменьшился: расход продолжения неизвестен';
+  answer.usageStatus = taskTokenStatus(ledger, taskId);
+  answer.usageError = answer.usageStatus.complete
+    ? null
+    : `Codex: полнота расхода задачи неизвестна (${answer.usageStatus.reasons.join(', ')})`;
   if (run.killedBy) return { ...answer, outcome: 'timeout', why: `этап снят: ${run.killedBy}` };
   if (run.error)
     return { ...answer, outcome: 'failed', why: `запуск не состоялся: ${run.error.message}` };
@@ -209,14 +212,16 @@ export function readCodexAnswer(run, config = {}, context = {}) {
       why: error ?? `Codex не завершил ход (код ${run.code})`,
     };
   }
-  if (config.codexMaxTaskTokens != null && !answer.usage) {
+  // Только завершение протокола разрешает сохранить текст; учёт решает его допуск отдельно.
+  answer.result = message;
+  if (config.codexMaxTaskTokens != null && answer.usageError) {
     return {
       ...answer,
       outcome: 'failed',
-      why: 'Codex не сообщил usage: токеновый бюджет проверить нельзя',
+      why: answer.usageError,
     };
   }
-  return { ...answer, result: message, outcome: 'done', why: null };
+  return { ...answer, outcome: 'done', why: null };
 }
 
 export function codexProbeCommand(config) {

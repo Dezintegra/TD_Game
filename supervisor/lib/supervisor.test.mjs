@@ -120,6 +120,98 @@ function harness(over = {}) {
 /** Строка итога этапа из всего, что рассказчик напечатал. */
 const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
 
+describe('сохранённый отчёт при ошибке учёта', () => {
+  for (const valid of [true, false]) {
+    it.each(['decreased-usage', 'invalid-usage', 'history', 'cached'])(
+      `JSON ${valid}, учёт %s`,
+      async (kind) => {
+        const text = valid ? JSON.stringify(report, null, 2) : 'не JSON\nисходный текст';
+        const h = harness({
+          home: fileURLToPath(new URL('..', import.meta.url)),
+          config: { provider: 'codex', codexMaxTaskTokens: 25000000 },
+          codexUsage: {
+            version: 2,
+            tasks: {
+              '0001-one': {
+                sessions: {
+                  thread: {
+                    knownTokens: 1100,
+                    snapshot: { input_tokens: 1000, output_tokens: 100, cached_input_tokens: 200 },
+                    reasons: kind === 'history' ? ['legacy-unknown'] : [],
+                  },
+                },
+                launches: {},
+              },
+            },
+          },
+        });
+        h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' }));
+        for (const event of [
+          { type: 'thread.started', thread_id: 'thread' },
+          { type: 'item.completed', item: { type: 'agent_message', text } },
+        ])
+          h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+        await h.answer({
+          type: 'turn.completed',
+          usage:
+            kind === 'invalid-usage'
+              ? undefined
+              : {
+                  input_tokens: kind === 'decreased-usage' ? 500 : kind === 'history' ? 2000 : 1000,
+                  output_tokens: 100,
+                  cached_input_tokens: 0,
+                },
+        });
+        expect(h.wrote).toHaveLength(1);
+        expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + text);
+        expect(h.wrote[0].text).not.toContain('сессия ответа не оставила');
+        const line = finishedLine(h.said);
+        if (kind === 'cached') {
+          expect(line.text).toContain('ответ done');
+          expect(line.text).not.toContain('неизвест');
+          expect(h.supervisor.reports).toHaveLength(valid ? 1 : 0);
+          expect(line.tag).toBe(valid ? TAG.stage : TAG.warn);
+        } else {
+          const reason = kind === 'history' ? 'legacy-unknown' : kind;
+          for (const output of [h.wrote[0].text, line.text, h.logged.join('\n')]) {
+            expect(output).toContain(reason);
+            expect(output).toContain('не применён');
+            if (!valid) expect(output).toContain('JSON');
+          }
+          expect(line.text).toContain('ответ failed');
+          expect(line.tag).toBe(TAG.warn);
+          expect(h.supervisor.reports).toEqual([]);
+        }
+      },
+    );
+  }
+
+  it('отказ записи бюджета сохраняет текст до возврата и запрещает применение', async () => {
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider: 'codex', codexMaxTaskTokens: 25000000 },
+      saveCodexUsage: (next) => {
+        if (
+          Object.values(next.tasks['0001-one']?.launches ?? {}).some((launch) => launch.completed)
+        )
+          throw new Error('disk unavailable');
+      },
+    });
+    h.supervisor.spawnStage(assignment());
+    for (const event of [
+      { type: 'thread.started', thread_id: 'thread' },
+      { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(report) } },
+    ])
+      h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+    await h.answer({ type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 100 } });
+    expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + JSON.stringify(report));
+    expect(h.wrote[0].text).toContain('disk unavailable');
+    expect(finishedLine(h.said).tag).toBe(TAG.warn);
+    expect(h.supervisor.reports).toEqual([]);
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+  });
+});
+
 it('дочерний Codex учитывает только подключённый durable cumulative snapshot', async () => {
   const h = harness({
     config: { provider: 'codex' },
