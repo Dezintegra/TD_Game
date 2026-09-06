@@ -8,6 +8,10 @@ Before applying a failed report or charging another continuation for an unsucces
 - **WHEN** fetch and merge succeeded, later command execution fails, the session exits 0 with a failed report and no permission denials, and a control operation independently reproduces unavailability
 - **THEN** the supervisor classifies the stop as infrastructure-confirmed before any failed transition or continuation exhaustion action
 
+#### Scenario: Existing API classification takes precedence
+- **WHEN** the normalized session result is a structural api-error
+- **THEN** it SHALL use the existing API-error path before in-stage tool classification, without requiring tool diagnostics or creating an infrastructure retry entitlement
+
 #### Scenario: Ordinary test failure or unconfirmed complaint
 - **WHEN** a test fails or an agent reports EPERM but the required control operations succeed
 - **THEN** the original result follows ordinary handling without infrastructure pause, refund or retry entitlement
@@ -67,6 +71,21 @@ After manual pause removal the supervisor SHALL require fresh successful diagnos
 #### Scenario: Restart after retry spawn
 - **WHEN** the replacement process started and the supervisor restarts before acknowledging the retry handoff
 - **THEN** its persisted launch identity is adopted or reconciled and a second replacement is not spawned
+
+#### Scenario: Availability closes between claim and spawn
+- **WHEN** an infrastructure retry is durably claimed and the API launch gate closes before process creation
+- **THEN** the final synchronous spawn gate SHALL return availability-held without creating a process or charging continuation, spawn-failure or cycle-failure counters
+- **AND** the entitlement SHALL remain available across restart, with the claim reconciled to retry-ready when non-creation is proven; after both tool recovery and launch admission it SHALL permit exactly one replacement, including a deploy replacement whose remote effects were verified
+
+#### Scenario: Completion precedes charge persistence
+- **WHEN** a continuation finishes with a confirmed tool outage before its launch-specific continuation charge has been confirmed by the recipient
+- **THEN** the supervisor SHALL persist the result but keep settlement and replacement blocked while that charge is pending or unknown, including across restart
+- **AND** once the charge is independently confirmed, settlement SHALL refund it once using current recipient state; charge persistence and compensation SHALL be serialized so a late saveTask callback cannot overwrite the refund or cause a duplicate charge
+
+#### Scenario: Structural API failure has one refund owner
+- **WHEN** a launch completes with a structural api-error, even if a tool diagnosis could also fail
+- **THEN** only the existing API-error handler SHALL own its launch-specific refund after confirmed charging; no infrastructure settlement or second refund SHALL be created for that launch
+- **AND** an availability observation or successful API probe SHALL neither refund that launch nor consume an unrelated infrastructure retry entitlement
 
 ### Requirement: Deploy outage recovery preserves the assigned batch
 
