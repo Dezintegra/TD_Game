@@ -1488,6 +1488,102 @@ describe('долговечные наблюдения Codex', () => {
     },
   );
 
+  it.each([
+    ['throw', '0001-one', 'spawn'],
+    ['throw', '0002-two', 'sweep'],
+    ['no-pid', '0001-one', 'sweep'],
+    ['no-pid', '0002-two', 'spawn'],
+  ])('повтор отмены %s восстанавливает %s через %s', async (failure, taskId, retry) => {
+    let writes = 0;
+    let failCancel = true;
+    let persisted;
+    let cancelledId;
+    const over = {
+      ...options,
+      spawnThrows: failure === 'throw' ? 'spawn failed' : null,
+      stillborn: failure === 'no-pid',
+      saveCodexUsage: (next) => {
+        writes += 1;
+        if (writes > 1 && failCancel) throw new Error('disk unavailable');
+        persisted = JSON.parse(JSON.stringify(next));
+      },
+      onSpawn: () => {
+        if (cancelledId) expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeUndefined();
+      },
+    };
+    const h = harness(over);
+    expect(h.supervisor.spawnStage(assignment()).reason).toBe('not-born');
+    cancelledId = Object.keys(persisted.tasks['0001-one'].launches)[0];
+    h.children.at(-1)?.emit('close', 1);
+    await sleep(0);
+    const attempts = h.children.length;
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+    h.supervisor.sweep();
+    expect(h.supervisor.spawnStage(assignment({ taskId })).reason).toBe('busy');
+    expect(h.children).toHaveLength(attempts);
+    expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeDefined();
+    expect(h.supervisor.busy()).toBe(0);
+    failCancel = false;
+    over.spawnThrows = null;
+    over.stillborn = false;
+    if (retry === 'sweep') {
+      h.supervisor.sweep();
+      expect(taskTokenStatus(persisted, '0001-one').complete).toBe(true);
+      expect(h.supervisor.codexUsage.writeErrors).toEqual([]);
+      const after = writes;
+      h.supervisor.sweep();
+      expect(writes).toBe(after);
+    }
+    expect(h.supervisor.spawnStage(assignment({ taskId })).ok).toBe(true);
+    expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeUndefined();
+    expect(h.supervisor.codexUsage.writeErrors).toEqual([]);
+    emit(h, { type: 'thread.started', thread_id: 's' });
+    await h.answer(completed());
+    expect(taskTokens(persisted, taskId)).toBe(1740);
+    expect(taskTokenStatus(persisted, '0001-one').complete).toBe(true);
+  });
+
+  it('удачная отмена не снимает ошибку сохранения расхода той же задачи', async () => {
+    let fail = false;
+    let failCancel = false;
+    let cancelledId;
+    let persisted;
+    const over = {
+      ...options,
+      saveCodexUsage: (next) => {
+        if (fail || (failCancel && !next.tasks['0001-one'].launches[cancelledId]))
+          throw new Error('disk unavailable');
+        persisted = JSON.parse(JSON.stringify(next));
+      },
+    };
+    const h = harness(over);
+    h.supervisor.spawnStage(assignment());
+    emit(h, { type: 'thread.started', thread_id: 's' });
+    emit(h, completed());
+    fail = true;
+    h.children.at(-1).emit('close', 0);
+    await sleep(0);
+    const originalId = Object.keys(persisted.tasks['0001-one'].launches)[0];
+    fail = false;
+    over.onSpawn = () => {
+      cancelledId = Object.keys(persisted.tasks['0001-one'].launches).find(
+        (id) => id !== originalId,
+      );
+      failCancel = true;
+      throw new Error('spawn failed');
+    };
+    expect(h.supervisor.spawnStage(assignment({ stage: 'decompose' })).reason).toBe('not-born');
+    expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeDefined();
+    failCancel = false;
+    h.supervisor.sweep();
+    expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeUndefined();
+    expect(persisted.tasks['0001-one'].launches[originalId]).toBeDefined();
+    expect(taskTokens(persisted, '0001-one')).toBe(1740);
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+    expect(h.supervisor.spawnStage(assignment()).reason).toBe('busy');
+    expect(h.supervisor.spawnStage(assignment({ taskId: '0002-two' })).reason).toBe('busy');
+  });
+
   it.each(['thread.started', 'turn.completed'])(
     'finish повторяет поток после сбоя сохранения %s',
     async (failureAt) => {

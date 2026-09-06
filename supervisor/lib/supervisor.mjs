@@ -72,6 +72,7 @@ export function createSupervisor({
   const children = new Map();
   codexUsage = migrateTokenLedger(codexUsage);
   const usageWriteErrors = new Set();
+  const pendingUsageCancellations = new Map();
   let policyBlocked = false;
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
@@ -121,7 +122,15 @@ export function createSupervisor({
 
   return {
     get codexUsage() {
-      return { ...codexUsage, writeErrors: [...usageWriteErrors] };
+      return {
+        ...codexUsage,
+        writeErrors: [
+          ...new Set([
+            ...usageWriteErrors,
+            ...[...pendingUsageCancellations.values()].map((child) => child.taskId),
+          ]),
+        ],
+      };
     },
     reports,
     orphanOutcomes,
@@ -230,8 +239,9 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
+      retryUsageCancellations();
       if (
-        usageWriteErrors.size &&
+        (usageWriteErrors.size || pendingUsageCancellations.size) &&
         config.codexMaxTaskTokens != null &&
         assignment.stage !== 'decompose' &&
         !CROSSCUT.includes(assignment.stage)
@@ -461,13 +471,26 @@ export function createSupervisor({
   }
 
   function cancelUsageLaunch(child) {
+    pendingUsageCancellations.set(child.launchId, child);
     try {
-      persistUsage(child.taskId, (next) => {
-        delete next.tasks[child.taskId].launches[child.launchId];
-      });
+      commitTokenLedger(
+        codexUsage,
+        (next) => {
+          delete next.tasks[child.taskId].launches[child.launchId];
+        },
+        saveCodexUsage,
+      );
+      pendingUsageCancellations.delete(child.launchId);
     } catch (error) {
       log(`не удалось отменить учёт несостоявшегося запуска: ${error.message}`);
     }
+  }
+
+  function retryUsageCancellations() {
+    // Отмена не восстанавливает потерянный расход живого процесса, поэтому
+    // её очередь отдельна от usageWriteErrors. Повтор нужен и до сканирования:
+    // unfinished-launch иначе не даст циклу дойти до spawnStage.
+    for (const child of pendingUsageCancellations.values()) cancelUsageLaunch(child);
   }
 
   /**
@@ -612,6 +635,7 @@ export function createSupervisor({
    * длиной в один срок этапа.
    */
   function sweep() {
+    retryUsageCancellations();
     for (const orphan of [...orphans.values()]) {
       const verdict = judgeOrphan(orphan);
 
