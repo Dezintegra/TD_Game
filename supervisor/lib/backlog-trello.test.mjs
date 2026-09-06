@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createTrelloBacklog } from './backlog-trello.mjs';
-import { joinDescription } from './card.mjs';
+import { joinDescription, splitDescription } from './card.mjs';
+import { dependencyFixture } from './dependency-updates-fixture.mjs';
 import { checkCard } from './validate-card.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 
@@ -14,6 +15,132 @@ import { resolveConfig } from '../config/defaults.mjs';
 
 const { config } = resolveConfig({ trello: { board: 'b' } });
 const marker = config.trello.marker;
+
+describe('адресное дополнение зависимостей', () => {
+  it('пишет только desc, подтверждает отдельным GET, сохраняет свежие поля и повторяется без PUT', async () => {
+    const f = dependencyFixture();
+    const store = f.store();
+    const old = splitDescription(f.cards[0].desc);
+    f.cards[0].desc = joinDescription(old.human, {
+      ...old.meta,
+      dependsOn: ['0004-new'],
+      dependencyResults: [{ taskId: '0004-new', kind: 'merged-pr', pr: 7 }],
+    });
+    const result = await store.appendTaskDependencies(f.update, f.context);
+    expect(result).toMatchObject({
+      ok: true,
+      task: { status: 'new', dependsOn: ['0004-new', '0002-producer'] },
+    });
+    expect(splitDescription(f.cards[0].desc).meta.extra).toEqual(old.meta.extra);
+    expect(splitDescription(f.cards[0].desc).human).toBe(old.human);
+    const at = f.calls.findIndex((call) => call.method === 'PUT');
+    expect(Object.keys(f.calls[at].body)).toEqual(['desc']);
+    expect(f.calls[at - 1].method).toBe('INVALIDATE');
+    expect(f.calls[at + 1]).toMatchObject({ method: 'GET', path: 'cards/card-target' });
+    expect(f.cards[0].idMembers).toEqual([]);
+    f.calls.length = 0;
+    expect(await store.appendTaskDependencies(f.update, f.context)).toMatchObject({
+      ok: true,
+      outcome: 'unchanged',
+    });
+    expect(f.calls.every((call) => ['GET', 'INVALIDATE'].includes(call.method))).toBe(true);
+  });
+  it('перечитывает дополнения, появившиеся при захвате', async () => {
+    const f = dependencyFixture();
+    f.hook = (method, path) => {
+      if (method === 'POST' && path.endsWith('/idMembers')) {
+        const old = splitDescription(f.cards[0].desc);
+        f.cards[0].desc = joinDescription('Новый текст.', { ...old.meta, dependsOn: ['0004-new'] });
+      }
+    };
+    expect(await f.store().appendTaskDependencies(f.update, f.context)).toMatchObject({
+      ok: true,
+      task: { dependsOn: ['0004-new', '0002-producer'], description: 'Новый текст.' },
+    });
+  });
+  it.each(['busy', 'duplicate', 'archived', 'invalid', 'board'])(
+    'отклоняет адресата: %s',
+    async (mode) => {
+      const f = dependencyFixture();
+      const store = f.store();
+      if (mode === 'busy') f.cards[0].idMembers = ['me'];
+      if (mode === 'duplicate') f.cards.push({ ...f.cards[0], id: 'duplicate', closed: true });
+      if (mode === 'archived') f.cards[0].closed = true;
+      if (mode === 'invalid') f.cards[0].idLabels = [];
+      if (mode === 'board') f.cards[0].idBoard = 'other';
+      expect((await store.appendTaskDependencies(f.update, f.context)).ok).toBe(false);
+      expect(f.calls.some((call) => ['PUT', 'DELETE'].includes(call.method))).toBe(false);
+    },
+  );
+  it.each(
+    ['read', 'post', 'after-claim', 'put', 'confirm', 'release'].flatMap((step) =>
+      ['failure', 'throw'].map((mode) => [step, mode]),
+    ),
+  )('не подтверждает %s / %s', async (step, mode) => {
+    const f = dependencyFixture();
+    const store = f.store();
+    let reads = 0;
+    f.hook = (method, path) => {
+      if (method === 'GET' && path === 'cards/card-target') reads++;
+      const hit =
+        (step === 'read' && path === 'boards/b/cards') ||
+        (step === 'post' && method === 'POST') ||
+        (step === 'after-claim' && reads === 2 && method === 'GET') ||
+        (step === 'put' && method === 'PUT') ||
+        (step === 'confirm' && reads === 3 && method === 'GET') ||
+        (step === 'release' && method === 'DELETE');
+      if (!hit) return;
+      if (mode === 'throw') throw new Error(`broken ${step}`);
+      return { ok: false, why: `broken ${step}` };
+    };
+    const result = await store.appendTaskDependencies(f.update, f.context);
+    expect(result).toMatchObject({ ok: false });
+    expect(result.why).toContain('0003-consumer');
+    expect(store.readTask('0003-consumer').dependsOn).toBeUndefined();
+    if (['after-claim', 'put', 'confirm', 'release'].includes(step))
+      expect(f.calls.some((call) => call.method === 'DELETE')).toBe(true);
+    if (['put', 'confirm', 'release'].includes(step))
+      expect(f.invalidated).toEqual(['0003-consumer']);
+  });
+  it.each(['dependsOn', 'dependencyResults', 'extra', 'human', 'name', 'id'])(
+    'ловит потерю поля %s при readback',
+    async (field) => {
+      const f = dependencyFixture();
+      let written = false;
+      f.hook = (method, path) => {
+        if (method === 'PUT') written = true;
+        if (written && method === 'GET' && path === 'cards/card-target') {
+          const raw = { ...f.cards[0] };
+          const parts = splitDescription(raw.desc);
+          if (field === 'human') parts.human = 'Потерян';
+          else if (['name', 'id'].includes(field)) raw[field] = 'changed';
+          else delete parts.meta[field];
+          raw.desc = joinDescription(parts.human, parts.meta);
+          return { ok: true, data: raw };
+        }
+      };
+      expect((await f.store().appendTaskDependencies(f.update, f.context)).ok).toBe(false);
+      expect(f.invalidated).toEqual(['0003-consumer']);
+    },
+  );
+  it('не теряет инвалидацию, если PUT сохранился и потерял ответ', async () => {
+    const f = dependencyFixture();
+    f.hook = (method, path, body) => {
+      if (method !== 'PUT') return;
+      Object.assign(f.cards[0], body);
+      throw new Error('ответ потерян');
+    };
+    const store = f.store();
+    expect((await store.appendTaskDependencies(f.update, f.context)).ok).toBe(false);
+    expect(f.invalidated).toEqual(['0003-consumer']);
+    expect(store.readTask('0003-consumer').dependsOn).toBeUndefined();
+    f.hook = null;
+    expect(await store.appendTaskDependencies(f.update, f.context)).toMatchObject({
+      ok: true,
+      outcome: 'unchanged',
+    });
+  });
+});
 
 /** Подставной клиент Trello: помнит запросы, отвечает заданным. */
 function fakeTrello(replies = {}) {

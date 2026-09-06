@@ -12,6 +12,8 @@ import {
 import { findAnswer, joinJournalParts, splitJournalEntry } from './comments.mjs';
 import { journalBody } from './journal.mjs';
 import { nextId } from './requests.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { planDependencyUpdates } from './dependency-updates.mjs';
 
 /**
  * Бэклог, живущий карточками доски Trello.
@@ -135,11 +137,176 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     return { ok: true, id: meId };
   }
 
+  const failed = (why) => ({ ok: false, outcome: 'failed', why });
+  const fields = 'idBoard,name,desc,idList,idLabels,idMembers,pos,closed';
+  const parse = (raw) => parseCard(raw, { stateByList, labelKeyById });
+  function record(raw) {
+    const item = parse(raw);
+    const id = item.task.id ?? raw.name?.match(/^([0-9]{4}-[a-z0-9]+(?:-[a-z0-9]+)*)\s*[·—–]/)?.[1];
+    return { ...item.task, id, valid: checkCard(item).length === 0, archived: Boolean(raw.closed) };
+  }
+  async function freshCards() {
+    const result = await trello.get(`boards/${trelloConfig.board}/cards`, {
+      filter: 'all',
+      fields,
+    });
+    if (!result.ok) return failure(result);
+    if (!Array.isArray(result.data)) return failed('не получена коллекция карточек доски');
+    return { ok: true, cards: result.data, records: result.data.map(record) };
+  }
+  async function resolveFresh(id, board, expectedCardId) {
+    const matches = board.cards.filter((raw) => record(raw).id === id);
+    if (matches.length !== 1) return failed(`${id}: адресат отсутствует или неоднозначен`);
+    const raw = matches[0];
+    if (raw.idBoard !== trelloConfig.board || (expectedCardId && raw.id !== expectedCardId))
+      return failed(`${id}: другая физическая карточка или доска`);
+    const result = await trello.get(`cards/${raw.id}`, { fields });
+    if (!result.ok) return failure(result);
+    const current = result.data;
+    if (
+      !current ||
+      current.id !== raw.id ||
+      current.idBoard !== trelloConfig.board ||
+      current.closed ||
+      record(current).id !== id ||
+      !record(current).valid
+    )
+      return failed(`${id}: негодное свежее чтение карточки`);
+    return { ok: true, raw: current, item: parse(current) };
+  }
+  // Меняется лишь JSON блока: даже пробелы человеческой части остаются на месте.
+  function withMeta(desc, meta) {
+    const start = desc.indexOf('<!-- pipeline') + '<!-- pipeline'.length;
+    const end = desc.indexOf('-->', start);
+    return `${desc.slice(0, start)}\n${JSON.stringify(meta)}\n${desc.slice(end)}`;
+  }
+  function preserved(raw) {
+    return Object.fromEntries(
+      ['id', 'idBoard', 'name', 'idList', 'idLabels', 'idMembers', 'pos', 'closed'].map((key) => [
+        key,
+        raw[key],
+      ]),
+    );
+  }
+  function sameDescription(a, b) {
+    return (
+      isDeepStrictEqual(splitDescription(a).meta, splitDescription(b).meta) &&
+      withMeta(a, {}) === withMeta(b, {})
+    );
+  }
+  function publish(raw) {
+    const item = parse(raw);
+    byId.set(item.task.id, item);
+    return item.task;
+  }
+
+  async function planTaskDependencyUpdates(updates, sourceId) {
+    try {
+      const board = await freshCards();
+      return board.ok ? planDependencyUpdates(updates, sourceId, board.records) : board;
+    } catch (error) {
+      return failed(`dependencyUpdates: ${error.message}`);
+    }
+  }
+
+  async function appendTaskDependencies(update, context) {
+    let owned = null;
+    let confirmed = null;
+    let result;
+    try {
+      const apply = async () => {
+        let board = await freshCards();
+        if (!board.ok) return board;
+        let plan = planDependencyUpdates(
+          context.updates ?? [update],
+          context.sourceId,
+          board.records,
+        );
+        if (!plan.ok) return plan;
+        let fresh = await resolveFresh(update.taskId, board);
+        if (!fresh.ok) return fresh;
+        const mergeFresh = () =>
+          planDependencyUpdates(
+            context.updates ?? [update],
+            context.sourceId,
+            board.records.map((item) => (item.id === update.taskId ? record(fresh.raw) : item)),
+          );
+        plan = mergeFresh();
+        if (!plan.ok) return plan;
+        let candidate = plan.tasks.find((task) => task.id === update.taskId);
+        const description = () =>
+          withMeta(fresh.raw.desc, {
+            ...splitDescription(fresh.raw.desc).meta,
+            dependsOn: candidate.dependsOn,
+            dependencyResults: candidate.dependencyResults,
+          });
+        if (sameDescription(fresh.raw.desc, description())) {
+          context.invalidate(update.taskId);
+          confirmed = fresh.raw;
+          return { ok: true, outcome: 'unchanged' };
+        }
+        if (fresh.raw.idMembers?.length)
+          return { ok: false, outcome: 'busy', why: 'адресат уже назначен исполнителю' };
+        const me = await whoAmI();
+        if (!me.ok) return me;
+        const taken = await trello.post(`cards/${fresh.raw.id}/idMembers`, { value: me.id });
+        if (!taken.ok)
+          return /already on the card/i.test(taken.why ?? '')
+            ? { ok: false, outcome: 'busy', why: 'адресат уже назначен исполнителю' }
+            : failure(taken);
+        owned = { cardId: fresh.raw.id, memberId: me.id };
+        board = await freshCards();
+        if (!board.ok) return board;
+        fresh = await resolveFresh(update.taskId, board, owned.cardId);
+        if (!fresh.ok) return fresh;
+        if (!isDeepStrictEqual(fresh.raw.idMembers, [me.id]))
+          return failed('захват адресата изменился');
+        plan = mergeFresh();
+        if (!plan.ok) return plan;
+        candidate = plan.tasks.find((task) => task.id === update.taskId);
+        const desc = description();
+        context.invalidate(update.taskId);
+        if (!sameDescription(fresh.raw.desc, desc)) {
+          const written = await trello.put(`cards/${owned.cardId}`, { desc });
+          if (!written.ok) return failure(written);
+        }
+        const readback = await trello.get(`cards/${owned.cardId}`, { fields });
+        if (!readback.ok) return failure(readback);
+        const saved = readback.data;
+        if (
+          !saved ||
+          !record(saved).valid ||
+          !isDeepStrictEqual(preserved(saved), preserved(fresh.raw)) ||
+          !sameDescription(saved.desc, desc)
+        )
+          return failed('подтверждение потеряло или изменило данные карточки');
+        confirmed = saved;
+        return { ok: true, outcome: 'saved' };
+      };
+      result = await apply();
+    } catch (error) {
+      result = failed(error.message);
+    } finally {
+      if (owned) {
+        try {
+          const freed = await trello.delete(`cards/${owned.cardId}/idMembers/${owned.memberId}`);
+          if (!freed.ok) result = failed(`освобождение захвата: ${freed.why}`);
+        } catch (error) {
+          result = failed(`освобождение захвата: ${error.message}`);
+        }
+      }
+    }
+    if (!result.ok) return { ...result, why: `${update.taskId}: ${result.why}` };
+    return { ...result, task: publish(confirmed) };
+  }
+
   return {
     // Всё, что ниже, повторяет поверхность файлового хранилища. Разница
     // только в том, что записи возвращают обещание: доска отвечает по сети.
 
     readTask: (id) => byId.get(id)?.task ?? null,
+    planTaskDependencyUpdates,
+    appendTaskDependencies,
 
     /**
      * Все занятые идентификаторы.
