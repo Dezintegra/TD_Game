@@ -29,6 +29,15 @@ const assignment = {
 };
 
 describe('состав', () => {
+  it('передаёт закреплённую ревизию снимка выкладки', () => {
+    const deploymentRevision = 'a'.repeat(40);
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'deploy', branch: null, deploymentRevision },
+      task,
+    });
+    expect(text).toContain(`"deploymentRevision": "${deploymentRevision}"`);
+    expect(text).toContain('"branch": null');
+  });
   const text = stagePrompt({ assignment, task, journal: 'вердикт аудита: пропущено' });
 
   it('называет задачу, этап, ветку и дерево', () => {
@@ -53,6 +62,36 @@ describe('состав', () => {
   it('требует вернуть отчёт сообщением, а не файлом', () => {
     expect(text).toContain('последним сообщением');
     expect(text).not.toContain('.pipeline/reports');
+  });
+});
+
+describe('пакет выкладки', () => {
+  const batch = [
+    { id: '0042-fix-tesla-price', title: 'Снизить цену Теслы', pr: 137, change: 'fix-tesla-price' },
+    { id: '0043-fix-nuke', title: 'Поправить удар', pr: 138, change: 'fix-nuke' },
+  ];
+
+  it('идентификаторы пакета стоят в назначении, выписки — своим разделом', () => {
+    // Сессии нужен номер pull request каждой задачи, чтобы проверить
+    // вливание, а открывать бэклог ей нельзя: чего нет в промпте, того
+    // для неё не существует.
+    const text = stagePrompt({ assignment: { ...assignment, stage: 'deploy', batch }, task });
+    expect(text).toContain('"batch": [');
+    expect(text).toContain('## Пакет выкладки');
+    expect(text).toContain('0043-fix-nuke');
+    expect(text).toContain('138');
+    expect(text).toContain('`skipped`');
+  });
+
+  it('без пакета ни поля, ни раздела нет', () => {
+    const text = stagePrompt({ assignment, task });
+    expect(text).not.toContain('"batch"');
+    expect(text).not.toContain('Пакет выкладки');
+  });
+
+  it('пустой перечень пакетом не считается', () => {
+    const text = stagePrompt({ assignment: { ...assignment, batch: [] }, task });
+    expect(text).not.toContain('Пакет выкладки');
   });
 });
 

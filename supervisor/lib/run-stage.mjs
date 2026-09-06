@@ -46,7 +46,21 @@ export function startStage({
   setTimer = nodeSetTimeout,
   clearTimer = nodeClearTimeout,
 }) {
-  const child = spawn(command.program, command.args, { cwd: command.cwd });
+  // `windowsHide` — не косметика, а лечение вполне конкретной беды.
+  //
+  // Супервизор запускается с `detached: true`, а это на Windows означает
+  // процесс ВОВСЕ БЕЗ КОНСОЛИ. Каждый его потомок из-за этого получает
+  // свежую и ВИДИМУЮ консоль: окна вспыхивают десятками, перехватывая фокус
+  // у того, кто в это время работает за машиной. Проверено делом 02.09.2026.
+  //
+  // Флаг даёт процессу консоль, которая просто не показывается. Потомки
+  // этапа — `git`, `pnpm`, `gh` — наследуют её и потому молчат тоже: иначе
+  // до них было бы не дотянуться, они порождаются не нами.
+  const child = spawn(command.program, command.args, {
+    cwd: command.cwd,
+    windowsHide: true,
+    ...(command.env ? { env: command.env } : {}),
+  });
 
   // Промпт подаётся на вход, а не аргументом: длина аргументов на Windows
   // ограничена, и назначение растущей задачи однажды перестаёт в неё влезать
@@ -183,6 +197,24 @@ function stripBom(text) {
 }
 
 /**
+ * Состояние отказа сервера модели — или `null`, если отказа нет.
+ *
+ * Признак берётся из двух полей, и достаточно любого. `terminal_reason` —
+ * слово приложения о случившемся, `api_error_status` — число ответа.
+ * 03.09.2026 приходили оба сразу, но полагаться на их совместность нельзя:
+ * расширить признак дешевле, чем однажды не узнать отказ и снова оплатить
+ * шесть пустых этапов.
+ *
+ * Число возвращается как есть, а при одном лишь слове — само слово: причина
+ * обязана называть состояние, и «api_error» без числа лучше пустоты.
+ */
+function apiErrorStatus(envelope) {
+  const status = envelope.api_error_status;
+  if (typeof status === 'number' && Number.isFinite(status)) return status;
+  return envelope.terminal_reason === 'api_error' ? 'api_error' : null;
+}
+
+/**
  * Что ответил этап.
  *
  * Исход берётся из кода возврата и разбора ответа — и ниоткуда больше.
@@ -232,6 +264,19 @@ export function readAnswer(run) {
     cost: envelope.total_cost_usd ?? null,
     turns: envelope.num_turns ?? null,
   };
+
+  // Отказ сервера модели — свой исход, и ступень стоит ВЫШЕ общей неудачи:
+  // иначе до неё не доходит дело. Слова общей ветки здесь заведомо лгут —
+  // подсказку она берёт из `subtype`, а у отказа сервера он равен `success`,
+  // и строка выходит про «неудачу» с пояснением «успех».
+  const apiStatus = apiErrorStatus(envelope);
+  if (apiStatus !== null) {
+    return {
+      ...answer,
+      outcome: 'api-error',
+      why: `сервер модели отказал (состояние ${apiStatus}); работы не было`,
+    };
+  }
 
   if (run.code !== 0 || envelope.is_error) {
     return {
@@ -306,6 +351,84 @@ function parseEnvelope(stdout) {
  * На Windows это `taskkill /T /F`: своей группы процессов там нет, и
  * `process.kill` снял бы одного `claude`, оставив всех его детей.
  */
+/**
+ * Спросить у системы, что за процесс носит этот номер.
+ *
+ * Нужно ради одного: номера процессов система переиспользует, и «номер
+ * существует» само по себе не значит «наш этап жив». Довериться одному лишь
+ * номеру значило бы однажды снять поддеревом (`taskkill /T /F`) постороннюю
+ * ветку процессов рабочей станции — браузер, редактор и всё, что они успели
+ * породить.
+ *
+ * Ответ разводит три положения, и путать их нельзя:
+ *
+ * - `known: true,  alive: true`  — процесс есть, и вот имя его образа;
+ * - `known: true,  alive: false` — процесса с таким номером нет;
+ * - `known: false`               — спросить не удалось, и это НЕ «процесса нет».
+ *
+ * Третье приходится отличать отдельно: «процесса нет» отпускает рабочее
+ * дерево задачи, а «не спросилось» обязано оставить этап идущим до его срока.
+ * Свалив их в одно, мы выдали бы продолжение живому этапу — то самое, ради
+ * отмены чего опознание и заводится.
+ */
+export function createProbeProcess(run, platform = process.platform) {
+  return (pid) => {
+    if (!pid) return UNKNOWN;
+    let answer;
+    try {
+      answer =
+        platform === 'win32'
+          ? run('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'])
+          : run('ps', ['-p', String(pid), '-o', 'comm=']);
+    } catch {
+      // Нет самой команды опроса — тот же случай «спросить не удалось».
+      return UNKNOWN;
+    }
+    return platform === 'win32' ? readTasklist(answer) : readPs(answer);
+  };
+}
+
+/** Спросить не удалось. Отдельное положение, а не разновидность отсутствия. */
+const UNKNOWN = { known: false, alive: false, image: null };
+/** Процесса с таким номером нет — и об этом система сказала прямо. */
+const GONE = { known: true, alive: false, image: null };
+
+/**
+ * Ответ `tasklist`.
+ *
+ * Отсутствие процесса он сообщает ТЕКСТОМ при нулевом коде возврата —
+ * «INFO: No tasks are running which match the specified criteria», причём
+ * на языке системы. Поэтому опознаётся не сообщение (его не с чем сверять),
+ * а его отсутствие: строка данных в формате CSV начинается с кавычки, всё
+ * прочее — разговоры.
+ */
+function readTasklist(answer) {
+  const line = firstLine(answer?.stdout);
+  if (!line) return UNKNOWN;
+  if (!line.startsWith('"')) return GONE;
+  const end = line.indexOf('"', 1);
+  const image = end > 1 ? line.slice(1, end) : '';
+  return image ? { known: true, alive: true, image } : UNKNOWN;
+}
+
+/** Ответ `ps`: здесь отсутствие процесса приходит кодом возврата. */
+function readPs(answer) {
+  if (!answer) return UNKNOWN;
+  if (answer.code !== 0) return GONE;
+  const image = firstLine(answer.stdout);
+  return image ? { known: true, alive: true, image } : UNKNOWN;
+}
+
+/** Первая непустая строка вывода. Пустой вывод — это «не разобралось». */
+function firstLine(stdout) {
+  return (
+    String(stdout ?? '')
+      .split('\n')
+      .map((line) => line.trim())
+      .find(Boolean) ?? ''
+  );
+}
+
 export function createKillTree(run, platform = process.platform) {
   return (pid) => {
     if (!pid) return;

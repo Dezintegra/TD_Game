@@ -1,6 +1,7 @@
 ﻿import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { hasWork, scan } from './scan.mjs';
+import { migrateTokenLedger, beginTokenLaunch } from './token-budget.mjs';
 // resolveConfig уже импортирован выше — здесь он нужен и проверкам настройки.
 
 /**
@@ -52,6 +53,19 @@ describe('пустая картина', () => {
     const result = run({ tasks: [task()], paused: true });
     expect(result.actions).toEqual([]);
     expect(result.notes.join()).toContain('паузы');
+  });
+
+  it('пауза сервера останавливает всё, включая записи об отказах', () => {
+    // Записи ждут, пока сервер ответит, и не теряются: очередь отказов живёт
+    // у супервизора и под паузой не расходуется. Писать на доску под лежачим
+    // сервером незачем — оборот под паузой к ней не обращается вовсе.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      apiPaused: true,
+      apiFailures: [{ taskId: '0001-one', stage: 'implement', why: 'состояние 529' }],
+    });
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('сервер модели не отвечает');
   });
 
   it('негодная запись в работу не берётся и названа', () => {
@@ -177,8 +191,10 @@ describe('неполная настройка', () => {
   it('этап, который нечем закончить, не начинают', () => {
     // Без каталога рабочих деревьев проработку начинать нельзя: сессия
     // проснётся, дойдёт до заведения дерева и встанет.
+    // Задача с меткой дробления: без неё первым этапом идёт анализ, которому
+    // не нужно ничего, и проверка стала бы вечнозелёной.
     const { config: bare } = resolveConfig({ commands: {} });
-    const result = scan({ now: NOW, config: bare, tasks: [task()] });
+    const result = scan({ now: NOW, config: bare, tasks: [task({ decomposed: true })] });
     expect(result.actions).toEqual([]);
     expect(result.notes.join()).toContain('worktreeDir');
   });
@@ -188,7 +204,7 @@ describe('неполная настройка', () => {
       commands: { verify: 'x', perf: 'x' },
       worktreeDir: '.claude/worktrees',
     });
-    const result = scan({ now: NOW, config: noDeploy, tasks: [task()] });
+    const result = scan({ now: NOW, config: noDeploy, tasks: [task({ decomposed: true })] });
     expect(result.actions).toContainEqual({
       kind: 'start-stage',
       taskId: '0001-one',
@@ -230,6 +246,290 @@ describe('неполная настройка', () => {
   });
 });
 
+describe('непокрытые команды этапа', () => {
+  /**
+   * Настройка, при которой команды выкладки не проходят: ровно сегодняшняя
+   * картина, только записанная короче. Открывать `ssh` в проверке нельзя —
+   * это решение владельца продукта (задача 0117), и подменять его выдуманной
+   * настройкой тут не приходится: проверяется сканер, а не правила.
+   */
+  const closed = { allow: ['Bash(gh pr:*)', 'PowerShell(gh pr:*)'], deny: [] };
+
+  /** Та же настройка, но с открытыми командами выкладки. */
+  const opened = {
+    allow: [
+      'Bash(node scripts/deploy-remote.mjs:*)',
+      'PowerShell(node scripts/deploy-remote.mjs:*)',
+      'Bash(node scripts/deploy.mjs:*)',
+      'PowerShell(node scripts/deploy.mjs:*)',
+      'Bash(pnpm e2e:perf:*)',
+      'PowerShell(pnpm e2e:perf:*)',
+    ],
+    deny: [],
+  };
+
+  const deploying = (over = {}) =>
+    task({ id: '0002-deploy', status: 'deploy', links: { pr: 7 }, ...over });
+
+  it('задача в выкладке не получает сессию и не растит продолжений', () => {
+    // За 02–03.09.2026 так сгорело семь задач подряд, все на одном и том же
+    // `ssh … dezintegra "true"`, и каждая забрала ещё и сессию разбора.
+    const result = run({
+      tasks: [deploying()],
+      registry: { entries: [entry('0002-deploy')] },
+      permissions: closed,
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(kinds(result)).not.toContain('fail-stage');
+    expect(result.notes.join()).toContain('ждёт починок конвейера');
+    expect(result.notes.join()).toContain('node scripts/deploy-remote.mjs "true"');
+  });
+
+  it('удержание не уводит в ошибку и при исчерпанных продолжениях', () => {
+    // Ошибка потребовала бы разбора — той самой второй сессии, ради отмены
+    // которой всё затеяно. А тратить продолжение не на что: сессии не было.
+    const result = run({
+      tasks: [deploying({ attempts: { continuations: 99, cycleFailures: 0 } })],
+      registry: { entries: [entry('0002-deploy')] },
+      permissions: closed,
+    });
+    expect(kinds(result)).not.toContain('fail-stage');
+  });
+
+  it('удержанная задача не занимает исполнителя', () => {
+    // Оставь её в счёте — и она держала бы единственное место навсегда:
+    // сессии нет, этап не кончается, место не освобождается. Вдобавок
+    // выкладка объявлена исключительным этапом, то есть требующим тишины.
+    const result = run({
+      tasks: [deploying(), task({ id: '0003-next', decomposed: true })],
+      registry: { entries: [entry('0002-deploy')] },
+      permissions: closed,
+    });
+    expect(result.actions).toContainEqual({
+      kind: 'start-stage',
+      taskId: '0003-next',
+      stage: 'design',
+    });
+    expect(result.notes.join()).not.toContain('исполнитель занят');
+    expect(result.notes.join()).not.toContain('машина должна молчать');
+  });
+
+  it('покрытые команды ничего не меняют', () => {
+    const result = run({
+      tasks: [deploying()],
+      registry: { entries: [entry('0002-deploy')] },
+      permissions: opened,
+    });
+    expect(result.actions).toContainEqual({
+      kind: 'continue-stage',
+      taskId: '0002-deploy',
+      stage: 'deploy',
+      reason: 'этапу нужна сессия, живого процесса нет',
+      batch: ['0002-deploy'],
+    });
+  });
+
+  it('без правил разрешений никто не удержан, но это названо', () => {
+    // «Не знаем, значит держим» остановило бы конвейер целиком из-за опечатки
+    // в пути к файлу настройки.
+    const result = run({
+      tasks: [deploying()],
+      registry: { entries: [entry('0002-deploy')] },
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(result.notes.join()).toContain('проверить нечем');
+  });
+
+  it('без правил разрешений молчит, когда проверять было нечего', () => {
+    // Строка, звучащая каждые пять минут на исправном конвейере, перестаёт
+    // читаться — потому запись и сужена условием «было что проверять».
+    //
+    // Перечень здесь БОЕВОЙ, а не поданный доводом: проверяется ровно обычный
+    // день, когда команды объявлены `review` и `deploy`, а на доске стоит
+    // задача проработки (`task()` даёт статус `new`, первый этап `design`).
+    // Подмена перечня доводом сделала бы пробу разговором теста с самим собой.
+    const result = run({ tasks: [task()] });
+    expect(result.notes.join()).not.toContain('проверить нечем');
+    expect(kinds(result)).toContain('start-stage');
+  });
+
+  it('живой этап удержание не трогает', () => {
+    // Командам идущей сессии судья — среда, а не сканер: вмешиваться посреди
+    // работы значило бы отнимать у задачи уже начатый этап.
+    const result = run({
+      tasks: [deploying()],
+      registry: { entries: [entry('0002-deploy')] },
+      running: [{ taskId: '0002-deploy', stage: 'deploy' }],
+      permissions: closed,
+    });
+    expect(result.notes.join()).not.toContain('ждёт починок конвейера');
+  });
+
+  it('очередная задача не берётся, если её первому этапу команды не покрыты', () => {
+    // Перечень подаётся ДОВОДОМ, и это не украшение проверки. Боевой перечень
+    // объявлен `review` и `deploy`, а из очереди задача уходит в `design`,
+    // `benchmark` или `triage`: проверка на боевом перечне была бы
+    // вечнозелёной, а снятая ветка кода её бы пережила.
+    const result = run({
+      tasks: [task({ decomposed: true })],
+      permissions: closed,
+      stageCommands: { design: ['ssh -o BatchMode=yes dezintegra "true"'] },
+    });
+    expect(kinds(result)).not.toContain('start-stage');
+    expect(result.notes.join()).toContain('ждёт починок конвейера');
+    expect(result.notes.join()).toContain('«design»');
+  });
+
+  it('этап без объявленных команд не задерживается', () => {
+    // Молчание перечня значит «не проверяли», а не «всё плохо».
+    const result = run({ tasks: [task()], permissions: closed, stageCommands: {} });
+    expect(kinds(result)).toContain('start-stage');
+    expect(result.notes.join()).not.toContain('ждёт починок конвейера');
+  });
+});
+
+describe('пакетная выкладка', () => {
+  /**
+   * Предмет у всех задач `deploy` один — выложенный `origin/main`, — и потому
+   * сессию получает одна, а перечень остальных едет с ней. 04.09.2026
+   * в «Выкладке» стояло пятнадцать карточек, и по прежним правилам каждая
+   * получила бы свой замер, свою пересборку образов и свою перезапись
+   * точки отката.
+   */
+  const deploying = (id, over = {}) =>
+    task({
+      id,
+      status: 'deploy',
+      links: { pr: 7 },
+      createdAt: `2026-08-26T1${id[3]}:00:00+03:00`,
+      ...over,
+    });
+  const three = ['0002-a', '0003-b', '0004-c'];
+  const registry = { entries: three.map((id) => entry(id)) };
+
+  it.each(['done', 'failed'])('отчёт %s удерживает весь пакет до свежего снимка', (outcome) => {
+    const result = run({
+      tasks: three.map((id) => deploying(id)),
+      registry,
+      reports: [{ taskId: three[0], stage: 'deploy', outcome, batch: three }],
+    });
+    expect(kinds(result)).toEqual(['transfer-report']);
+  });
+
+  it('отчёт пакета не задерживает независимую выкладку', () => {
+    const result = run({
+      tasks: [...three, '0005-d'].map((id) => deploying(id)),
+      registry: { entries: [...registry.entries, entry('0005-d')] },
+      reports: [{ taskId: three[0], stage: 'deploy', outcome: 'done', batch: three }],
+    });
+    expect(result.actions.filter((action) => action.kind === 'continue-stage')).toEqual([
+      expect.objectContaining({ taskId: '0005-d', stage: 'deploy', batch: ['0005-d'] }),
+    ]);
+  });
+
+  it('после переноса отчёта свежий снимок разрешает уборку', () => {
+    const result = run({
+      tasks: three.map((id) => deploying(id, { status: 'cleanup' })),
+      registry,
+      reports: [],
+    });
+    expect(result.actions.filter((action) => action.kind === 'cleanup')).toEqual(
+      three.map((taskId) => ({ kind: 'cleanup', taskId })),
+    );
+    expect(kinds(result)).not.toContain('continue-stage');
+  });
+
+  it('три задачи в выкладке дают одну сессию с перечнем из трёх', () => {
+    const result = run({ tasks: three.map((id) => deploying(id)), registry });
+    const issued = result.actions.filter((action) => action.kind === 'continue-stage');
+    expect(issued).toEqual([
+      {
+        kind: 'continue-stage',
+        taskId: '0002-a',
+        stage: 'deploy',
+        reason: 'этапу нужна сессия, живого процесса нет',
+        batch: three,
+      },
+    ]);
+    expect(result.notes).toContain('задача 0003-b едет в пакете выкладки с 0002-a');
+    expect(result.notes).toContain('задача 0004-c едет в пакете выкладки с 0002-a');
+  });
+
+  it('ведущая — старшая по приоритету, а не по порядку на доске', () => {
+    const result = run({
+      tasks: [deploying('0002-a'), deploying('0003-b', { priority: 10 }), deploying('0004-c')],
+      registry,
+    });
+    const [issued] = result.actions.filter((action) => action.kind === 'continue-stage');
+    expect(issued.taskId).toBe('0003-b');
+    expect(issued.batch).toEqual(['0003-b', '0002-a', '0004-c']);
+  });
+
+  it('идущая выкладка заставляет остальные ждать её, а не тесноту', () => {
+    // Причина у ожидания другая, и читатель должен видеть очередь на пакет,
+    // а не «свободных мест нет».
+    const result = run({
+      tasks: three.map((id) => deploying(id)),
+      registry,
+      running: [{ taskId: '0002-a', stage: 'deploy' }],
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(result.notes).toContain('задача 0003-b ждёт: идёт пакетная выкладка 0002-a');
+    expect(result.notes.join()).not.toContain('свободных мест нет');
+  });
+
+  it('исчерпавшие пределы в пакет не входят', () => {
+    // Решение по ним принято выше, по общим правилам: обе уходят в разбор.
+    // Перечень складывается из уже отобранных, иначе сессия выкладывала бы
+    // задачу, которую сканер только что отправил в ошибку.
+    const result = run({
+      tasks: [
+        deploying('0002-a', { attempts: { continuations: 99, cycleFailures: 0 } }),
+        deploying('0003-b'),
+        deploying('0004-c', { spentUsd: 1e9 }),
+      ],
+      registry,
+    });
+    const [issued] = result.actions.filter((action) => action.kind === 'continue-stage');
+    expect(issued.taskId).toBe('0003-b');
+    expect(issued.batch).toEqual(['0003-b']);
+    // Исчерпанные продолжения ведут в разбор, потолок стоимости — в анализ
+    // на дробность; для пакета важно одно: ни та, ни другая в нём не едет.
+    expect(kinds(result).filter((kind) => kind === 'fail-stage')).toHaveLength(1);
+    expect(kinds(result).filter((kind) => kind === 'decompose-again')).toHaveLength(1);
+  });
+
+  it('прочие этапы перечня пакета не получают', () => {
+    const result = run({
+      tasks: [task({ id: '0005-d', status: 'design' })],
+      registry: { entries: [entry('0005-d')] },
+    });
+    const [issued] = result.actions.filter((action) => action.kind === 'continue-stage');
+    expect(issued).not.toHaveProperty('batch');
+  });
+});
+
+describe('слив перед самообновлением', () => {
+  it('сессий не выдаём, идущее доделываем, опросы идут', () => {
+    // Новый код супервизора на диске; перезапуск ждёт «нет этапов и отчётов».
+    // Выдавать сессии дальше значило бы никогда этого не дождаться.
+    const result = run({
+      draining: true,
+      tasks: [
+        task({ id: '0001-one', status: 'design' }),
+        task({ id: '0002-two', status: 'new' }),
+        task({ id: '0003-three', status: 'pr', links: { pr: 3 } }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [],
+    });
+    expect(kinds(result)).not.toContain('start-stage');
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(kinds(result)).toContain('poll-external');
+    expect(result.notes.join()).toContain('самообновление');
+  });
+});
+
 describe('исполнитель один', () => {
   it('пока задача в работе, новых не берут', () => {
     const result = run({
@@ -250,7 +550,7 @@ describe('исполнитель один', () => {
     expect(result.actions).toContainEqual({
       kind: 'start-stage',
       taskId: '0002-two',
-      stage: 'design',
+      stage: 'decompose',
     });
   });
 
@@ -357,6 +657,186 @@ describe('приоритеты', () => {
   });
 });
 
+describe('исходы осиротевших этапов', () => {
+  /** Исход, каким его отдаёт супервизор: этап был, процесс кончился. */
+  const orphan = (over = {}) => ({
+    taskId: '0001-one',
+    stage: 'implement',
+    pid: 29704,
+    startedAt: '2026-08-26T11:00:00+03:00',
+    outcome: 'gone',
+    why: 'процесс кончился сам',
+    ...over,
+  });
+
+  it('исход попадает в журнал задачи отдельным действием', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+      orphans: [orphan()],
+    });
+    expect(result.actions).toContainEqual({
+      kind: 'note-orphan',
+      taskId: '0001-one',
+      stage: 'implement',
+      outcome: 'gone',
+    });
+  });
+
+  it('запись делается ПЕРЕД выдачей сессии', () => {
+    // Иначе причина пустого захода ложится в журнал уже после того, как
+    // продолжатель порождён, и в его промпт не попадает вовсе.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+      orphans: [orphan()],
+    });
+    const order = kinds(result);
+    expect(order.indexOf('note-orphan')).toBeLessThan(order.indexOf('continue-stage'));
+  });
+
+  it('исход по задаче, которой нет в бэклоге, назван, а не записан', () => {
+    const result = run({ tasks: [], orphans: [orphan({ taskId: '0404-lost' })] });
+    expect(kinds(result)).not.toContain('note-orphan');
+    expect(result.notes.join()).toContain('0404-lost');
+  });
+
+  it('без исходов действия не появляется вовсе', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+    });
+    expect(kinds(result)).not.toContain('note-orphan');
+  });
+});
+
+describe('маршрут из очереди', () => {
+  it('новая задача идёт в анализ на дробность, а не в проработку', () => {
+    const result = run({ tasks: [task({ id: '0001-one' })] });
+    expect(result.actions).toContainEqual({
+      kind: 'start-stage',
+      taskId: '0001-one',
+      stage: 'decompose',
+    });
+  });
+
+  it('карточка от дробления анализ пропускает', () => {
+    // Иначе каждая часть разбитой задачи проходила бы разбор на дробность,
+    // которую для неё только что и проделали.
+    const result = run({ tasks: [task({ id: '0001-one', decomposed: true })] });
+    expect(result.actions).toContainEqual({
+      kind: 'start-stage',
+      taskId: '0001-one',
+      stage: 'design',
+    });
+  });
+
+  it('прогон и вольная запись идут прежними маршрутами', () => {
+    const measuring = run({
+      tasks: [
+        task({ id: '0002-run', type: 'run', run: { kind: 'arena', expectation: 'ждём сдвига' } }),
+      ],
+    });
+    expect(kinds(measuring)).toContain('start-stage');
+    expect(measuring.actions.find((a) => a.kind === 'start-stage').stage).toBe('benchmark');
+
+    const noted = run({ tasks: [task({ id: '0003-note', type: 'note' })] });
+    expect(noted.actions.find((a) => a.kind === 'start-stage').stage).toBe('triage');
+  });
+});
+
+describe('потолок стоимости задачи', () => {
+  it('расход выше потолка отправляет на повторный анализ и называет оба числа', () => {
+    // В анализ, а не в разбор ошибки: задача не сломана, она разрослась.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement', spentUsd: 76.01 })],
+      registry: { entries: [entry('0001-one')] },
+    });
+    const again = result.actions.find((a) => a.kind === 'decompose-again');
+    expect(again).toBeDefined();
+    expect(again.reason).toContain('76.01');
+    expect(again.reason).toContain(String(config.maxTaskCostUsd));
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(kinds(result)).not.toContain('fail-stage');
+  });
+
+  it('сам анализ потолком не сторожится', () => {
+    // Иначе задача, отправленная в него потолком, не смогла бы пройти тот
+    // единственный этап, ради которого её туда и отправили.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'decompose', spentUsd: 76.01 })],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(kinds(result)).not.toContain('decompose-again');
+  });
+
+  it('расход ниже потолка сессию не задерживает', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement', spentUsd: 5 })],
+      registry: { entries: [entry('0001-one')] },
+    });
+    expect(kinds(result)).toContain('continue-stage');
+  });
+
+  it('разбор превысившей потолок задачи не запрещён', () => {
+    // Иначе потолок запретил бы понимать, почему он сработал.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'postmortem', spentUsd: 76.01 })],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(kinds(result)).not.toContain('decompose-again');
+  });
+});
+
+describe('отказ сервера модели', () => {
+  const failure = (over = {}) => ({
+    taskId: '0001-one',
+    stage: 'implement',
+    why: 'сервер модели отказал (состояние 529); работы не было',
+    ...over,
+  });
+
+  it('отказ уходит записью в задачу', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+      apiFailures: [failure()],
+    });
+    expect(result.actions).toContainEqual({
+      kind: 'note-api-error',
+      taskId: '0001-one',
+      stage: 'implement',
+      why: 'сервер модели отказал (состояние 529); работы не было',
+    });
+  });
+
+  it('сессия тем же оборотом не выдаётся: две правки затёрли бы друг друга', () => {
+    // Возврат продолжения и выдача сессии — две правки одной задачи, обе
+    // по одному снимку доски (задача 0070). Продолжение ждёт один оборот.
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+      apiFailures: [failure()],
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(result.notes.join()).toContain('отказе сервера');
+  });
+
+  it('отказ по задаче, которой нет в бэклоге, назван, а не записан', () => {
+    const result = run({ tasks: [], apiFailures: [failure({ taskId: '0404-lost' })] });
+    expect(kinds(result)).not.toContain('note-api-error');
+    expect(result.notes.join()).toContain('0404-lost');
+  });
+
+  it('без отказов действия не появляется вовсе', () => {
+    const result = run({
+      tasks: [task({ id: '0001-one', status: 'implement' })],
+      registry: { entries: [entry('0001-one')] },
+    });
+    expect(kinds(result)).not.toContain('note-api-error');
+  });
+});
+
 describe('этапы без живого процесса', () => {
   /** Живой этап: ровно то, что знает о своих детях супервизор. */
   const running = (taskId, stage) => [{ taskId, stage }];
@@ -388,8 +868,12 @@ describe('этапы без живого процесса', () => {
     });
   });
 
+  /** Настройка на два места: иначе живой чужой процесс займёт единственное. */
+  const roomy = { ...config, maxConcurrent: 2 };
+
   it('чужой живой этап своего не прикрывает', () => {
     const result = run({
+      config: roomy,
       tasks: [task({ id: '0001-one', status: 'design' })],
       registry: { entries: [entry('0001-one')] },
       running: running('0002-two', 'design'),
@@ -399,6 +883,7 @@ describe('этапы без живого процесса', () => {
 
   it('процесс прошлого этапа за нынешний не считают', () => {
     const result = run({
+      config: roomy,
       tasks: [task({ id: '0001-one', status: 'audit' })],
       registry: { entries: [entry('0001-one')] },
       running: running('0001-one', 'design'),
@@ -463,6 +948,95 @@ describe('этапы без живого процесса', () => {
     });
     expect(kinds(result)).toContain('fail-stage');
     expect(result.notes.join()).toContain('исчерпаны');
+  });
+
+  it('исчерпанные запуски останавливают задачу своей причиной', () => {
+    // «Продолжения исчерпаны» здесь было бы прямой ложью: сессии не было
+    // ни одной, и разбор пошёл бы читать её лог, которого нет. Так уже
+    // погибли 0043, 0062, 0022 и 0088.
+    const result = run({
+      tasks: [
+        task({
+          id: '0001-one',
+          status: 'design',
+          attempts: { continuations: 0, cycleFailures: 0, spawnFailures: 3 },
+        }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [],
+    });
+    const [stop] = result.actions.filter((action) => action.kind === 'fail-stage');
+
+    expect(stop.reason).toContain('этап не порождается');
+    expect(stop.reason).not.toContain('продолжения исчерпаны');
+    expect(kinds(result)).not.toContain('continue-stage');
+  });
+
+  it('непустой, но не исчерпанный счёт запусков сессии не мешает', () => {
+    const result = run({
+      tasks: [
+        task({
+          id: '0001-one',
+          status: 'design',
+          attempts: { continuations: 0, cycleFailures: 0, spawnFailures: 2 },
+        }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [],
+    });
+    expect(kinds(result)).toContain('continue-stage');
+    expect(kinds(result)).not.toContain('fail-stage');
+  });
+
+  it('при занятом единственном месте сессию не просят вовсе', () => {
+    // Просить и получать отказ каждые пять минут — значит наполнить журнал
+    // цикла строкой, которая при исправной работе означает беду. Прочитанной
+    // она после этого быть перестаёт.
+    const result = run({
+      tasks: [
+        task({ id: '0001-one', status: 'review' }),
+        task({ id: '0002-run', type: 'run', status: 'benchmark' }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [{ taskId: '0002-run', stage: 'benchmark' }],
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(result.notes.join()).toContain('свободных мест нет');
+  });
+
+  it('единственное свободное место достаётся задаче поважнее', () => {
+    // Порядок чтения бэклога основанием быть не может: 02.09.2026 задача
+    // 0022 умерла на этапе review, не получив ни одной сессии, пока место
+    // держал прогон арены.
+    const result = run({
+      tasks: [
+        task({ id: '0001-idle', status: 'design', priority: 90 }),
+        task({ id: '0002-hot', status: 'design', priority: 10 }),
+      ],
+      registry: { entries: [entry('0001-idle'), entry('0002-hot')] },
+      running: [],
+    });
+    const asked = result.actions.filter((action) => action.kind === 'continue-stage');
+    expect(asked).toHaveLength(1);
+    expect(asked[0].taskId).toBe('0002-hot');
+  });
+
+  it('остановка не ждёт свободного места', () => {
+    // Иначе повторился бы случай 0022: место освободилось за три минуты
+    // до остановки, а остановка всё равно случилась.
+    const result = run({
+      tasks: [
+        task({
+          id: '0001-one',
+          status: 'design',
+          attempts: { continuations: 2, cycleFailures: 0 },
+        }),
+        task({ id: '0002-run', type: 'run', status: 'benchmark' }),
+      ],
+      registry: { entries: [entry('0001-one')] },
+      running: [{ taskId: '0002-run', stage: 'benchmark' }],
+    });
+    expect(kinds(result)).toContain('fail-stage');
   });
 });
 
@@ -540,6 +1114,85 @@ describe('ожидание и уборка', () => {
   });
 });
 
+describe('возврат из ошибки по вине конвейера', () => {
+  const fallen = (recovery, over = {}) =>
+    task({ id: '0041-one', status: 'failed', returnTo: 'implement', recovery, ...over });
+  const fix = (status) => task({ id: '0091-fix', status, type: 'feature' });
+  const returned = { kind: 'return-task', taskId: '0041-one', returnTo: 'implement' };
+
+  it('чинить нечего — возвращается ближайшим оборотом', () => {
+    // Работа цела, причина в конвейере и снята: решения в подъёме нет,
+    // одна задержка. 02.09.2026 так стояли пять задач с pull request.
+    const result = run({ tasks: [fallen({ causedBy: 'pipeline', fixedBy: [], returns: 0 })] });
+    expect(result.actions).toContainEqual({ ...returned, fixedBy: [] });
+  });
+
+  it('пока починка не закрыта, задача ждёт, и журнал цикла называет, чего', () => {
+    const result = run({
+      tasks: [
+        fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 }),
+        fix('implement'),
+      ],
+    });
+    expect(kinds(result)).not.toContain('return-task');
+    expect(result.notes.join()).toContain('ждёт починок конвейера: 0091-fix (implement)');
+  });
+
+  it('закрытая починка возвращает задачу', () => {
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 }), fix('closed')],
+    });
+    expect(result.actions).toContainEqual({ ...returned, fixedBy: ['0091-fix'] });
+  });
+
+  it('починка в карантине — не закрыта, ждём', () => {
+    // Негодная карточка не читается задачей, но она есть — и может быть
+    // исправлена и доведена. Считать её закрытой значило бы вернуть задачу
+    // на ту же причину.
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 })],
+      invalid: [{ id: '0091-fix', problems: ['нет метки типа'], status: 'failed', flags: [] }],
+    });
+    expect(kinds(result)).not.toContain('return-task');
+    expect(result.notes.join()).toContain('0091-fix (не разобрана)');
+  });
+
+  it('починки, которой нет нигде, не ждут: она закрыта и убрана', () => {
+    // Идентификатор проверен при разборе, и исчезнуть иначе он не мог.
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 })],
+    });
+    expect(result.actions).toContainEqual({ ...returned, fixedBy: ['0091-fix'] });
+  });
+
+  it('причина в задаче или без вердикта — конвейер не трогает', () => {
+    for (const recovery of [
+      { causedBy: 'task', fixedBy: [], returns: 0 },
+      { causedBy: null, fixedBy: [], returns: 2 },
+      undefined,
+    ]) {
+      const result = run({ tasks: [fallen(recovery)] });
+      expect(result.actions, JSON.stringify(recovery)).toEqual([]);
+    }
+  });
+
+  it('без состояния возврата возвращать некуда, и это названо', () => {
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: [], returns: 0 }, { returnTo: null })],
+    });
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('возвращать некуда');
+  });
+
+  it('пауза останавливает и возврат', () => {
+    const result = run({
+      tasks: [fallen({ causedBy: 'pipeline', fixedBy: [], returns: 0 })],
+      paused: true,
+    });
+    expect(result.actions).toEqual([]);
+  });
+});
+
 describe('порядок действий', () => {
   it('хвост идёт раньше переноса отчёта', () => {
     const result = run({
@@ -561,4 +1214,109 @@ describe('порядок действий', () => {
     });
     expect(kinds(result)).toEqual(['push-tail', 'start-stage']);
   });
+});
+
+it('явное отключение денежного потолка не означает потолок в ноль', () => {
+  const result = run({
+    config: { ...config, maxTaskCostUsd: null },
+    tasks: [task({ status: 'implement', spentUsd: 100 })],
+    registry: { entries: [entry('0001-one')] },
+  });
+  expect(kinds(result)).toContain('continue-stage');
+  expect(kinds(result)).not.toContain('decompose-again');
+});
+
+describe('бюджет тяжести Codex', () => {
+  const check = (tokens, status = 'implement', limit = 100) =>
+    run({
+      config: { ...config, provider: 'codex', codexMaxTaskTokens: limit },
+      tasks: [task({ status, spentUsd: 999 })],
+      registry: { entries: [entry('0001-one')] },
+      codexUsage: {
+        version: 2,
+        tasks: {
+          '0001-one': {
+            sessions: {
+              first: {
+                knownTokens: tokens - 10,
+                snapshot: { input_tokens: tokens - 10, output_tokens: 0 },
+                reasons: [],
+              },
+              resumed: {
+                knownTokens: 10,
+                snapshot: { input_tokens: 10, output_tokens: 0 },
+                reasons: [],
+              },
+            },
+            launches: {},
+          },
+        },
+      },
+    });
+  it('суммирует сессии и отправляет на дробление ровно на границе', () => {
+    expect(kinds(check(99))).toContain('continue-stage');
+    const result = check(100);
+    expect(result.actions.find((a) => a.kind === 'decompose-again').reason).toContain(
+      '100 токенов при бюджете 100',
+    );
+    expect(kinds(result)).not.toContain('continue-stage');
+  });
+  it('допускает анализ и восстановление; null отключает только этот бюджет', () => {
+    for (const status of ['decompose', 'postmortem'])
+      expect(kinds(check(101, status))).not.toContain('decompose-again');
+    expect(kinds(check(101, 'implement', null))).toContain('continue-stage');
+  });
+
+  it('legacy-unknown удерживает без расходования попытки, известный предел по-прежнему ведёт в decompose', () => {
+    const card = task({ status: 'implement', attempts: { continuations: 1, cycleFailures: 0 } });
+    const before = JSON.parse(JSON.stringify(card));
+    const checkLegacy = (tokens, limit = 100, status = 'implement') =>
+      run({
+        config: { ...config, provider: 'codex', codexMaxTaskTokens: limit },
+        tasks: [{ ...card, status }],
+        registry: { entries: [entry('0001-one')] },
+        codexUsage: JSON.parse(JSON.stringify(migrateTokenLedger({ '0001-one': { s: tokens } }))),
+      });
+    const held = checkLegacy(99);
+    expect(held.actions).toEqual([]);
+    expect(held.notes.join()).toContain('legacy-unknown');
+    expect(card).toEqual(before);
+    expect(kinds(checkLegacy(100))).toContain('decompose-again');
+    expect(kinds(checkLegacy(99, null))).toContain('continue-stage');
+    for (const status of ['decompose', 'postmortem']) {
+      expect(kinds(checkLegacy(99, 100, status))).toContain('continue-stage');
+      expect(kinds(checkLegacy(100, 100, status))).not.toContain('decompose-again');
+    }
+    for (const status of ['failed', 'awaiting-po']) {
+      expect(kinds(checkLegacy(100, 100, status))).not.toContain('decompose-again');
+      expect(checkLegacy(99, 100, status).notes.join()).not.toContain('legacy-unknown');
+    }
+  });
+
+  it.each(['unfinished-launch', 'storage-error'])(
+    'не выдаёт запуск при %s после смены этапа',
+    (unknown) => {
+      const ledger = migrateTokenLedger({});
+      if (unknown === 'unfinished-launch') beginTokenLaunch(ledger, '0001-one', 'persisted');
+      else ledger.writeErrors = ['0001-one'];
+      for (const status of ['design', 'audit', 'implement', 'revise']) {
+        const state = {
+          tasks: [task({ status })],
+          registry: { entries: [entry('0001-one')] },
+          codexUsage: ledger,
+        };
+        const held = run({
+          ...state,
+          config: { ...config, provider: 'codex', codexMaxTaskTokens: 100 },
+        });
+        expect(held.actions).toEqual([]);
+        expect(held.notes.join()).toContain(unknown);
+        expect(
+          kinds(
+            run({ ...state, config: { ...config, provider: 'codex', codexMaxTaskTokens: null } }),
+          ),
+        ).toContain('continue-stage');
+      }
+    },
+  );
 });

@@ -76,6 +76,34 @@ describe('разбор отказа отправки', () => {
   });
 });
 
+describe('команды самообновления', () => {
+  it('ветка дерева читается, а отсоединённая голова — тоже ответ', () => {
+    const { git } = gitWith([['rev-parse --abbrev-ref HEAD', { code: 0, stdout: 'main\n' }]]);
+    expect(git.currentBranch()).toBe('main');
+    const { git: lost } = gitWith([['rev-parse --abbrev-ref HEAD', FAIL('fatal')]]);
+    expect(lost.currentBranch()).toBeNull();
+  });
+
+  it('отставание по путям спрашивается с разделителем путей', () => {
+    // Без `--` git счёл бы `supervisor` именем ревизии.
+    const { git, calls } = gitWith([
+      ['rev-list --count main..origin/main -- supervisor', { code: 0, stdout: '3\n' }],
+    ]);
+    expect(git.aheadOn(['supervisor'])).toBe(3);
+    expect(calls).toContain('rev-list --count main..origin/main -- supervisor');
+  });
+
+  it('хеш дерева каталога берётся из названной ревизии', () => {
+    const { git, calls } = gitWith([
+      ['rev-parse HEAD:supervisor', { code: 0, stdout: 'abc123\n' }],
+    ]);
+    expect(git.treeOf('supervisor')).toBe('abc123');
+    expect(calls).toContain('rev-parse HEAD:supervisor');
+    const { git: none } = gitWith([['rev-parse HEAD:supervisor', FAIL('fatal')]]);
+    expect(none.treeOf('supervisor')).toBeNull();
+  });
+});
+
 describe('отправка с первого раза', () => {
   it('удачная отправка не трогает ни дерева, ни истории', () => {
     const { git, calls } = gitWith([]);

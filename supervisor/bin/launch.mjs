@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 // Именованным ввозом, а не глобальным именем: перечень известных линту
 // глобальных имён у служебных сценариев узкий, и `setTimeout` в него не входит.
 import { setTimeout as later } from 'node:timers';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createKillTree } from '../lib/run-stage.mjs';
+import { decideLaunch } from '../lib/worktree-guard.mjs';
 
 /**
  * Запуск супервизора.
@@ -32,7 +33,7 @@ const args = process.argv.slice(2);
 
 /** Ключи без значения и ключи со значением. Всё прочее — опечатка. */
 const FLAGS = ['shadow', 'dry-run', 'detached', 'quiet', 'stop', 'help'];
-const VALUES = ['root', 'config'];
+const VALUES = ['root', 'config', 'provider'];
 
 const has = (name) => args.includes(`--${name}`);
 const valueOf = (name) => {
@@ -44,6 +45,7 @@ function usage() {
   console.log('Запуск супервизора конвейера.');
   console.log('');
   console.log('  (без доводов)     запустить и смотреть');
+  console.log('  --provider=claude|codex  исполнитель (по умолчанию из настройки, иначе claude)');
   console.log('  --shadow          тень: считать и печатать, мира не трогать');
   console.log('  --detached        в фон, вывод в .pipeline/supervisor.out.log');
   console.log('  --stop            снять вместе с поддеревом процессов');
@@ -75,6 +77,11 @@ if (unknown.length > 0) {
   process.exit(1);
 }
 
+if (valueOf('provider') !== null && !['claude', 'codex'].includes(valueOf('provider'))) {
+  console.error(`Неизвестный provider: ${valueOf('provider')}. Ничего не запущено.`);
+  process.exit(1);
+}
+
 if (has('help')) {
   usage();
   process.exit(0);
@@ -94,11 +101,37 @@ function findRoot() {
   return null;
 }
 
-const root = resolve(valueOf('root') ?? process.env.PIPELINE_ROOT ?? findRoot() ?? process.cwd());
+const explicitRoot = valueOf('root') ?? process.env.PIPELINE_ROOT ?? null;
+const root = resolve(explicitRoot ?? findRoot() ?? process.cwd());
 
 if (!existsSync(root)) {
   console.error(`Не найден корень проекта: ${root}`);
   console.error('Назовите его прямо: --root=C:\\путь\\к\\проекту');
+  process.exit(1);
+}
+
+/**
+ * Содержимое файла `.git` найденного корня, либо `null`.
+ *
+ * `null` значит «спрашивать нечего»: у основного дерева `.git` — каталог,
+ * а нечитаемый `.git` не повод отказывать в запуске.
+ */
+function gitLink(dir) {
+  const path = join(dir, '.git');
+  try {
+    return statSync(path).isDirectory() ? null : readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// Решение целиком принимает модуль, здесь остаются печать и код возврата.
+// Стоит сразу за поиском корня и до всего остального: и `--stop` из чужого
+// дерева одинаково бессмыслен — он смотрел бы не в тот замок и отвечал бы
+// «супервизор не работает», пока настоящий работает.
+const decision = decideLaunch({ root, gitFile: gitLink(root), explicitRoot });
+if (!decision.launch) {
+  console.error(decision.message);
   process.exit(1);
 }
 
@@ -139,7 +172,7 @@ function liveSupervisor() {
 
 const killTree = createKillTree((program, list) => {
   try {
-    execFileSync(program, list, { stdio: 'ignore' });
+    execFileSync(program, list, { stdio: 'ignore', windowsHide: true });
     return { code: 0 };
   } catch (error) {
     return { code: error.status ?? 1 };
@@ -191,6 +224,7 @@ function start() {
   }
 
   const forwarded = [entry];
+  if (valueOf('provider')) forwarded.push(`--provider=${valueOf('provider')}`);
   // `--shadow` — своё имя того же, что супервизор знает как `--dry-run`.
   // Пускателю нужно слово, понятное человеку у двойного щелчка.
   if (has('shadow') || has('dry-run')) forwarded.push('--dry-run');

@@ -168,6 +168,41 @@ export function createGit(run, { remote, mainBranch }) {
       return { ok: false, why: `${result.stderr}${result.stdout}`.trim() };
     },
 
+    /**
+     * На какой ветке стоит дерево. `HEAD` в отсоединённом состоянии
+     * — тоже ответ: такое дерево не на главной ветке, и трогать его нельзя.
+     */
+    currentBranch() {
+      const result = run(['rev-parse', '--abbrev-ref', 'HEAD']);
+      return result.code === 0 ? out(result) : null;
+    },
+
+    /**
+     * На сколько коммитов удалённая ветка ушла вперёд ПО НАЗВАННЫМ ПУТЯМ.
+     *
+     * Отставание целиком считает `behind`; здесь интересует одно —
+     * задели ли новые коммиты сам инструмент. Прочие правки его не касаются,
+     * и перезапускаться из-за них незачем.
+     */
+    aheadOn(paths, branch = mainBranch) {
+      const result = run(['rev-list', '--count', `${branch}..${remote}/${branch}`, '--', ...paths]);
+      if (result.code !== 0) return null;
+      return Number.parseInt(out(result), 10) || 0;
+    },
+
+    /**
+     * Хеш дерева каталога в названной ревизии.
+     *
+     * По нему супервизор узнаёт, что его собственный код на диске сменился:
+     * подтягиванием, ручным `git pull`, локальным коммитом — чем угодно.
+     * Сравнивать хеши дешевле и честнее, чем следить за файлами: незакоммиченная
+     * правка человека хеш не меняет, и перезапуска не будет, пока он работает.
+     */
+    treeOf(path, ref = 'HEAD') {
+      const result = run(['rev-parse', `${ref}:${path}`]);
+      return result.code === 0 ? out(result) : null;
+    },
+
     /** Кто написал последние коммиты хвоста: свои или чужие. */
     tailAuthors(branch = mainBranch) {
       const result = run(['log', '--format=%an', `${remote}/${branch}..${branch}`]);

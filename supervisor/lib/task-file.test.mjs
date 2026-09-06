@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addSpent,
   applyTransition,
   claimTask,
   countContinuation,
   countRejection,
+  countApiError,
+  countSpawnFailure,
   linkArtifact,
+  refundContinuation,
   relate,
   releaseClaim,
+  resetApiErrors,
   resetAttempts,
 } from './task-file.mjs';
 import { journalAppendix, journalEntry } from './journal.mjs';
@@ -105,7 +110,46 @@ describe('переход состояния', () => {
       attempts: { continuations: 2, cycleFailures: 1, rejections: 3 },
     });
     const { task: analysed } = applyTransition(tired, { status: 'postmortem', now: NOW });
-    expect(analysed.attempts).toEqual({ continuations: 0, cycleFailures: 0, rejections: 0 });
+    expect(analysed.attempts).toEqual({
+      continuations: 0,
+      cycleFailures: 0,
+      rejections: 0,
+      spawnFailures: 0,
+      apiErrors: 0,
+    });
+  });
+
+  it('вход в разбор стирает вердикт прошлого разбора, но хранит счёт возвратов', () => {
+    // Вердикт относится к прошлому падению: задача, упавшая снова и не
+    // дождавшаяся нового вердикта, вернулась бы по старому. Счёт же —
+    // предохранитель на всю жизнь задачи.
+    const judged = task({
+      status: 'implement',
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 },
+    });
+    const { task: analysed } = applyTransition(judged, { status: 'postmortem', now: NOW });
+    expect(analysed.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 1 });
+  });
+
+  it('прочие переходы вердикт не трогают, а неразобранной задаче его не заводят', () => {
+    const judged = task({
+      status: 'failed',
+      returnTo: 'implement',
+      recovery: { causedBy: 'pipeline', fixedBy: [], returns: 0 },
+    });
+    const { task: back } = applyTransition(judged, { status: 'implement', now: NOW });
+    expect(back.recovery).toEqual(judged.recovery);
+
+    const { task: fresh } = applyTransition(task({ status: 'implement' }), {
+      status: 'postmortem',
+      now: NOW,
+    });
+    expect(fresh).not.toHaveProperty('recovery');
+  });
+
+  it('сброс попыток счёт возвратов не трогает', () => {
+    const judged = task({ recovery: { causedBy: null, fixedBy: [], returns: 2 } });
+    expect(resetAttempts(judged).recovery).toEqual(judged.recovery);
   });
 
   it('переход по маршруту счёт попыток не трогает', () => {
@@ -168,12 +212,29 @@ describe('счётчики', () => {
   });
 
   it('дошедший до конца этап сбрасывает счётчики', () => {
-    const tired = task({ attempts: { continuations: 2, cycleFailures: 1, rejections: 2 } });
+    const tired = task({
+      attempts: { continuations: 2, cycleFailures: 1, rejections: 2, spawnFailures: 2 },
+    });
     expect(resetAttempts(tired).attempts).toEqual({
       continuations: 0,
       cycleFailures: 0,
       rejections: 0,
+      spawnFailures: 0,
+      apiErrors: 0,
     });
+  });
+
+  it('несостоявшийся запуск считается', () => {
+    expect(countSpawnFailure(task()).attempts.spawnFailures).toBe(1);
+    expect(countSpawnFailure(countSpawnFailure(task())).attempts.spawnFailures).toBe(2);
+  });
+
+  it('счёт несостоявшихся запусков не трогает счёт продолжений', () => {
+    // Продолжение платит за сессию, которая была и не справилась,
+    // а несостоявшийся запуск — за сессию, которой не было вовсе.
+    // Общий счётчик увёл бы разбор искать причину не там.
+    const counted = countSpawnFailure(task({ attempts: { continuations: 1, cycleFailures: 0 } }));
+    expect(counted.attempts.continuations).toBe(1);
   });
 
   it('возврат проверяющего этапа считается', () => {
@@ -182,10 +243,70 @@ describe('счётчики', () => {
     expect(again.attempts.rejections).toBe(2);
   });
 
-  it('счёт возвратов не трогает счёт продолжений', () => {
-    // Заминки разной природы: уснувшая сессия и несходящийся спор лечатся
-    // по-разному, и общий счётчик путал бы их пределы.
-    const counted = countRejection(task({ attempts: { continuations: 1, cycleFailures: 0 } }));
+  it('возврат гасит счёт продолжений, сохраняя счёт возвратов', () => {
+    // Продолжения считают сессии на этапе, а возврат уводит задачу на другой
+    // этап. Счёт, притащенный с аудита, останавливал проработку, не дав ей
+    // ни одной сессии: так 02.09.2026 легли 0022, 0080 и 0088.
+    const counted = countRejection(
+      task({ attempts: { continuations: 2, cycleFailures: 1, spawnFailures: 1, rejections: 1 } }),
+    );
+    expect(counted.attempts).toEqual({
+      continuations: 0,
+      cycleFailures: 0,
+      spawnFailures: 0,
+      apiErrors: 0,
+      rejections: 2,
+    });
+  });
+
+  it('отказ сервера возвращает потраченное продолжение', () => {
+    // Процесс родился и умер, не сделав ни одного хода: платить за это
+    // задаче нечем и незачем. 03.09.2026 так пропали все продолжения
+    // у 0153 и 0165.
+    const spent = task({ attempts: { continuations: 1, cycleFailures: 0 } });
+    expect(refundContinuation(spent).attempts.continuations).toBe(0);
+  });
+
+  it('возврат продолжения не уводит счёт ниже нуля', () => {
+    // Задача, взятая из очереди впервые, продолжений не тратила, а первый
+    // же её этап может лечь на 529. Отрицательный счёт дал бы ей лишнюю
+    // попытку в обход предела.
+    expect(refundContinuation(task()).attempts.continuations).toBe(0);
+  });
+
+  it('отказы сервера считаются своим счётом и гасятся живым ответом', () => {
+    const once = countApiError(task());
+    expect(once.attempts.apiErrors).toBe(1);
+    expect(countApiError(once).attempts.apiErrors).toBe(2);
+    // Без гашения счёт копится за сутки и взводит паузу по картине,
+    // которой не было: три отказа, разделённые часами работы.
+    expect(resetApiErrors(countApiError(once)).attempts.apiErrors).toBe(0);
+  });
+
+  it('расход прибавляется и не бывает отрицательным', () => {
+    expect(addSpent(task(), 3.25).spentUsd).toBe(3.25);
+    expect(addSpent(addSpent(task(), 3.25), 1.75).spentUsd).toBe(5);
+    // Стоимость бывает не названа вовсе; вычесть из расхода нельзя ничем.
+    expect(addSpent(task(), undefined).spentUsd).toBe(0);
+    expect(addSpent(addSpent(task(), 2), -5).spentUsd).toBe(2);
+  });
+
+  it('дошедший до конца этап расхода НЕ обнуляет', () => {
+    // Главная проба всего изменения. Предел спора умер оттого, что его
+    // счётчик гасился удачным отчётом между отказами (задача 0216).
+    // Расход обязан пережить и это, и вход в сквозное состояние.
+    const spent = addSpent(task(), 12.5);
+    expect(resetAttempts(spent).spentUsd).toBe(12.5);
+  });
+
+  it('вход в сквозное состояние расхода не обнуляет', () => {
+    const spent = addSpent(task({ status: 'implement' }), 12.5);
+    const { task: analysed } = applyTransition(spent, { status: 'postmortem', now: NOW });
+    expect(analysed.spentUsd).toBe(12.5);
+  });
+
+  it('счёт отказов сервера не трогает счёт продолжений', () => {
+    const counted = countApiError(task({ attempts: { continuations: 1, cycleFailures: 0 } }));
     expect(counted.attempts.continuations).toBe(1);
   });
 });

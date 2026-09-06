@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
+import { removeWorktree } from './remove-worktree.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 
@@ -323,6 +324,15 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * без локальной git заведёт сам, с отслеживанием, — и это ровно то,
      * что нужно после потери дерева вместе с локальной веткой.
      */
+    /**
+     * Путь дерева задачи в той форме, в какой его хранит реестр: от корня
+     * и через разделитель этой системы. Сверка получает пути из
+     * `git worktree list` абсолютными, а запуск этапа склеивает путь
+     * с корнем — абсолютный после склейки указывал бы в никуда.
+     * Проверено 02.09.2026: усыновлённое дерево 0088 дало `spawn ENOENT`.
+     */
+    worktreePathFor: (taskId) => join(config.worktreeDir, taskId),
+
     addWorktree(taskId, branch) {
       const path = join(config.worktreeDir, taskId);
       const base = `${config.remote}/${config.mainBranch}`;
@@ -489,6 +499,11 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
         // Номер прогона, который задача знала ДО этапа: «новый номер»
         // проверяется сравнением, а не наличием.
         previousRun: task.links?.run ?? null,
+        // Номер pull request, который задача знала ДО этапа, — и по той же
+        // причине: pull request, открытый прошлым заходом, следом нынешнего
+        // быть не должен. Нового обращения к git улика не стоит: номер лежит
+        // в самой задаче.
+        previousPr: task.links?.pr ?? null,
       };
     },
 
@@ -499,13 +514,35 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
       return Number.parseInt(result.stdout.trim(), 10) || 0;
     },
 
+    /**
+     * Сколько своей работы лежит в ветке сверх главной.
+     *
+     * Считается от ГЛАВНОЙ ветки, а не от удалённого двойника своей: `unpushed`
+     * отвечает на вопрос «отправлено ли», и у ветки, которую не отправляли
+     * ни разу, не говорит о её содержимом ничего.
+     *
+     * Ключ `--no-merges` нужен по делу: скилл проработки предписывает сессии
+     * подтянуть свежую главную ветку в своё дерево, и получившийся коммит
+     * слияния — не работа, а обновление базы. Считая его работой, уборка
+     * заперлась бы у всякой задачи, зашедшей в дерево после расхождения
+     * с `main`.
+     *
+     * Команда не отработала — `null`, а не ноль: неизвестность здесь толкуется
+     * в пользу сохранности, удаление необратимо.
+     */
+    ownCommits(branch) {
+      const result = run([
+        'rev-list',
+        '--count',
+        '--no-merges',
+        `${config.remote}/${config.mainBranch}..${branch}`,
+      ]);
+      if (result.code !== 0) return null;
+      return Number.parseInt(result.stdout.trim(), 10) || 0;
+    },
+
     removeWorktree(path) {
-      const result = run(['worktree', 'remove', path, '--force']);
-      if (result.code === 0) return { ok: true };
-      // Каталога может уже не быть — тогда убирать нечего, и это не беда.
-      if (/not a working tree|no such file|is not a valid/i.test(result.stderr))
-        return { ok: true };
-      return { ok: false, why: result.stderr.trim() };
+      return removeWorktree({ root, path, run, worktreeDir: config.worktreeDir });
     },
 
     deleteBranch(branch) {
@@ -573,9 +610,14 @@ export function summariseChecks(json) {
     return { state: 'pending', why: `идут: ${unfinished.map((c) => c.name).join(', ')}` };
   }
 
-  const failed = checks.filter((check) => check.conclusion !== 'SUCCESS');
+  // Условные игровые задания завершаются SKIPPED: GitHub считает это
+  // штатным пропуском. Ошибка определения областей остаётся FAILURE.
+  const failed = checks.filter((check) => !['SUCCESS', 'SKIPPED'].includes(check.conclusion));
   if (failed.length > 0) {
     return { state: 'failure', failed: failed.map((check) => check.name).join(', ') };
+  }
+  if (!checks.some((check) => check.conclusion === 'SUCCESS')) {
+    return { state: 'pending', why: 'все проверки пропущены' };
   }
   return { state: 'success' };
 }

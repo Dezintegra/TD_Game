@@ -80,6 +80,27 @@ describe('дерево есть, записи нет', () => {
     });
   });
 
+  it('путь хранится от корня, а не абсолютным из git', () => {
+    // Сверка приносит путь таким, каким его печатает `git worktree list`, —
+    // абсолютным. Запуск этапа склеивает путь с корнем, и абсолютный после
+    // склейки указывал бы в никуда: 02.09.2026 усыновлённое дерево 0088
+    // дало `spawn ENOENT`. Хранилище знает форму реестра — её и пишем.
+    const io = fakeIo({ tasks: { '0001-one': task() } });
+    io.worktreePathFor = (taskId) => `.claude/worktrees/${taskId}`;
+    repairWorld(
+      [
+        {
+          kind: 'adopt-worktree',
+          taskId: '0001-one',
+          branch: 'worktree-0001-one',
+          path: 'C:/src/repo/.claude/worktrees/0001-one',
+        },
+      ],
+      io,
+    );
+    expect(io.registry.get('0001-one').path).toBe('.claude/worktrees/0001-one');
+  });
+
   it('дерево задачи, которой нет в бэклоге, в реестр не заносится', () => {
     const io = fakeIo({ tasks: {} });
     const [done] = repairWorld(

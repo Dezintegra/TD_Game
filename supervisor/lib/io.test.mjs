@@ -16,6 +16,40 @@ const check = (name, status, conclusion) => ({ name, status, conclusion });
 const rollup = (...checks) => JSON.stringify({ statusCheckRollup: checks });
 
 describe('состояние проверок', () => {
+  it('успешные служебные проверки и пропущенная игра разрешают ревью', () => {
+    expect(
+      summariseChecks(
+        rollup(
+          check('затронутые области', 'COMPLETED', 'SUCCESS'),
+          check('быстрые тесты', 'COMPLETED', 'SUCCESS'),
+          check('матчевые тесты', 'COMPLETED', 'SKIPPED'),
+          check('сквозные проверки', 'COMPLETED', 'SKIPPED'),
+        ),
+      ),
+    ).toEqual({ state: 'success' });
+  });
+
+  it.each(['FAILURE', 'CANCELLED', 'TIMED_OUT'])(
+    'пропуски не скрывают проблему определения областей: %s',
+    (conclusion) => {
+      expect(
+        summariseChecks(
+          rollup(
+            check('затронутые области', 'COMPLETED', conclusion),
+            check('быстрые тесты', 'COMPLETED', 'SUCCESS'),
+            check('матчевые тесты', 'COMPLETED', 'SKIPPED'),
+          ),
+        ),
+      ).toEqual({ state: 'failure', failed: 'затронутые области' });
+    },
+  );
+
+  it('полностью пропущенный набор не разрешает ревью', () => {
+    expect(summariseChecks(rollup(check('матчевые тесты', 'COMPLETED', 'SKIPPED'))).state).toBe(
+      'pending',
+    );
+  });
+
   it('все зелёные — успех', () => {
     const state = summariseChecks(
       rollup(check('типы', 'COMPLETED', 'SUCCESS'), check('сборка', 'COMPLETED', 'SUCCESS')),
@@ -106,7 +140,7 @@ describe('улики о деле этапа', () => {
     worktreeDir: '.claude/worktrees',
   });
 
-  const task = (over = {}) => ({ id: '0001-one', links: { run: null }, ...over });
+  const task = (over = {}) => ({ id: '0001-one', links: { run: null, pr: null }, ...over });
 
   /** Переходник, отвечающий заранее заготовленным, и список спрошенного. */
   function fakeIo(answers = []) {
@@ -130,6 +164,7 @@ describe('улики о деле этапа', () => {
       unpushed: 0,
       lastCommitAt: '2026-09-01T12:30:00+03:00',
       previousRun: null,
+      previousPr: null,
     });
     expect(asked).toEqual([
       'rev-parse --verify --quiet origin/worktree-0001-one',
@@ -161,6 +196,43 @@ describe('улики о деле этапа', () => {
     const { io } = fakeIo();
     const evidence = io.stageEvidence(task({ links: { run: '33428427058' } }));
     expect(evidence.previousRun).toBe('33428427058');
+  });
+
+  it('прежний номер pull request берётся из задачи и лишних команд не стоит', () => {
+    // Зеркально номеру прогона: впервые открытый pull request — это тот,
+    // которого задача до этапа не знала. Ни одного нового вызова git.
+    const { io, asked } = fakeIo();
+    const evidence = io.stageEvidence(task({ links: { run: null, pr: 124 } }));
+
+    expect(evidence.previousPr).toBe(124);
+    expect(asked).toEqual([
+      'rev-parse --verify --quiet origin/worktree-0001-one',
+      'rev-list --count origin/worktree-0001-one..worktree-0001-one',
+      'log -1 --format=%cI worktree-0001-one',
+    ]);
+  });
+
+  it('задача без ссылки на pull request даёт null, а не undefined', () => {
+    const { io } = fakeIo();
+    expect(io.stageEvidence({ id: '0001-one', links: {} }).previousPr).toBe(null);
+  });
+
+  it('своя работа в ветке считается от главной ветки и без слияний', () => {
+    // Мерка объявлена дословно: оба ключа несут смысл. Считать от удалённого
+    // двойника своей ветки нельзя — это вопрос «отправлено ли», а не «есть ли
+    // что терять»; считать слияния нельзя — коммит подтянутой главной ветки
+    // это обновление базы, а не работа, и с ним уборка заперлась бы у всякой
+    // задачи, зашедшей в дерево после расхождения с main.
+    const { io, asked } = fakeIo([ok('0\n')]);
+    expect(io.ownCommits('worktree-0001-one')).toBe(0);
+    expect(asked).toEqual(['rev-list --count --no-merges origin/main..worktree-0001-one']);
+  });
+
+  it('отказ git о содержимом ветки — это null, а не ноль', () => {
+    // Ноль означает «терять нечего» и разрешает удаление. Слив его
+    // с неизвестностью, поломка прибора сносила бы ветки с работой.
+    const { io } = fakeIo([{ code: 128, stdout: '', stderr: 'fatal: bad revision' }]);
+    expect(io.ownCommits('worktree-0001-one')).toBe(null);
   });
 });
 

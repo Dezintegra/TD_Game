@@ -12,8 +12,15 @@ import { canTransition } from '../config/transitions.mjs';
  * задача уходит в ошибку с внятной причиной, а не тихо застревает.
  */
 
-/** Исходы, с которыми сессия вправе завершиться. */
-export const OUTCOMES = ['done', 'rejected', 'question', 'failed'];
+/**
+ * Исходы, с которыми сессия вправе завершиться.
+ *
+ * `moot` — «предмет снят»: описанного в задаче дефекта нет, работа уже сделана
+ * чужим влитым изменением либо правило, которое просят завести, действует.
+ * Проектировать такой задаче нечего, и прежде она уходила в сквозную «Ошибку»,
+ * лгавшую о причине; теперь у неё есть честный конец — уборка и «Закрыто».
+ */
+export const OUTCOMES = ['done', 'rejected', 'question', 'failed', 'moot', 'split'];
 
 /**
  * Куда ведёт остановка задачи.
@@ -52,6 +59,8 @@ function afterDone(task) {
   switch (task.status) {
     case 'triage':
       return 'closed';
+    case 'decompose':
+      return 'design';
     case 'design':
       return 'audit';
     case 'audit':
@@ -141,6 +150,113 @@ export function applyReport(task, report, limits = {}) {
       status: 'awaiting-po',
       returnTo: task.status,
       note: report.summary ?? 'сессия упёрлась в решение уровня продукта',
+      problems,
+    };
+  }
+
+  if (report.outcome === 'moot') {
+    // Три предохранителя против тихого сбрасывания неудобной работы, и все
+    // машинные: словесный запрет в скилле проверить нечем.
+    //
+    // Первый — этап. С имплементации, ревью или выкладки задачу этим ходом
+    // не сбросить вовсе: там работа уже сделана.
+    if (task.status !== 'design') {
+      const why = `исход «moot» объявлен этапом «${task.status}», а он бывает только у проработки`;
+      problems.push(why);
+      return halt(task, why, problems);
+    }
+
+    // Второй — заведённые артефакты. Проработка, вернувшаяся из аудита
+    // с замечаниями, обязана править заведённое изменение, а спорит
+    // с постановкой отчётом `question`.
+    const started = task.links?.change
+      ? `изменение «${task.links.change}»`
+      : task.links?.pr
+        ? `pull request ${task.links.pr}`
+        : null;
+    if (started) {
+      const why = `исход «moot» поверх сделанной работы: у задачи заведено ${started}`;
+      problems.push(why);
+      return halt(task, why, problems);
+    }
+
+    // Третий — доказательство. Заявленное без него ходом не считается:
+    // назвать файл со строкой или номер влитого pull request можно, только
+    // посмотрев, и это ровно та цена, которую ход обязан стоить.
+    const evidence = String(report.evidence ?? '').trim();
+    if (!evidence) {
+      const why = 'исход «moot» без доказательства: поле evidence пусто';
+      problems.push(why);
+      return halt(task, why, problems);
+    }
+
+    // Переход всё так же сверяется с таблицей: у задачи не типа `feature`
+    // маршрута `design` → `cleanup` нет, и ход обязан упереться в неё,
+    // а не обойти.
+    const verdict = canTransition(task, 'cleanup');
+    if (!verdict.ok) {
+      problems.push(verdict.reason);
+      return halt(task, verdict.reason, problems);
+    }
+
+    return {
+      status: 'cleanup',
+      returnTo: null,
+      // Записка уезжает в журнал задачи: закрытие без названной причины
+      // неотличимо на доске от брошенного.
+      note: `Предмет снят: ${report.summary ?? 'причина не названа'}. Проверено: ${evidence}.`,
+      problems,
+    };
+  }
+
+  if (report.outcome === 'split') {
+    // Три предохранителя, и все машинные — по образцу `moot`: ход, которым
+    // этап закрывает собственную задачу, словесным запретом не удержать.
+    //
+    // Первый — этап. С проработки, имплементации или ревью задачу этим ходом
+    // не сбросить: там работа уже начата, а разнести по карточкам можно
+    // только замысел.
+    if (task.status !== 'decompose') {
+      const why = `исход «split» объявлен этапом «${task.status}», а он бывает только у анализа`;
+      problems.push(why);
+      return halt(task, why, problems);
+    }
+
+    // Второй — число частей. Дробление на одну часть — это не дробление,
+    // а отказ от работы под видом дробления, и мерка тут обязана быть
+    // машинной: словами такое не отличить.
+    const parts = Array.isArray(report.requests) ? report.requests.length : 0;
+    if (parts < 2) {
+      const why = `исход «split» с ${parts} заявками: дробление меньше чем на две части — не дробление`;
+      problems.push(why);
+      return halt(task, why, problems);
+    }
+
+    // Третий — заведённые артефакты, дословно как у `moot`. Задача, дошедшая
+    // до изменения или до pull request, дробится уже поверх сделанного.
+    const started = task.links?.change
+      ? `изменение «${task.links.change}»`
+      : task.links?.pr
+        ? `pull request ${task.links.pr}`
+        : null;
+    if (started) {
+      const why = `исход «split» поверх сделанной работы: у задачи заведено ${started}`;
+      problems.push(why);
+      return halt(task, why, problems);
+    }
+
+    // Переход всё так же сверяется с таблицей: у задачи не типа `feature`
+    // маршрута `decompose` → `closed` нет, и ход обязан упереться в неё.
+    const verdict = canTransition(task, 'closed');
+    if (!verdict.ok) {
+      problems.push(verdict.reason);
+      return halt(task, verdict.reason, problems);
+    }
+
+    return {
+      status: 'closed',
+      returnTo: null,
+      note: `Работа разнесена по ${parts} карточкам: ${report.summary ?? 'причина не названа'}`,
       problems,
     };
   }

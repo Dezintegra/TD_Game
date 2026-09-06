@@ -29,6 +29,44 @@ describe('образцы задач', () => {
   });
 });
 
+describe('поля возврата из ошибки', () => {
+  it('запись с вердиктом разбора и зоной причины годна', () => {
+    // По вердикту конвейер возвращает задачу из ошибки сам, по зоне —
+    // заводит заявку мимо кандидатов. Схема, не знающая этих полей,
+    // отвергла бы такую запись у файлового хранилища молча.
+    const task = {
+      ...feature(),
+      area: 'pipeline',
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 },
+    };
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('вердикт из двух слов, а не из любого', () => {
+    const task = { ...feature(), recovery: { causedBy: 'кто-то', fixedBy: [], returns: 0 } };
+    expect(validateTask(task, schema)).toHaveLength(1);
+  });
+});
+
+describe('счёт отказов сервера и расход задачи', () => {
+  it('запись с apiErrors и расходом годна', () => {
+    // Обе величины код пишет, а схемы их не знали: apiErrors — с 03.09.2026
+    // (задача 0220), расход — с этого изменения. При additionalProperties:
+    // false такая запись у файлового хранилища отвергалась бы молча.
+    const task = {
+      ...feature(),
+      spentUsd: 12.5,
+      attempts: { continuations: 0, cycleFailures: 0, apiErrors: 2 },
+    };
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('отрицательный расход отвергается', () => {
+    const task = { ...feature(), spentUsd: -1 };
+    expect(validateTask(task, schema)).toHaveLength(1);
+  });
+});
+
 describe('обязательные поля', () => {
   it('пропущенное поле названо по имени', () => {
     const task = feature();

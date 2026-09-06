@@ -126,8 +126,76 @@ export function readStages(root, config) {
   return value && typeof value === 'object' ? value : {};
 }
 
-/** Взведён ли рубильник паузы. */
+/**
+ * Прочитать правила разрешений, которые достанутся этапу ключом `--settings`.
+ *
+ * Путь считается **от каталога инструмента**: настройка разрешений — часть
+ * самого инструмента, как и правила этапов (см. границу «своё — проектное»
+ * в README). Абсолютный путь берётся как есть.
+ *
+ * Файла нет, файл не разобрался, поля `permissions` в нём нет — возвращается
+ * `null`, и сканер по такому ответу не держит ни одной задачи. Обратное
+ * решение — «не знаем, значит держим» — остановило бы конвейер целиком
+ * из-за опечатки в пути; отсутствие файла к тому же уже названо осмотром
+ * окружения при запуске.
+ */
+export function readPermissions(home, config) {
+  if (!config.stageSettings) return null;
+  const path = isAbsolute(config.stageSettings)
+    ? config.stageSettings
+    : resolve(home, config.stageSettings);
+  if (!existsSync(path)) return null;
+
+  const { value } = readJson(path);
+  const permissions = value?.permissions;
+  if (!permissions || typeof permissions !== 'object') return null;
+
+  // Списки приводятся к массивам здесь, а не у читателя: сканер — чистый счёт,
+  // и разбирать полуразобранную настройку не его дело.
+  return {
+    allow: Array.isArray(permissions.allow) ? permissions.allow : [],
+    deny: Array.isArray(permissions.deny) ? permissions.deny : [],
+  };
+}
+
+/** Взведён ли рубильник человека. Снимается только руками. */
 export const isPaused = (root, config) => existsSync(join(root, config.paths.local, 'pause'));
+
+/**
+ * Взведена ли пауза сервера модели.
+ *
+ * Файл свой, а не поле в общем: такой файл пришлось бы читать и разбирать,
+ * а его порча превратила бы обе паузы в неизвестность. Два файла — два
+ * независимых признака, каждый читается существованием, и снятие одного
+ * физически не может задеть другой.
+ */
+export const isApiPaused = (root, config) =>
+  existsSync(join(root, config.paths.local, 'pause.api'));
+
+/**
+ * Состояние паузы сервера: когда взведена, сколько проб сделано, когда была
+ * последняя.
+ *
+ * Испорченный или пустой файл даёт пустое состояние, а не исключение: пауза
+ * при этом остаётся взведённой (её признак — само существование файла),
+ * и первая же проба под ней сделается сразу. Терять из-за нечитаемой отметки
+ * возможность узнать, что сервер ответил, было бы худшим из исходов.
+ */
+export function readApiPause(root, config) {
+  const path = join(root, config.paths.local, 'pause.api');
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    return {
+      armedAt: parsed.armedAt ?? null,
+      attempt: Number.isFinite(parsed.attempt) ? parsed.attempt : 0,
+      lastProbeAt: Number.isFinite(parsed.lastProbeAt) ? parsed.lastProbeAt : null,
+      status: parsed.status ?? null,
+    };
+  } catch {
+    return { armedAt: null, attempt: 0, lastProbeAt: null, status: null };
+  }
+}
 
 /**
  * Разобрать файл вопросов и понять, на какие из них уже ответили.

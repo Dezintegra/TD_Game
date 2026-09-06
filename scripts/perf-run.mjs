@@ -23,6 +23,9 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
+import { releasePerfLock } from './perf-lock.mjs';
+import { preparePerfPackages } from './perf-prepare.mjs';
+import { perfServiceSpecs, startPerfServices } from './perf-services.mjs';
 import {
   BUSY_LIMIT,
   die,
@@ -53,6 +56,16 @@ if (argv.includes('--history')) {
 // Сырой вывод замера — свой у каждого дерева: это промежуточный файл
 // одного прогона, и делить его не с кем.
 const measurementsPath = join(repoRoot, 'test-results', 'perf-measurements.jsonl');
+
+// Подготовка до замера занятости: компилятор не должен попадать в цифры прогона.
+if (!checkOnly) {
+  step('Готовлю внутренние пакеты для серверов замера');
+  try {
+    preparePerfPackages(repoRoot);
+  } catch (error) {
+    die(`не удалось подготовить замер: ${error.message}`);
+  }
+}
 
 // ── Проверка обстановки ──────────────────────────────────────────────
 step('Смотрю, свободна ли машина');
@@ -91,9 +104,11 @@ const portFree = (port) =>
 step('Смотрю, свободны ли порты');
 const clientPort = Number(process.env['CLIENT_PORT'] ?? 5173);
 const serverPort = Number(process.env['PORT'] ?? 3001);
+const metricsPort = Number(process.env['COMPUTER_METRICS_PORT'] ?? serverPort + 1);
 const taken = [];
 if (!(await portFree(clientPort))) taken.push(`клиентский ${clientPort} (CLIENT_PORT)`);
 if (!(await portFree(serverPort))) taken.push(`серверный ${serverPort} (PORT)`);
+if (!(await portFree(metricsPort))) taken.push(`метрики ${metricsPort} (COMPUTER_METRICS_PORT)`);
 
 if (taken.length > 0) {
   die(
@@ -127,9 +142,9 @@ writeFileSync(
 // заблокировал бы соседние деревья на четверть часа впустую.
 const release = () => {
   try {
-    rmSync(lockPath, { force: true });
-  } catch {
-    // Уже удалён — значит цель достигнута.
+    releasePerfLock(lockPath);
+  } catch (error) {
+    warn(`не удалось освободить замок: ${error.message}`);
   }
 };
 process.on('exit', release);
@@ -155,23 +170,37 @@ rmSync(measurementsPath, { force: true });
 // в конце.
 const sampling = startBusySampling();
 
-const status = await new Promise((resolve) => {
-  const child = spawn(
-    'pnpm',
-    ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
-    {
-      stdio: 'inherit',
-      shell: true,
-      cwd: repoRoot,
-      env: { ...process.env, PERF_OUT: measurementsPath },
-    },
-  );
+let services;
+let status;
+try {
+  if (process.platform === 'win32') services = await startPerfServices(perfServiceSpecs(repoRoot));
+  status = await new Promise((resolve) => {
+    const child = spawn(
+      'pnpm',
+      ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
+      {
+        stdio: 'inherit',
+        shell: true,
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PERF_OUT: measurementsPath,
+          ...(services ? { PERF_MANAGED_SERVICES: '1' } : {}),
+        },
+      },
+    );
 
-  // Не запустился вовсе — это не «замер провалился», но и не успех.
-  // Ниже такой прогон отсеется по отсутствию чисел.
-  child.on('error', () => resolve(1));
-  child.on('close', (code) => resolve(code ?? 1));
-});
+    // Не запустился вовсе — это не «замер провалился», но и не успех.
+    // Ниже такой прогон отсеется по отсутствию чисел.
+    child.on('error', () => resolve(1));
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+} catch (error) {
+  warn(`не удалось запустить замер: ${error.message}`);
+  status = 1;
+} finally {
+  await services?.stop();
+}
 
 const load = sampling.stop();
 

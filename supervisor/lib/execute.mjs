@@ -1,15 +1,20 @@
 import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
 import {
+  addSpent,
   applyTransition,
   claimTask,
+  countApiError,
   countContinuation,
   countRejection,
+  countSpawnFailure,
   linkArtifact,
+  refundContinuation,
   relate,
   releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
 import { judgeDenials } from './denials.mjs';
+import { pipelineCause, recoveryFrom } from './recovery.mjs';
 import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
@@ -82,11 +87,6 @@ async function transferReport(action, io) {
       : { verdict: 'passing', why: null };
 
   if (trust.verdict === 'undermining') {
-    // Продолжение здесь бессмысленно и стоит денег: правило разрешений
-    // не изменилось, продолжатель упрётся туда же. Хуже: возобновлённая
-    // сессия помнит собственный отчёт и ответит из него «всё сделано».
-    io.forgetSession?.(action.taskId, action.stage);
-
     // Отчёт при этом не пропадает. Основание записано ценой: 31.08.2026
     // задача 0006 ушла в ошибку с полностью снятыми числами шестидесяти
     // матчей, и числа эти остались лежать в логе, которого не прочитал никто.
@@ -98,7 +98,11 @@ async function transferReport(action, io) {
     });
     // Отчёт снимается с очереди и здесь: иначе следующий цикл принёс бы его
     // снова, а задача уже стоит в разборе.
-    if (stopped.result === 'done') io.removeReport(action.taskId, action.stage);
+    if (stopped.result === 'done') {
+      // До удавшейся записи отметка начала нужна повторной приёмке.
+      io.forgetSession?.(action.taskId, action.stage);
+      io.removeReport(action.taskId, action.stage);
+    }
     return stopped;
   }
 
@@ -120,8 +124,10 @@ async function transferReport(action, io) {
   // Дошедший до конца этап обнуляет счётчики: прошлые заминки больше не в счёт,
   // иначе задача упрётся в предел там, где всё было хорошо.
   //
-  // Возврат — случай особый: обнулить счёт здесь значило бы никогда до предела
-  // и не дойти. Поэтому возврат счёт наращивает, а гасит его успех проверки.
+  // Возврат наращивает свой счёт — возвраты подряд, до предела спора, — а
+  // продолжения гасит так же, как успех: они считают сессии на этапе, с которого
+  // задача уходит. Счёт, притащенный с аудита, останавливал проработку, не дав
+  // ей ни одной сессии (02.09.2026: 0022, 0080, 0088; карточка 0081).
   let next = halted
     ? moved.task
     : report.outcome === 'rejected'
@@ -140,6 +146,11 @@ async function transferReport(action, io) {
   // разобранная и упавшая снова, возобновила бы ту сессию — и услышала бы
   // от неё вывод о позапрошлом падении.
   if (verdict.status === 'postmortem') io.forgetSession?.(action.taskId, 'postmortem');
+
+  // Расход прибавляется на ЛЮБОМ исходе отчёта, включая возврат и остановку:
+  // сессия стоила денег независимо от того, чем кончилась, а вся мера затеяна
+  // ровно против кругов, каждый из которых чем-то кончался.
+  next = addSpent(next, report.costUsd);
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без
@@ -160,11 +171,31 @@ async function transferReport(action, io) {
     // блокирующей заявки. Право заводить работу мимо шлюза кандидатов есть
     // только у разбора ошибки.
     sourceStage: task.status,
+    // Разбор, назвавший причину конвейерной, заводит конвейерные заявки.
+    pipelineCause: pipelineCause(report),
+    // Части, рождённые дроблением, анализ на дробность уже прошли — в лице
+    // задачи, которая их и породила, — и потому идут из очереди сразу
+    // в проработку.
+    decomposed: report.outcome === 'split',
   });
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
     plan.notes = [...(plan.notes ?? []), `заявка отклонена: ${bad.problems.join('; ')}`];
+  }
+
+  // Вердикт удавшегося разбора едет в саму задачу: по нему сканер потом
+  // решает, возвращать ли её из ошибки и когда. Идентификаторы конвейерных
+  // починок известны уже здесь — до записи, — и разбору знать их не нужно.
+  if (task.status === 'postmortem' && verdict.status === 'failed' && report.outcome === 'done') {
+    const judged = recoveryFrom(report, {
+      task: next,
+      created: plan.planned.filter((born) => born.area === 'pipeline').map((born) => born.id),
+      known: io.allTaskIds(),
+      maxReturns: io.maxAutoReturns,
+    });
+    next = { ...next, recovery: judged.recovery };
+    plan.notes = [...(plan.notes ?? []), ...judged.notes];
   }
 
   // Дополнения разбираются здесь же и по тем же правилам: одна негодная
@@ -222,6 +253,17 @@ async function transferReport(action, io) {
     next = relate(next, item.taskId);
   }
 
+  // Пакет выкладки разносится ДО записи ведущей и по той же причине, что
+  // заявки: неудача на середине не должна оставлять отчёт непринятым при
+  // уже сдвинутой ведущей. Задачи, уже переехавшие прошлым заходом,
+  // разноска узнаёт по состоянию и пропускает — перенос идемпотентен.
+  if (action.stage === 'deploy' && Array.isArray(report.batch)) {
+    const spread = await spreadBatch(task, report, io);
+    if (!spread.ok) return { result: 'failed', why: spread.why, created, amended };
+    for (const id of spread.moved) next = relate(next, id);
+    plan.notes = [...(plan.notes ?? []), ...spread.notes];
+  }
+
   // Вопрос записывается ТЕМ ЖЕ действием, что и переход в ожидание.
   // Схема задачи требует поля `question` при этом состоянии, а без записи
   // вопроса у ожидания нет выхода вовсе.
@@ -254,7 +296,15 @@ async function transferReport(action, io) {
       at: io.now,
       from: task.status,
       to: verdict.status,
-      what: report.summary,
+      // Обычно запись журнала говорит словами сессии — её `summary`. Исходу
+      // `moot` этого мало: спецификация требует, чтобы запись назвала причину
+      // ВМЕСТЕ с доказательством, а сложены они в одну фразу только в записке
+      // разбора — «Предмет снят: … Проверено: …». Деться доказательству больше
+      // некуда: `task.history` доска не хранит вовсе, а отчёт после переноса
+      // снимается, и лог этапа в промпт следующих сессий не уезжает. Без этой
+      // строки закрытая задача осталась бы в журнале заявлением без улики —
+      // ровно тем, против чего написан третий предохранитель исхода.
+      what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
       links: report.links ?? {},
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
@@ -269,6 +319,10 @@ async function transferReport(action, io) {
   );
   if (!push.ok) return { result: 'failed', why: push.outcome, created, amended };
 
+  // Перенесённый отчёт завершает заход при любом исходе. Память о нём
+  // не должна подменить чтение новой задачи при следующем возврате.
+  io.forgetSession?.(action.taskId, action.stage);
+
   // Отчёт снимается с очереди только после удавшейся отправки: иначе
   // при неудаче этап пришлось бы проходить заново, потеряв уже сделанное.
   io.removeReport(action.taskId, action.stage);
@@ -279,6 +333,91 @@ async function transferReport(action, io) {
     amended,
     rejected: [...plan.rejected, ...facts.rejected],
   };
+}
+
+/**
+ * Разнести отчёт пакетной выкладки по задачам пакета.
+ *
+ * Отчёт один — ведущей, — а задач в пакете много, и о них говорят два
+ * перечня: `deployed` (код выложен → `cleanup`) и `skipped` (`{ taskId, why }`,
+ * из пакета исключена → `failed` с причиной). Исход `outcome` относится
+ * к ведущей и разбирается общим порядком; здесь двигаются только прочие.
+ *
+ * Отчёт властен ровно над своим пакетом — перечнем из назначения, который
+ * супервизор вернул вместе с отчётом. Идентификатор не из пакета не двигает
+ * ничего: сессия не откроет доску, и назвать чужую задачу может только
+ * по ошибке. Задача пакета, не названная ни в одном перечне, остаётся
+ * в `deploy` и попадёт в следующий пакет — молча увести её в уборку нельзя:
+ * сессия могла пропустить её по делу, а не по забывчивости. Оба случая
+ * ложатся записью в журнал ведущей.
+ *
+ * Каждая задача уезжает своим коммитом, и неудача любой из них возвращает
+ * неудачу целиком: ведущая и отчёт остаются на месте, следующий оборот
+ * начинает заново, а уже переехавших узнаёт по состоянию.
+ */
+async function spreadBatch(lead, report, io) {
+  const batch = report.batch.filter((id) => id !== lead.id);
+  const deployed = new Set(Array.isArray(report.deployed) ? report.deployed : []);
+  const skipped = new Map(
+    (Array.isArray(report.skipped) ? report.skipped : [])
+      .filter((item) => item && typeof item.taskId === 'string')
+      .map((item) => [item.taskId, String(item.why ?? '').trim() || 'причина не названа']),
+  );
+
+  const notes = [];
+  for (const id of [...deployed, ...skipped.keys()]) {
+    if (id !== lead.id && !batch.includes(id)) {
+      notes.push(`Отчёт назвал задачу ${id}, которой в пакете не было: она не тронута.`);
+    }
+  }
+
+  const moved = [];
+  for (const id of batch) {
+    const member = io.readTask(id);
+    if (!member) {
+      notes.push(`Задача ${id} из пакета в бэклоге не найдена.`);
+      continue;
+    }
+    // Уже переехала прошлым заходом переноса — либо её увёл человек.
+    // И то и другое не наше дело: двигаем только стоящих в выкладке.
+    if (member.status !== 'deploy') continue;
+
+    const to = deployed.has(id) ? 'cleanup' : skipped.has(id) ? 'failed' : null;
+    if (!to) {
+      notes.push(`Задача ${id} из пакета отчётом не названа: остаётся в выкладке.`);
+      continue;
+    }
+
+    const problem = to === 'failed' ? skipped.get(id) : undefined;
+    const what =
+      to === 'cleanup'
+        ? `Выложена пакетом с ${lead.id}. ${report.summary ?? ''}`.trim()
+        : `Исключена из пакета выкладки ${lead.id}.`;
+    const shifted = applyTransition(member, { status: to, note: problem ?? what, now: io.now });
+    if (!shifted.task) return { ok: false, why: `${id}: ${shifted.problems.join('; ')}` };
+
+    // Дошедшая до уборки задача счётчиков не несёт, как и ведущая: прошлые
+    // заминки этапа больше не в счёт. Исключённой их обнулил сам переход
+    // в сквозное состояние.
+    const settled = to === 'cleanup' ? resetAttempts(shifted.task) : shifted.task;
+    const push = await io.saveTask(
+      settled,
+      {
+        at: io.now,
+        from: 'deploy',
+        to,
+        what,
+        problem,
+        links: report.links ?? {},
+        source: 'agent',
+      },
+      `chore(backlog): ${id} deploy → ${to} (пакет ${lead.id})`,
+    );
+    if (!push.ok) return { ok: false, why: `${id}: ${push.outcome}`, moved, notes };
+    moved.push(id);
+  }
+
+  return { ok: true, moved, notes };
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
@@ -370,7 +509,33 @@ async function startStage(action, io) {
   }
 
   const spawned = io.spawnStage(assignmentFor(action, io, claimed.task, branch));
-  if (!spawned.ok) return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
+
+  // Захват и запись «Взята в работу» остаются на месте при любом отказе:
+  // задача действительно взята и действительно стоит в этапе. Отменять
+  // тут нечего — не хватает лишь сессии, и её выдаст ближайший оборот
+  // действием `continue-stage`.
+  if (!spawned.ok && spawned.reason === 'busy') {
+    return { result: 'skipped', why: `этап не запустился: ${spawned.why}` };
+  }
+
+  if (!spawned.ok) {
+    // Отдельной записью, а не поверх «Взята в работу»: первая говорит
+    // о состоявшемся захвате и остаётся правдой, вторая — о несостоявшемся
+    // запуске. Слив их в одну, мы получили бы ту же ложь, ради которой
+    // всё и правится.
+    await io.saveTask(
+      countSpawnFailure(claimed.task),
+      {
+        at: io.now,
+        from: action.stage,
+        to: action.stage,
+        problem: `Этап не запустился: ${spawned.why}.`,
+      },
+      `chore(backlog): ${task.id} этап ${action.stage} не запустился`,
+    );
+    return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
+  }
+
   return { result: 'done', status: action.stage };
 }
 
@@ -383,7 +548,7 @@ async function startStage(action, io) {
  * диск они не могли. Теперь порождает тот же, кто решает.
  *
  * `sessionId` решает, начинается этап или возобновляется. Идентификатор
- * известен — значит процесс на этом этапе уже был и прервался; тогда
+ * известен — значит заход ещё не завершён переносом отчёта; тогда
  * сессию возобновляют, и она помнит свой ход мысли. Прежде продолжатель
  * выяснял сделанное тремя командами `git log` и иногда понимал неверно.
  */
@@ -405,6 +570,27 @@ function assignmentFor(action, io, task, branchHint) {
     task,
     journal: io.readJournal(action.taskId),
     board: io.boardDigest(),
+    // Пакет выкладки: выписки задач, которые сессия выкладывает вместе
+    // с ведущей. Перечень фиксируется здесь, в момент выдачи сессии, и это
+    // единственный источник правды о составе пакета — доску сессия не откроет,
+    // а задача, пришедшая в `deploy` позже, останется ждать следующего.
+    batch: action.batch ? action.batch.map((id) => batchDigest(io.readTask(id), id)) : null,
+  };
+}
+
+/**
+ * Что о задаче пакета нужно сессии выкладки: номер pull request, чтобы
+ * проверить вливание, имя изменения — чтобы назвать его в журнале.
+ * Задачи, которой бэклог уже не знает, выписка не скрывает: сессия обязана
+ * назвать её в отчёте исключённой, а не промолчать.
+ */
+function batchDigest(task, id) {
+  if (!task) return { id, title: null, pr: null, change: null, missing: true };
+  return {
+    id: task.id,
+    title: task.title ?? null,
+    pr: task.links?.pr ?? null,
+    change: task.links?.change ?? null,
   };
 }
 
@@ -424,9 +610,52 @@ async function continueStage(action, io) {
     return { result: 'failed', why: `дерева у задачи нет: этапу «${task.status}» работать негде` };
   }
 
+  // Сперва порождение, и только потом счёт с записью. Порядок обратный —
+  // посчитать, записать, а потом порождать — стоил задач 0043, 0062, 0022
+  // и 0088: несостоявшийся запуск съедал продолжение наравне с уснувшей
+  // сессией, а в журнал задачи уезжала запись «Этапу выдана сессия»,
+  // которой не было. Разбор шёл искать причину в сессии, которой не было.
+  //
+  // Назначение при этом собирается с УЖЕ посчитанной задачи: продолжателю
+  // важно видеть израсходованные попытки, а не то, сколько их было до него.
+  // В мир это значение уезжает только вместе с родившимся процессом;
+  // при отказе оно просто выбрасывается.
   const counted = countContinuation(task);
+  const spawned = io.spawnStage(assignmentFor(action, io, counted));
+
+  // Теснота — очередь, а не поломка: ничего не тратит и в журнал задачи
+  // не пишется вовсе. При обороте в пять минут и прогоне арены, держащем
+  // место десятками минут, такая запись дала бы карточке дюжину одинаковых
+  // строк в час, и настоящая беда утонула бы в них. В журнал цикла причина
+  // попадает всегда — её называет сам исход действия.
+  if (!spawned.ok && spawned.reason === 'busy') {
+    return { result: 'skipped', why: `этап не запустился: ${spawned.why}` };
+  }
+
+  // А вот несостоявшееся порождение — беда уровня настройки, и молчать
+  // о ней нельзя: в журнале цикла она утонет за сутки, а карточка останется
+  // единственным местом, где видно, почему задача встала.
+  if (!spawned.ok) {
+    const failed = countSpawnFailure(task);
+    await io.saveTask(
+      failed,
+      {
+        at: io.now,
+        from: task.status,
+        to: task.status,
+        problem: `Этап не запустился: ${spawned.why}.`,
+      },
+      `chore(backlog): ${task.id} этап ${task.status} не запустился`,
+    );
+    return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
+  }
+
+  // Процесс родился. Удавшееся порождение гасит счёт несостоявшихся
+  // запусков: оно доказывает, что машинерия запуска работает, и прежние
+  // отказы к делу больше не относятся.
+  const started = { ...counted, attempts: { ...counted.attempts, spawnFailures: 0 } };
   const push = await io.saveTask(
-    counted,
+    started,
     {
       at: io.now,
       from: task.status,
@@ -435,13 +664,158 @@ async function continueStage(action, io) {
     },
     `chore(backlog): ${task.id} сессия на этап ${task.status}`,
   );
+  // Процесс при неудаче записи НЕ снимается: он делает работу, ради которой
+  // и порождён. Платим одной пропущенной записью журнала и одной несписанной
+  // попыткой — то есть задача получит на заход больше положенного. Второго
+  // процесса по ней не появится: сканер видит живой прямо.
   if (!push.ok) return { result: 'failed', why: push.outcome };
-
-  // Назначение собирается с уже посчитанной задачи: продолжателю важно
-  // видеть израсходованные попытки, а не то, сколько их было до него.
-  const spawned = io.spawnStage(assignmentFor(action, io, counted));
-  if (!spawned.ok) return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
   return { result: 'done', status: task.status };
+}
+
+/**
+ * Записать в журнал задачи исход этапа, осиротевшего при смене супервизора.
+ *
+ * Пишется ЖУРНАЛ, и только он: ни состояния, ни счётчиков, ни положения
+ * в очереди запись не меняет. Причина не в осторожности, а в задаче 0070 —
+ * два изменения одной задачи в один оборот делаются по одному и тому же
+ * снимку доски, и второе затирает первое. А `note-orphan` и `continue-stage`
+ * попадают в один оборот по построению: сирота кончился, значит этапу тут же
+ * нужна сессия. `amendTask` полей задачи не трогает, и затирать ему нечего.
+ */
+async function noteOrphan(action, io) {
+  const outcome = io.readOrphan?.(action.taskId, action.stage);
+  if (!outcome) return { result: 'skipped', why: 'исход осиротевшего этапа уже записан' };
+
+  const written = await io.amendTask(
+    action.taskId,
+    orphanRecord(outcome),
+    `chore(backlog): ${action.taskId} исход осиротевшего этапа ${action.stage}`,
+    'supervisor',
+  );
+  // Исход снимается с очереди — а с ним и дескриптор с диска — только после
+  // удавшейся записи. Обрыв оставляет и то и другое на месте, и следующий
+  // оборот пробует снова.
+  if (!written.ok) return { result: 'failed', why: written.outcome };
+  io.forgetOrphan?.(action.taskId, action.stage);
+  return { result: 'done' };
+}
+
+/** Чем кончился осиротевший процесс — теми словами, какими это видел наблюдатель. */
+const ORPHAN_END = {
+  gone: 'процесс кончился сам',
+  stale: 'номер процесса занял посторонний: снимать его было нельзя',
+  killed: 'процесс снят поддеревом по истечении своего срока',
+  left: 'опознать процесс не удалось, и он оставлен работать',
+};
+
+/**
+ * Запись об осиротевшем этапе.
+ *
+ * Она обязана отвечать на вопрос следующей сессии и разбора: почему заход
+ * не дал ничего. Поэтому в ней и номер процесса, и отметка начала — по ним
+ * ищут журнал этапа, — и прямо сказанное «отчёт потерян, сделанное ищите
+ * в ветке»: коммит в отправленной ветке потерю отчёта переживает.
+ */
+function orphanRecord(outcome) {
+  return (
+    `**Этап «${outcome.stage}» осиротел при смене супервизора**\n\n` +
+    `Процесс ${outcome.pid}, начатый ${outcome.startedAt}, порождён прежним ` +
+    `супервизором и пережил его. ${ORPHAN_END[outcome.outcome] ?? outcome.why}.\n\n` +
+    'Отчёт этого захода потерян: он приходит стандартным выводом, а тот был ' +
+    'трубой в умерший процесс. Сделанное, если оно было, лежит в ветке задачи — ' +
+    'ищите его коммитами, а не по этой записи.\n'
+  );
+}
+
+/**
+ * Записать отказ сервера модели и вернуть задаче потраченное продолжение.
+ *
+ * В отличие от записи о сироте, здесь правятся и поля задачи: счёт
+ * продолжений уменьшается, счёт отказов сервера растёт. Затирания чужой
+ * правки это не грозит — сканер не выдаёт такой задаче сессию тем же
+ * оборотом именно затем, чтобы двух правок по одному снимку не было.
+ *
+ * Состояние задачи не меняется и разбор не зовётся: разбирать нечего,
+ * работы не было ни на один ход.
+ */
+async function noteApiError(action, io) {
+  const failure = io.readApiFailure?.(action.taskId, action.stage);
+  if (!failure) return { result: 'skipped', why: 'отказ сервера уже записан' };
+
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+
+  const counted = countApiError(refundContinuation(task));
+  const push = await io.saveTask(
+    counted,
+    {
+      at: io.now,
+      from: task.status,
+      to: task.status,
+      problem: apiErrorRecord(action.stage, failure.why),
+    },
+    `chore(backlog): ${action.taskId} отказ сервера на этапе ${action.stage}`,
+  );
+  // Отказ снимается с очереди только после удавшейся записи: обрыв оставляет
+  // его на месте, и следующий оборот пробует снова.
+  if (!push.ok) return { result: 'failed', why: push.outcome };
+  io.forgetApiFailure?.(action.taskId, action.stage);
+  return { result: 'done', status: task.status };
+}
+
+/**
+ * Запись об отказе сервера модели.
+ *
+ * Она отвечает на вопрос следующей сессии: почему заход не дал ничего
+ * и почему счёт попыток не вырос. Без этого разбор пошёл бы искать причину
+ * в работе, которой не было.
+ */
+function apiErrorRecord(stage, why) {
+  return (
+    `**Этап «${stage}» лёг на отказе сервера модели**\n\n` +
+    `${why}. Ходов сессия не сделала, поэтому продолжение, списанное при ` +
+    'рождении процесса, задаче возвращено: платить за чужую перегрузку ей ' +
+    'нечем и незачем.\n\n' +
+    'Состояние задачи не изменилось. Как только сервер ответит, этап пойдёт ' +
+    'заново с прежним счётом попыток.\n'
+  );
+}
+
+/**
+ * Отправить разросшуюся задачу на повторный анализ дробности.
+ *
+ * Не в разбор ошибки: задача не сломана. Разбор читает лог упавшего этапа
+ * и ищет поломку, а тут поломки нет — работа выросла, и лог последнего этапа
+ * про это не скажет ничего. 04.09.2026 задача 0216 прошла двенадцать этапов
+ * за $76,01, расширившись по дороге с проработки на имплементацию.
+ *
+ * Признак дробления снимается, и без этого весь ход бессмыслен: анализ
+ * пропустился бы ровно в том случае, ради которого затеян.
+ */
+async function decomposeAgain(action, io) {
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+
+  const moved = applyTransition(task, {
+    status: 'decompose',
+    note: action.reason,
+    now: io.now,
+  });
+  if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  const push = await io.saveTask(
+    { ...moved.task, decomposed: false },
+    {
+      at: io.now,
+      from: task.status,
+      to: 'decompose',
+      problem: `${action.reason}. Метка о проведённом дроблении снята: анализ идёт заново.`,
+    },
+    `chore(backlog): ${task.id} ${task.status} → decompose (предел ресурсов)`,
+  );
+  return push.ok
+    ? { result: 'done', status: 'decompose' }
+    : { result: 'failed', why: push.outcome };
 }
 
 /** Разобрать ответ владельца продукта и вернуть задачу в работу. */
@@ -484,6 +858,70 @@ async function answerQuestion(action, io) {
       decisions: [answer],
     },
     `chore(backlog): ${task.id} получен ответ, возврат в ${task.returnTo}`,
+  );
+  return push.ok
+    ? { result: 'done', status: task.returnTo }
+    : { result: 'failed', why: push.outcome };
+}
+
+/**
+ * Вернуть из ошибки задачу, упавшую по вине конвейера.
+ *
+ * Переход тот же, что делает человек мышью, — из `failed` в сохранённое
+ * состояние, — и объявлен он был для него. Разница в том, что здесь
+ * известно, почему: вердикт разбора и закрытые починки называются
+ * в журнале поимённо, чтобы через месяц было видно, чем задачу поднимали.
+ *
+ * Сессия упавшего этапа забывается. Причина была в конвейере — в правиле,
+ * разрешении, коде, — и возобновлённая сессия отвечала бы из памяти
+ * о прежних правилах. Новая читает журнал, как всякий новый исполнитель.
+ */
+async function returnTask(action, io) {
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+  // Картина могла смениться между решением и исполнением: человек поднял
+  // задачу сам либо разбор переписал вердикт. Тогда возвращать нечего.
+  if (task.status !== 'failed') return { result: 'skipped', why: 'задача уже не в ошибке' };
+  if (task.recovery?.causedBy !== 'pipeline') {
+    return { result: 'skipped', why: 'вердикт разбора уже не конвейерный' };
+  }
+  if (!task.returnTo) {
+    return { result: 'failed', why: 'некуда возвращать: состояние возврата пусто' };
+  }
+
+  const moved = applyTransition(task, {
+    status: task.returnTo,
+    note: 'возвращена конвейером: причина была в конвейере и снята',
+    now: io.now,
+  });
+  if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  // Счётчики попыток обнуляются, как при ручном подъёме, а счёт возвратов
+  // растёт: он и есть предохранитель, и вердикт снимается — задача снова
+  // в работе, и судить о ней будет следующий разбор, если он понадобится.
+  const returns = (task.recovery.returns ?? 0) + 1;
+  const next = {
+    ...resetAttempts(moved.task),
+    recovery: { causedBy: null, fixedBy: [], returns },
+  };
+  io.forgetSession?.(task.id, task.returnTo);
+
+  const fixed = action.fixedBy ?? task.recovery.fixedBy ?? [];
+  const limit = io.maxAutoReturns != null ? ` из ${io.maxAutoReturns}` : '';
+  const push = await io.saveTask(
+    next,
+    {
+      at: io.now,
+      from: task.status,
+      to: task.returnTo,
+      what:
+        'Возвращена в работу конвейером: по разбору причина падения была ' +
+        `в конвейере, а не в задаче, ${
+          fixed.length > 0 ? `и починки закрыты: ${fixed.join(', ')}` : 'и чинить было нечего'
+        }. Возврат ${returns}${limit}; счётчики попыток обнулены, ` +
+        `сессия этапа «${task.returnTo}» начнётся заново.`,
+    },
+    `chore(backlog): ${task.id} возвращена в ${task.returnTo} после починки конвейера`,
   );
   return push.ok
     ? { result: 'done', status: task.returnTo }
@@ -558,8 +996,8 @@ async function halt(task, why, io, extra = {}) {
  * Прибрать за завершённой задачей.
  *
  * Удаление — единственное необратимое, что делает конвейер, поэтому решение
- * принимается не здесь, а в отдельном разборе, и только по доказанной
- * влитости pull request.
+ * принимается не здесь, а в отдельном разборе: по доказанной влитости pull
+ * request, а там, где он не заводился вовсе, — по содержимому ветки.
  */
 async function cleanupTask(action, io) {
   const task = io.readTask(action.taskId);
@@ -571,6 +1009,9 @@ async function cleanupTask(action, io) {
     entry,
     pr: io.readPr(task.links?.pr),
     unpushed: entry ? io.unpushed(entry.branch) : 0,
+    // Содержимое ветки спрашивается только там, где решать по pull request
+    // нечем: у обычной задачи это был бы лишний вызов git на каждой уборке.
+    ownCommits: entry && !task.links?.pr ? io.ownCommits(entry.branch) : null,
   });
 
   if (verdict.verdict === 'wait') return { result: 'skipped', why: verdict.why };
@@ -658,8 +1099,12 @@ const HANDLERS = {
   cleanup: cleanupTask,
   'transfer-report': transferReport,
   'start-stage': startStage,
+  'note-orphan': noteOrphan,
+  'note-api-error': noteApiError,
+  'decompose-again': decomposeAgain,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
+  'return-task': returnTask,
   'poll-external': pollExternal,
   'fail-stage': failStage,
 };

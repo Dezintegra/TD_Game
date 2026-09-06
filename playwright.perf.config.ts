@@ -40,11 +40,24 @@ export default defineConfig({
   // кадров пропадёт, если печь спрайты по ходу боя. Мерить кадры
   // с выключенным прогревом значило бы мерить сборку, которой ни один
   // игрок не увидит, — и цифра выходила бы хуже правды.
-  webServer: base.webServer?.map((server) => ({
-    ...server,
-    reuseExistingServer: false,
-    ...(server.env === undefined ? {} : { env: { ...server.env, VITE_E2E_CHEAP_TEXTURES: '0' } }),
-  })),
+  webServer:
+    process.env['PERF_MANAGED_SERVICES'] === '1'
+      ? []
+      : base.webServer?.map((server) => ({
+          ...server,
+          // Неизменяемый снимок не нуждается в watch. tsx вызывает os.userInfo,
+          // недоступный под Windows sandbox; службы уже собраны perf-run.
+          command:
+            server.command === 'pnpm --filter @td/server dev'
+              ? 'pnpm --filter @td/server start'
+              : server.command === 'pnpm --filter @td/computer dev'
+                ? 'pnpm --filter @td/computer start'
+                : server.command,
+          reuseExistingServer: false,
+          ...(server.env === undefined
+            ? {}
+            : { env: { ...server.env, VITE_E2E_CHEAP_TEXTURES: '0' } }),
+        })),
 
   // Обычный конфиг эти файлы исключает — здесь ровно наоборот.
   testIgnore: [],

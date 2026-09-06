@@ -32,10 +32,16 @@ function register(io, { taskId, branch, path }) {
   const task = io.readTask(taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет в бэклоге' };
 
+  // Путь берётся в форме реестра, а не той, в какой его принесла сверка:
+  // из `git worktree list` он приходит абсолютным, а запуск этапа склеивает
+  // путь с корнем. Хранилище без такого метода (подделки в тестах) оставляет
+  // путь как есть.
+  const stored = io.worktreePathFor?.(taskId) ?? path;
+
   io.upsertRegistry({
     taskId,
     branch,
-    path,
+    path: stored,
     stage: task.status,
     sessionTitle: `pipeline:${taskId}:${task.status}`,
     lastSeenAt: io.now,

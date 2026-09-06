@@ -5,14 +5,14 @@
   "type": "module",
   "description": "Супервизор конвейера агентской разработки: берёт задачи с доски, заводит рабочие деревья и порождает этапы дочерними процессами claude",
   "bin": {
-    "pipeline-supervisor": "bin/supervise.mjs"
+    "pipeline-supervisor": "bin/launch.mjs"
   },
   "engines": {
     "node": ">=20.12"
   },
   "scripts": {
-    "start": "node bin/supervise.mjs",
-    "shadow": "node bin/supervise.mjs --dry-run",
+    "start": "node bin/launch.mjs",
+    "shadow": "node bin/launch.mjs --shadow",
     "cycle": "node bin/cycle.mjs",
     "board": "node bin/board.mjs",
     "board-setup": "node bin/board-setup.mjs",

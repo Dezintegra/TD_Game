@@ -110,6 +110,22 @@ describe('замок', () => {
     const held = { pid: 999, takenAt: NOW, refreshedAt: NOW };
     expect(lockVerdict(held, NOW, 30, () => false).take).toBe(true);
   });
+
+  it('замок с собственным номером — переданный, его берут', () => {
+    // Старый супервизор, перезапускаясь, записывает в замок номер нового
+    // и выходит: ни в один момент замок не пуст и не мёртв, а новому
+    // достаточно узнать себя. Живость при этом не спрашивается вовсе.
+    const handed = { pid: 4242, takenAt: NOW, refreshedAt: NOW, handedFrom: 999 };
+    const verdict = lockVerdict(handed, NOW, 30, () => true, 4242);
+    expect(verdict.take).toBe(true);
+    expect(verdict.why).toContain('передан');
+  });
+
+  it('чужой живой замок без собственного номера по-прежнему не берётся', () => {
+    const held = { pid: 999, takenAt: NOW, refreshedAt: NOW };
+    expect(lockVerdict(held, NOW, 30, () => true, 4242).take).toBe(false);
+    expect(lockVerdict(held, NOW, 30, () => true).take).toBe(false);
+  });
 });
 
 describe('самозащита от бесконечных неудач', () => {
@@ -177,6 +193,29 @@ describe('цикл', () => {
     expect(result.actions).toEqual([]);
   });
 
+  it('пауза сервера останавливает цикл своей причиной, а не чужой', () => {
+    // Одна строка на два случая была бы вредна: по ней нельзя решить,
+    // надо ли что-то делать. Ждущий человека конвейер требует человека,
+    // ждущий сервер не требует никого.
+    const result = cycle({ state: { tasks: [task('0001-one')], apiPaused: true } });
+    expect(result.outcome).toBe('api-paused');
+    expect(result.lock).not.toBeNull();
+    expect(result.actions).toEqual([]);
+    expect(result.notes.join()).toContain('сервер модели не отвечает');
+    expect(result.notes.join()).not.toContain('рубильник');
+  });
+
+  it('взведены обе — причиной назван человек: его паузу снимает только он', () => {
+    const result = cycle({
+      state: { tasks: [task('0001-one')], paused: true, apiPaused: true },
+    });
+    expect(result.outcome).toBe('paused');
+    expect(result.notes.join()).toContain('рубильник паузы');
+    // Вторая причина названа тоже: сняв свою паузу, человек иначе ждал бы
+    // работы, которой не будет, пока молчит сервер.
+    expect(result.notes.join()).toContain('сервер модели не отвечает');
+  });
+
   it('пустой бэклог не даёт работы', () => {
     expect(cycle().outcome).toBe('idle');
   });
@@ -188,7 +227,9 @@ describe('цикл', () => {
     expect(result.actions[0]).toMatchObject({
       kind: 'start-stage',
       taskId: '0001-one',
-      stage: 'design',
+      // Из очереди задача типа `feature` идёт в анализ на дробность, а не
+      // сразу в проработку: карточка метки дробления не несёт.
+      stage: 'decompose',
     });
   });
 });

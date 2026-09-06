@@ -1,5 +1,7 @@
 import { isAbsolute, join, resolve } from 'node:path';
+import { codexStageCommand, providerOf } from './provider.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
+import { modelForStage } from './stage-model.mjs';
 
 /**
  * Из чего складывается запуск этапа.
@@ -35,6 +37,8 @@ export function stageCommand({ assignment, prompt, config, root, home = root }) 
   // Искать сначала у себя, а не нашлось — в корне, намеренно НЕ делается:
   // молчаливый выбор одного пути из двух превращает опечатку в имени файла
   // в работу по чужим правилам, а такую беду ничем не заметить.
+  if (providerOf(config) === 'codex')
+    return codexStageCommand({ assignment, prompt, config, root, home });
   const own = (path) => (isAbsolute(path) ? path : resolve(home, path));
 
   // Промпт уезжает в стандартный ввод, а не в аргумент. Причина не в красоте:
@@ -91,9 +95,8 @@ export function stageCommand({ assignment, prompt, config, root, home = root }) 
   // человека, а человеческие — в конвейер.
   if (config.stageSettings) args.push('--settings', own(config.stageSettings));
 
-  // Модель называется, только если проект её назвал. Умолчания здесь нет
-  // намеренно: угаданная модель — это чужой выбор цены и качества.
-  if (config.stageModel) args.push('--model', config.stageModel);
+  const model = modelForStage(config, 'claude', assignment.stage);
+  if (model) args.push('--model', model);
 
   return {
     program: config.claudeCommand,

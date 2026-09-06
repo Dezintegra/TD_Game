@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { createKillTree, readAnswer, startStage } from './run-stage.mjs';
+import { createKillTree, createProbeProcess, readAnswer, startStage } from './run-stage.mjs';
 
 /**
  * Проверки хозяина у процесса.
@@ -38,10 +38,14 @@ function harness({ timeoutMs = 1000, command, onEvent, onStderr } = {}) {
   const timers = [];
   const events = [];
   const errors = [];
+  const spawned = [];
   const handle = startStage({
     command: command ?? { program: 'claude', args: ['-p'], cwd: '/repo', stdin: 'делай' },
     timeoutMs,
-    spawn: () => child,
+    spawn: (program, list, options) => {
+      spawned.push({ program, list, options });
+      return child;
+    },
     killTree: (pid) => killed.push(pid),
     onEvent:
       onEvent ??
@@ -59,8 +63,34 @@ function harness({ timeoutMs = 1000, command, onEvent, onStderr } = {}) {
     },
     clearTimer: () => {},
   });
-  return { child, killed, handle, events, errors, fire: () => timers.forEach((fn) => fn()) };
+  return {
+    child,
+    killed,
+    handle,
+    events,
+    errors,
+    spawned,
+    fire: () => timers.forEach((fn) => fn()),
+  };
 }
+
+describe('окно потомка не показывается', () => {
+  it('этап порождается со скрытой консолью', () => {
+    // Супервизор запускается с `detached: true`, а это на Windows означает
+    // процесс ВОВСЕ БЕЗ КОНСОЛИ: каждый его потомок получает свежую и видимую,
+    // окна вспыхивают десятками и перехватывают фокус у работающего человека.
+    // Проверено делом 02.09.2026 — и потому проверяется здесь, а не на глаз:
+    // пропажу этого флага иначе заметит только тот, у кого мигает экран.
+    const { spawned } = harness();
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].options.windowsHide).toBe(true);
+  });
+
+  it('рабочий каталог при этом не теряется', () => {
+    const { spawned } = harness();
+    expect(spawned[0].options.cwd).toBe('/repo');
+  });
+});
 
 describe('промпт подаётся на вход', () => {
   it('текст назначения уходит в stdin и вход закрывается', async () => {
@@ -185,6 +215,36 @@ describe('разбор ответа', () => {
 
   it('пустой перечень отказов — обычное дело, а не отсутствие поля', () => {
     expect(readAnswer(run('{"is_error":false,"result":"ок"}')).denials).toEqual([]);
+  });
+
+  // Ответ снят с живого случая 03.09.2026: шесть этапов подряд легли на 529,
+  // и каждый печатался как «завершился неудачей (код 1, success)».
+  it('отказ сервера модели — свой исход, а не неудача этапа', () => {
+    const overloaded =
+      '{"is_error":true,"subtype":"success","terminal_reason":"api_error",' +
+      '"api_error_status":529,"num_turns":1,"result":"API Error: 529 Overloaded"}';
+    const answer = readAnswer(run(overloaded, 1));
+    expect(answer.outcome).toBe('api-error');
+    expect(answer.why).toContain('529');
+    // Слово из subtype в причину попасть не вправе: у отказа сервера оно
+    // равно success, и «неудача, причина успех» не говорит ничего.
+    expect(answer.why).not.toContain('success');
+  });
+
+  it('одного числового состояния довольно: слова о причине бывает и нет', () => {
+    const throttled = '{"is_error":true,"subtype":"success","api_error_status":429}';
+    const answer = readAnswer(run(throttled, 1));
+    expect(answer.outcome).toBe('api-error');
+    expect(answer.why).toContain('429');
+  });
+
+  it('неудача без признаков отказа сервера остаётся обычной неудачей', () => {
+    const answer = readAnswer(run('{"is_error":true,"subtype":"error_max_turns"}', 1));
+    expect(answer.outcome).toBe('failed');
+  });
+
+  it('неразобравшийся вывод отказом сервера не признаётся: причины тут не видно', () => {
+    expect(readAnswer(run('API Error: 529 Overloaded', 1)).outcome).toBe('failed');
   });
 });
 
@@ -321,6 +381,79 @@ describe('разбор потока событий', () => {
   });
 });
 
+describe('опознание процесса', () => {
+  // Живых процессов здесь нет ни одного: опрос подставной. Проверяется то,
+  // ради чего опознание и заводится, — различение трёх положений, из которых
+  // два внешне похожи: «процесса нет» и «спросить не удалось».
+  const probe = (platform, answer) => createProbeProcess(() => answer, platform);
+
+  it('на Windows спрашивает tasklist по номеру и берёт имя образа', () => {
+    const run = vi.fn(() => ({
+      code: 0,
+      stdout: '"claude.exe","29704","Console","1","12 345 K"\r\n',
+    }));
+    const seen = createProbeProcess(run, 'win32')(29704);
+
+    expect(run).toHaveBeenCalledWith('tasklist', ['/FI', 'PID eq 29704', '/NH', '/FO', 'CSV']);
+    expect(seen).toEqual({ known: true, alive: true, image: 'claude.exe' });
+  });
+
+  it('«нет такого процесса» приходит текстом при нулевом коде возврата', () => {
+    // Сообщение ещё и на языке системы, поэтому сверяется не оно, а его
+    // отсутствие: строка данных начинается с кавычки, всё прочее — разговоры.
+    const stdout = 'INFO: No tasks are running which match the specified criteria.\r\n';
+    expect(probe('win32', { code: 0, stdout })(29704)).toEqual({
+      known: true,
+      alive: false,
+      image: null,
+    });
+  });
+
+  it('пустой ответ tasklist — «спросить не удалось», а не «процесса нет»', () => {
+    // Разница дорогая: «нет» отпускает рабочее дерево задачи, «не спросилось»
+    // обязано оставить этап идущим до его срока.
+    expect(probe('win32', { code: 1, stdout: '' })(29704).known).toBe(false);
+  });
+
+  it('строка данных без имени образа тоже читается как «не спросилось»', () => {
+    expect(probe('win32', { code: 0, stdout: '"","29704"' })(29704).known).toBe(false);
+  });
+
+  it('на прочих системах спрашивает ps и берёт его вывод именем образа', () => {
+    const run = vi.fn(() => ({ code: 0, stdout: 'claude\n' }));
+    const seen = createProbeProcess(run, 'linux')(29704);
+
+    expect(run).toHaveBeenCalledWith('ps', ['-p', '29704', '-o', 'comm=']);
+    expect(seen).toEqual({ known: true, alive: true, image: 'claude' });
+  });
+
+  it('ненулевой код ps означает, что процесса нет', () => {
+    expect(probe('linux', { code: 1, stdout: '' })(29704)).toEqual({
+      known: true,
+      alive: false,
+      image: null,
+    });
+  });
+
+  it('пустой вывод ps при нулевом коде — «спросить не удалось»', () => {
+    expect(probe('linux', { code: 0, stdout: '\n' })(29704).known).toBe(false);
+  });
+
+  it('упавшая команда опроса не роняет супервизор', () => {
+    // Так выглядит система без `tasklist` в PATH: ответа нет вовсе.
+    const probing = createProbeProcess(() => {
+      throw new Error('нет такой команды');
+    }, 'win32');
+    expect(probing(29704)).toEqual({ known: false, alive: false, image: null });
+  });
+
+  it('без номера процесса не спрашивает вовсе', () => {
+    const run = vi.fn();
+    expect(createProbeProcess(run, 'win32')(undefined).known).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+});
+
 describe('снятие поддерева', () => {
   it('на Windows зовёт taskkill с ключом дерева: своей группы процессов там нет', () => {
     const run = vi.fn();
@@ -333,4 +466,17 @@ describe('снятие поддерева', () => {
     createKillTree(run, 'win32')(undefined);
     expect(run).not.toHaveBeenCalled();
   });
+});
+
+it('передаёт авторизацию окружением, не добавляя её к аргументам', () => {
+  const command = {
+    program: 'codex',
+    args: ['exec'],
+    cwd: '/repo',
+    env: { GH_TOKEN: 'test-only-token' },
+  };
+  const h = harness({ command });
+  expect(h.spawned[0].options.env).toEqual(command.env);
+  expect(h.spawned[0].list).toEqual(['exec']);
+  h.child.emit('close', 0);
 });

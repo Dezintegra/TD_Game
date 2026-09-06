@@ -107,6 +107,33 @@ describe('задача из заявки', () => {
   });
 });
 
+describe('части, рождённые дроблением', () => {
+  it('заявка дробления даёт задачу с признаком, прочие — без него', () => {
+    // Признак ставится только заявкам дробления: заявка разбора или аудита —
+    // это находка по дороге, и её дробность никто не смотрел.
+    const split = taskFromRequest(request(), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(split.task.decomposed).toBe(true);
+
+    const found = taskFromRequest(request(), { id: '0006-found', now: NOW, sourceId: '0001-one' });
+    expect(found.task.decomposed).toBe(false);
+  });
+
+  it('помеченная часть проходит настоящую схему бэклога', () => {
+    const { task } = taskFromRequest(request(), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+});
+
 describe('блокирующая причина', () => {
   const blocking = request({ blocking: true });
 
@@ -137,6 +164,38 @@ describe('блокирующая причина', () => {
     }
   });
 
+  it('признак едет дальше самой задачей и проходит схему', () => {
+    // Хранилище ставит блокирующую задачу первой в очереди и узнаёт её
+    // по этому полю. Пока признак терялся здесь, задача миновала
+    // кандидатов, но вставала в конец «Заведено» и ждала всю очередь.
+    const { planned } = planRequests([blocking], {
+      existingIds: [],
+      now: NOW,
+      sourceId: '0001-one',
+      sourceStage: 'postmortem',
+    });
+    expect(planned[0].blocking).toBe(true);
+    expect(validateTask(planned[0], schema)).toEqual([]);
+  });
+
+  it('у прочих задач поля нет вовсе, а не false', () => {
+    // Отсутствие и есть «обычная»: записи без поля состав не меняют,
+    // и ни одна проверка, сверяющая задачу целиком, не должна узнать
+    // о признаке против воли.
+    const cases = [
+      { requests: [request()], sourceStage: 'postmortem' },
+      { requests: [blocking], sourceStage: 'triage' },
+      {
+        requests: [request({ type: 'run', run: { kind: 'arena', expectation: 'равные доли' } })],
+        sourceStage: 'postmortem',
+      },
+    ];
+    for (const { requests, sourceStage } of cases) {
+      const { planned } = planRequests(requests, { existingIds: [], now: NOW, sourceStage });
+      expect(planned[0], sourceStage).not.toHaveProperty('blocking');
+    }
+  });
+
   it('разбор без метки заводит кандидата, как и все', () => {
     const { planned } = planRequests([request()], {
       existingIds: [],
@@ -158,6 +217,79 @@ describe('блокирующая причина', () => {
       });
       expect(planned[0].status, JSON.stringify(value)).toBe('candidate');
     }
+  });
+});
+
+describe('причина в конвейере', () => {
+  const pipeline = request({ area: 'pipeline' });
+  const plan = (requests, sourceStage) =>
+    planRequests(requests, { existingIds: [], now: NOW, sourceId: '0001-one', sourceStage });
+
+  it('заявка с любого этапа встаёт в очередь первой и проходит схему', () => {
+    // 02.09.2026 починки разрешений pnpm и сгорающих продолжений простояли
+    // в кандидатах часами: разборы честно не назвали их блокирующими,
+    // а прочим этапам метить было нечем. Зона причины — другой вопрос,
+    // чем срочность, и право на него есть у всех.
+    for (const stage of ['implement', 'review', 'triage', 'postmortem', null]) {
+      const { planned } = plan([pipeline], stage);
+      expect(planned[0], `этап ${stage}`).toMatchObject({
+        status: 'new',
+        blocking: true,
+        area: 'pipeline',
+      });
+      expect(validateTask(planned[0], schema), `этап ${stage}`).toEqual([]);
+    }
+  });
+
+  it('прогон с причиной в конвейере тоже встаёт первым', () => {
+    const { planned } = plan(
+      [
+        request({
+          type: 'run',
+          area: 'pipeline',
+          run: { kind: 'bench-tick', expectation: 'стоимость тика не выросла' },
+        }),
+      ],
+      'interpret',
+    );
+    expect(planned[0]).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+  });
+
+  it('признак проходит только точным словом', () => {
+    // Заявка приходит из отчёта сессии — недоверенного по сути места, —
+    // и правдоподобное значение не должно тихо менять маршрут.
+    for (const value of [true, 'Pipeline', 'конвейер', 1, ['pipeline']]) {
+      const { planned } = plan([request({ area: value })], 'implement');
+      expect(planned[0].status, JSON.stringify(value)).toBe('candidate');
+      expect(planned[0], JSON.stringify(value)).not.toHaveProperty('area');
+    }
+  });
+
+  it('у обычной заявки поля area нет вовсе', () => {
+    const { planned } = plan([request()], 'implement');
+    expect(planned[0]).not.toHaveProperty('area');
+  });
+
+  it('разбор с причиной в конвейере делает конвейерными все свои заявки', () => {
+    // Отчёт с причиной в конвейере и починкой в кандидатах противоречил бы
+    // сам себе: задача вернулась бы сразу, а починка ждала бы человека.
+    const { planned } = planRequests([request()], {
+      existingIds: [],
+      now: NOW,
+      sourceStage: 'postmortem',
+      pipelineCause: true,
+    });
+    expect(planned[0]).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+  });
+
+  it('тот же признак с прочих этапов не слушается', () => {
+    const { planned } = planRequests([request()], {
+      existingIds: [],
+      now: NOW,
+      sourceStage: 'triage',
+      pipelineCause: true,
+    });
+    expect(planned[0].status).toBe('candidate');
   });
 });
 

@@ -27,7 +27,11 @@
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "verify:all": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:all && pnpm build",
     "deploy": "node scripts/deploy.mjs",
-    "ship": "node scripts/deploy.mjs"
+    "ship": "node scripts/deploy.mjs",
+    "supervisor": "node supervisor/bin/launch.mjs",
+    "supervisor:shadow": "node supervisor/bin/launch.mjs --shadow",
+    "supervisor:detached": "node supervisor/bin/launch.mjs --detached",
+    "supervisor:stop": "node supervisor/bin/launch.mjs --stop"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

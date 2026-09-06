@@ -177,11 +177,13 @@ function fakeIo(over = {}) {
           unpushed: 0,
           lastCommitAt: '2026-08-26T11:30:00+03:00',
           previousRun: null,
+          previousPr: null,
         }
       );
     },
     stageStartedAt: () => over.stageStartedAt ?? '2026-08-26T11:00:00+03:00',
     maxRejections: over.maxRejections,
+    maxAutoReturns: over.maxAutoReturns ?? 2,
     boardDigest: () => [...tasks.values()].map((item) => ({ id: item.id, status: item.status })),
 
     // Записи может не быть вовсе, и `null` здесь — не «умолчание сойдёт»,
@@ -203,9 +205,49 @@ function fakeIo(over = {}) {
     },
     readPr: () => over.pr ?? { state: 'merged' },
     unpushed: () => over.unpushed ?? 0,
+    // Содержимое ветки. Спрашивается только у задачи без pull request,
+    // поэтому обращение сюда попадает в перечень шагов: лишний вызов git
+    // на каждой уборке надо видеть.
+    ownCommits(branch) {
+      steps.push(`спрошено содержимое ветки ${branch}`);
+      return over.ownCommits ?? 0;
+    },
     removeWorktree: () => over.worktreeRemoval ?? { ok: true },
     deleteBranch: () => ({ ok: true }),
     deleteRemoteBranch: () => ({ ok: true }),
+
+    // Исход этапа, осиротевшего при смене супервизора. Он живёт очередью
+    // в супервизоре, а не на диске: писать на доску вправе только исполнение.
+    readOrphan: (taskId, stage) =>
+      'orphan' in over
+        ? over.orphan
+        : {
+            taskId,
+            stage,
+            pid: 29704,
+            startedAt: '2026-08-26T11:00:00+03:00',
+            outcome: 'gone',
+            why: 'процесс кончился сам',
+          },
+    forgetOrphan(taskId, stage) {
+      steps.push(`исход сироты ${taskId}:${stage} забыт`);
+      return true;
+    },
+
+    // Отказ сервера модели — та же очередь в супервизоре и та же пара
+    // «прочитать, записать, забыть».
+    readApiFailure: (taskId, stage) =>
+      'apiFailure' in over
+        ? over.apiFailure
+        : {
+            taskId,
+            stage,
+            why: 'сервер модели отказал (состояние 529); работы не было',
+          },
+    forgetApiFailure(taskId, stage) {
+      steps.push(`отказ сервера ${taskId}:${stage} забыт`);
+      return true;
+    },
 
     allTaskIds: () => [...tasks.keys()],
     readReport: (id, stage) => over.report ?? { taskId: id, stage, outcome: 'done' },
@@ -220,6 +262,145 @@ function fakeIo(over = {}) {
 }
 
 const startAction = { kind: 'start-stage', taskId: '0001-one', stage: 'design' };
+
+describe('исход осиротевшего этапа', () => {
+  const noteAction = { kind: 'note-orphan', taskId: '0001-one', stage: 'implement' };
+
+  it('дописывается в журнал, не трогая саму задачу', async () => {
+    // Задача 0070: два изменения одной задачи в один оборот делаются
+    // по одному снимку доски, и второе затирает первое. А запись об исходе
+    // и выдача сессии попадают в один оборот по построению.
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('done');
+    expect(io.steps).toContain('дописан журнал 0001-one');
+    expect(io.steps.filter((step) => step.startsWith('записана задача'))).toEqual([]);
+    expect(io.tasks.get('0001-one')).toMatchObject({ status: 'implement', history: [] });
+  });
+
+  it('запись называет процесс, потерянный отчёт и ветку', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([noteAction], io);
+
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('29704');
+    expect(journal).toContain('осиротел');
+    expect(journal).toContain('Отчёт этого захода потерян');
+    expect(journal).toContain('в ветке задачи');
+  });
+
+  it('исход забывается только после удавшейся записи', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([noteAction], io);
+
+    const written = io.steps.indexOf('дописан журнал 0001-one');
+    const forgotten = io.steps.indexOf('исход сироты 0001-one:implement забыт');
+    expect(written).toBeGreaterThanOrEqual(0);
+    expect(forgotten).toBeGreaterThan(written);
+  });
+
+  it('неудачная запись исход из очереди не убирает', async () => {
+    // Дескриптор при этом остаётся на диске, и следующий оборот пробует
+    // снова: повторная запись стоит одного лишнего комментария, потерянная —
+    // необъяснимого провала в журнале задачи.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      amend: { ok: false, outcome: 'offline' },
+    });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('failed');
+    expect(io.steps).not.toContain('исход сироты 0001-one:implement забыт');
+  });
+
+  it('исхода уже нет — действие пропускается без записи', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })], orphan: null });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('skipped');
+    expect(io.steps).toEqual([]);
+  });
+});
+
+describe('повторный анализ дробности', () => {
+  const again = {
+    kind: 'decompose-again',
+    taskId: '0001-one',
+    stage: 'implement',
+    reason: 'истрачено $76.01 при потолке $25: задача разрослась, нужен повторный анализ',
+  };
+
+  it('задача уходит в анализ, а признак дробления снимается', async () => {
+    // Без снятия признака анализ пропустился бы ровно в том случае, ради
+    // которого затеян: задача с меткой идёт из очереди мимо него.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement', decomposed: true, spentUsd: 76.01 })],
+    });
+    const [result] = await execute([again], io);
+
+    expect(result.result).toBe('done');
+    const moved = io.tasks.get('0001-one');
+    expect(moved.status).toBe('decompose');
+    expect(moved.decomposed).toBe(false);
+  });
+
+  it('журнал называет причину с числами', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement', spentUsd: 76.01 })] });
+    await execute([again], io);
+
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('76.01');
+    expect(journal).toContain('снята');
+  });
+});
+
+describe('отказ сервера модели', () => {
+  const noteAction = { kind: 'note-api-error', taskId: '0001-one', stage: 'implement' };
+
+  it('возвращает продолжение, растит свой счёт и не двигает задачу', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'implement', attempts: { continuations: 1, cycleFailures: 0 } })],
+    });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('done');
+    const moved = io.tasks.get('0001-one');
+    expect(moved.attempts.continuations).toBe(0);
+    expect(moved.attempts.apiErrors).toBe(1);
+    // Состояние прежнее и разбор не зовётся: работы не было ни на один ход.
+    expect(moved.status).toBe('implement');
+  });
+
+  it('запись объясняет, почему заход не дал ничего и счёт не вырос', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([noteAction], io);
+
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('529');
+    expect(journal).toContain('отказе сервера модели');
+    expect(journal).toContain('возвращено');
+  });
+
+  it('отказ забывается только после удавшейся записи', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      push: () => ({ ok: false, outcome: 'offline' }),
+    });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('failed');
+    expect(io.steps).not.toContain('отказ сервера 0001-one:implement забыт');
+  });
+
+  it('отказа уже нет — действие пропускается без записи', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })], apiFailure: null });
+    const [result] = await execute([noteAction], io);
+
+    expect(result.result).toBe('skipped');
+    expect(io.steps).toEqual([]);
+  });
+});
 
 describe('взятие задачи в работу', () => {
   it('захват отправляется раньше заведения дерева', async () => {
@@ -319,14 +500,31 @@ describe('взятие задачи в работу', () => {
     expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toEqual([]);
   });
 
-  it('этап, который не запустился, за успех не выдаётся', async () => {
+  it('этап, который не завёлся, за успех не выдаётся', async () => {
     // Несостоявшееся порождение — это отказ настройки, а не работа сессии.
     // Выдав его за успех, конвейер оставил бы задачу в этапе, которого
     // никто не делает.
-    const io = fakeIo({ spawn: { ok: false, why: 'все места заняты' } });
+    const io = fakeIo({ spawn: { ok: false, reason: 'not-born', why: 'spawn claude ENOENT' } });
     const [result] = await execute([startAction], io);
     expect(result.result).toBe('failed');
-    expect(result.why).toContain('все места заняты');
+    expect(result.why).toContain('ENOENT');
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBe(1);
+    expect(io.journals.get('0001-one')).toContain('ENOENT');
+  });
+
+  it('при тесноте захват остаётся, а второго дерева не появляется', async () => {
+    // Задача действительно взята и действительно стоит в этапе — отменять
+    // тут нечего. Не хватает лишь сессии, и её выдаст ближайший оборот.
+    const io = fakeIo({ spawn: { ok: false, reason: 'busy', why: 'все места заняты' } });
+    const [result] = await execute([startAction], io);
+
+    expect(result.result).toBe('skipped');
+    expect(io.tasks.get('0001-one')).toMatchObject({ owner: 'станция-1', status: 'design' });
+    expect(io.steps.filter((step) => step.startsWith('заведено дерево'))).toHaveLength(1);
+    // Записей о задаче ровно одна — та, что говорит о взятии в работу.
+    expect(io.journals.get('0001-one')).toContain('Взята в работу');
+    expect(io.journals.get('0001-one')).not.toContain('не запустился');
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBeUndefined();
   });
 
   it('прогону дерево не заводится: арену считает чужое железо', async () => {
@@ -364,6 +562,26 @@ describe('перенос отчёта', () => {
     expect(io.steps.filter((step) => step.includes('отчёт'))).toEqual([]);
   });
 
+  it('расход задачи растёт на стоимость этапа', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'design' })],
+      report: { taskId: '0001-one', stage: 'design', outcome: 'done', costUsd: 4.5 },
+    });
+    await execute([transfer], io);
+    expect(io.tasks.get('0001-one').spentUsd).toBe(4.5);
+  });
+
+  it('возврат проверяющего расход наращивает тоже', async () => {
+    // Мера затеяна против кругов, каждый из которых чем-то кончался.
+    // Считать только удачные значило бы не считать как раз спорные.
+    const io = fakeIo({
+      tasks: [task({ status: 'audit', spentUsd: 10 })],
+      report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', costUsd: 5.5 },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
+    expect(io.tasks.get('0001-one').spentUsd).toBe(15.5);
+  });
+
   it('дошедший до конца этап обнуляет счётчик продолжений', async () => {
     const io = fakeIo({
       tasks: [task({ status: 'design', attempts: { continuations: 2, cycleFailures: 0 } })],
@@ -399,10 +617,12 @@ describe('перенос отчёта', () => {
     expect(io.steps).toContain('забыта сессия 0001-one:design');
   });
 
-  it('успешный этап сессию не забывает', async () => {
+  it('успешный этап забывает свою сессию', async () => {
     const io = fakeIo({ tasks: [task({ status: 'design' })] });
     await execute([transfer], io);
-    expect(io.steps.filter((step) => step.startsWith('забыта сессия'))).toEqual([]);
+    expect(io.steps.filter((step) => step.startsWith('забыта сессия'))).toEqual([
+      'забыта сессия 0001-one:design',
+    ]);
   });
 
   it('возврат наращивает счёт, а не обнуляет его', async () => {
@@ -411,6 +631,19 @@ describe('перенос отчёта', () => {
       report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', summary: 'мимо' },
     });
     await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
+    expect(io.tasks.get('0001-one').attempts.rejections).toBe(1);
+  });
+
+  it('возврат обнуляет продолжения: проработка начинает со своим счётом', async () => {
+    // Задача 0088 пришла в проработку с двумя продолжениями, съеденными
+    // аудитом, и была остановлена следующим же оборотом, не получив сессии.
+    const io = fakeIo({
+      tasks: [task({ status: 'audit', attempts: { continuations: 2, cycleFailures: 0 } })],
+      report: { taskId: '0001-one', stage: 'audit', outcome: 'rejected', summary: 'мимо' },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
+    expect(io.tasks.get('0001-one').status).toBe('design');
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
     expect(io.tasks.get('0001-one').attempts.rejections).toBe(1);
   });
 
@@ -425,11 +658,10 @@ describe('перенос отчёта', () => {
     await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
     expect(io.tasks.get('0001-one').status).toBe('postmortem');
 
-    // Сессия спорившего этапа не трогается: спор кончен, разбирать его будет
-    // не он. А вот сессия разбора забывается — иначе задача, разобранная
-    // однажды, услышала бы от неё вывод о позапрошлом падении.
+    // Спор кончен: забывается и споривший этап, и прежний разбор,
+    // чтобы следующий заход читал новое состояние.
     expect(io.steps).toContain('забыта сессия 0001-one:postmortem');
-    expect(io.steps).not.toContain('забыта сессия 0001-one:audit');
+    expect(io.steps).toContain('забыта сессия 0001-one:audit');
   });
 
   it('номер pull request из отчёта попадает в саму задачу', async () => {
@@ -460,6 +692,30 @@ describe('перенос отчёта', () => {
     expect(io.tasks.get('0001-one').links.pr).toBe(7);
   });
 
+  it('снятый предмет несёт в журнал и причину, и доказательство', async () => {
+    // Доказательству больше негде осесть: `task.history` доска не хранит,
+    // отчёт после переноса снимается, а лог этапа в промпт следующих сессий
+    // не уезжает. Сторож стоит ЗДЕСЬ, а не в apply-report.test.mjs: там
+    // проверяется возвращаемое значение разбора, и до записи журнала оно
+    // не доходит — оттого дыра и прошла мимо проверок.
+    const io = fakeIo({
+      tasks: [task({ status: 'design' })],
+      report: {
+        taskId: '0001-one',
+        stage: 'design',
+        outcome: 'moot',
+        summary: 'правило уже действует',
+        evidence: 'supervisor/config/stage-settings.json:67',
+      },
+    });
+    await execute([transfer], io);
+
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('Предмет снят: правило уже действует.');
+    expect(journal).toContain('Проверено: supervisor/config/stage-settings.json:67.');
+  });
+
   it('неуспех отправляет задачу в разбор с чистым счётом попыток', async () => {
     // Прежде счёт здесь сохранялся: задача вставала в ошибке, и число
     // сожжённых заходов было уликой для человека. Теперь между ней и ошибкой
@@ -474,6 +730,155 @@ describe('перенос отчёта', () => {
     });
     await execute([transfer], io);
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
+  });
+});
+
+describe('жизненный цикл сессии после отчёта', () => {
+  // Постоянная заглушка lastSession не проверила бы сам дефект: удаление
+  // должно менять следующее назначение, а не только список вызовов.
+  function world(stage, over = {}) {
+    const io = fakeIo({ tasks: [task({ status: stage })], ...over });
+    const sessions = new Map();
+    const remember = (id, name) =>
+      sessions.set(`${id}:${name}`, {
+        sessionId: `прежняя-${id}-${name}`,
+        startedAt: NOW,
+      });
+    remember('0001-one', stage);
+    remember('0001-one', 'benchmark');
+    remember('0002-two', stage);
+    io.lastSession = (id, name) => sessions.get(`${id}:${name}`)?.sessionId ?? null;
+    io.stageStartedAt = (id, name) => {
+      const at = sessions.get(`${id}:${name}`)?.startedAt ?? null;
+      io.steps.push(`начало ${id}:${name} ${at}`);
+      return at;
+    };
+    io.forgetSession = (id, name) => {
+      io.steps.push(`забыта сессия ${id}:${name}`);
+      return sessions.delete(`${id}:${name}`);
+    };
+    let pending = null;
+    io.readReport = () => pending;
+    io.removeReport = () => {
+      io.steps.push('отчёт снят');
+      pending = null;
+    };
+    const transfer = async (name, outcome, extra = {}) => {
+      pending = { taskId: '0001-one', stage: name, outcome, ...extra };
+      return execute([{ kind: 'transfer-report', taskId: '0001-one', stage: name }], io);
+    };
+    const launch = (name) =>
+      execute([{ kind: 'continue-stage', taskId: '0001-one', stage: name }], io);
+    return { io, sessions, remember, transfer, launch };
+  }
+
+  it.each([
+    ['audit', 'design'],
+    ['review', 'revise'],
+  ])(
+    '%s после возврата и новой работы получает свежую задачу и журнал',
+    async (checker, worker) => {
+      const { io, sessions, remember, transfer, launch } = world(checker);
+      remember('0001-one', worker);
+      await transfer(checker, 'rejected', { summary: 'нужна новая работа' });
+      expect(io.tasks.get('0001-one').status).toBe(worker);
+      expect(sessions.has(`0001-one:${checker}`)).toBe(false);
+      expect(sessions.has(`0001-one:${worker}`)).toBe(false);
+      await launch(worker);
+      expect(io.spawned.at(-1)).toMatchObject({ continuation: false, sessionId: null });
+      remember('0001-one', worker);
+      await transfer(worker, 'done', {
+        summary: 'новая работа отправлена',
+        links: { change: 'new-work', pr: 51 },
+      });
+      if (checker === 'review') {
+        expect(io.tasks.get('0001-one').status).toBe('pr');
+        await execute([{ kind: 'poll-external', taskId: '0001-one', what: 'ci' }], io);
+      }
+      expect(io.tasks.get('0001-one').status).toBe(checker);
+      await launch(checker);
+      expect(io.spawned.at(-1)).toMatchObject({
+        continuation: false,
+        sessionId: null,
+        task: { status: checker, links: { change: 'new-work' } },
+      });
+      expect(io.spawned.at(-1).journal).toContain('новая работа отправлена');
+      expect(sessions.has(`0001-one:${worker}`)).toBe(false);
+      expect(sessions.has('0001-one:benchmark')).toBe(true);
+      expect(sessions.has(`0002-two:${checker}`)).toBe(true);
+    },
+  );
+
+  it.each(['done', 'question', 'failed', 'недопустимый'])(
+    'исход %s завершает исходный заход',
+    async (outcome) => {
+      const { io, sessions, transfer } = world('design');
+      const [result] = await transfer('design', outcome, { summary: 'результат' });
+      expect(result.result).toBe('done');
+      expect(sessions.has('0001-one:design')).toBe(false);
+      expect(io.readReport()).toBeNull();
+      const forgotten = io.steps.indexOf('забыта сессия 0001-one:design');
+      expect(forgotten).toBeGreaterThan(
+        io.steps.findIndex((step) => step.startsWith('коммит и отправка')),
+      );
+      expect(io.steps.indexOf('отчёт снят')).toBeGreaterThan(forgotten);
+    },
+  );
+
+  it.each(['обычный', 'подрывающий'])(
+    'сбой записи: %s отчёт сохраняет начало для успешного повтора',
+    async (kind) => {
+      const { io, sessions, transfer } = world('design', {
+        evidence: { branchOnRemote: kind === 'обычный', unpushed: 0, lastCommitAt: NOW },
+      });
+      const save = io.saveTask.bind(io);
+      io.saveTask = () => ({ ok: false, outcome: 'write-failed' });
+      const [failed] = await transfer('design', 'done', {
+        denials: [{ tool_name: 'PowerShell', tool_input: { command: 'node --version' } }],
+      });
+      expect(failed.result).toBe('failed');
+      expect(sessions.get('0001-one:design')).toMatchObject({ startedAt: NOW });
+      expect(io.readReport()).not.toBeNull();
+      expect(io.steps).not.toContain('забыта сессия 0001-one:design');
+      io.saveTask = save;
+      const [retried] = await execute(
+        [{ kind: 'transfer-report', taskId: '0001-one', stage: 'design' }],
+        io,
+      );
+      expect(retried.result).toBe('done');
+      expect(io.steps.filter((step) => step === `начало 0001-one:design ${NOW}`)).toHaveLength(2);
+      expect(sessions.has('0001-one:design')).toBe(false);
+      expect(io.readReport()).toBeNull();
+      expect(io.spawned).toEqual([]);
+    },
+  );
+
+  it.each(['createTask', 'amendTask'])(
+    'ошибка %s сохраняет исходную сессию и очередь отчёта',
+    async (method) => {
+      const { io, sessions, transfer } = world('design');
+      io.tasks.set('0002-two', task({ id: '0002-two' }));
+      io[method] = () => ({ ok: false, outcome: 'write-failed' });
+      const [result] = await transfer('design', 'done', {
+        requests:
+          method === 'createTask'
+            ? [{ type: 'note', title: 'Наблюдение', description: 'Фактура', priority: 50 }]
+            : [],
+        amendments: method === 'amendTask' ? [{ taskId: '0002-two', facts: 'Новая фактура' }] : [],
+      });
+      expect(result.result).toBe('failed');
+      expect(sessions.get('0001-one:design')).toMatchObject({ startedAt: NOW });
+      expect(io.readReport()).not.toBeNull();
+      expect(io.spawned).toEqual([]);
+    },
+  );
+
+  it('прерывание без отчёта сохраняет прежнее назначение и начало', async () => {
+    const { io, sessions, launch } = world('implement');
+    const previous = { ...sessions.get('0001-one:implement') };
+    await launch('implement');
+    expect(io.spawned.at(-1)).toMatchObject({ continuation: true, sessionId: previous.sessionId });
+    expect(sessions.get('0001-one:implement')).toEqual(previous);
   });
 });
 
@@ -670,6 +1075,130 @@ describe('вопрос владельцу продукта', () => {
   });
 });
 
+describe('разноска отчёта пакетной выкладки', () => {
+  /**
+   * Отчёт один — ведущей, — а задач в пакете много. Перенос двигает прочих
+   * по перечням `deployed` и `skipped`, и только их: отчёт властен ровно
+   * над своим пакетом, а перечень пакета приносит супервизор.
+   */
+  const transfer = { kind: 'transfer-report', taskId: '0001-one', stage: 'deploy' };
+  const deploying = (id, over = {}) =>
+    task({ id, status: 'deploy', links: { change: null, pr: 7, run: null, related: [] }, ...over });
+  const batch = ['0001-one', '0002-two', '0003-three', '0004-four'];
+  const world = (report = {}, over = {}) =>
+    fakeIo({
+      tasks: [
+        deploying('0001-one'),
+        deploying('0002-two'),
+        deploying('0003-three'),
+        deploying('0004-four', over.fourth ?? {}),
+      ],
+      report: {
+        taskId: '0001-one',
+        stage: 'deploy',
+        outcome: 'done',
+        summary: 'Ревизия abc играет на https://dezintegra.net/.',
+        links: { revision: 'abc' },
+        batch,
+        deployed: ['0002-two'],
+        skipped: [{ taskId: '0003-three', why: 'pull request 9 не влит' }],
+        ...report,
+      },
+      ...over,
+    });
+
+  it('выложенные едут в уборку, исключённые — в ошибку с причиной', async () => {
+    const io = world();
+    const [result] = await execute([transfer], io);
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
+    expect(io.tasks.get('0002-two').status).toBe('cleanup');
+    expect(io.tasks.get('0003-three')).toMatchObject({ status: 'failed', returnTo: 'deploy' });
+    expect(io.journals.get('0003-three')).toContain('pull request 9 не влит');
+  });
+
+  it('журнал выложенной несёт сводку, ссылки и пометку о пакете', async () => {
+    const io = world();
+    await execute([transfer], io);
+    const journal = io.journals.get('0002-two');
+    expect(journal).toContain('Выложена пакетом с 0001-one');
+    expect(journal).toContain('Ревизия abc играет');
+    expect(journal).toContain('revision: abc');
+  });
+
+  it('ведущая связывается с переведёнными задачами пакета', async () => {
+    const io = world();
+    await execute([transfer], io);
+    expect(io.tasks.get('0001-one').links.related).toEqual(['0002-two', '0003-three']);
+  });
+
+  it('неназванная остаётся в выкладке, и это записано у ведущей', async () => {
+    const io = world();
+    await execute([transfer], io);
+    expect(io.tasks.get('0004-four').status).toBe('deploy');
+    expect(io.journals.get('0001-one')).toContain('0004-four из пакета отчётом не названа');
+  });
+
+  it('чужой идентификатор не двигает ничего', async () => {
+    const io = fakeIo({
+      tasks: [deploying('0001-one'), deploying('0002-two'), deploying('0009-stray')],
+      report: {
+        taskId: '0001-one',
+        stage: 'deploy',
+        outcome: 'done',
+        summary: 'выложено',
+        batch: ['0001-one', '0002-two'],
+        deployed: ['0002-two', '0009-stray'],
+      },
+    });
+    await execute([transfer], io);
+    expect(io.tasks.get('0009-stray').status).toBe('deploy');
+    expect(io.journals.get('0001-one')).toContain('0009-stray, которой в пакете не было');
+  });
+
+  it('уже переехавшая пропускается молча: перенос идемпотентен', async () => {
+    const io = world({}, { fourth: { status: 'cleanup' } });
+    const before = io.tasks.get('0004-four');
+    await execute([transfer], io);
+    expect(io.tasks.get('0004-four')).toBe(before);
+    expect(io.journals.get('0001-one') ?? '').not.toContain('0004-four');
+  });
+
+  it('неудача записи задачи пакета оставляет ведущую и отчёт на месте', async () => {
+    // Следующий оборот начнёт заново и уже переехавших узнает по состоянию.
+    let saves = 0;
+    const io = world(
+      {},
+      {
+        push: () =>
+          ++saves === 2 ? { ok: false, outcome: 'rejected' } : { ok: true, outcome: 'pushed' },
+      },
+    );
+    const [result] = await execute([transfer], io);
+    expect(result.result).toBe('failed');
+    expect(io.tasks.get('0002-two').status).toBe('cleanup');
+    expect(io.tasks.get('0001-one').status).toBe('deploy');
+    expect(io.steps).not.toContain('отчёт 0001-one:deploy убран');
+  });
+
+  it('исход ведущей решается общим порядком: failed уводит её в разбор, пакет разносится', async () => {
+    const io = world({ outcome: 'failed', summary: 'сервер погашен' });
+    await execute([transfer], io);
+    expect(io.tasks.get('0001-one').status).toBe('postmortem');
+    expect(io.tasks.get('0002-two').status).toBe('cleanup');
+  });
+
+  it('без перечня пакета перенос выкладки прежний', async () => {
+    const io = fakeIo({
+      tasks: [deploying('0001-one'), deploying('0002-two')],
+      report: { taskId: '0001-one', stage: 'deploy', outcome: 'done', deployed: ['0002-two'] },
+    });
+    await execute([transfer], io);
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
+    expect(io.tasks.get('0002-two').status).toBe('deploy');
+  });
+});
+
 describe('сессия на идущий этап', () => {
   const carryOn = {
     kind: 'continue-stage',
@@ -692,6 +1221,38 @@ describe('сессия на идущий этап', () => {
     expect(io.spawned[0].task.attempts.continuations).toBe(1);
   });
 
+  it('пакет выкладки едет в назначение выписками задач', async () => {
+    // Сессии нужен номер pull request каждой, чтобы проверить вливание,
+    // а бэклог ей открывать нельзя. Задача, которой бэклог уже не знает,
+    // не скрывается: сессия обязана назвать её исключённой, а не промолчать.
+    const io = fakeIo({
+      tasks: [
+        task({ status: 'deploy', links: { pr: 11, change: 'one' } }),
+        task({
+          id: '0002-two',
+          title: 'Вторая',
+          status: 'deploy',
+          links: { pr: 12, change: 'two' },
+        }),
+      ],
+    });
+    await execute(
+      [{ ...carryOn, stage: 'deploy', batch: ['0001-one', '0002-two', '0009-gone'] }],
+      io,
+    );
+    expect(io.spawned[0].batch).toEqual([
+      { id: '0001-one', title: 'Образец', pr: 11, change: 'one' },
+      { id: '0002-two', title: 'Вторая', pr: 12, change: 'two' },
+      { id: '0009-gone', title: null, pr: null, change: null, missing: true },
+    ]);
+  });
+
+  it('без пакета в назначении нет и перечня', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([carryOn], io);
+    expect(io.spawned[0].batch).toBe(null);
+  });
+
   it('известная сессия возобновляется, а не начинается заново', async () => {
     // Ради этого и держится память о сессиях: возобновлённая помнит свой ход
     // мысли. Прежде продолжатель выяснял сделанное тремя командами `git log`
@@ -701,13 +1262,62 @@ describe('сессия на идущий этап', () => {
     expect(io.spawned[0]).toMatchObject({ continuation: true, sessionId: 'сессия-прежняя' });
   });
 
-  it('незапустившийся этап не выдаётся за успех', async () => {
+  it('удавшееся порождение пишет в журнал задачи выданную сессию', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    await execute([carryOn], io);
+    expect(io.journals.get('0001-one')).toContain('Этапу выдана сессия');
+  });
+
+  it('удавшееся порождение гасит счёт несостоявшихся запусков', async () => {
+    // Оно доказывает, что машинерия запуска работает, и прежние отказы
+    // к делу больше не относятся.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement', attempts: { continuations: 0, spawnFailures: 2 } })],
+    });
+    await execute([carryOn], io);
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBe(0);
+  });
+
+  it('несостоявшийся запуск продолжения не тратит', async () => {
+    // Признак сделанности из карточки задачи 0067, дословно: порождение,
+    // вернувшее ok: false, оставляет attempts.continuations неизменным.
     const io = fakeIo({
       tasks: [task({ status: 'implement' })],
-      spawn: { ok: false, why: 'по этой задаче уже идёт этап' },
+      spawn: { ok: false, reason: 'not-born', why: 'spawn claude ENOENT' },
     });
     const [result] = await execute([carryOn], io);
+
     expect(result.result).toBe('failed');
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
+  });
+
+  it('причина несостоявшегося запуска уезжает в журнал задачи', async () => {
+    // Прежде она оставалась в одном лишь cycle.log, а карточка утверждала
+    // обратное — «Этапу выдана сессия», — и разбор шёл по ложному следу.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      spawn: { ok: false, reason: 'not-born', why: 'spawn claude ENOENT' },
+    });
+    await execute([carryOn], io);
+
+    expect(io.journals.get('0001-one')).toContain('ENOENT');
+    expect(io.journals.get('0001-one')).not.toContain('Этапу выдана сессия');
+    expect(io.tasks.get('0001-one').attempts.spawnFailures).toBe(1);
+  });
+
+  it('теснота не тратит ничего и журнала не трогает вовсе', async () => {
+    // Оборот идёт раз в пять минут, прогон арены держит место десятками
+    // минут: запись о тесноте дала бы карточке дюжину строк в час.
+    const io = fakeIo({
+      tasks: [task({ status: 'implement' })],
+      spawn: { ok: false, reason: 'busy', why: 'все места заняты' },
+    });
+    const [result] = await execute([carryOn], io);
+
+    expect(result.result).toBe('skipped');
+    expect(result.why).toContain('все места заняты');
+    expect(io.journals.get('0001-one')).toBeUndefined();
+    expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
   });
 
   it('безместной задаче сессия не выдаётся, и оборот не падает', async () => {
@@ -772,6 +1382,82 @@ describe('ответ владельца продукта', () => {
   });
 });
 
+describe('возврат из ошибки по вине конвейера', () => {
+  const fallen = (over = {}) =>
+    task({
+      status: 'failed',
+      returnTo: 'implement',
+      attempts: { continuations: 2, cycleFailures: 1, rejections: 0, spawnFailures: 0 },
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 },
+      ...over,
+    });
+  const back = {
+    kind: 'return-task',
+    taskId: '0001-one',
+    returnTo: 'implement',
+    fixedBy: ['0091-fix'],
+  };
+
+  it('возвращает в состояние возврата, обнуляет попытки и наращивает счёт', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    const [result] = await execute([back], io);
+
+    expect(result).toMatchObject({ result: 'done', status: 'implement' });
+    const moved = io.tasks.get('0001-one');
+    expect(moved.status).toBe('implement');
+    expect(moved.returnTo).toBeNull();
+    expect(moved.attempts).toEqual({
+      continuations: 0,
+      cycleFailures: 0,
+      rejections: 0,
+      spawnFailures: 0,
+      apiErrors: 0,
+    });
+    // Вердикт снят, счёт вырос: судить о задаче будет следующий разбор.
+    expect(moved.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 1 });
+  });
+
+  it('журнал называет причину возврата и закрытые починки поимённо', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    await execute([back], io);
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('failed → implement');
+    expect(journal).toContain('причина падения была в конвейере');
+    expect(journal).toContain('починки закрыты: 0091-fix');
+    expect(journal).toContain('Возврат 1 из 2');
+  });
+
+  it('сессия упавшего этапа забывается: новая читает свежие правила', async () => {
+    const io = fakeIo({ tasks: [fallen()] });
+    await execute([back], io);
+    expect(io.steps).toContain('забыта сессия 0001-one:implement');
+  });
+
+  it('когда чинить было нечего, так и пишет', async () => {
+    const io = fakeIo({
+      tasks: [fallen({ recovery: { causedBy: 'pipeline', fixedBy: [], returns: 1 } })],
+    });
+    await execute([{ ...back, fixedBy: [] }], io);
+    expect(io.journals.get('0001-one')).toContain('чинить было нечего');
+    expect(io.tasks.get('0001-one').recovery.returns).toBe(2);
+  });
+
+  it('задачу, которую человек уже поднял, второй раз не трогает', async () => {
+    const io = fakeIo({ tasks: [fallen({ status: 'implement', returnTo: null })] });
+    const [result] = await execute([back], io);
+    expect(result.result).toBe('skipped');
+    expect(io.steps).toEqual([]);
+  });
+
+  it('без конвейерного вердикта не возвращает', async () => {
+    const io = fakeIo({
+      tasks: [fallen({ recovery: { causedBy: 'task', fixedBy: [], returns: 0 } })],
+    });
+    const [result] = await execute([back], io);
+    expect(result.result).toBe('skipped');
+  });
+});
+
 describe('остановка задачи', () => {
   const stop = (taskId = '0001-one') => ({
     kind: 'fail-stage',
@@ -829,6 +1515,48 @@ describe('уборка', () => {
     expect(result.result).toBe('done');
     expect(io.tasks.get('0001-one').status).toBe('postmortem');
     expect(io.tasks.get('0001-one').returnTo).toBe('cleanup');
+    expect(io.steps).not.toContain('запись реестра 0001-one снята');
+  });
+
+  it('закрытая по снятому предмету задача убирается и доезжает до «Закрыто»', async () => {
+    // Полный ход целиком: pull request такой задаче не заводили, ветка пуста,
+    // и уборка доводит её до `closed`. Прежняя мерка уронила бы её в разбор —
+    // то есть в ту самую «Ошибку», от которой ход и заводится.
+    const io = fakeIo({
+      tasks: [
+        task({ status: 'cleanup', links: { change: null, pr: null, run: null, related: [] } }),
+      ],
+      pr: { state: 'unknown' },
+      ownCommits: 0,
+    });
+    const [result] = await execute([sweep], io);
+
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('closed');
+    expect(io.steps).toContain('спрошено содержимое ветки worktree-0001-one');
+    expect(io.steps).toContain('запись реестра 0001-one снята');
+  });
+
+  it('у задачи с pull request содержимое ветки не спрашивается вовсе', async () => {
+    // Лишний вызов git на каждой уборке — цена, которую платить не за что:
+    // где pull request заведён, решает только он.
+    const io = fakeIo({ tasks: [inCleanup()], pr: { state: 'merged' } });
+    await execute([sweep], io);
+    expect(io.steps).not.toContain('спрошено содержимое ветки worktree-0001-one');
+  });
+
+  it('своя работа в ветке без pull request останавливает уборку', async () => {
+    const io = fakeIo({
+      tasks: [
+        task({ status: 'cleanup', links: { change: null, pr: null, run: null, related: [] } }),
+      ],
+      pr: { state: 'unknown' },
+      ownCommits: 3,
+    });
+    const [result] = await execute([sweep], io);
+
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').status).toBe('postmortem');
     expect(io.steps).not.toContain('запись реестра 0001-one снята');
   });
 
@@ -1096,6 +1824,91 @@ describe('дополнение существующей задачи', () => {
     });
     const [result] = await execute([{ ...analysis, stage: 'triage' }], io);
     expect(io.tasks.get(result.created[0]).status).toBe('candidate');
+  });
+});
+
+describe('вердикт разбора', () => {
+  const analysis = { kind: 'transfer-report', taskId: '0001-one', stage: 'postmortem' };
+  const halted = (over = {}) => task({ status: 'postmortem', returnTo: 'implement', ...over });
+  const fix = (over = {}) => ({
+    type: 'feature',
+    title: 'Разрешить pnpm в правилах разрешений',
+    description: 'Отказ молчаливый и повторится на каждой задаче.',
+    ...over,
+  });
+  const judged = (report, over = {}) =>
+    fakeIo({
+      tasks: [halted(over.halted), task({ id: '0084-pnpm', status: 'candidate' })],
+      report: { taskId: '0001-one', stage: 'postmortem', outcome: 'done', ...report },
+      ...over,
+    });
+
+  it('причина в конвейере: вердикт и номер заведённой починки едут в задачу', async () => {
+    // Идентификатор своей заявки разбор знать не может — его выдаёт перенос.
+    // Заявка при этом конвейерна и без `area`: причина в конвейере делает
+    // конвейерными все заявки отчёта, иначе задача вернулась бы сразу,
+    // а починка ждала бы человека в кандидатах.
+    const io = judged({ causedBy: 'pipeline', requests: [fix()] });
+    const [result] = await execute([analysis], io);
+
+    const born = io.tasks.get(result.created[0]);
+    expect(born).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+    expect(io.tasks.get('0001-one')).toMatchObject({
+      status: 'failed',
+      recovery: { causedBy: 'pipeline', fixedBy: [born.id], returns: 0 },
+    });
+  });
+
+  it('названный разбором кандидат с описи попадает в fixedBy', async () => {
+    const io = judged({ causedBy: 'pipeline', fixedBy: ['0084-pnpm'] });
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').recovery.fixedBy).toEqual(['0084-pnpm']);
+  });
+
+  it('несуществующая задача в fixedBy отброшена, причина в журнале', async () => {
+    const io = judged({ causedBy: 'pipeline', fixedBy: ['0999-nowhere', '0084-pnpm'] });
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').recovery.fixedBy).toEqual(['0084-pnpm']);
+    expect(io.journals.get('0001-one')).toContain('0999-nowhere');
+  });
+
+  it('причина в задаче: вердикт записан, починок нет', async () => {
+    const io = judged({ causedBy: 'task', requests: [fix()] });
+    const [result] = await execute([analysis], io);
+    expect(io.tasks.get('0001-one').recovery).toEqual({
+      causedBy: 'task',
+      fixedBy: [],
+      returns: 0,
+    });
+    // Заявка при причине в задаче идёт обычным путём — кандидатом.
+    expect(io.tasks.get(result.created[0]).status).toBe('candidate');
+  });
+
+  it('разбор без причины применяется, но не возвращает, и журнал это говорит', async () => {
+    const io = judged({});
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one')).toMatchObject({
+      status: 'failed',
+      recovery: { causedBy: null, fixedBy: [], returns: 0 },
+    });
+    expect(io.journals.get('0001-one')).toContain('не назвал причину');
+  });
+
+  it('на пределе возвратов вердикт не записывается, журнал зовёт человека', async () => {
+    const io = judged(
+      { causedBy: 'pipeline' },
+      { halted: { recovery: { causedBy: null, fixedBy: [], returns: 2 } } },
+    );
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').recovery).toEqual({ causedBy: null, fixedBy: [], returns: 2 });
+    expect(io.journals.get('0001-one')).toContain('возвращалась дважды, дальше человек');
+  });
+
+  it('неудавшийся разбор вердикта не оставляет', async () => {
+    const io = judged({ outcome: 'failed', causedBy: 'pipeline', summary: 'лога нет' });
+    await execute([analysis], io);
+    expect(io.tasks.get('0001-one').status).toBe('failed');
+    expect(io.tasks.get('0001-one')).not.toHaveProperty('recovery');
   });
 });
 

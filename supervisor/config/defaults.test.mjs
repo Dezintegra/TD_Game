@@ -70,6 +70,36 @@ describe('чего требует этап', () => {
   });
 });
 
+describe('пределы попыток', () => {
+  it('предел несостоявшихся запусков отдельный от продолжений и больше их', () => {
+    // Продолжение стоит сессии — денег, времени этапа, круга работы.
+    // Несостоявшийся запуск не стоит ничего, кроме строки в журнале,
+    // поэтому терпеть его можно чуть дольше.
+    const { config } = resolveConfig({});
+    expect(config.maxSpawnFailures).toBe(3);
+    expect(config.maxSpawnFailures).toBeGreaterThan(config.maxContinuations);
+  });
+
+  it('настройка проекта предел переопределяет', () => {
+    const { config } = resolveConfig({ maxSpawnFailures: 1 });
+    expect(config.maxSpawnFailures).toBe(1);
+    expect(config.maxContinuations).toBe(DEFAULTS.maxContinuations);
+  });
+
+  it('самообновление включено умолчанием и выключается настройкой', () => {
+    expect(resolveConfig({}).config.selfUpdate).toBe(true);
+    expect(resolveConfig({ selfUpdate: false }).config.selfUpdate).toBe(false);
+  });
+
+  it('автоматических возвратов из ошибки по умолчанию два', () => {
+    // Цена ошибки разбора: два возврата ограничивают потерю двумя сессиями
+    // упавшего этапа и двумя разборами, а третье падение подряд смотрит человек.
+    const { config } = resolveConfig({});
+    expect(config.maxAutoReturns).toBe(2);
+    expect(resolveConfig({ maxAutoReturns: 0 }).config.maxAutoReturns).toBe(0);
+  });
+});
+
 describe('доска в умолчаниях', () => {
   it('не названа: угаданная доска молча наполнится чужая', () => {
     expect(DEFAULTS.trello.board).toBeUndefined();

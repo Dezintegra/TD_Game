@@ -114,6 +114,67 @@ describe('след коммитящих этапов', () => {
   });
 });
 
+describe('след имплементации: коммит ЛИБО впервые открытый pull request', () => {
+  // Имплементация законно приходит к задаче, вся правка которой внесена
+  // проработкой: так вышло с задачей 0145. Работы у неё остаётся одна —
+  // открыть черновой pull request, — и без неё проверки CI не идут вовсе.
+  const stale = { ...clean, lastCommitAt: '2026-09-01T11:00:00+03:00' };
+
+  const implement = (evidence, links = {}) =>
+    judgeDenials({
+      denials: [denial()],
+      report: report({ stage: 'implement', links }),
+      stage: 'implement',
+      evidence,
+    });
+
+  it('без свежего коммита, но с новым номером pull request — попутный отказ', () => {
+    expect(implement({ ...stale, previousPr: null }, { pr: 129 }).verdict).toBe('passing');
+  });
+
+  it('номер тот же, что задача знала до этапа, следом не считается', () => {
+    // Pull request, открытый прошлым заходом, следом нынешнего быть не должен.
+    const verdict = implement({ ...stale, previousPr: '129' }, { pr: 129 });
+    expect(verdict.verdict).toBe('undermining');
+    expect(verdict.why).toContain('тот же');
+  });
+
+  it('ни свежего коммита, ни номера — подрывающий, и причина называет обе половины', () => {
+    const verdict = implement({ ...stale, previousPr: null });
+    expect(verdict.verdict).toBe('undermining');
+    expect(verdict.why).toContain('не появилось ни одного коммита');
+    expect(verdict.why).toContain('не называет номера pull request');
+  });
+
+  it('свежий коммит без всякого pull request — попутный отказ', () => {
+    expect(implement({ ...clean, previousPr: null }).verdict).toBe('passing');
+  });
+
+  it('молчащий git без нового номера даёт «сверять нечем», а не отсутствие следа', () => {
+    const evidence = { ...clean, lastCommitAt: null, previousPr: null };
+    expect(implement(evidence).verdict).toBe('unverifiable');
+  });
+
+  it('хвост в ветке подрывает отчёт при любом номере pull request', () => {
+    // Ветка у origin и отсутствие хвоста — предусловие обеих половин.
+    const verdict = implement({ ...clean, unpushed: 2, previousPr: null }, { pr: 129 });
+    expect(verdict.verdict).toBe('undermining');
+    expect(verdict.why).toContain('2 коммит');
+  });
+
+  it('проработке новый pull request следа не заменяет', () => {
+    // Проработка pull request не открывает вовсе, и ветка «либо» у неё
+    // осталась бы мёртвой, зато прикрывала бы этап, не сделавший ничего.
+    const verdict = judgeDenials({
+      denials: [denial()],
+      report: report({ links: { pr: 129 } }),
+      stage: 'design',
+      evidence: { ...stale, previousPr: null },
+    });
+    expect(verdict.verdict).toBe('undermining');
+  });
+});
+
 describe('след проверяющих этапов', () => {
   it('аудит без свежего коммита, но и без хвоста, принимается', () => {
     // Аудит выносит вердикт чтением и коммитить не обязан. Требовать

@@ -4,6 +4,7 @@ import {
   expectationOf,
   joinDescription,
   metaOf,
+  labelKeysOf,
   nameWithId,
   parseCard,
   splitDescription,
@@ -30,6 +31,7 @@ const labelKeyById = new Map([
   ['l-note', 'note'],
   ['l-arena', 'arena'],
   ['l-unparsed', 'unparsed'],
+  ['l-decomposed', 'decomposed'],
 ]);
 
 const ctx = { stateByList, labelKeyById };
@@ -202,6 +204,25 @@ describe('разбор карточки', () => {
     expect(seen.types).toEqual(['feature']);
     expect(seen.flags).toEqual(['unparsed']);
   });
+
+  it('метка дробления читается в признак задачи', () => {
+    const { task } = parseCard(card({ idLabels: ['l-feature', 'l-decomposed'] }), ctx);
+    expect(task.decomposed).toBe(true);
+  });
+
+  it('без метки признак ложен, а не отсутствует', () => {
+    // Отсутствие поля означало бы «неизвестно», и маршрут из очереди пришлось
+    // бы угадывать. Здесь известно: анализа не было.
+    const { task } = parseCard(card({ idLabels: ['l-feature'] }), ctx);
+    expect(task.decomposed).toBe(false);
+  });
+
+  it('признак задачи отдаёт метку обратно на карточку', () => {
+    // Без этого метка не уехала бы на заведённую дроблением карточку,
+    // и она пошла бы на анализ, который для неё только что провели.
+    expect(labelKeysOf({ type: 'feature', decomposed: true })).toEqual(['feature', 'decomposed']);
+    expect(labelKeysOf({ type: 'feature', decomposed: false })).toEqual(['feature']);
+  });
 });
 
 describe('сборка отметок', () => {
@@ -231,5 +252,60 @@ describe('сборка отметок', () => {
     expect(back.returnTo).toBe('design');
     expect(back.links.related).toEqual(['0030-y']);
     expect(back.attempts).toEqual({ continuations: 2, cycleFailures: 1 });
+  });
+
+  it('счёт несостоявшихся запусков переживает дорогу туда и обратно', () => {
+    // Без этого счётчик обнулялся бы каждым чтением карточки, и предел
+    // не сработал бы никогда: бэклог живёт на доске, а не в файлах.
+    const task = {
+      id: '0067-x',
+      owner: null,
+      statusChangedAt: '2026-09-02T09:00:00.000Z',
+      attempts: { continuations: 0, cycleFailures: 0, spawnFailures: 2 },
+    };
+    const desc = joinDescription('Текст.', metaOf(task));
+    const { task: back } = parseCard(card({ desc }), ctx);
+
+    expect(back.attempts.spawnFailures).toBe(2);
+  });
+
+  it('вердикт разбора и счёт возвратов переживают дорогу туда и обратно', () => {
+    // По вердикту конвейер возвращает задачу из ошибки, по счёту —
+    // останавливается после второго возврата. Потеряйся любое из них
+    // при чтении карточки — задача либо не вернётся, либо вернётся
+    // без предела.
+    const task = {
+      id: '0041-x',
+      owner: null,
+      statusChangedAt: '2026-09-02T09:00:00.000Z',
+      attempts: { continuations: 0, cycleFailures: 0 },
+      recovery: { causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 },
+    };
+    const desc = joinDescription('Текст.', metaOf(task));
+    const { task: back } = parseCard(card({ desc }), ctx);
+
+    expect(back.recovery).toEqual({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 });
+  });
+
+  it('у неразобранной задачи вердикта нет вовсе', () => {
+    // Отсутствие — честный ответ «не судили», а не пустой вердикт: записи
+    // без поля состав не меняют, и ни одна проверка целиком не узнает
+    // о нём против воли.
+    const task = { id: '0031-x', owner: null, statusChangedAt: '2026-08-21T09:00:00.000Z' };
+    expect(metaOf(task)).not.toHaveProperty('recovery');
+    const { task: back } = parseCard(card({ desc: joinDescription('', metaOf(task)) }), ctx);
+    expect(back).not.toHaveProperty('recovery');
+  });
+
+  it('вердикт из блока прежней раскладки приводится к полному виду', () => {
+    // Блок пишет та версия, что стояла на момент записи; читает — та,
+    // что стоит теперь. Неполный или испорченный вердикт не должен ронять
+    // разбор карточки: он приводится к тому, что из него можно понять.
+    const desc = joinDescription('', {
+      id: '0041-x',
+      recovery: { causedBy: 'кто-то', returns: '2' },
+    });
+    const { task: back } = parseCard(card({ desc }), ctx);
+    expect(back.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 0 });
   });
 });
