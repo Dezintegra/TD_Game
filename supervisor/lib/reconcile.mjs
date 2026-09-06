@@ -70,6 +70,9 @@ export function parseWorktrees(text = '') {
 /** Имя ветки и дерева выводятся из идентификатора задачи, а не хранятся. */
 export const branchFor = (taskId) => `worktree-${taskId}`;
 
+// Уборке нужна запись существующего дерева, но создавать отсутствующее нельзя.
+const canAdoptWorktree = (status) => NEEDS_WORKTREE.includes(status) || status === 'cleanup';
+
 /**
  * Посчитать, что чинить.
  *
@@ -115,7 +118,7 @@ export function reconcile({ registry, worktrees, tasks, machine }) {
       });
       continue;
     }
-    if (!NEEDS_WORKTREE.includes(task.status)) {
+    if (!canAdoptWorktree(task.status)) {
       repairs.push({
         kind: 'report-orphan',
         taskId,
