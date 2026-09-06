@@ -29,13 +29,20 @@
     "id": {
       "type": "string",
       "description": "Устойчивый идентификатор вида <число>-<короткое-имя>. Он же имя ветки, дерева и журнала. После закрытия не переиспользуется.",
-      "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+      "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$"
     },
     "dependsOn": {
       "type": "array",
       "description": "Полные идентификаторы задач, которые должны перейти в closed перед запуском этой задачи. Отсутствие поля означает отсутствие зависимостей.",
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$" }
+      "items": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$" }
+    },
+    "splitInto": {
+      "type": "array",
+      "description": "Части успешной декомпозиции: закрытие родителя не завершает зависимость до закрытия всех частей и их потомков.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$" }
     },
     "dependencyResults": {
       "type": "array",
@@ -45,7 +52,7 @@
         "additionalProperties": false,
         "required": ["taskId", "kind", "pr"],
         "properties": {
-          "taskId": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$" },
+          "taskId": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$" },
           "kind": { "const": "merged-pr" },
           "pr": { "type": "integer", "minimum": 1 }
         }
