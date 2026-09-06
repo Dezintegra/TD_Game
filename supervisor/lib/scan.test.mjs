@@ -1335,7 +1335,9 @@ describe('бюджет тяжести Codex', () => {
       registry: { entries: [entry('0012-design'), entry('0236-deploy')] },
       codexUsage: ledger,
     });
-    expect(result.actions).toContainEqual(expect.objectContaining({ kind: 'start-stage', taskId: '0237-new' }));
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'start-stage', taskId: '0237-new' }),
+    );
   });
 
   it('живой deploy удерживает исключительность и при legacy-unknown', () => {
