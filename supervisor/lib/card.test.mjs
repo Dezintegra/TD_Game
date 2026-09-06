@@ -309,3 +309,22 @@ describe('сборка отметок', () => {
     expect(back.recovery).toEqual({ causedBy: null, fixedBy: [], returns: 0 });
   });
 });
+
+describe('метаданные зависимостей', () => {
+  it.each([[], ['0002-base', '0003-next'], null])(
+    'сохраняет dependsOn без потери при чтении и записи: %j',
+    (dependsOn) => {
+      const parsed = parseCard(
+        {
+          id: '66c000000000000000000001',
+          name: 'Задача',
+          desc: joinDescription('Описание', { id: '0001-one', dependsOn }),
+          idList: 'list-new',
+          idLabels: [],
+        },
+        { stateByList, labelKeyById: new Map() },
+      );
+      expect(metaOf(parsed.task).dependsOn).toEqual(dependsOn);
+    },
+  );
+});
