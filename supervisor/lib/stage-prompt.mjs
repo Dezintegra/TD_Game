@@ -14,10 +14,26 @@
  * промпт. Здесь только то, что меняется от задачи к задаче.
  */
 
-/** Обрезать длинное, назвав обрезанное вслух. Молчаливая обрезка обманывает. */
-function clip(text, limit) {
+// Для журнала важнее последний вердикт, чем начало давней переписки. Берём
+// хвост по целым строкам: так свежая запись не начинается посередине слова.
+function clipJournal(text, limit) {
   if (!text || text.length <= limit) return text ?? '';
-  return `${text.slice(0, limit)}\n\n[…обрезано, целиком — в журнале задачи…]`;
+  const marker = '[…ранняя часть журнала пропущена…]';
+  const room = limit - marker.length - 2;
+  if (room <= 0) return marker.slice(-Math.max(0, limit));
+  const lines = text.split('\n');
+  const kept = [];
+  let size = 0;
+  for (const line of lines.reverse()) {
+    const next = line.length + (kept.length ? 1 : 0);
+    if (size + next > room) {
+      if (kept.length === 0) kept.unshift(line.slice(-room));
+      break;
+    }
+    kept.unshift(line);
+    size += next;
+  }
+  return `${marker}\n\n${kept.join('\n')}`;
 }
 
 /**
@@ -81,6 +97,9 @@ export function stagePrompt({
         stage: assignment.stage,
         branch: assignment.branch ?? null,
         worktree: assignment.path ?? null,
+        ...(assignment.deploymentRevision
+          ? { deploymentRevision: assignment.deploymentRevision }
+          : {}),
         continuation: Boolean(assignment.continuation),
         reason: assignment.reason ?? null,
         // Перечень пакета выкладки — идентификаторами, как в отчёте: по ним
@@ -131,7 +150,22 @@ export function stagePrompt({
   // Журнал читается обязательно: там лежит вердикт аудита, а аудит мог
   // пропустить предложение с оговорками, и оговорки эти нигде больше
   // не записаны.
-  lines.push('', '## Журнал задачи', '', clip(journal, journalLimit) || '_пусто_');
+  lines.push('', '## Журнал задачи', '', clipJournal(journal, journalLimit) || '_пусто_');
+
+  // Условия допуска нельзя обрезать вместе с журналом даже при малом лимите.
+  if (assignment.stage === 'revise' && journal.length > journalLimit) {
+    lines.push(
+      '',
+      '## Восстановление замечаний',
+      '',
+      `При нехватке замечаний проверь \`.pipeline/logs/${assignment.taskId}-review.log\``,
+      'относительно основного дерева (первая запись `git -C <дерево> worktree list`).',
+      'Следуй порядку в supervisor/skills/revise.md: проверка соответствия текущему возврату обязательна.',
+      'Итоговый отчёт лога — дополнительный источник; он не заменяет полный журнал карточки',
+      'и ответ владельца продукта. Не обращайся к Trello.',
+      'Если достоверное восстановление невозможно, завершись с failed до исправлений, назвав путь и причину.',
+    );
+  }
 
   // Лог упавшего этапа — то единственное, чего нет ни у кого, кроме разбора,
   // и ради чего разбор затеян. Он приходит выдержкой, а не путём к файлу:

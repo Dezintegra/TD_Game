@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execute } from './execute.mjs';
+import { reconcile } from './reconcile.mjs';
+import { repairWorld } from './repair.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 
@@ -617,10 +619,12 @@ describe('перенос отчёта', () => {
     expect(io.steps).toContain('забыта сессия 0001-one:design');
   });
 
-  it('успешный этап сессию не забывает', async () => {
+  it('успешный этап забывает свою сессию', async () => {
     const io = fakeIo({ tasks: [task({ status: 'design' })] });
     await execute([transfer], io);
-    expect(io.steps.filter((step) => step.startsWith('забыта сессия'))).toEqual([]);
+    expect(io.steps.filter((step) => step.startsWith('забыта сессия'))).toEqual([
+      'забыта сессия 0001-one:design',
+    ]);
   });
 
   it('возврат наращивает счёт, а не обнуляет его', async () => {
@@ -656,11 +660,10 @@ describe('перенос отчёта', () => {
     await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'audit' }], io);
     expect(io.tasks.get('0001-one').status).toBe('postmortem');
 
-    // Сессия спорившего этапа не трогается: спор кончен, разбирать его будет
-    // не он. А вот сессия разбора забывается — иначе задача, разобранная
-    // однажды, услышала бы от неё вывод о позапрошлом падении.
+    // Спор кончен: забывается и споривший этап, и прежний разбор,
+    // чтобы следующий заход читал новое состояние.
     expect(io.steps).toContain('забыта сессия 0001-one:postmortem');
-    expect(io.steps).not.toContain('забыта сессия 0001-one:audit');
+    expect(io.steps).toContain('забыта сессия 0001-one:audit');
   });
 
   it('номер pull request из отчёта попадает в саму задачу', async () => {
@@ -729,6 +732,155 @@ describe('перенос отчёта', () => {
     });
     await execute([transfer], io);
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(0);
+  });
+});
+
+describe('жизненный цикл сессии после отчёта', () => {
+  // Постоянная заглушка lastSession не проверила бы сам дефект: удаление
+  // должно менять следующее назначение, а не только список вызовов.
+  function world(stage, over = {}) {
+    const io = fakeIo({ tasks: [task({ status: stage })], ...over });
+    const sessions = new Map();
+    const remember = (id, name) =>
+      sessions.set(`${id}:${name}`, {
+        sessionId: `прежняя-${id}-${name}`,
+        startedAt: NOW,
+      });
+    remember('0001-one', stage);
+    remember('0001-one', 'benchmark');
+    remember('0002-two', stage);
+    io.lastSession = (id, name) => sessions.get(`${id}:${name}`)?.sessionId ?? null;
+    io.stageStartedAt = (id, name) => {
+      const at = sessions.get(`${id}:${name}`)?.startedAt ?? null;
+      io.steps.push(`начало ${id}:${name} ${at}`);
+      return at;
+    };
+    io.forgetSession = (id, name) => {
+      io.steps.push(`забыта сессия ${id}:${name}`);
+      return sessions.delete(`${id}:${name}`);
+    };
+    let pending = null;
+    io.readReport = () => pending;
+    io.removeReport = () => {
+      io.steps.push('отчёт снят');
+      pending = null;
+    };
+    const transfer = async (name, outcome, extra = {}) => {
+      pending = { taskId: '0001-one', stage: name, outcome, ...extra };
+      return execute([{ kind: 'transfer-report', taskId: '0001-one', stage: name }], io);
+    };
+    const launch = (name) =>
+      execute([{ kind: 'continue-stage', taskId: '0001-one', stage: name }], io);
+    return { io, sessions, remember, transfer, launch };
+  }
+
+  it.each([
+    ['audit', 'design'],
+    ['review', 'revise'],
+  ])(
+    '%s после возврата и новой работы получает свежую задачу и журнал',
+    async (checker, worker) => {
+      const { io, sessions, remember, transfer, launch } = world(checker);
+      remember('0001-one', worker);
+      await transfer(checker, 'rejected', { summary: 'нужна новая работа' });
+      expect(io.tasks.get('0001-one').status).toBe(worker);
+      expect(sessions.has(`0001-one:${checker}`)).toBe(false);
+      expect(sessions.has(`0001-one:${worker}`)).toBe(false);
+      await launch(worker);
+      expect(io.spawned.at(-1)).toMatchObject({ continuation: false, sessionId: null });
+      remember('0001-one', worker);
+      await transfer(worker, 'done', {
+        summary: 'новая работа отправлена',
+        links: { change: 'new-work', pr: 51 },
+      });
+      if (checker === 'review') {
+        expect(io.tasks.get('0001-one').status).toBe('pr');
+        await execute([{ kind: 'poll-external', taskId: '0001-one', what: 'ci' }], io);
+      }
+      expect(io.tasks.get('0001-one').status).toBe(checker);
+      await launch(checker);
+      expect(io.spawned.at(-1)).toMatchObject({
+        continuation: false,
+        sessionId: null,
+        task: { status: checker, links: { change: 'new-work' } },
+      });
+      expect(io.spawned.at(-1).journal).toContain('новая работа отправлена');
+      expect(sessions.has(`0001-one:${worker}`)).toBe(false);
+      expect(sessions.has('0001-one:benchmark')).toBe(true);
+      expect(sessions.has(`0002-two:${checker}`)).toBe(true);
+    },
+  );
+
+  it.each(['done', 'question', 'failed', 'недопустимый'])(
+    'исход %s завершает исходный заход',
+    async (outcome) => {
+      const { io, sessions, transfer } = world('design');
+      const [result] = await transfer('design', outcome, { summary: 'результат' });
+      expect(result.result).toBe('done');
+      expect(sessions.has('0001-one:design')).toBe(false);
+      expect(io.readReport()).toBeNull();
+      const forgotten = io.steps.indexOf('забыта сессия 0001-one:design');
+      expect(forgotten).toBeGreaterThan(
+        io.steps.findIndex((step) => step.startsWith('коммит и отправка')),
+      );
+      expect(io.steps.indexOf('отчёт снят')).toBeGreaterThan(forgotten);
+    },
+  );
+
+  it.each(['обычный', 'подрывающий'])(
+    'сбой записи: %s отчёт сохраняет начало для успешного повтора',
+    async (kind) => {
+      const { io, sessions, transfer } = world('design', {
+        evidence: { branchOnRemote: kind === 'обычный', unpushed: 0, lastCommitAt: NOW },
+      });
+      const save = io.saveTask.bind(io);
+      io.saveTask = () => ({ ok: false, outcome: 'write-failed' });
+      const [failed] = await transfer('design', 'done', {
+        denials: [{ tool_name: 'PowerShell', tool_input: { command: 'node --version' } }],
+      });
+      expect(failed.result).toBe('failed');
+      expect(sessions.get('0001-one:design')).toMatchObject({ startedAt: NOW });
+      expect(io.readReport()).not.toBeNull();
+      expect(io.steps).not.toContain('забыта сессия 0001-one:design');
+      io.saveTask = save;
+      const [retried] = await execute(
+        [{ kind: 'transfer-report', taskId: '0001-one', stage: 'design' }],
+        io,
+      );
+      expect(retried.result).toBe('done');
+      expect(io.steps.filter((step) => step === `начало 0001-one:design ${NOW}`)).toHaveLength(2);
+      expect(sessions.has('0001-one:design')).toBe(false);
+      expect(io.readReport()).toBeNull();
+      expect(io.spawned).toEqual([]);
+    },
+  );
+
+  it.each(['createTask', 'amendTask'])(
+    'ошибка %s сохраняет исходную сессию и очередь отчёта',
+    async (method) => {
+      const { io, sessions, transfer } = world('design');
+      io.tasks.set('0002-two', task({ id: '0002-two' }));
+      io[method] = () => ({ ok: false, outcome: 'write-failed' });
+      const [result] = await transfer('design', 'done', {
+        requests:
+          method === 'createTask'
+            ? [{ type: 'note', title: 'Наблюдение', description: 'Фактура', priority: 50 }]
+            : [],
+        amendments: method === 'amendTask' ? [{ taskId: '0002-two', facts: 'Новая фактура' }] : [],
+      });
+      expect(result.result).toBe('failed');
+      expect(sessions.get('0001-one:design')).toMatchObject({ startedAt: NOW });
+      expect(io.readReport()).not.toBeNull();
+      expect(io.spawned).toEqual([]);
+    },
+  );
+
+  it('прерывание без отчёта сохраняет прежнее назначение и начало', async () => {
+    const { io, sessions, launch } = world('implement');
+    const previous = { ...sessions.get('0001-one:implement') };
+    await launch('implement');
+    expect(io.spawned.at(-1)).toMatchObject({ continuation: true, sessionId: previous.sessionId });
+    expect(sessions.get('0001-one:implement')).toEqual(previous);
   });
 });
 
@@ -1344,6 +1496,188 @@ describe('остановка задачи', () => {
     // а не в разбор.
     expect(moved.returnTo).toBe('implement');
   });
+});
+
+describe('уборка после потери записи реестра', () => {
+  const id = '0001-one';
+  const branch = `worktree-${id}`;
+  const path = `.claude/worktrees/${id}`;
+  const sweep = { kind: 'cleanup', taskId: id };
+
+  function world({
+    owner = 'станция-1',
+    present = true,
+    pr = 50,
+    state = 'merged',
+    ownCommits = 0,
+  } = {}) {
+    const io = fakeIo({ tasks: [task({ status: 'cleanup', owner, links: { pr } })] });
+    const registry = new Map();
+    const resources = new Set(present ? ['tree', 'local', 'remote'] : []);
+    const failures = new Set();
+    const calls = [];
+    io.registryEntry = (taskId) => registry.get(taskId) ?? null;
+    io.upsertRegistry = (entry) => {
+      calls.push('register');
+      registry.set(entry.taskId, entry);
+    };
+    io.dropRegistry = (taskId) => {
+      expect(resources.size).toBe(0);
+      calls.push('drop');
+      registry.delete(taskId);
+    };
+    io.worktreePathFor = () => path;
+    io.addWorktree = () => {
+      throw new Error('cleanup не должен создавать дерево');
+    };
+    io.readPr = (number) => {
+      calls.push(['pr', number]);
+      return { state };
+    };
+    io.ownCommits = (name) => {
+      calls.push(['ownCommits', name]);
+      return ownCommits;
+    };
+    for (const [method, resource, argument] of [
+      ['removeWorktree', 'tree', path],
+      ['deleteBranch', 'local', branch],
+      ['deleteRemoteBranch', 'remote', branch],
+    ]) {
+      io[method] = (value) => {
+        expect(value).toBe(argument);
+        expect(registry.has(id)).toBe(true);
+        calls.push(resource);
+        if (failures.has(resource)) return { ok: false, why: `занят ${resource}` };
+        resources.delete(resource);
+        return { ok: true };
+      };
+    }
+    const saveTask = io.saveTask.bind(io);
+    io.saveTask = (...args) => {
+      if (args[0].status === 'closed') {
+        expect(resources.size).toBe(0);
+        expect(registry.size).toBe(0);
+        calls.push('closed');
+      }
+      return saveTask(...args);
+    };
+    const repair = () => {
+      const result = reconcile({
+        registry: { entries: [...registry.values()] },
+        worktrees: resources.has('tree') ? [{ branch, path: `C:/repo/${path}` }] : [],
+        tasks: [...io.tasks.values()],
+        machine: io.machine,
+      });
+      repairWorld(result.repairs, io);
+      return result.repairs;
+    };
+    expect(registry.size).toBe(0);
+    return { io, registry, resources, failures, calls, repair };
+  }
+
+  function adopt(world) {
+    expect(world.repair().map((item) => item.kind)).toEqual(['adopt-worktree']);
+    expect(world.registry.get(id)).toEqual({
+      taskId: id,
+      branch,
+      path,
+      stage: 'cleanup',
+      sessionTitle: `pipeline:${id}:cleanup`,
+      lastSeenAt: NOW,
+    });
+    expect(world.repair()).toEqual([]);
+  }
+
+  it.each(['станция-1', null])(
+    'восстанавливает запись и убирает ресурсы, владелец %s',
+    async (owner) => {
+      const w = world({ owner });
+      adopt(w);
+      expect(w.io.tasks.get(id).owner).toBe(owner);
+      const [result] = await execute([sweep], w.io);
+      expect(result).toMatchObject({ result: 'done', status: 'closed' });
+      expect(w.calls).toEqual([
+        'register',
+        ['pr', 50],
+        'tree',
+        'local',
+        'remote',
+        'drop',
+        'closed',
+      ]);
+      expect(w.io.tasks.get(id).status).toBe('closed');
+      expect(w.io.spawned).toEqual([]);
+    },
+  );
+
+  it('отсутствующее дерево не создаётся, пустая уборка закрывается', async () => {
+    const w = world({ present: false });
+    expect(w.repair()).toEqual([]);
+    await execute([sweep], w.io);
+    expect(w.io.tasks.get(id).status).toBe('closed');
+    expect(w.calls).toEqual([['pr', 50], 'closed']);
+  });
+
+  it('починка не присваивает и не удаляет чужое дерево', () => {
+    const w = world({ owner: 'станция-2' });
+    expect(w.repair().map((item) => item.kind)).toEqual(['report-orphan']);
+    expect(w.registry.size).toBe(0);
+    expect(w.calls).toEqual([]);
+    expect(w.resources.size).toBe(3);
+    expect(w.io.tasks.get(id).owner).toBe('станция-2');
+  });
+
+  it.each([
+    { state: 'open', status: 'postmortem' },
+    { state: 'unknown', status: 'cleanup' },
+  ])('PR $state не позволяет удалить восстановленное дерево', async ({ state, status }) => {
+    const w = world({ state });
+    adopt(w);
+    await execute([sweep], w.io);
+    expect(w.io.tasks.get(id).status).toBe(status);
+    expect(w.registry.has(id)).toBe(true);
+    expect(w.resources.size).toBe(3);
+    expect(w.calls).toEqual(['register', ['pr', 50]]);
+  });
+
+  it.each([0, 2, null])('без PR проверяет собственные коммиты: %s', async (ownCommits) => {
+    const w = world({ pr: null, ownCommits });
+    adopt(w);
+    await execute([sweep], w.io);
+    expect(w.calls).toContainEqual(['ownCommits', branch]);
+    expect(w.io.tasks.get(id).status).toBe(ownCommits === 0 ? 'closed' : 'postmortem');
+    expect(w.registry.has(id)).toBe(ownCommits !== 0);
+    expect(w.resources.size).toBe(ownCommits === 0 ? 0 : 3);
+    if (ownCommits !== 0)
+      expect(w.calls).toEqual(['register', ['pr', null], ['ownCommits', branch]]);
+  });
+
+  it.each(['tree', 'local', 'remote'])(
+    'отказ удаления %s сохраняет запись и cleanup',
+    async (resource) => {
+      const w = world();
+      adopt(w);
+      const entry = w.registry.get(id);
+      w.failures.add(resource);
+      const [result] = await execute([sweep], w.io);
+      expect(result).toMatchObject({ result: 'skipped' });
+      expect(result.why).toContain(`занят ${resource}`);
+      expect(w.registry.get(id)).toBe(entry);
+      expect(w.io.tasks.get(id).status).toBe('cleanup');
+      expect(w.resources).toEqual(new Set([resource]));
+      expect(w.calls).not.toContain('closed');
+      expect(w.calls).not.toContain('drop');
+      if (resource === 'tree') {
+        w.failures.clear();
+        expect(w.repair()).toEqual([]);
+        const [retry] = await execute([sweep], w.io);
+        expect(retry).toMatchObject({ result: 'done', status: 'closed' });
+        expect(w.io.tasks.get(id).status).toBe('closed');
+        expect(w.registry.size).toBe(0);
+        expect(w.resources.size).toBe(0);
+      }
+    },
+  );
 });
 
 describe('уборка', () => {

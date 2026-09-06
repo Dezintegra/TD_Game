@@ -14,6 +14,23 @@ import { loadSchema, validateTask } from './validate-task.mjs';
 const repoRoot = new URL('../../', import.meta.url);
 const schema = loadSchema(fileURLToPath(new URL('manage/schema.json', repoRoot)));
 
+describe('временная файловая схема результата зависимости', () => {
+  it('принимает результат и отвергает неверные поля', () => {
+    const result = { taskId: '0002-base', kind: 'merged-pr', pr: 168 };
+    const task = { ...feature(), dependsOn: ['0002-base'], dependencyResults: [result] };
+    expect(validateTask(task, schema)).toEqual([]);
+    for (const bad of [
+      { ...result, pr: 0 },
+      { ...result, kind: 'unknown' },
+      { ...result, extra: 1 },
+    ]) {
+      expect(validateTask({ ...task, dependencyResults: [bad] }, schema).join()).toContain(
+        'dependencyResults',
+      );
+    }
+  });
+});
+
 /** Прочитать образец задачи из `manage/examples/`. */
 const example = (name) =>
   JSON.parse(

@@ -29,6 +29,15 @@ const assignment = {
 };
 
 describe('состав', () => {
+  it('передаёт закреплённую ревизию снимка выкладки', () => {
+    const deploymentRevision = 'a'.repeat(40);
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'deploy', branch: null, deploymentRevision },
+      task,
+    });
+    expect(text).toContain(`"deploymentRevision": "${deploymentRevision}"`);
+    expect(text).toContain('"branch": null');
+  });
   const text = stagePrompt({ assignment, task, journal: 'вердикт аудита: пропущено' });
 
   it('называет задачу, этап, ветку и дерево', () => {
@@ -166,14 +175,71 @@ describe('лог упавшего этапа', () => {
 });
 
 describe('журнал', () => {
+  it.each([120, 8])('оставляет полное пояснение revise вне лимита %i', (journalLimit) => {
+    const journal = `${'история\n'.repeat(100)}P1: блоккер\nвладелец: принято`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task: { ...task, status: 'revise' },
+      journal,
+      journalLimit,
+    });
+    const [clipped, explanation] = text
+      .split('## Журнал задачи\n\n')[1]
+      .split('\n\n## Восстановление замечаний\n\n');
+    expect(clipped.length).toBeLessThanOrEqual(journalLimit);
+    if (journalLimit === 120) {
+      expect(clipped).toContain('P1: блоккер\nвладелец: принято');
+    }
+    for (const part of [
+      `.pipeline/logs/${task.id}-review.log`,
+      'основного дерева',
+      'git -C <дерево> worktree list',
+      'supervisor/skills/revise.md',
+      'проверка соответствия текущему возврату обязательна',
+      'дополнительный источник',
+      'не заменяет полный журнал карточки',
+      'ответ владельца продукта',
+      'Не обращайся к Trello',
+      'failed до исправлений',
+      'путь и причину',
+    ])
+      expect(explanation).toContain(part);
+    // Тот же хвост у другого этапа: пояснение не отнимает место в журнале.
+    const other = stagePrompt({ assignment, task, journal, journalLimit });
+    expect(other).toContain(`## Журнал задачи\n\n${clipped}\n\n`);
+    expect(other).not.toContain('## Восстановление замечаний');
+    expect(other).not.toContain('целиком — в журнале задачи');
+  });
+
+  it.each(['', 'полный журнал'])('не добавляет пояснение к необрезанному revise: %j', (journal) => {
+    const text = stagePrompt({ assignment: { ...assignment, stage: 'revise' }, task, journal });
+    expect(text).not.toContain('## Восстановление замечаний');
+    expect(text).toContain(journal || '_пусто_');
+  });
+
   it('обрезается, и обрезка названа вслух: молчаливая обманывает', () => {
     const long = 'строка журнала\n'.repeat(2000);
     const text = stagePrompt({ assignment, task, journal: long, journalLimit: 100 });
-    expect(text).toContain('обрезано');
+    expect(text).toContain('пропущена');
     expect(text.length).toBeLessThan(long.length);
   });
 
   it('пустой показан пустым, а не отсутствующим', () => {
     expect(stagePrompt({ assignment, task, journal: '' })).toContain('_пусто_');
+  });
+
+  it('сохраняет свежие P1 и ответ владельца после большого старого журнала', () => {
+    const journal = `${'старый отчёт\n'.repeat(2000)}P1: исправить блоккер\nвладелец: принято`;
+    const text = stagePrompt({ assignment, task, journal, journalLimit: 120 });
+    expect(text).toContain('ранняя часть журнала пропущена');
+    expect(text).toContain('P1: исправить блоккер');
+    expect(text).toContain('владелец: принято');
+  });
+
+  it('сохраняет bounded tail единственной последней строки, даже когда она длиннее лимита', () => {
+    const journal = `${'старое\n'.repeat(100)}${'x'.repeat(400)} END-P1`;
+    const text = stagePrompt({ assignment, task, journal, journalLimit: 90 });
+    expect(text).toContain('пропущена');
+    expect(text).toContain('END-P1');
   });
 });

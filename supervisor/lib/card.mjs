@@ -175,6 +175,10 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     // одного значения расходятся молча, и по той же причине состояние живёт
     // только колонкой, а тип — только меткой.
     decomposed: labels.flags.includes('decomposed'),
+    ...(Object.hasOwn(meta ?? {}, 'dependsOn') ? { dependsOn: meta.dependsOn } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'dependencyResults')
+      ? { dependencyResults: meta.dependencyResults }
+      : {}),
     history: [],
   };
 
@@ -228,6 +232,10 @@ function labelKeys(idLabels, labelKeyById) {
 export function metaOf(task) {
   return {
     id: task.id,
+    ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
+    ...(Object.hasOwn(task, 'dependencyResults')
+      ? { dependencyResults: task.dependencyResults }
+      : {}),
     owner: task.owner ?? null,
     returnTo: task.returnTo ?? null,
     statusChangedAt: task.statusChangedAt,

@@ -36,6 +36,8 @@ export const DEFAULTS = {
   provider: 'claude',
   codexCommand: 'codex',
   codexModel: null,
+  /** Карты моделей по провайдеру и этапу; default — для остальных этапов. */
+  stageModels: {},
   codexWindowsSandbox: 'elevated',
   // Эвристика тяжести задачи; кэш уже входит во входные токены.
   codexMaxTaskTokens: 25_000_000,

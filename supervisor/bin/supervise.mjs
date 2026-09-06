@@ -1,29 +1,28 @@
 #!/usr/bin/env node
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
+import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
+import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { createCommandRunner } from '../lib/command-runner.mjs';
+import { buildDependencyState } from '../lib/dependency-state.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   existsSync,
+  closeSync,
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  budgetsAgree,
-  countFailure,
-  lockVerdict,
-  newLock,
-  refreshLock,
-  shouldPause,
-} from '../lib/lock.mjs';
+import { budgetsAgree, countFailure, newLock, refreshLock, shouldPause } from '../lib/lock.mjs';
 import { codexProbeCommand, providerOf, readCodexAnswer } from '../lib/provider.mjs';
 import { judgeProbe, shouldProbe } from '../lib/api-health.mjs';
 import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
@@ -43,6 +42,12 @@ import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
+import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
+import {
+  claimSupervisorLock,
+  createOwnedSupervisor as createAfterOwnership,
+  releaseSupervisorLock,
+} from '../lib/supervisor-startup.mjs';
 import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -172,22 +177,7 @@ function probeApi() {
 }
 
 /** Запуск внешней команды с ответом вместо исключения. */
-function runCommand(args, program = 'git', cwd = root) {
-  try {
-    // `windowsHide` прячет консольное окно потомка. Без него каждый вызов
-    // git из супервизора, запущенного в фоне, вспыхивает отдельным окном
-    // и забирает фокус — а вызовов этих десятки за оборот.
-    const stdout = execFileSync(program, args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: 'pipe',
-      windowsHide: true,
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (error) {
-    return { code: error.status ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
-  }
-}
+const runCommand = createCommandRunner(root);
 
 const runGit = (args) => runCommand(args, 'git');
 const { config, missing } = loadConfig();
@@ -254,8 +244,27 @@ function writeLock(lock) {
   writeFileSync(lockPath(), JSON.stringify(lock, null, 2));
 }
 
+function claimLock(lock) {
+  ensureLocal();
+  try {
+    const descriptor = openSync(lockPath(), 'wx');
+    writeFileSync(descriptor, JSON.stringify(lock, null, 2));
+    closeSync(descriptor);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function releaseLock() {
-  if (existsSync(lockPath())) rmSync(lockPath());
+  return releaseSupervisorLock({
+    lockPath: lockPath(),
+    pid: process.pid,
+    readLock,
+    removeLock: () => {
+      if (existsSync(lockPath())) rmSync(lockPath());
+    },
+  });
 }
 
 /**
@@ -381,6 +390,8 @@ async function openBacklog({ mayWrite }) {
     invalid,
     marked,
     store,
+    closedDependencyIds: store.closedDependencyIds(),
+    dependencyRecords: store.dependencyRecords(),
     notes: [
       ...adopted.problems,
       ...(adopted.adopted.length > 0 ? [`выданы номера: ${adopted.adopted.join(', ')}`] : []),
@@ -391,52 +402,87 @@ async function openBacklog({ mayWrite }) {
 
 let codexEnvironment;
 let codexReady = false;
-const supervisor = createSupervisor({
-  getCodexEnvironment: () => codexEnvironment,
-  config,
-  root,
-  home,
-  spawn,
-  killTree: createKillTree((program, args) => runCommand(args, program)),
-  // Опрос системы о процессе по номеру. Тем же способом, что и снятие:
-  // одной внешней командой, ответ вместо исключения.
-  probe: createProbeProcess((program, args) => runCommand(args, program)),
-  // Дескриптор живого этапа называет станцию и своего супервизора: местное
-  // хранилище состояния можно скопировать, а номер процесса с другой машины
-  // здесь не значит ничего.
-  machine: hostname(),
-  supervisorPid: process.pid,
-  saveStages,
-  stages: readStages(root, config),
-  codexUsage: providerOf(config) === 'codex' ? readTokenLedger(root, config) : {},
-  saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
-  onPolicyBlocked: (why) => {
-    ensureLocal();
-    writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
-    note(`Конвейер на паузе: ${why}. Новые этапы не выдаются.`, TAG.error);
-  },
-  say,
-  log: (line) => note(line, null),
-  writeStageLog: (taskId, stage, text) => {
-    // Вывод процесса целиком — взамен списка сессий, в котором этапы
-    // больше не видны. Взамен неравноценное: кода возврата, стоимости
-    // и перечня отказов в списке не было вовсе.
-    mkdirSync(local('logs'), { recursive: true });
-    writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
-  },
-  // Тот же лог читается обратно — разбором упавшей задачи, и только им.
-  // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
-  // без лога всё равно начинается, а сам факт его отсутствия — улика.
-  readStageLog: (taskId, stage) => {
-    if (!stage) return null;
-    const path = local('logs', `${taskId}-${stage}.log`);
-    return {
-      stage,
-      path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
-      text: existsSync(path) ? readFileSync(path, 'utf8') : null,
-    };
-  },
-});
+function sessionFiles(dir, suffix) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return sessionFiles(path, suffix);
+    return entry.isFile() && path.endsWith(suffix) ? [path] : [];
+  });
+}
+function createRuntimeSupervisor() {
+  return createSupervisor({
+    getCodexEnvironment: () => codexEnvironment,
+    prepareAssignment: (assignment, previous) => {
+      const prepared = prepareDeploySnapshot(root, config, assignment, previous);
+      if (providerOf(config) === 'codex')
+        prepareCodexPerfFiles(root, prepared.path ? resolve(root, prepared.path) : root);
+      return prepared;
+    },
+    config,
+    root,
+    readCodexEvidence: (child) => {
+      if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
+      const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
+      const paths = sessionFiles(join(codexHome, 'sessions'), `${child.sessionId}.jsonl`);
+      if (paths.length !== 1) return { ok: false, reason: 'ambiguous-session-evidence' };
+      try {
+        return sessionEvidence(readFileSync(paths[0], 'utf8'), {
+          sessionId: child.sessionId,
+          cwd: child.path ? resolve(root, child.path) : root,
+          after: child.startedAt,
+        });
+      } catch {
+        return { ok: false, reason: 'malformed-session-evidence' };
+      }
+    },
+    home,
+    spawn,
+    killTree: createKillTree((program, args) => runCommand(args, program)),
+    // Опрос системы о процессе по номеру. Тем же способом, что и снятие:
+    // одной внешней командой, ответ вместо исключения.
+    probe: createProbeProcess((program, args) => runCommand(args, program)),
+    // Дескриптор живого этапа называет станцию и своего супервизора: местное
+    // хранилище состояния можно скопировать, а номер процесса с другой машины
+    // здесь не значит ничего.
+    machine: hostname(),
+    supervisorPid: process.pid,
+    saveStages,
+    stages: readStages(root, config),
+    // Сирота Codex может встретиться сразу после переключения на Claude.
+    // Пустой объект здесь при первом сохранении стёр бы весь прежний реестр.
+    codexUsage: readTokenLedger(root, config),
+    saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
+    onPolicyBlocked: (why) => {
+      ensureLocal();
+      writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
+      note(`Конвейер на паузе: ${why}. Новые этапы не выдаются.`, TAG.error);
+    },
+    say,
+    log: (line) => note(line, null),
+    writeStageLog: (taskId, stage, text) => {
+      // Вывод процесса целиком — взамен списка сессий, в котором этапы
+      // больше не видны. Взамен неравноценное: кода возврата, стоимости
+      // и перечня отказов в списке не было вовсе.
+      mkdirSync(local('logs'), { recursive: true });
+      writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
+    },
+    // Тот же лог читается обратно — разбором упавшей задачи, и только им.
+    // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
+    // без лога всё равно начинается, а сам факт его отсутствия — улика.
+    readStageLog: (taskId, stage) => {
+      if (!stage) return null;
+      const path = local('logs', `${taskId}-${stage}.log`);
+      return {
+        stage,
+        path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
+        text: existsSync(path) ? readFileSync(path, 'utf8') : null,
+      };
+    },
+  });
+}
+
+let supervisor;
 
 /** Сколько задач стоит в этом состоянии. Состояние задачи и есть её колонка. */
 function counted(tasks, status) {
@@ -514,12 +560,15 @@ async function turn() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const state = {
-    tasks: backlog.tasks,
-    invalid: backlog.invalid,
-    marked: backlog.marked ?? [],
+    ...(await buildDependencyState({
+      backlog,
+      config,
+      root,
+      run: runCommand,
+      reports: supervisor.reports,
+      running: supervisor.running(),
+    })),
     registry,
-    reports: supervisor.reports,
-    running: supervisor.running(),
     // Исходы этапов, осиротевших при смене супервизора: живость они уже
     // не значат, зато объясняют в журнале задачи, почему прошлый заход
     // ничего не дал.
@@ -742,8 +791,9 @@ const OUTCOME = {
 
 /** Бесконечный цикл с рубильником паузы и сторожем неудач. */
 async function prepareCodex() {
-  note('Проверяю Git и авторизацию GitHub в Codex перед выдачей задач', TAG.cycle);
+  note('Проверяю Git, GitHub, SSH и дочерние процессы Node в Codex перед выдачей задач', TAG.cycle);
   try {
+    prepareCodexPerfFiles(root);
     codexEnvironment = codexChildEnvironment();
     const readiness = await checkCodexReadiness({
       env: codexEnvironment,
@@ -756,7 +806,7 @@ async function prepareCodex() {
     writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
     if (!readiness.ok) throw new Error(readiness.why);
     codexReady = true;
-    note('Codex: Git, авторизация GitHub и соединение SSH проверены', TAG.cycle);
+    note('Codex: Git, GitHub, SSH и дочерние процессы Node проверены', TAG.cycle);
     return true;
   } catch (error) {
     const why = 'Проверка Codex не прошла: ' + error.message;
@@ -960,17 +1010,32 @@ async function loop() {
 const startedAt = new Date().toISOString();
 // Собственный номер нужен переданному замку: старый процесс, перезапускаясь,
 // записывает в замок номер нового и выходит, и новому достаточно узнать себя.
-const verdict = lockVerdict(readLock(), startedAt, config.lockStaleMinutes, isAlive, process.pid);
-if (!verdict.take) {
+const owned = createAfterOwnership({
+  claim: () =>
+    claimSupervisorLock({
+      lockPath: lockPath(),
+      now: startedAt,
+      staleMinutes: config.lockStaleMinutes,
+      isAlive,
+      pid: process.pid,
+      readLock,
+      writeLock,
+      removeLock: () => {
+        if (existsSync(lockPath())) rmSync(lockPath());
+      },
+      claimLock,
+    }),
+  createSupervisor: createRuntimeSupervisor,
+});
+if (!owned.ownership.acquired) {
   // Сторож будит супервизор раз в пять минут независимо от того, жив ли
   // прежний. Отсев двойного запуска — весь тут, и потому замок берётся
   // ДО первого оборота, а не внутри него: оборот может и не дойти до замка,
   // например при недоступной доске.
-  console.log(`СУПЕРВИЗОР УЖЕ РАБОТАЕТ: ${verdict.why}`);
+  console.log(`СУПЕРВИЗОР УЖЕ РАБОТАЕТ: ${owned.ownership.why}`);
 } else {
-  // Отметка передачи читается ДО записи своего замка: своя запись её стирает.
-  const handedFrom = readLock()?.handedFrom ?? null;
-  writeLock(newLock(process.pid, startedAt));
-  if (handedFrom) note(`замок получен от процесса ${handedFrom}: продолжаю на новом коде`, null);
+  supervisor = owned.supervisor;
+  if (owned.ownership.handedFrom)
+    note(`замок получен от процесса ${owned.ownership.handedFrom}: продолжаю на новом коде`, null);
   await loop();
 }

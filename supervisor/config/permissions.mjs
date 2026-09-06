@@ -107,35 +107,12 @@ export const STAGE_COMMANDS = {
    */
   review: ['gh pr view 1 --json state,isDraft', 'gh pr ready 1', 'gh pr merge 1 --merge'],
 
-  /**
-   * Команды выкладки — все восемь, какие `skills/deploy.md` зовёт наружу.
-   * Приставок у `ssh` ДВЕ, и в этом весь смысл полноты: шаги 4 и 5 щупают
-   * сервер с `-o ConnectTimeout=15`, а сверка имён переменных окружения
-   * (шаг 7) — без него. Перечень, знающий лишь первую приставку, зазеленел бы
-   * при правиле `ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra:*`:
-   * сторож объявил бы этап открытым, сканер перестал бы держать задачи
-   * выкладки — а этап всё равно умер бы, теперь на шаге 7 и тем же
-   * молчаливым отказом, ради отмены которого всё затеяно. Пропустить шаг 7
-   * скилл не разрешает.
-   *
-   * Шаги 4 делят приставку с шагом 5, и всё же названы порознь: правило точной
-   * формы (без хвоста `:*`) покрывает ровно одну строку и ни одной соседней,
-   * а `patternOf` эти формы уже различает.
-   *
-   * Замер (шаг 8) с пакетной выкладкой делает сама сессия, а не сценарий
-   * выкладки, поэтому три формы `pnpm e2e:perf` стоят здесь, а выкладка
-   * зовётся с `--no-perf` — дословно, как в скилле: сторож сверки требует,
-   * чтобы объявленная строка встречалась в скилле как есть.
-   *
-   * Строки `ssh` шагов 5 и 9 сняты с натуры — они отказались в живом заходе
-   * 03.09.2026 (`.pipeline/logs/0143-storozh-…-deploy.log`, четыре отказа).
-   * Потому перечень и сверяется со скиллом сторожем, а не памятью о падении.
-   */
+  /** Все удалённые проверки, замеры и выкладка из deploy.md. */
   deploy: [
-    'ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra "stat -c %y ~/td"',
-    'ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra "curl -fsS https://dezintegra.net/health"',
-    'ssh -o BatchMode=yes -o ConnectTimeout=15 dezintegra "true"',
-    'ssh -o BatchMode=yes dezintegra "grep -o \'^[A-Z_]*\' ~/td/.env"',
+    'node scripts/deploy-remote.mjs "stat -c %y ~/td"',
+    'node scripts/deploy-remote.mjs "curl -fsS https://dezintegra.net/health"',
+    'node scripts/deploy-remote.mjs "true"',
+    'node scripts/deploy-remote.mjs "grep -o \'^[A-Z_]*\' ~/td/.env"',
     'pnpm e2e:perf -- --check-only',
     'pnpm e2e:perf',
     'pnpm e2e:perf -- --history',

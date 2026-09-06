@@ -68,6 +68,32 @@ const backlog = (over = {}, trello = fakeTrello(), machine = null) =>
   createTrelloBacklog({ trello, config, snapshot: snapshot(over), machine });
 
 describe('чтение задач', () => {
+  it('сохраняет архивный результат и негодные совпадения идентификатора', () => {
+    const store = backlog({
+      cards: [
+        card({ id: 'active', idList: 'list-closed', meta: { links: { pr: 168 } } }),
+        card({ id: 'archived', closed: true, idList: 'list-closed', meta: { links: { pr: 168 } } }),
+        card({ id: 'not-done', closed: true, idList: 'list-new' }),
+        card({ id: 'bad-active', idLabels: [] }),
+        card({ id: 'bad-archive', closed: true, idList: 'list-closed', idLabels: [] }),
+        card({ id: 'broken', closed: true, desc: '<!-- pipeline {broken -->' }),
+      ],
+    });
+    const records = store.dependencyRecords();
+    expect(records).toHaveLength(5);
+    expect(records[0]).toMatchObject({
+      id: '0031-proba',
+      status: 'closed',
+      links: { pr: 168 },
+      valid: true,
+    });
+    expect(records[1]).toMatchObject({ status: 'new', valid: true });
+    expect(records.slice(2).every((item) => item.id === '0031-proba' && item.valid === false)).toBe(
+      true,
+    );
+    expect(store.parsedCards()).toHaveLength(2);
+  });
+
   it('карточка читается как задача', () => {
     const store = backlog({ cards: [card()] });
     expect(store.readTask('0031-proba')).toMatchObject({
@@ -605,5 +631,25 @@ describe('снятие захвата', () => {
     const put = trello.calls.find((call) => call.method === 'PUT');
     expect(put.body.desc).toContain('"owner":null');
     expect(put.body.idList).toBeUndefined();
+  });
+});
+
+describe('архивные предшественники', () => {
+  it('подтверждает только проверенные архивные карточки в closed', () => {
+    const store = backlog({
+      cards: [
+        card({ closed: true, idList: 'list-closed' }),
+        card({ id: 'card-2', closed: true, meta: { id: '0032-failed' }, idList: 'list-failed' }),
+        card({
+          id: 'card-3',
+          closed: true,
+          meta: { id: '0033-broken' },
+          idList: 'list-closed',
+          idLabels: [],
+        }),
+      ],
+    });
+    expect(store.closedDependencyIds()).toEqual(['0031-proba']);
+    expect(store.parsedCards()).toEqual([]);
   });
 });

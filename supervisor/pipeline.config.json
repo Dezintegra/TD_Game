@@ -4,6 +4,30 @@
   "remote": "origin",
   "mainBranch": "main",
   "worktreeDir": ".claude/worktrees",
+  "apiProbeModel": "claude-opus-5",
+
+  "stageModels": {
+    "codex": {
+      "default": "gpt-5.6-sol",
+      "triage": "gpt-6-astra",
+      "interpret": "gpt-6-astra",
+      "postmortem": "gpt-6-astra",
+      "implement": "gpt-5.6-terra",
+      "revise": "gpt-5.6-terra",
+      "benchmark": "gpt-5.6-terra",
+      "deploy": "gpt-5.6-terra"
+    },
+    "claude": {
+      "default": "claude-opus-5",
+      "triage": "claude-fable-5-1",
+      "interpret": "claude-fable-5-1",
+      "postmortem": "claude-fable-5-1",
+      "implement": "claude-opus-4-8",
+      "revise": "claude-opus-4-8",
+      "benchmark": "claude-opus-4-8",
+      "deploy": "claude-opus-4-8"
+    }
+  },
 
   "$concurrencyComment": "Два этапа разом, а не один: при одном слоте вторая живая задача каждый оборот сжигает продолжение об «все места заняты» и за десять минут уходит в разбор (карточка 0067). Исключительные этапы — замер и выкладка — по-прежнему требуют тишины и берутся в одиночку.",
   "maxConcurrent": 2,

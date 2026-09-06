@@ -1,10 +1,24 @@
 import { fileURLToPath } from 'node:url';
+import {
+  taskTokens,
+  taskTokenStatus,
+  migrateTokenLedger,
+  readTokenLedger,
+  writeTokenLedger,
+  commitTokenLedger,
+} from './token-budget.mjs';
+import { readCodexAnswer } from './provider.mjs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { createSupervisor } from './supervisor.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { TAG } from './console.mjs';
+import { scan } from './scan.mjs';
+import { parseReport } from './parse-report.mjs';
 
 /**
  * Проверки хозяйства идущих этапов.
@@ -72,9 +86,11 @@ function harness(over = {}) {
     saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
     stages: over.stages ?? {},
     codexUsage: over.codexUsage ?? {},
+    readCodexEvidence: over.readCodexEvidence,
     saveCodexUsage: over.saveCodexUsage,
     onPolicyBlocked: over.onPolicyBlocked,
     getCodexEnvironment: over.getCodexEnvironment,
+    prepareAssignment: over.prepareAssignment,
     log: (line) => logged.push(line),
     // Запись лога этапа собирается так же, как журнал цикла, и по той же
     // причине: умолчание в `createSupervisor` — пустая функция, и без этого
@@ -106,6 +122,252 @@ function harness(over = {}) {
 /** Строка итога этапа из всего, что рассказчик напечатал. */
 const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
 
+describe('сохранённый отчёт при ошибке учёта', () => {
+  for (const valid of [true, false]) {
+    it.each(['decreased-usage', 'decreased-output', 'invalid-usage', 'history', 'cached'])(
+      `JSON ${valid}, учёт %s`,
+      async (kind) => {
+        const text = valid ? JSON.stringify(report, null, 2) : 'не JSON\nисходный текст';
+        const h = harness({
+          home: fileURLToPath(new URL('..', import.meta.url)),
+          config: { provider: 'codex', codexMaxTaskTokens: 25000000 },
+          codexUsage: {
+            version: 2,
+            tasks: {
+              '0001-one': {
+                sessions: {
+                  thread: {
+                    knownTokens: 1100,
+                    snapshot: { input_tokens: 1000, output_tokens: 100, cached_input_tokens: 200 },
+                    reasons: kind === 'history' ? ['legacy-unknown'] : [],
+                  },
+                },
+                launches: {},
+              },
+            },
+          },
+        });
+        h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' }));
+        for (const event of [
+          { type: 'thread.started', thread_id: 'thread' },
+          { type: 'item.completed', item: { type: 'agent_message', text } },
+        ])
+          h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+        await h.answer({
+          type: 'turn.completed',
+          usage:
+            kind === 'invalid-usage'
+              ? undefined
+              : {
+                  input_tokens: kind === 'decreased-usage' ? 500 : kind === 'history' ? 2000 : 1000,
+                  output_tokens: kind === 'decreased-output' ? 50 : 100,
+                  cached_input_tokens: 0,
+                },
+        });
+        expect(h.wrote).toHaveLength(1);
+        expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + text);
+        expect(h.wrote[0].text).not.toContain('сессия ответа не оставила');
+        const line = finishedLine(h.said);
+        if (kind === 'cached') {
+          expect(line.text).toContain('ответ done');
+          expect(line.text).not.toContain('неизвест');
+          expect(h.supervisor.reports).toHaveLength(valid ? 1 : 0);
+          expect(line.tag).toBe(valid ? TAG.stage : TAG.warn);
+        } else {
+          const reason =
+            kind === 'history'
+              ? 'legacy-unknown'
+              : kind === 'decreased-output'
+                ? 'decreased-usage'
+                : kind;
+          for (const output of [h.wrote[0].text, line.text, h.logged.join('\n')]) {
+            expect(output).toContain(reason);
+            expect(output).toContain('не применён');
+            if (!valid) expect(output).toContain(parseReport(text).why);
+          }
+          expect(line.text).toContain('ответ failed');
+          expect(line.tag).toBe(TAG.warn);
+          expect(h.supervisor.reports).toEqual([]);
+          for (let cycle = 0; cycle < 2; cycle++) {
+            const next = scan({
+              config: { ...config, provider: 'codex', codexMaxTaskTokens: 25000000 },
+              tasks: [{ ...assignment().task, id: '0001-one', status: 'design' }],
+              registry: {
+                entries: [{ taskId: '0001-one', branch: 'worktree-0001-one', path: 'tree' }],
+              },
+              reports: h.supervisor.reports,
+              codexUsage: h.supervisor.codexUsage,
+            });
+            expect(next.actions).toEqual([]);
+            expect(next.notes.join()).toContain(reason);
+          }
+        }
+      },
+    );
+  }
+
+  it('отказ записи бюджета сохраняет текст до возврата и запрещает применение', async () => {
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider: 'codex', codexMaxTaskTokens: 25000000 },
+      saveCodexUsage: (next) => {
+        if (
+          Object.values(next.tasks['0001-one']?.launches ?? {}).some((launch) => launch.completed)
+        )
+          throw new Error('disk unavailable');
+      },
+    });
+    h.supervisor.spawnStage(assignment());
+    for (const event of [
+      { type: 'thread.started', thread_id: 'thread' },
+      { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(report) } },
+    ])
+      h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+    await h.answer({ type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 100 } });
+    expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + JSON.stringify(report));
+    expect(h.wrote[0].text).toContain('disk unavailable');
+    expect(finishedLine(h.said).tag).toBe(TAG.warn);
+    expect(h.supervisor.reports).toEqual([]);
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+  });
+});
+
+describe('диагностика границ Codex в finish', () => {
+  it.each([
+    'invalid',
+    'foreign',
+    'empty',
+    'absent',
+    'no-limit',
+    'numeric-history',
+    'exit',
+    'new-turn',
+    'turn-failed',
+    'error',
+  ])('%s сохраняет диагностику и прежний допуск', async (kind) => {
+    const text =
+      kind === 'invalid'
+        ? '{некорректный JSON'
+        : kind === 'empty'
+          ? ''
+          : JSON.stringify({ ...report, stage: kind === 'foreign' ? 'audit' : 'design' }, null, 2);
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider: 'codex', codexMaxTaskTokens: kind === 'no-limit' ? null : 25000000 },
+      codexUsage: kind === 'numeric-history' ? { '0001-one': { old: 500 } } : {},
+    });
+    h.supervisor.spawnStage(assignment());
+    const events = [
+      { type: 'thread.started', thread_id: 'new' },
+      {
+        type: 'item.completed',
+        item: {
+          type: 'command_execution',
+          status: 'declined',
+          command: 'git status',
+          aggregated_output: 'blocked by policy',
+        },
+      },
+    ];
+    if (kind !== 'absent')
+      events.push({ type: 'item.completed', item: { type: 'agent_message', text } });
+    events.push({
+      type: 'turn.completed',
+      usage:
+        kind === 'numeric-history'
+          ? { input_tokens: 1000, output_tokens: 100 }
+          : { input_tokens: 'bad', output_tokens: 100 },
+    });
+    if (kind === 'new-turn') events.push({ type: 'turn.started' });
+    if (kind === 'turn-failed')
+      events.push({ type: 'turn.failed', error: { message: 'protocol failed' } });
+    if (kind === 'error') events.push({ type: 'error', message: 'protocol error' });
+    const stdout = events.map(JSON.stringify).join('\n') + '\n';
+    h.children[0].stdout.emit('data', stdout);
+    h.children[0].stderr.emit('data', 'исходный stderr');
+    h.children[0].emit('close', kind === 'exit' ? 1 : 0);
+    await sleep(0);
+    expect(h.wrote).toHaveLength(1);
+    const log = h.wrote[0].text;
+    const line = finishedLine(h.said);
+    expect(log).toContain('--- stdout ---\n' + stdout);
+    expect(log).toContain('--- stderr ---\nисходный stderr');
+    expect(log).toContain('"tool_name": "shell"');
+    const discarded = ['absent', 'exit', 'new-turn', 'turn-failed', 'error'].includes(kind);
+    if (discarded) expect(log).not.toContain('--- итоговый текст ---');
+    else expect(log).toContain('--- итоговый текст ---\n' + text);
+    if (kind === 'no-limit') {
+      expect(h.supervisor.reports).toHaveLength(1);
+      expect(line.tag).toBe(TAG.stage);
+      expect(line.text).not.toContain('не применён');
+      expect(line.text).toContain('invalid-usage');
+    } else {
+      expect(h.supervisor.reports).toEqual([]);
+      expect(line.tag).toBe(TAG.warn);
+      expect(line.text).toContain('ответ failed');
+    }
+    if (kind === 'numeric-history') {
+      expect(line.text).toContain('расход текущего запуска известен');
+      expect(line.text).toContain('legacy-unknown');
+      expect(line.text).toContain('не применён');
+    }
+    if (kind === 'foreign') {
+      expect(line.text).toContain('«audit»');
+      expect(line.text).toContain('«design»');
+      expect(line.text).toContain('не применён');
+    }
+    if (['invalid', 'empty'].includes(kind)) {
+      expect(line.text).toContain(parseReport(text).why);
+      expect(line.text).toContain('invalid-usage');
+      expect(log).not.toContain('сессия ответа не оставила');
+    }
+  });
+});
+
+it('дочерний Codex учитывает только подключённый durable cumulative snapshot', async () => {
+  const h = harness({
+    config: { provider: 'codex' },
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    stages: { '0001-one:design': { sessionId: 'thread', startedAt: NOW } },
+    codexUsage: {
+      version: 2,
+      tasks: {
+        '0001-one': {
+          sessions: {
+            thread: {
+              knownTokens: 1585645,
+              snapshot: { input_tokens: 1585000, output_tokens: 645 },
+              reasons: [],
+            },
+          },
+          launches: {},
+        },
+      },
+    },
+    readCodexEvidence: () => ({
+      ok: true,
+      snapshot: { input_tokens: 2003546, output_tokens: 3788, cached_input_tokens: 1788288 },
+    }),
+  });
+  h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' }));
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({ type: 'thread.started', thread_id: 'thread' }) + '\n',
+  );
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(report) },
+    }) + '\n',
+  );
+  await h.answer({ type: 'turn.completed', usage: { input_tokens: 421089, output_tokens: 600 } });
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.knownTokens).toBe(2007334);
+  expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(true);
+  expect(h.supervisor.reports[0]).toMatchObject(report);
+  expect(h.logged.join('\n')).not.toContain('неизвестен');
+});
+
 const assignment = (over = {}) => ({
   taskId: '0001-one',
   stage: 'design',
@@ -127,6 +389,64 @@ const envelope = (over = {}) => ({
 });
 
 describe('порождение', () => {
+  it('сохраняет снимок до spawn и передаёт подготовленный путь', () => {
+    const deployment = { path: '.pipeline/deploy-checkouts/deploy-test', revision: 'a'.repeat(40) };
+    let observed;
+    let h;
+    h = harness({
+      prepareAssignment: (a, previous) => {
+        observed = previous;
+        return {
+          ...a,
+          path: deployment.path,
+          branch: null,
+          deployment,
+          deploymentRevision: deployment.revision,
+        };
+      },
+      onSpawn: ({ options }) => {
+        expect(h.saved.at(-1)['0001-one:deploy'].deployment).toEqual(deployment);
+        expect(options.cwd.replaceAll('\\', '/')).toContain(deployment.path);
+      },
+    });
+    expect(h.supervisor.spawnStage(assignment({ stage: 'deploy' })).ok).toBe(true);
+    expect(observed).toBeUndefined();
+    expect(h.saved.at(-1)['0001-one:deploy'].deployment).toEqual(deployment);
+  });
+
+  it('ошибка подготовки не порождает исполнителя', () => {
+    const h = harness({
+      prepareAssignment: () => {
+        throw new Error('снимок изменён');
+      },
+    });
+    expect(h.supervisor.spawnStage(assignment({ stage: 'deploy' }))).toEqual({
+      ok: false,
+      reason: 'not-born',
+      why: 'снимок изменён',
+    });
+    expect(h.children).toHaveLength(0);
+  });
+
+  it('снимок несостоявшегося запуска переживает перезапуск супервизора', () => {
+    const deployment = { path: '.pipeline/deploy-checkouts/deploy-test', revision: 'b'.repeat(40) };
+    const first = harness({
+      stillborn: true,
+      prepareAssignment: (a) => ({ ...a, deployment }),
+    });
+    expect(first.supervisor.spawnStage(assignment({ stage: 'deploy' })).ok).toBe(false);
+    let previous;
+    const second = harness({
+      stages: first.saved.at(-1),
+      prepareAssignment: (a, saved) => {
+        previous = saved;
+        return { ...a, deployment: saved.deployment };
+      },
+    });
+    expect(second.supervisor.spawnStage(assignment({ stage: 'deploy' })).ok).toBe(true);
+    expect(previous.deployment).toEqual(deployment);
+  });
+
   it('этап становится видимым как идущий', () => {
     const { supervisor } = harness();
     expect(supervisor.spawnStage(assignment()).ok).toBe(true);
@@ -206,6 +526,11 @@ describe('порождение', () => {
     expect(saved.at(-1)).not.toHaveProperty('0001-one:design');
     // Чужую сессию забвение не задевает.
     expect(supervisor.lastSession('0001-one', 'audit')).toBe('аудиторская');
+    const restarted = harness({ stages: saved.at(-1) }).supervisor;
+    expect(restarted.lastSession('0001-one', 'design')).toBeNull();
+    expect(restarted.stageStartedAt('0001-one', 'design')).toBeNull();
+    expect(restarted.lastSession('0001-one', 'audit')).toBe('аудиторская');
+    expect(restarted.stageStartedAt('0001-one', 'audit')).toBe(NOW);
   });
 
   it('забывать нечего — и говорится об этом прямо', () => {
@@ -595,6 +920,9 @@ describe('обход сирот по обороту', () => {
     expect(killed).toEqual([29704]);
     expect(supervisor.orphanOutcomes[0].outcome).toBe('killed');
     expect(supervisor.running()).toEqual([]);
+    expect(supervisor.reports).toEqual([]);
+    expect(supervisor.lastSession('0001-one', 'implement')).toBe('прежняя');
+    expect(supervisor.stageStartedAt('0001-one', 'implement')).toBe(NOW);
   });
 
   it('срок берётся из дескриптора, а не назначается заново', () => {
@@ -1159,7 +1487,39 @@ describe('сессии разных исполнителей', () => {
   });
 });
 
-it('помнит накопительный расход Codex после перезапуска', async () => {
+it('watch и finish учитывают 1740, а resume использует реестр после забывания этапа', async () => {
+  const h = harness({
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: { provider: 'codex' },
+  });
+  const emit = (event) => h.children.at(-1).stdout.emit('data', JSON.stringify(event) + '\n');
+  h.supervisor.spawnStage(assignment());
+  const launchId = h.saved.at(-1)['0001-one:design'].live.launchId;
+  expect(launchId).toBeTruthy();
+  emit({ type: 'thread.started', thread_id: 'thread' });
+  emit({ type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 100 } });
+  emit({ type: 'turn.completed', usage: { input_tokens: 1600, output_tokens: 140 } });
+  expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(1740);
+  h.children.at(-1).emit('close', 0);
+  await sleep(0);
+  expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(1740);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.reasons).toEqual([]);
+  h.supervisor.forgetSession('0001-one', 'design');
+  expect(h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' })).ok).toBe(
+    true,
+  );
+  const resumed = h.saved.at(-1)['0001-one:design'].live.launchId;
+  expect(resumed).not.toBe(launchId);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].launches[resumed].baseline).toEqual({
+    input_tokens: 1600,
+    output_tokens: 140,
+  });
+  emit({ type: 'thread.started', thread_id: 'thread' });
+  await h.answer({ type: 'turn.completed', usage: { input_tokens: 2000, output_tokens: 180 } });
+  expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(2180);
+});
+
+it('не подменяет отсутствующий долговечный baseline памятью этапа', async () => {
   const h = harness({
     home: fileURLToPath(new URL('..', import.meta.url)),
     config: {
@@ -1189,16 +1549,19 @@ it('помнит накопительный расход Codex после пер
     type: 'turn.completed',
     usage: { input_tokens: 2000, cached_input_tokens: 400, output_tokens: 200 },
   });
-  expect(h.supervisor.codexUsage['0001-one'].thread).toBe(2200);
-  expect(h.supervisor.reports[0].costUsd).toBe(0);
-  expect(h.saved.at(-1)['0001-one:design'].usage.input_tokens).toBe(2000);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.knownTokens).toBe(2200);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.reasons).toContain(
+    'missing-baseline',
+  );
+  expect(h.supervisor.reports).toEqual([]);
+  expect(h.saved.at(-1)['0001-one:design'].usage).toBeUndefined();
 });
 
 it('расход сохраняется до разбора отчёта и не исчезает при забывании сессии', async () => {
   const snapshots = [];
   const h = harness({
     home: fileURLToPath(new URL('..', import.meta.url)),
-    config: { provider: 'codex' },
+    config: { provider: 'codex', codexMaxTaskTokens: null },
     codexUsage: { '0001-one': { previous: 500 } },
     saveCodexUsage: (value) => snapshots.push(JSON.parse(JSON.stringify(value))),
   });
@@ -1214,12 +1577,385 @@ it('расход сохраняется до разбора отчёта и не
       usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 100 },
     }) + '\n',
   );
-  expect(snapshots.at(-1)['0001-one']).toEqual({ previous: 500, new: 1100 });
+  expect(snapshots.at(-1).tasks['0001-one'].sessions.previous.knownTokens).toBe(500);
+  expect(snapshots.at(-1).tasks['0001-one'].sessions.new.knownTokens).toBe(1100);
   await h.answer({ type: 'turn.failed', error: { message: 'failed after usage' } });
   expect(h.supervisor.reports).toEqual([]);
   h.supervisor.forgetSession('0001-one', 'design');
-  expect(h.supervisor.codexUsage['0001-one']).toEqual({ previous: 500, new: 1100 });
-  expect(snapshots.every((value) => value['0001-one'].new === 1100)).toBe(true);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.new.knownTokens).toBe(1100);
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.previous.knownTokens).toBe(500);
+});
+
+describe('долговечные наблюдения Codex', () => {
+  const options = {
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    config: { provider: 'codex', codexMaxTaskTokens: 25000000 },
+  };
+  const emit = (h, event) => h.children.at(-1).stdout.emit('data', JSON.stringify(event) + '\n');
+  const completed = (input_tokens = 1600, output_tokens = 140) => ({
+    type: 'turn.completed',
+    usage: { input_tokens, output_tokens },
+  });
+
+  it('restart после watch воспроизводит сохранённый stdout с прежним launchId без повторной записи', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'td-watch-replay-'));
+    const storage = { paths: { local: '.pipeline' } };
+    try {
+      let writes = 0;
+      const save = (next) => {
+        writeTokenLedger(root, storage, next);
+        writes++;
+      };
+      const h = harness({ ...options, saveCodexUsage: save });
+      h.supervisor.spawnStage(assignment());
+      const launchId = h.saved.at(-1)['0001-one:design'].live.launchId;
+      const events = [
+        { type: 'thread.started', thread_id: 's' },
+        completed(1000, 100),
+        completed(),
+        completed(),
+      ];
+      for (const event of events) emit(h, event);
+      const ledger = readTokenLedger(root, storage);
+      const result = { stdout: events.map(JSON.stringify).join('\n'), code: 0 };
+      const answer = readCodexAnswer(result, options.config, {
+        ledger,
+        taskId: '0001-one',
+        launchId,
+      });
+      commitTokenLedger(
+        ledger,
+        (next) => {
+          next.tasks = answer.usageLedger.tasks;
+        },
+        save,
+      );
+      const saved = readTokenLedger(root, storage);
+      const after = writes;
+      const repeat = readCodexAnswer(result, options.config, {
+        ledger: saved,
+        taskId: '0001-one',
+        launchId,
+      });
+      expect(
+        commitTokenLedger(
+          saved,
+          (next) => {
+            next.tasks = repeat.usageLedger.tasks;
+          },
+          save,
+        ),
+      ).toBe(false);
+      expect(writes).toBe(after);
+      expect(taskTokens(saved, '0001-one')).toBe(1740);
+      expect(taskTokenStatus(saved, '0001-one').complete).toBe(true);
+      expect(Object.keys(saved.tasks['0001-one'].launches[launchId].observations)).toHaveLength(3);
+      h.children.at(-1).emit('close', 0);
+      await sleep(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('новая сессия суммируется, меньший resume остаётся unknown после restart и забывания', async () => {
+    const h = harness(options);
+    h.supervisor.spawnStage(assignment());
+    emit(h, { type: 'thread.started', thread_id: 's' });
+    await h.answer(completed());
+    h.supervisor.forgetSession('0001-one', 'design');
+    h.supervisor.spawnStage(assignment({ stage: 'implement' }));
+    emit(h, { type: 'thread.started', thread_id: 'independent' });
+    await h.answer(completed(300, 20));
+    expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(2060);
+    h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 's' }));
+    emit(h, { type: 'thread.started', thread_id: 's' });
+    await h.answer(completed(500, 40));
+    expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(2060);
+    h.supervisor.forgetSession('0001-one', 'design');
+    const restarted = harness({ ...options, codexUsage: h.supervisor.codexUsage });
+    expect(taskTokens(restarted.supervisor.codexUsage, '0001-one')).toBe(2060);
+    expect(taskTokenStatus(restarted.supervisor.codexUsage, '0001-one').reasons).toContain(
+      'decreased-usage',
+    );
+  });
+
+  it.each(['failed-exit', 'invalid-report', 'truncated-turn'])(
+    'сохраняет completed перед %s',
+    async (ending) => {
+      const h = harness(options);
+      h.supervisor.spawnStage(assignment());
+      emit(h, { type: 'thread.started', thread_id: 's' });
+      emit(h, { type: 'item.completed', item: { type: 'agent_message', text: 'не JSON' } });
+      emit(h, completed());
+      if (ending === 'truncated-turn') emit(h, { type: 'turn.started' });
+      h.children.at(-1).emit('close', ending === 'failed-exit' ? 1 : 0);
+      await sleep(0);
+      expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(1740);
+      expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(
+        ending === 'invalid-report',
+      );
+      expect(h.supervisor.reports).toEqual([]);
+    },
+  );
+
+  it.each(['0001-one', '0002-two'])(
+    'после сбоя записи до spawn задача %s запускается без перезапуска супервизора',
+    async (taskId) => {
+      let fail = true;
+      let writes = 0;
+      let persisted;
+      const h = harness({
+        ...options,
+        saveCodexUsage: (next) => {
+          writes += 1;
+          if (fail) throw new Error('disk unavailable');
+          persisted = JSON.parse(JSON.stringify(next));
+        },
+        onSpawn: () => {
+          expect(persisted.tasks[taskId].launches).toBeDefined();
+        },
+      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        expect(h.supervisor.spawnStage(assignment())).toMatchObject({
+          ok: false,
+          reason: 'not-born',
+          why: 'disk unavailable',
+        });
+        expect(h.children).toHaveLength(0);
+        expect(h.supervisor.busy()).toBe(0);
+        expect(h.supervisor.codexUsage.writeErrors).toEqual([]);
+        expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(true);
+      }
+      expect(writes).toBe(2);
+      fail = false;
+      expect(h.supervisor.spawnStage(assignment({ taskId })).ok).toBe(true);
+      expect(writes).toBe(3);
+      expect(h.children).toHaveLength(1);
+      emit(h, { type: 'thread.started', thread_id: 's' });
+      await h.answer(completed());
+      expect(taskTokens(persisted, taskId)).toBe(1740);
+      expect(taskTokenStatus(h.supervisor.codexUsage, taskId).complete).toBe(true);
+    },
+  );
+
+  it.each([
+    ['throw', '0001-one', 'spawn'],
+    ['throw', '0002-two', 'sweep'],
+    ['no-pid', '0001-one', 'sweep'],
+    ['no-pid', '0002-two', 'spawn'],
+  ])('повтор отмены %s восстанавливает %s через %s', async (failure, taskId, retry) => {
+    let writes = 0;
+    let failCancel = true;
+    let persisted;
+    let cancelledId;
+    const over = {
+      ...options,
+      spawnThrows: failure === 'throw' ? 'spawn failed' : null,
+      stillborn: failure === 'no-pid',
+      saveCodexUsage: (next) => {
+        writes += 1;
+        if (writes > 1 && failCancel) throw new Error('disk unavailable');
+        persisted = JSON.parse(JSON.stringify(next));
+      },
+      onSpawn: () => {
+        if (cancelledId) expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeUndefined();
+      },
+    };
+    const h = harness(over);
+    expect(h.supervisor.spawnStage(assignment()).reason).toBe('not-born');
+    cancelledId = Object.keys(persisted.tasks['0001-one'].launches)[0];
+    h.children.at(-1)?.emit('close', 1);
+    await sleep(0);
+    const attempts = h.children.length;
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+    h.supervisor.sweep();
+    expect(h.supervisor.spawnStage(assignment({ taskId })).reason).toBe('busy');
+    expect(h.children).toHaveLength(attempts);
+    expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeDefined();
+    expect(h.supervisor.busy()).toBe(0);
+    failCancel = false;
+    over.spawnThrows = null;
+    over.stillborn = false;
+    if (retry === 'sweep') {
+      h.supervisor.sweep();
+      expect(taskTokenStatus(persisted, '0001-one').complete).toBe(true);
+      expect(h.supervisor.codexUsage.writeErrors).toEqual([]);
+      const after = writes;
+      h.supervisor.sweep();
+      expect(writes).toBe(after);
+    }
+    expect(h.supervisor.spawnStage(assignment({ taskId })).ok).toBe(true);
+    expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeUndefined();
+    expect(h.supervisor.codexUsage.writeErrors).toEqual([]);
+    emit(h, { type: 'thread.started', thread_id: 's' });
+    await h.answer(completed());
+    expect(taskTokens(persisted, taskId)).toBe(1740);
+    expect(taskTokenStatus(persisted, '0001-one').complete).toBe(true);
+  });
+
+  it('удачная отмена не снимает ошибку сохранения расхода той же задачи', async () => {
+    let fail = false;
+    let failCancel = false;
+    let cancelledId;
+    let persisted;
+    const over = {
+      ...options,
+      saveCodexUsage: (next) => {
+        if (fail || (failCancel && !next.tasks['0001-one'].launches[cancelledId]))
+          throw new Error('disk unavailable');
+        persisted = JSON.parse(JSON.stringify(next));
+      },
+    };
+    const h = harness(over);
+    h.supervisor.spawnStage(assignment());
+    emit(h, { type: 'thread.started', thread_id: 's' });
+    emit(h, completed());
+    fail = true;
+    h.children.at(-1).emit('close', 0);
+    await sleep(0);
+    const originalId = Object.keys(persisted.tasks['0001-one'].launches)[0];
+    fail = false;
+    over.onSpawn = () => {
+      cancelledId = Object.keys(persisted.tasks['0001-one'].launches).find(
+        (id) => id !== originalId,
+      );
+      failCancel = true;
+      throw new Error('spawn failed');
+    };
+    expect(h.supervisor.spawnStage(assignment({ stage: 'decompose' })).reason).toBe('not-born');
+    expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeDefined();
+    failCancel = false;
+    h.supervisor.sweep();
+    expect(persisted.tasks['0001-one'].launches[cancelledId]).toBeUndefined();
+    expect(persisted.tasks['0001-one'].launches[originalId]).toBeDefined();
+    expect(taskTokens(persisted, '0001-one')).toBe(1740);
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+    expect(h.supervisor.spawnStage(assignment()).reason).toBe('busy');
+    expect(h.supervisor.spawnStage(assignment({ taskId: '0002-two' })).reason).toBe('busy');
+  });
+
+  it.each(['thread.started', 'turn.completed'])(
+    'finish повторяет поток после сбоя сохранения %s',
+    async (failureAt) => {
+      let fail = false;
+      let persisted;
+      const h = harness({
+        ...options,
+        saveCodexUsage: (next) => {
+          if (fail) throw new Error('disk unavailable');
+          persisted = JSON.parse(JSON.stringify(next));
+        },
+      });
+      h.supervisor.spawnStage(assignment());
+      if (failureAt === 'thread.started') fail = true;
+      emit(h, { type: 'thread.started', thread_id: 's' });
+      fail = true;
+      emit(h, completed(1000, 100));
+      emit(h, completed());
+      expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(0);
+      expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').reasons).toContain(
+        'storage-error',
+      );
+      expect(h.supervisor.spawnStage(assignment({ taskId: '0002-two' })).reason).toBe('busy');
+      fail = false;
+      h.children.at(-1).emit('close', 0);
+      await sleep(0);
+      expect(taskTokens(persisted, '0001-one')).toBe(1740);
+      expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(true);
+    },
+  );
+
+  it('сбой finish оставляет бюджет удержанным, но не отменяет исключение decompose', async () => {
+    let fail = false;
+    let disk;
+    const h = harness({
+      ...options,
+      saveCodexUsage: (next) => {
+        if (fail) throw new Error('write failed');
+        disk = JSON.parse(JSON.stringify(next));
+      },
+    });
+    h.supervisor.spawnStage(assignment());
+    emit(h, { type: 'thread.started', thread_id: 's' });
+    emit(h, completed());
+    fail = true;
+    h.children.at(-1).emit('close', 0);
+    await sleep(0);
+    expect(h.supervisor.busy()).toBe(0);
+    expect(taskTokens(disk, '0001-one')).toBe(1740);
+    expect(taskTokenStatus(disk, '0001-one').reasons).toContain('unfinished-launch');
+    expect(h.supervisor.spawnStage(assignment()).reason).toBe('busy');
+    expect(h.supervisor.spawnStage(assignment({ stage: 'decompose' })).reason).toBe('not-born');
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+    fail = false;
+    expect(h.supervisor.spawnStage(assignment({ taskId: '0002-two' })).reason).toBe('busy');
+    expect(h.supervisor.spawnStage(assignment({ stage: 'decompose' })).ok).toBe(true);
+    await h.answer(completed(0, 0));
+  });
+
+  it.each([true, false])(
+    'сирота с launchId=%s и недоступным stdout сохраняет unknown',
+    async (hasLaunchId) => {
+      let persisted;
+      const h = harness({
+        ...options,
+        saveCodexUsage: (next) => {
+          persisted = JSON.parse(JSON.stringify(next));
+        },
+      });
+      h.supervisor.spawnStage(assignment());
+      emit(h, { type: 'thread.started', thread_id: 's' });
+      emit(h, completed());
+      const stages = JSON.parse(JSON.stringify(h.saved.at(-1)));
+      if (!hasLaunchId) delete stages['0001-one:design'].live.launchId;
+      const restarted = harness({ ...options, stages, codexUsage: persisted });
+      expect(taskTokens(restarted.supervisor.codexUsage, '0001-one')).toBe(1740);
+      expect(taskTokenStatus(restarted.supervisor.codexUsage, '0001-one').reasons).toContain(
+        hasLaunchId ? 'stdout-unavailable' : 'missing-launch-id',
+      );
+      restarted.supervisor.forgetSession('0001-one', 'design');
+      expect(taskTokenStatus(restarted.supervisor.codexUsage, '0001-one').complete).toBe(false);
+      h.children.at(-1).emit('close', 0);
+      await sleep(0);
+    },
+  );
+
+  it.each([{ spawnThrows: 'spawn failed' }, { stillborn: true }])(
+    'несостоявшийся spawn не создаёт неизвестный расход: %j',
+    async (failure) => {
+      const h = harness({ ...options, ...failure });
+      expect(h.supervisor.spawnStage(assignment()).ok).toBe(false);
+      expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(0);
+      expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(true);
+      h.children.at(-1)?.emit('close', 1);
+      await sleep(0);
+    },
+  );
+
+  it('Claude сохраняет старый ledger при усыновлении Codex-сироты', () => {
+    let saved;
+    const h = harness({
+      config: { provider: 'claude' },
+      codexUsage: migrateTokenLedger({
+        '0012-design': { saved: 1200 },
+        '0236-deploy': { legacy: 800 },
+      }),
+      stages: {
+        '0236-deploy:deploy': {
+          provider: 'codex',
+          sessionId: 'legacy',
+          live: { pid: 99, startedAt: '2026-09-06T10:00:00Z' },
+        },
+      },
+      saveCodexUsage: (next) => {
+        saved = globalThis.structuredClone(next);
+      },
+    });
+    expect(taskTokens(h.supervisor.codexUsage, '0012-design')).toBe(1200);
+    expect(taskTokens(h.supervisor.codexUsage, '0236-deploy')).toBe(800);
+    expect(taskTokens(saved, '0012-design')).toBe(1200);
+    expect(taskTokenStatus(saved, '0236-deploy').reasons).toContain('missing-launch-id');
+  });
 });
 
 it('отказ Codex немедленно запрещает новые этапы и сохраняет сигнал паузы', async () => {

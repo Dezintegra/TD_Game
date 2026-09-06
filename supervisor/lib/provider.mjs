@@ -1,6 +1,18 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { codexPerfPaths } from './codex-perf-files.mjs';
+import { modelForStage } from './stage-model.mjs';
+import {
+  migrateTokenLedger,
+  beginTokenLaunch,
+  bindTokenSession,
+  observeTokenUsage,
+  completeTokenLaunch,
+  launchTokenUsage,
+  launchTokenSnapshot,
+  taskTokenStatus,
+} from './token-budget.mjs';
 
 export function providerOf(config) {
   const provider = config.provider ?? 'claude';
@@ -31,7 +43,7 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
     '-c',
     'sandbox_workspace_write.network_access=true',
     '-c',
-    `sandbox_workspace_write.writable_roots=${JSON.stringify([join(root, '.git')])}`,
+    `sandbox_workspace_write.writable_roots=${JSON.stringify([join(root, '.git'), ...codexPerfPaths(root, cwd)])}`,
   ];
   if (platform === 'win32') {
     // Профиль сохраняет защиту :workspace и явно разрешает служебные записи Git.
@@ -52,7 +64,7 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const filesystem = [...new Set([common, gitdir])]
+    const filesystem = [...new Set([common, gitdir, ...codexPerfPaths(root, cwd)])]
       .map((path) => JSON.stringify(path.replaceAll('\\', '/')) + '="write"')
       .join(',');
     args.push(
@@ -78,7 +90,8 @@ export function codexStageCommand({ assignment, prompt, config, root, home }) {
   const rules = readFileSync(join(skillDir, `${assignment.stage}.md`), 'utf8');
   const cwd = assignment.path ? resolve(root, assignment.path) : root;
   const args = ['exec', '--ignore-user-config', '--json', ...codexExecutionArgs(config, root, cwd)];
-  if (config.codexModel) args.push('--model', config.codexModel);
+  const model = modelForStage(config, 'codex', assignment.stage);
+  if (model) args.push('--model', model);
   if (assignment.continuation && assignment.sessionId) args.push('resume', assignment.sessionId);
   args.push('-');
   return {
@@ -98,11 +111,14 @@ export function codexDenial(event) {
   };
 }
 
-export function readCodexAnswer(run, config = {}, previousUsage = null) {
+export function readCodexAnswer(run, config = {}, context = {}) {
+  const { taskId = 'answer', launchId = 'answer' } = context;
+  const ledger = migrateTokenLedger(context.ledger ?? {});
+  beginTokenLaunch(ledger, taskId, launchId, context.sessionId ?? null);
   const answer = {
     envelope: null,
     denials: [],
-    sessionId: null,
+    sessionId: ledger.tasks[taskId].launches[launchId].sessionId,
     result: null,
     cost: null,
     turns: 0,
@@ -112,8 +128,6 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
   let error = null;
   let message = null;
   let toolsUsed = false;
-  const usage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
-  let hasUsage = false;
   for (const line of String(run.stdout ?? '').split('\n')) {
     let event;
     try {
@@ -126,7 +140,10 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
     if (denial) answer.denials.push(denial);
     if (event.item && event.item.type !== 'agent_message' && event.item.type !== 'reasoning')
       toolsUsed = true;
-    if (event.type === 'thread.started') answer.sessionId = event.thread_id ?? null;
+    if (event.type === 'thread.started') {
+      bindTokenSession(ledger, taskId, launchId, event.thread_id);
+      answer.sessionId = ledger.tasks[taskId].launches[launchId].sessionId;
+    }
     if (event.type === 'turn.started') {
       terminal = null;
       message = null;
@@ -137,15 +154,8 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
     if (event.type === 'turn.completed') {
       terminal = event;
       answer.turns += 1;
-      if (
-        event.usage &&
-        Object.keys(usage).every(
-          (key) => Number.isFinite(event.usage[key]) && event.usage[key] >= 0,
-        )
-      ) {
-        for (const key of Object.keys(usage)) usage[key] = event.usage[key];
-        hasUsage = true;
-      }
+      if (!context.deferUsage)
+        observeTokenUsage(ledger, taskId, launchId, answer.turns, event.usage);
     }
     if (event.type === 'turn.failed') {
       terminal = event;
@@ -154,16 +164,36 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
     if (event.type === 'error') error = event.message ?? 'Codex error';
   }
   answer.envelope = terminal;
-  // CLI возвращает накопительный usage всей сессии, включая resume.
-  answer.usageTotals = hasUsage ? { ...usage } : null;
-  if (hasUsage && previousUsage) {
-    for (const key of Object.keys(usage)) {
-      if (usage[key] < (previousUsage[key] ?? 0))
-        error = 'Codex usage уменьшился: расход продолжения неизвестен';
-      usage[key] = Math.max(0, usage[key] - (previousUsage[key] ?? 0));
+  const durable = context.durableEvidence;
+  let durableReason = null;
+  if (context.deferUsage) {
+    if (durable?.ok && answer.turns === 1 && terminal?.type === 'turn.completed') {
+      observeTokenUsage(ledger, taskId, launchId, 1, durable.snapshot);
+    } else {
+      durableReason =
+        durable?.reason ??
+        (answer.turns === 1 ? 'missing-durable-evidence' : 'ambiguous-durable-turns');
     }
   }
-  answer.usage = hasUsage ? usage : null;
+  completeTokenLaunch(
+    ledger,
+    taskId,
+    launchId,
+    durableReason ??
+      (terminal?.type !== 'turn.completed' || run.code !== 0 || run.killedBy || run.error || error
+        ? 'unreported-tail'
+        : null),
+  );
+  const launch = ledger.tasks[taskId].launches[launchId];
+  const session = ledger.tasks[taskId].sessions[launch.sessionId];
+  answer.usageTotals = launchTokenSnapshot(launch);
+  answer.usage = session ? launchTokenUsage(session, launch) : null;
+  answer.usageLedger = ledger;
+  answer.usageReasons = [...new Set([...(session?.reasons ?? []), ...launch.reasons])];
+  answer.usageStatus = taskTokenStatus(ledger, taskId);
+  answer.usageError = answer.usageStatus.complete
+    ? null
+    : `Codex: полнота расхода задачи неизвестна (${answer.usageStatus.reasons.join(', ')})`;
   if (run.killedBy) return { ...answer, outcome: 'timeout', why: `этап снят: ${run.killedBy}` };
   if (run.error)
     return { ...answer, outcome: 'failed', why: `запуск не состоялся: ${run.error.message}` };
@@ -182,21 +212,16 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
       why: error ?? `Codex не завершил ход (код ${run.code})`,
     };
   }
-  if (
-    config.codexMaxTaskTokens != null &&
-    (!hasUsage ||
-      !terminal.usage ||
-      !Object.keys(usage).every(
-        (key) => Number.isFinite(terminal.usage[key]) && terminal.usage[key] >= 0,
-      ))
-  ) {
+  // Только завершение протокола разрешает сохранить текст; учёт решает его допуск отдельно.
+  answer.result = message;
+  if (config.codexMaxTaskTokens != null && answer.usageError) {
     return {
       ...answer,
       outcome: 'failed',
-      why: 'Codex не сообщил usage: токеновый бюджет проверить нельзя',
+      why: answer.usageError,
     };
   }
-  return { ...answer, result: message, outcome: 'done', why: null };
+  return { ...answer, outcome: 'done', why: null };
 }
 
 export function codexProbeCommand(config) {
@@ -211,7 +236,8 @@ export function codexProbeCommand(config) {
     '-c',
     'approval_policy="never"',
   ];
-  if (config.codexModel) args.push('--model', config.codexModel);
+  const model = modelForStage(config, 'codex', 'default');
+  if (model) args.push('--model', model);
   args.push('Ответь одним словом: готов. Не вызывай инструменты.');
   return codexInvocation(config, args);
 }
