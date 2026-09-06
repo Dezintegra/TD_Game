@@ -5,6 +5,7 @@ import {
   bindTokenSession,
   observeTokenUsage,
   completeTokenLaunch,
+  launchTokenUsage,
   taskTokens,
 } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
@@ -866,6 +867,7 @@ export function createSupervisor({
           );
           session.snapshot = evidence.snapshot;
           launch.completed = true;
+          answer.usage = launchTokenUsage(session, launch);
         } else
           completeTokenLaunch(
             next,
