@@ -33,9 +33,13 @@ The Codex adapter SHALL require a successful terminal event and process exit for
 - **WHEN** Codex runs with its default subscription configuration
 - **THEN** 25,000,000 input plus output tokens per task trigger decompose before the next ordinary stage, while Claude retains its dollar cap
 
-#### Scenario: Persistent cumulative usage
-- **WHEN** a turn reports cumulative session usage, including before a failed exit or invalid report
-- **THEN** the supervisor persists the session maximum, counts cached input once and sums sessions across stages without resetting on resume, restart or forgotten session
+#### Scenario: Comparable cumulative usage
+- **WHEN** completed turns report comparable cumulative thread snapshots, including before a failed exit or invalid report
+- **THEN** the supervisor persists each thread's known contribution, counts input plus output with cached input included once, deduplicates observations by durable launch identity and ordinal, and sums threads across stages without resetting on resume, restart or forgotten session
+
+#### Scenario: Incomparable cumulative usage
+- **WHEN** a new observation decreases an input/output component or historical completeness cannot be established
+- **THEN** the known contribution is retained as a lower bound, consumption remains explicitly incomplete, and an enabled token budget holds ordinary launches below the known limit without spending attempts; existing over-budget transitions and recovery exceptions remain effective
 
 #### Scenario: Unknown consumption
 - **WHEN** a completed turn omits usage while the budget is enabled

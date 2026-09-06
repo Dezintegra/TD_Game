@@ -3,6 +3,15 @@ import { isAbsolute, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { codexPerfPaths } from './codex-perf-files.mjs';
 import { modelForStage } from './stage-model.mjs';
+import {
+  migrateTokenLedger,
+  beginTokenLaunch,
+  bindTokenSession,
+  observeTokenUsage,
+  completeTokenLaunch,
+  launchTokenUsage,
+  launchTokenSnapshot,
+} from './token-budget.mjs';
 
 export function providerOf(config) {
   const provider = config.provider ?? 'claude';
@@ -101,11 +110,14 @@ export function codexDenial(event) {
   };
 }
 
-export function readCodexAnswer(run, config = {}, previousUsage = null) {
+export function readCodexAnswer(run, config = {}, context = {}) {
+  const { taskId = 'answer', launchId = 'answer' } = context;
+  const ledger = migrateTokenLedger(context.ledger ?? {});
+  beginTokenLaunch(ledger, taskId, launchId, context.sessionId ?? null);
   const answer = {
     envelope: null,
     denials: [],
-    sessionId: null,
+    sessionId: ledger.tasks[taskId].launches[launchId].sessionId,
     result: null,
     cost: null,
     turns: 0,
@@ -115,8 +127,6 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
   let error = null;
   let message = null;
   let toolsUsed = false;
-  const usage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
-  let hasUsage = false;
   for (const line of String(run.stdout ?? '').split('\n')) {
     let event;
     try {
@@ -129,7 +139,10 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
     if (denial) answer.denials.push(denial);
     if (event.item && event.item.type !== 'agent_message' && event.item.type !== 'reasoning')
       toolsUsed = true;
-    if (event.type === 'thread.started') answer.sessionId = event.thread_id ?? null;
+    if (event.type === 'thread.started') {
+      bindTokenSession(ledger, taskId, launchId, event.thread_id);
+      answer.sessionId = ledger.tasks[taskId].launches[launchId].sessionId;
+    }
     if (event.type === 'turn.started') {
       terminal = null;
       message = null;
@@ -140,15 +153,8 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
     if (event.type === 'turn.completed') {
       terminal = event;
       answer.turns += 1;
-      if (
-        event.usage &&
-        Object.keys(usage).every(
-          (key) => Number.isFinite(event.usage[key]) && event.usage[key] >= 0,
-        )
-      ) {
-        for (const key of Object.keys(usage)) usage[key] = event.usage[key];
-        hasUsage = true;
-      }
+      if (!context.deferUsage)
+        observeTokenUsage(ledger, taskId, launchId, answer.turns, event.usage);
     }
     if (event.type === 'turn.failed') {
       terminal = event;
@@ -157,16 +163,34 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
     if (event.type === 'error') error = event.message ?? 'Codex error';
   }
   answer.envelope = terminal;
-  // CLI возвращает накопительный usage всей сессии, включая resume.
-  answer.usageTotals = hasUsage ? { ...usage } : null;
-  if (hasUsage && previousUsage) {
-    for (const key of Object.keys(usage)) {
-      if (usage[key] < (previousUsage[key] ?? 0))
-        error = 'Codex usage уменьшился: расход продолжения неизвестен';
-      usage[key] = Math.max(0, usage[key] - (previousUsage[key] ?? 0));
+  const durable = context.durableEvidence;
+  let durableReason = null;
+  if (context.deferUsage) {
+    if (durable?.ok && answer.turns === 1 && terminal?.type === 'turn.completed') {
+      observeTokenUsage(ledger, taskId, launchId, 1, durable.snapshot);
+    } else {
+      durableReason =
+        durable?.reason ??
+        (answer.turns === 1 ? 'missing-durable-evidence' : 'ambiguous-durable-turns');
     }
   }
-  answer.usage = hasUsage ? usage : null;
+  completeTokenLaunch(
+    ledger,
+    taskId,
+    launchId,
+    durableReason ??
+      (terminal?.type !== 'turn.completed' || run.code !== 0 || run.killedBy || run.error || error
+        ? 'unreported-tail'
+        : null),
+  );
+  const launch = ledger.tasks[taskId].launches[launchId];
+  const session = ledger.tasks[taskId].sessions[launch.sessionId];
+  answer.usageTotals = launchTokenSnapshot(launch);
+  answer.usage = session ? launchTokenUsage(session, launch) : null;
+  answer.usageLedger = ledger;
+  answer.usageReasons = [...new Set([...(session?.reasons ?? []), ...launch.reasons])];
+  if (answer.usageReasons.includes('decreased-usage'))
+    error ??= 'Codex usage уменьшился: расход продолжения неизвестен';
   if (run.killedBy) return { ...answer, outcome: 'timeout', why: `этап снят: ${run.killedBy}` };
   if (run.error)
     return { ...answer, outcome: 'failed', why: `запуск не состоялся: ${run.error.message}` };
@@ -185,14 +209,7 @@ export function readCodexAnswer(run, config = {}, previousUsage = null) {
       why: error ?? `Codex не завершил ход (код ${run.code})`,
     };
   }
-  if (
-    config.codexMaxTaskTokens != null &&
-    (!hasUsage ||
-      !terminal.usage ||
-      !Object.keys(usage).every(
-        (key) => Number.isFinite(terminal.usage[key]) && terminal.usage[key] >= 0,
-      ))
-  ) {
+  if (config.codexMaxTaskTokens != null && !answer.usage) {
     return {
       ...answer,
       outcome: 'failed',
