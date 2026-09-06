@@ -17,6 +17,36 @@ const { config } = resolveConfig({ trello: { board: 'b' } });
 const marker = config.trello.marker;
 
 describe('адресное дополнение зависимостей', () => {
+  it('повтор ребра без результата не записывает пустое поле ради нормализации', async () => {
+    const f = dependencyFixture();
+    const old = splitDescription(f.cards[0].desc);
+    f.cards[0].desc = joinDescription(old.human, { ...old.meta, dependsOn: f.update.dependsOn });
+    const before = f.cards[0].desc;
+    const store = f.store();
+    expect(
+      await store.appendTaskDependencies({ ...f.update, dependencyResults: [] }, f.context),
+    ).toMatchObject({ ok: true, outcome: 'unchanged' });
+    expect(f.cards[0].desc).toBe(before);
+    expect(f.calls.every((call) => ['GET', 'INVALIDATE'].includes(call.method))).toBe(true);
+  });
+  it('негодная принадлежность второго адресата обнаруживается общей проверкой до записи', async () => {
+    const f = dependencyFixture();
+    f.cards.push({
+      ...f.cards[0],
+      id: 'second',
+      idBoard: 'other',
+      desc: joinDescription('Other', { id: '0005-other' }),
+    });
+    expect(
+      await f
+        .store()
+        .planTaskDependencyUpdates(
+          [f.update, { ...f.update, taskId: '0005-other' }],
+          f.context.sourceId,
+        ),
+    ).toMatchObject({ ok: false });
+    expect(f.calls.every((call) => call.method === 'GET')).toBe(true);
+  });
   it('пишет только desc, подтверждает отдельным GET, сохраняет свежие поля и повторяется без PUT', async () => {
     const f = dependencyFixture();
     const store = f.store();

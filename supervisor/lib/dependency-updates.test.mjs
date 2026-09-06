@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { planDependencyUpdates } from './dependency-updates.mjs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { createIo } from './io.mjs';
 
 const source = '0001-source';
 const target = { id: '0003-consumer', status: 'failed' };
@@ -13,6 +15,41 @@ const plan = (updates = [update], records = [target]) =>
   planDependencyUpdates(updates, source, records);
 
 describe('dependencyUpdates', () => {
+  it('файловый адаптер явно сообщает unsupported без записи', () => {
+    const io = createIo({ root: '.', config: { paths: { local: '.matchlog' } } });
+    expect(io.appendTaskDependencies(update, { sourceId: source })).toMatchObject({
+      ok: false,
+      outcome: 'unsupported',
+    });
+  });
+  it('примеры во всех правилах отчёта проходят настоящий валидатор', () => {
+    const skills = new URL('../skills/', import.meta.url);
+    const paths = [
+      new URL('../../manage/README.md', import.meta.url),
+      ...readdirSync(skills)
+        .filter((name) => name.endsWith('.md'))
+        .map((name) => new URL(name, skills)),
+    ];
+    for (const path of paths) {
+      const text = readFileSync(path, 'utf8');
+      const examples = [...text.matchAll(/^```json[ \t]*\r?\n([\s\S]*?)^```/gm)]
+        .map((match) => {
+          try {
+            return JSON.parse(match[1]);
+          } catch {
+            return null;
+          }
+        })
+        .filter((value) => value && Object.hasOwn(value, 'dependencyUpdates'));
+      expect(examples.length, path.pathname).toBeGreaterThan(0);
+      for (const example of examples) {
+        expect(plan(example.dependencyUpdates), path.pathname).toMatchObject({ ok: true });
+        expect(plan(example.dependencyUpdates).tasks[0].dependencyResults).toEqual(
+          update.dependencyResults,
+        );
+      }
+    }
+  });
   it('принимает отсутствие и пустой массив', () => {
     expect(planDependencyUpdates(undefined, source, []).tasks).toEqual([]);
     expect(plan([]).tasks).toEqual([]);

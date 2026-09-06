@@ -23,10 +23,9 @@ import { pendingDependencies } from './dependencies.mjs';
  * часть конвейера — сканер, таблица переходов, раскладка слотов — о выборе
  * хранилища не знает вовсе и знать не должна.
  *
- * Картина мира читается ОДИН раз за цикл и передаётся сюда снимком. Читать
- * доску заново на каждую задачу значило бы тратить десятки обращений
- * за цикл там, где хватает четырёх, и вдобавок работать с меняющимися под
- * руками данными.
+ * Обычное чтение использует снимок цикла. Адресные дополнения и граница
+ * старта после захвата перечитывают доску независимо: старый снимок другой
+ * станции не должен стирать уже подтверждённые зависимости.
  *
  * Записи же идут по одной и сразу: карточка переезжает в колонку нового
  * состояния тем же запросом, которым обновляются машинные отметки. Это
@@ -139,12 +138,18 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   function record(raw) {
     const item = parse(raw);
     const id = item.task.id ?? raw.name?.match(/^([0-9]{4}-[a-z0-9]+(?:-[a-z0-9]+)*)\s*[·—–]/)?.[1];
-    return { ...item.task, id, valid: checkCard(item).length === 0, archived: Boolean(raw.closed) };
+    return {
+      ...item.task,
+      id,
+      valid: checkCard(item).length === 0 && raw.idBoard === trelloConfig.board,
+      archived: Boolean(raw.closed),
+    };
   }
   async function freshCards() {
     const result = await trello.get(`boards/${trelloConfig.board}/cards`, {
       filter: 'all',
       fields,
+      limit: 1000,
     });
     if (!result.ok) return failure(result);
     if (!Array.isArray(result.data)) return failed('не получена коллекция карточек доски');
@@ -286,13 +291,16 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         plan = mergeFresh();
         if (!plan.ok) return plan;
         let candidate = plan.tasks.find((task) => task.id === update.taskId);
+        const alreadyPresent = () =>
+          isDeepStrictEqual(candidate.dependsOn, fresh.item.task.dependsOn ?? []) &&
+          isDeepStrictEqual(candidate.dependencyResults, fresh.item.task.dependencyResults ?? []);
         const description = () =>
           withMeta(fresh.raw.desc, {
             ...splitDescription(fresh.raw.desc).meta,
             dependsOn: candidate.dependsOn,
             dependencyResults: candidate.dependencyResults,
           });
-        if (sameDescription(fresh.raw.desc, description())) {
+        if (alreadyPresent()) {
           context.invalidate(update.taskId);
           confirmed = fresh.raw;
           return { ok: true, outcome: 'unchanged' };
@@ -316,9 +324,10 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         plan = mergeFresh();
         if (!plan.ok) return plan;
         candidate = plan.tasks.find((task) => task.id === update.taskId);
-        const desc = description();
+        const unchanged = alreadyPresent();
+        const desc = unchanged ? fresh.raw.desc : description();
         context.invalidate(update.taskId);
-        if (!sameDescription(fresh.raw.desc, desc)) {
+        if (!unchanged) {
           const written = await trello.put(`cards/${owned.cardId}`, { desc });
           if (!written.ok) return failure(written);
         }

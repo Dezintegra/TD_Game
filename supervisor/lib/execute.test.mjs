@@ -45,15 +45,56 @@ describe('свежесть Trello-start между станциями', () => {
   });
   it('неизменный разрешённый старт сохраняет неизвестные ключи и запускается', async () => {
     const f = dependencyFixture();
+    const original = splitDescription(f.cards[0].desc);
+    original.meta.recovery = {
+      causedBy: 'pipeline',
+      fixedBy: [],
+      returns: 0,
+      future: { keep: true },
+    };
+    f.cards[0].desc = joinDescription(original.human, original.meta);
     const before = splitDescription(f.cards[0].desc);
     const io = compose(f.store('B'));
     expect(await execute([action], io)).toMatchObject([{ result: 'done' }]);
     expect(io.spawned).toHaveLength(1);
     const after = splitDescription(f.cards[0].desc);
     expect(after.meta.extra).toEqual(before.meta.extra);
+    expect(after.meta.recovery.future).toEqual(before.meta.recovery.future);
     expect(after.human).toBe(before.human);
     expect(after.meta.owner).toBe('B');
   });
+  it.each([false, true])(
+    'доказанный PR допускается только при неизменном основании; устарело=%s',
+    async (changed) => {
+      const f = dependencyFixture();
+      f.cards.push({
+        ...f.cards[0],
+        id: 'producer',
+        name: '0002-producer · Producer',
+        idList: 'list-closed',
+        desc: joinDescription('Producer', { id: '0002-producer', links: { pr: 42 } }),
+      });
+      let store;
+      if (changed) store = f.store('B');
+      await f.store('A').appendTaskDependencies(f.update, f.context);
+      if (!changed) store = f.store('B');
+      const io = {
+        ...compose(store),
+        dependencyEvidence: {
+          42: {
+            number: 42,
+            state: 'MERGED',
+            mergedAt: '2026-09-01T00:00:00.000Z',
+            baseRefName: 'main',
+          },
+        },
+      };
+      f.calls.length = 0;
+      expect(await execute([action], io)).toMatchObject([{ result: changed ? 'skipped' : 'done' }]);
+      expect(io.spawned).toHaveLength(changed ? 0 : 1);
+      expect(f.calls.some((call) => call.method === 'PUT')).toBe(!changed);
+    },
+  );
   it('неизменный PR без доказательства текущего цикла удерживает старт', async () => {
     const f = dependencyFixture();
     await f.store().appendTaskDependencies(f.update, f.context);
@@ -407,6 +448,54 @@ function dependencyReportWorld() {
 }
 
 describe('перенос отчёта с dependencyUpdates', () => {
+  it('повтор после неудачной записи источника перечитывает новые зависимости и неизвестные поля', async () => {
+    const f = dependencyReportWorld();
+    const beforeSource = f.cards[1].desc;
+    f.fixture.hook = (method, path) => {
+      if (method === 'PUT' && path === 'cards/card-source')
+        return { ok: false, why: 'source unavailable' };
+    };
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'failed' }]);
+    expect(f.state.report).not.toBeNull();
+    expect(f.cards[1].desc).toBe(beforeSource);
+    const parts = splitDescription(f.cards[0].desc);
+    parts.meta.dependsOn.push('0007-new');
+    parts.meta.dependencyResults.push({ taskId: '0007-new', kind: 'merged-pr', pr: 77 });
+    parts.meta.extra.new = { keep: true };
+    f.cards[0].desc = joinDescription(parts.human, parts.meta);
+    f.fixture.hook = null;
+    f.calls.length = 0;
+    // Новая станция получает собственный Map; успех должен следовать из GET сервера.
+    Object.assign(f.io, f.store('B'));
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+    expect(f.state.report).toBeNull();
+    expect(f.calls.filter((call) => call.method === 'PUT').map((call) => call.path)).toEqual([
+      'cards/card-source',
+    ]);
+    expect(splitDescription(f.cards[0].desc).meta).toEqual(parts.meta);
+    expect(f.io.readTask(f.update.taskId).dependsOn).toEqual(['0002-producer', '0007-new']);
+  });
+  it('успешный ответ PUT и кандидат в Map не заменяют независимый readback', async () => {
+    const f = dependencyReportWorld();
+    const read = f.io.readTask;
+    f.io.readTask = (id) =>
+      id === f.update.taskId
+        ? {
+            ...read(id),
+            dependsOn: f.update.dependsOn,
+            dependencyResults: f.update.dependencyResults,
+          }
+        : read(id);
+    f.fixture.hook = (method, path, body) => {
+      if (method === 'PUT' && path === 'cards/card-target')
+        return { ok: true, data: { ...f.cards[0], ...body } };
+    };
+    expect(await execute([f.action], f.io)).toMatchObject([
+      { result: 'failed', why: expect.stringContaining('подтверждение') },
+    ]);
+    expect(f.state.report).not.toBeNull();
+    expect(f.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+  });
   it('подтверждает адресата до записи источника и перечисляет основание в журнале', async () => {
     const f = dependencyReportWorld();
     expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
@@ -477,7 +566,8 @@ describe('перенос отчёта с dependencyUpdates', () => {
       if (field === 'taskId') f.state.report.taskId = '0009-wrong';
       if (field === 'stage') f.state.report.stage = 'audit';
       if (field === 'outcome') f.state.report.outcome = 'unknown';
-      if (field === 'trust') f.state.report.denials = [{ tool_name: 'AskUserQuestion', tool_input: {} }];
+      if (field === 'trust')
+        f.state.report.denials = [{ tool_name: 'AskUserQuestion', tool_input: {} }];
       const result = await execute([f.action], f.io);
       expect(result[0].result).toBe('failed');
       expect(f.calls).toEqual([]);
