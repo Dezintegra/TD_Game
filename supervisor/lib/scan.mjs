@@ -636,9 +636,22 @@ export function scan(state) {
       notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
     }
   }
-  const eligible = waitingForSession.filter(
+  let eligible = waitingForSession.filter(
     (task) => task.status !== 'deploy' || batchOf.has(task.id),
   );
+  const liveExclusive = running.some((item) => {
+    const task = tasks.find((candidate) => candidate.id === item.taskId);
+    return task && stateClass(task) === 'exclusive';
+  });
+  const readyExclusive = eligible.some((task) => stateClass(task) === 'exclusive');
+  if (liveExclusive && free > 0) {
+    notes.push('идёт исключительный этап: продолжения других задач не выдаются');
+    eligible = [];
+  } else if (readyExclusive) {
+    // Готовая выкладка/замер ждёт тишины: не подпитываем обычные продолжения.
+    eligible =
+      running.length === 0 ? eligible.filter((task) => stateClass(task) === 'exclusive') : [];
+  }
 
   // Слив перед самообновлением: новый код супервизора уже на диске, и он
   // перезапустится, как только не останется ни этапов, ни отчётов. Выдавать

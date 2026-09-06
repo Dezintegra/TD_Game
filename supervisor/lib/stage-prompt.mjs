@@ -20,13 +20,16 @@ function clipJournal(text, limit) {
   if (!text || text.length <= limit) return text ?? '';
   const marker = '[…ранняя часть журнала пропущена; целиком — в журнале задачи…]';
   const room = limit - marker.length - 2;
-  if (room <= 0) return marker;
+  if (room <= 0) return marker.slice(-Math.max(0, limit));
   const lines = text.split('\n');
   const kept = [];
   let size = 0;
   for (const line of lines.reverse()) {
     const next = line.length + (kept.length ? 1 : 0);
-    if (size + next > room) break;
+    if (size + next > room) {
+      if (kept.length === 0) kept.unshift(line.slice(-room));
+      break;
+    }
     kept.unshift(line);
     size += next;
   }

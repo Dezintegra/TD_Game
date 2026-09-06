@@ -21,5 +21,5 @@
 ## 5. Final resilience integration
 
 - [ ] 5.1 Serialize supervisor and recovery lock ownership with a shared atomic guard before side-effectful initialization.
-- [ ] 5.2 Preserve newest bounded journal tails and enforce exclusive deploy/perf scheduling across new and continuation actions.
+- [x] 5.2 Preserve newest bounded journal tails and enforce exclusive deploy/perf scheduling across new and continuation actions.
 - [ ] 5.3 Merge reviewed dependency and Windows-readiness branches, validate the combined PR, and archive this change.
