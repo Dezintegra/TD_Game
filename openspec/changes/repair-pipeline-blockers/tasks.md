@@ -17,3 +17,9 @@
 
 - [x] 4.1 Connect createSupervisor to an injected host reader of attributable completed-session JSONL evidence and persist only its durable cumulative snapshot after child completion.
 - [x] 4.2 Finalize durable evidence through the normal launch reducer and preserve atomic supervisor-lock handoff ownership.
+
+## 5. Final resilience integration
+
+- [ ] 5.1 Serialize supervisor and recovery lock ownership with a shared atomic guard before side-effectful initialization.
+- [ ] 5.2 Preserve newest bounded journal tails and enforce exclusive deploy/perf scheduling across new and continuation actions.
+- [ ] 5.3 Merge reviewed dependency and Windows-readiness branches, validate the combined PR, and archive this change.
