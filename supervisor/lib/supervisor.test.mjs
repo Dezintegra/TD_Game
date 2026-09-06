@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import {
   taskTokens,
   taskTokenStatus,
+  migrateTokenLedger,
   readTokenLedger,
   writeTokenLedger,
   commitTokenLedger,
@@ -83,6 +84,7 @@ function harness(over = {}) {
     saveStages: (stages) => saved.push(JSON.parse(JSON.stringify(stages))),
     stages: over.stages ?? {},
     codexUsage: over.codexUsage ?? {},
+    readCodexEvidence: over.readCodexEvidence,
     saveCodexUsage: over.saveCodexUsage,
     onPolicyBlocked: over.onPolicyBlocked,
     getCodexEnvironment: over.getCodexEnvironment,
@@ -117,6 +119,50 @@ function harness(over = {}) {
 
 /** Строка итога этапа из всего, что рассказчик напечатал. */
 const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
+
+it('дочерний Codex учитывает только подключённый durable cumulative snapshot', async () => {
+  const h = harness({
+    config: { provider: 'codex' },
+    home: fileURLToPath(new URL('..', import.meta.url)),
+    stages: { '0001-one:design': { sessionId: 'thread', startedAt: NOW } },
+    codexUsage: {
+      version: 2,
+      tasks: {
+        '0001-one': {
+          sessions: {
+            thread: {
+              knownTokens: 1585645,
+              snapshot: { input_tokens: 1585000, output_tokens: 645 },
+              reasons: [],
+            },
+          },
+          launches: {},
+        },
+      },
+    },
+    readCodexEvidence: () => ({
+      ok: true,
+      snapshot: { input_tokens: 2003546, output_tokens: 3788, cached_input_tokens: 1788288 },
+    }),
+  });
+  h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' }));
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({ type: 'thread.started', thread_id: 'thread' }) + '\n',
+  );
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(report) },
+    }) + '\n',
+  );
+  await h.answer({ type: 'turn.completed', usage: { input_tokens: 421089, output_tokens: 600 } });
+  expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.knownTokens).toBe(2007334);
+  expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(true);
+  expect(h.supervisor.reports[0]).toMatchObject(report);
+  expect(h.logged.join('\n')).not.toContain('неизвестен');
+});
 
 const assignment = (over = {}) => ({
   taskId: '0001-one',
@@ -1681,6 +1727,31 @@ describe('долговечные наблюдения Codex', () => {
       await sleep(0);
     },
   );
+
+  it('Claude сохраняет старый ledger при усыновлении Codex-сироты', () => {
+    let saved;
+    const h = harness({
+      config: { provider: 'claude' },
+      codexUsage: migrateTokenLedger({
+        '0012-design': { saved: 1200 },
+        '0236-deploy': { legacy: 800 },
+      }),
+      stages: {
+        '0236-deploy:deploy': {
+          provider: 'codex',
+          sessionId: 'legacy',
+          live: { pid: 99, startedAt: '2026-09-06T10:00:00Z' },
+        },
+      },
+      saveCodexUsage: (next) => {
+        saved = globalThis.structuredClone(next);
+      },
+    });
+    expect(taskTokens(h.supervisor.codexUsage, '0012-design')).toBe(1200);
+    expect(taskTokens(h.supervisor.codexUsage, '0236-deploy')).toBe(800);
+    expect(taskTokens(saved, '0012-design')).toBe(1200);
+    expect(taskTokenStatus(saved, '0236-deploy').reasons).toContain('missing-launch-id');
+  });
 });
 
 it('отказ Codex немедленно запрещает новые этапы и сохраняет сигнал паузы', async () => {

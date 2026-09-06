@@ -1,3 +1,4 @@
+import { dependencyFormatProblem } from './dependencies.mjs';
 /**
  * Заявки на новые задачи.
  *
@@ -108,6 +109,8 @@ export function taskFromRequest(
     problems.push('прогон заявлен без ожидаемого результата');
   }
 
+  const dependencyProblem = dependencyFormatProblem({ ...request, id });
+  if (dependencyProblem) problems.push(dependencyProblem);
   if (problems.length > 0) return { task: null, problems };
 
   const priority = Number.isInteger(request.priority) ? request.priority : 50;
@@ -137,6 +140,7 @@ export function taskFromRequest(
 
   const task = {
     $schema: '../schema.json',
+    ...(Object.hasOwn(request, 'dependsOn') ? { dependsOn: [...request.dependsOn] } : {}),
     id,
     type,
     title: title.slice(0, 200),

@@ -1,3 +1,4 @@
+import { pendingDependencies } from './dependencies.mjs';
 import { taskTokens, taskTokenStatus } from './token-budget.mjs';
 import {
   CROSSCUT,
@@ -387,6 +388,15 @@ export function scan(state) {
   // нет, этап не кончается, место не освобождается. Сегодня оно освобождается
   // хотя бы через полчаса падением, то есть лечение вышло бы хуже болезни.
   const held = new Map();
+  // Проверяем до квот и пределов попыток: ожидание не является запуском.
+  for (const task of tasks) {
+    if (task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (isRunning(task.id) || hasReport(task.id)) continue;
+    const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? []);
+    if (pending.length === 0) continue;
+    held.set(task.id, pending);
+    notes.push(`задача ${task.id} ждёт зависимостей: ${pending.join(', ')}`);
+  }
   for (const task of tasks) {
     if (!NEEDS_SESSION.includes(task.status)) continue;
     // Живой этап удержание не касается: он уже идёт, и командам его сессии
@@ -423,7 +433,28 @@ export function scan(state) {
   // семнадцать задач — парами, в одну и ту же секунду.
   //
   // Плата за простоту названа честно: прогоны арены идут по очереди.
-  const engaged = tasks.filter((task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id));
+  // Неполный реестр Codex удерживает именно ВЫДАЧУ следующей сессии ниже,
+  // однако раньше такая неподвижная задача всё равно съедала слот здесь.
+  // Получалась ловушка: две старые задачи без живых процессов удерживали
+  // всю машину навсегда. Живой процесс исключать нельзя даже при неизвестном
+  // расходе: он действительно работает, а живой deploy всё ещё требует тишины.
+  const tokenHeld = new Set(
+    tasks
+      .filter((task) => {
+        if (!NEEDS_SESSION.includes(task.status) || isRunning(task.id, task.status)) return false;
+        const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
+        return (
+          config.provider === 'codex' &&
+          capped &&
+          config.codexMaxTaskTokens != null &&
+          !taskTokenStatus(state.codexUsage ?? {}, task.id).complete
+        );
+      })
+      .map((task) => task.id),
+  );
+  const engaged = tasks.filter(
+    (task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id) && !tokenHeld.has(task.id),
+  );
   let busy = engaged.length >= config.maxConcurrent;
 
   // Исключительный этап — замер кадров и выкладка — требует тишины на машине
@@ -605,9 +636,26 @@ export function scan(state) {
       notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
     }
   }
-  const eligible = waitingForSession.filter(
+  let eligible = waitingForSession.filter(
     (task) => task.status !== 'deploy' || batchOf.has(task.id),
   );
+  const liveExclusive = running.some((item) => {
+    const task = tasks.find((candidate) => candidate.id === item.taskId);
+    return task && stateClass(task) === 'exclusive';
+  });
+  const readyExclusives = eligible
+    .filter((task) => stateClass(task) === 'exclusive')
+    .sort(byPriorityThenAge);
+  if (liveExclusive && free > 0) {
+    notes.push('идёт исключительный этап: продолжения других задач не выдаются');
+    eligible = [];
+  } else if (readyExclusives.length > 0) {
+    // Готовая выкладка/замер ждёт тишины: не подпитываем обычные продолжения
+    // и не выдаём два исключительных продолжения, даже если свободных мест
+    // несколько. Выбранный первым по обычному приоритету этап резервирует
+    // весь оборот, чтобы следующий цикл увидел его уже живым.
+    eligible = running.length === 0 ? readyExclusives.slice(0, 1) : [];
+  }
 
   // Слив перед самообновлением: новый код супервизора уже на диске, и он
   // перезапустится, как только не останется ни этапов, ни отчётов. Выдавать
@@ -636,7 +684,9 @@ export function scan(state) {
   }
 
   // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
-  const queue = tasks.filter((task) => task.status === 'new').sort(byPriorityThenAge);
+  const queue = tasks
+    .filter((task) => task.status === 'new' && !held.has(task.id))
+    .sort(byPriorityThenAge);
 
   // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
   const runWaiting = queue.some((task) => task.type === 'run');
