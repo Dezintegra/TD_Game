@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -60,15 +61,48 @@ export function findPnpm(env = process.env) {
   return realpathSync(cli);
 }
 
-function firstFile(root) {
+function* cacheFiles(root) {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const path = join(root, entry.name);
     if (entry.isSymbolicLink()) throw new Error(`Unexpected cache link: ${path}`);
-    if (entry.isFile() && statSync(path).size > 0) return path;
-    if (entry.isDirectory()) {
-      const found = firstFile(path);
-      if (found) return found;
+    if (entry.isFile()) yield path;
+    if (entry.isDirectory()) yield* cacheFiles(path);
+  }
+}
+
+function firstPackageFile(store) {
+  // pnpm 10.12.4: индекс v10 связывает пакет с SHA-512 файлами CAFS.
+  // Один маркер или даже файл с похожим именем не доказывает наличие пакета.
+  const files = new Set(cacheFiles(store));
+  for (const path of files) {
+    const local = relative(store, path).split(sep).join('/');
+    if (!/^v10\/index\/[a-f0-9]{2}\/[a-f0-9]{62}-.+\.json$/.test(local)) continue;
+    const index = JSON.parse(readFileSync(path, 'utf8'));
+    if (!index.name || !index.version || !index.files?.['package.json']) continue;
+    let manifestPath;
+    let valid = true;
+    for (const [name, file] of Object.entries(index.files)) {
+      if (!/^sha512-[A-Za-z0-9+/]{86}==$/.test(file.integrity ?? '')) {
+        valid = false;
+        break;
+      }
+      const hash = Buffer.from(file.integrity.slice(7), 'base64').toString('hex');
+      const suffix = file.mode & 0o111 ? '-exec' : '';
+      const content = join(store, 'v10/files', hash.slice(0, 2), hash.slice(2) + suffix);
+      if (!files.has(content) || statSync(content).size !== file.size) {
+        valid = false;
+        break;
+      }
+      const bytes = readFileSync(content);
+      if (createHash('sha512').update(bytes).digest('hex') !== hash) {
+        valid = false;
+        break;
+      }
+      if (name === 'package.json') manifestPath = content;
     }
+    if (!valid || !manifestPath) continue;
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    if (manifest.name === index.name && manifest.version === index.version) return manifestPath;
   }
   return null;
 }
@@ -169,7 +203,7 @@ export function checkInstallSnapshot({ cwd = process.cwd(), pnpmCli, run = check
       stderr: installed.stderr,
     };
     report.stage = 'verify';
-    const cacheFile = existsSync(store) && firstFile(store);
+    const cacheFile = existsSync(store) && firstPackageFile(store);
     if (!cacheFile) throw new Error('Cache has no nonempty package files');
     report.cacheFile = relative(report.snapshot, cacheFile).split(sep).join('/');
     report.installedStatus = clean(report.snapshot);

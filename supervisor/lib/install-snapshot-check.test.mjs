@@ -8,6 +8,8 @@ import {
   existsSync,
 } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { checkedProcess, checkInstallSnapshot } from './install-snapshot-check.mjs';
 
@@ -51,9 +53,39 @@ function installer(mode = 'ok') {
     expect(args.slice(1)).toEqual(['install', '--frozen-lockfile', '--store-dir', '.pnpm-store']);
     expect(process.cwd()).not.toBe(options.cwd);
     if (mode === 'error') throw new Error('pnpm: EPERM mkdir .pnpm-store');
-    const store = join(options.cwd, '.pnpm-store/v10/files');
+    const store = join(options.cwd, '.pnpm-store');
     mkdirSync(store, { recursive: true });
-    if (mode !== 'empty') writeFileSync(join(store, 'package-content'), 'package bytes');
+    if (mode === 'marker') writeFileSync(join(store, 'marker.txt'), 'installation succeeded');
+    else if (mode !== 'empty') {
+      const files = {};
+      for (const [name, text] of Object.entries({
+        'package.json': JSON.stringify({ name: 'example', version: '1.0.0' }),
+        'index.js': 'export const value = 1;\n',
+      })) {
+        const bytes = Buffer.from(text);
+        const digest = createHash('sha512').update(bytes).digest();
+        const hex = digest.toString('hex');
+        const directory = join(store, 'v10/files', hex.slice(0, 2));
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(
+          join(directory, hex.slice(2)),
+          mode === 'corrupt' && name === 'index.js' ? bytes.map(() => 120) : bytes,
+        );
+        files[name] = {
+          integrity: `sha512-${digest.toString('base64')}`,
+          size: bytes.length,
+          mode: 0o644,
+        };
+      }
+      if (mode !== 'no-index') {
+        const directory = join(store, 'v10/index/ab');
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(
+          join(directory, `${'c'.repeat(62)}-example@1.0.0.json`),
+          JSON.stringify({ name: 'example', version: '1.0.0', files }),
+        );
+      }
+    }
     if (mode === 'wrong-ignore') {
       writeFileSync(join(options.cwd, '.git/info/exclude'), '.pnpm-store/\n');
     }
@@ -85,11 +117,22 @@ describe('install snapshot', () => {
   it.each([
     ['error', 'EPERM'],
     ['empty', 'Cache has no'],
+    ['no-index', 'Cache has no'],
+    ['corrupt', 'Cache has no'],
     ['version', 'version mismatch'],
   ])('rejects %s', (mode, message) => {
     const result = check(fixture().cwd, mode);
     expect(result.ok).toBe(false);
     expect(result.error).toContain(message);
+  });
+
+  it('rejects a successful installer leaving only a nonempty marker', () => {
+    const result = check(fixture().cwd, 'marker');
+    expect(result.install.status).toBe(0);
+    expect(readFileSync(join(result.snapshot, '.pnpm-store/marker.txt'), 'utf8')).not.toBe('');
+    expect(result.ok).toBe(false);
+    expect(result.stage).toBe('verify');
+    expect(result.error).toContain('Cache has no');
   });
 
   it('detects removing the project store ignore', () => {
