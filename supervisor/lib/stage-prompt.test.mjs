@@ -175,6 +175,48 @@ describe('лог упавшего этапа', () => {
 });
 
 describe('журнал', () => {
+  it.each([120, 8])('оставляет полное пояснение revise вне лимита %i', (journalLimit) => {
+    const journal = `${'история\n'.repeat(100)}P1: блоккер\nвладелец: принято`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task: { ...task, status: 'revise' },
+      journal,
+      journalLimit,
+    });
+    const [clipped, explanation] = text
+      .split('## Журнал задачи\n\n')[1]
+      .split('\n\n## Восстановление замечаний\n\n');
+    expect(clipped.length).toBeLessThanOrEqual(journalLimit);
+    if (journalLimit === 120) {
+      expect(clipped).toContain('P1: блоккер\nвладелец: принято');
+    }
+    for (const part of [
+      `.pipeline/logs/${task.id}-review.log`,
+      'основного дерева',
+      'git -C <дерево> worktree list',
+      'supervisor/skills/revise.md',
+      'проверка соответствия текущему возврату обязательна',
+      'дополнительный источник',
+      'не заменяет полный журнал карточки',
+      'ответ владельца продукта',
+      'Не обращайся к Trello',
+      'failed до исправлений',
+      'путь и причину',
+    ])
+      expect(explanation).toContain(part);
+    // Тот же хвост у другого этапа: пояснение не отнимает место в журнале.
+    const other = stagePrompt({ assignment, task, journal, journalLimit });
+    expect(other).toContain(`## Журнал задачи\n\n${clipped}\n\n`);
+    expect(other).not.toContain('## Восстановление замечаний');
+    expect(other).not.toContain('целиком — в журнале задачи');
+  });
+
+  it.each(['', 'полный журнал'])('не добавляет пояснение к необрезанному revise: %j', (journal) => {
+    const text = stagePrompt({ assignment: { ...assignment, stage: 'revise' }, task, journal });
+    expect(text).not.toContain('## Восстановление замечаний');
+    expect(text).toContain(journal || '_пусто_');
+  });
+
   it('обрезается, и обрезка названа вслух: молчаливая обманывает', () => {
     const long = 'строка журнала\n'.repeat(2000);
     const text = stagePrompt({ assignment, task, journal: long, journalLimit: 100 });
