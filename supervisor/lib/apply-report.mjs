@@ -160,8 +160,8 @@ export function applyReport(task, report, limits = {}) {
     //
     // Первый — этап. С имплементации, ревью или выкладки задачу этим ходом
     // не сбросить вовсе: там работа уже сделана.
-    if (task.status !== 'design') {
-      const why = `исход «moot» объявлен этапом «${task.status}», а он бывает только у проработки`;
+    if (task.status !== 'design' && task.status !== 'triage') {
+      const why = `исход «moot» объявлен этапом «${task.status}», а он бывает только у проработки и разбора заметки`;
       problems.push(why);
       return halt(task, why, problems);
     }
@@ -193,14 +193,15 @@ export function applyReport(task, report, limits = {}) {
     // Переход всё так же сверяется с таблицей: у задачи не типа `feature`
     // маршрута `design` → `cleanup` нет, и ход обязан упереться в неё,
     // а не обойти.
-    const verdict = canTransition(task, 'cleanup');
+    const target = task.status === 'triage' ? 'closed' : 'cleanup';
+    const verdict = canTransition(task, target);
     if (!verdict.ok) {
       problems.push(verdict.reason);
       return halt(task, verdict.reason, problems);
     }
 
     return {
-      status: 'cleanup',
+      status: target,
       returnTo: null,
       // Записка уезжает в журнал задачи: закрытие без названной причины
       // неотличимо на доске от брошенного.

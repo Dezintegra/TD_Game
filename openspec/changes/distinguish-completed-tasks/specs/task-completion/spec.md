@@ -33,3 +33,8 @@ The supervisor SHALL use `completed` (Выполнено) only for fulfilled tas
 
 - **WHEN** the new list is introduced
 - **THEN** old closed cards are not automatically declared completed
+
+#### Scenario: Moot note
+
+- **WHEN** triage confirms loss of relevance with a moot outcome and nonempty evidence
+- **THEN** the note enters closed, and missing evidence blocks that transition

@@ -40,3 +40,14 @@ describe('выполнение постановки отдельно от зак
     expect(pendingDependencies(task, [{ id: '0001-base', status: 'completed' }])).toEqual([]);
   });
 });
+
+it.each(['Проверено по постановке и актуальному решению', ''])(
+  'снятие предмета заметки требует доказательства: %s',
+  (evidence) => {
+    const result = applyReport(
+      { type: 'note', status: 'triage' },
+      { stage: 'triage', outcome: 'moot', evidence },
+    );
+    expect(result.status).toBe(evidence ? 'closed' : 'postmortem');
+  },
+);
