@@ -279,7 +279,6 @@ export function scan(state) {
   //     Прежде задачу из ошибки поднимал только человек. 02.09.2026 так стояли
   //     пять задач с целыми ветками и pull request, чья причина лежала
   //     в конвейере и была уже починена: решения в подъёме нет, одна задержка.
-  const invalidIds = new Set(invalid.map((bad) => bad.id));
   for (const task of tasks) {
     if (task.status !== 'failed' || task.recovery?.causedBy !== 'pipeline') continue;
     if (!task.returnTo) {
@@ -287,19 +286,19 @@ export function scan(state) {
       continue;
     }
 
-    const pending = (task.recovery.fixedBy ?? []).filter((id) => {
-      const fix = byId.get(id);
-      if (fix) return fix.status !== 'completed';
-      // Негодная карточка — задача есть, но не читается: ждём её. Задачи,
-      // которой нет нигде, считаем закрытой и убранной в архив: идентификатор
-      // проверен при разборе, и исчезнуть иначе он не мог.
-      return invalidIds.has(id);
-    });
+    // Та же проверка, что перед запуском: закрытый родитель может лишь
+    // передать работу частям, а исчезнувшая карточка не доказывает починку.
+    const pending = pendingDependencies(
+      { ...task, dependsOn: task.recovery.fixedBy ?? [], dependencyResults: [] },
+      tasks,
+      state.closedDependencyIds ?? [],
+      {
+        records: state.dependencyRecords ?? [],
+        invalid,
+      },
+    );
     if (pending.length > 0) {
-      notes.push(
-        `задача ${task.id} ждёт починок конвейера: ` +
-          pending.map((id) => `${id} (${byId.get(id)?.status ?? 'не разобрана'})`).join(', '),
-      );
+      notes.push(`задача ${task.id} ждёт починок конвейера: ${pending.join(', ')}`);
       continue;
     }
 

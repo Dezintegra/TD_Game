@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { pendingDependencies } from './dependencies.mjs';
 import { execute } from './execute.mjs';
 import { reconcile } from './reconcile.mjs';
 import { repairWorld } from './repair.mjs';
@@ -264,6 +265,64 @@ function fakeIo(over = {}) {
 }
 
 const startAction = { kind: 'start-stage', taskId: '0001-one', stage: 'design' };
+
+describe('сохранение частей декомпозиции', () => {
+  const action = { kind: 'transfer-report', taskId: '0001-one', stage: 'decompose' };
+  const parts = ['first', 'second'].map((title) => ({
+    type: 'feature',
+    title,
+    description: 'Часть',
+    area: 'pipeline',
+  }));
+  const make = (requests = parts) =>
+    fakeIo({
+      tasks: [task({ status: 'decompose', links: { related: ['0009-note'] } })],
+      report: {
+        taskId: '0001-one',
+        stage: 'decompose',
+        outcome: 'split',
+        summary: 'Две части',
+        requests,
+      },
+    });
+
+  it('родитель закрывается со списком созданных частей и продолжает удерживать потребителя', async () => {
+    const io = make();
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('done');
+    const parent = io.tasks.get('0001-one');
+    expect(parent.status).toBe('closed');
+    expect(parent.splitInto).toEqual(result.created);
+    expect(parent.splitInto).toHaveLength(2);
+    expect(parent.splitInto).not.toContain('0009-note');
+    const consumer = { id: '0041-field', dependsOn: [parent.id] };
+    expect(pendingDependencies(consumer, [...io.tasks.values()])).toHaveLength(2);
+    for (const id of parent.splitInto) io.tasks.get(id).status = 'completed';
+    expect(pendingDependencies(consumer, [...io.tasks.values()])).toEqual([]);
+  });
+
+  it('не закрывает родителя, если вторую часть не удалось создать', async () => {
+    const io = make();
+    const create = io.createTask.bind(io);
+    let count = 0;
+    io.createTask = (...args) =>
+      ++count === 2 ? { ok: false, outcome: 'offline' } : create(...args);
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('failed');
+    expect(io.tasks.get('0001-one').status).toBe('decompose');
+    expect(io.tasks.get('0001-one')).not.toHaveProperty('splitInto');
+    expect(io.steps).not.toContain('отчёт 0001-one:decompose убран');
+  });
+
+  it('не закрывает родителя и не создаёт части при негодной заявке', async () => {
+    const io = make([parts[0], { type: 'feature' }]);
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('failed');
+    expect(result.why).toContain('декомпозиция не сохранена');
+    expect(io.tasks.size).toBe(1);
+    expect(io.tasks.get('0001-one').status).toBe('decompose');
+  });
+});
 
 describe('исход осиротевшего этапа', () => {
   const noteAction = { kind: 'note-orphan', taskId: '0001-one', stage: 'implement' };

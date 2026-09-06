@@ -1,14 +1,26 @@
+// Старые слаги обрезались на сороковом знаке, иногда на дефисе. Такой
+// полный ID уже существует на доске и не должен терять свои зависимости.
+const TASK_ID = /^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$/;
+
 /** Неверные зависимости удерживают задачу, а не превращаются в пустой список. */
 export function dependencyFormatProblem(task) {
   const ids = Object.hasOwn(task, 'dependsOn') ? task.dependsOn : [];
-  if (
-    !Array.isArray(ids) ||
-    ids.some((id) => typeof id !== 'string' || !/^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$/.test(id))
-  ) {
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string' || !TASK_ID.test(id))) {
     return 'dependsOn должен быть массивом полных идентификаторов задач';
   }
   if (ids.includes(task.id)) return `самоссылка ${task.id}`;
   if (new Set(ids).size !== ids.length) return 'dependsOn содержит повторные идентификаторы';
+  if (Object.hasOwn(task, 'splitInto')) {
+    const parts = task.splitInto;
+    if (
+      !Array.isArray(parts) ||
+      parts.length === 0 ||
+      parts.some((id) => typeof id !== 'string' || !TASK_ID.test(id))
+    )
+      return 'splitInto должен быть непустым массивом полных идентификаторов задач';
+    if (parts.includes(task.id)) return `самоссылка splitInto ${task.id}`;
+    if (new Set(parts).size !== parts.length) return 'splitInto содержит повторные идентификаторы';
+  }
   if (Object.hasOwn(task, 'dependencyResults')) {
     const results = task.dependencyResults;
     if (!Array.isArray(results)) return 'dependencyResults должен быть массивом';
@@ -49,7 +61,7 @@ export function resultPredecessor(id, tasks, records = [], invalid = []) {
   const predecessor = matches[0];
   if (predecessor.valid === false || dependencyFormatProblem(predecessor))
     return { problem: 'негодный предшественник' };
-  if (predecessor.status !== 'completed') return { problem: `не выполнен (${predecessor.status})` };
+  if (!isCompletionNode(predecessor)) return { problem: `не выполнен (${predecessor.status})` };
   return { predecessor };
 }
 
@@ -85,13 +97,80 @@ export function dependencyCycleProblem(task, tasks, records = []) {
     if (checked.has(id)) continue;
     visiting.add(id);
     stack.push({ id, exit: true });
-    const ids = byId.get(id)?.dependsOn;
-    if (Array.isArray(ids)) for (const next of ids) stack.push({ id: next, exit: false });
+    const current = byId.get(id);
+    for (const ids of [current?.dependsOn, current?.splitInto]) {
+      if (Array.isArray(ids)) for (const next of ids) stack.push({ id: next, exit: false });
+    }
   }
   return null;
 }
 
-/** Исчезновение карточки не доказывает завершение; принимаем только явное completed. */
+/** Закрытие разделённой задачи означает результат только вместе со всеми её частями. */
+export function pendingCompletion(
+  id,
+  tasks,
+  archivedClosed = [],
+  { records = [], invalid = [] } = {},
+) {
+  const byId = new Map();
+  for (const item of [...tasks, ...records]) {
+    const matches = byId.get(item.id) ?? [];
+    matches.push(item);
+    byId.set(item.id, matches);
+  }
+  const invalidIds = new Set(invalid.map((item) => item.id));
+  const visiting = new Set();
+  const checked = new Set();
+  const pending = [];
+  const stack = [{ id, path: [id], exit: false }];
+  while (stack.length) {
+    const step = stack.pop();
+    if (step.exit) {
+      visiting.delete(step.id);
+      checked.add(step.id);
+      continue;
+    }
+    const waitFor = (why) => pending.push(`${step.path.join(' → ')} (${why})`);
+    if (visiting.has(step.id)) {
+      waitFor('цикл декомпозиции');
+      continue;
+    }
+    if (checked.has(step.id)) continue;
+    const matches = byId.get(step.id) ?? [];
+    if (invalidIds.has(step.id) || matches.some((item) => item.valid === false)) {
+      waitFor('не разобрана');
+      continue;
+    }
+    if (matches.length > 1) {
+      waitFor('неоднозначный идентификатор');
+      continue;
+    }
+    const current = matches[0];
+    if (!current) {
+      // Старые файловые хранилища передают только доказанные закрытые ID.
+      // Если полная архивная карточка есть, этот список её не подменяет.
+      if (!archivedClosed.includes(step.id)) waitFor('нет подтверждения выполнения');
+      continue;
+    }
+    const problem = dependencyFormatProblem(current);
+    if (problem) {
+      waitFor(problem);
+      continue;
+    }
+    if (!isCompletionNode(current)) {
+      waitFor(current.status ?? 'нет подтверждения выполнения');
+      continue;
+    }
+    visiting.add(step.id);
+    stack.push({ ...step, exit: true });
+    for (const child of [...(current.splitInto ?? [])].reverse()) {
+      stack.push({ id: child, path: [...step.path, child], exit: false });
+    }
+  }
+  return pending;
+}
+
+/** Исчезновение карточки не доказывает завершение; проверяем выполнение и все части декомпозиции. */
 export function pendingDependencies(
   task,
   tasks,
@@ -103,6 +182,7 @@ export function pendingDependencies(
   const cycle = dependencyCycleProblem(task, tasks, records);
   if (cycle) return [cycle];
   return (task.dependsOn ?? []).flatMap((id) => {
+    const pending = pendingCompletion(id, tasks, archivedClosed, { records, invalid });
     const result = (task.dependencyResults ?? []).find((item) => item.taskId === id);
     if (result) {
       const resolved = resultPredecessor(id, tasks, records, invalid);
@@ -111,13 +191,13 @@ export function pendingDependencies(
         (resolved.predecessor.links?.pr !== result.pr
           ? 'links.pr не совпадает с ожидаемым PR'
           : mergeEvidenceProblem(evidence[result.pr], result.pr, mainBranch));
-      return unmet ? [`${id} (PR #${result.pr}: ${unmet})`] : [];
+      return [...pending, ...(unmet ? [`${id} (PR #${result.pr}: ${unmet})`] : [])];
     }
-    const matches = tasks.filter((item) => item.id === id);
-    if (matches.length === 1 && matches[0].status === 'completed') return [];
-    if (matches.length === 0 && archivedClosed.includes(id)) return [];
-    return [
-      `${id} (${matches.length > 1 ? 'неоднозначный идентификатор' : (matches[0]?.status ?? 'нет подтверждения выполнения')})`,
-    ];
+    return pending;
   });
+}
+
+/** Закрытый родитель лишь передаёт доказательство своим частям. */
+function isCompletionNode(task) {
+  return task.status === 'completed' || (task.status === 'closed' && task.splitInto?.length > 0);
 }

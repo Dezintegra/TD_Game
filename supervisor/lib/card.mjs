@@ -176,6 +176,7 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     // только колонкой, а тип — только меткой.
     decomposed: labels.flags.includes('decomposed'),
     ...(Object.hasOwn(meta ?? {}, 'dependsOn') ? { dependsOn: meta.dependsOn } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'splitInto') ? { splitInto: meta.splitInto } : {}),
     ...(Object.hasOwn(meta ?? {}, 'dependencyResults')
       ? { dependencyResults: meta.dependencyResults }
       : {}),
@@ -233,6 +234,7 @@ export function metaOf(task) {
   return {
     id: task.id,
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
+    ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),
     ...(Object.hasOwn(task, 'dependencyResults')
       ? { dependencyResults: task.dependencyResults }
       : {}),
