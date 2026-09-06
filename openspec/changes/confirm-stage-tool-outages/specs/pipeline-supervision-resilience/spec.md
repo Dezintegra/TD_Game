@@ -74,3 +74,12 @@ An infrastructure hold on deploy SHALL cover the original trusted lead, all assi
 #### Scenario: Healthy tools do not establish the deployment effect
 - **WHEN** deploy diagnostics are healthy and a retry entitlement exists but the remote revision and prior effects have not been verified
 - **THEN** the assigned batch remains held and no replacement deploy process is spawned
+
+#### Scenario: Infrastructure replacement retains its assignment despite new arrivals
+- **WHEN** a confirmed deploy outage recovers, remote effects are verified, and a new higher-priority deploy task has arrived during the hold
+- **THEN** the replacement receives the original trusted lead, every assigned member and retained deployment revision without rebuilding the batch, including after supervisor restart or when resuming without a report
+- **AND** the new task waits for the next batch; an unknown original assignment keeps the replacement held
+
+#### Scenario: Ordinary continuation still rebuilds its batch
+- **WHEN** an interrupted deploy is continued without an infrastructure hold or retry entitlement
+- **THEN** its batch is recalculated at session issuance under the existing eligibility and lead-selection rules
