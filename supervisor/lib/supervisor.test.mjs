@@ -17,6 +17,8 @@ import { describe, expect, it } from 'vitest';
 import { createSupervisor } from './supervisor.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { TAG } from './console.mjs';
+import { scan } from './scan.mjs';
+import { parseReport } from './parse-report.mjs';
 
 /**
  * Проверки хозяйства идущих этапов.
@@ -119,6 +121,208 @@ function harness(over = {}) {
 
 /** Строка итога этапа из всего, что рассказчик напечатал. */
 const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
+
+describe('сохранённый отчёт при ошибке учёта', () => {
+  for (const valid of [true, false]) {
+    it.each(['decreased-usage', 'decreased-output', 'invalid-usage', 'history', 'cached'])(
+      `JSON ${valid}, учёт %s`,
+      async (kind) => {
+        const text = valid ? JSON.stringify(report, null, 2) : 'не JSON\nисходный текст';
+        const h = harness({
+          home: fileURLToPath(new URL('..', import.meta.url)),
+          config: { provider: 'codex', codexMaxTaskTokens: 25000000 },
+          codexUsage: {
+            version: 2,
+            tasks: {
+              '0001-one': {
+                sessions: {
+                  thread: {
+                    knownTokens: 1100,
+                    snapshot: { input_tokens: 1000, output_tokens: 100, cached_input_tokens: 200 },
+                    reasons: kind === 'history' ? ['legacy-unknown'] : [],
+                  },
+                },
+                launches: {},
+              },
+            },
+          },
+        });
+        h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' }));
+        for (const event of [
+          { type: 'thread.started', thread_id: 'thread' },
+          { type: 'item.completed', item: { type: 'agent_message', text } },
+        ])
+          h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+        await h.answer({
+          type: 'turn.completed',
+          usage:
+            kind === 'invalid-usage'
+              ? undefined
+              : {
+                  input_tokens: kind === 'decreased-usage' ? 500 : kind === 'history' ? 2000 : 1000,
+                  output_tokens: kind === 'decreased-output' ? 50 : 100,
+                  cached_input_tokens: 0,
+                },
+        });
+        expect(h.wrote).toHaveLength(1);
+        expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + text);
+        expect(h.wrote[0].text).not.toContain('сессия ответа не оставила');
+        const line = finishedLine(h.said);
+        if (kind === 'cached') {
+          expect(line.text).toContain('ответ done');
+          expect(line.text).not.toContain('неизвест');
+          expect(h.supervisor.reports).toHaveLength(valid ? 1 : 0);
+          expect(line.tag).toBe(valid ? TAG.stage : TAG.warn);
+        } else {
+          const reason =
+            kind === 'history'
+              ? 'legacy-unknown'
+              : kind === 'decreased-output'
+                ? 'decreased-usage'
+                : kind;
+          for (const output of [h.wrote[0].text, line.text, h.logged.join('\n')]) {
+            expect(output).toContain(reason);
+            expect(output).toContain('не применён');
+            if (!valid) expect(output).toContain(parseReport(text).why);
+          }
+          expect(line.text).toContain('ответ failed');
+          expect(line.tag).toBe(TAG.warn);
+          expect(h.supervisor.reports).toEqual([]);
+          for (let cycle = 0; cycle < 2; cycle++) {
+            const next = scan({
+              config: { ...config, provider: 'codex', codexMaxTaskTokens: 25000000 },
+              tasks: [{ ...assignment().task, id: '0001-one', status: 'design' }],
+              registry: {
+                entries: [{ taskId: '0001-one', branch: 'worktree-0001-one', path: 'tree' }],
+              },
+              reports: h.supervisor.reports,
+              codexUsage: h.supervisor.codexUsage,
+            });
+            expect(next.actions).toEqual([]);
+            expect(next.notes.join()).toContain(reason);
+          }
+        }
+      },
+    );
+  }
+
+  it('отказ записи бюджета сохраняет текст до возврата и запрещает применение', async () => {
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider: 'codex', codexMaxTaskTokens: 25000000 },
+      saveCodexUsage: (next) => {
+        if (
+          Object.values(next.tasks['0001-one']?.launches ?? {}).some((launch) => launch.completed)
+        )
+          throw new Error('disk unavailable');
+      },
+    });
+    h.supervisor.spawnStage(assignment());
+    for (const event of [
+      { type: 'thread.started', thread_id: 'thread' },
+      { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(report) } },
+    ])
+      h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+    await h.answer({ type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 100 } });
+    expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + JSON.stringify(report));
+    expect(h.wrote[0].text).toContain('disk unavailable');
+    expect(finishedLine(h.said).tag).toBe(TAG.warn);
+    expect(h.supervisor.reports).toEqual([]);
+    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+  });
+});
+
+describe('диагностика границ Codex в finish', () => {
+  it.each([
+    'invalid',
+    'foreign',
+    'empty',
+    'absent',
+    'no-limit',
+    'numeric-history',
+    'exit',
+    'new-turn',
+    'turn-failed',
+    'error',
+  ])('%s сохраняет диагностику и прежний допуск', async (kind) => {
+    const text =
+      kind === 'invalid'
+        ? '{некорректный JSON'
+        : kind === 'empty'
+          ? ''
+          : JSON.stringify({ ...report, stage: kind === 'foreign' ? 'audit' : 'design' }, null, 2);
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider: 'codex', codexMaxTaskTokens: kind === 'no-limit' ? null : 25000000 },
+      codexUsage: kind === 'numeric-history' ? { '0001-one': { old: 500 } } : {},
+    });
+    h.supervisor.spawnStage(assignment());
+    const events = [
+      { type: 'thread.started', thread_id: 'new' },
+      {
+        type: 'item.completed',
+        item: {
+          type: 'command_execution',
+          status: 'declined',
+          command: 'git status',
+          aggregated_output: 'blocked by policy',
+        },
+      },
+    ];
+    if (kind !== 'absent')
+      events.push({ type: 'item.completed', item: { type: 'agent_message', text } });
+    events.push({
+      type: 'turn.completed',
+      usage:
+        kind === 'numeric-history'
+          ? { input_tokens: 1000, output_tokens: 100 }
+          : { input_tokens: 'bad', output_tokens: 100 },
+    });
+    if (kind === 'new-turn') events.push({ type: 'turn.started' });
+    if (kind === 'turn-failed')
+      events.push({ type: 'turn.failed', error: { message: 'protocol failed' } });
+    if (kind === 'error') events.push({ type: 'error', message: 'protocol error' });
+    const stdout = events.map(JSON.stringify).join('\n') + '\n';
+    h.children[0].stdout.emit('data', stdout);
+    h.children[0].stderr.emit('data', 'исходный stderr');
+    h.children[0].emit('close', kind === 'exit' ? 1 : 0);
+    await sleep(0);
+    expect(h.wrote).toHaveLength(1);
+    const log = h.wrote[0].text;
+    const line = finishedLine(h.said);
+    expect(log).toContain('--- stdout ---\n' + stdout);
+    expect(log).toContain('--- stderr ---\nисходный stderr');
+    expect(log).toContain('"tool_name": "shell"');
+    const discarded = ['absent', 'exit', 'new-turn', 'turn-failed', 'error'].includes(kind);
+    if (discarded) expect(log).not.toContain('--- итоговый текст ---');
+    else expect(log).toContain('--- итоговый текст ---\n' + text);
+    if (kind === 'no-limit') {
+      expect(h.supervisor.reports).toHaveLength(1);
+      expect(line.tag).toBe(TAG.stage);
+      expect(line.text).not.toContain('не применён');
+      expect(line.text).toContain('invalid-usage');
+    } else {
+      expect(h.supervisor.reports).toEqual([]);
+      expect(line.tag).toBe(TAG.warn);
+      expect(line.text).toContain('ответ failed');
+    }
+    if (kind === 'numeric-history') {
+      expect(line.text).toContain('расход текущего запуска известен');
+      expect(line.text).toContain('legacy-unknown');
+      expect(line.text).toContain('не применён');
+    }
+    if (kind === 'foreign') {
+      expect(line.text).toContain('«audit»');
+      expect(line.text).toContain('«design»');
+      expect(line.text).toContain('не применён');
+    }
+    if (['invalid', 'empty'].includes(kind)) {
+      expect(line.text).toContain(parseReport(text).why);
+      expect(line.text).toContain('invalid-usage');
+      expect(log).not.toContain('сессия ответа не оставила');
+    }
+  });
+});
 
 it('дочерний Codex учитывает только подключённый durable cumulative snapshot', async () => {
   const h = harness({

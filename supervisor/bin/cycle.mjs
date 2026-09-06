@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readTokenLedger } from '../lib/token-budget.mjs';
-import { execFileSync } from 'node:child_process';
+import { createCommandRunner } from '../lib/command-runner.mjs';
+import { buildDependencyState } from '../lib/dependency-state.mjs';
 import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -60,22 +61,7 @@ function loadConfig() {
   return resolveConfig(project);
 }
 
-function runCommand(args, program = 'git') {
-  try {
-    // `windowsHide` прячет консольное окно потомка. Без него каждый вызов
-    // git из супервизора, запущенного в фоне, вспыхивает отдельным окном
-    // и забирает фокус — а вызовов этих десятки за оборот.
-    const stdout = execFileSync(program, args, {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: 'pipe',
-      windowsHide: true,
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (error) {
-    return { code: error.status ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
-  }
-}
+const runCommand = createCommandRunner(root);
 
 const runGit = (args) => runCommand(args, 'git');
 
@@ -120,6 +106,7 @@ async function openBacklog(config) {
     ok: true,
     ...sortCards(store.parsedCards()),
     closedDependencyIds: store.closedDependencyIds(),
+    dependencyRecords: store.dependencyRecords(),
   };
 }
 
@@ -138,15 +125,9 @@ async function main() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const decision = scan({
-    tasks: backlog.tasks,
-    closedDependencyIds: backlog.closedDependencyIds ?? [],
-    invalid: backlog.invalid,
-    marked: backlog.marked ?? [],
+    ...(await buildDependencyState({ backlog, config, root, run: runCommand })),
     registry,
-    reports: [],
     codexUsage: readTokenLedger(root, config),
-    // Живых этапов смотрящий прогон не знает: дескрипторы у супервизора.
-    running: [],
     answers: readAnswers(root, config),
     // Правила разрешений — доводом, как и всё прочее: сканер сам диска
     // не трогает. Смотрящий прогон обязан видеть ту же картину, что боевой

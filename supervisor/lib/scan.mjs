@@ -392,7 +392,12 @@ export function scan(state) {
   for (const task of tasks) {
     if (task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
     if (isRunning(task.id) || hasReport(task.id)) continue;
-    const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? []);
+    const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? [], {
+      records: state.dependencyRecords ?? [],
+      invalid: state.invalid ?? [],
+      evidence: state.dependencyEvidence ?? {},
+      mainBranch: config.mainBranch,
+    });
     if (pending.length === 0) continue;
     held.set(task.id, pending);
     notes.push(`задача ${task.id} ждёт зависимостей: ${pending.join(', ')}`);
