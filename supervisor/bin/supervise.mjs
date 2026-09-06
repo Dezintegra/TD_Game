@@ -416,7 +416,9 @@ const supervisor = createSupervisor({
   supervisorPid: process.pid,
   saveStages,
   stages: readStages(root, config),
-  codexUsage: providerOf(config) === 'codex' ? readTokenLedger(root, config) : {},
+  // Сирота Codex может встретиться сразу после переключения на Claude.
+  // Пустой объект здесь при первом сохранении стёр бы весь прежний реестр.
+  codexUsage: readTokenLedger(root, config),
   saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
   onPolicyBlocked: (why) => {
     ensureLocal();

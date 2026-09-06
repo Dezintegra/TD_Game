@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import {
   taskTokens,
   taskTokenStatus,
+  migrateTokenLedger,
   readTokenLedger,
   writeTokenLedger,
   commitTokenLedger,
@@ -1681,6 +1682,31 @@ describe('долговечные наблюдения Codex', () => {
       await sleep(0);
     },
   );
+
+  it('Claude сохраняет старый ledger при усыновлении Codex-сироты', () => {
+    let saved;
+    const h = harness({
+      config: { provider: 'claude' },
+      codexUsage: migrateTokenLedger({
+        '0012-design': { saved: 1200 },
+        '0236-deploy': { legacy: 800 },
+      }),
+      stages: {
+        '0236-deploy:deploy': {
+          provider: 'codex',
+          sessionId: 'legacy',
+          live: { pid: 99, startedAt: '2026-09-06T10:00:00Z' },
+        },
+      },
+      saveCodexUsage: (next) => {
+        saved = structuredClone(next);
+      },
+    });
+    expect(taskTokens(h.supervisor.codexUsage, '0012-design')).toBe(1200);
+    expect(taskTokens(h.supervisor.codexUsage, '0236-deploy')).toBe(800);
+    expect(taskTokens(saved, '0012-design')).toBe(1200);
+    expect(taskTokenStatus(saved, '0236-deploy').reasons).toContain('missing-launch-id');
+  });
 });
 
 it('отказ Codex немедленно запрещает новые этапы и сохраняет сигнал паузы', async () => {

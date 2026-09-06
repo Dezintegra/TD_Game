@@ -139,7 +139,7 @@ async function main() {
     marked: backlog.marked ?? [],
     registry,
     reports: [],
-    codexUsage: providerOf(config) === 'codex' ? readTokenLedger(root, config) : {},
+    codexUsage: readTokenLedger(root, config),
     // Живых этапов смотрящий прогон не знает: дескрипторы у супервизора.
     running: [],
     answers: readAnswers(root, config),
