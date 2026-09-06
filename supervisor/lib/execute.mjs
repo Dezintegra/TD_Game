@@ -9,7 +9,8 @@ import {
   releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
-import { transferReport, halt } from './report-plan.mjs';
+import { halt } from './report-plan.mjs';
+import { transferReport } from './report-delivery.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 
