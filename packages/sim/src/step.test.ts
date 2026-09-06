@@ -1731,24 +1731,20 @@ describe('остановка у назначенной цели', () => {
  * к её стене вплотную.
  *
  * Это та самая просьба, с которой началось изменение: «если до базы пять
- * клеток — пусть уже стреляет». Пять и четыре здесь не спорят: расстояние
- * до постройки меряется до КРАЯ основания, а у базы основание три клетки
- * на три, то есть от края до середины ровно клетка. Четыре до края и есть
- * пять до середины.
+ * клеток — пусть уже стреляет». Мерка — до КРАЯ основания базы 3 × 3:
+ * граница четырёх клеток при осевом подходе находится в 5,5 клетки
+ * от центра. Фактическая остановка допускает заход внутрь на один шаг;
+ * по диагонали пересчёт расстояния до центра иной.
  *
  * Границы записаны числом в клетках, а не выведены из характеристик,
  * и это намеренно: разбор проверяет ЗАКАЗАННУЮ величину, и вернись
  * дальность к двум клеткам — он обязан покраснеть, а не подстроиться.
  */
 describe('огонь по базе с подхода', () => {
-  const ASSAULT = UNIT_STATS[UnitType.Assault];
   const BASE_FOOTPRINT = STRUCTURE_STATS[StructureKind.Base].footprintRadius;
 
   /** Здоровья с запасом: разбор про подход, а не про то, кто кого убьёт. */
   const TOUGH = 1_000_000;
-
-  /** Сколько тиков нужно, чтобы пройти клетку. Считается от скорости. */
-  const TICKS_PER_CELL = Math.ceil(cellsToUnits(1) / ASSAULT.speed);
 
   /** С какого расстояния штурмовик начинает подход, в клетках. */
   const START_CELLS = 9;
@@ -1756,9 +1752,9 @@ describe('огонь по базе с подхода', () => {
   it('останавливается в четырёх клетках от края основания и бьёт по базе', () => {
     const empty = openWorld();
     const baseCell = baseCellOf(empty, 1);
-    // Подход по прямой сверху: карта в `openWorld` расчищена целиком,
-    // так что обходить нечего и путь не вмешивается в расстояние.
-    const start = cellIndex(cellX(baseCell), cellY(baseCell) - START_CELLS);
+    // Подход слева: карта расчищена, а при равных путях навигация
+    // выбирает восток первым. Это сохраняет ось без искусственных преград.
+    const start = cellIndex(cellX(baseCell) - START_CELLS, cellY(baseCell));
 
     const world = withUnitAt(empty, 0, start, TOUGH, 900);
     const baseBefore = world.structures.find((s) => s.cell === baseCell);
@@ -1767,32 +1763,48 @@ describe('огонь по базе с подхода', () => {
     // а не назначаем заново: разбор обязан проверять штатный ход вещей.
     expect(world.players[0]?.targetStructure).toBe(baseBefore?.id);
 
-    const arrived = run(world, (START_CELLS + 1) * TICKS_PER_CELL);
-    const settled = arrived.units.find((unit) => unit.id === asEntityId(900))?.position;
+    const player = world.players[0];
+    if (player === undefined) throw new Error('Нет игрока штурмовика');
+    const assault = playerStats(player).units[UnitType.Assault];
+    const range = cellsToUnits(4);
+    const positionOf = (state: WorldState): Vec2 => {
+      const unit = state.units.find((candidate) => candidate.id === asEntityId(900));
+      if (unit === undefined) throw new Error('Штурмовик исчез до проверки остановки');
+      return unit.position;
+    };
+    const distanceOf = (state: WorldState): number =>
+      squaredDistanceToFootprint(positionOf(state), baseCell, BASE_FOOTPRINT);
+    let arrived = world;
+    let apart = distanceOf(arrived);
+    let previousApart = apart;
+    const maxTicks = Math.ceil((Math.sqrt(apart) - range) / assault.speed) + 1;
+    expect(apart).toBeGreaterThan(range * range);
 
-    // Дошёл: иначе «встал в четырёх клетках» означало бы «стои́т там,
-    // где его поставили», и разбор проходил бы при сломанном движении.
-    expect(settled).not.toEqual(cellCentre(start));
-    // И встал: лишний тик его больше не двигает.
-    expect(step(arrived, []).units.find((unit) => unit.id === asEntityId(900))?.position).toEqual(
-      settled,
-    );
+    // Обязательно находим первое пересечение: неподвижность в стартовой
+    // точке и поздняя остановка не должны выдавать себя за успех.
+    for (let tick = 0; tick < maxTicks && apart > range * range; tick += 1) {
+      previousApart = apart;
+      arrived = step(arrived, []);
+      apart = distanceOf(arrived);
+      expect(positionOf(arrived).y).toBe(cellCentre(start).y);
+    }
+    expect(previousApart).toBeGreaterThan(range * range);
+    expect(apart).toBeLessThanOrEqual(range * range);
+    expect(apart).toBeGreaterThanOrEqual((range - assault.speed) * (range - assault.speed));
 
-    const apart = squaredDistanceToFootprint(
-      settled ?? cellCentre(start),
-      baseCell,
-      BASE_FOOTPRINT,
-    );
-
-    // Верхняя граница — заказанные четыре клетки. Нижняя не украшение:
-    // без неё правило было бы выполнено и юнитом, упёршимся в стену.
-    expect(apart).toBeLessThanOrEqual(cellsToUnits(4) * cellsToUnits(4));
-    expect(apart).toBeGreaterThan(cellsToUnits(3) * cellsToUnits(3));
-
-    // И стреляет оттуда же: остановка без огня была бы не подходом,
-    // а затором.
-    const baseAfter = arrived.structures.find((s) => s.cell === baseCell);
-    expect(baseAfter?.health).toBeLessThan(baseBefore?.health ?? 0);
+    const settled = positionOf(arrived);
+    const healthAtStop = arrived.structures.find((s) => s.id === baseBefore?.id)?.health;
+    expect(healthAtStop).toBeDefined();
+    expect(healthAtStop).toBeGreaterThan(0);
+    // Проверяем каждый тик, начиная со следующего после пересечения.
+    // Урон на подходе не доказывает, что юнит стреляет после остановки.
+    for (let tick = 0; tick < assault.cooldownTicks + 1; tick += 1) {
+      arrived = step(arrived, []);
+      expect(positionOf(arrived)).toEqual(settled);
+    }
+    const baseAfter = arrived.structures.find((s) => s.id === baseBefore?.id);
+    expect(baseAfter?.health).toBeGreaterThan(0);
+    expect(baseAfter?.health).toBeLessThan(healthAtStop ?? 0);
   });
 });
 
