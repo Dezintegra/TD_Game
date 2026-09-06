@@ -31,6 +31,15 @@ it('temporarily supports receipt replay in the legacy file adapter', () => {
   expect(reopened.saveTask(task, entry, 'save', [], operation).ok).toBe(true);
   expect(reopened.readJournal(task.id)).toBe(journal);
   expect(reopened.readTask(task.id)).toMatchObject({ status: 'pr', spentUsd: 7 });
+  const born = { ...expected, id: '0002-born', title: 'Born' };
+  const create = { key: 'launch-create' };
+  expect(reopened.createTask(born, 'create', create).ok).toBe(true);
+  expect(open().createTask(born, 'create', create).ok).toBe(true);
+  const amendment = { key: 'launch-amend' };
+  expect(reopened.amendTask(task.id, 'evidence', 'amend', 'agent', amendment).ok).toBe(true);
+  const amended = reopened.readJournal(task.id);
+  expect(open().amendTask(task.id, 'evidence', 'amend', 'agent', amendment).ok).toBe(true);
+  expect(open().readJournal(task.id)).toBe(amended);
   expect(
     reopened.saveTask(task, entry, 'save', [], { key: 'other-launch', expected }),
   ).toMatchObject({ outcome: 'conflict' });

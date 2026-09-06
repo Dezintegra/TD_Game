@@ -40,6 +40,65 @@ const save = (recipient, fixture) =>
   recipient.store.saveTask(fixture.task, fixture.entry, '', [], fixture.operation);
 
 describe('recipient report receipts', () => {
+  it('reconciles a created request including archived cards before another POST', async () => {
+    const f = fixture();
+    const task = {
+      ...original,
+      id: '0002-request',
+      status: 'new',
+      title: 'Request',
+      description: 'reason',
+    };
+    const operation = { key: 'report:create:0' };
+    f.recipient.fail('POST', 'cards', 'after');
+    expect((await f.recipient.store.createTask(task, '', operation)).ok).toBe(false);
+    const created = openRecipient(f.path).state().cards.at(-1);
+    await f.recipient.trello.put(`cards/${created.id}`, { closed: true });
+    const restarted = openRecipient(f.path);
+    expect((await restarted.store.createTask(task, '', operation)).ok).toBe(true);
+    expect(restarted.state()).toMatchObject({ posts: 1 });
+    expect(restarted.state().cards).toHaveLength(2);
+  });
+  it('reserves an unused numeric id before the first creating attempt', async () => {
+    const f = fixture();
+    const task = { ...original, id: '0001-collision', status: 'new' };
+    const reserved = await f.recipient.store.reserveReportTask(task, { key: 'create' });
+    expect(reserved.ok).toBe(true);
+    expect(reserved.task.id.startsWith('0002-')).toBe(true);
+    expect(f.recipient.state().posts).toBe(0);
+  });
+  it('does not repeat an uncertain creating POST when inspection fails', async () => {
+    const f = fixture();
+    const task = { ...original, id: '0002-request', status: 'new' };
+    const operation = { key: 'create' };
+    f.recipient.fail('POST', 'cards', 'after');
+    await f.recipient.store.createTask(task, '', operation);
+    const restarted = openRecipient(f.path);
+    restarted.fail('GET', 'boards/');
+    expect((await restarted.store.createTask(task, '', operation)).ok).toBe(false);
+    expect(restarted.state().posts).toBe(1);
+  });
+  it('reconciles amendment and question parts after lost responses', async () => {
+    const f = fixture();
+    const operation = { key: 'amend' };
+    f.recipient.fail('POST', '/actions/comments', 'after');
+    expect(
+      (await f.recipient.store.amendTask(original.id, 'Evidence', '', 'agent', operation)).ok,
+    ).toBe(false);
+    const restarted = openRecipient(f.path);
+    expect(
+      (await restarted.store.amendTask(original.id, 'Evidence', '', 'agent', operation)).ok,
+    ).toBe(true);
+    restarted.fail('POST', '/actions/comments', 'after');
+    expect((await restarted.store.askOwner(f.task, { summary: 'Choose' }, { key: 'ask' })).ok).toBe(
+      false,
+    );
+    expect(
+      (await openRecipient(f.path).store.askOwner(f.task, { summary: 'Choose' }, { key: 'ask' }))
+        .ok,
+    ).toBe(true);
+    expect(openRecipient(f.path).state().posts).toBe(2);
+  });
   it.each(['before', 'after'])('reconciles PUT %s failure across adapter restart', async (when) => {
     const f = fixture();
     f.recipient.fail('PUT', 'cards/', when);
