@@ -516,6 +516,18 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     /** Разобранные карточки — для сканера и для проверки при чтении. */
     parsedCards: () => parsed,
 
+    // Не фильтруем негодные совпадения: иначе дубликат оставит ложное доказательство.
+    dependencyRecords: () =>
+      cards.flatMap((card) => {
+        const item = parseCard(card, { stateByList, labelKeyById });
+        const valid = checkCard(item).length === 0;
+        if (!card.closed && valid) return [];
+        // Имя служит только свидетельством неоднозначности, никогда подтверждением результата.
+        const id =
+          item.task.id ?? card.name?.match(/^([0-9]{4}-[a-z0-9]+(?:-[a-z0-9]+)*)\s*[·—–]/)?.[1];
+        return id ? [{ ...item.task, id, valid: valid && Boolean(item.task.id) }] : [];
+      }),
+
     // Архивирование не доказывает успех: нужна проверенная карточка в «Закрыто».
     closedDependencyIds: () =>
       cards
