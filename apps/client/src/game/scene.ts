@@ -628,7 +628,7 @@ export const createScene = (renderer: RendererHost): Scene => {
    * приклеенным к экрану стеклом. Миникарта и джойстик остаются снаружи
    * по обратной причине: они как раз приборы.
    */
-  const clouds: CloudLayer = createCloudLayer(readCloudColors());
+  const clouds: CloudLayer = createCloudLayer(app.renderer, readCloudColors(), bakeDensity);
 
   shakeContainer.addChild(clouds.layer, worldContainer);
 

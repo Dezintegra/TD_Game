@@ -1,4 +1,5 @@
-import { Container, Sprite, Texture } from 'pixi.js';
+import { CanvasSource, Container, Sprite, Texture } from 'pixi.js';
+import type { Renderer } from 'pixi.js';
 import { fbm } from './relief.js';
 import { CLOUD_PUFF_LIMIT, CLOUD_VARIANTS, cloudCellSize, cloudPuffs } from './clouds.js';
 import type { CloudCamera, CloudViewport } from './clouds.js';
@@ -16,13 +17,8 @@ import type { CloudCamera, CloudViewport } from './clouds.js';
  */
 
 /**
- * Сторона запечённого пятна.
- *
- * Двести пятьдесят шесть при поперечнике на экране около семисот точек —
- * это меньше единицы к одной, и так и задумано: у мглы нет ни одной резкой
- * черты, растягивать нечего. Четыре таких текстуры (три варианта плюс
- * мип-уровни) стоят десятые доли мегабайта, тогда как 512 стоили бы
- * вчетверо больше ради разницы, которой не видно.
+ * Логическая сторона пятна. Физический буфер следует общей плотности
+ * сцены, а экранный размах остаётся прежним при любой плотности экрана.
  */
 export const CLOUD_TEXTURE_SIZE = 256;
 
@@ -113,20 +109,32 @@ const buildPuffPixels = (size: number, variant: number): Uint8ClampedArray => {
   return pixels;
 };
 
-const bakePuffTexture = (variant: number): Texture => {
+const bakePuffTexture = (renderer: Renderer, variant: number, density: number): Texture => {
+  const size = Math.round(CLOUD_TEXTURE_SIZE * density);
   const canvas = document.createElement('canvas');
-  canvas.width = CLOUD_TEXTURE_SIZE;
-  canvas.height = CLOUD_TEXTURE_SIZE;
+  canvas.width = size;
+  canvas.height = size;
 
   const ctx = canvas.getContext('2d');
   if (ctx === null) throw new Error('нет двумерного контекста для пятна мглы');
 
   // Копия, а не сам массив: `ImageData` требует буфер, которым владеет сам.
-  const image = ctx.createImageData(CLOUD_TEXTURE_SIZE, CLOUD_TEXTURE_SIZE);
-  image.data.set(buildPuffPixels(CLOUD_TEXTURE_SIZE, variant));
+  const image = ctx.createImageData(size, size);
+  image.data.set(buildPuffPixels(size, variant));
   ctx.putImageData(image, 0, 0);
 
-  return Texture.from(canvas);
+  const source = new CanvasSource({
+    resource: canvas,
+    resolution: density,
+    width: CLOUD_TEXTURE_SIZE,
+    height: CLOUD_TEXTURE_SIZE,
+    autoGenerateMipmaps: true,
+  });
+  const texture = new Texture({ source });
+  // В отличие от пустой RenderTexture, canvas уже содержит готовый рисунок.
+  // Первая загрузка сама строит мип-уровни; updateMipmaps повторил бы работу.
+  renderer.texture.initSource(source);
+  return texture;
 };
 
 /**
@@ -134,15 +142,19 @@ const bakePuffTexture = (variant: number): Texture => {
  *
  * Спрайты заводятся один раз и с тех пор только переставляются: пятен
  * ровно столько, сколько узлов у решётки, и это число постоянно. Текстуры
- * печутся здесь же — все три разом, доли миллисекунды на всё, — и живут
- * до конца матча.
+ * печутся здесь же и живут до конца матча. Стоимость запекания проверяет
+ * отдельный замер, а обновление кадра только переставляет готовые спрайты.
  */
-export const createCloudLayer = (colors: CloudColors): CloudLayer => {
+export const createCloudLayer = (
+  renderer: Renderer,
+  colors: CloudColors,
+  density: number,
+): CloudLayer => {
   const layer = new Container();
 
   const textures: Texture[] = [];
   for (let variant = 0; variant < CLOUD_VARIANTS; variant += 1) {
-    textures.push(bakePuffTexture(variant));
+    textures.push(bakePuffTexture(renderer, variant, density));
   }
 
   const sprites: Sprite[] = [];
