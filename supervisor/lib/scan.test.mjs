@@ -1,6 +1,7 @@
 ﻿import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { hasWork, scan } from './scan.mjs';
+import { migrateTokenLedger, beginTokenLaunch } from './token-budget.mjs';
 // resolveConfig уже импортирован выше — здесь он нужен и проверкам настройки.
 
 /**
@@ -1265,4 +1266,57 @@ describe('бюджет тяжести Codex', () => {
       expect(kinds(check(101, status))).not.toContain('decompose-again');
     expect(kinds(check(101, 'implement', null))).toContain('continue-stage');
   });
+
+  it('legacy-unknown удерживает без расходования попытки, известный предел по-прежнему ведёт в decompose', () => {
+    const card = task({ status: 'implement', attempts: { continuations: 1, cycleFailures: 0 } });
+    const before = JSON.parse(JSON.stringify(card));
+    const checkLegacy = (tokens, limit = 100, status = 'implement') =>
+      run({
+        config: { ...config, provider: 'codex', codexMaxTaskTokens: limit },
+        tasks: [{ ...card, status }],
+        registry: { entries: [entry('0001-one')] },
+        codexUsage: JSON.parse(JSON.stringify(migrateTokenLedger({ '0001-one': { s: tokens } }))),
+      });
+    const held = checkLegacy(99);
+    expect(held.actions).toEqual([]);
+    expect(held.notes.join()).toContain('legacy-unknown');
+    expect(card).toEqual(before);
+    expect(kinds(checkLegacy(100))).toContain('decompose-again');
+    expect(kinds(checkLegacy(99, null))).toContain('continue-stage');
+    for (const status of ['decompose', 'postmortem']) {
+      expect(kinds(checkLegacy(99, 100, status))).toContain('continue-stage');
+      expect(kinds(checkLegacy(100, 100, status))).not.toContain('decompose-again');
+    }
+    for (const status of ['failed', 'awaiting-po']) {
+      expect(kinds(checkLegacy(100, 100, status))).not.toContain('decompose-again');
+      expect(checkLegacy(99, 100, status).notes.join()).not.toContain('legacy-unknown');
+    }
+  });
+
+  it.each(['unfinished-launch', 'storage-error'])(
+    'не выдаёт запуск при %s после смены этапа',
+    (unknown) => {
+      const ledger = migrateTokenLedger({});
+      if (unknown === 'unfinished-launch') beginTokenLaunch(ledger, '0001-one', 'persisted');
+      else ledger.writeErrors = ['0001-one'];
+      for (const status of ['design', 'audit', 'implement', 'revise']) {
+        const state = {
+          tasks: [task({ status })],
+          registry: { entries: [entry('0001-one')] },
+          codexUsage: ledger,
+        };
+        const held = run({
+          ...state,
+          config: { ...config, provider: 'codex', codexMaxTaskTokens: 100 },
+        });
+        expect(held.actions).toEqual([]);
+        expect(held.notes.join()).toContain(unknown);
+        expect(
+          kinds(
+            run({ ...state, config: { ...config, provider: 'codex', codexMaxTaskTokens: null } }),
+          ),
+        ).toContain('continue-stage');
+      }
+    },
+  );
 });

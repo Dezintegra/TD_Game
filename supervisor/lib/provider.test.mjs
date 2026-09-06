@@ -4,7 +4,7 @@ import { resolveConfig } from '../config/defaults.mjs';
 import { stageCommand } from './stage-command.mjs';
 import { checkEnvironment } from './environment.mjs';
 import { providerOf, readCodexAnswer } from './provider.mjs';
-import { beginTokenLaunch } from './token-budget.mjs';
+import { beginTokenLaunch, taskTokens } from './token-budget.mjs';
 
 const home = fileURLToPath(new URL('..', import.meta.url));
 const config = resolveConfig({ provider: 'codex' }).config;
@@ -186,6 +186,26 @@ it('согласует все completed, resume и уменьшение без �
   expect(smaller.usage).toBeNull();
   expect(smaller.usageLedger.tasks.answer.sessions['thread-1'].knownTokens).toBe(2180);
   expect(smaller.usageReasons).toContain('decreased-usage');
+});
+
+it('повтор finish и раннего снимка после другого запуска не меняет реестр или расход старого запуска', () => {
+  const first = readCodexAnswer(run(), config);
+  const repeated = readCodexAnswer(run(), config, { ledger: first.usageLedger });
+  expect(repeated.usageLedger).toEqual(first.usageLedger);
+  beginTokenLaunch(first.usageLedger, 'answer', 'resume', 'thread-1');
+  const second = readCodexAnswer(
+    run([
+      ...events.slice(0, -1),
+      { type: 'turn.completed', usage: { input_tokens: 2000, output_tokens: 180 } },
+    ]),
+    config,
+    { ledger: first.usageLedger, launchId: 'resume' },
+  );
+  const replay = readCodexAnswer(run(), config, { ledger: second.usageLedger });
+  expect(replay.usageLedger).toEqual(second.usageLedger);
+  expect(replay.usage).toEqual(first.usage);
+  expect(replay.usageTotals).toEqual(first.usageTotals);
+  expect(taskTokens(replay.usageLedger, 'answer')).toBe(2180);
 });
 
 it('включает Windows sandbox без Git-авторизации в argv', async () => {

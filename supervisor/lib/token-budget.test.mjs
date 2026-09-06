@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -12,6 +12,12 @@ import {
   normalizeTokenUsage,
   migrateTokenLedger,
   commitTokenLedger,
+  beginTokenLaunch,
+  bindTokenSession,
+  observeTokenUsage,
+  completeTokenLaunch,
+  taskTokens,
+  taskTokenStatus,
 } from './token-budget.mjs';
 
 it('v2 переносит каждую старую сумму с legacy-unknown и проверяет схему', () => {
@@ -33,6 +39,68 @@ it('v2 переносит каждую старую сумму с legacy-unknown
     { version: 2, tasks: { a: { sessions: {}, launches: { l: {} } } } },
   ])
     expect(() => migrateTokenLedger(data)).toThrow('счётчик');
+});
+
+it('миграция не добавляет следующий снимок к истории и не снимает legacy-unknown', () => {
+  const ledger = migrateTokenLedger({ task: { s: 1740 } });
+  beginTokenLaunch(ledger, 'task', 'resume', 's');
+  observeTokenUsage(ledger, 'task', 'resume', 1, { input_tokens: 500, output_tokens: 40 });
+  completeTokenLaunch(ledger, 'task', 'resume');
+  expect(taskTokens(ledger, 'task')).toBe(1740);
+  expect(taskTokenStatus(ledger, 'task').reasons).toContain('legacy-unknown');
+  observeTokenUsage(ledger, 'task', 'resume', 2, { input_tokens: 2000, output_tokens: 180 });
+  expect(taskTokens(ledger, 'task')).toBe(2180);
+  expect(
+    launchTokenUsage(ledger.tasks.task.sessions.s, ledger.tasks.task.launches.resume),
+  ).toBeNull();
+});
+
+it('падение только кэша диагностируется, но input/output остаются сопоставимыми', () => {
+  const ledger = migrateTokenLedger({});
+  beginTokenLaunch(ledger, 'task', 'one');
+  bindTokenSession(ledger, 'task', 'one', 's');
+  observeTokenUsage(ledger, 'task', 'one', 1, {
+    input_tokens: 1000,
+    output_tokens: 100,
+    cached_input_tokens: 800,
+  });
+  completeTokenLaunch(ledger, 'task', 'one');
+  beginTokenLaunch(ledger, 'task', 'two', 's');
+  observeTokenUsage(ledger, 'task', 'two', 1, {
+    input_tokens: 1000,
+    output_tokens: 100,
+    cached_input_tokens: 200,
+  });
+  completeTokenLaunch(ledger, 'task', 'two');
+  const { sessions, launches } = ledger.tasks.task;
+  expect(sessions.s.diagnostics).toContain('decreased-cache');
+  expect(taskTokenStatus(ledger, 'task').complete).toBe(true);
+  expect(launchTokenUsage(sessions.s, launches.two)).toEqual({
+    input_tokens: 0,
+    output_tokens: 0,
+    cached_input_tokens: 0,
+  });
+});
+
+it('реальный сбой записи временного файла не меняет память или прежний файл', () => {
+  const root = mkdtempSync(join(tmpdir(), 'td-token-write-'));
+  const config = { paths: { local: '.pipeline' } };
+  try {
+    const ledger = migrateTokenLedger({});
+    const save = (next) => writeTokenLedger(root, config, next);
+    save(ledger);
+    const temporary = join(root, '.pipeline/codex-usage.json.tmp');
+    mkdirSync(temporary);
+    const update = (next) => beginTokenLaunch(next, 'task', 'launch');
+    expect(() => commitTokenLedger(ledger, update, save)).toThrow();
+    expect(ledger.tasks).toEqual({});
+    expect(readTokenLedger(root, config)).toEqual(ledger);
+    rmSync(temporary, { recursive: true });
+    expect(commitTokenLedger(ledger, update, save)).toBe(true);
+    expect(readTokenLedger(root, config)).toEqual(ledger);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it('v2 переживает round-trip, а ошибка до rename оставляет память и файл для повтора', () => {

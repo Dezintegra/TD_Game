@@ -8,6 +8,7 @@ import {
   taskTokens,
 } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
+import { CROSSCUT } from '../config/transitions.mjs';
 import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
 import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
 import { providerOf, readCodexAnswer, codexDenial } from './provider.mjs';
@@ -229,7 +230,12 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
-      if (usageWriteErrors.size && config.codexMaxTaskTokens != null)
+      if (
+        usageWriteErrors.size &&
+        config.codexMaxTaskTokens != null &&
+        assignment.stage !== 'decompose' &&
+        !CROSSCUT.includes(assignment.stage)
+      )
         return { ok: false, reason: 'busy', why: 'Не сохранён расход Codex; бюджет неизвестен' };
       if (policyBlocked)
         return {
