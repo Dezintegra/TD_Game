@@ -38,6 +38,13 @@ export const VERDICTS = {
  * @returns {{ verdict: string, why: string }}
  */
 export function mayCleanup({ task, entry, pr, unpushed, ownCommits }) {
+  // Отсутствие дерева не доказывает вливание: после частичной уборки
+  // результат проверяется заново до перевода карточки в «Выполнено».
+  if (!entry && task.links?.pr && pr?.state !== 'merged') {
+    return pr?.state === 'unknown'
+      ? { verdict: 'wait', why: 'состояние pull request недоступно' }
+      : { verdict: 'fail', why: 'pull request не влит, выполнение не подтверждено' };
+  }
   if (!entry) {
     return { verdict: 'skip', why: 'дерева нет, убирать нечего' };
   }

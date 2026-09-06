@@ -83,7 +83,7 @@ describe('успешный этап двигает задачу по маршр�
       task({ type: 'note', status: 'triage' }),
       report({ stage: 'triage' }),
     );
-    expect(verdict.status).toBe('closed');
+    expect(verdict.status).toBe('completed');
   });
 
   it('замер отдаёт задачу-прогон толкованию, а не закрывает', () => {
@@ -102,7 +102,7 @@ describe('успешный этап двигает задачу по маршр�
       task({ type: 'run', status: 'interpret', run: { kind: 'arena', expectation: 'ровно' } }),
       report({ stage: 'interpret' }),
     );
-    expect(verdict.status).toBe('closed');
+    expect(verdict.status).toBe('completed');
     expect(verdict.problems).toEqual([]);
   });
 

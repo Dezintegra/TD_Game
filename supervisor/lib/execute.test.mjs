@@ -1554,10 +1554,10 @@ describe('уборка после потери записи реестра', () 
     }
     const saveTask = io.saveTask.bind(io);
     io.saveTask = (...args) => {
-      if (args[0].status === 'closed') {
+      if (args[0].status === 'completed') {
         expect(resources.size).toBe(0);
         expect(registry.size).toBe(0);
-        calls.push('closed');
+        calls.push('completed');
       }
       return saveTask(...args);
     };
@@ -1595,7 +1595,7 @@ describe('уборка после потери записи реестра', () 
       adopt(w);
       expect(w.io.tasks.get(id).owner).toBe(owner);
       const [result] = await execute([sweep], w.io);
-      expect(result).toMatchObject({ result: 'done', status: 'closed' });
+      expect(result).toMatchObject({ result: 'done', status: 'completed' });
       expect(w.calls).toEqual([
         'register',
         ['pr', 50],
@@ -1603,9 +1603,9 @@ describe('уборка после потери записи реестра', () 
         'local',
         'remote',
         'drop',
-        'closed',
+        'completed',
       ]);
-      expect(w.io.tasks.get(id).status).toBe('closed');
+      expect(w.io.tasks.get(id).status).toBe('completed');
       expect(w.io.spawned).toEqual([]);
     },
   );
@@ -1614,8 +1614,8 @@ describe('уборка после потери записи реестра', () 
     const w = world({ present: false });
     expect(w.repair()).toEqual([]);
     await execute([sweep], w.io);
-    expect(w.io.tasks.get(id).status).toBe('closed');
-    expect(w.calls).toEqual([['pr', 50], 'closed']);
+    expect(w.io.tasks.get(id).status).toBe('completed');
+    expect(w.calls).toEqual([['pr', 50], 'completed']);
   });
 
   it('починка не присваивает и не удаляет чужое дерево', () => {
@@ -1665,14 +1665,14 @@ describe('уборка после потери записи реестра', () 
       expect(w.registry.get(id)).toBe(entry);
       expect(w.io.tasks.get(id).status).toBe('cleanup');
       expect(w.resources).toEqual(new Set([resource]));
-      expect(w.calls).not.toContain('closed');
+      expect(w.calls).not.toContain('completed');
       expect(w.calls).not.toContain('drop');
       if (resource === 'tree') {
         w.failures.clear();
         expect(w.repair()).toEqual([]);
         const [retry] = await execute([sweep], w.io);
-        expect(retry).toMatchObject({ result: 'done', status: 'closed' });
-        expect(w.io.tasks.get(id).status).toBe('closed');
+        expect(retry).toMatchObject({ result: 'done', status: 'completed' });
+        expect(w.io.tasks.get(id).status).toBe('completed');
         expect(w.registry.size).toBe(0);
         expect(w.resources.size).toBe(0);
       }
@@ -1689,7 +1689,7 @@ describe('уборка', () => {
     const io = fakeIo({ tasks: [inCleanup()], pr: { state: 'merged' } });
     const [result] = await execute([sweep], io);
     expect(result.result).toBe('done');
-    expect(io.tasks.get('0001-one').status).toBe('closed');
+    expect(io.tasks.get('0001-one').status).toBe('completed');
     expect(io.steps).toContain('запись реестра 0001-one снята');
   });
 

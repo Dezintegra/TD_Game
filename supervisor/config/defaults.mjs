@@ -392,6 +392,7 @@ export const DEFAULTS = {
       revise: 'Доработка',
       deploy: 'Выкладка',
       cleanup: 'Уборка',
+      completed: 'Выполнено',
       closed: 'Закрыто',
       postmortem: 'Разбор ошибки',
       failed: 'Ошибка',

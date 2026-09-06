@@ -289,7 +289,7 @@ export function scan(state) {
 
     const pending = (task.recovery.fixedBy ?? []).filter((id) => {
       const fix = byId.get(id);
-      if (fix) return fix.status !== 'closed';
+      if (fix) return fix.status !== 'completed';
       // Негодная карточка — задача есть, но не читается: ждём её. Задачи,
       // которой нет нигде, считаем закрытой и убранной в архив: идентификатор
       // проверен при разборе, и исчезнуть иначе он не мог.

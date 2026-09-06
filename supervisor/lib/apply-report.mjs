@@ -55,10 +55,10 @@ const halt = (task, why, problems = []) => ({
  * Разбор нарочно табличный: маршрут читается глазами целиком, а не
  * собирается из ветвлений по всему файлу.
  */
-function afterDone(task) {
+function afterDone(task, report) {
   switch (task.status) {
     case 'triage':
-      return 'closed';
+      return report.requests?.length ? 'closed' : 'completed';
     case 'decompose':
       return 'design';
     case 'design':
@@ -74,7 +74,7 @@ function afterDone(task) {
       // лишь одна из проверок перед ревью, и толковать его будет ревьюер.
       return task.type === 'run' ? 'interpret' : 'pr';
     case 'interpret':
-      return 'closed';
+      return 'completed';
     // Доработка ведёт обратно в ожидание проверок, а не в ревью: правка
     // требует нового прогона CI, а ревью на непроверенном коде запрещено.
     case 'revise':
@@ -84,7 +84,7 @@ function afterDone(task) {
     case 'deploy':
       return 'cleanup';
     case 'cleanup':
-      return 'closed';
+      return task.links?.pr ? 'completed' : 'closed';
     // Удавшийся разбор ошибки ведёт задачу в саму ошибку — и это не сбой,
     // а его назначение. Разбор не спасает задачу, а объясняет, почему её
     // не удалось довести; поднимает её оттуда человек.
@@ -274,7 +274,7 @@ export function applyReport(task, report, limits = {}) {
     }
   }
 
-  const target = report.outcome === 'done' ? afterDone(task) : afterRejected(task);
+  const target = report.outcome === 'done' ? afterDone(task, report) : afterRejected(task);
   if (!target) {
     problems.push(`из «${task.status}» исход «${report.outcome}» никуда не ведёт`);
     return halt(task, problems.join('; '), problems);

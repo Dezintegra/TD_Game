@@ -44,12 +44,12 @@ export function resultPredecessor(id, tasks, records = [], invalid = []) {
   ].filter((item) => item.id === id);
   if (matches.length !== 1)
     return {
-      problem: matches.length ? 'неоднозначный идентификатор' : 'нет подтверждения закрытия',
+      problem: matches.length ? 'неоднозначный идентификатор' : 'нет подтверждения выполнения',
     };
   const predecessor = matches[0];
   if (predecessor.valid === false || dependencyFormatProblem(predecessor))
     return { problem: 'негодный предшественник' };
-  if (predecessor.status !== 'closed') return { problem: `не закрыт (${predecessor.status})` };
+  if (predecessor.status !== 'completed') return { problem: `не выполнен (${predecessor.status})` };
   return { predecessor };
 }
 
@@ -91,7 +91,7 @@ export function dependencyCycleProblem(task, tasks, records = []) {
   return null;
 }
 
-/** Исчезновение карточки не доказывает завершение; принимаем только явное closed. */
+/** Исчезновение карточки не доказывает завершение; принимаем только явное completed. */
 export function pendingDependencies(
   task,
   tasks,
@@ -114,10 +114,10 @@ export function pendingDependencies(
       return unmet ? [`${id} (PR #${result.pr}: ${unmet})`] : [];
     }
     const matches = tasks.filter((item) => item.id === id);
-    if (matches.length === 1 && matches[0].status === 'closed') return [];
+    if (matches.length === 1 && matches[0].status === 'completed') return [];
     if (matches.length === 0 && archivedClosed.includes(id)) return [];
     return [
-      `${id} (${matches.length > 1 ? 'неоднозначный идентификатор' : (matches[0]?.status ?? 'нет подтверждения закрытия')})`,
+      `${id} (${matches.length > 1 ? 'неоднозначный идентификатор' : (matches[0]?.status ?? 'нет подтверждения выполнения')})`,
     ];
   });
 }

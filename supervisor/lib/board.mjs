@@ -20,6 +20,7 @@ export const COLUMNS = [
   { title: 'Выкладка', states: ['deploy', 'cleanup'] },
   { title: 'Ждут вас', states: ['awaiting-po'] },
   { title: 'Остановлены', states: ['failed'] },
+  { title: 'Выполнено', states: ['completed'] },
   { title: 'Закрыты', states: ['closed'] },
 ];
 
