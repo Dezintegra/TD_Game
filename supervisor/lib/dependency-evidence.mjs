@@ -1,6 +1,7 @@
 import { NEEDS_SESSION } from '../config/transitions.mjs';
 import {
   dependencyFormatProblem,
+  dependencyCycleProblem,
   mergeEvidenceProblem,
   resultPredecessor,
 } from './dependencies.mjs';
@@ -30,7 +31,8 @@ export async function collectDependencyEvidence({
       )
     )
       continue;
-    if (dependencyFormatProblem(task)) continue;
+    if (dependencyFormatProblem(task) || dependencyCycleProblem(task, tasks, dependencyRecords))
+      continue;
     for (const result of task.dependencyResults ?? []) {
       const { predecessor } = resultPredecessor(result.taskId, tasks, dependencyRecords, invalid);
       if (predecessor?.links?.pr === result.pr) numbers.add(result.pr);

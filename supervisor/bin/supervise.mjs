@@ -4,7 +4,9 @@ import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
 import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { createCommandRunner } from '../lib/command-runner.mjs';
+import { buildDependencyState } from '../lib/dependency-state.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   existsSync,
@@ -175,22 +177,7 @@ function probeApi() {
 }
 
 /** Запуск внешней команды с ответом вместо исключения. */
-function runCommand(args, program = 'git', cwd = root) {
-  try {
-    // `windowsHide` прячет консольное окно потомка. Без него каждый вызов
-    // git из супервизора, запущенного в фоне, вспыхивает отдельным окном
-    // и забирает фокус — а вызовов этих десятки за оборот.
-    const stdout = execFileSync(program, args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: 'pipe',
-      windowsHide: true,
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (error) {
-    return { code: error.status ?? 1, stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
-  }
-}
+const runCommand = createCommandRunner(root);
 
 const runGit = (args) => runCommand(args, 'git');
 const { config, missing } = loadConfig();
@@ -404,6 +391,7 @@ async function openBacklog({ mayWrite }) {
     marked,
     store,
     closedDependencyIds: store.closedDependencyIds(),
+    dependencyRecords: store.dependencyRecords(),
     notes: [
       ...adopted.problems,
       ...(adopted.adopted.length > 0 ? [`выданы номера: ${adopted.adopted.join(', ')}`] : []),
@@ -572,13 +560,15 @@ async function turn() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const state = {
-    tasks: backlog.tasks,
-    closedDependencyIds: backlog.closedDependencyIds ?? [],
-    invalid: backlog.invalid,
-    marked: backlog.marked ?? [],
+    ...(await buildDependencyState({
+      backlog,
+      config,
+      root,
+      run: runCommand,
+      reports: supervisor.reports,
+      running: supervisor.running(),
+    })),
     registry,
-    reports: supervisor.reports,
-    running: supervisor.running(),
     // Исходы этапов, осиротевших при смене супервизора: живость они уже
     // не значат, зато объясняют в журнале задачи, почему прошлый заход
     // ничего не дал.

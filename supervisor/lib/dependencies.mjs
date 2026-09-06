@@ -68,6 +68,29 @@ export function mergeEvidenceProblem(evidence, pr, mainBranch) {
   return null;
 }
 
+/** Даже закрытая карточка не позволяет обойти цикл объявленных предусловий. */
+export function dependencyCycleProblem(task, tasks, records = []) {
+  const byId = new Map([...tasks, ...records, task].map((item) => [item.id, item]));
+  const visiting = new Set();
+  const checked = new Set();
+  const stack = [{ id: task.id, exit: false }];
+  while (stack.length) {
+    const { id, exit } = stack.pop();
+    if (exit) {
+      visiting.delete(id);
+      checked.add(id);
+      continue;
+    }
+    if (visiting.has(id)) return `цикл зависимостей через ${id}`;
+    if (checked.has(id)) continue;
+    visiting.add(id);
+    stack.push({ id, exit: true });
+    const ids = byId.get(id)?.dependsOn;
+    if (Array.isArray(ids)) for (const next of ids) stack.push({ id: next, exit: false });
+  }
+  return null;
+}
+
 /** Исчезновение карточки не доказывает завершение; принимаем только явное closed. */
 export function pendingDependencies(
   task,
@@ -77,6 +100,8 @@ export function pendingDependencies(
 ) {
   const problem = dependencyFormatProblem(task);
   if (problem) return [problem];
+  const cycle = dependencyCycleProblem(task, tasks, records);
+  if (cycle) return [cycle];
   return (task.dependsOn ?? []).flatMap((id) => {
     const result = (task.dependencyResults ?? []).find((item) => item.taskId === id);
     if (result) {
