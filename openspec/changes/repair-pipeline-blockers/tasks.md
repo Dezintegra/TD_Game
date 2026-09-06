@@ -16,3 +16,4 @@
 ## 4. Runtime Codex evidence adapter
 
 - [x] 4.1 Connect createSupervisor to an injected host reader of attributable completed-session JSONL evidence and persist only its durable cumulative snapshot after child completion.
+- [x] 4.2 Finalize durable evidence through the normal launch reducer and preserve atomic supervisor-lock handoff ownership.

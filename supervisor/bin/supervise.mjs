@@ -428,13 +428,13 @@ const supervisor = createSupervisor({
   root,
   readCodexEvidence: (child) => {
     if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
-    const paths = sessionFiles(join(homedir(), '.codex', 'sessions'), `${child.sessionId}.jsonl`);
+    const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
+    const paths = sessionFiles(join(codexHome, 'sessions'), `${child.sessionId}.jsonl`);
     if (paths.length !== 1) return { ok: false, reason: 'ambiguous-session-evidence' };
     try {
       return sessionEvidence(readFileSync(paths[0], 'utf8'), {
         sessionId: child.sessionId,
         cwd: child.path ? resolve(root, child.path) : root,
-        projectRoot: root,
         after: child.startedAt,
       });
     } catch {
@@ -1009,7 +1009,8 @@ async function loop() {
 const startedAt = new Date().toISOString();
 // Собственный номер нужен переданному замку: старый процесс, перезапускаясь,
 // записывает в замок номер нового и выходит, и новому достаточно узнать себя.
-const verdict = lockVerdict(readLock(), startedAt, config.lockStaleMinutes, isAlive, process.pid);
+const existingLock = readLock();
+const verdict = lockVerdict(existingLock, startedAt, config.lockStaleMinutes, isAlive, process.pid);
 if (!verdict.take) {
   // Сторож будит супервизор раз в пять минут независимо от того, жив ли
   // прежний. Отсев двойного запуска — весь тут, и потому замок берётся
@@ -1018,9 +1019,19 @@ if (!verdict.take) {
   console.log(`СУПЕРВИЗОР УЖЕ РАБОТАЕТ: ${verdict.why}`);
 } else {
   // Отметка передачи читается ДО записи своего замка: своя запись её стирает.
-  const handedFrom = readLock()?.handedFrom ?? null;
-  if (existsSync(lockPath()) && readLock()?.pid !== process.pid) rmSync(lockPath());
-  if (!claimLock(newLock(process.pid, startedAt))) {
+  const handedFrom = existingLock?.handedFrom ?? null;
+  // Переданный замок уже принадлежит этому PID. Перезаписываем его на месте:
+  // `wx` здесь неизбежно отказал бы, а снятие создало бы окно для сторожа.
+  const acquired =
+    existingLock?.pid === process.pid
+      ? (writeLock(newLock(process.pid, startedAt)), true)
+      : (() => {
+          const before = existsSync(lockPath()) ? readFileSync(lockPath(), 'utf8') : null;
+          if (before != null && before !== JSON.stringify(existingLock, null, 2)) return false;
+          if (before != null) rmSync(lockPath());
+          return claimLock(newLock(process.pid, startedAt));
+        })();
+  if (!acquired) {
     console.log('СУПЕРВИЗОР УЖЕ РАБОТАЕТ: замок занят при атомарном захвате');
     process.exitCode = 0;
   } else {
