@@ -134,6 +134,8 @@
       "PowerShell(node scripts/perf-run.mjs:*)",
       "PowerShell(openspec:*)",
 
+      "PowerShell(node supervisor/bin/check-install-snapshot.mjs)",
+      "PowerShell(node supervisor/bin/check-install-snapshot.mjs --run)",
       "PowerShell(node -e \"1\")",
       "PowerShell('hello' -match 'l')",
 
