@@ -2,7 +2,7 @@
 
 ### Requirement: Explicit prerequisite metadata
 
-The supervisor SHALL preserve optional `dependsOn` metadata containing complete task identifiers; absence SHALL mean no prerequisites. Optional `dependencyResults` SHALL contain objects with exactly `taskId`, `kind: "merged-pr"`, and a positive integer `pr`. Each `taskId` SHALL occur once and belong to `dependsOn`. Absence or an empty list SHALL preserve completion-only semantics. Both task schemas, card read/save and request-to-card creation SHALL preserve and validate this contract. Unsupported kinds, malformed entries and references outside `dependsOn` MUST NOT silently become completion-only prerequisites. `links.related` MUST NOT supply prerequisites or expected results.
+The supervisor SHALL preserve optional `dependsOn` metadata containing complete task identifiers; absence SHALL mean no prerequisites. Optional `dependencyResults` SHALL contain objects with exactly `taskId`, `kind: "merged-pr"`, and a positive integer `pr`. Each `taskId` SHALL occur once and belong to `dependsOn`. Absence or an empty list SHALL preserve completion-only semantics. Card read/save and request-to-card creation SHALL preserve this contract, and the supervisor SHALL validate it before task admission regardless of the backlog storage implementation. Validation MUST NOT depend on the presence of a legacy file store or its schema. Unsupported kinds, malformed entries and references outside `dependsOn` MUST NOT silently become completion-only prerequisites. `links.related` MUST NOT supply prerequisites or expected results.
 
 #### Scenario: Round trip
 
@@ -24,6 +24,12 @@ The supervisor SHALL preserve optional `dependsOn` metadata containing complete 
 
 - **WHEN** a result uses an unsupported kind, a nonpositive or noninteger PR, an incomplete task identifier, a duplicate task identifier, extra fields, or a task outside `dependsOn`
 - **THEN** it is reported as invalid and cannot permit a launch by dropping the result condition
+
+#### Scenario: Trello contract after file-store removal
+
+- **WHEN** the legacy file store and its schema are absent and Trello supplies cards or receives task requests
+- **THEN** valid dependencyResults survive card read/save and request-to-card creation
+- **AND** invalid declarations still prevent launches and are rejected in requests without relying on the removed schema
 
 ### Requirement: Gate task launches on completion
 
