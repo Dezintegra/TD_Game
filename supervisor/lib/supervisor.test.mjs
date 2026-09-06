@@ -1699,7 +1699,7 @@ describe('долговечные наблюдения Codex', () => {
         },
       },
       saveCodexUsage: (next) => {
-        saved = structuredClone(next);
+        saved = globalThis.structuredClone(next);
       },
     });
     expect(taskTokens(h.supervisor.codexUsage, '0012-design')).toBe(1200);
