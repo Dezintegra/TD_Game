@@ -86,6 +86,17 @@
 
 ## Зависимости
 
+- Открытое изменение `cap-task-cost` пересекается по `transferReport`
+  в `supervisor/lib/execute.mjs` (его шаг 3) и по обеим схемам задачи
+  `supervisor/config/task-schema.json`, `manage/schema.json` (его шаг 5).
+  На свежей базе от 06.09.2026 его код уже присутствует: вызов
+  `addSpent(next, report.costUsd)` находится в `execute.mjs:153`, поле
+  `spentUsd` — в обеих схемах на строке 185. Поэтому наша реализация
+  обязана сохранить накопление стоимости и поле верхнего уровня `spentUsd`,
+  включая его описание и ограничения, а также `attempts.apiErrors`.
+  Легший вторым исполнитель сверяет совмещённый diff этих мест;
+  при конфликте останавливается и называет файл в отчёте.
+  Требования независимы: порядок архивации с `cap-task-cost` безразличен.
 - Дельта пишется в способность `dev-backlog`, которой в `openspec/specs/`
   ещё нет: она живёт открытыми изменениями (`agent-backlog-pipeline`,
   `failed-task-postmortem`, `backlog-in-trello`, `run-without-the-owner`).
