@@ -124,19 +124,44 @@ it('дочерний Codex учитывает только подключённ�
   const h = harness({
     config: { provider: 'codex' },
     home: fileURLToPath(new URL('..', import.meta.url)),
+    stages: { '0001-one:design': { sessionId: 'thread', startedAt: NOW } },
+    codexUsage: {
+      version: 2,
+      tasks: {
+        '0001-one': {
+          sessions: {
+            thread: {
+              knownTokens: 1585645,
+              snapshot: { input_tokens: 1585000, output_tokens: 645 },
+              reasons: [],
+            },
+          },
+          launches: {},
+        },
+      },
+    },
     readCodexEvidence: () => ({
       ok: true,
       snapshot: { input_tokens: 2003546, output_tokens: 3788, cached_input_tokens: 1788288 },
     }),
   });
-  h.supervisor.spawnStage(assignment());
+  h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' }));
   h.children[0].stdout.emit(
     'data',
     JSON.stringify({ type: 'thread.started', thread_id: 'thread' }) + '\n',
   );
+  h.children[0].stdout.emit(
+    'data',
+    JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(report) },
+    }) + '\n',
+  );
   await h.answer({ type: 'turn.completed', usage: { input_tokens: 421089, output_tokens: 600 } });
   expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.knownTokens).toBe(2007334);
   expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(true);
+  expect(h.supervisor.reports[0]).toMatchObject(report);
+  expect(h.logged.join('\n')).not.toContain('неизвестен');
 });
 
 const assignment = (over = {}) => ({

@@ -58,16 +58,21 @@ export function sessionEvidence(text, { sessionId, cwd, projectRoot = null, afte
       if (typeof payload.turn_id !== 'string' || !payload.turn_id || activeTurn)
         return fail('незавершённый turn');
       if (turns.has(payload.turn_id)) return fail('turn запущен повторно');
-      turns.set(payload.turn_id, 'active');
+      turns.set(payload.turn_id, { state: 'active', startedAt: Date.parse(event.timestamp) });
       activeTurn = payload.turn_id;
       continue;
     }
     if (payload?.type === 'task_complete') {
-      if (payload.turn_id !== activeTurn || turns.get(payload.turn_id) !== 'active')
+      if (payload.turn_id !== activeTurn || turns.get(payload.turn_id)?.state !== 'active')
         return fail('task_complete без активного task_started');
-      turns.set(payload.turn_id, 'completed');
+      const turn = turns.get(payload.turn_id);
+      turns.set(payload.turn_id, { ...turn, state: 'completed' });
       activeTurn = null;
-      lastCompleted = { turnId: payload.turn_id, at: Date.parse(event.timestamp) };
+      lastCompleted = {
+        turnId: payload.turn_id,
+        at: Date.parse(event.timestamp),
+        startedAt: turn.startedAt,
+      };
       continue;
     }
     if (event.type === 'event_msg' && payload?.type === 'token_count') {
@@ -98,11 +103,15 @@ export function sessionEvidence(text, { sessionId, cwd, projectRoot = null, afte
     if (previous && !same(previous, item)) return fail('конфликтующий response_id');
     if (!previous) records.set(item.responseId, item);
   }
-  if (!turns.size || activeTurn || [...turns.values()].some((state) => state !== 'completed'))
+  if (!turns.size || activeTurn || [...turns.values()].some((turn) => turn.state !== 'completed'))
     return fail('незавершённый turn');
   if (
     after != null &&
-    (!lastCompleted || !Number.isFinite(lastCompleted.at) || lastCompleted.at < Date.parse(after))
+    (!lastCompleted ||
+      !Number.isFinite(lastCompleted.at) ||
+      !Number.isFinite(lastCompleted.startedAt) ||
+      lastCompleted.startedAt < Date.parse(after) ||
+      lastCompleted.at < Date.parse(after))
   )
     return fail('stale completed turn');
 

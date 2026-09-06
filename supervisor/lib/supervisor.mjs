@@ -5,7 +5,6 @@ import {
   bindTokenSession,
   observeTokenUsage,
   completeTokenLaunch,
-  launchTokenUsage,
   taskTokens,
 } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
@@ -840,6 +839,15 @@ export function createSupervisor({
     children.delete(child.taskId);
     stopPulse();
 
+    let durableEvidence = null;
+    if (providerOf(config) === 'codex' && readCodexEvidence) {
+      try {
+        durableEvidence = readCodexEvidence(child);
+      } catch (error) {
+        durableEvidence = { ok: false, reason: `evidence-reader-error: ${error.message}` };
+      }
+    }
+
     const answer =
       providerOf(config) === 'codex'
         ? readCodexAnswer(run, config, {
@@ -847,34 +855,12 @@ export function createSupervisor({
             taskId: child.taskId,
             launchId: child.launchId,
             deferUsage: Boolean(readCodexEvidence),
+            durableEvidence,
           })
         : readAnswer(run);
     if (providerOf(config) === 'codex') {
       persistUsage(child.taskId, (next) => {
-        if (!readCodexEvidence) {
-          next.tasks[child.taskId] = answer.usageLedger.tasks[child.taskId];
-          return;
-        }
-        const evidence = readCodexEvidence(child);
-        beginTokenLaunch(next, child.taskId, child.launchId, child.sessionId);
-        if (child.sessionId) bindTokenSession(next, child.taskId, child.launchId, child.sessionId);
-        const launch = next.tasks[child.taskId].launches[child.launchId];
-        const session = next.tasks[child.taskId].sessions[launch.sessionId];
-        if (evidence?.ok && session) {
-          session.knownTokens = Math.max(
-            session.knownTokens,
-            evidence.snapshot.input_tokens + evidence.snapshot.output_tokens,
-          );
-          session.snapshot = evidence.snapshot;
-          launch.completed = true;
-          answer.usage = launchTokenUsage(session, launch);
-        } else
-          completeTokenLaunch(
-            next,
-            child.taskId,
-            child.launchId,
-            evidence?.reason ?? 'unreported-tail',
-          );
+        next.tasks[child.taskId] = answer.usageLedger.tasks[child.taskId];
       });
       usageWriteErrors.delete(child.taskId);
       answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${config.codexMaxTaskTokens ?? 'без лимита'} токенов задачи${answer.usage ? '' : '; расход текущего запуска неизвестен'}`;
