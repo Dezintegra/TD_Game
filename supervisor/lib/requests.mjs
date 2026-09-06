@@ -141,6 +141,9 @@ export function taskFromRequest(
   const task = {
     $schema: '../schema.json',
     ...(Object.hasOwn(request, 'dependsOn') ? { dependsOn: [...request.dependsOn] } : {}),
+    ...(Object.hasOwn(request, 'dependencyResults')
+      ? { dependencyResults: request.dependencyResults.map((result) => ({ ...result })) }
+      : {}),
     id,
     type,
     title: title.slice(0, 200),

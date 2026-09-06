@@ -1,7 +1,6 @@
 /** Неверные зависимости удерживают задачу, а не превращаются в пустой список. */
 export function dependencyFormatProblem(task) {
-  if (!Object.hasOwn(task, 'dependsOn')) return null;
-  const ids = task.dependsOn;
+  const ids = Object.hasOwn(task, 'dependsOn') ? task.dependsOn : [];
   if (
     !Array.isArray(ids) ||
     ids.some((id) => typeof id !== 'string' || !/^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$/.test(id))
@@ -10,14 +9,85 @@ export function dependencyFormatProblem(task) {
   }
   if (ids.includes(task.id)) return `самоссылка ${task.id}`;
   if (new Set(ids).size !== ids.length) return 'dependsOn содержит повторные идентификаторы';
+  if (Object.hasOwn(task, 'dependencyResults')) {
+    const results = task.dependencyResults;
+    if (!Array.isArray(results)) return 'dependencyResults должен быть массивом';
+    const seen = new Set();
+    for (const result of results) {
+      if (
+        !result ||
+        typeof result !== 'object' ||
+        Array.isArray(result) ||
+        Object.keys(result).length !== 3 ||
+        !Object.hasOwn(result, 'taskId') ||
+        !Object.hasOwn(result, 'kind') ||
+        !Object.hasOwn(result, 'pr') ||
+        result.kind !== 'merged-pr' ||
+        !Number.isInteger(result.pr) ||
+        result.pr <= 0 ||
+        !ids.includes(result.taskId)
+      )
+        return 'dependencyResults: ожидается { taskId из dependsOn, kind: merged-pr, pr: положительное целое }';
+      if (seen.has(result.taskId)) return `dependencyResults: повтор ${result.taskId}`;
+      seen.add(result.taskId);
+    }
+  }
+  return null;
+}
+
+/** Для результата архивные ID недостаточны; негодные дубликаты тоже учитываются. */
+export function resultPredecessor(id, tasks, records = [], invalid = []) {
+  const matches = [
+    ...tasks,
+    ...records,
+    ...invalid.map((item) => ({ ...item, valid: false })),
+  ].filter((item) => item.id === id);
+  if (matches.length !== 1)
+    return {
+      problem: matches.length ? 'неоднозначный идентификатор' : 'нет подтверждения закрытия',
+    };
+  const predecessor = matches[0];
+  if (predecessor.valid === false || dependencyFormatProblem(predecessor))
+    return { problem: 'негодный предшественник' };
+  if (predecessor.status !== 'closed') return { problem: `не закрыт (${predecessor.status})` };
+  return { predecessor };
+}
+
+/** Проверяем поля доказательства заново: один флаг успеха ничего не доказывает. */
+export function mergeEvidenceProblem(evidence, pr, mainBranch) {
+  if (!evidence || !mainBranch) return 'нет доказательства вливания';
+  if (evidence.number !== pr) return 'не совпадает номер PR в доказательстве';
+  if (evidence.state !== 'MERGED') return evidence.problem ?? 'PR не влит';
+  if (
+    typeof evidence.mergedAt !== 'string' ||
+    !evidence.mergedAt.trim() ||
+    !Number.isFinite(Date.parse(evidence.mergedAt))
+  )
+    return 'нет корректной даты вливания';
+  if (evidence.baseRefName !== mainBranch) return 'другая база PR';
   return null;
 }
 
 /** Исчезновение карточки не доказывает завершение; принимаем только явное closed. */
-export function pendingDependencies(task, tasks, archivedClosed = []) {
+export function pendingDependencies(
+  task,
+  tasks,
+  archivedClosed = [],
+  { records = [], invalid = [], evidence = {}, mainBranch } = {},
+) {
   const problem = dependencyFormatProblem(task);
   if (problem) return [problem];
   return (task.dependsOn ?? []).flatMap((id) => {
+    const result = (task.dependencyResults ?? []).find((item) => item.taskId === id);
+    if (result) {
+      const resolved = resultPredecessor(id, tasks, records, invalid);
+      const unmet =
+        resolved.problem ??
+        (resolved.predecessor.links?.pr !== result.pr
+          ? 'links.pr не совпадает с ожидаемым PR'
+          : mergeEvidenceProblem(evidence[result.pr], result.pr, mainBranch));
+      return unmet ? [`${id} (PR #${result.pr}: ${unmet})`] : [];
+    }
     const matches = tasks.filter((item) => item.id === id);
     if (matches.length === 1 && matches[0].status === 'closed') return [];
     if (matches.length === 0 && archivedClosed.includes(id)) return [];
