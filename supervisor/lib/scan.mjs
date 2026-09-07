@@ -1,5 +1,6 @@
 import { pendingDependencies } from './dependencies.mjs';
 import { taskTokens, taskTokenStatus } from './token-budget.mjs';
+import { effectiveTokenLimit } from './user-token-limit.mjs';
 import {
   CROSSCUT,
   NEEDS_SESSION,
@@ -554,7 +555,8 @@ export function scan(state) {
     // потолком значило бы запретить разбирать ровно те задачи, ради которых
     // потолок и заведён.
     const tokens = config.provider === 'codex';
-    const limit = tokens ? config.codexMaxTaskTokens : config.maxTaskCostUsd;
+    const budget = effectiveTokenLimit(task, config);
+    const limit = tokens ? budget.value : config.maxTaskCostUsd;
     const spent = tokens
       ? taskTokens(state.codexUsage ?? {}, task.id)
       : Number.isFinite(task.spentUsd)
@@ -565,6 +567,10 @@ export function scan(state) {
     // этап, ради которого её туда и отправили. Исключение того же рода,
     // что у сквозных состояний, и по той же причине.
     const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
+    if (tokens && capped && budget.error) {
+      notes.push(`задача ${task.id}: ${budget.error}`);
+      continue;
+    }
     if (capped && limit != null && spent >= limit) {
       // Числа в причине обязательны: по ним человек выбирает между двумя
       // выходами — поднять потолок или раздробить задачу, — а «предел

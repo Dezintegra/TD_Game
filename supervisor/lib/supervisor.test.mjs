@@ -122,6 +122,35 @@ function harness(over = {}) {
 /** Строка итога этапа из всего, что рассказчик напечатал. */
 const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
 
+describe('индивидуальный лимит при запуске', () => {
+  it('журнал использует лимит подготовленного назначения, даже при общем null', async () => {
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider: 'codex', codexMaxTaskTokens: null },
+      prepareAssignment: (a) => ({ ...a, task: { userTokenLimit: { value: 35000000 } } }),
+    });
+    const launched = h.supervisor.spawnStage(assignment());
+    expect(launched, JSON.stringify(launched)).toMatchObject({ ok: true });
+    const emit = (event) => h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+    emit({ type: 'thread.started', thread_id: 'user-budget' });
+    emit({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(report) } });
+    await h.answer({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+    expect(h.logged.join('\n')).toContain('/ 35000000 токенов задачи (лимит владельца');
+  });
+
+  it('не запускает процесс с неверной командой владельца', () => {
+    const h = harness({
+      config: { provider: 'codex' },
+      prepareAssignment: (a) => ({ ...a, task: { userTokenLimit: { error: 'Неверный лимит' } } }),
+    });
+    expect(h.supervisor.spawnStage(assignment())).toMatchObject({
+      ok: false,
+      why: 'Неверный лимит',
+    });
+    expect(h.children).toHaveLength(0);
+  });
+});
+
 describe('сохранённый отчёт при ошибке учёта', () => {
   for (const valid of [true, false]) {
     it.each(['decreased-usage', 'decreased-output', 'invalid-usage', 'history', 'cached'])(
@@ -1965,7 +1994,8 @@ it('отказ Codex немедленно запрещает новые этап
     config: { provider: 'codex' },
     onPolicyBlocked: (why) => paused.push(why),
   });
-  expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+  const launched = h.supervisor.spawnStage(assignment());
+  expect(launched, JSON.stringify(launched)).toMatchObject({ ok: true });
   const denial = {
     type: 'item.completed',
     item: {
@@ -1997,7 +2027,8 @@ it('передаёт Git-авторизацию рабочему Codex окру�
       getCodexEnvironment: () => env,
       onSpawn: (call) => calls.push(call),
     });
-    expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+    const launched = h.supervisor.spawnStage(assignment());
+    expect(launched, JSON.stringify(launched)).toMatchObject({ ok: true });
     const call = calls[0];
     expect(call.args.join()).not.toContain('test-token');
     expect(call.args.join()).not.toContain('AUTHORIZATION');
