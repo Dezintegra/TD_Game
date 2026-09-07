@@ -185,6 +185,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * по дыре в истории карточки.
      */
     async saveTask(task, entry) {
+      if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
+        return {
+          ok: false,
+          outcome: 'failed',
+          why: 'на доске нет меток категорий: выполните board-setup',
+        };
       const card = cardOf(task.id);
       if (!card) {
         return { ok: false, outcome: 'failed', why: `карточки задачи ${task.id} нет` };
@@ -266,6 +272,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * в журнале цикла.
      */
     async createTask(task) {
+      if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
+        return {
+          ok: false,
+          outcome: 'failed',
+          why: 'на доске нет меток категорий: выполните board-setup',
+        };
       const idList = listIdByState.get(task.status);
       if (!idList) {
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };

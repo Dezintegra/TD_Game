@@ -26,6 +26,7 @@ export function classifyDeployment(pr, files, number, mainBranch) {
     pr.changed_files < 1 ||
     pr.changed_files > 3000 ||
     !Array.isArray(files) ||
+    files.some((file) => !file || typeof file !== 'object') ||
     files.length !== pr.changed_files ||
     new Set(files.map((f) => f.filename)).size !== files.length
   )

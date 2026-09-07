@@ -25,3 +25,41 @@ export function routingFields(value) {
     ROUTING_FIELDS.filter((key) => Object.hasOwn(value ?? {}, key)).map((key) => [key, value[key]]),
   );
 }
+
+export function routingProblem(task) {
+  if (task.reanalysis !== undefined && typeof task.reanalysis !== 'boolean')
+    return 'reanalysis не boolean';
+  if (
+    task.analysisGeneration !== undefined &&
+    (!Number.isSafeInteger(task.analysisGeneration) || task.analysisGeneration < 0)
+  )
+    return 'analysisGeneration не целое неотрицательное число';
+  const context = task.blockedContext;
+  if (context === undefined && task.status !== 'blocked') return null;
+  if (
+    !context ||
+    typeof context !== 'object' ||
+    Array.isArray(context) ||
+    typeof context.operation !== 'string' ||
+    !context.operation ||
+    !Number.isFinite(context.priority) ||
+    context.priority < 0 ||
+    typeof context.from !== 'string' ||
+    !Array.isArray(context.reasons) ||
+    !context.reasons.length
+  )
+    return 'неполный blockedContext';
+  for (const reason of context.reasons) {
+    if (
+      !reason ||
+      typeof reason.taskId !== 'string' ||
+      !task.dependsOn?.includes(reason.taskId) ||
+      typeof reason.reason !== 'string' ||
+      !reason.reason.trim() ||
+      typeof reason.result !== 'string' ||
+      !reason.result.trim()
+    )
+      return 'blockedContext: каждому предшественнику нужны ссылка, reason и result';
+  }
+  return null;
+}

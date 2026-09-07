@@ -410,10 +410,10 @@ export const DEFAULTS = {
      * дополнений, а читать их всё равно нужно ради типа задачи.
      */
     labels: {
-      'category-ux': { name: 'Игровой UX', color: 'sky' },
-      'category-mechanics': { name: 'Игровые механики', color: 'green' },
-      'category-balance': { name: 'Игровой баланс', color: 'orange' },
-      'category-infrastructure': { name: 'Инфраструктура разработки', color: 'purple' },
+      'category-ux': { name: 'Игровой UX', color: 'sky_dark' },
+      'category-mechanics': { name: 'Игровые механики', color: 'green_dark' },
+      'category-balance': { name: 'Игровой баланс', color: 'orange_dark' },
+      'category-infrastructure': { name: 'Инфраструктура разработки', color: 'purple_dark' },
       feature: { name: 'feature', color: 'green' },
       run: { name: 'run', color: 'blue' },
       note: { name: 'note', color: 'yellow' },

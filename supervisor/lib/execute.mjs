@@ -115,7 +115,7 @@ async function transferReport(action, io) {
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
   if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
-  const categoryProblem = categoriesProblem(report.categories);
+  const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
   if (categoryProblem) return { result: 'failed', why: categoryProblem };
   if (report.categories && report.requests) {
     if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };

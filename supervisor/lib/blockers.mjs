@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { checkCard } from './validate-card.mjs';
 import { categoriesProblem } from './categories.mjs';
 import {
   dependencyCycleProblem,
@@ -59,6 +60,7 @@ export function planBlockers(task, report, known, now) {
     const matches = known.filter((t) => t.creationKey === creationKey);
     if (matches.length > 1) return { problem: 'неоднозначный результат создания предпосылки' };
     if (matches.length === 1) {
+      if (matches[0].valid === false) return { problem: 'созданная предпосылка повреждена' };
       keyToId.set(request.key, matches[0].id);
       continue;
     }
@@ -85,9 +87,16 @@ export function planBlockers(task, report, known, now) {
     const matches = all.filter((t) => t.id === reason.taskId);
     if (matches.length !== 1)
       return { problem: `предшественник ${reason.taskId} отсутствует или неоднозначен` };
+    if (matches[0].valid === false)
+      return { problem: `предшественник ${reason.taskId} не прошёл проверку` };
     // Кандидата нельзя молча сделать блокером: его постановку ещё не одобрили.
     // Для обязательного существующего кандидата перенос выполняется отдельно ниже.
-    if (['closed', 'failed'].includes(matches[0].status))
+    if (matches[0].status === 'completed')
+      return { problem: `предшественник ${reason.taskId} уже выполнен` };
+    if (
+      matches[0].status === 'failed' ||
+      (matches[0].status === 'closed' && !matches[0].splitInto?.length)
+    )
       return { problem: `предшественник ${reason.taskId} остановлен без результата` };
   }
   const next = {
@@ -114,10 +123,15 @@ export async function transferBlocked(task, report, action, io) {
     io.removeReport(task.id, report.stage);
     return { result: 'done', status: 'blocked' };
   }
-  const known = io
-    .allTaskIds()
-    .map((id) => io.readTask(id))
-    .filter(Boolean);
+  const known = io.parsedCards
+    ? [
+        ...io.parsedCards().map((p) => ({ ...p.task, valid: checkCard(p).length === 0 })),
+        ...(io.dependencyRecords?.() ?? []),
+      ]
+    : io
+        .allTaskIds()
+        .map((id) => io.readTask(id))
+        .filter(Boolean);
   const plan = planBlockers(task, report, known, io.now);
   if (plan.problem) return { result: 'failed', why: plan.problem };
   for (const born of plan.planned) {

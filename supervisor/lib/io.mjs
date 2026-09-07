@@ -384,6 +384,8 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
           id: task.id,
           title: task.title,
           type: task.type,
+          categories: task.categories ?? [],
+          dependsOn: task.dependsOn ?? [],
           status: task.status,
           // Ссылки на артефакты нужны аудиту: он сопоставляет изменения
           // OpenSpec чужих задач со своим и так ловит пересечения. Без них
