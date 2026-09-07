@@ -1007,20 +1007,63 @@ describe('этапы и скиллы', () => {
     expect(guilty).toEqual([]);
   });
 
-  it('проработка и аудит называют законную ошибку валидатора дословно', () => {
-    // Красный валидатор на бездельтовом изменении законен, и оба этапа
-    // обязаны узнавать этот случай по тексту ошибки, а не по пересказу.
-    // Проработка, не узнав его, полезет чинить красноту требованием
-    // ради проверки; аудит, не узнав, вернёт задачу замечанием — и оба
-    // сожгут заход на беду, которой нет.
-    //
-    // Сверяется дословная строка, а не «есть слово delta»: пересказ вроде
-    // «валидатор ругается на отсутствие дельт» сессия примет за описание
-    // ЛЮБОЙ ошибки про дельты и спишет на этот случай поломанную разметку.
-    const guilty = ['design', 'audit'].filter(
-      (stage) => !skillText(stage).includes('Change must have at least one delta'),
-    );
-    expect(guilty).toEqual([]);
+  // Проверяем саму норму между границами, а не случайную цитату в примере.
+  // Это сторож инструкций, не парсер CLI: смысловые случаи разобраны
+  // отдельно в verification.md изменения recognize-deltaless-diagnostics.
+  const deltalessStart = '**Исключение для отсутствия дельт.**';
+  const deltalessEnd = '**Конец исключения.**';
+  const deltalessClauses = [
+    'ровно одна ошибка.',
+    'сообщение ошибки должно начинаться с `Change must have at least one delta. No deltas found.`.',
+    'Дословного совпадения всего сообщения или всего вывода не требуй.',
+    'Продолжение `Ensure your change…`, подсказка `Tip: run…`, заголовок результата и раздел `Next steps` с рекомендациями допустимы как штатные пояснения CLI и сами по себе дополнительными ошибками не являются.',
+    'Другая или дополнительная ошибка исключением не покрывается, в том числе после `Next steps`: просматривай вывод до конца.',
+    'Цитата только в подсказке вместо начала сообщения ошибки не подходит.',
+    'каталог `specs/` отсутствует (даже пустой каталог исключает этот случай)',
+    'в `proposal.md` есть раздел `## Почему дельты нет`',
+    'обоснование проверено по существу по списку задач, основным требованиям и открытым дельтам: ни одно требование не меняет прочтения.',
+    'Отсутствующий или пустой раздел, непроверенное либо опровергнутое обоснование не допускают исключения.',
+    'Проработка обосновывает отсутствие дельты, аудит независимо сверяет обоснование; одного заголовка недостаточно.',
+  ];
+  const normalizeRule = (text) => text.replace(/\s+/g, ' ').trim();
+  function deltalessProblems(text) {
+    const normalized = normalizeRule(text);
+    const start = normalized.indexOf(deltalessStart);
+    const end = normalized.indexOf(deltalessEnd, start);
+    if (start < 0 || end < 0) return ['границы исключения'];
+    const rule = normalized.slice(start, end);
+    const missing = deltalessClauses.filter((clause) => !rule.includes(clause));
+    if (/любая другая строка вывода/i.test(rule)) missing.push('запрет штатных пояснений');
+    return missing;
+  }
+
+  describe.each(['design', 'audit'])('диагностика без дельт: %s', (stage) => {
+    it('сохраняет все условия исключения в самом правиле', () => {
+      expect(deltalessProblems(skillText(stage))).toEqual([]);
+    });
+
+    it.each(deltalessClauses)('обнаруживает удаление условия: %s', (clause) => {
+      const original = normalizeRule(skillText(stage));
+      expect(deltalessProblems(original)).toEqual([]);
+      const mutant = original.replace(clause, '');
+      expect(mutant).not.toBe(original);
+      // Копия исходной нормы за границей исключения не должна спасать мутацию.
+      expect(deltalessProblems(mutant + '\n' + original)).toContain(clause);
+    });
+
+    it('обнаруживает возврат запрета любой дополнительной строки', () => {
+      const original = skillText(stage);
+      expect(deltalessProblems(original)).toEqual([]);
+      const mutant = original.replace(
+        deltalessEnd,
+        'Любая другая строка вывода бедой быть не перестаёт. ' + deltalessEnd,
+      );
+      expect(deltalessProblems(mutant)).toContain('запрет штатных пояснений');
+    });
+
+    it.each([deltalessStart, deltalessEnd])('обнаруживает потерю границы %s', (mark) => {
+      expect(deltalessProblems(skillText(stage).replace(mark, ''))).toEqual(['границы исключения']);
+    });
   });
 
   it('этапы, освежающие базу, подтягивают свежую главную ветку', () => {
