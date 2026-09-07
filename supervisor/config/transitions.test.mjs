@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { OUTCOMES } from '../lib/apply-report.mjs';
@@ -303,6 +303,171 @@ const skillPrefix = (command) => {
 
 const skillText = (stage) =>
   readFileSync(fileURLToPath(new URL(`../skills/${stage}.md`, import.meta.url)), 'utf8');
+
+// Проверяем исходный текст: форматтер принимает перенос, который сам ломает отступ.
+// Разбор ограничен абзацами прозы, чтобы незамкнутая кавычка не захватила соседний пример.
+const multilineCodeSpans = (text) => {
+  const found = [];
+  let paragraph = [];
+  let startLine = 0;
+  let fence = null;
+  let frontmatter = false;
+  const flush = () => {
+    const prose = paragraph.join('\n');
+    const runs = [...prose.matchAll(/`+/g)];
+    for (let i = 0; i < runs.length; i++) {
+      const opening = runs[i];
+      const slashes = prose.slice(0, opening.index).match(/\\+$/)?.[0].length ?? 0;
+      if (slashes % 2) continue;
+      const closing = runs.findIndex((run, j) => j > i && run[0] === opening[0]);
+      if (closing < 0) continue;
+      if (prose.slice(opening.index, runs[closing].index).includes('\n')) {
+        found.push(startLine + prose.slice(0, opening.index).split('\n').length - 1);
+      }
+      i = closing;
+    }
+    paragraph = [];
+  };
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    if (index === 0 && line === '---') {
+      frontmatter = true;
+      continue;
+    }
+    if (frontmatter) {
+      if (/^(---|\.\.\.)\s*$/.test(line)) frontmatter = false;
+      continue;
+    }
+    const marker = line.match(/^\s*(?:[-+*]\s+|[0-9]+[.)]\s+)?(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      if (
+        marker &&
+        marker[1][0] === fence[0] &&
+        marker[1].length >= fence.length &&
+        !marker[2].trim()
+      )
+        fence = null;
+      continue;
+    }
+    if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) {
+      flush();
+      fence = marker[1];
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    if (!paragraph.length) startLine = index + 1;
+    paragraph.push(line);
+  }
+  flush();
+  return found;
+};
+
+const codeSpanRule = (text) =>
+  text.match(
+    /^- \*\*Вставку кода на другую строку не переносить\.\*\*[^\n]*(?:\n[ \t]+[^\n]+)*/m,
+  )?.[0] ?? '';
+
+const missingCodeSpanRule = (text) => {
+  const rule = codeSpanRule(text).replace(/\s+/g, ' ');
+  return [
+    'обратными кавычками',
+    'потерю отступа',
+    'форматировании',
+    'одной физической строке',
+    'ограждённый блок',
+    'с сохранением вложенности',
+  ].filter((mark) => !rule.includes(mark));
+};
+
+describe('однострочные вставки кода в скиллах', () => {
+  const files = readdirSync(new URL('../skills/', import.meta.url)).filter((name) =>
+    name.endsWith('.md'),
+  );
+
+  it('все Markdown-файлы каталога соблюдают правило и объясняют его', () => {
+    expect(files.length).toBeGreaterThan(0);
+    const guilty = files.flatMap((file) => {
+      const text = readFileSync(new URL(`../skills/${file}`, import.meta.url), 'utf8');
+      return [
+        ...multilineCodeSpans(text).map((line) => `${file}:${line}: перенос вставки кода`),
+        ...missingCodeSpanRule(text).map((mark) => `${file}: отсутствует правило: ${mark}`),
+      ];
+    });
+    expect(guilty).toEqual([]);
+  });
+
+  const broken = [
+    '`& "C:\\Program\nFiles\\GitHub CLI\\gh.exe" pr checks 12`',
+    '`Get-ChildItem … |\nRemove-Item …`',
+    '`## ADDED\n     Requirements`',
+    '`произвольная\n  команда`',
+    '``внутри ` кавычка\nи продолжение``',
+  ];
+  for (const [index, sample] of broken.entries()) {
+    for (const eol of ['\n', '\r\n']) {
+      it(`называет строку образца ${index + 1} при ${JSON.stringify(eol)}`, () => {
+        const text = `Введение\n\n- Пример ${sample}\n\nКонец`.replaceAll('\n', eol);
+        expect(multilineCodeSpans(text)).toEqual([3]);
+        expect(multilineCodeSpans(text.replaceAll(eol, ' '))).toEqual([]);
+      });
+    }
+  }
+
+  it('собирает все нарушения, включая таблицу и разные разделители', () => {
+    expect(multilineCodeSpans('- `a\nb` и ``c\nd``\n\n| `e\nf` |')).toEqual([1, 2, 5]);
+  });
+
+  it('принимает самостоятельные, длинные, экранированные и незамкнутые вставки', () => {
+    const samples = [
+      '`первая`\n`вторая`',
+      '`' + 'длинная команда '.repeat(30) + '`',
+      '\\`буквальная\nкавычка',
+      '`не замкнуто\n\n`соседняя вставка`',
+      '``одна ` внутри``',
+      '---\nname: "`a\nb`"\n---\n`обычная`',
+    ];
+    for (const sample of samples) expect(multilineCodeSpans(sample), sample).toEqual([]);
+    expect(multilineCodeSpans('\\\\`a\nb`')).toEqual([1]);
+  });
+
+  it('пропускает ограждения обоих видов, включая вложенные и более длинные', () => {
+    for (const marker of ['```', '~~~']) {
+      const other = marker[0] === '`' ? '~~~' : '```';
+      const text = [
+        '- Пункт',
+        '',
+        `  ${marker}text`,
+        '  `a',
+        other,
+        '  b`',
+        marker.slice(1),
+        `  ${marker}${marker[0]}`,
+        '',
+        '`после`',
+      ].join('\n');
+      expect(multilineCodeSpans(text)).toEqual([]);
+      expect(multilineCodeSpans(text + '\n\n`a\nb`')).toEqual([12]);
+    }
+  });
+
+  it('ловит порчу вставки и удаление правила в копии живого скилла', () => {
+    const text = skillText('implement');
+    const actual = '`tasks.md`';
+    // Выбираем существующую вставку, чтобы контроль не превратился в дописывание образца.
+    const at = text.indexOf(actual);
+    expect(at).toBeGreaterThanOrEqual(0);
+    const damaged =
+      text.slice(0, at) + actual.slice(0, -1) + '\n`' + text.slice(at + actual.length);
+    expect(multilineCodeSpans(text)).toEqual([]);
+    expect(multilineCodeSpans(damaged)).toEqual([text.slice(0, at).split('\n').length]);
+    expect(missingCodeSpanRule(text)).toEqual([]);
+    const rule = codeSpanRule(text);
+    expect(rule).not.toBe('');
+    expect(missingCodeSpanRule(text.replace(rule, ''))).toContain('потерю отступа');
+  });
+});
 
 /**
  * Семья формулировок ложного довода «составную команду не покрывает никакое
