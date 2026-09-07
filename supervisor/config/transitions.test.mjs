@@ -83,7 +83,7 @@ describe('маршруты', () => {
   });
 
   it('толкование закрывает прогон', () => {
-    expect(canTransition(task({ type: 'run', status: 'interpret' }), 'closed').ok).toBe(true);
+    expect(canTransition(task({ type: 'run', status: 'interpret' }), 'completed').ok).toBe(true);
   });
 
   it('доработка толкования не знает: её замер ведёт к проверкам', () => {

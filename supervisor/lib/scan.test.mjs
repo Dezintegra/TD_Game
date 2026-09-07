@@ -1239,7 +1239,10 @@ describe('возврат из ошибки по вине конвейера', ()
 
   it('закрытая починка возвращает задачу', () => {
     const result = run({
-      tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 }), fix('closed')],
+      tasks: [
+        fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 }),
+        fix('completed'),
+      ],
     });
     expect(result.actions).toContainEqual({ ...returned, fixedBy: ['0091-fix'] });
   });
@@ -1261,7 +1264,7 @@ describe('возврат из ошибки по вине конвейера', ()
       tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 })],
     });
     expect(kinds(result)).not.toContain('return-task');
-    expect(result.notes.join()).toContain('нет подтверждения закрытия');
+    expect(result.notes.join()).toContain('нет подтверждения выполнения');
   });
 
   it('причина в задаче или без вердикта — конвейер не трогает', () => {
@@ -1486,10 +1489,10 @@ describe('зависимости карточек', () => {
 
   it('запускает только после закрытия всех предшественников', () => {
     const dependent = task({ dependsOn: ['0002-base', '0003-base'] });
-    const base = task({ id: '0002-base', status: 'closed' });
+    const base = task({ id: '0002-base', status: 'completed' });
     expect(run({ tasks: [dependent, base] }).actions).toEqual([]);
     expect(
-      run({ tasks: [dependent, base, task({ id: '0003-base', status: 'closed' })] }).actions,
+      run({ tasks: [dependent, base, task({ id: '0003-base', status: 'completed' })] }).actions,
     ).toContainEqual({ kind: 'start-stage', taskId: dependent.id, stage: 'decompose' });
   });
 

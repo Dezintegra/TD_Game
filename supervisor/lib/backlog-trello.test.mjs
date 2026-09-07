@@ -638,7 +638,7 @@ describe('архивные предшественники', () => {
   it('подтверждает только проверенные архивные карточки в closed', () => {
     const store = backlog({
       cards: [
-        card({ closed: true, idList: 'list-closed' }),
+        card({ closed: true, idList: 'list-completed' }),
         card({ id: 'card-2', closed: true, meta: { id: '0032-failed' }, idList: 'list-failed' }),
         card({
           id: 'card-3',

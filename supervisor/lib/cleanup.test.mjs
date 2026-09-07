@@ -119,7 +119,9 @@ describe('когда убирать нельзя', () => {
   });
 
   it('дерева нет — убирать нечего', () => {
-    expect(mayCleanup({ task: task(), entry: null, pr: {}, unpushed: 0 }).verdict).toBe('skip');
+    expect(
+      mayCleanup({ task: task(), entry: null, pr: { state: 'merged' }, unpushed: 0 }).verdict,
+    ).toBe('skip');
   });
 });
 

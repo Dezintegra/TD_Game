@@ -7,8 +7,8 @@ import { createTrelloBacklog } from './backlog-trello.mjs';
 
 const { config } = resolveConfig({ commands: { verify: 'x', deploy: 'x', perf: 'x' } });
 const parent = { id: '0127-parent', status: 'closed', splitInto: ['0243-launch', '0244-tools'] };
-const launch = { id: '0243-launch', status: 'closed' };
-const tools = { id: '0244-tools', status: 'closed' };
+const launch = { id: '0243-launch', status: 'completed' };
+const tools = { id: '0244-tools', status: 'completed' };
 const consumer = { id: '0041-field', type: 'feature', status: 'new', dependsOn: [parent.id] };
 const fallen = {
   id: consumer.id,
@@ -52,14 +52,14 @@ describe('ожидание частей закрытого предшестве�
     const nested = { ...tools, splitInto: ['0250-leaf'] };
     const graph = [{ ...parent, links: { related: ['0099-note'] } }, launch, nested];
     expect(pendingDependencies(consumer, graph)).toEqual([
-      '0127-parent → 0244-tools → 0250-leaf (нет подтверждения закрытия)',
+      '0127-parent → 0244-tools → 0250-leaf (нет подтверждения выполнения)',
     ]);
-    graph.push({ id: '0250-leaf', status: 'closed' }, { id: '0099-note', status: 'new' });
+    graph.push({ id: '0250-leaf', status: 'completed' }, { id: '0099-note', status: 'new' });
     expect(pendingDependencies(consumer, graph)).toEqual([]);
   });
 
   it.each([
-    [[], 'нет подтверждения закрытия'],
+    [[], 'нет подтверждения выполнения'],
     [[tools, tools], 'неоднозначный идентификатор'],
     [[{ ...tools, valid: false }], 'не разобрана'],
   ])('недоказанная часть не снимает ожидание: %j', (parts, why) => {
@@ -77,7 +77,7 @@ describe('ожидание частей закрытого предшестве�
   );
 
   it('различает цикл и общего потомка двух частей', () => {
-    const shared = { id: '0250-shared', status: 'closed' };
+    const shared = { id: '0250-shared', status: 'completed' };
     const graph = [
       parent,
       { ...launch, splitInto: [shared.id] },
@@ -103,7 +103,7 @@ describe('ожидание частей закрытого предшестве�
   it('не переполняет стек на глубокой цепочке частей', () => {
     const graph = Array.from({ length: 1500 }, (_, i) => ({
       id: `${String(i).padStart(4, '0')}-part`,
-      status: 'closed',
+      status: i < 1499 ? 'closed' : 'completed',
       ...(i < 1499 ? { splitInto: [`${String(i + 1).padStart(4, '0')}-part`] } : {}),
     }));
     expect(pendingCompletion(graph[0].id, graph)).toEqual([]);
