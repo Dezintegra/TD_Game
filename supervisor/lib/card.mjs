@@ -176,6 +176,7 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     statusChangedAt: meta?.statusChangedAt ?? createdAtOf(card.id),
     owner: meta?.owner ?? null,
     returnTo: meta?.returnTo ?? null,
+    ...(Object.hasOwn(meta ?? {}, 'question') ? { question: meta.question } : {}),
     links: { change: null, pr: null, run: null, related: [], ...(meta?.links ?? {}) },
     attempts: { continuations: 0, cycleFailures: 0, ...(meta?.attempts ?? {}) },
     // Дробление уже проводили — этап анализа задача пропускает. Признак
@@ -247,6 +248,7 @@ export function metaOf(task) {
   return {
     id: task.id,
     ...routingFields(task),
+    ...(Object.hasOwn(task, 'question') ? { question: task.question } : {}),
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
     ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),
     ...(Object.hasOwn(task, 'closureReason') ? { closureReason: task.closureReason } : {}),

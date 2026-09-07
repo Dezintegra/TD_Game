@@ -17,12 +17,15 @@ export const DELAY_STATES = [
   'cleanup',
   'postmortem',
   'blocked',
+  'awaiting-po',
 ];
 const nonempty = (value) => typeof value === 'string' && value.trim().length > 0;
 const evidence = (value) => Array.isArray(value) && value.length > 0 && value.every(nonempty);
 export const delayKey = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export const reviewingDelay = (task) =>
   task?.status === 'postmortem' && ['analyzing', 'verifying'].includes(task.delayAnalysis?.phase);
+export const reviewingQuestion = (task) =>
+  reviewingDelay(task) && task.delayAnalysis.originStatus === 'awaiting-po';
 
 export function delayStateProblem(task) {
   const saved = task.delayAnalysis;
@@ -56,6 +59,7 @@ export const delayFacts = (task) =>
     task.dependsOn,
     task.dependencyResults,
     task.blockedContext?.reasons,
+    ...(task.question ? [task.question] : []),
   ]);
 
 export function delayDependencies(task, tasks = []) {
@@ -85,8 +89,9 @@ export function delayDependencies(task, tasks = []) {
   return result.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export function delayDecision(task, { now, tasks = [] }) {
+export function delayDecision(task, { now, tasks = [], answered = false }) {
   if (task.delayJournal) return { kind: 'flush-delay-journal', taskId: task.id };
+  if (task.status === 'awaiting-po' && answered) return null;
   if (!DELAY_STATES.includes(task.status) || reviewingDelay(task)) return null;
   const saved = task.delayAnalysis;
   const snapshot = delayDependencies(task, tasks);
@@ -109,14 +114,18 @@ export function delayDecision(task, { now, tasks = [] }) {
   }
   const since = task.statusChangedAt ?? task.createdAt;
   const elapsed = Date.parse(now) - Date.parse(since);
-  if (!Number.isFinite(elapsed) || elapsed <= DELAY_HOURS * 3600000) return null;
+  const question = task.status === 'awaiting-po';
+  if (!Number.isFinite(elapsed) || elapsed < 0 || (!question && elapsed <= DELAY_HOURS * 3600000))
+    return null;
   return {
     kind: 'analyze-delay',
     taskId: task.id,
     mode: 'initial',
     status: task.status,
     since,
-    reason: `Более ${DELAY_HOURS} часов в статусе ${task.status}: с ${since}. Требуется разбор причины задержки.`,
+    reason: question
+      ? 'Проверить смысл ожидания ответа: требуется решение владельца или результат другой задачи.'
+      : `Более ${DELAY_HOURS} часов в статусе ${task.status}: с ${since}. Требуется разбор причины задержки.`,
   };
 }
 
@@ -131,6 +140,8 @@ export async function beginDelayAnalysis(action, io) {
     return { result: 'skipped', why: 'разбор уже назначен или ожидает публикации' };
   if (!DELAY_STATES.includes(task.status))
     return { result: 'skipped', why: 'карточка уже продвинулась' };
+  if (task.status === 'awaiting-po' && io.readAnswer?.(task.id))
+    return { result: 'skipped', why: 'владелец уже ответил' };
   if (task.owner && task.owner !== io.machine)
     return { result: 'raced', why: 'карточка занята другой станцией' };
   if (
@@ -220,6 +231,15 @@ export function delayReportProblem(task, report) {
     return 'разбору задержки нужны cause, evidence и nextAction';
   if (!['done', 'blocked'].includes(report.outcome))
     return 'разбор задержки ожидает done или blocked';
+  if (reviewingQuestion(task)) {
+    const verifying = task.delayAnalysis.phase === 'verifying';
+    if (report.outcome === 'blocked' || verifying) {
+      if (diagnosis.waitingFor !== 'dependencies')
+        return 'техническое ожидание требует waitingFor: dependencies';
+    } else if (diagnosis.waitingFor !== 'owner' || diagnosis.resolution !== 'monitor') {
+      return 'непроверенный вопрос требует owner/monitor либо blocked с зависимостями';
+    }
+  }
   if (report.outcome === 'blocked') {
     if (!Array.isArray(report.blockers) || !report.blockers.length) return 'не названы исправления';
     for (const blocker of report.blockers)
@@ -278,24 +298,34 @@ export async function rejectDelayReport(task, report, problem, io) {
   return { result: 'failed', why: problem };
 }
 
-export async function finishDelayAnalysis(task, report, io) {
+export async function finishDelayAnalysis(task, report, io, { ownerAnswered = false } = {}) {
   const saved = task.delayAnalysis;
   const wasBlocked = saved.originStatus === 'blocked' && saved.phase === 'verifying';
-  const status = wasBlocked ? 'new' : saved.originStatus;
+  const resumeQuestion = reviewingQuestion(task) && saved.phase === 'verifying' && !ownerAnswered;
+  const status = resumeQuestion ? saved.originReturnTo : wasBlocked ? 'new' : saved.originStatus;
+  const diagnosis = ownerAnswered
+    ? {
+        cause: 'Во время проверки вопроса получен ответ владельца',
+        evidence: ['Ответ найден после исходной даты вопроса'],
+        nextAction: 'Передать ответ обычному обработчику, не заменяя его классификацией',
+        waitingFor: 'owner',
+        resolution: 'monitor',
+      }
+    : report.delayAnalysis;
   const moved =
     task.status === status
       ? { task }
       : applyTransition(task, {
           status,
           now: io.now,
-          note: report.delayAnalysis.nextAction,
+          note: diagnosis.nextAction,
         });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
   let next = addSpent(
     {
       ...moved.task,
-      statusChangedAt: wasBlocked ? io.now : saved.originSince,
-      returnTo: saved.originReturnTo ?? null,
+      statusChangedAt: wasBlocked || resumeQuestion ? io.now : saved.originSince,
+      returnTo: resumeQuestion ? null : (saved.originReturnTo ?? null),
       attempts: saved.originAttempts,
       categories: report.categories ?? task.categories,
       ...(['blocked', 'new'].includes(status) ? { owner: null } : {}),
@@ -309,7 +339,7 @@ export async function finishDelayAnalysis(task, report, io) {
       delayAnalysis: {
         ...saved,
         phase: 'monitoring',
-        diagnosis: report.delayAnalysis,
+        diagnosis,
         reportKey: delayKey(report),
       },
     },
@@ -318,7 +348,7 @@ export async function finishDelayAnalysis(task, report, io) {
   next.delayAnalysis.facts = delayFacts(next);
   const written = await io.saveTask(
     next,
-    delayEntry(next, delaySummary(report.delayAnalysis), {
+    delayEntry(next, delaySummary(diagnosis), {
       from: 'postmortem',
       source: 'agent',
       at: io.now,

@@ -3,6 +3,7 @@ import {
   beginDelayAnalysis,
   observeDelay,
   reviewingDelay,
+  reviewingQuestion,
   delayReportProblem,
   finishDelayAnalysis,
   delayKey,
@@ -136,6 +137,13 @@ async function transferReport(action, io) {
     return { result: 'done', status: task.status };
   }
   if (reviewingDelay(task)) {
+    if (
+      reviewingQuestion(task) &&
+      report.taskId === task.id &&
+      report.stage === task.status &&
+      io.readAnswer?.(task.id)
+    )
+      return finishDelayAnalysis(task, report, io, { ownerAnswered: true });
     const problem = delayReportProblem(task, report) || categoriesProblem(report.categories, true);
     if (problem) return rejectDelayReport(task, report, problem, io);
     if (report.outcome !== 'blocked') return finishDelayAnalysis(task, report, io);

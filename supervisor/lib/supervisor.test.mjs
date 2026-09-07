@@ -503,6 +503,26 @@ describe('порождение', () => {
     expect(logsAsked).toEqual(['0001-one:implement']);
   });
 
+  it('проверка прежнего вопроса читает лог задавшего его этапа', () => {
+    const { supervisor, logsAsked } = harness();
+    supervisor.spawnStage(
+      assignment({
+        stage: 'postmortem',
+        task: {
+          id: '0001-one',
+          status: 'postmortem',
+          returnTo: 'implement',
+          delayAnalysis: {
+            originStatus: 'awaiting-po',
+            originReturnTo: 'implement',
+            phase: 'analyzing',
+          },
+        },
+      }),
+    );
+    expect(logsAsked).toEqual(['0001-one:implement']);
+  });
+
   it('прочим этапам лог не читается вовсе', () => {
     const { supervisor, logsAsked } = harness();
     supervisor.spawnStage(assignment());
