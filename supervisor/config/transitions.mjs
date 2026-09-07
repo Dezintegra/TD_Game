@@ -13,6 +13,7 @@ export const STATES = [
   // Кандидат стоит первым намеренно: колонки доски идут в этом порядке,
   // а входящая корзина должна быть слева от очереди, а не после «Закрыто».
   'candidate',
+  'blocked',
   'new',
   'triage',
   // Анализ на дробность стоит ПЕРЕД проработкой: колонки доски идут
@@ -145,6 +146,7 @@ export const STATE_CLASS = {
   // Кандидат не занимает ничего и не движется сам: он ждёт человека,
   // а не машину. Для раскладки это та же очередь, что и `new`.
   candidate: 'queue',
+  blocked: 'waiting',
   new: 'queue',
   triage: 'resource',
   // Анализ читает карточку и доску, но читает сессией — значит занимает
@@ -247,6 +249,22 @@ export function canTransition(task, to) {
   if (from === to) {
     return { ok: false, reason: 'задача уже в этом состоянии' };
   }
+  if (from === 'blocked' && to === 'new')
+    return { ok: true, reason: 'предшественники выполнены, новый анализ' };
+  if (
+    to === 'blocked' &&
+    [
+      'decompose',
+      'design',
+      'audit',
+      'implement',
+      'revise',
+      'triage',
+      'benchmark',
+      'interpret',
+    ].includes(from)
+  )
+    return { ok: true, reason: 'обязательная предпосылка' };
   if (TERMINAL.includes(from) && to !== 'closed') {
     // Из ошибки задачу поднимает человек, а не конвейер: причина требует разбора.
     if (from === 'failed' && to === task.returnTo) {

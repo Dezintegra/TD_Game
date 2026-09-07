@@ -140,7 +140,7 @@ export function taskFromRequest(
   // размылся бы до необязательного. Причина в конвейере встаёт первой
   // по своему праву: всё, что конвейер взял бы раньше неё, упало бы
   // на ней же.
-  const blocking = pipeline || (mayQueue && request.blocking === true);
+  const blocking = mayQueue && (pipelineByDefault || request.blocking === true);
 
   const task = {
     $schema: '../schema.json',

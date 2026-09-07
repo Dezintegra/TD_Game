@@ -99,7 +99,8 @@
         "closed",
         "postmortem",
         "failed",
-        "awaiting-po"
+        "awaiting-po",
+        "blocked"
       ]
     },
     "returnTo": {

@@ -380,6 +380,7 @@ export const DEFAULTS = {
     lists: {
       candidate: 'Кандидаты',
       new: 'Заведено',
+      blocked: 'Заблокированы',
       triage: 'Разбор',
       decompose: 'Декомпозиция',
       design: 'Проработка',

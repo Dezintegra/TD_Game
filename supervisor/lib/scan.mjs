@@ -27,6 +27,7 @@ import { STAGE_COMMANDS, uncoveredForStage } from '../config/permissions.mjs';
 
 /** Действия, которые сканер умеет назначать, от самого срочного к обычным. */
 export const ACTIONS = [
+  'unblock-task',
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
   'answer-question', // разобрать ответ владельца продукта
@@ -82,6 +83,10 @@ function duplicateNumbers(tasks) {
 
 /** Раньше берётся меньший приоритет, при равенстве — более ранняя задача. */
 function byPriorityThenAge(a, b) {
+  if (Boolean(a.reanalysis) !== Boolean(b.reanalysis)) return a.reanalysis ? -1 : 1;
+  const pa = a.reanalysis ? (a.blockedContext?.priority ?? a.priority) : a.priority;
+  const pb = b.reanalysis ? (b.blockedContext?.priority ?? b.priority) : b.priority;
+  if (pa !== pb) return pa - pb;
   return a.priority !== b.priority
     ? a.priority - b.priority
     : Date.parse(a.createdAt) - Date.parse(b.createdAt);
@@ -98,7 +103,7 @@ function firstStage(task) {
   // меткой. Без исключения каждая часть разбитой задачи проходила бы разбор
   // на дробность, которую для неё только что и проделали, — сессия за сессией
   // на вопрос с известным ответом.
-  if (task.type === 'feature') return task.decomposed ? 'design' : 'decompose';
+  if (task.type === 'feature') return task.decomposed && !task.reanalysis ? 'design' : 'decompose';
   return { run: 'benchmark', note: 'triage' }[task.type];
 }
 
@@ -389,7 +394,7 @@ export function scan(state) {
   const held = new Map();
   // Проверяем до квот и пределов попыток: ожидание не является запуском.
   for (const task of tasks) {
-    if (task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (!['new', 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status)) continue;
     if (isRunning(task.id) || hasReport(task.id)) continue;
     const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? [], {
       records: state.dependencyRecords ?? [],
@@ -397,7 +402,24 @@ export function scan(state) {
       evidence: state.dependencyEvidence ?? {},
       mainBranch: config.mainBranch,
     });
-    if (pending.length === 0) continue;
+    if (pending.length === 0) {
+      if (
+        task.status === 'blocked' &&
+        task.dependsOn?.length &&
+        task.blockedContext?.reasons?.length
+      ) {
+        actions.push({
+          kind: 'unblock-task',
+          taskId: task.id,
+          closedDependencyIds: state.closedDependencyIds,
+          dependencyRecords: state.dependencyRecords,
+          invalid: state.invalid,
+          dependencyEvidence: state.dependencyEvidence,
+          mainBranch: config.mainBranch,
+        });
+      }
+      continue;
+    }
     held.set(task.id, pending);
     notes.push(`задача ${task.id} ждёт зависимостей: ${pending.join(', ')}`);
   }
@@ -688,6 +710,8 @@ export function scan(state) {
   }
 
   // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
+  // Сначала сохраняем разблокировку; обычную очередь выбираем по следующему снимку.
+  const unblocking = actions.some((action) => action.kind === 'unblock-task');
   const queue = tasks
     .filter((task) => task.status === 'new' && !held.has(task.id))
     .sort(byPriorityThenAge);
@@ -727,6 +751,7 @@ export function scan(state) {
       notes.push(`задача ${task.id} ждёт: самообновление сливает работу`);
       continue;
     }
+    if (unblocking) continue;
     if (busy) {
       notes.push(`задача ${task.id} ждёт: исполнитель занят`);
       continue;

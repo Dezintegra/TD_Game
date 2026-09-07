@@ -13,7 +13,13 @@ export function categoriesProblem(value, required = false) {
 }
 
 // Эти поля принадлежат протоколу ожидания, а не колонке или меткам Trello.
-export const ROUTING_FIELDS = ['creationKey', 'blockedContext', 'reanalysis', 'analysisGeneration'];
+export const ROUTING_FIELDS = [
+  'creationKey',
+  'blockedContext',
+  'reanalysis',
+  'analysisGeneration',
+  'spentUsd',
+];
 export function routingFields(value) {
   return Object.fromEntries(
     ROUTING_FIELDS.filter((key) => Object.hasOwn(value ?? {}, key)).map((key) => [key, value[key]]),

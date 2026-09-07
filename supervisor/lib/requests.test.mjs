@@ -225,7 +225,7 @@ describe('причина в конвейере', () => {
   const plan = (requests, sourceStage) =>
     planRequests(requests, { existingIds: [], now: NOW, sourceId: '0001-one', sourceStage });
 
-  it('заявка с любого этапа встаёт в очередь первой и проходит схему', () => {
+  it('одна область pipeline не делает находку обязательной', () => {
     // 02.09.2026 починки разрешений pnpm и сгорающих продолжений простояли
     // в кандидатах часами: разборы честно не назвали их блокирующими,
     // а прочим этапам метить было нечем. Зона причины — другой вопрос,
@@ -233,15 +233,14 @@ describe('причина в конвейере', () => {
     for (const stage of ['implement', 'review', 'triage', 'postmortem', null]) {
       const { planned } = plan([pipeline], stage);
       expect(planned[0], `этап ${stage}`).toMatchObject({
-        status: 'new',
-        blocking: true,
+        status: 'candidate',
         area: 'pipeline',
       });
       expect(validateTask(planned[0], schema), `этап ${stage}`).toEqual([]);
     }
   });
 
-  it('прогон с причиной в конвейере тоже встаёт первым', () => {
+  it('прогон минует кандидатов без автоматического первого места', () => {
     const { planned } = plan(
       [
         request({
@@ -252,7 +251,7 @@ describe('причина в конвейере', () => {
       ],
       'interpret',
     );
-    expect(planned[0]).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+    expect(planned[0]).toMatchObject({ status: 'new', area: 'pipeline' });
   });
 
   it('признак проходит только точным словом', () => {
