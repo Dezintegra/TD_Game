@@ -1950,6 +1950,59 @@ describe('согласованность отсутствующего предм
       'ошибка не доказательство',
       'ошибка чтения доказательством отсутствия предмета быть MUST NOT',
     ],
+    ...[
+      ['Имплементации нечего править', ['подтянув свежую главную ветку', 'в дереве ещё нет']],
+      [
+        'Предмета нет, но pull request уже открыт',
+        [
+          'успевшая открыть черновой pull request',
+          'на свежей базе',
+          'подтверждает, что предмета оставшихся шагов в дереве ещё нет',
+          'не завершается исходом `premature`',
+          'ожидание в `summary`',
+          'доказательство в `evidence`',
+        ],
+      ],
+      ...[
+        ['Доступная подготовка без собственного PR', 'собственного PR нет'],
+        ['Доступная подготовка с собственным PR', 'собственный PR уже открыт'],
+      ].map(([scenario, ownPr]) => [
+        scenario,
+        [
+          'файл только в отправленной версии открытого соседнего PR',
+          'подготовка по плану доступна',
+          ownPr,
+          'дерево безопасно',
+          'main обновлена',
+          'явные предусловия соблюдены',
+        ],
+      ]),
+      ['Доступная подготовка без собственного PR', ['без обязательной попытки слияния всей ветки']],
+      ['Доступная подготовка с собственным PR', ['собственный PR доступную работу не запрещает']],
+      [
+        'Поддержка premature ещё не введена',
+        [
+          'на свежей базе',
+          'делом подтвердила ожидание предмета от другой задачи',
+          'доступной подготовки по плану нет',
+          'поддержка `premature` ещё не введена',
+          'ожидание в `summary`',
+          'доказательство в `evidence`',
+        ],
+      ],
+      [
+        'Техническая ошибка проверки подготовки',
+        [
+          'ошибка доступа к существующей ревизии',
+          'инструмента',
+          'отмены слияния',
+          'конфликт требуемого планом слияния без альтернативы',
+          'с конкретной ошибкой',
+        ],
+      ],
+    ].flatMap(([scenario, phrases]) =>
+      phrases.map((phrase) => [scenario, `${scenario}: ${phrase}`, phrase]),
+    ),
   ];
   const section = (text, scenario) => {
     const requirement = block(text, title, /^### Requirement:/);
@@ -1964,19 +2017,48 @@ describe('согласованность отсутствующего предм
       )
       .map(([, condition]) => `${path}: ${condition}`);
   const mutate = (original, scenario, before, after) => {
-    const part = section(original.text, scenario);
-    const normalized = part.replace(/\s+/g, ' ');
+    const text = original.text.replace(/\r\n/g, '\n');
+    const part = section(text, scenario);
+    const newline = part.indexOf('\n');
+    const heading = part.slice(0, newline);
+    const normalized = part.slice(newline + 1).replace(/\s+/g, ' ');
     expect(normalized).toContain(before);
-    return { ...original, text: original.text.replace(part, normalized.replace(before, after)) };
+    // Сохраняем заголовок отдельной строкой: иначе исчезает весь блок,
+    // и проба зеленеет на потере блока вместо потери выбранного условия.
+    return {
+      ...original,
+      text: text.replace(part, `${heading}\n\n${normalized.replace(before, after)}\n\n`),
+    };
   };
 
   it('проверяет определение и каждый сценарий реального требования', () => {
     expect(problems(source())).toEqual([]);
   });
 
+  // Пробы ревью независимы от clauses: забытая в перечне оговорка
+  // должна краснить тест, даже если остальные сценарии её ещё содержат.
+  it.each([
+    ['Поддержка premature ещё не введена', 'доступной подготовки по плану нет'],
+    ['Предмета нет, но pull request уже открыт', 'ожидание в `summary`'],
+    ['Предмета нет, но pull request уже открыт', 'доказательство в `evidence`'],
+    ['Доступная подготовка с собственным PR', 'main обновлена'],
+    ['Доступная подготовка с собственным PR', 'явные предусловия соблюдены'],
+  ])('выявляет отдельную потерю из ревью: %s — %s', (scenario, phrase) => {
+    const original = source();
+    const damaged = mutate(original, scenario, phrase, '');
+    expect(problems(damaged)).toContain(`${original.path}: ${scenario}: ${phrase}`);
+  });
+
   it.each(clauses)('отвергает потерю условия в блоке %s: %s', (scenario, condition, phrase) => {
     const original = source();
     const damaged = mutate(original, scenario, phrase, '');
+    expect(section(damaged.text, scenario)).not.toBe('');
+    // Остальные условия сохраняются: нельзя зачесть исчезновение всего
+    // сценария или порчу соседнего блока за адресную отрицательную пробу.
+    for (const [otherScenario, , otherPhrase] of clauses) {
+      if (otherScenario === scenario && otherPhrase.includes(phrase)) continue;
+      expect(section(damaged.text, otherScenario).replace(/\s+/g, ' ')).toContain(otherPhrase);
+    }
     // Перенос верных слов в соседний документ не должен лечить условие.
     damaged.text += `\n### Requirement: Посторонний текст\n${phrase}\n`;
     expect(problems(damaged)).toContain(`${original.path}: ${condition}`);
