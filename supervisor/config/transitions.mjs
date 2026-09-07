@@ -68,7 +68,7 @@ export const TOKEN_CAPPED_STAGES = [
   'revise',
   'deploy',
 ];
-export const TOKEN_RESUME_STATES = ['new', ...TOKEN_CAPPED_STAGES];
+export const TOKEN_RESUME_STATES = ['new', 'decompose', ...TOKEN_CAPPED_STAGES];
 
 /**
  * Маршруты по типам задач.
@@ -275,6 +275,13 @@ export function canTransition(task, to) {
       ok: [...TOKEN_RESUME_STATES, 'awaiting-po'].includes(from),
       reason: 'бюджет удерживает обычный запуск с сохранением этапа',
     };
+  if (
+    from === 'decompose' &&
+    task.tokenReanalysis?.phase === 'analyzing' &&
+    to === task.tokenReanalysis.originStatus &&
+    TOKEN_RESUME_STATES.includes(to)
+  )
+    return { ok: true, reason: 'неделимая задача продолжает этап до бюджетного анализа' };
   if (
     from === 'postmortem' &&
     ['analyzing', 'verifying'].includes(task.delayAnalysis?.phase) &&

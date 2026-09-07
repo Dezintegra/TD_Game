@@ -20,6 +20,7 @@ import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
 import { codexGitEnvironment } from './codex-environment.mjs';
 import { effectiveTokenLimit } from './user-token-limit.mjs';
+import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import { tokenAdmission } from './token-hold.mjs';
 
 /**
@@ -284,9 +285,17 @@ export function createSupervisor({
         tokenLimit = effectiveTokenLimit(assignment.task, config);
         const tokenHold = tokenAdmission(assignment.task, assignment.stage, config, codexUsage);
         if (tokenHold) return { ok: false, reason: 'busy', why: tokenHold.explanation };
+        const analysis = tokenReanalysisAdmission(
+          assignment.task,
+          assignment.stage,
+          config,
+          codexUsage,
+        );
+        if (analysis) return { ok: false, reason: 'busy', why: analysis.explanation };
         const capped =
           provider === 'codex' &&
-          assignment.stage !== 'decompose' &&
+          (assignment.stage !== 'decompose' ||
+            assignment.task.tokenReanalysis?.phase === 'analyzing') &&
           !CROSSCUT.includes(assignment.stage);
         if (capped && tokenLimit.error) return { ok: false, reason: 'busy', why: tokenLimit.error };
         if (

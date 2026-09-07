@@ -1,6 +1,7 @@
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
 import { tokenAdmission, tokenHoldProblem } from './token-hold.mjs';
+import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import {
   CROSSCUT,
   NEEDS_SESSION,
@@ -50,6 +51,7 @@ export const ACTIONS = [
   'note-orphan',
   'note-api-error',
   'decompose-again',
+  'analyze-token-budget',
   'continue-stage', // подхватить этап за уснувшей сессией
   'fail-stage', // сдаться: продолжения исчерпаны, нужен человек
   'start-stage', // взять задачу в работу
@@ -498,6 +500,20 @@ export function scan(state) {
     const budget = tokenAdmission(task, stage, config, state.codexUsage ?? {});
     if (!budget) {
       if (waiting) actions.push({ kind: 'resume-token-budget', taskId: task.id, stage });
+      else {
+        const analysis = tokenReanalysisAdmission(task, stage, config, state.codexUsage ?? {});
+        if (analysis) {
+          tokenHeld.add(task.id);
+          notes.push(`задача ${task.id}: ${analysis.explanation}`);
+          actions.push({
+            kind: 'analyze-token-budget',
+            taskId: task.id,
+            stage,
+            from: task.status,
+            analysis,
+          });
+        }
+      }
       continue;
     }
     tokenHeld.add(task.id);

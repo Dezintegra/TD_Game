@@ -148,6 +148,16 @@ export function stagePrompt({
   }
 
   lines.push('', '## Задача', '', '```json', JSON.stringify(taskDigest(task), null, 2), '```');
+  if (assignment.stage === 'decompose' && task?.tokenReanalysis?.phase === 'analyzing') {
+    lines.push(
+      '',
+      '## Ранний бюджетный анализ Codex',
+      '',
+      `Достигнут ранний порог ${task.tokenReanalysis.threshold} токенов. Сохранённый этап: ${task.tokenReanalysis.originStatus}. Это единственный бюджетный повторный анализ задачи.`,
+      'Проверь возможность дробления. Если задача неделима или уже имеет OpenSpec/PR, верни done с объяснением и пустыми requests: супервизор вернёт её на сохранённый этап. Начинать проработку заново не нужно.',
+      'Ранний порог сам по себе не повод для question или повышения лимита. Окончательный бюджет проверит супервизор перед следующим запуском; анализ входит в общий расход. Реальный вопрос продукта и зависимости обрабатываются обычным контрактом.',
+    );
+  }
   if (tokenBudget) {
     lines.push(
       '',
@@ -258,6 +268,7 @@ function taskDigest(task) {
     dependencyResults: task.dependencyResults ?? [],
     blockedContext: task.blockedContext ?? null,
     delayAnalysis: task.delayAnalysis ?? null,
+    tokenReanalysis: task.tokenReanalysis ?? null,
     analysisGeneration: task.analysisGeneration ?? 0,
     status: task.status,
     description: task.description ?? null,
