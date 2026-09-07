@@ -318,7 +318,9 @@ export function createSupervisor({
                     reviewingDelay(assignment.task)
                       ? assignment.task.delayAnalysis.originStatus === 'blocked'
                         ? assignment.task.blockedContext?.from
-                        : assignment.task.delayAnalysis.originStatus
+                        : assignment.task.delayAnalysis.originStatus === 'awaiting-po'
+                          ? assignment.task.delayAnalysis.originReturnTo
+                          : assignment.task.delayAnalysis.originStatus
                       : assignment.task?.returnTo,
                   )
                 : null,

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   reviewingDelay,
+  reviewingQuestion,
   delayReportProblem,
   delaySummary,
   delayFacts,
@@ -138,12 +139,13 @@ export function planBlockers(task, report, known, now) {
     // Принимаем такой прогресс, но не даём вновь блокироваться давней готовой работой.
     if (
       matches[0].status === 'completed' &&
+      !reviewingQuestion(task) &&
       !matches[0].creationKey?.startsWith(`${operation}:`) &&
       !(Date.parse(matches[0].statusChangedAt) >= Date.parse(task.statusChangedAt))
     )
       return { problem: `предшественник ${reason.taskId} выполнен ещё до этого анализа` };
     if (
-      matches[0].status === 'failed' ||
+      (matches[0].status === 'failed' && !reviewingQuestion(task)) ||
       (matches[0].status === 'closed' && !matches[0].splitInto?.length)
     )
       return { problem: `предшественник ${reason.taskId} остановлен без результата` };
