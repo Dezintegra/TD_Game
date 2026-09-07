@@ -1,6 +1,6 @@
 ## 1. Согласовать единый перечень и предписания этапов
 
-- [ ] 1.1 За один атомарный коммит (до 2 часов) добавить `$permissionIndependentGuardsNote`, ссылки всех одиннадцати скиллов и комментария `STAGE_COMMANDS`, согласовать предписания удаления, окружения и .NET по design. Выполнить перечисленные ниже узкие проверки, отметить этот пункт, закоммитить явные пути и сразу отправить; после первого коммита открыть черновой PR по действующему порядку имплементации.
+- [ ] 1.1 За один атомарный коммит (до 2 часов) добавить `$permissionIndependentGuardsNote`, ссылки всех одиннадцати скиллов и комментария `STAGE_COMMANDS`, согласовать предписания удаления, окружения и .NET по design и сторож оговорок об оболочке из PR 126 с полной редакцией требования собственной дельты. Выполнить перечисленные ниже узкие проверки, отметить этот пункт, закоммитить явные пути и сразу отправить; после первого коммита открыть черновой PR по действующему порядку имплементации.
 
 Перед правками выполнить отдельно `git -C <дерево> fetch origin` и `git -C <дерево> merge origin/main`, соблюдая правила этапа при конфликте и коммите слияния. Сверить свежие версии пересекающихся изменений из proposal. Не восстанавливать строки, уже исправленные соседней задачей. Проверить `gh pr view 126 --json state,mergedAt,headRefOid`: PR 126 должен влиться раньше нашего PR. Пока он открыт, готовить правку по его отправленной версии без изменения чужой ветки; в описании чернового PR и отчёте имплементации назвать порядок вливания и обязательную повторную сверку после включения PR 126 в базу. Ожидание его вливания не является действием или отметкой этого пункта; это условие интеграции для ревью.
 
@@ -10,6 +10,7 @@
 
 - `supervisor/config/stage-settings.json`
 - `supervisor/config/permissions.mjs` (только пояснение)
+- `supervisor/config/shell.test.mjs` (согласование `SHELL_NOTE_MARKS`, проверки и фикстур оговорки из PR 126; комментарий о синтаксисе присваивания окружения)
 - `supervisor/skills/audit.md`
 - `supervisor/skills/benchmark.md`
 - `supervisor/skills/decompose.md`
@@ -26,11 +27,11 @@
 Проверки реализации, каждая отдельным вызовом из своего дерева:
 
 ```powershell
-npx vitest run --root supervisor config/transitions.test.mjs
+npx vitest run --root supervisor config/shell.test.mjs config/transitions.test.mjs
 ```
 
 ```powershell
-npx prettier --check supervisor/config/stage-settings.json supervisor/config/permissions.mjs supervisor/skills/audit.md supervisor/skills/benchmark.md supervisor/skills/decompose.md supervisor/skills/deploy.md supervisor/skills/design.md supervisor/skills/implement.md supervisor/skills/interpret.md supervisor/skills/postmortem.md supervisor/skills/review.md supervisor/skills/revise.md supervisor/skills/triage.md
+npx prettier --check supervisor/config/stage-settings.json supervisor/config/permissions.mjs supervisor/config/shell.test.mjs supervisor/skills/audit.md supervisor/skills/benchmark.md supervisor/skills/decompose.md supervisor/skills/deploy.md supervisor/skills/design.md supervisor/skills/implement.md supervisor/skills/interpret.md supervisor/skills/postmortem.md supervisor/skills/review.md supervisor/skills/revise.md supervisor/skills/triage.md
 ```
 
 ```powershell
@@ -40,6 +41,9 @@ openspec validate document-permission-independent-guards --strict
 Формы `npx vitest:*` и `npx prettier:*` разрешены текущим stage-settings; OpenSpec установлен глобально. Не запускать полный набор, замер или новые живые пробы независимых отказов. `openspec/` не форматируется.
 
 Ручная приёмка с результатами в отчёте имплементации:
+
+- Сверить доставляемую нормативную замену: собственная дельта содержит удаление «Скилл этапа называет оболочку своих команд» и полную добавленную редакцию «Скилл этапа называет оболочку и различает причины отказа». Все шесть сценариев PR 126 сохранены, условие повтора уточнено, добавлены три сценария различения причин и проверки оговорки. Чужую дельту не править, основную спецификацию вручную не переписывать. Перед последующей архивацией человеком требуется наличие старого требования после архивации `one-shell-for-stages`; после нашей архивации старого заголовка и безусловного объяснения отказа в основе быть не должно. Эта проверка порядка архивации не является пунктом реализации.
+- Согласовать `SHELL_NOTE_MARKS` и `missingNoteMarks` с итоговым текстом design: положительная фикстура полной оговорки проходит; удаление условия Bash, независимого предохранителя или порядка неизвестной причины, а также возврат прежнего безусловного утверждения дают ошибку с именем скилла. Сохранить проверки разметки, трёх форм тела, кавычек и пар разрешений/запретов. Синтаксический тест присваивания окружения не выдаёт его за разрешение среды. Проверить матрицу по тексту всех скиллов: установленный выбор Bash — повтор PowerShell; известный независимый предохранитель — действие перечня без повтора; неизвестная причина — сверка без автоматического повтора. После включения влитого PR 126 в базу ревью повторяет узкую команду и эту матрицу вместе с матрицей портов; в отчёте называет проверенную голову.
 
 - Для всех одиннадцати скиллов проверить разрешение относительной ссылки на `../config/stage-settings.json` и наличие точного ключа `$permissionIndependentGuardsNote`. Ни одной потерянной ссылки и ни одного второго полного перечня.
 - Сверить три случая с матрицей design: источник/дата, область пробы и действие присутствуют. `node -e` остаётся неопределённой пробой; нехватка allow для смены каталога не названа независимым запретом.
