@@ -1,5 +1,7 @@
 import { setTimeout as wait } from 'node:timers/promises';
 
+import { collectTokenLimits } from './user-token-limit.mjs';
+
 /**
  * Обращение к Trello.
  *
@@ -180,7 +182,7 @@ function shorten(text) {
  * отсутствующая, и её имя по-прежнему занято.
  */
 export async function readBoard(trello, board) {
-  const [lists, labels, cards, comments] = await Promise.all([
+  const [lists, labels, cards, comments, owner] = await Promise.all([
     trello.get(`boards/${board}/lists`, { filter: 'all', fields: 'name,closed' }),
     trello.get(`boards/${board}/labels`, { fields: 'name,color', limit: 50 }),
     // `filter: all` — вместе с архивными. Без него Trello отдаёт только
@@ -196,6 +198,7 @@ export async function readBoard(trello, board) {
     // Комментарии всей доски разом, а не по карточке: карточек десятки,
     // и запрос на каждую съел бы предел обращений за один цикл.
     trello.get(`boards/${board}/actions`, { filter: 'commentCard', limit: 1000 }),
+    trello.get('members/me', { fields: 'id' }),
   ]);
 
   for (const [what, result] of [
@@ -203,12 +206,48 @@ export async function readBoard(trello, board) {
     ['метки', labels],
     ['карточки', cards],
     ['комментарии', comments],
+    ['владелец лимита', owner],
   ]) {
     if (!result.ok) return { ...result, what };
   }
 
+  if (!owner.data?.id)
+    return { ok: false, kind: 'refused', what: 'владелец лимита', why: 'нет id владельца токена' };
+  // Команда не должна выпадать из окна после тысячи записей журнала.
+  // Разрешение не кэшируется: удаление/правка человеком видны следующему циклу.
+  const userTokenLimits = Object.create(null);
+  let page = comments;
+  const cursors = new Set();
+  while (true) {
+    if (!Array.isArray(page.data))
+      return {
+        ok: false,
+        kind: 'refused',
+        what: 'история лимитов',
+        why: 'ожидался список действий',
+      };
+    collectTokenLimits(userTokenLimits, page.data, owner.data.id);
+    if (page.data.length < 1000) break;
+    const before = page.data.at(-1)?.id;
+    if (!before || cursors.has(before))
+      return {
+        ok: false,
+        kind: 'refused',
+        what: 'история лимитов',
+        why: 'пагинация не продвигается',
+      };
+    cursors.add(before);
+    page = await trello.get(`boards/${board}/actions`, {
+      filter: 'commentCard',
+      limit: 1000,
+      before,
+    });
+    if (!page.ok) return { ...page, what: 'история лимитов' };
+  }
+
   return {
     ok: true,
+    userTokenLimits,
     lists: lists.data,
     labels: labels.data,
     cards: cards.data,

@@ -65,9 +65,14 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
 
   // Карточки разбираются разом: задача нужна и сканеру, и исполнению,
   // а разбор её — чистый счёт, повторять который незачем.
-  const parsed = cards
-    .filter((card) => !card.closed)
-    .map((card) => parseCard(card, { stateByList, labelKeyById }));
+  const parseSnapshotCard = (card) => {
+    const item = parseCard(card, { stateByList, labelKeyById });
+    // Только проверенная история пользовательских команд, никогда meta/отчёт.
+    const limit = snapshot.userTokenLimits?.[card.id];
+    if (limit) item.task.userTokenLimit = limit;
+    return item;
+  };
+  const parsed = cards.filter((card) => !card.closed).map(parseSnapshotCard);
 
   const byId = new Map(parsed.filter((item) => item.task.id).map((item) => [item.task.id, item]));
 
