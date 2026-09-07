@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { OUTCOMES } from '../lib/apply-report.mjs';
+import { TRACE } from '../lib/denials.mjs';
 import { STAGE_COMMANDS, uncoveredForStage } from './permissions.mjs';
 import {
   NEEDS_SESSION,
@@ -482,11 +483,188 @@ const FALSE_GROUND =
 /**
  * Однострочная формула следа из скилла — абзац после «След объявлен поимённо».
  *
- * Она живёт десятью копиями, по одной на скилл, и сверяется целым абзацем,
+ * Все копии берутся из NEEDS_SESSION и сверяются целым абзацем,
  * а не отдельным словом: слово `pull request` встречается в скиллах и вне
  * формулы, и поиск по всему тексту зеленел бы на разъехавшейся копии.
  */
-const traceFormula = (text) => text.match(/След объявлен поимённо:[\s\S]*?(?=\n\n)/)?.[0] ?? null;
+const traceFormula = (text) =>
+  text.replace(/\r\n/g, '\n').match(/След\s+объявлен\s+поимённо:[\s\S]*?(?=\n\s*\n|$)/)?.[0] ??
+  null;
+
+// Это перевод имён, а не второй перечень коммитящих этапов: типы и состав
+// определяет TRACE. Неизвестное имя ищется буквально и потому не пропускается.
+const traceStageNames = {
+  design: /проработк[а-яё]*/i,
+  revise: /доработк[а-яё]*/i,
+  implement: /имплементаци[а-яё]*/i,
+};
+
+function traceFormulaProblems(text, traces = TRACE) {
+  const raw = traceFormula(text);
+  if (!raw) return ['формулы следа нет вовсе'];
+  const formula = raw.replace(/\s+/g, ' ').toLowerCase();
+  const clauses = [...formula.matchAll(/([^:;.!?]+?)\s+[—–-]\s+([^;.!?]+)/g)];
+  const branch = formula.match(/для обеих половин[^.!?]+/)?.[0] ?? '';
+  const problems = [];
+  for (const [stage, kind] of Object.entries(traces)) {
+    if (kind !== 'commit' && kind !== 'commit-or-pr') continue;
+    const namesStage = (part) =>
+      traceStageNames[stage]?.test(part) ?? part.split(/[\s,]+/).includes(stage);
+    const clause = clauses.find(([, names]) => namesStage(names))?.[2] ?? '';
+    const checkCondition = (ok, why) => {
+      if (!ok) problems.push(`${stage}: ${why}`);
+    };
+    checkCondition(/свой коммит/.test(clause), 'собственный коммит не назван');
+    checkCondition(/не раньше начала этапа/.test(clause), 'свежесть коммита не названа');
+    checkCondition(
+      namesStage(branch) &&
+        /ветка задачи обязана быть у удалённого репозитория/.test(branch) &&
+        /не иметь неотправленных коммитов/.test(branch),
+      'удалённая ветка без хвоста не обязательна для обеих половин',
+    );
+    if (kind === 'commit-or-pr') {
+      checkCondition(
+        /либо впервые открытый pull request/.test(clause),
+        'альтернатива первого PR не названа',
+      );
+    } else {
+      checkCondition(!/pull request/.test(clause), 'PR не заменяет коммит этого этапа');
+    }
+  }
+  if (!/до начала этапа[^;.!?]*коммитную половину не закрывают/.test(formula)) {
+    problems.push('прежние коммиты не исключены');
+  }
+  if (!/ранее известный задаче pull request новым следом не считается/.test(formula)) {
+    problems.push('ранее известный PR не исключён');
+  }
+  return problems;
+}
+
+// Перечень сессий — вход проверки: новая копия без формулы должна дать
+// ошибку с именем файла, а не исчезнуть при предварительной фильтрации.
+const skillTraceProblems = (stages, readSkill, traces = TRACE) =>
+  stages.flatMap((stage) =>
+    traceFormulaProblems(readSkill(stage), traces).map((why) => `${stage}.md: ${why}`),
+  );
+
+describe('сторож свежести формулы следа', () => {
+  // Самостоятельный образец не читает скилл: порча живого файла не должна
+  // одновременно менять и проверяемый текст, и ожидаемую норму.
+  const correct = [
+    'След объявлен поимённо:',
+    'проработке и доработке — свой коммит, сделанный не раньше начала этапа;',
+    'имплементации — свой коммит, сделанный не раньше начала этапа, ЛИБО впервые открытый pull request.',
+    'Для обеих половин следа имплементации, как и для проработки и доработки,',
+    'ветка задачи обязана быть у удалённого репозитория и не иметь неотправленных коммитов.',
+    'Коммиты, лежавшие в ветке до начала этапа, коммитную половину не закрывают;',
+    'ранее известный задаче pull request новым следом не считается.',
+  ].join('\n');
+  const staleImplement = (text) =>
+    text.replace(
+      'имплементации — свой коммит, сделанный не раньше начала этапа',
+      'имплементации — свой коммит',
+    );
+
+  it.each([
+    correct,
+    correct.replaceAll(' ', '\n   ').replaceAll('\n', '\r\n'),
+    correct.replaceAll(',', '').replaceAll('—', '–'),
+  ])('принимает корректный текст, переносы и пунктуацию: %#', (text) => {
+    expect(traceFormulaProblems(text)).toEqual([]);
+  });
+
+  it.each([
+    ['свежесть только implement', staleImplement(correct), 'implement: свежесть'],
+    [
+      'первый PR',
+      correct.replace('ЛИБО впервые открытый pull request', ''),
+      'implement: альтернатива',
+    ],
+    [
+      'новизна PR',
+      correct.replace('ЛИБО впервые открытый', 'ЛИБО открытый'),
+      'implement: альтернатива',
+    ],
+    [
+      'альтернатива вместо обязательного PR',
+      correct.replace('ЛИБО впервые', 'И впервые'),
+      'implement: альтернатива',
+    ],
+    [
+      'удалённая ветка',
+      correct.replace('быть у удалённого репозитория', 'существовать'),
+      'implement: удалённая ветка',
+    ],
+    [
+      'хвост',
+      correct.replace('не иметь неотправленных коммитов', 'иметь коммиты'),
+      'implement: удалённая ветка',
+    ],
+    [
+      'обе половины',
+      correct.replace('Для обеих половин', 'Для коммитной половины'),
+      'implement: удалённая ветка',
+    ],
+    [
+      'свежесть design/revise',
+      correct.replace('не раньше начала этапа', 'сегодня'),
+      'design: свежесть',
+    ],
+    ['свой коммит', correct.replaceAll('свой коммит', 'коммит'), 'implement: собственный'],
+    [
+      'старые коммиты',
+      correct.replace('коммитную половину не закрывают', 'коммитную половину закрывают'),
+      'прежние коммиты',
+    ],
+    [
+      'известный PR',
+      correct.replace('новым следом не считается', 'новым следом считается'),
+      'ранее известный PR',
+    ],
+    [
+      'PR у design/revise',
+      correct.replace('начала этапа;', 'начала этапа ЛИБО впервые открытый pull request;'),
+      'design: PR не заменяет',
+    ],
+  ])('обнаруживает потерю условия: %s', (_name, text, problem) => {
+    expect(traceFormulaProblems(text)).toEqual(
+      expect.arrayContaining([expect.stringContaining(problem)]),
+    );
+  });
+
+  it('свежесть за пределами формулы не закрывает пропуск внутри', () => {
+    const text = `${staleImplement(correct)}\n\nимплементации — свой коммит, сделанный не раньше начала этапа`;
+    expect(traceFormulaProblems(text)).toContain('implement: свежесть коммита не названа');
+  });
+
+  it.each(['commit', 'commit-or-pr'])('новый тип %s требует правил для нового этапа', (kind) => {
+    const problems = traceFormulaProblems(correct, { ...TRACE, future: kind });
+    expect(problems).toContain('future: свежесть коммита не названа');
+    if (kind === 'commit-or-pr') {
+      expect(problems).toContain('future: альтернатива первого PR не названа');
+    }
+  });
+
+  it('полный обход называет порчу только decompose.md', () => {
+    const texts = Object.fromEntries(NEEDS_SESSION.map((stage) => [stage, correct]));
+    expect(skillTraceProblems(NEEDS_SESSION, (stage) => texts[stage])).toEqual([]);
+    expect(NEEDS_SESSION).toContain('decompose');
+    texts.decompose = staleImplement(correct);
+    expect(skillTraceProblems(NEEDS_SESSION, (stage) => texts[stage])).toEqual([
+      'decompose.md: implement: свежесть коммита не названа',
+    ]);
+  });
+
+  it.each(['без формулы', staleImplement(correct)])(
+    'новый скилл не выпадает из обхода: %#',
+    (text) => {
+      const stages = [...NEEDS_SESSION, 'future'];
+      const problems = skillTraceProblems(stages, (stage) => (stage === 'future' ? text : correct));
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toMatch(/^future\.md:/);
+    },
+  );
+});
 
 describe('этапы и скиллы', () => {
   it('всякому ресурсному состоянию положена сессия', () => {
@@ -938,23 +1116,8 @@ describe('этапы и скиллы', () => {
     expect(silent).toEqual([]);
   });
 
-  it('все десять копий формулы следа называют pull request у имплементации', () => {
-    // След имплементации — коммит ЛИБО впервые открытый pull request:
-    // задача, вся правка которой внесена проработкой, законна, а открыть
-    // черновой PR ей всё равно обязательно. Копия, отставшая от этого,
-    // велит сессии отчитаться `failed` там, где приёмка приняла бы `done`,
-    // — то есть выбрасывает правильно сделанную работу.
-    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
-    const guilty = [];
-    for (const stage of NEEDS_SESSION) {
-      const formula = traceFormula(readFileSync(`${dir}${stage}.md`, 'utf8'));
-      if (!formula) {
-        guilty.push(`${stage}.md: формулы следа нет вовсе`);
-      } else if (!formula.includes('pull request')) {
-        guilty.push(`${stage}.md: pull request не назван`);
-      }
-    }
-    expect(guilty).toEqual([]);
+  it('все копии формулы согласованы с типами следа и свежестью из TRACE', () => {
+    expect(skillTraceProblems(NEEDS_SESSION, skillText)).toEqual([]);
   });
 
   it('скилл проработки называет каждый исход отчёта и обязательное доказательство', () => {
@@ -1327,6 +1490,9 @@ describe('этапы и скиллы', () => {
     ].join('\n');
     expect(traceFormula(previous)).not.toBeNull();
     expect(traceFormula(previous)).not.toContain('pull request');
+    expect(traceFormulaProblems(previous)).toContain(
+      'implement: альтернатива первого PR не названа',
+    );
   });
 
   it('скилл проработки называет форму команд, годную для списка задач', () => {
