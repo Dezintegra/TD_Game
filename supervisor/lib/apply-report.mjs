@@ -1,5 +1,6 @@
 import { canTransition } from '../config/transitions.mjs';
 import { blockerReportProblem } from './blockers.mjs';
+import { tokenReanalysisProblem } from './token-reanalysis.mjs';
 
 /**
  * Что означает исход этапа для состояния задачи.
@@ -61,7 +62,9 @@ function afterDone(task, report) {
     case 'triage':
       return report.requests?.length ? 'closed' : 'completed';
     case 'decompose':
-      return 'design';
+      return task.tokenReanalysis?.phase === 'analyzing'
+        ? task.tokenReanalysis.originStatus
+        : 'design';
     case 'design':
       return 'audit';
     case 'audit':
@@ -129,6 +132,20 @@ function afterRejected(task) {
  */
 export function applyReport(task, report, limits = {}) {
   const problems = [];
+
+  if (
+    task.status === 'decompose' &&
+    report.outcome === 'done' &&
+    task.tokenReanalysis?.phase === 'analyzing'
+  ) {
+    const problem =
+      tokenReanalysisProblem(task) ||
+      (typeof report.summary !== 'string' || !report.summary.trim()
+        ? 'Не объяснена невозможность дробления.'
+        : null) ||
+      (report.requests?.length ? 'Неделимая задача не порождает части.' : null);
+    if (problem) return halt(task, problem, [problem]);
+  }
 
   if (!OUTCOMES.includes(report.outcome)) {
     problems.push(`неизвестный исход «${report.outcome}»`);

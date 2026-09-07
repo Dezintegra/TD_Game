@@ -427,6 +427,41 @@ const envelope = (over = {}) => ({
 });
 
 describe('порождение', () => {
+  it('последний допуск запрещает рабочий запуск до раннего анализа и его продолжение после окончательного предела', () => {
+    for (const [stage, spent, tokenReanalysis] of [
+      ['design', 150, undefined],
+      ['decompose', 250, { phase: 'analyzing', originStatus: 'design' }],
+    ]) {
+      const h = harness({
+        config: { provider: 'codex', codexTaskReanalysisTokens: 150, codexMaxTaskTokens: 250 },
+        codexUsage: {
+          version: 2,
+          tasks: {
+            '0001-one': {
+              sessions: {
+                prior: {
+                  knownTokens: spent,
+                  snapshot: { input_tokens: spent, output_tokens: 0 },
+                  reasons: [],
+                },
+              },
+              launches: {},
+            },
+          },
+        },
+      });
+      expect(
+        h.supervisor.spawnStage(
+          assignment({
+            stage,
+            task: { id: '0001-one', type: 'feature', status: stage, tokenReanalysis },
+          }),
+        ),
+      ).toMatchObject({ ok: false, reason: 'busy' });
+      expect(h.children).toHaveLength(0);
+    }
+  });
+
   it('сохраняет снимок до spawn и передаёт подготовленный путь', () => {
     const deployment = { path: '.pipeline/deploy-checkouts/deploy-test', revision: 'a'.repeat(40) };
     let observed;

@@ -5,7 +5,10 @@ import { applyTransition } from './task-file.mjs';
 
 /** Один допуск для сканера и последней проверки перед порождением процесса. */
 export function tokenAdmission(task, stage, config, ledger = {}) {
-  if (config.provider !== 'codex' || !TOKEN_CAPPED_STAGES.includes(stage)) return null;
+  const capped =
+    TOKEN_CAPPED_STAGES.includes(stage) ||
+    (stage === 'decompose' && task.tokenReanalysis?.phase === 'analyzing');
+  if (config.provider !== 'codex' || !capped) return null;
   const budget = effectiveTokenLimit(task, config);
   const spent = taskTokens(ledger, task.id);
   const accounting = taskTokenStatus(ledger, task.id);

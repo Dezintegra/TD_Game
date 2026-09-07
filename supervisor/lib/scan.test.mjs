@@ -1352,6 +1352,8 @@ describe('бюджет тяжести Codex', () => {
 
   it('явное повышение допускает прежний расход, снижение снова включает предел', () => {
     const raised = userBudgetState({ value: 35000000 });
+    expect(kinds(run(raised))).toContain('analyze-token-budget');
+    raised.tasks[0].tokenReanalysis = { phase: 'completed' };
     expect(kinds(run(raised))).toContain('continue-stage');
     expect(kinds(run(userBudgetState({ value: 20000000 })))).toContain('hold-token-budget');
     expect(kinds(run(userBudgetState({ value: null })))).toContain('hold-token-budget');
@@ -1360,7 +1362,7 @@ describe('бюджет тяжести Codex', () => {
 
   it('индивидуальный предел действует и при отключённом общем', () => {
     expect(kinds(run(userBudgetState({ value: 20000000 }, null)))).toContain('hold-token-budget');
-    expect(kinds(run(userBudgetState({ value: null }, null)))).toContain('continue-stage');
+    expect(kinds(run(userBudgetState({ value: null }, null)))).toContain('analyze-token-budget');
   });
 
   it('ошибка команды и неизвестный расход удерживают запуск без изменения попыток', () => {
