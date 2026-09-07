@@ -76,6 +76,67 @@ it('обязательная инфраструктура идёт первой,
   expect(p.next.dependsOn).toEqual([p.planned[0].id]);
 });
 
+it('сохраняет старые условия и два необходимых PR на собственной карточке', async () => {
+  const source = task({
+    dependsOn: ['0004-old'],
+    dependencyResults: [{ taskId: '0004-old', kind: 'merged-pr', pr: 100 }],
+  });
+  const io = world([
+    source,
+    task({ id: '0002-store' }),
+    task({ id: '0003-channel' }),
+    task({ id: '0004-old' }),
+  ]);
+  const value = report({
+    requests: [],
+    blockers: [
+      {
+        taskId: '0002-store',
+        reason: 'Нужно хранилище',
+        result: 'В main',
+        dependencyResult: { kind: 'merged-pr', pr: 172 },
+      },
+      {
+        taskId: '0003-channel',
+        reason: 'Нужен канал',
+        result: 'В main',
+        dependencyResult: { kind: 'merged-pr', pr: 177 },
+      },
+    ],
+  });
+  expect((await transferBlocked(source, value, {}, io)).status).toBe('blocked');
+  expect(io.tasks.get(source.id).dependencyResults).toEqual([
+    { taskId: '0004-old', kind: 'merged-pr', pr: 100 },
+    { taskId: '0002-store', kind: 'merged-pr', pr: 172 },
+    { taskId: '0003-channel', kind: 'merged-pr', pr: 177 },
+  ]);
+  expect(io.created).toEqual([]);
+});
+
+it('не пишет карточки при неверном результате или попытке сменить прежний PR', async () => {
+  for (const dependencyResult of [
+    { kind: 'merged-pr', pr: 0 },
+    { kind: 'merged-pr', pr: '172' },
+    { kind: 'merged-pr', pr: 172, taskId: '0003-wrong' },
+    { kind: 'merged-pr', pr: 177 },
+  ]) {
+    const source = task({
+      dependsOn: ['0002-store'],
+      dependencyResults: [{ taskId: '0002-store', kind: 'merged-pr', pr: 172 }],
+    });
+    const io = world([source, task({ id: '0002-store' })]);
+    const value = report({
+      blockers: [
+        ...report().blockers,
+        { taskId: '0002-store', reason: 'Нужно', result: 'В main', dependencyResult },
+      ],
+    });
+    expect((await transferBlocked(source, value, {}, io)).result).toBe('failed');
+    expect(io.tasks.get(source.id)).toEqual(source);
+    expect(io.created).toEqual([]);
+  }
+});
+
 it('требует обоснование, результат и категорию, а не одну метку blocking', () => {
   for (const over of [
     { blockers: [] },
