@@ -47,6 +47,7 @@ describe('свежесть Trello-start между станциями', () => {
   it('неизменный разрешённый старт сохраняет неизвестные ключи и запускается', async () => {
     const f = dependencyFixture();
     const original = splitDescription(f.cards[0].desc);
+    original.meta.reanalysis = true;
     original.meta.recovery = {
       causedBy: 'pipeline',
       fixedBy: [],
@@ -63,6 +64,7 @@ describe('свежесть Trello-start между станциями', () => {
     expect(after.meta.recovery.future).toEqual(before.meta.recovery.future);
     expect(after.human).toBe(before.human);
     expect(after.meta.owner).toBe('B');
+    expect(after.meta.reanalysis).toBe(false);
   });
   it.each([false, true])(
     'доказанный PR допускается только при неизменном основании; устарело=%s',
@@ -72,7 +74,7 @@ describe('свежесть Trello-start между станциями', () => {
         ...f.cards[0],
         id: 'producer',
         name: '0002-producer · Producer',
-        idList: 'list-closed',
+        idList: 'list-completed',
         desc: joinDescription('Producer', { id: '0002-producer', links: { pr: 42 } }),
       });
       let store;
@@ -103,7 +105,7 @@ describe('свежесть Trello-start между станциями', () => {
       ...f.cards[0],
       id: 'producer',
       name: '0002-producer · Producer',
-      idList: 'list-closed',
+      idList: 'list-completed',
       desc: joinDescription('Producer', { id: '0002-producer', links: { pr: 42 } }),
     });
     const io = compose(f.store('B'));
@@ -449,6 +451,57 @@ function dependencyReportWorld() {
 }
 
 describe('перенос отчёта с dependencyUpdates', () => {
+  it.each(['success', 'readback', 'invalid-blocker', 'release'])(
+    'адресное поручение при blocked: %s',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      if (mode === 'success') {
+        f.cards[0].idList = 'list-candidate';
+        Object.assign(f.io, f.store('B'));
+      }
+      Object.assign(f.state.report, {
+        outcome: 'blocked',
+        routingVersion: 1,
+        categories: ['infrastructure'],
+        blockers: [{ taskId: f.update.taskId, reason: 'Нужен результат', result: 'Готовый канал' }],
+      });
+      if (mode === 'invalid-blocker') f.state.report.blockers[0].taskId = '0009-missing';
+      let wrote = false;
+      f.fixture.hook = (method, path) => {
+        if (method === 'PUT' && path === 'cards/card-target') wrote = true;
+        if (mode === 'readback' && wrote && method === 'GET' && path === 'cards/card-target')
+          return { ok: false, why: 'readback failed' };
+        if (mode === 'release' && method === 'DELETE' && path.startsWith('cards/card-source/'))
+          return { ok: false, why: 'release failed' };
+      };
+      const [result] = await execute([f.action], f.io);
+      expect(result.result).toBe(mode === 'success' ? 'done' : 'failed');
+      const puts = f.calls.filter((call) => call.method === 'PUT').map((call) => call.path);
+      if (mode === 'success') {
+        expect(puts).toEqual(['cards/card-target', 'cards/card-target', 'cards/card-source']);
+        expect(f.cards[1].idList).toBe('list-blocked');
+        expect(splitDescription(f.cards[0].desc).meta.dependencyResults).toEqual(
+          f.update.dependencyResults,
+        );
+        expect(splitDescription(f.cards[0].desc).meta.extra).toEqual({ nested: ['не терять'] });
+        expect(f.state.report).toBeNull();
+      } else if (mode === 'release') {
+        expect(f.cards[1].idList).toBe('list-blocked');
+        expect(f.state.report).not.toBeNull();
+        f.fixture.hook = null;
+        f.calls.length = 0;
+        Object.assign(f.io, f.store('B'));
+        expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+        expect(f.state.report).toBeNull();
+        expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+        expect(f.calls.some((call) => call.path === 'boards/b/cards')).toBe(true);
+      } else {
+        expect(puts).toEqual(mode === 'readback' ? ['cards/card-target'] : []);
+        expect(f.cards[1].idList).toBe('list-implement');
+        expect(f.state.report).not.toBeNull();
+      }
+    },
+  );
   it('повтор после неудачной записи источника перечитывает новые зависимости и неизвестные поля', async () => {
     const f = dependencyReportWorld();
     const beforeSource = f.cards[1].desc;

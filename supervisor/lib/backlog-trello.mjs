@@ -212,6 +212,11 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   }
   function publish(raw) {
     const item = parse(raw);
+    // Все читатели снимка должны видеть подтверждение, включая план блокировки.
+    const rawIndex = cards.findIndex((card) => card.id === raw.id);
+    if (rawIndex !== -1) cards[rawIndex] = raw;
+    const parsedIndex = parsed.findIndex((entry) => entry.card.id === raw.id);
+    if (parsedIndex !== -1) parsed[parsedIndex] = item;
     byId.set(item.task.id, item);
     rawById.set(item.task.id, raw);
     return item.task;
@@ -363,6 +368,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       }
     }
     if (!result.ok) return { ...result, why: `${update.taskId}: ${result.why}` };
+    if (owned)
+      confirmed = {
+        ...confirmed,
+        idMembers: confirmed.idMembers.filter((id) => id !== owned.memberId),
+      };
+    startBases.set(update.taskId, confirmed);
     return { ...result, task: publish(confirmed) };
   }
 

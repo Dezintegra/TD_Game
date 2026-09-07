@@ -67,6 +67,33 @@ function evidenceFor(task, stage, io) {
   };
 }
 
+async function applyDependencyUpdates(task, updates, io, context) {
+  // Все адресаты проверяются до первой записи. Неудача сохраняет весь отчёт для повтора.
+  const dependencyNotes = [];
+  if (updates.length) {
+    if (!io.planTaskDependencyUpdates || !io.appendTaskDependencies)
+      return { result: 'failed', why: 'адаптер не поддерживает dependencyUpdates' };
+    try {
+      const planned = await io.planTaskDependencyUpdates(updates, task.id);
+      if (!planned.ok) return { result: 'failed', why: planned.why };
+      for (const update of updates) {
+        const saved = await io.appendTaskDependencies(update, {
+          ...context,
+          sourceId: task.id,
+          updates,
+        });
+        if (!saved.ok)
+          return { result: 'failed', why: saved.why ?? `${update.taskId}: ${saved.outcome}` };
+        dependencyNotes.push(`Зависимости ${update.taskId} подтверждены: ${update.reason}`);
+      }
+    } catch (error) {
+      return { result: 'failed', why: `dependencyUpdates: ${error.message}` };
+    }
+  }
+
+  return { notes: dependencyNotes };
+}
+
 /** Перенести отчёт сессии в бэклог. */
 async function transferReport(action, io, context) {
   const task = io.readTask(action.taskId);
@@ -81,7 +108,12 @@ async function transferReport(action, io, context) {
     (report.taskId !== task.id ||
       report.taskId !== action.taskId ||
       report.stage !== action.stage ||
-      report.stage !== task.status)
+      (report.stage !== task.status &&
+        !(
+          report.outcome === 'blocked' &&
+          task.status === 'blocked' &&
+          task.blockedContext?.from === report.stage
+        )))
   )
     return {
       result: 'failed',
@@ -130,7 +162,10 @@ async function transferReport(action, io, context) {
   // заводилось прежнее правило.
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
-  if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
+  if (report.outcome === 'blocked')
+    return transferBlocked(task, report, action, io, {
+      beforeWrite: () => applyDependencyUpdates(task, updates, io, context),
+    });
   const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
   if (categoryProblem) return { result: 'failed', why: categoryProblem };
   if (report.categories && report.requests) {
@@ -155,28 +190,9 @@ async function transferReport(action, io, context) {
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
-  // Все адресаты проверяются до первой записи. Неудача сохраняет весь отчёт для повтора.
-  const dependencyNotes = [];
-  if (updates.length) {
-    if (!io.planTaskDependencyUpdates || !io.appendTaskDependencies)
-      return { result: 'failed', why: 'адаптер не поддерживает dependencyUpdates' };
-    try {
-      const planned = await io.planTaskDependencyUpdates(updates, task.id);
-      if (!planned.ok) return { result: 'failed', why: planned.why };
-      for (const update of updates) {
-        const saved = await io.appendTaskDependencies(update, {
-          ...context,
-          sourceId: task.id,
-          updates,
-        });
-        if (!saved.ok)
-          return { result: 'failed', why: saved.why ?? `${update.taskId}: ${saved.outcome}` };
-        dependencyNotes.push(`Зависимости ${update.taskId} подтверждены: ${update.reason}`);
-      }
-    } catch (error) {
-      return { result: 'failed', why: `dependencyUpdates: ${error.message}` };
-    }
-  }
+  const dependencies = await applyDependencyUpdates(task, updates, io, context);
+  if (dependencies.result) return dependencies;
+  const dependencyNotes = dependencies.notes;
 
   // Остановленная задача счётчиков больше не считает: их обнулил сам переход
   // в сквозное состояние, и наращивать возвраты поверх обнулённого значило бы
@@ -508,7 +524,6 @@ async function startStage(action, io, context) {
 
   let claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
-  if (task.reanalysis) claimed.task.reanalysis = false;
 
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
@@ -557,6 +572,8 @@ async function startStage(action, io, context) {
       return { result: 'skipped', why: fresh.why };
     }
   }
+
+  if (task.reanalysis) claimed.task.reanalysis = false;
 
   const push = await io.saveTask(
     claimed.task,
