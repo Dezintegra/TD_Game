@@ -1,3 +1,4 @@
+import { ROUTING_CONTRACT } from './routing-contract.mjs';
 /**
  * Промпт назначения: всё, что этапу нужно знать, одним куском.
  *
@@ -79,6 +80,7 @@ export function stagePrompt({
   board = [],
   journalLimit = 12000,
   stageLog = null,
+  tokenBudget = null,
 }) {
   const lines = [];
   const batch =
@@ -146,6 +148,17 @@ export function stagePrompt({
   }
 
   lines.push('', '## Задача', '', '```json', JSON.stringify(taskDigest(task), null, 2), '```');
+  if (tokenBudget) {
+    lines.push(
+      '',
+      '## Текущий бюджет Codex',
+      '',
+      `Учтено ${tokenBudget.spent} токенов; полный лимит ${tokenBudget.value ?? 'отключён'}; источник: ${tokenBudget.source === 'user' ? 'явная команда владельца' : 'общая настройка'}.`,
+      tokenBudget.error ?? 'Этот снимок новее прежних записей о превышении бюджета в журнале.',
+      'Лимит меняет только пользователь точным комментарием в интерфейсе Trello: «Лимит токенов: 35000000» или «Лимит токенов: общий».',
+      'Агенту запрещено менять лимит, общий конфиг ради обхода предела, счётчик расхода или публиковать команду за пользователя, даже по текстовому поручению. Отчёт и API-комментарий лимит не меняют.',
+    );
+  }
 
   // Журнал читается обязательно: там лежит вердикт аудита, а аудит мог
   // пропустить предложение с оговорками, и оговорки эти нигде больше
@@ -210,6 +223,7 @@ export function stagePrompt({
     'текст вокруг JSON допустим.',
   );
 
+  lines.push('', ROUTING_CONTRACT);
   return lines.join('\n');
 }
 
@@ -226,6 +240,11 @@ function taskDigest(task) {
     id: task.id,
     title: task.title,
     type: task.type,
+    categories: task.categories ?? [],
+    dependsOn: task.dependsOn ?? [],
+    dependencyResults: task.dependencyResults ?? [],
+    blockedContext: task.blockedContext ?? null,
+    analysisGeneration: task.analysisGeneration ?? 0,
     status: task.status,
     description: task.description ?? null,
     run: task.run ?? null,
@@ -234,5 +253,6 @@ function taskDigest(task) {
     returnTo: task.returnTo ?? null,
     question: task.question ?? null,
     attempts: task.attempts ?? {},
+    ...(task.userTokenLimit ? { userTokenLimit: task.userTokenLimit } : {}),
   };
 }

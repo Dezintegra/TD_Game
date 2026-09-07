@@ -1,5 +1,6 @@
 import { pendingDependencies } from './dependencies.mjs';
 import { taskTokens, taskTokenStatus } from './token-budget.mjs';
+import { effectiveTokenLimit } from './user-token-limit.mjs';
 import {
   CROSSCUT,
   NEEDS_SESSION,
@@ -27,6 +28,7 @@ import { STAGE_COMMANDS, uncoveredForStage } from '../config/permissions.mjs';
 
 /** Действия, которые сканер умеет назначать, от самого срочного к обычным. */
 export const ACTIONS = [
+  'unblock-task',
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
   'answer-question', // разобрать ответ владельца продукта
@@ -82,6 +84,10 @@ function duplicateNumbers(tasks) {
 
 /** Раньше берётся меньший приоритет, при равенстве — более ранняя задача. */
 function byPriorityThenAge(a, b) {
+  if (Boolean(a.reanalysis) !== Boolean(b.reanalysis)) return a.reanalysis ? -1 : 1;
+  const pa = a.reanalysis ? (a.blockedContext?.priority ?? a.priority) : a.priority;
+  const pb = b.reanalysis ? (b.blockedContext?.priority ?? b.priority) : b.priority;
+  if (pa !== pb) return pa - pb;
   return a.priority !== b.priority
     ? a.priority - b.priority
     : Date.parse(a.createdAt) - Date.parse(b.createdAt);
@@ -98,7 +104,7 @@ function firstStage(task) {
   // меткой. Без исключения каждая часть разбитой задачи проходила бы разбор
   // на дробность, которую для неё только что и проделали, — сессия за сессией
   // на вопрос с известным ответом.
-  if (task.type === 'feature') return task.decomposed ? 'design' : 'decompose';
+  if (task.type === 'feature') return task.decomposed && !task.reanalysis ? 'design' : 'decompose';
   return { run: 'benchmark', note: 'triage' }[task.type];
 }
 
@@ -279,7 +285,6 @@ export function scan(state) {
   //     Прежде задачу из ошибки поднимал только человек. 02.09.2026 так стояли
   //     пять задач с целыми ветками и pull request, чья причина лежала
   //     в конвейере и была уже починена: решения в подъёме нет, одна задержка.
-  const invalidIds = new Set(invalid.map((bad) => bad.id));
   for (const task of tasks) {
     if (task.status !== 'failed' || task.recovery?.causedBy !== 'pipeline') continue;
     if (!task.returnTo) {
@@ -287,19 +292,19 @@ export function scan(state) {
       continue;
     }
 
-    const pending = (task.recovery.fixedBy ?? []).filter((id) => {
-      const fix = byId.get(id);
-      if (fix) return fix.status !== 'closed';
-      // Негодная карточка — задача есть, но не читается: ждём её. Задачи,
-      // которой нет нигде, считаем закрытой и убранной в архив: идентификатор
-      // проверен при разборе, и исчезнуть иначе он не мог.
-      return invalidIds.has(id);
-    });
+    // Та же проверка, что перед запуском: закрытый родитель может лишь
+    // передать работу частям, а исчезнувшая карточка не доказывает починку.
+    const pending = pendingDependencies(
+      { ...task, dependsOn: task.recovery.fixedBy ?? [], dependencyResults: [] },
+      tasks,
+      state.closedDependencyIds ?? [],
+      {
+        records: state.dependencyRecords ?? [],
+        invalid,
+      },
+    );
     if (pending.length > 0) {
-      notes.push(
-        `задача ${task.id} ждёт починок конвейера: ` +
-          pending.map((id) => `${id} (${byId.get(id)?.status ?? 'не разобрана'})`).join(', '),
-      );
+      notes.push(`задача ${task.id} ждёт починок конвейера: ${pending.join(', ')}`);
       continue;
     }
 
@@ -390,7 +395,7 @@ export function scan(state) {
   const held = new Map();
   // Проверяем до квот и пределов попыток: ожидание не является запуском.
   for (const task of tasks) {
-    if (task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (!['new', 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status)) continue;
     if (isRunning(task.id) || hasReport(task.id)) continue;
     const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? [], {
       records: state.dependencyRecords ?? [],
@@ -398,7 +403,24 @@ export function scan(state) {
       evidence: state.dependencyEvidence ?? {},
       mainBranch: config.mainBranch,
     });
-    if (pending.length === 0) continue;
+    if (pending.length === 0) {
+      if (
+        task.status === 'blocked' &&
+        task.dependsOn?.length &&
+        task.blockedContext?.reasons?.length
+      ) {
+        actions.push({
+          kind: 'unblock-task',
+          taskId: task.id,
+          closedDependencyIds: state.closedDependencyIds,
+          dependencyRecords: state.dependencyRecords,
+          invalid: state.invalid,
+          dependencyEvidence: state.dependencyEvidence,
+          mainBranch: config.mainBranch,
+        });
+      }
+      continue;
+    }
     held.set(task.id, pending);
     notes.push(`задача ${task.id} ждёт зависимостей: ${pending.join(', ')}`);
   }
@@ -555,7 +577,8 @@ export function scan(state) {
     // потолком значило бы запретить разбирать ровно те задачи, ради которых
     // потолок и заведён.
     const tokens = config.provider === 'codex';
-    const limit = tokens ? config.codexMaxTaskTokens : config.maxTaskCostUsd;
+    const budget = effectiveTokenLimit(task, config);
+    const limit = tokens ? budget.value : config.maxTaskCostUsd;
     const spent = tokens
       ? taskTokens(state.codexUsage ?? {}, task.id)
       : Number.isFinite(task.spentUsd)
@@ -566,6 +589,10 @@ export function scan(state) {
     // этап, ради которого её туда и отправили. Исключение того же рода,
     // что у сквозных состояний, и по той же причине.
     const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
+    if (tokens && capped && budget.error) {
+      notes.push(`задача ${task.id}: ${budget.error}`);
+      continue;
+    }
     if (capped && limit != null && spent >= limit) {
       // Числа в причине обязательны: по ним человек выбирает между двумя
       // выходами — поднять потолок или раздробить задачу, — а «предел
@@ -689,6 +716,8 @@ export function scan(state) {
   }
 
   // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
+  // Сначала сохраняем разблокировку; обычную очередь выбираем по следующему снимку.
+  const unblocking = actions.some((action) => action.kind === 'unblock-task');
   const queue = tasks
     .filter((task) => task.status === 'new' && !held.has(task.id))
     .sort(byPriorityThenAge);
@@ -728,6 +757,7 @@ export function scan(state) {
       notes.push(`задача ${task.id} ждёт: самообновление сливает работу`);
       continue;
     }
+    if (unblocking) continue;
     if (busy) {
       notes.push(`задача ${task.id} ждёт: исполнитель занят`);
       continue;

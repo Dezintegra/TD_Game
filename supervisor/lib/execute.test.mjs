@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { pendingDependencies } from './dependencies.mjs';
 import { execute } from './execute.mjs';
 import { dependencyFixture } from './dependency-updates-fixture.mjs';
 import { joinDescription, splitDescription } from './card.mjs';
@@ -642,6 +643,64 @@ describe('перенос отчёта с dependencyUpdates', () => {
       'cards/second',
       'cards/card-source',
     ]);
+  });
+});
+
+describe('сохранение частей декомпозиции', () => {
+  const action = { kind: 'transfer-report', taskId: '0001-one', stage: 'decompose' };
+  const parts = ['first', 'second'].map((title) => ({
+    type: 'feature',
+    title,
+    description: 'Часть',
+    area: 'pipeline',
+  }));
+  const make = (requests = parts) =>
+    fakeIo({
+      tasks: [task({ status: 'decompose', links: { related: ['0009-note'] } })],
+      report: {
+        taskId: '0001-one',
+        stage: 'decompose',
+        outcome: 'split',
+        summary: 'Две части',
+        requests,
+      },
+    });
+
+  it('родитель закрывается со списком созданных частей и продолжает удерживать потребителя', async () => {
+    const io = make();
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('done');
+    const parent = io.tasks.get('0001-one');
+    expect(parent.status).toBe('closed');
+    expect(parent.splitInto).toEqual(result.created);
+    expect(parent.splitInto).toHaveLength(2);
+    expect(parent.splitInto).not.toContain('0009-note');
+    const consumer = { id: '0041-field', dependsOn: [parent.id] };
+    expect(pendingDependencies(consumer, [...io.tasks.values()])).toHaveLength(2);
+    for (const id of parent.splitInto) io.tasks.get(id).status = 'completed';
+    expect(pendingDependencies(consumer, [...io.tasks.values()])).toEqual([]);
+  });
+
+  it('не закрывает родителя, если вторую часть не удалось создать', async () => {
+    const io = make();
+    const create = io.createTask.bind(io);
+    let count = 0;
+    io.createTask = (...args) =>
+      ++count === 2 ? { ok: false, outcome: 'offline' } : create(...args);
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('failed');
+    expect(io.tasks.get('0001-one').status).toBe('decompose');
+    expect(io.tasks.get('0001-one')).not.toHaveProperty('splitInto');
+    expect(io.steps).not.toContain('отчёт 0001-one:decompose убран');
+  });
+
+  it('не закрывает родителя и не создаёт части при негодной заявке', async () => {
+    const io = make([parts[0], { type: 'feature' }]);
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('failed');
+    expect(result.why).toContain('декомпозиция не сохранена');
+    expect(io.tasks.size).toBe(1);
+    expect(io.tasks.get('0001-one').status).toBe('decompose');
   });
 });
 
@@ -1749,6 +1808,44 @@ describe('внешнее состояние', () => {
 });
 
 describe('ответ владельца продукта', () => {
+  it('отчёт агента не повышает и не сбрасывает пользовательский лимит', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'design', userTokenLimit: { value: 35, actionId: 'human' } })],
+      report: {
+        taskId: '0001-one',
+        stage: 'design',
+        outcome: 'done',
+        userTokenLimit: { value: 999 },
+        codexMaxTaskTokens: null,
+      },
+    });
+    const [result] = await execute(
+      [{ kind: 'transfer-report', taskId: '0001-one', stage: 'design' }],
+      io,
+    );
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').userTokenLimit).toEqual({ value: 35, actionId: 'human' });
+    expect(io.tasks.get('0001-one').codexMaxTaskTokens).toBeUndefined();
+  });
+  it('команда возвращает на анализ с новым лимитом, без сброса расхода', async () => {
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'awaiting-po',
+          returnTo: 'decompose',
+          userTokenLimit: { value: 35000000, actionId: 'human' },
+          spentUsd: 9,
+        }),
+      ],
+    });
+    io.readAnswer = () => 'Лимит токенов: 35000000';
+    await execute([{ kind: 'answer-question', taskId: '0001-one' }], io);
+    expect(io.tasks.get('0001-one')).toMatchObject({
+      status: 'decompose',
+      spentUsd: 9,
+      userTokenLimit: { value: 35000000, actionId: 'human' },
+    });
+  });
   it('возвращает задачу туда, откуда она ушла', async () => {
     const io = fakeIo({ tasks: [task({ status: 'awaiting-po', returnTo: 'design' })] });
     const [result] = await execute([{ kind: 'answer-question', taskId: '0001-one' }], io);
@@ -1894,6 +1991,7 @@ describe('уборка после потери записи реестра', () 
     const io = fakeIo({ tasks: [task({ status: 'cleanup', owner, links: { pr } })] });
     const registry = new Map();
     const resources = new Set(present ? ['tree', 'local', 'remote'] : []);
+    const gitTrees = new Set(present ? ['tree'] : []);
     const failures = new Set();
     const calls = [];
     io.registryEntry = (taskId) => registry.get(taskId) ?? null;
@@ -1916,7 +2014,7 @@ describe('уборка после потери записи реестра', () 
     };
     io.ownCommits = (name) => {
       calls.push(['ownCommits', name]);
-      return ownCommits;
+      return resources.has('local') || resources.has('remote') ? ownCommits : 0;
     };
     for (const [method, resource, argument] of [
       ['removeWorktree', 'tree', path],
@@ -1927,6 +2025,8 @@ describe('уборка после потери записи реестра', () 
         expect(value).toBe(argument);
         expect(registry.has(id)).toBe(true);
         calls.push(resource);
+        // Git снимает регистрацию раньше, чем Windows даёт удалить файлы.
+        if (resource === 'tree') gitTrees.delete('tree');
         if (failures.has(resource)) return { ok: false, why: `занят ${resource}` };
         resources.delete(resource);
         return { ok: true };
@@ -1934,17 +2034,17 @@ describe('уборка после потери записи реестра', () 
     }
     const saveTask = io.saveTask.bind(io);
     io.saveTask = (...args) => {
-      if (args[0].status === 'closed') {
+      if (args[0].status === 'completed') {
         expect(resources.size).toBe(0);
         expect(registry.size).toBe(0);
-        calls.push('closed');
+        calls.push('completed');
       }
       return saveTask(...args);
     };
     const repair = () => {
       const result = reconcile({
         registry: { entries: [...registry.values()] },
-        worktrees: resources.has('tree') ? [{ branch, path: `C:/repo/${path}` }] : [],
+        worktrees: gitTrees.has('tree') ? [{ branch, path: `C:/repo/${path}` }] : [],
         tasks: [...io.tasks.values()],
         machine: io.machine,
       });
@@ -1975,7 +2075,7 @@ describe('уборка после потери записи реестра', () 
       adopt(w);
       expect(w.io.tasks.get(id).owner).toBe(owner);
       const [result] = await execute([sweep], w.io);
-      expect(result).toMatchObject({ result: 'done', status: 'closed' });
+      expect(result).toMatchObject({ result: 'done', status: 'completed' });
       expect(w.calls).toEqual([
         'register',
         ['pr', 50],
@@ -1983,9 +2083,9 @@ describe('уборка после потери записи реестра', () 
         'local',
         'remote',
         'drop',
-        'closed',
+        'completed',
       ]);
-      expect(w.io.tasks.get(id).status).toBe('closed');
+      expect(w.io.tasks.get(id).status).toBe('completed');
       expect(w.io.spawned).toEqual([]);
     },
   );
@@ -1994,8 +2094,8 @@ describe('уборка после потери записи реестра', () 
     const w = world({ present: false });
     expect(w.repair()).toEqual([]);
     await execute([sweep], w.io);
-    expect(w.io.tasks.get(id).status).toBe('closed');
-    expect(w.calls).toEqual([['pr', 50], 'closed']);
+    expect(w.io.tasks.get(id).status).toBe('completed');
+    expect(w.calls).toEqual([['pr', 50], 'completed']);
   });
 
   it('починка не присваивает и не удаляет чужое дерево', () => {
@@ -2025,17 +2125,25 @@ describe('уборка после потери записи реестра', () 
     adopt(w);
     await execute([sweep], w.io);
     expect(w.calls).toContainEqual(['ownCommits', branch]);
-    expect(w.io.tasks.get(id).status).toBe(ownCommits === 0 ? 'closed' : 'postmortem');
+    const status = ownCommits === 0 ? 'closed' : ownCommits === null ? 'cleanup' : 'postmortem';
+    expect(w.io.tasks.get(id).status).toBe(status);
     expect(w.registry.has(id)).toBe(ownCommits !== 0);
     expect(w.resources.size).toBe(ownCommits === 0 ? 0 : 3);
     if (ownCommits !== 0)
       expect(w.calls).toEqual(['register', ['pr', null], ['ownCommits', branch]]);
   });
 
-  it.each(['tree', 'local', 'remote'])(
-    'отказ удаления %s сохраняет запись и cleanup',
-    async (resource) => {
-      const w = world();
+  it.each([
+    [50, 'tree'],
+    [50, 'local'],
+    [50, 'remote'],
+    [null, 'tree'],
+    [null, 'local'],
+    [null, 'remote'],
+  ])(
+    'PR %s: отказ удаления %s сохраняет запись до успешного повторного цикла',
+    async (pr, resource) => {
+      const w = world({ pr });
       adopt(w);
       const entry = w.registry.get(id);
       w.failures.add(resource);
@@ -2045,17 +2153,26 @@ describe('уборка после потери записи реестра', () 
       expect(w.registry.get(id)).toBe(entry);
       expect(w.io.tasks.get(id).status).toBe('cleanup');
       expect(w.resources).toEqual(new Set([resource]));
-      expect(w.calls).not.toContain('closed');
+      expect(w.calls).not.toContain('completed');
       expect(w.calls).not.toContain('drop');
-      if (resource === 'tree') {
-        w.failures.clear();
-        expect(w.repair()).toEqual([]);
-        const [retry] = await execute([sweep], w.io);
-        expect(retry).toMatchObject({ result: 'done', status: 'closed' });
-        expect(w.io.tasks.get(id).status).toBe('closed');
-        expect(w.registry.size).toBe(0);
-        expect(w.resources.size).toBe(0);
+      w.failures.clear();
+      expect(w.repair()).toEqual([]);
+      if (pr === null) {
+        const readCommits = w.io.ownCommits;
+        w.io.ownCommits = () => null;
+        const [unavailable] = await execute([sweep], w.io);
+        expect(unavailable.result).toBe('skipped');
+        expect(w.io.tasks.get(id).status).toBe('cleanup');
+        expect(w.registry.get(id)).toBe(entry);
+        expect(w.resources).toEqual(new Set([resource]));
+        w.io.ownCommits = readCommits;
       }
+      const [retry] = await execute([sweep], w.io);
+      const status = pr ? 'completed' : 'closed';
+      expect(retry).toMatchObject({ result: 'done', status });
+      expect(w.io.tasks.get(id).status).toBe(status);
+      expect(w.registry.size).toBe(0);
+      expect(w.resources.size).toBe(0);
     },
   );
 });
@@ -2069,7 +2186,7 @@ describe('уборка', () => {
     const io = fakeIo({ tasks: [inCleanup()], pr: { state: 'merged' } });
     const [result] = await execute([sweep], io);
     expect(result.result).toBe('done');
-    expect(io.tasks.get('0001-one').status).toBe('closed');
+    expect(io.tasks.get('0001-one').status).toBe('completed');
     expect(io.steps).toContain('запись реестра 0001-one снята');
   });
 

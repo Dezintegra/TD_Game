@@ -1,3 +1,5 @@
+import { CATEGORIES, routingFields } from './categories.mjs';
+
 /**
  * Превращение карточки Trello в задачу и обратно.
  *
@@ -123,6 +125,7 @@ export function withExpectation(human, task) {
 export const labelKeysOf = (task) =>
   [
     task?.type,
+    ...(task?.categories ?? []).map((key) => `category-${key}`),
     task?.type === 'run' ? (task.run?.kind ?? null) : null,
     // Без этой строки метка не уехала бы на заведённую дроблением карточку,
     // и она пошла бы на анализ дробности, который для неё только что провели.
@@ -157,6 +160,8 @@ export function parseCard(card, { stateByList, labelKeyById }) {
 
   const task = {
     id: meta?.id ?? null,
+    ...routingFields(meta),
+    ...(labels.categories.length ? { categories: labels.categories } : {}),
     type: labels.types[0] ?? null,
     title: titleOf(card.name),
     description: human,
@@ -176,6 +181,7 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     // только колонкой, а тип — только меткой.
     decomposed: labels.flags.includes('decomposed'),
     ...(Object.hasOwn(meta ?? {}, 'dependsOn') ? { dependsOn: meta.dependsOn } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'splitInto') ? { splitInto: meta.splitInto } : {}),
     ...(Object.hasOwn(meta ?? {}, 'dependencyResults')
       ? { dependencyResults: meta.dependencyResults }
       : {}),
@@ -217,6 +223,7 @@ function labelKeys(idLabels, labelKeyById) {
 
   return {
     types: keys.filter((key) => ['feature', 'run', 'note'].includes(key)),
+    categories: CATEGORIES.filter((key) => keys.includes(`category-${key}`)),
     runKinds: keys.filter((key) => ['arena', 'perf', 'bench-tick'].includes(key)),
     flags: keys.filter((key) => ['unparsed', 'overdue', 'decomposed'].includes(key)),
   };
@@ -232,7 +239,9 @@ function labelKeys(idLabels, labelKeyById) {
 export function metaOf(task) {
   return {
     id: task.id,
+    ...routingFields(task),
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
+    ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),
     ...(Object.hasOwn(task, 'dependencyResults')
       ? { dependencyResults: task.dependencyResults }
       : {}),

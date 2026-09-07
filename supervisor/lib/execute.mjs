@@ -1,3 +1,5 @@
+import { transferBlocked, unblockTask } from './blockers.mjs';
+import { categoriesProblem } from './categories.mjs';
 import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
 import {
   addSpent,
@@ -128,9 +130,28 @@ async function transferReport(action, io, context) {
   // заводилось прежнее правило.
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
+  if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
+  const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
+  if (categoryProblem) return { result: 'failed', why: categoryProblem };
+  if (report.categories && report.requests) {
+    if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };
+    for (const request of report.requests) {
+      const problem = categoriesProblem(request?.categories, true);
+      if (problem) return { result: 'failed', why: problem };
+    }
+  }
+
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
   if (updates.length && verdict.problems?.length)
     return { result: 'failed', why: verdict.problems.join('; ') };
+
+  if (task.status === 'review' && report.outcome === 'done' && verdict.status === 'deploy') {
+    const impact = io.deploymentImpact?.(report.links?.pr ?? task.links?.pr);
+    if (impact?.needed === false) {
+      verdict.status = 'cleanup';
+      verdict.note = (verdict.note ?? '') + '\nВыкладка игры не нужна: ' + impact.reason;
+    }
+  }
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
@@ -192,6 +213,7 @@ async function transferReport(action, io, context) {
   // сессия стоила денег независимо от того, чем кончилась, а вся мера затеяна
   // ровно против кругов, каждый из которых чем-то кончался.
   next = addSpent(next, report.costUsd);
+  if (report.categories) next.categories = [...report.categories];
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без
@@ -219,6 +241,14 @@ async function transferReport(action, io, context) {
     // в проработку.
     decomposed: report.outcome === 'split',
   });
+  // Частичный план не доказывает завершение разделения: иначе потерянная
+  // часть исчезнет из ожиданий всех потребителей закрытого родителя.
+  if (report.outcome === 'split' && verdict.status === 'closed' && plan.rejected.length > 0) {
+    return {
+      result: 'failed',
+      why: `декомпозиция не сохранена: ${plan.rejected.flatMap((bad) => bad.problems).join('; ')}`,
+    };
+  }
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
@@ -273,6 +303,12 @@ async function transferReport(action, io, context) {
     if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
     created.push(born.id);
     next = relate(next, born.id);
+  }
+
+  // Части — отдельная связь, не общий related с замечаниями и прогонами.
+  // Сохраняем её вместе с закрытием, только после создания всех частей.
+  if (report.outcome === 'split' && verdict.status === 'closed') {
+    next = { ...next, splitInto: [...created] };
   }
 
   // Дополнения уезжают тем же порядком и по той же причине: до смены
@@ -345,7 +381,11 @@ async function transferReport(action, io, context) {
       // снимается, и лог этапа в промпт следующих сессий не уезжает. Без этой
       // строки закрытая задача осталась бы в журнале заявлением без улики —
       // ровно тем, против чего написан третий предохранитель исхода.
-      what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
+      what:
+        (report.outcome === 'moot' && !halted) ||
+        (task.status === 'review' && verdict.status === 'cleanup')
+          ? verdict.note
+          : report.summary,
       links: report.links ?? {},
       decisions: [...(report.decisions ?? []), ...dependencyNotes, ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
@@ -468,6 +508,7 @@ async function startStage(action, io, context) {
 
   let claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
+  if (task.reanalysis) claimed.task.reanalysis = false;
 
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
@@ -1101,14 +1142,15 @@ async function cleanupTask(action, io) {
     }
   }
 
-  const moved = applyTransition(task, { status: 'closed', note: verdict.why, now: io.now });
+  const status = task.links?.pr ? 'completed' : 'closed';
+  const moved = applyTransition(task, { status, note: verdict.why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
   const push = await io.saveTask(
     moved.task,
-    { at: io.now, from: task.status, to: 'closed', what: `Убрано: ${verdict.why}.` },
-    `chore(backlog): ${task.id} закрыта`,
+    { at: io.now, from: task.status, to: status, what: `Убрано: ${verdict.why}.` },
+    `chore(backlog): ${task.id} ${status}`,
   );
-  return push.ok ? { result: 'done', status: 'closed' } : { result: 'failed', why: push.outcome };
+  return push.ok ? { result: 'done', status } : { result: 'failed', why: push.outcome };
 }
 
 /**
@@ -1167,6 +1209,7 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'unblock-task': unblockTask,
   'push-tail': pushTail,
   'quarantine-card': quarantineCard,
   'clear-card': clearCard,

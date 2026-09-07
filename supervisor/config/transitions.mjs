@@ -13,6 +13,7 @@ export const STATES = [
   // Кандидат стоит первым намеренно: колонки доски идут в этом порядке,
   // а входящая корзина должна быть слева от очереди, а не после «Закрыто».
   'candidate',
+  'blocked',
   'new',
   'triage',
   // Анализ на дробность стоит ПЕРЕД проработкой: колонки доски идут
@@ -28,6 +29,7 @@ export const STATES = [
   'revise',
   'deploy',
   'cleanup',
+  'completed',
   'closed',
   'postmortem',
   'failed',
@@ -35,7 +37,7 @@ export const STATES = [
 ];
 
 /** Состояния, из которых задача больше сама не двинется. */
-export const TERMINAL = ['closed', 'failed'];
+export const TERMINAL = ['completed', 'closed', 'failed'];
 
 /**
  * Сквозные состояния: достижимы из любого рабочего и хранят состояние возврата.
@@ -91,12 +93,12 @@ export const ROUTES = {
     // Красный CI отправляет в доработку, зелёный — в ревью.
     pr: ['review', 'revise'],
     // Ревью с замечаниями отправляет в доработку, чистое — в выкладку.
-    review: ['deploy', 'revise'],
+    review: ['deploy', 'cleanup', 'revise'],
     // Доработка ведёт обратно в ожидание проверок, а НЕ сразу в ревью:
     // ревью на непроверенном коде запрещено, а правка требует нового прогона CI.
     revise: ['pr'],
     deploy: ['cleanup'],
-    cleanup: ['closed'],
+    cleanup: ['completed', 'closed'],
     // Закрытие застрявшей в «Ошибке» задачи. Переход объявлен, но выполняет
     // его человек мышью — как `candidate` → `new`, — а конвейер не выполняет
     // никогда: `afterDone` состояния `failed` не знает и отвечает `null`,
@@ -115,7 +117,7 @@ export const ROUTES = {
     // Счёт держится на командах, толкование счёта — на суждении, и мешать
     // их в одном отчёте значит прятать второе за первым.
     benchmark: ['interpret'],
-    interpret: ['closed'],
+    interpret: ['completed'],
     // Закрытие из «Ошибки» — см. пояснение у `feature`.
     failed: ['closed'],
   },
@@ -123,7 +125,7 @@ export const ROUTES = {
     // Одобрение кандидата — см. пояснение у `feature`.
     candidate: ['new'],
     new: ['triage'],
-    triage: ['closed'],
+    triage: ['completed', 'closed'],
     // Закрытие из «Ошибки» — см. пояснение у `feature`.
     failed: ['closed'],
   },
@@ -144,6 +146,7 @@ export const STATE_CLASS = {
   // Кандидат не занимает ничего и не движется сам: он ждёт человека,
   // а не машину. Для раскладки это та же очередь, что и `new`.
   candidate: 'queue',
+  blocked: 'waiting',
   new: 'queue',
   triage: 'resource',
   // Анализ читает карточку и доску, но читает сессией — значит занимает
@@ -165,6 +168,7 @@ export const STATE_CLASS = {
   'awaiting-po': 'waiting',
   deploy: 'exclusive',
   cleanup: 'housekeeping',
+  completed: 'terminal',
   closed: 'terminal',
   failed: 'terminal',
   // benchmark разбирается отдельно: цена зависит от вида прогона.
@@ -245,6 +249,22 @@ export function canTransition(task, to) {
   if (from === to) {
     return { ok: false, reason: 'задача уже в этом состоянии' };
   }
+  if (from === 'blocked' && to === 'new')
+    return { ok: true, reason: 'предшественники выполнены, новый анализ' };
+  if (
+    to === 'blocked' &&
+    [
+      'decompose',
+      'design',
+      'audit',
+      'implement',
+      'revise',
+      'triage',
+      'benchmark',
+      'interpret',
+    ].includes(from)
+  )
+    return { ok: true, reason: 'обязательная предпосылка' };
   if (TERMINAL.includes(from) && to !== 'closed') {
     // Из ошибки задачу поднимает человек, а не конвейер: причина требует разбора.
     if (from === 'failed' && to === task.returnTo) {

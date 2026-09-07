@@ -196,7 +196,7 @@ export function readCodexAnswer(run, config = {}, context = {}) {
     : `Codex: полнота расхода задачи неизвестна (${answer.usageStatus.reasons.join(', ')})`;
   if (run.killedBy) return { ...answer, outcome: 'timeout', why: `этап снят: ${run.killedBy}` };
   if (run.error)
-    return { ...answer, outcome: 'failed', why: `запуск не состоялся: ${run.error.message}` };
+    return { ...answer, outcome: 'failed', why: `процесс оборвался: ${run.error.message}` };
   if (
     error &&
     !toolsUsed &&

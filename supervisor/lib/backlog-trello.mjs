@@ -67,9 +67,14 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
 
   // Карточки разбираются разом: задача нужна и сканеру, и исполнению,
   // а разбор её — чистый счёт, повторять который незачем.
-  const parsed = cards
-    .filter((card) => !card.closed)
-    .map((card) => parseCard(card, { stateByList, labelKeyById }));
+  const parseSnapshotCard = (card) => {
+    const item = parseCard(card, { stateByList, labelKeyById });
+    // Только проверенная история пользовательских команд, никогда meta/отчёт.
+    const limit = snapshot.userTokenLimits?.[card.id];
+    if (limit) item.task.userTokenLimit = limit;
+    return item;
+  };
+  const parsed = cards.filter((card) => !card.closed).map(parseSnapshotCard);
 
   const byId = new Map(parsed.filter((item) => item.task.id).map((item) => [item.task.id, item]));
 
@@ -415,6 +420,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * по дыре в истории карточки.
      */
     async saveTask(task, entry) {
+      if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
+        return {
+          ok: false,
+          outcome: 'failed',
+          why: 'на доске нет меток категорий: выполните board-setup',
+        };
       const card = cardOf(task.id);
       if (!card) {
         return { ok: false, outcome: 'failed', why: `карточки задачи ${task.id} нет` };
@@ -427,6 +438,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
 
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
+        ...(task.blocking ? { pos: 'top' } : {}),
         // Название пересобирается из очищенного: иначе служебный префикс
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),
@@ -436,6 +448,22 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
               overlayMeta(splitDescription(startBases.get(task.id).desc).meta, metaOf(task)),
             )
           : joinDescription(card.human, metaOf(task)),
+
+        // Чужие метки сохраняются; категории и флаг декомпозиции берём из задачи.
+        idLabels: [
+          ...new Set([
+            ...(cards.find((item) => item.id === card.id)?.idLabels ?? []).filter(
+              (id) =>
+                ![...labelIdByKey.entries()].some(
+                  ([key, known]) =>
+                    known === id && (key.startsWith('category-') || key === 'decomposed'),
+                ),
+            ),
+            ...labelKeysOf(task)
+              .map((key) => labelIdByKey.get(key))
+              .filter(Boolean),
+          ]),
+        ],
       });
       if (!moved.ok) return failure(moved);
 
@@ -485,6 +513,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * в журнале цикла.
      */
     async createTask(task) {
+      if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
+        return {
+          ok: false,
+          outcome: 'failed',
+          why: 'на доске нет меток категорий: выполните board-setup',
+        };
       const idList = listIdByState.get(task.status);
       if (!idList) {
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };
@@ -775,13 +809,14 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         return id ? [{ ...item.task, id, valid: valid && Boolean(item.task.id) }] : [];
       }),
 
-    // Архивирование не доказывает успех: нужна проверенная карточка в «Закрыто».
+    // Архивирование не доказывает успех: нужна проверенная карточка в «Выполнено».
     closedDependencyIds: () =>
       cards
         .filter((card) => card.closed)
         .map((card) => parseCard(card, { stateByList, labelKeyById }))
         .filter(
-          (item) => item.task.id && item.task.status === 'closed' && checkCard(item).length === 0,
+          (item) =>
+            item.task.id && item.task.status === 'completed' && checkCard(item).length === 0,
         )
         .map((item) => item.task.id),
 

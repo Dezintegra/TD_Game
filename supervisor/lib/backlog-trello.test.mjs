@@ -225,6 +225,26 @@ const backlog = (over = {}, trello = fakeTrello(), machine = null) =>
   createTrelloBacklog({ trello, config, snapshot: snapshot(over), machine });
 
 describe('чтение задач', () => {
+  it('лимит читается только из истории и не записывается отчётом в metadata', async () => {
+    const trello = fakeTrello();
+    const store = backlog(
+      {
+        cards: [card({ meta: { userTokenLimit: { value: 999 } } })],
+        userTokenLimits: { 'card-1': { value: 35, actionId: 'human' } },
+      },
+      trello,
+    );
+    const task = store.readTask('0031-proba');
+    expect(task.userTokenLimit.value).toBe(35);
+    await store.saveTask({ ...task, userTokenLimit: { value: 999 } }, { from: 'new', to: 'new' });
+    expect(trello.calls.find((x) => x.method === 'PUT').body.desc).not.toContain('userTokenLimit');
+    expect(store.readTask('0031-proba').userTokenLimit.value).toBe(35);
+    expect(
+      backlog({ cards: [card({ meta: { userTokenLimit: { value: 999 } } })] }).readTask(
+        '0031-proba',
+      ).userTokenLimit,
+    ).toBeUndefined();
+  });
   it('сохраняет архивный результат и негодные совпадения идентификатора', () => {
     const store = backlog({
       cards: [
@@ -793,7 +813,7 @@ describe('архивные предшественники', () => {
   it('подтверждает только проверенные архивные карточки в closed', () => {
     const store = backlog({
       cards: [
-        card({ closed: true, idList: 'list-closed' }),
+        card({ closed: true, idList: 'list-completed' }),
         card({ id: 'card-2', closed: true, meta: { id: '0032-failed' }, idList: 'list-failed' }),
         card({
           id: 'card-3',

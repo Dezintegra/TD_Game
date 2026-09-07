@@ -44,7 +44,7 @@ const HUMAN_TOOLS = ['AskUserQuestion'];
  * - `run` — отчёт называет номер прогона, и он новый;
  * - `none` — проверяемого следа нет вовсе, и об этом говорится вслух.
  */
-const TRACE = {
+export const TRACE = {
   design: 'commit',
   implement: 'commit-or-pr',
   revise: 'commit',

@@ -1,4 +1,5 @@
 import { STATES } from '../config/transitions.mjs';
+import { routingProblem } from './categories.mjs';
 
 /**
  * Проверка карточки взамен схемы задачи.
@@ -32,6 +33,8 @@ const RUN_KINDS = ['arena', 'perf', 'bench-tick'];
  */
 export function checkCard({ task, card }) {
   const problems = [];
+  const routing = routingProblem(task);
+  if (routing) problems.push(routing);
 
   if (card.metaBroken) {
     problems.push(
