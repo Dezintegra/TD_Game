@@ -99,6 +99,27 @@ function world(over = {}) {
 }
 
 describe('ранний бюджетный анализ', () => {
+  it.each([
+    [14_999_999, 'continue-stage'],
+    [15_000_000, 'analyze-token-budget'],
+    [24_999_999, 'analyze-token-budget'],
+    [25_000_000, 'hold-token-budget'],
+    [26_000_000, 'hold-token-budget'],
+  ])('штатные пороги при расходе %s дают %s', (spent, kind) => {
+    const actual = resolveConfig({
+      provider: 'codex',
+      commands: { verify: 'x', deploy: 'x', perf: 'x' },
+      worktreeDir: 'trees',
+    }).config;
+    expect(actual.codexTaskReanalysisTokens).toBe(15_000_000);
+    expect(actual.codexMaxTaskTokens).toBe(25_000_000);
+    expect(
+      world({ config: actual, codexUsage: ledger(spent) })
+        .next()
+        .actions.map((a) => a.kind),
+    ).toEqual([kind]);
+  });
+
   it('анализ не стирает исчерпанные продолжения прежнего этапа', async () => {
     const w = world({ tasks: [task({ attempts: { continuations: 99, rejections: 2 } })] });
     await w.apply(w.next().actions);
