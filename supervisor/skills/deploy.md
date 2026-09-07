@@ -287,7 +287,6 @@ description: Выкладывает на боевой сервер весь па
    и ключом `--no-perf`:
 
    ```powershell
-   [Console]::OutputEncoding = [Text.Encoding]::UTF8
    Push-Location <дерево>
    node scripts/deploy.mjs --ref <хеш> --no-perf
    ```
