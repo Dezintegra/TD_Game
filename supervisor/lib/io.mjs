@@ -1,3 +1,4 @@
+import { readDeploymentImpact } from './deploy-impact.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
@@ -442,6 +443,10 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
     },
 
     /** Состояние pull request. Им доказывается влитость — не хешами коммитов. */
+    deploymentImpact(number) {
+      return readDeploymentImpact({ run, root, number, mainBranch: config.mainBranch });
+    },
+
     readPr(number) {
       if (!number) return { state: 'unknown' };
       const result = run(['pr', 'view', String(number), '--json', 'state'], 'gh');

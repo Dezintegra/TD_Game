@@ -126,6 +126,13 @@ async function transferReport(action, io) {
   }
 
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
+  if (task.status === 'review' && report.outcome === 'done' && verdict.status === 'deploy') {
+    const impact = io.deploymentImpact?.(report.links?.pr ?? task.links?.pr);
+    if (impact?.needed === false) {
+      verdict.status = 'cleanup';
+      verdict.note = (verdict.note ?? '') + '\nВыкладка игры не нужна: ' + impact.reason;
+    }
+  }
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
@@ -332,7 +339,11 @@ async function transferReport(action, io) {
       // снимается, и лог этапа в промпт следующих сессий не уезжает. Без этой
       // строки закрытая задача осталась бы в журнале заявлением без улики —
       // ровно тем, против чего написан третий предохранитель исхода.
-      what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
+      what:
+        (report.outcome === 'moot' && !halted) ||
+        (task.status === 'review' && verdict.status === 'cleanup')
+          ? verdict.note
+          : report.summary,
       links: report.links ?? {},
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
