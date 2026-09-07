@@ -269,7 +269,7 @@ export function planRequests(
  * к ней новую фактуру значит хоронить сигнал в законченной истории.
  * Остановленная не лучше: её саму ещё предстоит поднимать человеку.
  */
-const CLOSED_TO_FACTS = ['closed', 'failed'];
+const CLOSED_TO_FACTS = ['completed', 'closed', 'failed'];
 
 /**
  * Разобрать дополнения отчёта.

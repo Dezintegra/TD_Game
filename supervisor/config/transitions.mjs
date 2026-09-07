@@ -28,6 +28,7 @@ export const STATES = [
   'revise',
   'deploy',
   'cleanup',
+  'completed',
   'closed',
   'postmortem',
   'failed',
@@ -35,7 +36,7 @@ export const STATES = [
 ];
 
 /** Состояния, из которых задача больше сама не двинется. */
-export const TERMINAL = ['closed', 'failed'];
+export const TERMINAL = ['completed', 'closed', 'failed'];
 
 /**
  * Сквозные состояния: достижимы из любого рабочего и хранят состояние возврата.
@@ -96,7 +97,7 @@ export const ROUTES = {
     // ревью на непроверенном коде запрещено, а правка требует нового прогона CI.
     revise: ['pr'],
     deploy: ['cleanup'],
-    cleanup: ['closed'],
+    cleanup: ['completed', 'closed'],
     // Закрытие застрявшей в «Ошибке» задачи. Переход объявлен, но выполняет
     // его человек мышью — как `candidate` → `new`, — а конвейер не выполняет
     // никогда: `afterDone` состояния `failed` не знает и отвечает `null`,
@@ -115,7 +116,7 @@ export const ROUTES = {
     // Счёт держится на командах, толкование счёта — на суждении, и мешать
     // их в одном отчёте значит прятать второе за первым.
     benchmark: ['interpret'],
-    interpret: ['closed'],
+    interpret: ['completed'],
     // Закрытие из «Ошибки» — см. пояснение у `feature`.
     failed: ['closed'],
   },
@@ -123,7 +124,7 @@ export const ROUTES = {
     // Одобрение кандидата — см. пояснение у `feature`.
     candidate: ['new'],
     new: ['triage'],
-    triage: ['closed'],
+    triage: ['completed', 'closed'],
     // Закрытие из «Ошибки» — см. пояснение у `feature`.
     failed: ['closed'],
   },
@@ -165,6 +166,7 @@ export const STATE_CLASS = {
   'awaiting-po': 'waiting',
   deploy: 'exclusive',
   cleanup: 'housekeeping',
+  completed: 'terminal',
   closed: 'terminal',
   failed: 'terminal',
   // benchmark разбирается отдельно: цена зависит от вида прогона.

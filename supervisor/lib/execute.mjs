@@ -1041,14 +1041,15 @@ async function cleanupTask(action, io) {
     }
   }
 
-  const moved = applyTransition(task, { status: 'closed', note: verdict.why, now: io.now });
+  const status = task.links?.pr ? 'completed' : 'closed';
+  const moved = applyTransition(task, { status, note: verdict.why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
   const push = await io.saveTask(
     moved.task,
-    { at: io.now, from: task.status, to: 'closed', what: `Убрано: ${verdict.why}.` },
-    `chore(backlog): ${task.id} закрыта`,
+    { at: io.now, from: task.status, to: status, what: `Убрано: ${verdict.why}.` },
+    `chore(backlog): ${task.id} ${status}`,
   );
-  return push.ok ? { result: 'done', status: 'closed' } : { result: 'failed', why: push.outcome };
+  return push.ok ? { result: 'done', status } : { result: 'failed', why: push.outcome };
 }
 
 /**

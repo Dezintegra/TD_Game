@@ -528,13 +528,14 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         return id ? [{ ...item.task, id, valid: valid && Boolean(item.task.id) }] : [];
       }),
 
-    // Архивирование не доказывает успех: нужна проверенная карточка в «Закрыто».
+    // Архивирование не доказывает успех: нужна проверенная карточка в «Выполнено».
     closedDependencyIds: () =>
       cards
         .filter((card) => card.closed)
         .map((card) => parseCard(card, { stateByList, labelKeyById }))
         .filter(
-          (item) => item.task.id && item.task.status === 'closed' && checkCard(item).length === 0,
+          (item) =>
+            item.task.id && item.task.status === 'completed' && checkCard(item).length === 0,
         )
         .map((item) => item.task.id),
 

@@ -36,7 +36,7 @@ const dependent = (over = {}) =>
     dependencyResults: [{ taskId: '0002-base', kind: 'merged-pr', pr: 168 }],
     ...over,
   });
-const base = (over = {}) => task('0002-base', { status: 'closed', links: { pr: 168 }, ...over });
+const base = (over = {}) => task('0002-base', { status: 'completed', links: { pr: 168 }, ...over });
 const registry = {
   entries: [
     { taskId: '0001-next', branch: 'worktree-0001-next', path: '.claude/worktrees/0001-next' },

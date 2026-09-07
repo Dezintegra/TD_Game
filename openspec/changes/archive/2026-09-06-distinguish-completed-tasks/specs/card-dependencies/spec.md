@@ -1,17 +1,4 @@
-# card-dependencies Specification
-
-## Purpose
-
-Prevent premature task launches by requiring explicit predecessor completion without spending attempts while waiting.
-## Requirements
-### Requirement: Explicit prerequisite metadata
-
-The supervisor SHALL preserve optional `dependsOn` metadata containing complete task identifiers; absence SHALL mean no prerequisites.
-
-#### Scenario: Round trip
-
-- **WHEN** a card is read and saved
-- **THEN** its prerequisite identifiers remain unchanged
+## MODIFIED Requirements
 
 ### Requirement: Gate task launches on completion
 
@@ -37,24 +24,12 @@ The supervisor MUST only launch a task when every prerequisite is confirmed in s
 - **WHEN** a prerequisite changes while a process is running
 - **THEN** the supervisor does not interrupt the process or discard its report
 
+
 #### Scenario: Closed without fulfillment
 
 - **WHEN** a prerequisite is closed after decomposition or loss of relevance
 - **THEN** dependent launches remain blocked until fulfillment is confirmed in completed
 
-### Requirement: Explicit decomposition lineage
-
-The supervisor SHALL persist a nonempty unique `splitInto` list of actual child task identifiers together with closing a successfully split parent. The list MUST survive card and archived-card round trips. Unrelated links and the `decomposed` scheduling label MUST NOT imply child membership.
-
-#### Scenario: Split report creates parts
-
-- **WHEN** a split report successfully creates its parts and closes the parent
-- **THEN** the saved parent names exactly those parts in `splitInto`
-
-#### Scenario: Child creation fails
-
-- **WHEN** a child cannot be created
-- **THEN** the parent is not saved as closed with an incomplete successful split
 
 ### Requirement: Completion includes all decomposition descendants
 
@@ -89,4 +64,5 @@ For `dependsOn` and `recovery.fixedBy`, the supervisor MUST recompute completion
 
 - **WHEN** all split leaves complete but the expected PR of the referenced predecessor is not confirmed merged
 - **THEN** the consumer still waits for the PR evidence
+
 

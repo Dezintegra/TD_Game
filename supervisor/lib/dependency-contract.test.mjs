@@ -25,7 +25,7 @@ const dependent = (dependencyResults = [result]) => ({
   dependsOn: ['0002-base'],
   dependencyResults,
 });
-const base = { id: '0002-base', status: 'closed', links: { pr: 168 } };
+const base = { id: '0002-base', status: 'completed', links: { pr: 168 } };
 const ctx = {
   stateByList: new Map([['new', 'new']]),
   labelKeyById: new Map([['feature', 'feature']]),
@@ -50,7 +50,7 @@ const invalidResults = [
   [null],
   [168],
   [{}],
-  [{ ...result, kind: 'closed' }],
+  [{ ...result, kind: 'completed' }],
   ...[0, -1, 1.5, '168', null].map((pr) => [{ ...result, pr }]),
   [{ ...result, extra: true }],
   [{ ...result, taskId: '0003-absent' }],
