@@ -1,4 +1,5 @@
 import { pendingDependencies } from './dependencies.mjs';
+import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
 import { taskTokens, taskTokenStatus } from './token-budget.mjs';
 import { effectiveTokenLimit } from './user-token-limit.mjs';
 import {
@@ -28,6 +29,9 @@ import { STAGE_COMMANDS, uncoveredForStage } from '../config/permissions.mjs';
 
 /** Действия, которые сканер умеет назначать, от самого срочного к обычным. */
 export const ACTIONS = [
+  'flush-delay-journal',
+  'analyze-delay',
+  'observe-delay',
   'unblock-task',
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
@@ -397,6 +401,8 @@ export function scan(state) {
   for (const task of tasks) {
     if (!['new', 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status)) continue;
     if (isRunning(task.id) || hasReport(task.id)) continue;
+    // Диагностике нужны результаты блокеров, но ожидать их для самого разбора нельзя.
+    if (reviewingDelay(task)) continue;
     const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? [], {
       records: state.dependencyRecords ?? [],
       invalid: state.invalid ?? [],
@@ -768,6 +774,39 @@ export function scan(state) {
     busy = true;
   }
 
+  const delayed = new Map();
+  if (!state.draining)
+    for (const task of tasks) {
+      if (isRunning(task.id) || running.some((item) => item.batch?.includes(task.id))) continue;
+      if (task.owner && task.owner !== state.machine) continue;
+      if (task.delayJournal) {
+        delayed.set(task.id, { kind: 'flush-delay-journal', taskId: task.id });
+        continue;
+      }
+      if (hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id)) continue;
+      const action = delayDecision(task, {
+        now: state.now,
+        tasks: [
+          ...tasks,
+          ...(state.dependencyRecords ?? []),
+          ...invalid.map((item) => ({ ...item, valid: false })),
+        ],
+      });
+      if (!action) continue;
+      if (
+        action.kind === 'observe-delay' &&
+        actions.some((item) => item.taskId === task.id && item.kind === 'unblock-task')
+      )
+        continue;
+      delayed.set(task.id, action);
+    }
+  // Не выдаём обычный этап и диагностику из одного устаревшего снимка.
+  for (let index = actions.length - 1; index >= 0; index -= 1) {
+    const action = actions[index];
+    if (delayed.has(action.taskId) || action.batch?.some((id) => delayed.has(id)))
+      actions.splice(index, 1);
+  }
+  actions.push(...delayed.values());
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
   return { actions, notes };
 }

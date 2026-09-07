@@ -17,6 +17,40 @@ const { config } = resolveConfig({ trello: { board: 'b' } });
 const marker = config.trello.marker;
 
 describe('адресное дополнение зависимостей', () => {
+  it('доставка журнала после дополнения сохраняет его подложку и снимает только конверт', async () => {
+    const f = dependencyFixture();
+    const original = splitDescription(f.cards[0].desc);
+    const store = f.store();
+    expect(await store.appendTaskDependencies(f.update, f.context)).toMatchObject({ ok: true });
+    f.hook = (method, path) => {
+      if (method === 'GET' && path.endsWith('/actions')) return { ok: true, data: [] };
+    };
+    const current = store.readTask(f.update.taskId);
+    expect(
+      await store.saveTask(current, {
+        from: 'new',
+        to: 'new',
+        what: 'Разбор задержки',
+        source: 'agent',
+        deliveryKey: 'delay-test',
+      }),
+    ).toMatchObject({ ok: true });
+    const saved = splitDescription(f.cards[0].desc);
+    expect(saved.meta.dependsOn).toEqual(f.update.dependsOn);
+    expect(saved.meta.dependencyResults).toEqual(f.update.dependencyResults);
+    expect(saved.meta.extra).toEqual(original.meta.extra);
+    expect(saved.human).toBe(original.human);
+    expect(saved.meta).not.toHaveProperty('delayJournal');
+    expect(
+      await store.saveTask(store.readTask(f.update.taskId), {
+        from: 'new',
+        to: 'new',
+        what: 'Следующая запись',
+        source: 'agent',
+      }),
+    ).toMatchObject({ ok: true });
+    expect(splitDescription(f.cards[0].desc).meta).not.toHaveProperty('delayJournal');
+  });
   it('повтор ребра без результата не записывает пустое поле ради нормализации', async () => {
     const f = dependencyFixture();
     const old = splitDescription(f.cards[0].desc);
@@ -410,6 +444,100 @@ describe('сохранение задачи', () => {
   });
 
   const entry = { at: '2026-08-27T11:00:00.000Z', from: 'new', to: 'design', what: 'Взята.' };
+
+  it.each([
+    ['feature', 'cleanup'],
+    ['run', 'interpret'],
+    ['note', 'triage'],
+  ])('новая выполненная задача %s оказывается сверху одним запросом', async (type, from) => {
+    const trello = fakeTrello();
+    const store = backlog({ cards: [card({ idList: `list-${from}` })] }, trello);
+    const result = await store.saveTask(task({ type, status: 'completed' }), {
+      ...entry,
+      from,
+      to: 'completed',
+    });
+
+    expect(result.ok).toBe(true);
+    const puts = trello.calls.filter((call) => call.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(puts[0].body).toMatchObject({ idList: 'list-completed', pos: 'top' });
+    expect(trello.calls.filter((call) => call.method === 'GET')).toHaveLength(0);
+  });
+
+  it.each(['completed', 'cleanup'])(
+    'выполненная карточка сохраняет место при повторе с from=%s и blocking',
+    async (from) => {
+      const trello = fakeTrello();
+      const store = backlog({ cards: [card({ idList: 'list-completed' })] }, trello);
+      await store.saveTask(task({ status: 'completed', blocking: true }), {
+        ...entry,
+        from,
+        to: 'completed',
+      });
+      expect(trello.calls.find((call) => call.method === 'PUT').body).not.toHaveProperty('pos');
+    },
+  );
+
+  it('повтор после сбоя комментария не обгоняет более позднее завершение', async () => {
+    const order = ['old-card'];
+    let failComment = true;
+    const trello = {
+      async put(path, body) {
+        const id = path.split('/')[1];
+        if (body.pos === 'top') {
+          const previous = order.indexOf(id);
+          if (previous !== -1) order.splice(previous, 1);
+          order.unshift(id);
+        }
+        return { ok: true, data: {} };
+      },
+      async post() {
+        return failComment ? { ok: false, kind: 'offline' } : { ok: true, data: {} };
+      },
+    };
+    const store = backlog(
+      {
+        cards: [
+          card({ idList: 'list-cleanup' }),
+          card({ id: 'card-2', idList: 'list-cleanup', meta: { id: '0032-next' } }),
+        ],
+      },
+      trello,
+    );
+    const completedEntry = { ...entry, from: 'cleanup', to: 'completed' };
+    const first = task({ status: 'completed' });
+    expect((await store.saveTask(first, completedEntry)).ok).toBe(false);
+    failComment = false;
+    await store.saveTask(task({ id: '0032-next', status: 'completed' }), completedEntry);
+    expect((await store.saveTask(first, completedEntry)).ok).toBe(true);
+    expect(order).toEqual(['card-2', 'card-1', 'old-card']);
+  });
+
+  it('неудачное перемещение оставляет запрос верхней позиции для повтора', async () => {
+    const replies = { 'cards/card-1': { ok: false, kind: 'offline' } };
+    const trello = fakeTrello(replies);
+    const store = backlog({ cards: [card({ idList: 'list-cleanup' })] }, trello);
+    const completedEntry = { ...entry, from: 'cleanup', to: 'completed' };
+    expect((await store.saveTask(task({ status: 'completed' }), completedEntry)).ok).toBe(false);
+    replies['cards/card-1'] = { ok: true, data: {} };
+    expect((await store.saveTask(task({ status: 'completed' }), completedEntry)).ok).toBe(true);
+    expect(
+      trello.calls.filter((call) => call.method === 'PUT').map((call) => call.body.pos),
+    ).toEqual(['top', 'top']);
+  });
+
+  it.each([false, true])(
+    'сохраняет правило позиции рабочей очереди при blocking=%s',
+    async (blocking) => {
+      const trello = fakeTrello();
+      const store = backlog({ cards: [card()] }, trello);
+      await store.saveTask(task({ blocking }), entry);
+      expect(trello.calls.find((call) => call.method === 'PUT').body.pos).toBe(
+        blocking ? 'top' : undefined,
+      );
+    },
+  );
 
   it('переезд в колонку и правка отметок делаются одним запросом', async () => {
     const trello = fakeTrello();

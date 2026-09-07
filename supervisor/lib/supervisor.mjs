@@ -1,3 +1,4 @@
+import { reviewingDelay } from './delay-analysis.mjs';
 import {
   migrateTokenLedger,
   commitTokenLedger,
@@ -312,7 +313,14 @@ export function createSupervisor({
             // здесь, а не угадывается по журналу.
             stageLog:
               assignment.stage === 'postmortem'
-                ? readStageLog(assignment.taskId, assignment.task?.returnTo)
+                ? readStageLog(
+                    assignment.taskId,
+                    reviewingDelay(assignment.task)
+                      ? assignment.task.delayAnalysis.originStatus === 'blocked'
+                        ? assignment.task.blockedContext?.from
+                        : assignment.task.delayAnalysis.originStatus
+                      : assignment.task?.returnTo,
+                  )
                 : null,
           }),
           config,

@@ -91,6 +91,9 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   // Исходный блок нужен для проверки основания старта и сохранения неизвестных полей.
   const rawById = new Map(cards.map((raw) => [splitDescription(raw.desc ?? '').meta?.id, raw]));
   const startBases = new Map();
+  // Подтверждённые перемещения нужны при повторе после ошибки комментария;
+  // исходный снимок остаётся прежним для остальных решений цикла.
+  const savedLists = new Map();
 
   /**
    * Опубликовать запись журнала комментариями.
@@ -104,12 +107,19 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
    * а разница между «так решила сессия» и «так распорядился конвейер»
    * читающему доску нужна постоянно.
    */
-  async function comment(cardId, text, source, { deduplicate = false } = {}) {
-    const parts = splitJournalEntry(text, {
-      marker: mark,
-      source,
-      limit: trelloConfig.maxTextLength,
-    });
+  async function comment(
+    cardId,
+    text,
+    source,
+    { deduplicate = false, parts: savedParts = null } = {},
+  ) {
+    const parts =
+      savedParts ??
+      splitJournalEntry(text, {
+        marker: mark,
+        source,
+        limit: trelloConfig.maxTextLength,
+      });
     const existing = new Set();
     if (deduplicate) {
       // Снимок всей доски ограничен тысячей записей: для повтора нужна
@@ -206,9 +216,10 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   }
   // Меняется лишь JSON блока: даже пробелы человеческой части остаются на месте.
   function withMeta(desc, meta) {
-    const start = desc.indexOf('<!-- pipeline') + '<!-- pipeline'.length;
+    const start = desc.indexOf('<!-- pipeline');
     const end = desc.indexOf('-->', start);
-    return `${desc.slice(0, start)}\n${JSON.stringify(meta)}\n${desc.slice(end)}`;
+    // Штатный сериализатор экранирует конец комментария внутри конверта журнала.
+    return `${desc.slice(0, start)}${joinDescription('', meta)}${desc.slice(end + 3)}`;
   }
   function overlayMeta(base, changes) {
     const merged = { ...base };
@@ -401,7 +412,34 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     return { ...result, task: publish(confirmed) };
   }
 
+  // Доставку видимого разбора нельзя считать законченной по одному PUT.
+  // Части сохраняются до POST: после обрыва сравниваем точный текст уже
+  // опубликованных частей, затем снимаем конверт отдельной записью.
+  async function flushDelayJournal(task) {
+    const pending = task.delayJournal;
+    const card = cardOf(task.id);
+    if (!pending || !card) return { ok: false, why: 'нет конверта комментария задержки' };
+    const posted = await comment(card.id, '', pending.entry.source, {
+      deduplicate: true,
+      parts: pending.parts,
+    });
+    if (!posted.ok) return failure(posted);
+    const next = { ...task };
+    delete next.delayJournal;
+    const raw = cards.find((item) => item.id === card.id);
+    const meta = { ...splitDescription(raw.desc).meta };
+    delete meta.delayJournal;
+    const desc = withMeta(raw.desc, overlayMeta(meta, metaOf(next)));
+    const cleared = await trello.put(`cards/${card.id}`, { desc });
+    if (!cleared.ok) return failure(cleared);
+    byId.get(task.id).task = next;
+    if (raw) raw.desc = desc;
+    if (startBases.has(task.id)) startBases.set(task.id, { ...raw, desc });
+    return { ok: true, outcome: 'saved' };
+  }
+
   return {
+    flushDelayJournal,
     // Всё, что ниже, повторяет поверхность файлового хранилища. Разница
     // только в том, что записи возвращают обещание: доска отвечает по сети.
 
@@ -473,6 +511,21 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };
       }
 
+      if (entry.deliveryKey)
+        task = {
+          ...task,
+          delayJournal: {
+            entry,
+            parts: splitJournalEntry(
+              `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}\n\n<!-- delay-analysis:${entry.deliveryKey} -->`,
+              {
+                marker: mark,
+                source: entry.source,
+                limit: trelloConfig.maxTextLength,
+              },
+            ),
+          },
+        };
       const closing = task.status === 'closed' && entry.from !== 'closed';
       const journal = `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}`;
       if (closing) {
@@ -482,18 +535,22 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         if (!written.ok) return failure(written);
       }
 
+      const currentList =
+        savedLists.get(card.id) ?? cards.find((item) => item.id === card.id)?.idList;
+      const placeFirst = task.status === 'completed' ? currentList !== idList : task.blocking;
+      const desc = startBases.has(task.id)
+        ? withMeta(
+            startBases.get(task.id).desc,
+            overlayMeta(splitDescription(startBases.get(task.id).desc).meta, metaOf(task)),
+          )
+        : joinDescription(card.human, metaOf(task));
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
-        ...(task.blocking ? { pos: 'top' } : {}),
+        ...(placeFirst ? { pos: 'top' } : {}),
         // Название пересобирается из очищенного: иначе служебный префикс
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),
-        desc: startBases.has(task.id)
-          ? withMeta(
-              startBases.get(task.id).desc,
-              overlayMeta(splitDescription(startBases.get(task.id).desc).meta, metaOf(task)),
-            )
-          : joinDescription(card.human, metaOf(task)),
+        desc,
 
         // Чужие метки сохраняются; категории и флаг декомпозиции берём из задачи.
         idLabels: [
@@ -512,6 +569,16 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         ],
       });
       if (!moved.ok) return failure(moved);
+      savedLists.set(card.id, idList);
+      if (task.delayJournal) {
+        byId.get(task.id).task = task;
+        const raw = cards.find((item) => item.id === card.id);
+        if (raw) {
+          raw.desc = desc;
+          raw.idList = idList;
+        }
+        return flushDelayJournal(task);
+      }
       if (closing) return { ok: true, outcome: 'saved' };
 
       // Источник берётся из самой записи: переход состояния бывает и делом
@@ -535,9 +602,18 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * порядок доводов ради одного из них значило бы заставить исполнение
      * помнить, с каким из них оно работает.
      */
-    async amendTask(taskId, text, message, source) {
+    async amendTask(taskId, text, message, source, deliveryKey = null) {
       const card = cardOf(taskId);
       if (!card) return { ok: false, outcome: 'failed', why: `карточки задачи ${taskId} нет` };
+      if (deliveryKey) {
+        const posted = await comment(
+          card.id,
+          `${text}\n\n<!-- delay-analysis:${deliveryKey} -->`,
+          source,
+          { deduplicate: true },
+        );
+        return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
+      }
       const posted = await comment(card.id, text, source);
       return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
     },

@@ -453,6 +453,93 @@ function dependencyReportWorld() {
 }
 
 describe('перенос отчёта с dependencyUpdates', () => {
+  it.each(['success', 'readback', 'release', 'blocked'])(
+    'разбор задержки сохраняет порядок адресных записей и повтор: %s',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      const source = splitDescription(f.cards[1].desc);
+      source.meta.delayAnalysis = {
+        phase: 'verifying',
+        originStatus: 'blocked',
+        originSince: '2026-09-01T00:00:00.000Z',
+        originAttempts: { continuations: 0, cycleFailures: 0 },
+      };
+      f.cards[1].idList = 'list-postmortem';
+      f.cards[1].desc = joinDescription(source.human, source.meta);
+      if (mode === 'blocked') f.cards[0].idList = 'list-candidate';
+      Object.assign(f.io, f.store('B'));
+      Object.assign(f.state.report, {
+        stage: 'postmortem',
+        outcome: mode === 'blocked' ? 'blocked' : 'done',
+        routingVersion: 1,
+        categories: ['infrastructure'],
+        delayAnalysis: {
+          cause: 'Ожидание артефакта',
+          evidence: ['Артефакт проверен'],
+          nextAction: 'Повторный анализ',
+          resolution: 'resolved',
+          specificEvidence: ['Артефакт доступен'],
+          preventionEvidence: ['Проверка повторного чтения прошла'],
+        },
+        ...(mode === 'blocked'
+          ? {
+              blockers: [
+                {
+                  taskId: f.update.taskId,
+                  reason: 'Нужен канал',
+                  result: 'Канал готов',
+                  specificResult: 'Артефакт доступен',
+                  preventionResult: 'Повтор защищён тестом',
+                },
+              ],
+            }
+          : {}),
+      });
+      f.action.stage = 'postmortem';
+      let wrote = false;
+      f.fixture.hook = (method, path) => {
+        if (method === 'GET' && path.endsWith('/actions')) return { ok: true, data: [] };
+        if (method === 'PUT' && path === 'cards/card-target') wrote = true;
+        if (mode === 'readback' && wrote && method === 'GET' && path === 'cards/card-target')
+          return { ok: false, why: 'readback failed' };
+        if (mode === 'release' && method === 'DELETE' && path.startsWith('cards/card-source/'))
+          return { ok: false, why: 'release failed' };
+      };
+      const result = await execute([f.action], f.io);
+      expect(result[0].result, result[0].why).toBe(
+        ['readback', 'release'].includes(mode) ? 'failed' : 'done',
+      );
+      const puts = f.calls.filter((call) => call.method === 'PUT');
+      expect(puts[0].path).toBe('cards/card-target');
+      expect(splitDescription(f.cards[0].desc).meta.dependencyResults).toEqual(
+        f.update.dependencyResults,
+      );
+      if (mode === 'readback') {
+        expect(puts).toHaveLength(1);
+        expect(f.cards[1].idList).toBe('list-postmortem');
+        expect(f.state.report).not.toBeNull();
+      } else {
+        expect(
+          f.calls.some(
+            (call) =>
+              call.path === 'cards/card-source/actions/comments' &&
+              call.body.text?.includes('Зависимости 0003-consumer подтверждены'),
+          ),
+        ).toBe(true);
+        expect(f.cards[1].idList).toBe(mode === 'blocked' ? 'list-blocked' : 'list-new');
+        if (mode === 'release') {
+          expect(f.state.report).not.toBeNull();
+          f.fixture.hook = null;
+          f.calls.length = 0;
+          Object.assign(f.io, f.store('B'));
+          expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+          expect(f.calls.some((call) => call.path === 'boards/b/cards')).toBe(true);
+          expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+        }
+        expect(f.state.report).toBeNull();
+      }
+    },
+  );
   it.each(['success', 'readback', 'invalid-blocker', 'release'])(
     'адресное поручение при blocked: %s',
     async (mode) => {
