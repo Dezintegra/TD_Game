@@ -257,3 +257,13 @@ describe('журнал', () => {
     expect(text).toContain('END-P1');
   });
 });
+
+it.each(['review', 'interpret', 'triage'])(
+  'этап %s получает требование итога всей задачи',
+  (stage) => {
+    const text = stagePrompt({ assignment: { ...assignment, stage }, task });
+    expect(text).toContain('## Итог всей задачи');
+    expect(text).toContain('окончательные исправления после замечаний');
+    expect(text).toContain('не выдумывай');
+  },
+);

@@ -37,6 +37,7 @@ import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { closureReasonFor, closureRequestKey, recoverClosureReason } from './closure.mjs';
+import { journalBody } from './journal.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -209,6 +210,23 @@ async function transferReport(action, io) {
     report.outcome === 'done' &&
     !halted;
   if (resumedTokenAnalysis) next = finishTokenReanalysis(task, next, report, io.now);
+
+  // Ревью знает итог реализации; уборка работает без модели и лишь доставляет его.
+  if (
+    !halted &&
+    report.outcome === 'done' &&
+    (verdict.status === 'completed' ||
+      (task.status === 'review' && ['deploy', 'cleanup'].includes(verdict.status)))
+  ) {
+    next.completionSummary = journalBody({
+      what: report.summary,
+      decisions: report.decisions,
+      links: report.links,
+    }).trim();
+    if (!next.completionSummary) delete next.completionSummary;
+  } else if (!halted && ['design', 'implement', 'revise'].includes(verdict.status)) {
+    delete next.completionSummary;
+  }
 
   // Возврат отправляет задачу на этап, где сессия уже была, и возобновлять её
   // нельзя: возобновлённая отвечает из своей памяти — «всё сделано» — и вершина
@@ -410,6 +428,7 @@ async function transferReport(action, io) {
       at: io.now,
       from: task.status,
       to: verdict.status,
+      ...(verdict.status === 'completed' ? { completionSummary: next.completionSummary } : {}),
       ...(resumedTokenAnalysis ? { restorePriority: task.tokenReanalysis.originPriority } : {}),
       ...(verdict.status === 'closed' ? { closureReason: next.closureReason } : {}),
       // Обычно запись журнала говорит словами сессии — её `summary`. Исходу
@@ -425,7 +444,7 @@ async function transferReport(action, io) {
         (task.status === 'review' && verdict.status === 'cleanup')
           ? verdict.note
           : report.summary,
-      links: report.links ?? {},
+      links: verdict.status === 'completed' ? next.links : (report.links ?? {}),
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
       denials,
@@ -1173,6 +1192,9 @@ async function cleanupTask(action, io) {
       at: io.now,
       from: task.status,
       to: status,
+      ...(status === 'completed'
+        ? { completionSummary: task.completionSummary, links: task.links }
+        : {}),
       what: closureReason ? 'Уборка ресурсов задачи завершена.' : `Убрано: ${verdict.why}.`,
       ...(closureReason ? { closureReason } : {}),
     },
