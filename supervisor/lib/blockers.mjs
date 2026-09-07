@@ -91,8 +91,14 @@ export function planBlockers(task, report, known, now) {
       return { problem: `предшественник ${reason.taskId} не прошёл проверку` };
     // Кандидата нельзя молча сделать блокером: его постановку ещё не одобрили.
     // Для обязательного существующего кандидата перенос выполняется отдельно ниже.
-    if (matches[0].status === 'completed')
-      return { problem: `предшественник ${reason.taskId} уже выполнен` };
+    // Предшественник мог успеть закончиться между POST и повтором отчёта.
+    // Принимаем такой прогресс, но не даём вновь блокироваться давней готовой работой.
+    if (
+      matches[0].status === 'completed' &&
+      !matches[0].creationKey?.startsWith(`${operation}:`) &&
+      !(Date.parse(matches[0].statusChangedAt) >= Date.parse(task.statusChangedAt))
+    )
+      return { problem: `предшественник ${reason.taskId} выполнен ещё до этого анализа` };
     if (
       matches[0].status === 'failed' ||
       (matches[0].status === 'closed' && !matches[0].splitInto?.length)

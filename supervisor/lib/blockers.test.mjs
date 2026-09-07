@@ -128,6 +128,31 @@ it('повтор после успешного PUT не удваивает ра�
   expect(io.created).toHaveLength(1);
 });
 
+it('созданный предшественник может завершиться до повтора записи родителя', async () => {
+  const io = world();
+  const save = io.saveTask;
+  io.saveTask = async () => ({ ok: false, outcome: 'offline' });
+  await transferBlocked(task(), report(), {}, io);
+  const born = io.created[0];
+  io.tasks.set(born.id, { ...born, status: 'completed' });
+  io.saveTask = save;
+  expect((await transferBlocked(task(), report(), {}, io)).result).toBe('done');
+  expect(io.created).toHaveLength(1);
+});
+
+it('давний выполненный блокер не обновляет квоту анализа', () => {
+  const r = report({
+    requests: [],
+    blockers: [{ taskId: '0002-build', reason: 'Нужно', result: 'Сборка' }],
+  });
+  const predecessor = task({
+    id: '0002-build',
+    status: 'completed',
+    statusChangedAt: '2026-09-01T12:00:00Z',
+  });
+  expect(planBlockers(task(), r, [task(), predecessor], now).problem).toContain('до этого анализа');
+});
+
 it('существующий кандидат становится подтверждённой обязательной задачей', async () => {
   const io = world([task(), task({ id: '0002-build', status: 'candidate' })]);
   const r = report({
