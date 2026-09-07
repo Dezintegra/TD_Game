@@ -86,6 +86,10 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   /** Карточка задачи вместе с разобранным человеческим текстом. */
   const cardOf = (id) => byId.get(id)?.card ?? null;
 
+  // Подтверждённые перемещения нужны при повторе после ошибки комментария;
+  // исходный снимок остаётся прежним для остальных решений цикла.
+  const savedLists = new Map();
+
   /**
    * Чьё имя стоит в служебной отметке владельца.
    *
@@ -241,9 +245,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         if (!written.ok) return failure(written);
       }
 
+      const currentList =
+        savedLists.get(card.id) ?? cards.find((item) => item.id === card.id)?.idList;
+      const placeFirst = task.status === 'completed' ? currentList !== idList : task.blocking;
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
-        ...(task.blocking ? { pos: 'top' } : {}),
+        ...(placeFirst ? { pos: 'top' } : {}),
         // Название пересобирается из очищенного: иначе служебный префикс
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),
@@ -265,6 +272,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         ],
       });
       if (!moved.ok) return failure(moved);
+      savedLists.set(card.id, idList);
       if (closing) return { ok: true, outcome: 'saved' };
 
       // Источник берётся из самой записи: переход состояния бывает и делом
