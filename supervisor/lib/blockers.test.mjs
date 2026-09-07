@@ -76,6 +76,53 @@ it('обязательная инфраструктура идёт первой,
   expect(p.next.dependsOn).toEqual([p.planned[0].id]);
 });
 
+it('triage принимает failed без подъёма или дубликата, сохраняя основание', async () => {
+  const source = task({ status: 'triage' });
+  const predecessor = task({ id: '0002-run', status: 'failed', type: 'run' });
+  const io = world([source, predecessor]);
+  const value = report({
+    stage: 'triage',
+    requests: [],
+    blockers: [{ taskId: predecessor.id, reason: 'Нужны измерения', result: 'Артефакты арены' }],
+  });
+  expect(await transferBlocked(source, value, {}, io)).toEqual({
+    result: 'done',
+    status: 'blocked',
+  });
+  expect(io.readTask(source.id)).toMatchObject({
+    dependsOn: [predecessor.id],
+    blockedContext: { from: 'triage', reasons: value.blockers, operation: expect.any(String) },
+    links: source.links,
+  });
+  expect(io.readTask(predecessor.id)).toEqual(predecessor);
+  expect(io.created).toEqual([]);
+});
+
+it('failed не отменяет проверку валидности, уникальности, самоссылок и циклов', () => {
+  const source = task();
+  const predecessor = task({ id: '0002-run', status: 'failed' });
+  const value = report({
+    requests: [],
+    blockers: [{ taskId: predecessor.id, reason: 'Нужно', result: 'Результат' }],
+  });
+  for (const known of [
+    [source],
+    [source, predecessor, predecessor],
+    [source, { ...predecessor, valid: false }],
+    [source, { ...predecessor, dependsOn: [source.id] }],
+    [source, { ...predecessor, status: 'closed' }],
+  ])
+    expect(planBlockers(source, value, known, now).problem).toBeTruthy();
+  expect(
+    planBlockers(
+      source,
+      { ...value, blockers: [{ ...value.blockers[0], taskId: source.id }] },
+      [source],
+      now,
+    ).problem,
+  ).toBeTruthy();
+});
+
 it('сохраняет старые условия и два необходимых PR на собственной карточке', async () => {
   const source = task({
     dependsOn: ['0004-old'],

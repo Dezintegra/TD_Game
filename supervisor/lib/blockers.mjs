@@ -144,10 +144,8 @@ export function planBlockers(task, report, known, now) {
       !(Date.parse(matches[0].statusChangedAt) >= Date.parse(task.statusChangedAt))
     )
       return { problem: `предшественник ${reason.taskId} выполнен ещё до этого анализа` };
-    if (
-      (matches[0].status === 'failed' && !reviewingQuestion(task)) ||
-      (matches[0].status === 'closed' && !matches[0].splitInto?.length)
-    )
+    // Остановка допускает ожидание существующей работы, но не доказывает её выполнение.
+    if (matches[0].status === 'closed' && !matches[0].splitInto?.length)
       return { problem: `предшественник ${reason.taskId} остановлен без результата` };
   }
   const next = {

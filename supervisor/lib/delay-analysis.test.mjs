@@ -4,7 +4,8 @@ import { canTransition } from '../config/transitions.mjs';
 import { metaOf, parseCard, joinDescription } from './card.mjs';
 import { scan } from './scan.mjs';
 import { execute } from './execute.mjs';
-import { delayDecision, delayReportProblem, DELAY_STATES } from './delay-analysis.mjs';
+import { delayDecision, delayReportProblem, DELAY_STATES, WAIT_FROM } from './delay-analysis.mjs';
+import { BLOCKABLE } from './blockers.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
 
 const now = '2026-09-07T12:00:00Z';
@@ -131,6 +132,38 @@ async function transfer(io, value) {
 }
 
 describe('порог задержки', () => {
+  it('исключает только полное принятое ожидание из разрешённого этапа', () => {
+    expect(WAIT_FROM).toEqual(BLOCKABLE);
+    const blocked = task({
+      status: 'blocked',
+      dependsOn: ['0002-run'],
+      blockedContext: {
+        operation: 'accepted',
+        from: 'triage',
+        reasons: [{ taskId: '0002-run', reason: 'Нужно', result: 'Артефакт' }],
+      },
+    });
+    expect(delayDecision(blocked, { now })).toBeNull();
+    for (const blockedContext of [
+      undefined,
+      {},
+      { ...blocked.blockedContext, operation: '' },
+      { ...blocked.blockedContext, from: 'review' },
+      { ...blocked.blockedContext, reasons: [] },
+      ...[
+        { taskId: '0003-other', reason: 'Нужно', result: 'Артефакт' },
+        { taskId: '0002-run', reason: '', result: 'Артефакт' },
+        { taskId: '0002-run', reason: 'Нужно', result: '' },
+        null,
+      ].map((r) => ({ ...blocked.blockedContext, reasons: [r] })),
+    ])
+      expect(delayDecision({ ...blocked, blockedContext }, { now })?.kind).toBe('analyze-delay');
+    for (const dependsOn of [[], ['bad'], ['0002-run', '0002-run']])
+      expect(delayDecision({ ...blocked, dependsOn }, { now })?.kind).toBe('analyze-delay');
+    expect(delayDecision({ ...blocked, delayJournal: {} }, { now })?.kind).toBe(
+      'flush-delay-journal',
+    );
+  });
   it.each(DELAY_STATES)('обнаруживает рабочий статус %s', (status) => {
     expect(delayDecision(task({ status }), { now })?.kind).toBe('analyze-delay');
   });
@@ -559,13 +592,13 @@ it('неудачное исправление оставляет диагноз 
   );
 });
 
-it('задержка уже заблокированной карточки проверяется до нового анализа постановки', async () => {
+it('сохранённый разбор blocked проверяется до нового анализа постановки', async () => {
   const dependency = task({ id: '0002-prerequisite', status: 'new', statusChangedAt: now });
   const source = task({
     status: 'blocked',
     dependsOn: [dependency.id],
     blockedContext: {
-      operation: 'old',
+      // Неполное старое основание по-прежнему требует первичного разбора.
       from: 'design',
       priority: 20,
       reasons: [{ taskId: dependency.id, reason: 'Нужна сборка', result: 'Сборка проходит' }],
