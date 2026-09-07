@@ -2509,3 +2509,74 @@ describe('пропавшая сеть', () => {
     expect(results.filter((item) => item.result === 'done')).toEqual([]);
   });
 });
+
+it.each([
+  ['review', 'feature', 'deploy'],
+  ['interpret', 'run', 'completed'],
+  ['triage', 'note', 'completed'],
+])('сохраняет итог всей задачи из %s', async (stage, type, status) => {
+  const summary =
+    'Что сделано: исправлен расчёт. Как решено: единая формула. Проверки: тесты прошли.';
+  const io = fakeIo({
+    tasks: [task({ type, status: stage, links: { pr: 50 } })],
+    report: {
+      taskId: '0001-one',
+      stage,
+      outcome: 'done',
+      summary,
+      decisions: ['Убран двойной учёт.'],
+    },
+  });
+  const [result] = await execute([{ kind: 'transfer-report', taskId: '0001-one', stage }], io);
+  expect(result.status).toBe(status);
+  expect(io.tasks.get('0001-one').completionSummary).toContain(summary);
+  expect(io.tasks.get('0001-one').completionSummary).toContain('Убран двойной учёт.');
+  if (status === 'completed') expect(io.journals.get('0001-one')).toContain('**Итог задачи**');
+});
+
+it('уборка доставляет сохранённый итог реализации', async () => {
+  const summary = 'Исправлен расчёт через единую формулу, регрессия проверена тестом.';
+  const io = fakeIo({
+    tasks: [task({ status: 'cleanup', links: { pr: 50 }, completionSummary: summary })],
+    pr: { state: 'merged' },
+  });
+  await execute([{ kind: 'cleanup', taskId: '0001-one' }], io);
+  expect(io.journals.get('0001-one')).toContain(summary);
+  expect(io.journals.get('0001-one')).toContain('**Итог задачи**');
+  expect(io.journals.get('0001-one')).not.toContain('Убрано:');
+});
+
+it('возврат ревью на доработку удаляет старый итог', async () => {
+  const io = fakeIo({
+    tasks: [task({ status: 'review', completionSummary: 'Старое решение' })],
+    report: {
+      taskId: '0001-one',
+      stage: 'review',
+      outcome: 'rejected',
+      summary: 'Исправить дефект',
+    },
+  });
+  await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'review' }], io);
+  expect(io.tasks.get('0001-one').status).toBe('revise');
+  expect(io.tasks.get('0001-one')).not.toHaveProperty('completionSummary');
+  expect(io.journals.get('0001-one')).not.toContain('**Итог задачи**');
+});
+
+it('сохраняет итог ревью при пропуске ненужной выкладки игры', async () => {
+  const io = fakeIo({
+    tasks: [task({ status: 'review', links: { pr: 50 } })],
+    report: {
+      taskId: '0001-one',
+      stage: 'review',
+      outcome: 'done',
+      summary: 'Добавлен итог задачи, проверены повторы доставки.',
+    },
+  });
+  io.deploymentImpact = () => ({ needed: false, reason: 'Изменён только конвейер.' });
+  const [result] = await execute(
+    [{ kind: 'transfer-report', taskId: '0001-one', stage: 'review' }],
+    io,
+  );
+  expect(result.status).toBe('cleanup');
+  expect(io.tasks.get('0001-one').completionSummary).toContain('проверены повторы доставки');
+});

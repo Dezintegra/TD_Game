@@ -283,10 +283,13 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
           },
         };
       const closing = task.status === 'closed' && entry.from !== 'closed';
-      const journal = `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}`;
+      const completing = task.status === 'completed' && entry.from !== 'completed';
+      const journal = `**${entry.from} → ${entry.to}**\n\n${journalBody({ ...entry, completionSummary: task.completionSummary ?? entry.completionSummary })}`;
       if (closing) {
         if (typeof entry.closureReason !== 'string' || !entry.closureReason.trim())
           return { ok: false, outcome: 'failed', why: 'причина закрытия не названа' };
+      }
+      if (closing || completing) {
         const written = await comment(card.id, journal, entry.source, { deduplicate: true });
         if (!written.ok) return failure(written);
       }
@@ -329,7 +332,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         }
         return flushDelayJournal(task);
       }
-      if (closing) return { ok: true, outcome: 'saved' };
+      if (closing || completing) return { ok: true, outcome: 'saved' };
 
       // Источник берётся из самой записи: переход состояния бывает и делом
       // сессии — тогда в записи её отчёт, — и распоряжением супервизора.

@@ -58,6 +58,9 @@ export function journalEntry(entry) {
  * в его первой строке только мешала бы читать.
  */
 export function journalBody({
+  from,
+  to,
+  completionSummary,
   closureReason,
   what,
   decisions = [],
@@ -67,10 +70,23 @@ export function journalBody({
   denialsNote,
 }) {
   const lines = [];
+  const completing = to === 'completed' && from !== 'completed';
+
+  if (completing) {
+    lines.push(
+      '**Итог задачи**',
+      '',
+      completionSummary?.trim() ||
+        'Подробный итог не сохранён: задача выполнялась без итогового отчёта. Доступные сведения — в журнале этапов и ссылках ниже.',
+      '',
+      '**Завершение:** задача выполнена.',
+      '',
+    );
+  }
 
   if (closureReason) lines.push('**Причина закрытия**', '', closureReason, '');
 
-  if (what) lines.push(what, '');
+  if (what && !completing) lines.push(what, '');
 
   if (problem) {
     lines.push(`**Не удалось:** ${problem}`, '');
