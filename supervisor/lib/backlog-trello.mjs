@@ -140,7 +140,34 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     return { ok: true, id: meId };
   }
 
+  // Доставку видимого разбора нельзя считать законченной по одному PUT.
+  // Части сохраняются до POST: после обрыва сравниваем точный текст уже
+  // опубликованных частей, затем снимаем конверт отдельной записью.
+  async function flushDelayJournal(task) {
+    const pending = task.delayJournal;
+    const card = cardOf(task.id);
+    if (!pending || !card) return { ok: false, why: 'нет конверта комментария задержки' };
+    const known = commentsByCard.get(card.id) ?? [];
+    for (const part of pending.parts) {
+      if (known.some((item) => item.text === part)) continue;
+      const posted = await trello.post(`cards/${card.id}/actions/comments`, { text: part });
+      if (!posted.ok) return failure(posted);
+      known.push({ text: part, date: pending.entry.at, cardId: card.id });
+      commentsByCard.set(card.id, known);
+    }
+    const next = { ...task };
+    delete next.delayJournal;
+    const desc = joinDescription(card.human, metaOf(next));
+    const cleared = await trello.put(`cards/${card.id}`, { desc });
+    if (!cleared.ok) return failure(cleared);
+    byId.get(task.id).task = next;
+    const raw = cards.find((item) => item.id === card.id);
+    if (raw) raw.desc = desc;
+    return { ok: true, outcome: 'saved' };
+  }
+
   return {
+    flushDelayJournal,
     // Всё, что ниже, повторяет поверхность файлового хранилища. Разница
     // только в том, что записи возвращают обещание: доска отвечает по сети.
 
@@ -206,6 +233,22 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };
       }
 
+      if (entry.deliveryKey)
+        task = {
+          ...task,
+          delayJournal: {
+            entry,
+            parts: splitJournalEntry(
+              `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}\n\nРазбор: ${entry.deliveryKey}`,
+              {
+                marker: mark,
+                source: entry.source,
+                limit: trelloConfig.maxTextLength,
+              },
+            ),
+          },
+        };
+
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
         ...(task.blocking ? { pos: 'top' } : {}),
@@ -230,6 +273,15 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         ],
       });
       if (!moved.ok) return failure(moved);
+      if (task.delayJournal) {
+        byId.get(task.id).task = task;
+        const raw = cards.find((item) => item.id === card.id);
+        if (raw) {
+          raw.desc = joinDescription(card.human, metaOf(task));
+          raw.idList = idList;
+        }
+        return flushDelayJournal(task);
+      }
 
       // Источник берётся из самой записи: переход состояния бывает и делом
       // сессии — тогда в записи её отчёт, — и распоряжением супервизора.
@@ -256,9 +308,25 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * порядок доводов ради одного из них значило бы заставить исполнение
      * помнить, с каким из них оно работает.
      */
-    async amendTask(taskId, text, message, source) {
+    async amendTask(taskId, text, message, source, deliveryKey = null) {
       const card = cardOf(taskId);
       if (!card) return { ok: false, outcome: 'failed', why: `карточки задачи ${taskId} нет` };
+      if (deliveryKey) {
+        const parts = splitJournalEntry(`${text}\n\nРазбор: ${deliveryKey}`, {
+          marker: mark,
+          source,
+          limit: trelloConfig.maxTextLength,
+        });
+        const known = commentsByCard.get(card.id) ?? [];
+        for (const part of parts) {
+          if (known.some((item) => item.text === part)) continue;
+          const posted = await trello.post(`cards/${card.id}/actions/comments`, { text: part });
+          if (!posted.ok) return failure(posted);
+          known.push({ text: part, cardId: card.id });
+          commentsByCard.set(card.id, known);
+        }
+        return { ok: true, outcome: 'saved' };
+      }
       const posted = await comment(card.id, text, source);
       return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
     },

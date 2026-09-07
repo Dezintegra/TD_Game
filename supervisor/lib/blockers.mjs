@@ -1,4 +1,14 @@
 import { createHash } from 'node:crypto';
+import {
+  reviewingDelay,
+  delayReportProblem,
+  delaySummary,
+  delayFacts,
+  delayDependencies,
+  delayEntry,
+  delayKey,
+  beginDelayAnalysis,
+} from './delay-analysis.mjs';
 import { checkCard } from './validate-card.mjs';
 import { categoriesProblem } from './categories.mjs';
 import {
@@ -22,7 +32,12 @@ export const BLOCKABLE = [
 const nonempty = (s) => typeof s === 'string' && s.trim().length > 0;
 
 export function blockerReportProblem(task, report) {
-  if (!BLOCKABLE.includes(report.stage)) return 'этот этап не может объявить предпосылку';
+  if (!BLOCKABLE.includes(report.stage) && !reviewingDelay(task))
+    return 'этот этап не может объявить предпосылку';
+  if (reviewingDelay(task)) {
+    const problem = delayReportProblem(task, report);
+    if (problem) return problem;
+  }
   if (task.status !== report.stage && task.status !== 'blocked') return 'отчёт о другом этапе';
   if (!Array.isArray(report.blockers) || report.blockers.length === 0) return 'не названы блокеры';
   if (categoriesProblem(report.categories, true)) return categoriesProblem(report.categories, true);
@@ -73,6 +88,17 @@ export function planBlockers(task, report, known, now) {
       status: required.has(request.key) || request.type === 'run' ? 'new' : 'candidate',
       blocking: required.has(request.key),
     };
+    if (reviewingDelay(task) && required.has(request.key)) {
+      const criteria = report.blockers.filter((b) => b.requestKey === request.key);
+      born.description +=
+        `\n\nРазблокирует ${task.id}. Причина: ${report.delayAnalysis.cause}\n` +
+        criteria
+          .map(
+            (b) =>
+              `Конкретный результат и проверка: ${b.specificResult}\nОбщее исправление и защита от повторения: ${b.preventionResult}`,
+          )
+          .join('\n');
+    }
     planned.push(born);
     taken.push(id);
     keyToId.set(request.key, id);
@@ -81,6 +107,9 @@ export function planBlockers(task, report, known, now) {
     taskId: b.taskId ?? keyToId.get(b.requestKey),
     reason: b.reason,
     result: b.result,
+    ...(reviewingDelay(task)
+      ? { specificResult: b.specificResult, preventionResult: b.preventionResult }
+      : {}),
   }));
   const all = [...known, ...planned];
   for (const reason of reasons) {
@@ -158,18 +187,53 @@ export async function transferBlocked(task, report, action, io) {
     );
     if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };
   }
-  const note = plan.reasons
-    .map((r) => `${r.taskId}: ${r.reason}. Нужен результат: ${r.result}`)
-    .join('\n');
+  if (reviewingDelay(task))
+    for (const reason of plan.reasons) {
+      const predecessor = io.readTask(reason.taskId);
+      if (!known.some((item) => item.id === reason.taskId) || !predecessor) continue;
+      const what =
+        `Исправление требуется для ${task.id}. Причина: ${report.delayAnalysis.cause}\n` +
+        `Конкретное разблокирование и проверка: ${reason.specificResult}\n` +
+        `Общее исправление и защита от повторения: ${reason.preventionResult}`;
+      const written = await io.amendTask(
+        reason.taskId,
+        what,
+        `chore(backlog): repair criteria for ${task.id}`,
+        'agent',
+        delayKey([plan.operation, reason.taskId]),
+      );
+      if (!written.ok) return { result: 'failed', why: written.why ?? written.outcome };
+    }
+  const note =
+    (reviewingDelay(task) ? delaySummary(report.delayAnalysis) + '\n\n' : '') +
+    plan.reasons
+      .map(
+        (r) =>
+          `Ожидает выполнения карточки ${r.taskId}: ${r.reason}. Нужен результат: ${r.result}` +
+          (r.specificResult
+            ? `\nКонкретное разблокирование: ${r.specificResult}\nЗащита от повторения: ${r.preventionResult}`
+            : ''),
+      )
+      .join('\n');
   const moved = applyTransition(plan.next, { status: 'blocked', note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
   const next = addSpent({ ...moved.task, owner: null }, report.costUsd);
   for (const key of ['change', 'pr', 'run']) {
     if (report.links?.[key] != null) next.links = { ...next.links, [key]: report.links[key] };
   }
+  if (reviewingDelay(task))
+    next.delayAnalysis = {
+      ...task.delayAnalysis,
+      phase: 'waiting',
+      diagnosis: report.delayAnalysis,
+      reportKey: delayKey(report),
+      facts: delayFacts(next),
+      dependencies: delayDependencies(next, [...known, ...plan.planned]),
+    };
+  const entry = { from: task.status, to: 'blocked', what: note, source: 'agent', at: io.now };
   const saved = await io.saveTask(
     next,
-    { from: task.status, to: 'blocked', what: note, source: 'agent', at: io.now },
+    reviewingDelay(task) ? delayEntry(next, note, entry) : entry,
     `chore(backlog): ${task.id} ждёт предшественников`,
   );
   if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };
@@ -197,6 +261,15 @@ export async function unblockTask(action, io) {
     mainBranch: action.mainBranch,
   });
   if (pending.length) return { result: 'skipped', why: pending.join(', ') };
+  if (task.delayAnalysis)
+    return beginDelayAnalysis(
+      {
+        taskId: task.id,
+        mode: 'verify',
+        reason: `Исправления выполнены: ${task.dependsOn.join(', ')}. Проверить сохранённый разбор, конкретное разблокирование и защиту от повторения.`,
+      },
+      io,
+    );
   const note = `Предшественники выполнены: ${task.dependsOn.join(', ')}. Новый анализ с учётом их результата.`;
   const moved = applyTransition(task, { status: 'new', now: io.now, note });
   const next = {

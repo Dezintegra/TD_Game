@@ -560,6 +560,7 @@ async function turn() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const state = {
+    machine,
     ...(await buildDependencyState({
       backlog,
       config,

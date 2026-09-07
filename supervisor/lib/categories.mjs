@@ -1,3 +1,5 @@
+import { delayStateProblem } from './delay-analysis.mjs';
+
 export const CATEGORIES = ['ux', 'mechanics', 'balance', 'infrastructure'];
 
 export function categoriesProblem(value, required = false) {
@@ -14,6 +16,8 @@ export function categoriesProblem(value, required = false) {
 
 // Эти поля принадлежат протоколу ожидания, а не колонке или меткам Trello.
 export const ROUTING_FIELDS = [
+  'delayAnalysis',
+  'delayJournal',
   'creationKey',
   'blockedContext',
   'reanalysis',
@@ -27,6 +31,8 @@ export function routingFields(value) {
 }
 
 export function routingProblem(task) {
+  const delayProblem = delayStateProblem(task);
+  if (delayProblem) return delayProblem;
   if (task.reanalysis !== undefined && typeof task.reanalysis !== 'boolean')
     return 'reanalysis не boolean';
   if (

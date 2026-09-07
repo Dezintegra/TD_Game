@@ -249,6 +249,19 @@ export function canTransition(task, to) {
   if (from === to) {
     return { ok: false, reason: 'задача уже в этом состоянии' };
   }
+  if (
+    from === 'postmortem' &&
+    ['analyzing', 'verifying'].includes(task.delayAnalysis?.phase) &&
+    (to === 'blocked' ||
+      to === task.delayAnalysis.originStatus ||
+      (to === 'new' &&
+        task.delayAnalysis.originStatus === 'blocked' &&
+        task.delayAnalysis.phase === 'verifying'))
+  )
+    return {
+      ok: true,
+      reason: 'сохранённый разбор задержки: ожидание исправления или проверенное продолжение',
+    };
   if (from === 'blocked' && to === 'new')
     return { ok: true, reason: 'предшественники выполнены, новый анализ' };
   if (
