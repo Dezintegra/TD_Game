@@ -119,6 +119,7 @@
         "failed",
         "awaiting-po",
         "blocked",
+        "token-limit",
         "decompose"
       ]
     },
@@ -400,6 +401,10 @@
           }
         }
       }
+    },
+    "tokenHold": {
+      "type": "object",
+      "description": "Сохранённый этап и производная панель ожидания бюджета; не источник разрешения на расход."
     }
   },
   "allOf": [
