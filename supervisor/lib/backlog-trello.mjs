@@ -85,6 +85,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
 
   /** Карточка задачи вместе с разобранным человеческим текстом. */
   const cardOf = (id) => byId.get(id)?.card ?? null;
+  const createdCardIds = new Map();
 
   /**
    * Чьё имя стоит в служебной отметке владельца.
@@ -107,13 +108,37 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
    * а разница между «так решила сессия» и «так распорядился конвейер»
    * читающему доску нужна постоянно.
    */
-  async function comment(cardId, text, source) {
+  async function comment(cardId, text, source, { deduplicate = false } = {}) {
     const parts = splitJournalEntry(text, {
       marker: mark,
       source,
       limit: trelloConfig.maxTextLength,
     });
+    const existing = new Set();
+    if (deduplicate) {
+      // Снимок всей доски ограничен тысячей записей: для повтора нужна
+      // полная история именно этой карточки, включая частичную публикацию.
+      let before;
+      const cursors = new Set();
+      do {
+        const page = await trello.get(`cards/${cardId}/actions`, {
+          filter: 'commentCard',
+          limit: 1000,
+          before,
+        });
+        if (!page.ok) return page;
+        if (!Array.isArray(page.data))
+          return { ok: false, kind: 'refused', why: 'история комментариев не является списком' };
+        for (const action of page.data) existing.add(action.data?.text);
+        if (page.data.length < 1000) break;
+        before = page.data.at(-1)?.id;
+        if (!before || cursors.has(before))
+          return { ok: false, kind: 'refused', why: 'пагинация комментариев не продвигается' };
+        cursors.add(before);
+      } while (before);
+    }
     for (const part of parts) {
+      if (existing.has(part)) continue;
       const posted = await trello.post(`cards/${cardId}/actions/comments`, { text: part });
       if (!posted.ok) return posted;
     }
@@ -145,6 +170,10 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     // только в том, что записи возвращают обещание: доска отвечает по сети.
 
     readTask: (id) => byId.get(id)?.task ?? null,
+    taskLink: (id) => {
+      const cardId = createdCardIds.get(id) ?? cardOf(id)?.id;
+      return cardId ? `[${id}](https://trello.com/c/${cardId})` : id;
+    },
 
     /**
      * Все занятые идентификаторы.
@@ -184,10 +213,8 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * отметками, и разъехаться им нельзя. Trello такую правку делает
      * неделимой, проверено пробой.
      *
-     * Комментарий с записью журнала идёт вторым и отдельным обращением.
-     * Обрыв между ними оставит задачу переехавшей без записи в журнале —
-     * неприятно, но не опасно: состояние верно, а пропавшую запись видно
-     * по дыре в истории карточки.
+     * При закрытии сначала записывается причина: терминальная карточка
+     * не получит нового этапа, который мог бы восстановить пропавший текст.
      */
     async saveTask(task, entry) {
       if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
@@ -204,6 +231,15 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       const idList = listIdByState.get(task.status);
       if (!idList) {
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };
+      }
+
+      const closing = task.status === 'closed' && entry.from !== 'closed';
+      const journal = `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}`;
+      if (closing) {
+        if (typeof entry.closureReason !== 'string' || !entry.closureReason.trim())
+          return { ok: false, outcome: 'failed', why: 'причина закрытия не названа' };
+        const written = await comment(card.id, journal, entry.source, { deduplicate: true });
+        if (!written.ok) return failure(written);
       }
 
       const moved = await trello.put(`cards/${card.id}`, {
@@ -230,14 +266,11 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         ],
       });
       if (!moved.ok) return failure(moved);
+      if (closing) return { ok: true, outcome: 'saved' };
 
       // Источник берётся из самой записи: переход состояния бывает и делом
       // сессии — тогда в записи её отчёт, — и распоряжением супервизора.
-      const written = await comment(
-        card.id,
-        `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}`,
-        entry.source,
-      );
+      const written = await comment(card.id, journal, entry.source);
       if (!written.ok) return failure(written);
 
       return { ok: true, outcome: 'saved' };
@@ -307,6 +340,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         pos: task.blocking ? 'top' : 'bottom',
       });
       if (!created.ok) return failure(created);
+      if (created.data?.id) createdCardIds.set(task.id, created.data.id);
 
       return { ok: true, outcome: 'saved' };
     },

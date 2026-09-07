@@ -318,7 +318,7 @@ describe('сохранение частей декомпозиции', () => {
     const io = make([parts[0], { type: 'feature' }]);
     const [result] = await execute([action], io);
     expect(result.result).toBe('failed');
-    expect(result.why).toContain('декомпозиция не сохранена');
+    expect(result.why).toContain('передача работы не сохранена');
     expect(io.tasks.size).toBe(1);
     expect(io.tasks.get('0001-one').status).toBe('decompose');
   });
@@ -1608,7 +1608,16 @@ describe('уборка после потери записи реестра', () 
     state = 'merged',
     ownCommits = 0,
   } = {}) {
-    const io = fakeIo({ tasks: [task({ status: 'cleanup', owner, links: { pr } })] });
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'cleanup',
+          owner,
+          links: { pr },
+          closureReason: 'Предмет снят: правило уже действует. Проверено: PR 49 влит.',
+        }),
+      ],
+    });
     const registry = new Map();
     const resources = new Set(present ? ['tree', 'local', 'remote'] : []);
     const gitTrees = new Set(present ? ['tree'] : []);
@@ -1797,6 +1806,64 @@ describe('уборка после потери записи реестра', () 
   );
 });
 
+describe('причина в конечном переходе', () => {
+  it('снятый предмет сохраняется после отдельного цикла уборки', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'design' })],
+      ownCommits: 0,
+      report: {
+        stage: 'design',
+        outcome: 'moot',
+        summary: 'Проверка Windows уже исправлена.',
+        evidence: 'PR 166 влит.',
+      },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'design' }], io);
+    const pending = io.tasks.get('0001-one');
+    expect(pending.status).toBe('cleanup');
+    io.journals.clear();
+    const [closed] = await execute([{ kind: 'cleanup', taskId: pending.id }], io);
+    expect(closed.status).toBe('closed');
+    expect(io.journals.get(pending.id)).toContain('**Причина закрытия**');
+    expect(io.journals.get(pending.id)).toContain('Проверка Windows уже исправлена.');
+    expect(io.journals.get(pending.id)).toContain('PR 166 влит.');
+  });
+
+  it('без причины уборка не удаляет ресурсы и не закрывает карточку', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'cleanup' })], ownCommits: 0 });
+    const [result] = await execute([{ kind: 'cleanup', taskId: '0001-one' }], io);
+    expect(result.result).toBe('failed');
+    expect(result.why).toContain('причина закрытия отсутствует');
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
+    expect(io.steps.some((step) => /удалено|удалена|снята/.test(step))).toBe(false);
+  });
+
+  it.each([
+    ['triage', 'note', 'done'],
+    ['decompose', 'feature', 'split'],
+  ])('%s называет созданные продолжения', async (stage, type, outcome) => {
+    const io = fakeIo({
+      tasks: [task({ status: stage, type })],
+      report: {
+        stage,
+        outcome,
+        summary: 'Две независимые правки: диагностика и учёт.',
+        requests: [
+          { type: 'feature', title: 'Диагностика', description: 'Сохранить отчёт.' },
+          { type: 'feature', title: 'Учёт', description: 'Исправить расход.' },
+        ],
+      },
+    });
+    io.taskLink = (id) => `[${id}](https://trello.com/c/card-${id})`;
+    const [result] = await execute([{ kind: 'transfer-report', taskId: '0001-one', stage }], io);
+    expect(result.status).toBe('closed');
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('**Причина закрытия**');
+    expect(journal).toContain('Две независимые правки');
+    for (const id of result.created) expect(journal).toContain(io.taskLink(id));
+  });
+});
+
 describe('уборка', () => {
   const sweep = { kind: 'cleanup', taskId: '0001-one' };
   const inCleanup = () =>
@@ -1825,7 +1892,11 @@ describe('уборка', () => {
     // то есть в ту самую «Ошибку», от которой ход и заводится.
     const io = fakeIo({
       tasks: [
-        task({ status: 'cleanup', links: { change: null, pr: null, run: null, related: [] } }),
+        task({
+          status: 'cleanup',
+          links: { change: null, pr: null, run: null, related: [] },
+          closureReason: 'Предмет снят: правило действует. Проверено: PR 49 влит.',
+        }),
       ],
       pr: { state: 'unknown' },
       ownCommits: 0,
@@ -1887,6 +1958,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           { type: 'feature', title: 'Починить цену Теслы', description: 'Цена мешает ремонту.' },
         ],
@@ -1911,6 +1983,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           {
             type: 'run',
@@ -1932,6 +2005,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           { type: 'feature', title: 'Первая', description: 'Раз.' },
           { type: 'feature', title: 'Вторая', description: 'Два.' },
@@ -1943,13 +2017,14 @@ describe('заявки на новые задачи', () => {
     expect(commits).toHaveLength(3); // состояние породившей плюс две задачи
   });
 
-  it('негодная заявка отклоняется, годная заводится', async () => {
+  it('негодная заявка не позволяет закрыть заметку с частичной передачей работы', async () => {
     const io = fakeIo({
       tasks: [note()],
       report: {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           { type: 'feature', title: 'Годная', description: 'Есть описание.' },
           { type: 'run', title: 'Прогон без ожидания', description: 'Есть.' },
@@ -1957,8 +2032,9 @@ describe('заявки на новые задачи', () => {
       },
     });
     const [result] = await execute([triage], io);
-    expect(result.created).toHaveLength(1);
-    expect(io.journals.get('0001-one')).toContain('заявка отклонена');
+    expect(result.result).toBe('failed');
+    expect(io.tasks.get('0001-one').status).toBe('triage');
+    expect(io.tasks.size).toBe(1);
   });
 
   it('задачи по заявкам заводятся РАНЬШЕ смены состояния породившей', async () => {
@@ -1973,6 +2049,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [{ type: 'feature', title: 'Порождённая', description: 'Есть описание.' }],
       },
     });
@@ -1991,6 +2068,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [{ type: 'feature', title: 'Порождённая', description: 'Есть описание.' }],
       },
       push: () => ({ ok: false, outcome: 'dirty' }),
@@ -2092,6 +2170,7 @@ describe('дополнение существующей задачи', () => {
         taskId: '0001-one',
         stage: 'postmortem',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           {
             type: 'feature',
@@ -2113,6 +2192,7 @@ describe('дополнение существующей задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           {
             type: 'feature',

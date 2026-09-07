@@ -20,9 +20,17 @@ describe('выполнение постановки отдельно от зак
     ['triage', 'note', [], 'completed'],
     ['triage', 'note', [{ type: 'feature' }], 'closed'],
   ])('%s: заявки не подменяют выполнение исходной постановки', (stage, type, requests, status) => {
-    expect(applyReport({ type, status: stage }, { stage, outcome: 'done', requests }).status).toBe(
-      status,
-    );
+    expect(
+      applyReport(
+        { type, status: stage },
+        {
+          stage,
+          outcome: 'done',
+          requests,
+          summary: 'Вопрос разобран, работа передана заявкам при их наличии.',
+        },
+      ).status,
+    ).toBe(status);
   });
 
   it.each(['unknown', 'open', 'closed', undefined])(
@@ -46,7 +54,7 @@ it.each(['Проверено по постановке и актуальному
   (evidence) => {
     const result = applyReport(
       { type: 'note', status: 'triage' },
-      { stage: 'triage', outcome: 'moot', evidence },
+      { stage: 'triage', outcome: 'moot', evidence, summary: 'Требуемое правило уже действует.' },
     );
     expect(result.status).toBe(evidence ? 'closed' : 'postmortem');
   },

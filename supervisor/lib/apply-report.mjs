@@ -142,6 +142,14 @@ export function applyReport(task, report, limits = {}) {
     return halt(task, problems.join('; '), problems);
   }
 
+  const closing =
+    ['moot', 'split'].includes(report.outcome) ||
+    (task.status === 'triage' && report.outcome === 'done' && report.requests?.length);
+  if (closing && (typeof report.summary !== 'string' || !report.summary.trim())) {
+    const why = 'причина закрытия не названа: поле summary пусто';
+    return halt(task, why, [why]);
+  }
+
   if (report.outcome === 'failed') {
     return halt(task, report.summary ?? 'этап завершился неуспешно', problems);
   }

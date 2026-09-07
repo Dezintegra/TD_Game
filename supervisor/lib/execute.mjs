@@ -20,6 +20,7 @@ import { pipelineCause, recoveryFrom } from './recovery.mjs';
 import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
+import { closureReasonFor, recoverClosureReason } from './closure.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -201,10 +202,10 @@ async function transferReport(action, io) {
   });
   // Частичный план не доказывает завершение разделения: иначе потерянная
   // часть исчезнет из ожиданий всех потребителей закрытого родителя.
-  if (report.outcome === 'split' && verdict.status === 'closed' && plan.rejected.length > 0) {
+  if (verdict.status === 'closed' && plan.rejected.length > 0) {
     return {
       result: 'failed',
-      why: `декомпозиция не сохранена: ${plan.rejected.flatMap((bad) => bad.problems).join('; ')}`,
+      why: `передача работы не сохранена: ${plan.rejected.flatMap((bad) => bad.problems).join('; ')}`,
     };
   }
   for (const bad of plan.rejected) {
@@ -269,6 +270,10 @@ async function transferReport(action, io) {
     next = { ...next, splitInto: [...created] };
   }
 
+  if (!halted && (report.outcome === 'moot' || verdict.status === 'closed')) {
+    next = { ...next, closureReason: closureReasonFor(report, created, io.taskLink) };
+  }
+
   // Дополнения уезжают тем же порядком и по той же причине: до смены
   // состояния, каждое своим коммитом. Неудача здесь не оставляет следов —
   // состояние не тронуто, отчёт цел, следующий цикл начнёт заново.
@@ -331,6 +336,7 @@ async function transferReport(action, io) {
       at: io.now,
       from: task.status,
       to: verdict.status,
+      ...(verdict.status === 'closed' ? { closureReason: next.closureReason } : {}),
       // Обычно запись журнала говорит словами сессии — её `summary`. Исходу
       // `moot` этого мало: спецификация требует, чтобы запись назвала причину
       // ВМЕСТЕ с доказательством, а сложены они в одну фразу только в записке
@@ -1058,6 +1064,15 @@ async function cleanupTask(action, io) {
 
   if (verdict.verdict === 'fail') return halt(task, verdict.why, io);
 
+  const closureReason = task.links?.pr
+    ? null
+    : recoverClosureReason(task, io.readJournal?.(task.id));
+  if (!task.links?.pr && !closureReason)
+    return {
+      result: 'failed',
+      why: 'причина закрытия отсутствует: восстановите решение о снятии предмета до уборки',
+    };
+
   if (verdict.verdict === 'proceed') {
     const swept = cleanup({ task, entry, io });
     if (!swept.finished) {
@@ -1071,8 +1086,14 @@ async function cleanupTask(action, io) {
   const moved = applyTransition(task, { status, note: verdict.why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
   const push = await io.saveTask(
-    moved.task,
-    { at: io.now, from: task.status, to: status, what: `Убрано: ${verdict.why}.` },
+    closureReason ? { ...moved.task, closureReason } : moved.task,
+    {
+      at: io.now,
+      from: task.status,
+      to: status,
+      what: `Убрано: ${verdict.why}.`,
+      ...(closureReason ? { closureReason } : {}),
+    },
     `chore(backlog): ${task.id} ${status}`,
   );
   return push.ok ? { result: 'done', status } : { result: 'failed', why: push.outcome };
