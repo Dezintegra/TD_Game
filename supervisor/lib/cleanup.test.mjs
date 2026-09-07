@@ -114,7 +114,7 @@ describe('когда убирать нельзя', () => {
       unpushed: 0,
       ownCommits: null,
     });
-    expect(verdict.verdict).toBe('fail');
+    expect(verdict.verdict).toBe('wait');
     expect(verdict.why).toContain('узнать не удалось');
   });
 

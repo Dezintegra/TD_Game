@@ -234,6 +234,44 @@ describe('улики о деле этапа', () => {
     const { io } = fakeIo([{ code: 128, stdout: '', stderr: 'fatal: bad revision' }]);
     expect(io.ownCommits('worktree-0001-one')).toBe(null);
   });
+
+  it('подтверждённое отсутствие обеих веток разрешает дочистку папки', () => {
+    const { io, asked } = fakeIo([{ code: 128 }, { code: 1 }, { code: 2 }]);
+    expect(io.ownCommits('worktree-0001-one')).toBe(0);
+    expect(asked).toEqual([
+      'rev-list --count --no-merges origin/main..worktree-0001-one',
+      'show-ref --verify --quiet refs/heads/worktree-0001-one',
+      'ls-remote --exit-code --heads origin refs/heads/worktree-0001-one',
+    ]);
+  });
+
+  it.each(['0', '2'])('после удаления локальной ветки проверяет работу на сервере: %s', (count) => {
+    const sha = 'a'.repeat(40);
+    const { io, asked } = fakeIo([
+      { code: 128 },
+      { code: 1 },
+      ok(`${sha}\trefs/heads/worktree-0001-one\n`),
+      ok(count),
+    ]);
+    expect(io.ownCommits('worktree-0001-one')).toBe(Number(count));
+    expect(asked.at(-1)).toBe(`rev-list --count --no-merges origin/main..${sha}`);
+  });
+
+  it.each([
+    [{ code: 128 }, { code: 128 }],
+    [{ code: 128 }, { code: 1 }, { code: 128 }],
+    [{ code: 128 }, { code: 1 }, ok('')],
+    [{ code: 128 }, { code: 1 }, ok(`${'a'.repeat(40)}\trefs/heads/another\n`)],
+    [
+      { code: 128 },
+      { code: 1 },
+      ok(`${'a'.repeat(40)}\trefs/heads/worktree-0001-one\n`),
+      { code: 128 },
+    ],
+  ])('не выдаёт отказ проверки оставшейся ветки за отсутствие работы %#', (...answers) => {
+    const { io } = fakeIo(answers);
+    expect(io.ownCommits('worktree-0001-one')).toBe(null);
+  });
 });
 
 describe('коммит конвейера', () => {

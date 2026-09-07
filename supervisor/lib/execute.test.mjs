@@ -1634,7 +1634,7 @@ describe('уборка после потери записи реестра', () 
     };
     io.ownCommits = (name) => {
       calls.push(['ownCommits', name]);
-      return resources.has('local') ? ownCommits : null;
+      return resources.has('local') || resources.has('remote') ? ownCommits : 0;
     };
     for (const [method, resource, argument] of [
       ['removeWorktree', 'tree', path],
@@ -1700,8 +1700,8 @@ describe('уборка после потери записи реестра', () 
         'register',
         ['pr', 50],
         'tree',
-        'remote',
         'local',
+        'remote',
         'drop',
         'completed',
       ]);
@@ -1745,7 +1745,8 @@ describe('уборка после потери записи реестра', () 
     adopt(w);
     await execute([sweep], w.io);
     expect(w.calls).toContainEqual(['ownCommits', branch]);
-    expect(w.io.tasks.get(id).status).toBe(ownCommits === 0 ? 'closed' : 'postmortem');
+    const status = ownCommits === 0 ? 'closed' : ownCommits === null ? 'cleanup' : 'postmortem';
+    expect(w.io.tasks.get(id).status).toBe(status);
     expect(w.registry.has(id)).toBe(ownCommits !== 0);
     expect(w.resources.size).toBe(ownCommits === 0 ? 0 : 3);
     if (ownCommits !== 0)
@@ -1771,16 +1772,21 @@ describe('уборка после потери записи реестра', () 
       expect(result.why).toContain(`занят ${resource}`);
       expect(w.registry.get(id)).toBe(entry);
       expect(w.io.tasks.get(id).status).toBe('cleanup');
-      const remaining = {
-        tree: ['tree', 'local', 'remote'],
-        remote: ['local', 'remote'],
-        local: ['local'],
-      };
-      expect(w.resources).toEqual(new Set(remaining[resource]));
+      expect(w.resources).toEqual(new Set([resource]));
       expect(w.calls).not.toContain('completed');
       expect(w.calls).not.toContain('drop');
       w.failures.clear();
       expect(w.repair()).toEqual([]);
+      if (pr === null) {
+        const readCommits = w.io.ownCommits;
+        w.io.ownCommits = () => null;
+        const [unavailable] = await execute([sweep], w.io);
+        expect(unavailable.result).toBe('skipped');
+        expect(w.io.tasks.get(id).status).toBe('cleanup');
+        expect(w.registry.get(id)).toBe(entry);
+        expect(w.resources).toEqual(new Set([resource]));
+        w.io.ownCommits = readCommits;
+      }
       const [retry] = await execute([sweep], w.io);
       const status = pr ? 'completed' : 'closed';
       expect(retry).toMatchObject({ result: 'done', status });

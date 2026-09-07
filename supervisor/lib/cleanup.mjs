@@ -61,7 +61,7 @@ export function mayCleanup({ task, entry, pr, unpushed, ownCommits }) {
       // Содержимое ветки узнать не удалось. Удаление необратимо, поэтому
       // неизвестность толкуется в пользу сохранности.
       return {
-        verdict: 'fail',
+        verdict: 'wait',
         why: 'pull request не заводился, а содержимое ветки узнать не удалось',
       };
     }
@@ -108,20 +108,17 @@ export function cleanup({ task, entry, io }) {
 
   const tree = io.removeWorktree(entry.path);
   if (tree.ok) done.push('дерево удалено');
-  else {
-    // Ветки ещё нужны для проверки повтора, особенно у задачи без PR.
-    return { finished: false, done, left: [`дерево осталось: ${tree.why}`] };
-  }
+  else left.push(`дерево осталось: ${tree.why}`);
 
-  const remote = io.deleteRemoteBranch(entry.branch);
-  if (remote.ok) done.push('удалённая ветка удалена');
-  else {
-    return { finished: false, done, left: [`удалённая ветка осталась: ${remote.why}`] };
-  }
-
+  // Занятая папка не мешает убрать доступные ветки: повтор держится
+  // на записи реестра и состоянии карточки, а не на сохранении веток.
   const local = io.deleteBranch(entry.branch);
   if (local.ok) done.push('локальная ветка удалена');
   else left.push(`локальная ветка осталась: ${local.why}`);
+
+  const remote = io.deleteRemoteBranch(entry.branch);
+  if (remote.ok) done.push('удалённая ветка удалена');
+  else left.push(`удалённая ветка осталась: ${remote.why}`);
 
   // Запись реестра снимается только когда следов не осталось. Иначе следующий
   // цикл не найдёт, что дочищать: дерево есть, а сведений о нём нет.
