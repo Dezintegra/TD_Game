@@ -280,6 +280,10 @@ export function canTransition(task, to) {
     ['analyzing', 'verifying'].includes(task.delayAnalysis?.phase) &&
     (to === 'blocked' ||
       to === task.delayAnalysis.originStatus ||
+      (task.delayAnalysis.originStatus === 'awaiting-po' &&
+        task.delayAnalysis.phase === 'verifying' &&
+        task.delayAnalysis.diagnosis?.waitingFor === 'dependencies' &&
+        to === task.delayAnalysis.originReturnTo) ||
       (to === 'new' &&
         task.delayAnalysis.originStatus === 'blocked' &&
         task.delayAnalysis.phase === 'verifying'))

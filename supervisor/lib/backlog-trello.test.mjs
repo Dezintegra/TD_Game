@@ -615,6 +615,32 @@ describe('журнал', () => {
 });
 
 describe('ответ владельца продукта', () => {
+  it.each(['analyzing', 'waiting', 'verifying'])(
+    'не теряет ответ после начала проверки вопроса: %s',
+    (phase) => {
+      const store = backlog({
+        cards: [
+          card({
+            idList: 'list-postmortem',
+            meta: {
+              statusChangedAt: '2026-08-27T14:00:00.000Z',
+              returnTo: 'implement',
+              delayAnalysis: {
+                originStatus: 'awaiting-po',
+                originSince: '2026-08-27T12:00:00.000Z',
+                phase,
+              },
+            },
+          }),
+        ],
+        comments: [
+          { id: 'c1', cardId: 'card-1', date: '2026-08-27T11:00:00.000Z', text: 'Старый ответ' },
+          { id: 'c2', cardId: 'card-1', date: '2026-08-27T13:00:00.000Z', text: 'Новое решение' },
+        ],
+      });
+      expect(store.readAnswer('0031-proba')).toBe('Новое решение');
+    },
+  );
   it('находится после перехода в ожидание', () => {
     const store = backlog({
       cards: [

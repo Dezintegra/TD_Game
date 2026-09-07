@@ -797,6 +797,7 @@ export function scan(state) {
       if (hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id)) continue;
       const action = delayDecision(task, {
         now: state.now,
+        answered: Boolean(answers[task.id]),
         tasks: [
           ...tasks,
           ...(state.dependencyRecords ?? []),
