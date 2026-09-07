@@ -107,12 +107,19 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
    * а разница между «так решила сессия» и «так распорядился конвейер»
    * читающему доску нужна постоянно.
    */
-  async function comment(cardId, text, source, { deduplicate = false } = {}) {
-    const parts = splitJournalEntry(text, {
-      marker: mark,
-      source,
-      limit: trelloConfig.maxTextLength,
-    });
+  async function comment(
+    cardId,
+    text,
+    source,
+    { deduplicate = false, parts: savedParts = null } = {},
+  ) {
+    const parts =
+      savedParts ??
+      splitJournalEntry(text, {
+        marker: mark,
+        source,
+        limit: trelloConfig.maxTextLength,
+      });
     const existing = new Set();
     if (deduplicate) {
       // Снимок всей доски ограничен тысячей записей: для повтора нужна
@@ -171,14 +178,11 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     const pending = task.delayJournal;
     const card = cardOf(task.id);
     if (!pending || !card) return { ok: false, why: 'нет конверта комментария задержки' };
-    const known = commentsByCard.get(card.id) ?? [];
-    for (const part of pending.parts) {
-      if (known.some((item) => item.text === part)) continue;
-      const posted = await trello.post(`cards/${card.id}/actions/comments`, { text: part });
-      if (!posted.ok) return failure(posted);
-      known.push({ text: part, date: pending.entry.at, cardId: card.id });
-      commentsByCard.set(card.id, known);
-    }
+    const posted = await comment(card.id, '', pending.entry.source, {
+      deduplicate: true,
+      parts: pending.parts,
+    });
+    if (!posted.ok) return failure(posted);
     const next = { ...task };
     delete next.delayJournal;
     const desc = joinDescription(card.human, metaOf(next));
@@ -265,7 +269,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
           delayJournal: {
             entry,
             parts: splitJournalEntry(
-              `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}\n\nРазбор: ${entry.deliveryKey}`,
+              `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}\n\n<!-- delay-analysis:${entry.deliveryKey} -->`,
               {
                 marker: mark,
                 source: entry.source,
@@ -343,20 +347,13 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       const card = cardOf(taskId);
       if (!card) return { ok: false, outcome: 'failed', why: `карточки задачи ${taskId} нет` };
       if (deliveryKey) {
-        const parts = splitJournalEntry(`${text}\n\nРазбор: ${deliveryKey}`, {
-          marker: mark,
+        const posted = await comment(
+          card.id,
+          `${text}\n\n<!-- delay-analysis:${deliveryKey} -->`,
           source,
-          limit: trelloConfig.maxTextLength,
-        });
-        const known = commentsByCard.get(card.id) ?? [];
-        for (const part of parts) {
-          if (known.some((item) => item.text === part)) continue;
-          const posted = await trello.post(`cards/${card.id}/actions/comments`, { text: part });
-          if (!posted.ok) return failure(posted);
-          known.push({ text: part, cardId: card.id });
-          commentsByCard.set(card.id, known);
-        }
-        return { ok: true, outcome: 'saved' };
+          { deduplicate: true },
+        );
+        return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
       }
       const posted = await comment(card.id, text, source);
       return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);

@@ -33,6 +33,13 @@ function board() {
   let failClear = false;
   let acceptThenFail = false;
   const api = {
+    get: async (path, query) => {
+      const history = comments
+        .map((item, index) => ({ id: `comment-${index}`, data: { text: item.text } }))
+        .reverse();
+      const offset = query.before ? history.findIndex((item) => item.id === query.before) + 1 : 0;
+      return { ok: true, data: history.slice(offset, offset + query.limit) };
+    },
     post: async (path, body) => {
       postCount += 1;
       if (postCount !== failPart || acceptThenFail)
@@ -54,7 +61,7 @@ function board() {
         lists: Object.entries(config.trello.lists).map(([id, name]) => ({ id, name })),
         labels: Object.entries(config.trello.labels).map(([id, value]) => ({ id, ...value })),
         cards: [globalThis.structuredClone(raw)],
-        comments: globalThis.structuredClone(comments),
+        comments: globalThis.structuredClone(comments.slice(-1000)),
       },
     });
   return {
@@ -128,4 +135,26 @@ it('после частичной публикации доставляет то
   expect((await store.flushDelayJournal(pending)).ok).toBe(true);
   expect(state.comments.map((c) => c.text)).toEqual(pending.delayJournal.parts);
   expect(new Set(state.comments.map((c) => c.text)).size).toBe(state.comments.length);
+});
+
+it('находит опубликованный разбор за пределами тысячи свежих комментариев', async () => {
+  const state = board();
+  state.fail(0, true);
+  const entry = delayEntry(state.source, 'Разбор с доказательствами.', { at: now });
+  expect((await state.restart().saveTask(state.source, entry)).ok).toBe(false);
+  for (let index = 0; index < 1001; index += 1)
+    state.comments.push({ cardId: state.raw.id, text: `Другая запись ${index}`, date: now });
+  state.fail(0);
+  const store = state.restart();
+  expect((await store.flushDelayJournal(store.readTask(state.source.id))).ok).toBe(true);
+  expect(state.count()).toBe(1);
+});
+
+it('сохраняет машинные данные с HTML-комментарием внутри текста диагностики', () => {
+  const meta = {
+    id: '0001-source',
+    delayJournal: { parts: ['Факт <!-- пример --> и продолжение'] },
+  };
+  const value = joinDescription('Исходная постановка', meta);
+  expect(splitDescription(value)).toEqual({ human: 'Исходная постановка', meta });
 });

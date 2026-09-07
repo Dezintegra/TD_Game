@@ -54,7 +54,10 @@ export function splitDescription(desc = '') {
 
 /** Собрать описание обратно: человеческий текст, ниже — машинный блок. */
 export function joinDescription(human, meta) {
-  const block = `${BLOCK_OPEN}\n${JSON.stringify(meta)}\n${BLOCK_CLOSE}`;
+  // Текст комментария внутри JSON может содержать конец HTML-комментария.
+  // Экранируем его в JSON, иначе чтение оборвёт весь машинный блок посередине.
+  const encoded = JSON.stringify(meta).replace(/-->/g, '--\\u003e');
+  const block = `${BLOCK_OPEN}\n${encoded}\n${BLOCK_CLOSE}`;
   return human ? `${human.trim()}\n\n${block}` : block;
 }
 
