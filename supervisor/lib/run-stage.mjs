@@ -244,7 +244,7 @@ export function readAnswer(run) {
   }
 
   if (run.error) {
-    return { ...base, outcome: 'failed', why: `запуск не состоялся: ${run.error.message}` };
+    return { ...base, outcome: 'failed', why: `процесс оборвался: ${run.error.message}` };
   }
 
   const envelope = parseEnvelope(run.stdout);
