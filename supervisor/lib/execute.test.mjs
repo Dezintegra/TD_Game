@@ -1611,6 +1611,7 @@ describe('уборка после потери записи реестра', () 
     const io = fakeIo({ tasks: [task({ status: 'cleanup', owner, links: { pr } })] });
     const registry = new Map();
     const resources = new Set(present ? ['tree', 'local', 'remote'] : []);
+    const gitTrees = new Set(present ? ['tree'] : []);
     const failures = new Set();
     const calls = [];
     io.registryEntry = (taskId) => registry.get(taskId) ?? null;
@@ -1633,7 +1634,7 @@ describe('уборка после потери записи реестра', () 
     };
     io.ownCommits = (name) => {
       calls.push(['ownCommits', name]);
-      return ownCommits;
+      return resources.has('local') || resources.has('remote') ? ownCommits : 0;
     };
     for (const [method, resource, argument] of [
       ['removeWorktree', 'tree', path],
@@ -1644,6 +1645,8 @@ describe('уборка после потери записи реестра', () 
         expect(value).toBe(argument);
         expect(registry.has(id)).toBe(true);
         calls.push(resource);
+        // Git снимает регистрацию раньше, чем Windows даёт удалить файлы.
+        if (resource === 'tree') gitTrees.delete('tree');
         if (failures.has(resource)) return { ok: false, why: `занят ${resource}` };
         resources.delete(resource);
         return { ok: true };
@@ -1661,7 +1664,7 @@ describe('уборка после потери записи реестра', () 
     const repair = () => {
       const result = reconcile({
         registry: { entries: [...registry.values()] },
-        worktrees: resources.has('tree') ? [{ branch, path: `C:/repo/${path}` }] : [],
+        worktrees: gitTrees.has('tree') ? [{ branch, path: `C:/repo/${path}` }] : [],
         tasks: [...io.tasks.values()],
         machine: io.machine,
       });
@@ -1742,17 +1745,25 @@ describe('уборка после потери записи реестра', () 
     adopt(w);
     await execute([sweep], w.io);
     expect(w.calls).toContainEqual(['ownCommits', branch]);
-    expect(w.io.tasks.get(id).status).toBe(ownCommits === 0 ? 'closed' : 'postmortem');
+    const status = ownCommits === 0 ? 'closed' : ownCommits === null ? 'cleanup' : 'postmortem';
+    expect(w.io.tasks.get(id).status).toBe(status);
     expect(w.registry.has(id)).toBe(ownCommits !== 0);
     expect(w.resources.size).toBe(ownCommits === 0 ? 0 : 3);
     if (ownCommits !== 0)
       expect(w.calls).toEqual(['register', ['pr', null], ['ownCommits', branch]]);
   });
 
-  it.each(['tree', 'local', 'remote'])(
-    'отказ удаления %s сохраняет запись и cleanup',
-    async (resource) => {
-      const w = world();
+  it.each([
+    [50, 'tree'],
+    [50, 'local'],
+    [50, 'remote'],
+    [null, 'tree'],
+    [null, 'local'],
+    [null, 'remote'],
+  ])(
+    'PR %s: отказ удаления %s сохраняет запись до успешного повторного цикла',
+    async (pr, resource) => {
+      const w = world({ pr });
       adopt(w);
       const entry = w.registry.get(id);
       w.failures.add(resource);
@@ -1764,15 +1775,24 @@ describe('уборка после потери записи реестра', () 
       expect(w.resources).toEqual(new Set([resource]));
       expect(w.calls).not.toContain('completed');
       expect(w.calls).not.toContain('drop');
-      if (resource === 'tree') {
-        w.failures.clear();
-        expect(w.repair()).toEqual([]);
-        const [retry] = await execute([sweep], w.io);
-        expect(retry).toMatchObject({ result: 'done', status: 'completed' });
-        expect(w.io.tasks.get(id).status).toBe('completed');
-        expect(w.registry.size).toBe(0);
-        expect(w.resources.size).toBe(0);
+      w.failures.clear();
+      expect(w.repair()).toEqual([]);
+      if (pr === null) {
+        const readCommits = w.io.ownCommits;
+        w.io.ownCommits = () => null;
+        const [unavailable] = await execute([sweep], w.io);
+        expect(unavailable.result).toBe('skipped');
+        expect(w.io.tasks.get(id).status).toBe('cleanup');
+        expect(w.registry.get(id)).toBe(entry);
+        expect(w.resources).toEqual(new Set([resource]));
+        w.io.ownCommits = readCommits;
       }
+      const [retry] = await execute([sweep], w.io);
+      const status = pr ? 'completed' : 'closed';
+      expect(retry).toMatchObject({ result: 'done', status });
+      expect(w.io.tasks.get(id).status).toBe(status);
+      expect(w.registry.size).toBe(0);
+      expect(w.resources.size).toBe(0);
     },
   );
 });

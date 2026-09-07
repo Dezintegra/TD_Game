@@ -534,18 +534,33 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * заперлась бы у всякой задачи, зашедшей в дерево после расхождения
      * с `main`.
      *
-     * Команда не отработала — `null`, а не ноль: неизвестность здесь толкуется
-     * в пользу сохранности, удаление необратимо.
+     * После частичной уборки локальная ветка может исчезнуть раньше папки.
+     * Тогда проверяем сервер: отсутствие обеих веток означает отсутствие
+     * работы в них; ошибки чтения по-прежнему дают `null`, а не ноль.
      */
     ownCommits(branch) {
-      const result = run([
-        'rev-list',
-        '--count',
-        '--no-merges',
-        `${config.remote}/${config.mainBranch}..${branch}`,
-      ]);
-      if (result.code !== 0) return null;
-      return Number.parseInt(result.stdout.trim(), 10) || 0;
+      const count = (ref) => {
+        const result = run([
+          'rev-list',
+          '--count',
+          '--no-merges',
+          `${config.remote}/${config.mainBranch}..${ref}`,
+        ]);
+        return result.code === 0 ? Number.parseInt(result.stdout.trim(), 10) || 0 : null;
+      };
+      const local = count(branch);
+      if (local !== null) return local;
+      const found = run(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+      if (found.code !== 1) return null;
+
+      // Локальная ссылка origin/<ветка> может устареть. Код 2 ls-remote
+      // подтверждает отсутствие на сервере, любой иной отказ — неизвестность.
+      const ref = `refs/heads/${branch}`;
+      const remote = run(['ls-remote', '--exit-code', '--heads', config.remote, ref]);
+      if (remote.code === 2) return 0;
+      if (remote.code !== 0) return null;
+      const head = /^([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$/.exec(remote.stdout.trim());
+      return head?.[2] === ref ? count(head[1]) : null;
     },
 
     removeWorktree(path) {

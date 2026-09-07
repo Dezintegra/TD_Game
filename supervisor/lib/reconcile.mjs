@@ -133,6 +133,9 @@ export function reconcile({ registry, worktrees, tasks, machine }) {
   // 2. Записи без деревьев.
   for (const entry of entries) {
     if (ours.some((tree) => taskIdOf(tree) === entry.taskId)) continue;
+    // Отсутствие регистрации не означает, что исчезли папка и обе ветки.
+    // Незавершённую уборку вправе забыть только сама успешная уборка.
+    if (byId.get(entry.taskId)?.status === 'cleanup') continue;
     repairs.push({ kind: 'drop-entry', taskId: entry.taskId, why: 'дерева нет на диске' });
   }
 
