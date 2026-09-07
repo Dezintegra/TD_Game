@@ -10,14 +10,17 @@
 npx prettier и npx eslint разрешены. Перед проверками реализации подготовить
 зависимости по правилам implement; на проработке установка не нужна.
 
-## 1. Формула во всех десяти скиллах
+## 1. Формула во всех существующих скиллах
 
 - [ ] 1.1 За один коммит (до 1 часа) заменить общий пункт о следе текстом
-  из design.md во всех десяти файлах. Сохранить свежесть у design/revise
+  из design.md во всех файлах NEEDS_SESSION: сейчас их одиннадцать,
+  включая decompose.md. Сверить полный состав с NEEDS_SESSION;
+  коммитный след самой декомпозиции не добавлять. Сохранить свежесть у design/revise
   и коммитной половины implement, альтернативу первого PR только
   у implement и общую оговорку об удалённой ветке без хвоста.
   Сохранить запрет считать одно освежение базы следом.
-  Проверка: прочитать все десять абзацев по таблице случаев design.md,
+  Проверка: сверить разрешённые пути с полным составом NEEDS_SESSION,
+  прочитать все одиннадцать абзацев по таблице случаев design.md,
   выполнить `npx vitest run --root supervisor config/transitions.test.mjs`
   и `npx prettier --check "supervisor/skills/*.md"`.
   Отметить пункт, проверить индекс и коммит по правилам ниже,
@@ -28,6 +31,7 @@ npx prettier и npx eslint разрешены. Перед проверками �
 
 - supervisor/skills/audit.md
 - supervisor/skills/benchmark.md
+- supervisor/skills/decompose.md
 - supervisor/skills/deploy.md
 - supervisor/skills/design.md
 - supervisor/skills/implement.md
@@ -42,11 +46,17 @@ npx prettier и npx eslint разрешены. Перед проверками �
 
 - [ ] 2.1 За один коммит (до 2 часов) экспортировать существующую TRACE,
   расширить проверку формулы в transitions.test.mjs согласно design.md:
-  типы commit и commit-or-pr брать из таблицы; все десять копий
-  проверять с различением частей формулы. Сохранить действующую защиту
+  типы commit и commit-or-pr брать из TRACE; все существующие копии
+  проверять полным обходом NEEDS_SESSION с различением частей формулы.
+  Не ограничивать обход фиксированными десятью или одиннадцатью файлами
+  и не пропускать отсутствующую формулу. Сохранить действующую защиту
   двух половин, добавить синтетические пробы на утрату свежести только
   у implement, утрату PR, общей оговорки о ветке без хвоста и новый этап
-  каждого типа. Корректный текст и переносы строк должны проходить.
+  каждого типа. Добавить пробу полного обхода набора текстов по NEEDS_SESSION:
+  порча свежести только в decompose.md должна назвать decompose.md.
+  Добавленный в синтетический NEEDS_SESSION скилл без формулы либо
+  без свежести также должен обнаруживаться и называться по имени.
+  Корректный текст и переносы строк должны проходить.
   Проверка: `npx vitest run --root supervisor config/transitions.test.mjs lib/denials.test.mjs`,
   `npx prettier --check supervisor/lib/denials.mjs supervisor/config/transitions.test.mjs`
   и `npx eslint supervisor/lib/denials.mjs supervisor/config/transitions.test.mjs`.
