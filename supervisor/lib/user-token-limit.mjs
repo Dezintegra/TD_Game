@@ -17,7 +17,8 @@ export function readTokenLimitCommand(action, ownerId) {
   const raw = text.slice(TOKEN_LIMIT_PREFIX.length).trim();
   const value = raw === 'общий' ? null : Number(raw);
   const valid =
-    raw === 'общий' || (/^[1-9]\d*$/.test(raw) && Number.isSafeInteger(value) && value > 0);
+    !/[\r\n]/.test(text) &&
+    (raw === 'общий' || (/^[1-9]\d*$/.test(raw) && Number.isSafeInteger(value) && value > 0));
   return {
     actionId: action.id,
     at: action.date,

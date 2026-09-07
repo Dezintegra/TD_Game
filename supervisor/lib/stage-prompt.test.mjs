@@ -28,6 +28,20 @@ const assignment = {
   path: '.claude/worktrees/0042-fix-tesla-price',
 };
 
+it('новый бюджет и запрет его изменения агентом не обрезаются старым журналом', () => {
+  const text = stagePrompt({
+    assignment,
+    task,
+    journal: 'старый предел 25 млн\n'.repeat(1000),
+    journalLimit: 200,
+    tokenBudget: { value: 35000000, spent: 26093350, source: 'user' },
+  });
+  expect(text).toContain('полный лимит 35000000');
+  expect(text).toContain('Учтено 26093350');
+  expect(text).toContain('Агенту запрещено менять лимит');
+  expect(text).toContain('Этот снимок новее');
+});
+
 describe('состав', () => {
   it('передаёт закреплённую ревизию снимка выкладки', () => {
     const deploymentRevision = 'a'.repeat(40);

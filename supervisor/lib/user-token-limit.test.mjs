@@ -75,6 +75,10 @@ describe('пользовательский лимит', () => {
     expect(limits.card1.error).toBeTruthy();
   });
 
+  it('команда занимает одну строку, без продолжения после двоеточия', () => {
+    expect(readTokenLimitCommand(action('Лимит токенов:\n35000000'), 'owner').error).toBeTruthy();
+  });
+
   it('выбирает индивидуальный предел, включая отключённый общий', () => {
     expect(
       effectiveTokenLimit({ userTokenLimit: { value: 35 } }, { codexMaxTaskTokens: null }).value,

@@ -303,6 +303,10 @@ export function createSupervisor({
             task: assignment.task,
             journal: assignment.journal,
             board: assignment.board,
+            tokenBudget:
+              provider === 'codex'
+                ? { ...tokenLimit, spent: taskTokens(codexUsage, assignment.taskId) }
+                : null,
             // Разбору дают лог того этапа, из которого задача упала. Его имя
             // хранит сама задача — состоянием возврата, — и потому спрашивается
             // здесь, а не угадывается по журналу.
