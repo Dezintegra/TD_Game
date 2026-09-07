@@ -1,8 +1,10 @@
 import { transferBlocked, unblockTask } from './blockers.mjs';
+import { changeTokenHold } from './token-hold.mjs';
 import {
   beginDelayAnalysis,
   observeDelay,
   reviewingDelay,
+  reviewingQuestion,
   delayReportProblem,
   finishDelayAnalysis,
   delayKey,
@@ -136,6 +138,13 @@ async function transferReport(action, io) {
     return { result: 'done', status: task.status };
   }
   if (reviewingDelay(task)) {
+    if (
+      reviewingQuestion(task) &&
+      report.taskId === task.id &&
+      report.stage === task.status &&
+      io.readAnswer?.(task.id)
+    )
+      return finishDelayAnalysis(task, report, io, { ownerAnswered: true });
     const problem = delayReportProblem(task, report) || categoriesProblem(report.categories, true);
     if (problem) return rejectDelayReport(task, report, problem, io);
     if (report.outcome !== 'blocked') return finishDelayAnalysis(task, report, io);
@@ -1206,6 +1215,9 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'hold-token-budget': changeTokenHold,
+  'refresh-token-budget': changeTokenHold,
+  'resume-token-budget': changeTokenHold,
   'analyze-delay': beginDelayAnalysis,
   'observe-delay': observeDelay,
   'flush-delay-journal': async (action, io) => {

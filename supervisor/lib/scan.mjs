@@ -1,7 +1,6 @@
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
-import { taskTokens, taskTokenStatus } from './token-budget.mjs';
-import { effectiveTokenLimit } from './user-token-limit.mjs';
+import { tokenAdmission, tokenHoldProblem } from './token-hold.mjs';
 import {
   CROSSCUT,
   NEEDS_SESSION,
@@ -33,6 +32,9 @@ export const ACTIONS = [
   'analyze-delay',
   'observe-delay',
   'unblock-task',
+  'hold-token-budget',
+  'refresh-token-budget',
+  'resume-token-budget',
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
   'answer-question', // разобрать ответ владельца продукта
@@ -201,7 +203,11 @@ export function scan(state) {
         (report.stage === 'deploy' && Array.isArray(report.batch) && report.batch.includes(taskId)),
     );
   const isRunning = (taskId, stage) =>
-    running.some((item) => item.taskId === taskId && (stage === undefined || item.stage === stage));
+    running.some(
+      (item) =>
+        (item.taskId === taskId || item.batch?.includes(taskId)) &&
+        (stage === undefined || item.stage === stage),
+    );
 
   // 0. Негодные карточки. Уносятся в ошибку прежде всякой работы: пока
   //    карточка стоит в очереди неотличимо от годных, её беда видна только
@@ -471,20 +477,47 @@ export function scan(state) {
   // Получалась ловушка: две старые задачи без живых процессов удерживали
   // всю машину навсегда. Живой процесс исключать нельзя даже при неизвестном
   // расходе: он действительно работает, а живой deploy всё ещё требует тишины.
-  const tokenHeld = new Set(
-    tasks
-      .filter((task) => {
-        if (!NEEDS_SESSION.includes(task.status) || isRunning(task.id, task.status)) return false;
-        const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
-        return (
-          config.provider === 'codex' &&
-          capped &&
-          config.codexMaxTaskTokens != null &&
-          !taskTokenStatus(state.codexUsage ?? {}, task.id).complete
-        );
-      })
-      .map((task) => task.id),
-  );
+  const tokenHeld = new Set();
+  for (const task of tasks) {
+    const waiting = task.status === 'token-limit';
+    if (!waiting && task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (task.delayJournal) continue;
+    if (task.status === 'deploy' && running.some((item) => item.stage === 'deploy')) continue;
+    if (isRunning(task.id) || hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id))
+      continue;
+    if (task.owner && task.owner !== state.machine) continue;
+    if (waiting) tokenHeld.add(task.id);
+    if (waiting && tokenHoldProblem(task)) {
+      notes.push(`задача ${task.id}: ${tokenHoldProblem(task)}`);
+      continue;
+    }
+    // Зависимости и разрешения не превращаются в бюджетное ожидание.
+    if (!waiting && held.has(task.id)) continue;
+    const resumeStatus = waiting ? task.tokenHold.resumeStatus : task.status;
+    const stage = resumeStatus === 'new' ? firstStage(task) : resumeStatus;
+    const budget = tokenAdmission(task, stage, config, state.codexUsage ?? {});
+    if (!budget) {
+      if (waiting) actions.push({ kind: 'resume-token-budget', taskId: task.id, stage });
+      continue;
+    }
+    tokenHeld.add(task.id);
+    notes.push(`задача ${task.id}: ${budget.explanation}`);
+    const common = { taskId: task.id, stage, budget };
+    if (!waiting)
+      actions.push({
+        kind: 'hold-token-budget',
+        ...common,
+        from: task.status,
+        resumeLabel: config.trello.lists[resumeStatus],
+        originLabel: config.trello.lists[task.status],
+      });
+    else if (
+      Object.entries(budget).some(
+        ([key, value]) => JSON.stringify(task.tokenHold[key]) !== JSON.stringify(value),
+      )
+    )
+      actions.push({ kind: 'refresh-token-budget', ...common });
+  }
   const engaged = tasks.filter(
     (task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id) && !tokenHeld.has(task.id),
   );
@@ -519,7 +552,7 @@ export function scan(state) {
     // занят ею навсегда, и заметить это можно было только глазами.
     // Проверено 27.08.2026: 0002 простояла так почти шесть часов.
     if (!NEEDS_SESSION.includes(task.status)) continue;
-    if (stuck.has(task.id) || hasReport(task.id)) continue;
+    if (stuck.has(task.id) || hasReport(task.id) || tokenHeld.has(task.id)) continue;
 
     // Живой процесс на этом самом этапе — работа идёт, вмешиваться незачем.
     if (isRunning(task.id, task.status)) continue;
@@ -582,47 +615,25 @@ export function scan(state) {
     // обязана быть разобрана, а разбор — тоже сессия; проверять его тем же
     // потолком значило бы запретить разбирать ровно те задачи, ради которых
     // потолок и заведён.
-    const tokens = config.provider === 'codex';
-    const budget = effectiveTokenLimit(task, config);
-    const limit = tokens ? budget.value : config.maxTaskCostUsd;
-    const spent = tokens
-      ? taskTokens(state.codexUsage ?? {}, task.id)
-      : Number.isFinite(task.spentUsd)
-        ? task.spentUsd
-        : 0;
+    const limit = config.provider === 'codex' ? null : config.maxTaskCostUsd;
+    const spent = Number.isFinite(task.spentUsd) ? task.spentUsd : 0;
     // Само состояние анализа потолком не сторожится, иначе задача,
     // отправленная в него потолком, не смогла бы пройти тот единственный
     // этап, ради которого её туда и отправили. Исключение того же рода,
     // что у сквозных состояний, и по той же причине.
     const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
-    if (tokens && capped && budget.error) {
-      notes.push(`задача ${task.id}: ${budget.error}`);
-      continue;
-    }
     if (capped && limit != null && spent >= limit) {
       // Числа в причине обязательны: по ним человек выбирает между двумя
       // выходами — поднять потолок или раздробить задачу, — а «предел
       // исчерпан» без величин не даёт выбрать ничего.
       const why =
-        (tokens
-          ? `израсходовано ${spent} токенов при бюджете ${limit}: `
-          : `истрачено $${spent.toFixed(2)} при потолке $${limit}: `) +
+        `истрачено $${spent.toFixed(2)} при потолке $${limit}: ` +
         'задача разрослась, нужен повторный анализ на дробность';
       notes.push(`задача ${task.id}: ${why}`);
       // В анализ, а не в разбор ошибки. Задача не сломана — она разрослась,
       // и лог последнего этапа про это не скажет ничего.
       actions.push({ kind: 'decompose-again', taskId: task.id, stage: task.status, reason: why });
       continue;
-    }
-
-    if (tokens && capped && limit != null) {
-      const status = taskTokenStatus(state.codexUsage ?? {}, task.id);
-      if (!status.complete) {
-        notes.push(
-          `задача ${task.id}: расход Codex неизвестен (${status.reasons.join(', ')}); запуск удержан`,
-        );
-        continue;
-      }
     }
 
     // Причина названа уровнем поломки, а не последствием. «Продолжения
@@ -725,7 +736,7 @@ export function scan(state) {
   // Сначала сохраняем разблокировку; обычную очередь выбираем по следующему снимку.
   const unblocking = actions.some((action) => action.kind === 'unblock-task');
   const queue = tasks
-    .filter((task) => task.status === 'new' && !held.has(task.id))
+    .filter((task) => task.status === 'new' && !held.has(task.id) && !tokenHeld.has(task.id))
     .sort(byPriorityThenAge);
 
   // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
@@ -777,6 +788,7 @@ export function scan(state) {
   const delayed = new Map();
   if (!state.draining)
     for (const task of tasks) {
+      if (tokenHeld.has(task.id)) continue;
       if (isRunning(task.id) || running.some((item) => item.batch?.includes(task.id))) continue;
       if (task.owner && task.owner !== state.machine) continue;
       if (task.delayJournal) {
@@ -786,6 +798,7 @@ export function scan(state) {
       if (hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id)) continue;
       const action = delayDecision(task, {
         now: state.now,
+        answered: Boolean(answers[task.id]),
         tasks: [
           ...tasks,
           ...(state.dependencyRecords ?? []),

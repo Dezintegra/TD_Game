@@ -381,6 +381,7 @@ export const DEFAULTS = {
       candidate: 'Кандидаты',
       new: 'Заведено',
       blocked: 'Заблокированы',
+      'token-limit': 'Лимит токенов',
       triage: 'Разбор',
       decompose: 'Декомпозиция',
       design: 'Проработка',

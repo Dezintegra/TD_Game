@@ -297,6 +297,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
         ...(placeFirst ? { pos: 'top' } : {}),
+        ...(Number.isFinite(entry.restorePriority) ? { pos: entry.restorePriority } : {}),
         // Название пересобирается из очищенного: иначе служебный префикс
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),
@@ -663,7 +664,11 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       if (!item) return null;
       const found = findAnswer(commentsByCard.get(item.card.id) ?? [], {
         marker: mark,
-        since: item.task.statusChangedAt,
+        since:
+          item.task.delayAnalysis?.originStatus === 'awaiting-po' &&
+          ['analyzing', 'waiting', 'verifying'].includes(item.task.delayAnalysis.phase)
+            ? item.task.delayAnalysis.originSince
+            : item.task.statusChangedAt,
       });
       return found?.text ?? null;
     },

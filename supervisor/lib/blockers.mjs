@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   reviewingDelay,
+  reviewingQuestion,
   delayReportProblem,
   delaySummary,
   delayFacts,
@@ -47,6 +48,19 @@ export function blockerReportProblem(task, report) {
       return 'каждому блокеру нужны reason и result';
     if (Number(nonempty(blocker.taskId)) + Number(nonempty(blocker.requestKey)) !== 1)
       return 'блокеру нужна ровно одна ссылка taskId или requestKey';
+    if (Object.hasOwn(blocker, 'dependencyResult')) {
+      const result = blocker.dependencyResult;
+      if (
+        !result ||
+        typeof result !== 'object' ||
+        Array.isArray(result) ||
+        Object.keys(result).length !== 2 ||
+        result.kind !== 'merged-pr' ||
+        !Number.isInteger(result.pr) ||
+        result.pr <= 0
+      )
+        return 'dependencyResult: ожидается { kind: merged-pr, pr: положительное целое }';
+    }
   }
   return null;
 }
@@ -56,7 +70,7 @@ export const blockerOperation = (task, report) =>
   `${task.id}:${task.analysisGeneration ?? 0}:${createHash('sha256').update(JSON.stringify(report)).digest('hex')}`;
 
 export function planBlockers(task, report, known, now) {
-  const problem = blockerReportProblem(task, report);
+  const problem = blockerReportProblem(task, report) || dependencyFormatProblem(task);
   if (problem) return { problem };
   const operation = blockerOperation(task, report);
   const requests = report.requests ?? [];
@@ -107,6 +121,7 @@ export function planBlockers(task, report, known, now) {
     taskId: b.taskId ?? keyToId.get(b.requestKey),
     reason: b.reason,
     result: b.result,
+    ...(b.dependencyResult ? { dependencyResult: b.dependencyResult } : {}),
     ...(reviewingDelay(task)
       ? { specificResult: b.specificResult, preventionResult: b.preventionResult }
       : {}),
@@ -124,12 +139,13 @@ export function planBlockers(task, report, known, now) {
     // Принимаем такой прогресс, но не даём вновь блокироваться давней готовой работой.
     if (
       matches[0].status === 'completed' &&
+      !reviewingQuestion(task) &&
       !matches[0].creationKey?.startsWith(`${operation}:`) &&
       !(Date.parse(matches[0].statusChangedAt) >= Date.parse(task.statusChangedAt))
     )
       return { problem: `предшественник ${reason.taskId} выполнен ещё до этого анализа` };
     if (
-      matches[0].status === 'failed' ||
+      (matches[0].status === 'failed' && !reviewingQuestion(task)) ||
       (matches[0].status === 'closed' && !matches[0].splitInto?.length)
     )
       return { problem: `предшественник ${reason.taskId} остановлен без результата` };
@@ -140,6 +156,16 @@ export function planBlockers(task, report, known, now) {
     dependsOn: [...new Set([...(task.dependsOn ?? []), ...reasons.map((r) => r.taskId)])],
     blockedContext: { operation, reasons, priority: task.priority, from: report.stage },
   };
+  // Уточнение результата не должно стирать чужое условие или менять ожидаемый PR.
+  const results = new Map((task.dependencyResults ?? []).map((item) => [item.taskId, item]));
+  for (const reason of reasons) {
+    if (!reason.dependencyResult) continue;
+    const previous = results.get(reason.taskId);
+    if (previous && previous.pr !== reason.dependencyResult.pr)
+      return { problem: `противоречивый результат PR для ${reason.taskId}` };
+    results.set(reason.taskId, { taskId: reason.taskId, ...reason.dependencyResult });
+  }
+  if (results.size) next.dependencyResults = [...results.values()];
   const graph = [...all.filter((t) => t.id !== task.id), next];
   const graphProblem = dependencyFormatProblem(next) || dependencyCycleProblem(next, graph);
   if (graphProblem) return { problem: graphProblem };
