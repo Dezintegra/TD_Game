@@ -1428,6 +1428,44 @@ describe('внешнее состояние', () => {
 });
 
 describe('ответ владельца продукта', () => {
+  it('отчёт агента не повышает и не сбрасывает пользовательский лимит', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'design', userTokenLimit: { value: 35, actionId: 'human' } })],
+      report: {
+        taskId: '0001-one',
+        stage: 'design',
+        outcome: 'done',
+        userTokenLimit: { value: 999 },
+        codexMaxTaskTokens: null,
+      },
+    });
+    const [result] = await execute(
+      [{ kind: 'transfer-report', taskId: '0001-one', stage: 'design' }],
+      io,
+    );
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').userTokenLimit).toEqual({ value: 35, actionId: 'human' });
+    expect(io.tasks.get('0001-one').codexMaxTaskTokens).toBeUndefined();
+  });
+  it('команда возвращает на анализ с новым лимитом, без сброса расхода', async () => {
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'awaiting-po',
+          returnTo: 'decompose',
+          userTokenLimit: { value: 35000000, actionId: 'human' },
+          spentUsd: 9,
+        }),
+      ],
+    });
+    io.readAnswer = () => 'Лимит токенов: 35000000';
+    await execute([{ kind: 'answer-question', taskId: '0001-one' }], io);
+    expect(io.tasks.get('0001-one')).toMatchObject({
+      status: 'decompose',
+      spentUsd: 9,
+      userTokenLimit: { value: 35000000, actionId: 'human' },
+    });
+  });
   it('возвращает задачу туда, откуда она ушла', async () => {
     const io = fakeIo({ tasks: [task({ status: 'awaiting-po', returnTo: 'design' })] });
     const [result] = await execute([{ kind: 'answer-question', taskId: '0001-one' }], io);
