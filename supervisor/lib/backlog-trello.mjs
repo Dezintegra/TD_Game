@@ -201,6 +201,21 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),
         desc: joinDescription(card.human, metaOf(task)),
+        // Чужие метки сохраняются; категории и флаг декомпозиции берём из задачи.
+        idLabels: [
+          ...new Set([
+            ...(cards.find((item) => item.id === card.id)?.idLabels ?? []).filter(
+              (id) =>
+                ![...labelIdByKey.entries()].some(
+                  ([key, known]) =>
+                    known === id && (key.startsWith('category-') || key === 'decomposed'),
+                ),
+            ),
+            ...labelKeysOf(task)
+              .map((key) => labelIdByKey.get(key))
+              .filter(Boolean),
+          ]),
+        ],
       });
       if (!moved.ok) return failure(moved);
 

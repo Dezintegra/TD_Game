@@ -1,4 +1,5 @@
 import { dependencyFormatProblem } from './dependencies.mjs';
+import { categoriesProblem } from './categories.mjs';
 /**
  * Заявки на новые задачи.
  *
@@ -96,6 +97,9 @@ export function taskFromRequest(
 ) {
   const problems = [];
 
+  const categoryProblem = categoriesProblem(request?.categories);
+  if (categoryProblem) problems.push(categoryProblem);
+
   const type = ['feature', 'run', 'note'].includes(request?.type) ? request.type : null;
   if (!type) problems.push(`неизвестный тип заявки «${request?.type}»`);
 
@@ -140,6 +144,7 @@ export function taskFromRequest(
 
   const task = {
     $schema: '../schema.json',
+    ...(request.categories ? { categories: [...request.categories] } : {}),
     ...(Object.hasOwn(request, 'dependsOn') ? { dependsOn: [...request.dependsOn] } : {}),
     ...(Object.hasOwn(request, 'dependencyResults')
       ? { dependencyResults: request.dependencyResults.map((result) => ({ ...result })) }

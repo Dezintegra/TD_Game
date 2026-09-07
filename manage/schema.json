@@ -35,14 +35,20 @@
       "type": "array",
       "description": "Полные идентификаторы задач, которые должны перейти в completed перед запуском этой задачи. Отсутствие поля означает отсутствие зависимостей.",
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$"
+      }
     },
     "splitInto": {
       "type": "array",
       "description": "Части успешной декомпозиции: закрытие родителя не завершает зависимость до закрытия всех частей и их потомков.",
       "minItems": 1,
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$"
+      }
     },
     "dependencyResults": {
       "type": "array",
@@ -52,9 +58,17 @@
         "additionalProperties": false,
         "required": ["taskId", "kind", "pr"],
         "properties": {
-          "taskId": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$" },
-          "kind": { "const": "merged-pr" },
-          "pr": { "type": "integer", "minimum": 1 }
+          "taskId": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$"
+          },
+          "kind": {
+            "const": "merged-pr"
+          },
+          "pr": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       }
     },
@@ -153,10 +167,20 @@
         "additionalProperties": false,
         "required": ["at", "from", "to"],
         "properties": {
-          "at": { "type": "string", "format": "date-time" },
-          "from": { "type": "string" },
-          "to": { "type": "string" },
-          "note": { "type": "string", "description": "Одна строка о причине перехода." }
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "Одна строка о причине перехода."
+          }
         }
       }
     },
@@ -182,7 +206,9 @@
         "related": {
           "type": "array",
           "description": "Идентификаторы связанных задач: породившей и порождённых.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -257,9 +283,18 @@
       "additionalProperties": false,
       "required": ["askedAt", "summary"],
       "properties": {
-        "askedAt": { "type": "string", "format": "date-time" },
-        "summary": { "type": "string", "minLength": 1 },
-        "answeredAt": { "type": ["string", "null"], "format": "date-time" }
+        "askedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answeredAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
       }
     },
     "recovery": {
@@ -276,7 +311,9 @@
         "fixedBy": {
           "type": "array",
           "description": "Идентификаторы задач, после закрытия которых причина снята. Пустой перечень — вернуть сразу.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "returns": {
           "type": "integer",
@@ -284,16 +321,56 @@
           "minimum": 0
         }
       }
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["ux", "mechanics", "balance", "infrastructure"]
+      }
+    },
+    "creationKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "analysisGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reanalysis": {
+      "type": "boolean"
+    },
+    "blockedContext": {
+      "type": "object"
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "type": { "const": "run" } }, "required": ["type"] },
-      "then": { "required": ["run"] }
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["run"]
+      }
     },
     {
-      "if": { "properties": { "status": { "const": "awaiting-po" } }, "required": ["status"] },
-      "then": { "required": ["question", "returnTo"] }
+      "if": {
+        "properties": {
+          "status": {
+            "const": "awaiting-po"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["question", "returnTo"]
+      }
     }
   ]
 }
