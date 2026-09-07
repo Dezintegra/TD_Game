@@ -1,4 +1,5 @@
 import { transferBlocked, unblockTask } from './blockers.mjs';
+import { changeTokenHold } from './token-hold.mjs';
 import {
   beginDelayAnalysis,
   observeDelay,
@@ -1206,6 +1207,9 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'hold-token-budget': changeTokenHold,
+  'refresh-token-budget': changeTokenHold,
+  'resume-token-budget': changeTokenHold,
   'analyze-delay': beginDelayAnalysis,
   'observe-delay': observeDelay,
   'flush-delay-journal': async (action, io) => {

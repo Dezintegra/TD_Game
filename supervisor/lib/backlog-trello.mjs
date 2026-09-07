@@ -297,6 +297,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
         ...(placeFirst ? { pos: 'top' } : {}),
+        ...(Number.isFinite(entry.restorePriority) ? { pos: entry.restorePriority } : {}),
         // Название пересобирается из очищенного: иначе служебный префикс
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),

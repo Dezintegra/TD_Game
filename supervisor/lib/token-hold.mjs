@@ -1,6 +1,7 @@
 import { TOKEN_CAPPED_STAGES, TOKEN_RESUME_STATES } from '../config/transitions.mjs';
 import { taskTokens, taskTokenStatus } from './token-budget.mjs';
 import { effectiveTokenLimit } from './user-token-limit.mjs';
+import { applyTransition } from './task-file.mjs';
 
 /** Один допуск для сканера и последней проверки перед порождением процесса. */
 export function tokenAdmission(task, stage, config, ledger = {}) {
@@ -44,6 +45,87 @@ export function tokenHoldProblem(task) {
   )
     return 'Не сохранён этап возврата из «Лимит токенов»: восстановите контекст по истории карточки.';
   return null;
+}
+
+/** Служебная запись не касается сессии, реестра, лимита или счётчиков. */
+export async function changeTokenHold(action, io) {
+  const task = io.readTask(action.taskId);
+  if (!task) return { result: 'skipped', why: 'задачи нет' };
+  if (task.owner && task.owner !== io.machine)
+    return { result: 'skipped', why: 'задача другой станции' };
+  if (io.tokenActionBlocked?.(task.id))
+    return { result: 'skipped', why: 'есть живая сессия или готовый отчёт' };
+  const entering = action.kind === 'hold-token-budget';
+  if ((entering && task.status !== action.from) || (!entering && task.status !== 'token-limit'))
+    return { result: 'skipped', why: 'состояние уже изменилось' };
+  if (!entering && tokenHoldProblem(task))
+    return { result: 'skipped', why: tokenHoldProblem(task) };
+  const budget = io.tokenAdmission ? io.tokenAdmission(task, action.stage) : action.budget;
+  const resume = action.kind === 'resume-token-budget';
+  if (resume ? Boolean(budget) : !budget)
+    return { result: 'skipped', why: 'бюджет изменился, нужен новый снимок' };
+  let next;
+  if (entering) {
+    const hold = {
+      originStatus: task.status,
+      resumeStatus: action.resumeStatus ?? task.status,
+      originSince: task.statusChangedAt ?? task.createdAt,
+      originPriority: task.priority,
+      originReturnTo: task.returnTo ?? null,
+      originLabel: action.originLabel,
+      resumeLabel: action.resumeLabel,
+      blockedAt: io.now,
+      ...(action.evidence ? { evidence: action.evidence } : {}),
+      ...budget,
+    };
+    if (tokenHoldProblem({ tokenHold: hold }))
+      return { result: 'failed', why: tokenHoldProblem({ tokenHold: hold }) };
+    next = applyTransition(
+      { ...task, tokenHold: hold },
+      {
+        status: 'token-limit',
+        now: io.now,
+        note: budget.explanation,
+      },
+    );
+  } else if (resume) {
+    next = applyTransition(task, {
+      status: task.tokenHold.resumeStatus,
+      now: io.now,
+      note: 'Бюджет разрешает продолжение.',
+    });
+    if (next.task) {
+      next.task.priority = task.tokenHold.originPriority;
+      next.task.returnTo = task.tokenHold.originReturnTo;
+      delete next.task.tokenHold;
+    }
+  } else {
+    if (
+      Object.entries(budget).every(
+        ([key, value]) => JSON.stringify(task.tokenHold[key]) === JSON.stringify(value),
+      )
+    )
+      return { result: 'skipped', why: 'сведения бюджета не изменились' };
+    next = { task: { ...task, tokenHold: { ...task.tokenHold, ...budget } } };
+  }
+  if (!next.task) return { result: 'failed', why: next.problems.join('; ') };
+  const saved = await io.saveTask(
+    next.task,
+    {
+      at: io.now,
+      from: task.status,
+      to: next.task.status,
+      what: resume
+        ? 'Бюджет разрешает продолжение; сохранённый этап и счётчики восстановлены.'
+        : tokenPanel(next.task.tokenHold),
+      source: 'supervisor',
+      ...(resume ? { restorePriority: task.tokenHold.originPriority } : {}),
+    },
+    `chore(backlog): ${task.id} ${task.status} → ${next.task.status} (бюджет токенов)`,
+  );
+  return saved.ok
+    ? { result: 'done', status: next.task.status }
+    : { result: 'failed', why: saved.why ?? saved.outcome };
 }
 
 const PANEL_OPEN = '<!-- token-budget-panel -->';
