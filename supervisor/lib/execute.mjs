@@ -1,6 +1,11 @@
 import { transferBlocked, unblockTask } from './blockers.mjs';
 import { changeTokenHold } from './token-hold.mjs';
 import {
+  analyzeTokenBudget,
+  finishTokenReanalysis,
+  tokenAnalysisReportKey,
+} from './token-reanalysis.mjs';
+import {
   beginDelayAnalysis,
   observeDelay,
   reviewingDelay,
@@ -84,6 +89,15 @@ async function transferReport(action, io) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
+
+  if (
+    task.status !== report.stage &&
+    task.tokenReanalysis?.reportKey === tokenAnalysisReportKey(report)
+  ) {
+    io.forgetSession?.(task.id, report.stage);
+    io.removeReport(task.id, report.stage);
+    return { result: 'done', status: task.status };
+  }
 
   // Отказанные действия судят ЗДЕСЬ, а не в супервизоре, и после разбора
   // отчёта, а не до него. До разбора неизвестны ни исход, ни ссылки — то
@@ -188,6 +202,13 @@ async function transferReport(action, io) {
     : report.outcome === 'rejected'
       ? countRejection(moved.task)
       : resetAttempts(moved.task);
+
+  const resumedTokenAnalysis =
+    task.status === 'decompose' &&
+    task.tokenReanalysis?.phase === 'analyzing' &&
+    report.outcome === 'done' &&
+    !halted;
+  if (resumedTokenAnalysis) next = finishTokenReanalysis(task, next, report, io.now);
 
   // Возврат отправляет задачу на этап, где сессия уже была, и возобновлять её
   // нельзя: возобновлённая отвечает из своей памяти — «всё сделано» — и вершина
@@ -389,6 +410,7 @@ async function transferReport(action, io) {
       at: io.now,
       from: task.status,
       to: verdict.status,
+      ...(resumedTokenAnalysis ? { restorePriority: task.tokenReanalysis.originPriority } : {}),
       ...(verdict.status === 'closed' ? { closureReason: next.closureReason } : {}),
       // Обычно запись журнала говорит словами сессии — её `summary`. Исходу
       // `moot` этого мало: спецификация требует, чтобы запись назвала причину
@@ -1236,6 +1258,7 @@ const HANDLERS = {
   'note-orphan': noteOrphan,
   'note-api-error': noteApiError,
   'decompose-again': decomposeAgain,
+  'analyze-token-budget': analyzeTokenBudget,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
   'return-task': returnTask,
