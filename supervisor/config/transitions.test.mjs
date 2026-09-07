@@ -1838,6 +1838,183 @@ describe('этапы и скиллы', () => {
   });
 });
 
+describe('согласованность отсутствующего предмета 0216 с подготовкой 0254', () => {
+  const change = 'return-premature-tasks-to-the-queue';
+  const title =
+    '### Requirement: Проработка и имплементация возвращают в очередь задачу, чей предмет ещё не появился';
+  const read = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
+  const has = (path) => existsSync(new URL(`../../${path}`, import.meta.url));
+  const block = (text, heading, boundary) => {
+    const lines = text.split(/\r?\n/);
+    const start = lines.findIndex((line) => line === heading);
+    if (start < 0) return '';
+    const end = lines.findIndex((line, index) => index > start && boundary.test(line));
+    return lines.slice(start, end < 0 ? undefined : end).join('\n');
+  };
+  // Основная спецификация приоритетна; наша уточняющая дельта не может
+  // подменить исходное требование и скрыть его старое широкое определение.
+  const source = () => {
+    for (const path of [
+      'openspec/specs/dev-pipeline-worker/spec.md',
+      `openspec/changes/${change}/specs/dev-pipeline-worker/spec.md`,
+    ]) {
+      if (has(path) && block(read(path), title, /^### Requirement:/))
+        return { path, text: read(path) };
+    }
+    const archive = 'openspec/changes/archive';
+    const candidates = readdirSync(new URL(`../../${archive}`, import.meta.url))
+      .filter((name) => name.endsWith(`-${change}`))
+      .map((name) => `${archive}/${name}/specs/dev-pipeline-worker/spec.md`)
+      .filter((path) => has(path) && block(read(path), title, /^### Requirement:/));
+    if (candidates.length !== 1)
+      throw new Error(
+        `${archive}: ${change}: нужен единственный источник, найдено ${candidates.length}`,
+      );
+    return { path: candidates[0], text: read(candidates[0]) };
+  };
+  const clauses = [
+    [
+      '',
+      'приоритет определения',
+      'доступная подготовка по согласованному плану SHALL исключать вывод об отсутствии предмета только по отсутствию файла в main',
+    ],
+    ['', 'PR и поддержка в определении', 'независимо от собственного PR и поддержки `premature`'],
+    [
+      '',
+      'безопасность и предусловия',
+      'при безопасном дереве, обновлённой main и соблюдении явных предусловий',
+    ],
+    [
+      '',
+      'введённая поддержка',
+      'Поддержка означает введённые в рабочую версию правила, допустимый исход и его обработчик',
+    ],
+    ['Имплементации нечего править', 'нет подготовки', 'доступной подготовки по плану нет'],
+    ['Имплементации нечего править', 'поддержка', 'поддержка `premature` введена'],
+    ['Имплементации нечего править', 'нет собственного PR', 'собственного PR нет'],
+    [
+      'Имплементации нечего править',
+      'подтверждение',
+      'делом подтверждает, что их принесёт другая задача',
+    ],
+    ['Имплементации нечего править', 'исход', 'с исходом `premature`'],
+    ['Имплементации нечего править', 'ожидание', 'в `summary` ожидаемую работу'],
+    [
+      'Имплементации нечего править',
+      'доказательство',
+      'в `evidence` — номер невлитого pull request',
+    ],
+    [
+      'Имплементации нечего править',
+      'до правки и PR',
+      'кода не пишет, собственный PR не открывает',
+    ],
+    [
+      'Предмета нет, но pull request уже открыт',
+      'нет подготовки при PR',
+      'доступной подготовки по плану нет',
+    ],
+    ['Предмета нет, но pull request уже открыт', 'failed при PR', 'объявляет исход `failed`'],
+    [
+      'Предмета нет, но pull request уже открыт',
+      'сохранность работы',
+      'без автоматического возврата в очередь и удаления начатой работы',
+    ],
+    [
+      'Доступная подготовка без собственного PR',
+      'продолжение без PR',
+      'SHALL продолжить подготовку по плану независимо от поддержки `premature`',
+    ],
+    [
+      'Доступная подготовка с собственным PR',
+      'продолжение с PR',
+      'SHALL продолжить подготовку по плану независимо от поддержки `premature`',
+    ],
+    [
+      'Поддержка premature ещё не введена',
+      'до поддержки',
+      'действующий `failed` независимо от собственного PR',
+    ],
+    [
+      'Поддержка premature ещё не введена',
+      'запрет неподдерживаемого исхода',
+      'неподдерживаемый `premature` отправлять MUST NOT',
+    ],
+    [
+      'Техническая ошибка проверки подготовки',
+      'технический failed',
+      'технический `failed` независимо от собственного PR и поддержки `premature`',
+    ],
+    [
+      'Техническая ошибка проверки подготовки',
+      'ошибка не доказательство',
+      'ошибка чтения доказательством отсутствия предмета быть MUST NOT',
+    ],
+  ];
+  const section = (text, scenario) => {
+    const requirement = block(text, title, /^### Requirement:/);
+    return scenario
+      ? block(requirement, `#### Scenario: ${scenario}`, /^#{3,4} /)
+      : requirement.split('#### Scenario:')[0];
+  };
+  const problems = ({ path, text }) =>
+    clauses
+      .filter(
+        ([scenario, , phrase]) => !section(text, scenario).replace(/\s+/g, ' ').includes(phrase),
+      )
+      .map(([, condition]) => `${path}: ${condition}`);
+  const mutate = (original, scenario, before, after) => {
+    const part = section(original.text, scenario);
+    const normalized = part.replace(/\s+/g, ' ');
+    expect(normalized).toContain(before);
+    return { ...original, text: original.text.replace(part, normalized.replace(before, after)) };
+  };
+
+  it('проверяет определение и каждый сценарий реального требования', () => {
+    expect(problems(source())).toEqual([]);
+  });
+
+  it.each(clauses)('отвергает потерю условия в блоке %s: %s', (scenario, condition, phrase) => {
+    const original = source();
+    const damaged = mutate(original, scenario, phrase, '');
+    // Перенос верных слов в соседний документ не должен лечить условие.
+    damaged.text += `\n### Requirement: Посторонний текст\n${phrase}\n`;
+    expect(problems(damaged)).toContain(`${original.path}: ${condition}`);
+  });
+
+  it.each([
+    [
+      '',
+      'приоритет определения',
+      'Предмет считается не появившимся, когда правка лежит в чужой невлитой ветке или открытом pull request.',
+    ],
+    [
+      'Имплементации нечего править',
+      'нет подготовки',
+      '- **WHEN** файла ещё нет и он приедет открытым pull request другой задачи\n- **THEN** сессия завершается с исходом `premature`',
+    ],
+  ])('отвергает прежний блок %s', (scenario, condition, previous) => {
+    const original = source();
+    const part = section(original.text, scenario);
+    expect(part).not.toBe('');
+    const heading = scenario ? `#### Scenario: ${scenario}` : title;
+    expect(
+      problems({ ...original, text: original.text.replace(part, `${heading}\n\n${previous}\n\n`) }),
+    ).toContain(`${original.path}: ${condition}`);
+  });
+
+  it('отвергает ошибку чтения, выданную за evidence', () => {
+    const original = source();
+    const damaged = mutate(
+      original,
+      'Техническая ошибка проверки подготовки',
+      'ошибка чтения доказательством отсутствия предмета быть MUST NOT',
+      'ошибка чтения SHALL записываться в evidence как доказательство отсутствия предмета',
+    );
+    expect(problems(damaged)).toContain(`${original.path}: ошибка не доказательство`);
+  });
+});
+
 describe('связность таблицы', () => {
   it('у каждого состояния объявлена цена', () => {
     const priced = STATES.filter((status) => stateClass({ status, run: { kind: 'arena' } }));
