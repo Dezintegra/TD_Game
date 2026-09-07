@@ -426,11 +426,11 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
       if (what === 'ci') {
         if (!task.links?.pr) return { state: 'pending', why: 'pull request ещё не открыт' };
         const result = run(
-          ['pr', 'view', String(task.links.pr), '--json', 'statusCheckRollup'],
+          ['pr', 'view', String(task.links.pr), '--json', 'mergeable,statusCheckRollup'],
           'gh',
         );
         if (result.code !== 0) return { state: 'pending', why: 'состояние проверок недоступно' };
-        return summariseChecks(result.stdout);
+        return summarisePullRequest(result.stdout);
       }
 
       if (!task.links?.run) return { state: 'pending', why: 'прогон ещё не запущен' };
@@ -609,6 +609,34 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
 function knownRef(result) {
   if (result.code === 0) return true;
   return String(result.stderr ?? '').trim() === '' ? false : null;
+}
+
+/**
+ * Возможность слияния проверяется раньше CI: при конфликте GitHub вообще
+ * не запускает pull_request workflow. Пустой список проверок такого PR
+ * не пополнится от ожидания — сначала нужна доработка его ветки.
+ *
+ * mergeStateStatus для этого не годится: у черновика он бывает UNKNOWN
+ * одновременно с однозначным mergeable: CONFLICTING.
+ */
+export function summarisePullRequest(json) {
+  let pr;
+  try {
+    pr = JSON.parse(json);
+  } catch {
+    return { state: 'pending', why: 'ответ GitHub о pull request не разобрался' };
+  }
+  if (pr?.mergeable === 'CONFLICTING') return { state: 'conflict' };
+  if (pr?.mergeable === 'UNKNOWN') {
+    return { state: 'pending', why: 'GitHub ещё не определил возможность слияния pull request' };
+  }
+  if (pr?.mergeable !== 'MERGEABLE') {
+    return { state: 'pending', why: 'состояние слияния pull request недоступно' };
+  }
+  if (pr.statusCheckRollup != null && !Array.isArray(pr.statusCheckRollup)) {
+    return { state: 'pending', why: 'ответ GitHub о проверках не разобрался' };
+  }
+  return summariseChecks(json);
 }
 
 /**

@@ -142,6 +142,14 @@ export function applyReport(task, report, limits = {}) {
     return halt(task, problems.join('; '), problems);
   }
 
+  const closing =
+    ['moot', 'split'].includes(report.outcome) ||
+    (task.status === 'triage' && report.outcome === 'done' && report.requests?.length);
+  if (closing && (typeof report.summary !== 'string' || !report.summary.trim())) {
+    const why = 'причина закрытия не названа: поле summary пусто';
+    return halt(task, why, [why]);
+  }
+
   if (report.outcome === 'failed') {
     return halt(task, report.summary ?? 'этап завершился неуспешно', problems);
   }
@@ -317,8 +325,16 @@ export function applyReport(task, report, limits = {}) {
  */
 export function applyExternal(task, external) {
   if (task.status === 'pr') {
+    if (external.state === 'conflict') {
+      const pr = task.links?.pr ? `pull request #${task.links.pr}` : 'pull request';
+      return {
+        status: 'revise',
+        returnTo: null,
+        note: `${pr} конфликтует с главной веткой; обновите ветку и устраните конфликты перед повторным CI`,
+      };
+    }
     if (external.state === 'pending')
-      return { status: 'pr', returnTo: null, note: 'проверки идут' };
+      return { status: 'pr', returnTo: null, note: external.why ?? 'проверки идут' };
     if (external.state === 'success') {
       return { status: 'review', returnTo: null, note: 'проверки зелёные' };
     }
