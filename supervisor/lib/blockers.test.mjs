@@ -1,4 +1,7 @@
 import { expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { execute } from './execute.mjs';
+import { metaOf, parseCard, joinDescription } from './card.mjs';
 import { planBlockers, transferBlocked, unblockTask } from './blockers.mjs';
 import { scan } from './scan.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -46,6 +49,7 @@ function world(items = [task()]) {
     now,
     tasks,
     created: [],
+    entries: [],
     forgotten: [],
     readTask: (id) => tasks.get(id),
     allTaskIds: () => [...tasks.keys()],
@@ -54,8 +58,9 @@ function world(items = [task()]) {
       io.created.push(t);
       return { ok: true };
     },
-    saveTask: async (t) => {
+    saveTask: async (t, entry) => {
       tasks.set(t.id, t);
+      io.entries.push(entry);
       return { ok: true };
     },
     removeReport: () => {},
@@ -74,6 +79,201 @@ it('обязательная инфраструктура идёт первой,
     ['candidate', false],
   ]);
   expect(p.next.dependsOn).toEqual([p.planned[0].id]);
+});
+
+const nukeReport = () => {
+  const skill = readFileSync(new URL('../skills/triage.md', import.meta.url), 'utf8');
+  return JSON.parse(
+    [...skill.matchAll(/```json\s+([\s\S]*?)```/g)]
+      .map((match) => match[1])
+      .find((value) => value.includes('0032-yadernyy')),
+  );
+};
+const nukeSource = () =>
+  task({
+    id: nukeReport().taskId,
+    type: 'note',
+    status: 'triage',
+    title: 'Собственные потери',
+    description: 'Проверить четыре удара',
+    categories: ['balance'],
+    branch: 'worktree-0032-yadernyy',
+    history: [{ what: 'Начат анализ' }],
+    links: { change: 'nuke-counts-own-losses', pr: 23 },
+    analysisGeneration: 4,
+    attempts: { continuations: 100, rejections: 1 },
+  });
+const nukeRun = () =>
+  task({
+    id: nukeReport().blockers[0].taskId,
+    type: 'run',
+    status: 'failed',
+    links: { run: 'previous-incomplete-run' },
+  });
+const reread = (value) =>
+  parseCard(
+    {
+      id: '6a9084b276c945372833816f',
+      name: value.title,
+      pos: value.priority,
+      desc: joinDescription(value.description, metaOf(value)),
+      idList: value.status,
+      idLabels: [value.type],
+    },
+    {
+      stateByList: new Map([[value.status, value.status]]),
+      labelKeyById: new Map([[value.type, value.type]]),
+    },
+  ).task;
+async function acceptNuke(io, value) {
+  io.readReport = () => value;
+  return (
+    await execute([{ kind: 'transfer-report', taskId: value.taskId, stage: value.stage }], io)
+  )[0];
+}
+
+it.each([false, true])(
+  'пример 0032 принимается однократно, потеря ответа PUT: %s',
+  async (lost) => {
+    const source = nukeSource();
+    const predecessor = nukeRun();
+    const io = world([source, predecessor]);
+    const value = { ...nukeReport(), costUsd: 2 };
+    const save = io.saveTask;
+    io.saveTask = async (...args) => {
+      await save(...args);
+      return lost ? { ok: false, outcome: 'offline' } : { ok: true };
+    };
+    expect((await acceptNuke(io, value)).result).toBe(lost ? 'failed' : 'done');
+    io.saveTask = save;
+    const saved = globalThis.structuredClone(io.readTask(source.id));
+    expect(saved).toMatchObject({
+      status: 'blocked',
+      spentUsd: 9,
+      branch: source.branch,
+      links: source.links,
+      history: [...source.history, expect.objectContaining({ from: 'triage', to: 'blocked' })],
+      dependsOn: [predecessor.id],
+      blockedContext: { from: 'triage', reasons: value.blockers },
+    });
+    expect(io.entries[0].what).toContain(value.blockers[0].reason);
+    expect(io.entries[0].what).toContain(value.blockers[0].result);
+    expect((await acceptNuke(io, value)).result).toBe('done');
+    expect(io.readTask(source.id)).toEqual(saved);
+    expect(io.entries).toHaveLength(1);
+    expect(io.readTask(predecessor.id)).toEqual(predecessor);
+    expect(io.created).toEqual([]);
+  },
+);
+
+it('0032 удерживается сто циклов и получает новый анализ только после результата 0120', async () => {
+  const source = nukeSource();
+  const predecessor = nukeRun();
+  const io = world([source, predecessor]);
+  await acceptNuke(io, { ...nukeReport(), costUsd: 2 });
+  const blocked = reread(io.readTask(source.id));
+  io.tasks.set(source.id, blocked);
+  const independent = task({ id: '0099-ready', status: 'new', priority: 1 });
+  for (const time of [
+    now,
+    '2026-09-07T17:00:00Z',
+    '2026-09-07T17:00:01Z',
+    '2026-09-08T12:00:00Z',
+  ]) {
+    for (let i = 0; i < 100; i++) {
+      const result = scan({ config, now: time, tasks: [blocked, predecessor, independent] });
+      expect(result.actions.filter((a) => a.taskId === source.id)).toEqual([]);
+      expect(result.actions).toContainEqual(
+        expect.objectContaining({ taskId: independent.id, kind: 'start-stage' }),
+      );
+      expect(result.notes.join(' ')).toContain(predecessor.id);
+    }
+  }
+  for (const predecessors of [[], [{ ...predecessor, status: 'closed' }]])
+    expect(
+      scan({
+        config,
+        now: '2026-09-08T12:00:00Z',
+        tasks: [blocked, ...predecessors],
+      }).actions.filter((a) => a.taskId === source.id),
+    ).toEqual([]);
+  expect(
+    scan({
+      config,
+      now: '2026-09-08T12:00:00Z',
+      tasks: [blocked],
+      invalid: [{ id: predecessor.id, problems: ['повреждена карточка'] }],
+    }).actions.filter((a) => a.taskId === source.id),
+  ).toEqual([]);
+  expect(io.readTask(source.id)).toEqual(blocked);
+  expect(blocked.attempts.continuations).toBe(100);
+  io.tasks.set(predecessor.id, {
+    ...predecessor,
+    status: 'completed',
+    links: { run: '0120-result' },
+  });
+  const action = scan({ config, now, tasks: [...io.tasks.values()] }).actions.find(
+    (a) => a.kind === 'unblock-task',
+  );
+  expect(action).toBeTruthy();
+  io.tasks.set(predecessor.id, predecessor);
+  expect((await unblockTask(action, io)).result).toBe('skipped');
+  expect(io.readTask(source.id)).toEqual(blocked);
+  io.tasks.set(predecessor.id, {
+    ...predecessor,
+    status: 'completed',
+    links: { run: '0120-result' },
+  });
+  expect((await unblockTask(action, io)).status).toBe('new');
+  const next = io.readTask(source.id);
+  expect(next).toMatchObject({
+    analysisGeneration: 5,
+    spentUsd: 9,
+    reanalysis: true,
+    blockedContext: blocked.blockedContext,
+    links: blocked.links,
+    attempts: { continuations: 0, rejections: 1 },
+  });
+  expect((await unblockTask(action, io)).result).toBe('skipped');
+  expect(io.readTask(source.id)).toEqual(next);
+  expect(io.forgotten).toContain('triage');
+  expect(scan({ config, now, tasks: [...io.tasks.values(), independent] }).actions).toContainEqual(
+    expect.objectContaining({ taskId: source.id, kind: 'start-stage', stage: 'triage' }),
+  );
+});
+
+it('0032 сохраняет добавленные links и не обходит второй блокер или условие PR', async () => {
+  const source = nukeSource();
+  const predecessor = nukeRun();
+  const io = world([source, predecessor]);
+  await acceptNuke(io, {
+    ...nukeReport(),
+    links: { change: 'nuke-counts-own-losses', pr: 24, run: 'source-artifact' },
+  });
+  const blocked = io.readTask(source.id);
+  expect(blocked.links).toEqual({
+    change: 'nuke-counts-own-losses',
+    pr: 24,
+    run: 'source-artifact',
+  });
+  const completed = { ...predecessor, status: 'completed', links: { pr: 126 } };
+  const extra = task({ id: '0003-extra', status: 'failed' });
+  for (const value of [
+    { ...blocked, dependsOn: [...blocked.dependsOn, extra.id] },
+    { ...blocked, dependencyResults: [{ taskId: predecessor.id, kind: 'merged-pr', pr: 126 }] },
+  ]) {
+    io.tasks.set(source.id, value);
+    io.tasks.set(predecessor.id, completed);
+    io.tasks.set(extra.id, extra);
+    expect(
+      scan({ config, now, tasks: [...io.tasks.values()] }).actions.filter(
+        (a) => a.taskId === source.id,
+      ),
+    ).toEqual([]);
+    expect((await unblockTask({ taskId: source.id, mainBranch: 'main' }, io)).result).toBe(
+      'skipped',
+    );
+  }
 });
 
 it('triage принимает failed без подъёма или дубликата, сохраняя основание', async () => {

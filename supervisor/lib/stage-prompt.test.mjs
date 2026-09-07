@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { clipMiddle, stagePrompt } from './stage-prompt.mjs';
+import { ROUTING_CONTRACT } from './routing-contract.mjs';
 
 /**
  * Проверки промпта назначения.
@@ -27,6 +28,48 @@ const assignment = {
   branch: 'worktree-0042-fix-tesla-price',
   path: '.claude/worktrees/0042-fix-tesla-price',
 };
+
+it('новый анализ 0032 получает основание ожидания и артефакты 0120', () => {
+  const predecessor = {
+    id: '0120-progon-areny-s-priborom-pomeh-yadernogo-',
+    status: 'completed',
+    links: { run: '0120-arena-result' },
+  };
+  const source = {
+    ...task,
+    id: '0032-yadernyy-udar-vredit-svoim-general-na-ch',
+    type: 'note',
+    status: 'new',
+    analysisGeneration: 1,
+    dependsOn: [predecessor.id],
+    links: { change: 'nuke-counts-own-losses', pr: 23 },
+    blockedContext: {
+      from: 'triage',
+      operation: 'accepted',
+      reasons: [
+        {
+          taskId: predecessor.id,
+          reason: 'Без измерения нельзя оценить потери',
+          result: 'Артефакты помех ядерного удара',
+        },
+      ],
+    },
+  };
+  const text = stagePrompt({
+    assignment: { ...assignment, taskId: source.id, stage: 'triage' },
+    task: source,
+    board: [predecessor],
+  });
+  expect(text).toContain(ROUTING_CONTRACT);
+  for (const value of [
+    source.links.change,
+    predecessor.id,
+    predecessor.links.run,
+    source.blockedContext.reasons[0].reason,
+    source.blockedContext.reasons[0].result,
+  ])
+    expect(text).toContain(value);
+});
 
 it('новый бюджет и запрет его изменения агентом не обрезаются старым журналом', () => {
   const text = stagePrompt({
