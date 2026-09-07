@@ -20,7 +20,7 @@ import { pipelineCause, recoveryFrom } from './recovery.mjs';
 import { planAmendments, planRequests } from './requests.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
-import { closureReasonFor, recoverClosureReason } from './closure.mjs';
+import { closureReasonFor, closureRequestKey, recoverClosureReason } from './closure.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -254,7 +254,26 @@ async function transferReport(action, io) {
   // коммитом: правило «коммит на смысловую правку» не делает исключения
   // для порождённых.
   const created = [];
-  for (const born of plan.planned) {
+  for (const [index, planned] of plan.planned.entries()) {
+    const key = verdict.status === 'closed' ? closureRequestKey(task, report, index) : null;
+    const matches = key
+      ? io
+          .allTaskIds()
+          .map((id) => io.readTask(id))
+          .filter((item) => item?.closureRequestKey === key)
+      : [];
+    if (matches.length > 1)
+      return {
+        result: 'failed',
+        why: 'неоднозначные карточки продолжения закрываемой задачи',
+        created,
+      };
+    if (matches.length === 1) {
+      created.push(matches[0].id);
+      next = relate(next, matches[0].id);
+      continue;
+    }
+    const born = key ? { ...planned, closureRequestKey: key } : planned;
     const pushed = await io.createTask(
       born,
       `chore(backlog): ${born.id} заведена по разбору ${action.taskId}`,
@@ -1091,7 +1110,7 @@ async function cleanupTask(action, io) {
       at: io.now,
       from: task.status,
       to: status,
-      what: `Убрано: ${verdict.why}.`,
+      what: closureReason ? 'Уборка ресурсов задачи завершена.' : `Убрано: ${verdict.why}.`,
       ...(closureReason ? { closureReason } : {}),
     },
     `chore(backlog): ${task.id} ${status}`,

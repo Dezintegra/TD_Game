@@ -183,6 +183,9 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     ...(Object.hasOwn(meta ?? {}, 'dependsOn') ? { dependsOn: meta.dependsOn } : {}),
     ...(Object.hasOwn(meta ?? {}, 'splitInto') ? { splitInto: meta.splitInto } : {}),
     ...(Object.hasOwn(meta ?? {}, 'closureReason') ? { closureReason: meta.closureReason } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'closureRequestKey')
+      ? { closureRequestKey: meta.closureRequestKey }
+      : {}),
     ...(Object.hasOwn(meta ?? {}, 'dependencyResults')
       ? { dependencyResults: meta.dependencyResults }
       : {}),
@@ -244,6 +247,9 @@ export function metaOf(task) {
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
     ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),
     ...(Object.hasOwn(task, 'closureReason') ? { closureReason: task.closureReason } : {}),
+    ...(Object.hasOwn(task, 'closureRequestKey')
+      ? { closureRequestKey: task.closureRequestKey }
+      : {}),
     ...(Object.hasOwn(task, 'dependencyResults')
       ? { dependencyResults: task.dependencyResults }
       : {}),

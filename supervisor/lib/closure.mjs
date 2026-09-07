@@ -1,3 +1,21 @@
+import { createHash } from 'node:crypto';
+
+/** Повтор одного отчёта должен ссылаться на те же карточки продолжения. */
+export function closureRequestKey(task, report, index) {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        task.id,
+        task.status,
+        task.statusChangedAt,
+        report.summary,
+        report.requests,
+        index,
+      ]),
+    )
+    .digest('hex');
+}
+
 /** Причина живёт дольше этапа: уборка не должна подменять её своим итогом. */
 export function closureReasonFor(report, successors = [], link = (id) => id) {
   const summary = report.summary.trim();

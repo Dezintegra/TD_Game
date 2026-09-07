@@ -1807,6 +1807,65 @@ describe('уборка после потери записи реестра', () 
 });
 
 describe('причина в конечном переходе', () => {
+  it.each(['creation', 'move'])(
+    'повтор после сбоя %s использует прежние части',
+    async (failure) => {
+      const report = {
+        stage: 'decompose',
+        outcome: 'split',
+        summary: 'Диагностика и учёт независимы.',
+        requests: [
+          { type: 'feature', title: 'Диагностика', description: 'Сохранить отчёт.' },
+          { type: 'feature', title: 'Учёт', description: 'Исправить расход.' },
+        ],
+      };
+      const io = fakeIo({ tasks: [task({ status: 'decompose' })], report });
+      const create = io.createTask.bind(io),
+        save = io.saveTask.bind(io);
+      let created = 0;
+      if (failure === 'creation')
+        io.createTask = (...args) =>
+          ++created === 2 ? { ok: false, outcome: 'offline' } : create(...args);
+      else io.saveTask = () => ({ ok: false, outcome: 'offline' });
+      const action = { kind: 'transfer-report', taskId: '0001-one', stage: 'decompose' };
+      const [first] = await execute([action], io);
+      expect(first.result).toBe('failed');
+      const ids = [...io.tasks.keys()].filter((id) => id !== '0001-one');
+      expect(ids).toHaveLength(failure === 'creation' ? 1 : 2);
+      // Новый цикл читает задачи заново: связи должны пережить перезапуск.
+      const retry = fakeIo({ tasks: JSON.parse(JSON.stringify([...io.tasks.values()])), report });
+      const [result] = await execute([action], retry);
+      expect(result.status).toBe('closed');
+      expect(retry.tasks.size).toBe(3);
+      for (const id of ids) expect(result.created).toContain(id);
+      expect(retry.tasks.get('0001-one').splitInto).toEqual(result.created);
+      io.saveTask = save;
+    },
+  );
+
+  it('повтор уборки после удаления дерева сохраняет текст причины и итогового комментария', async () => {
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'cleanup',
+          closureReason: 'Предмет снят: правило действует. Проверено: PR 166 влит.',
+        }),
+      ],
+      ownCommits: 0,
+    });
+    const entries = [];
+    io.saveTask = (_, entry) => {
+      entries.push(entry);
+      return { ok: false, outcome: 'offline' };
+    };
+    const action = { kind: 'cleanup', taskId: '0001-one' };
+    await execute([action], io);
+    io.registryEntry = () => null;
+    await execute([action], io);
+    expect(entries).toHaveLength(2);
+    expect(entries[1]).toEqual(entries[0]);
+  });
+
   it('снятый предмет сохраняется после отдельного цикла уборки', async () => {
     const io = fakeIo({
       tasks: [task({ status: 'design' })],

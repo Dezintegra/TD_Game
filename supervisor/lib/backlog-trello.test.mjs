@@ -165,6 +165,8 @@ describe('публикация причины до закрытия', () => {
     const created = { ...w.task, id: '0032-next', status: 'new' };
     await w.store.createTask(created);
     expect(w.store.taskLink(created.id)).toBe('[0032-next](https://trello.com/c/card-1)');
+    expect(w.store.readTask(created.id).closureReason).toBe(reason);
+    expect(w.store.allTaskIds()).toContain(created.id);
   });
 });
 

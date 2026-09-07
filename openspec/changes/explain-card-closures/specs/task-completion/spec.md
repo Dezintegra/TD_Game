@@ -28,6 +28,7 @@ The supervisor SHALL publish a comment headed «Причина закрытия�
 
 - **WHEN** closure is retried after some or all comment parts were saved
 - **THEN** previously published identical parts are not duplicated and the card moves only after all parts are present
+- **AND** retrying the closing report reuses its previously created successor cards
 
 #### Scenario: Historical cards
 

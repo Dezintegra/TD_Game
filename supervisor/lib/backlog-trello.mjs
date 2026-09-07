@@ -85,7 +85,6 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
 
   /** Карточка задачи вместе с разобранным человеческим текстом. */
   const cardOf = (id) => byId.get(id)?.card ?? null;
-  const createdCardIds = new Map();
 
   /**
    * Чьё имя стоит в служебной отметке владельца.
@@ -171,7 +170,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
 
     readTask: (id) => byId.get(id)?.task ?? null,
     taskLink: (id) => {
-      const cardId = createdCardIds.get(id) ?? cardOf(id)?.id;
+      const cardId = cardOf(id)?.id;
       return cardId ? `[${id}](https://trello.com/c/${cardId})` : id;
     },
 
@@ -340,7 +339,24 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         pos: task.blocking ? 'top' : 'bottom',
       });
       if (!created.ok) return failure(created);
-      if (created.data?.id) createdCardIds.set(task.id, created.data.id);
+      if (created.data?.id) {
+        // После частичной публикации повтор в том же цикле должен видеть
+        // созданную часть так же, как её увидит следующий снимок доски.
+        const raw = {
+          name: nameWithId(task.id, task.title),
+          desc: joinDescription(withExpectation(task.description ?? '', task), metaOf(task)),
+          idList,
+          idLabels: labelKeysOf(task)
+            .map((key) => labelIdByKey.get(key))
+            .filter(Boolean),
+          closed: false,
+          ...created.data,
+        };
+        cards.push(raw);
+        const item = parseSnapshotCard(raw);
+        parsed.push(item);
+        byId.set(task.id, item);
+      }
 
       return { ok: true, outcome: 'saved' };
     },

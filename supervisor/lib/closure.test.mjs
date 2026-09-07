@@ -33,7 +33,8 @@ describe('объяснение закрытия', () => {
       summary: 'Проверка уже исправлена.',
       evidence: 'PR 166 влит.',
     });
-    const metadata = metaOf({ id: '0031-proba', closureReason });
+    const closureRequestKey = 'a'.repeat(64);
+    const metadata = metaOf({ id: '0031-proba', closureReason, closureRequestKey });
     const { task } = parseCard(
       {
         id: '6a9a30657ee6fbcc699138bc',
@@ -45,6 +46,7 @@ describe('объяснение закрытия', () => {
       { stateByList: new Map([['cleanup', 'cleanup']]), labelKeyById: new Map() },
     );
     expect(recoverClosureReason(task)).toBe(closureReason);
+    expect(task.closureRequestKey).toBe(closureRequestKey);
     const comment = journalBody({
       closureReason: recoverClosureReason(task),
       what: 'Убрано: дерева нет.',
