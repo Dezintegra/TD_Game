@@ -58,6 +58,7 @@ export function journalEntry(entry) {
  * в его первой строке только мешала бы читать.
  */
 export function journalBody({
+  closureReason,
   what,
   decisions = [],
   links = {},
@@ -66,6 +67,8 @@ export function journalBody({
   denialsNote,
 }) {
   const lines = [];
+
+  if (closureReason) lines.push('**Причина закрытия**', '', closureReason, '');
 
   if (what) lines.push(what, '');
 
