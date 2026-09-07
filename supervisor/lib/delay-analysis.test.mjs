@@ -4,7 +4,8 @@ import { canTransition } from '../config/transitions.mjs';
 import { metaOf, parseCard, joinDescription } from './card.mjs';
 import { scan } from './scan.mjs';
 import { execute } from './execute.mjs';
-import { delayDecision, delayReportProblem, DELAY_STATES } from './delay-analysis.mjs';
+import { delayDecision, delayReportProblem, DELAY_STATES, WAIT_FROM } from './delay-analysis.mjs';
+import { BLOCKABLE, unblockTask } from './blockers.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
 
 const now = '2026-09-07T12:00:00Z';
@@ -130,7 +131,236 @@ async function transfer(io, value) {
   )[0];
 }
 
+// Воспроизводит условия журнала 0279; исторического полного отчёта 0129 нет.
+async function stoppedShellWait() {
+  const predecessor = task({
+    id: '0156-svesti-komandy-etapov-k-odnoy-obolochke-',
+    status: 'failed',
+    links: { change: 'one-shell-for-stages', pr: 126 },
+  });
+  const source = task({
+    id: '0129-skilly-zovut-openspec-po-imeni-no-v-git-',
+    type: 'note',
+    status: 'blocked',
+    dependsOn: [predecessor.id],
+    links: { change: 'one-shell-for-stages' },
+    spentUsd: 7,
+    analysisGeneration: 3,
+    attempts: { continuations: 100, cycleFailures: 0 },
+    blockedContext: {
+      reasons: [{ taskId: predecessor.id, reason: 'Нет команды', result: 'Команда доступна' }],
+    },
+  });
+  const io = world([source, predecessor]);
+  await diagnose(io);
+  const value = report({
+    taskId: source.id,
+    requests: [],
+    links: source.links,
+    delayAnalysis: diagnosis({
+      cause: 'Нет результата 0156; приёмка отвергает ожидание остановленного предшественника',
+      evidence: ['Условия журнала 0279: 0129 ждёт PR 126'],
+      nextAction: 'Сохранить ожидание и проверить результат после выполнения 0156',
+    }),
+    blockers: [
+      {
+        taskId: predecessor.id,
+        reason: 'Без доступной команды нельзя закончить проверку',
+        result: 'Единая оболочка доставлена и проверена',
+        dependencyResult: { kind: 'merged-pr', pr: 126 },
+        specificResult: 'Команда openspec выполняется в назначенной оболочке после вливания PR 126',
+        preventionResult:
+          'Правила всех этапов согласованы с оболочкой и защищены регрессионной проверкой',
+      },
+    ],
+  });
+  return { io, source, predecessor, value };
+}
+
+it.each([false, true])(
+  '0129 сохраняет ожидание failed 0156 и критерии один раз, потеря PUT: %s',
+  async (lost) => {
+    const { io, source, predecessor, value } = await stoppedShellWait();
+    expect(io.readTask(source.id)).toMatchObject({
+      status: 'postmortem',
+      delayAnalysis: { originStatus: 'blocked' },
+    });
+    const save = io.saveTask;
+    io.saveTask = async (...args) => {
+      await save(...args);
+      return lost ? { ok: false, outcome: 'offline' } : { ok: true };
+    };
+    expect((await transfer(io, value)).result).toBe(lost ? 'failed' : 'done');
+    io.saveTask = save;
+    const blocked = globalThis.structuredClone(io.readTask(source.id));
+    expect(blocked).toMatchObject({
+      status: 'blocked',
+      links: source.links,
+      spentUsd: 9,
+      dependsOn: [predecessor.id],
+      analysisGeneration: 3,
+      blockedContext: { from: 'postmortem', reasons: value.blockers },
+      dependencyResults: [{ taskId: predecessor.id, kind: 'merged-pr', pr: 126 }],
+      delayAnalysis: { phase: 'waiting', originStatus: 'blocked', diagnosis: value.delayAnalysis },
+    });
+    const entries = globalThis.structuredClone(io.entries);
+    for (const field of ['specificResult', 'preventionResult']) {
+      expect(entries.find((entry) => entry.taskId === predecessor.id).what).toContain(
+        value.blockers[0][field],
+      );
+      expect(entries.at(-1).what).toContain(value.blockers[0][field]);
+    }
+    expect((await transfer(io, value)).result).toBe('done');
+    expect(io.entries).toEqual(entries);
+    expect(io.readTask(source.id)).toEqual(blocked);
+    expect(io.readTask(predecessor.id)).toEqual(predecessor);
+    expect(io.created).toEqual([]);
+    const restored = parseCard(
+      {
+        id: '6a9084b276c945372833816f',
+        name: blocked.title,
+        pos: blocked.priority,
+        desc: joinDescription(blocked.description, metaOf(blocked)),
+        idList: 'blocked',
+        idLabels: ['note'],
+      },
+      {
+        stateByList: new Map([['blocked', 'blocked']]),
+        labelKeyById: new Map([['note', 'note']]),
+      },
+    ).task;
+    io.tasks.set(source.id, restored);
+    for (let i = 0; i < 100; i++)
+      expect(
+        decision(io, { now: '2026-09-08T12:00:00Z' }).actions.filter((a) => a.taskId === source.id),
+      ).toEqual([]);
+    expect(io.readTask(source.id)).toEqual(restored);
+    expect(restored.attempts).toEqual(blocked.attempts);
+    expect(restored.delayAnalysis.originAttempts.continuations).toBe(100);
+    expect(restored.delayAnalysis.diagnosis).toEqual(value.delayAnalysis);
+    expect(io.entries).toEqual(entries);
+  },
+);
+
+it.each([false, true])(
+  '0129 проверяет диагноз только после выполнения и PR 126, splitInto: %s',
+  async (split) => {
+    const { io, source, predecessor, value } = await stoppedShellWait();
+    await transfer(io, value);
+    const blocked = io.readTask(source.id);
+    const merged = { number: 126, state: 'MERGED', mergedAt: now, baseRefName: 'main' };
+    const action = { taskId: source.id, mainBranch: 'main', dependencyEvidence: { 126: merged } };
+    io.tasks.set(predecessor.id, { ...predecessor, status: 'closed' });
+    expect((await unblockTask(action, io)).result).toBe('skipped');
+    const child = task({ id: '0280-shell-child', status: 'completed' });
+    const completed = {
+      ...predecessor,
+      status: split ? 'closed' : 'completed',
+      ...(split ? { splitInto: [child.id] } : {}),
+    };
+    io.tasks.set(child.id, child);
+    io.tasks.set(predecessor.id, completed);
+    for (const proof of [
+      undefined,
+      { ...merged, number: 127 },
+      { ...merged, mergedAt: null },
+      { ...merged, baseRefName: 'other' },
+      { number: 126, problem: 'Ошибка получения доказательства' },
+    ]) {
+      const dependencyEvidence = proof ? { 126: proof } : {};
+      expect((await unblockTask({ ...action, dependencyEvidence }, io)).result).toBe('skipped');
+      const actions = decision(io, { dependencyEvidence }).actions.filter(
+        (a) => a.taskId === source.id,
+      );
+      expect(actions.every((a) => a.kind === 'observe-delay')).toBe(true);
+      expect(io.readTask(source.id)).toEqual(blocked);
+    }
+    io.tasks.set(predecessor.id, { ...completed, links: { ...completed.links, pr: 127 } });
+    expect((await unblockTask(action, io)).result).toBe('skipped');
+    io.tasks.set(predecessor.id, completed);
+    const extra = task({ id: '0281-extra', status: 'failed' });
+    io.tasks.set(extra.id, extra);
+    io.tasks.set(source.id, { ...blocked, dependsOn: [...blocked.dependsOn, extra.id] });
+    expect((await unblockTask(action, io)).result).toBe('skipped');
+    io.tasks.set(source.id, blocked);
+    const selected = decision(io, { dependencyEvidence: action.dependencyEvidence }).actions.find(
+      (a) => a.taskId === source.id,
+    );
+    expect(selected.kind).toBe('unblock-task');
+    expect((await execute([selected], io))[0].status).toBe('postmortem');
+    const verifying = io.readTask(source.id);
+    expect(verifying).toMatchObject({
+      analysisGeneration: 3,
+      spentUsd: 9,
+      delayAnalysis: { phase: 'verifying', diagnosis: value.delayAnalysis },
+    });
+    const done = report({
+      taskId: source.id,
+      outcome: 'done',
+      requests: [],
+      blockers: [],
+      delayAnalysis: diagnosis({
+        resolution: 'resolved',
+        specificEvidence: ['Команда openspec выполнена после PR 126'],
+        preventionEvidence: ['Общие правила проверены регрессией всех этапов'],
+      }),
+    });
+    for (const field of ['specificEvidence', 'preventionEvidence']) {
+      const incomplete = { ...done, delayAnalysis: { ...done.delayAnalysis, [field]: [] } };
+      expect(delayReportProblem(verifying, incomplete)).toContain('доказательства');
+    }
+    expect((await transfer(io, done)).status).toBe('new');
+    const next = io.readTask(source.id);
+    expect(next).toMatchObject({
+      analysisGeneration: 4,
+      reanalysis: true,
+      spentUsd: 11,
+      links: source.links,
+      blockedContext: blocked.blockedContext,
+    });
+    const entries = io.entries.length;
+    expect((await transfer(io, done)).result).toBe('done');
+    expect(io.entries).toHaveLength(entries);
+    expect(io.readTask(source.id)).toEqual(next);
+    expect(decision(io, { dependencyEvidence: action.dependencyEvidence }).actions).toContainEqual(
+      expect.objectContaining({ taskId: source.id, kind: 'start-stage', stage: 'triage' }),
+    );
+  },
+);
+
 describe('порог задержки', () => {
+  it('исключает только полное принятое ожидание из разрешённого этапа', () => {
+    expect(WAIT_FROM).toEqual(BLOCKABLE);
+    const blocked = task({
+      status: 'blocked',
+      dependsOn: ['0002-run'],
+      blockedContext: {
+        operation: 'accepted',
+        from: 'triage',
+        reasons: [{ taskId: '0002-run', reason: 'Нужно', result: 'Артефакт' }],
+      },
+    });
+    expect(delayDecision(blocked, { now })).toBeNull();
+    for (const blockedContext of [
+      undefined,
+      {},
+      { ...blocked.blockedContext, operation: '' },
+      { ...blocked.blockedContext, from: 'review' },
+      { ...blocked.blockedContext, reasons: [] },
+      ...[
+        { taskId: '0003-other', reason: 'Нужно', result: 'Артефакт' },
+        { taskId: '0002-run', reason: '', result: 'Артефакт' },
+        { taskId: '0002-run', reason: 'Нужно', result: '' },
+        null,
+      ].map((r) => ({ ...blocked.blockedContext, reasons: [r] })),
+    ])
+      expect(delayDecision({ ...blocked, blockedContext }, { now })?.kind).toBe('analyze-delay');
+    for (const dependsOn of [[], ['bad'], ['0002-run', '0002-run']])
+      expect(delayDecision({ ...blocked, dependsOn }, { now })?.kind).toBe('analyze-delay');
+    expect(delayDecision({ ...blocked, delayJournal: {} }, { now })?.kind).toBe(
+      'flush-delay-journal',
+    );
+  });
   it.each(DELAY_STATES)('обнаруживает рабочий статус %s', (status) => {
     expect(delayDecision(task({ status }), { now })?.kind).toBe('analyze-delay');
   });
@@ -559,13 +789,13 @@ it('неудачное исправление оставляет диагноз 
   );
 });
 
-it('задержка уже заблокированной карточки проверяется до нового анализа постановки', async () => {
+it('сохранённый разбор blocked проверяется до нового анализа постановки', async () => {
   const dependency = task({ id: '0002-prerequisite', status: 'new', statusChangedAt: now });
   const source = task({
     status: 'blocked',
     dependsOn: [dependency.id],
     blockedContext: {
-      operation: 'old',
+      // Неполное старое основание по-прежнему требует первичного разбора.
       from: 'design',
       priority: 20,
       reasons: [{ taskId: dependency.id, reason: 'Нужна сборка', result: 'Сборка проходит' }],

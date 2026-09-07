@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { addSpent, applyTransition } from './task-file.mjs';
+import { dependencyFormatProblem } from './dependencies.mjs';
 
 export const DELAY_HOURS = 5;
 export const DELAY_STATES = [
@@ -26,6 +27,38 @@ export const reviewingDelay = (task) =>
   task?.status === 'postmortem' && ['analyzing', 'verifying'].includes(task.delayAnalysis?.phase);
 export const reviewingQuestion = (task) =>
   reviewingDelay(task) && task.delayAnalysis.originStatus === 'awaiting-po';
+
+// Перечень сверяется с BLOCKABLE тестом без циклического импорта blockers.
+export const WAIT_FROM = [
+  'decompose',
+  'design',
+  'audit',
+  'implement',
+  'revise',
+  'triage',
+  'benchmark',
+  'interpret',
+];
+function acceptedWait(task) {
+  const context = task.blockedContext;
+  return (
+    task.status === 'blocked' &&
+    !task.delayAnalysis &&
+    !dependencyFormatProblem(task) &&
+    task.dependsOn?.length > 0 &&
+    nonempty(context?.operation) &&
+    WAIT_FROM.includes(context?.from) &&
+    Array.isArray(context?.reasons) &&
+    context.reasons.length > 0 &&
+    context.reasons.every(
+      (item) =>
+        item &&
+        task.dependsOn.includes(item.taskId) &&
+        nonempty(item.reason) &&
+        nonempty(item.result),
+    )
+  );
+}
 
 export function delayStateProblem(task) {
   const saved = task.delayAnalysis;
@@ -91,6 +124,7 @@ export function delayDependencies(task, tasks = []) {
 
 export function delayDecision(task, { now, tasks = [], answered = false }) {
   if (task.delayJournal) return { kind: 'flush-delay-journal', taskId: task.id };
+  if (acceptedWait(task)) return null;
   if (task.status === 'awaiting-po' && answered) return null;
   if (!DELAY_STATES.includes(task.status) || reviewingDelay(task)) return null;
   const saved = task.delayAnalysis;
