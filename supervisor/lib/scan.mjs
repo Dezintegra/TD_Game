@@ -481,6 +481,7 @@ export function scan(state) {
   for (const task of tasks) {
     const waiting = task.status === 'token-limit';
     if (!waiting && task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (task.delayJournal) continue;
     if (task.status === 'deploy' && running.some((item) => item.stage === 'deploy')) continue;
     if (isRunning(task.id) || hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id))
       continue;
