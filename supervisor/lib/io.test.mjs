@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createIo, summariseChecks } from './io.mjs';
+import { createIo, summariseChecks, summarisePullRequest } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 
 /**
@@ -93,6 +93,98 @@ describe('состояние проверок', () => {
 
   it('пустой ответ не выдаётся за успех', () => {
     expect(summariseChecks('').state).toBe('pending');
+  });
+});
+
+describe('возможность слияния при опросе CI', () => {
+  const success = check('типы', 'COMPLETED', 'SUCCESS');
+  const pr = (mergeable, ...checks) => JSON.stringify({ mergeable, statusCheckRollup: checks });
+
+  it.each([
+    { checks: [] },
+    { checks: [check('типы', 'IN_PROGRESS', null)] },
+    { checks: [success] },
+  ])('конфликт требует доработки независимо от проверок: $checks', ({ checks }) => {
+    expect(summarisePullRequest(pr('CONFLICTING', ...checks))).toEqual({ state: 'conflict' });
+  });
+
+  it('черновой PR с UNKNOWN в mergeStateStatus всё равно имеет доказанный конфликт', () => {
+    expect(
+      summarisePullRequest(
+        JSON.stringify({
+          isDraft: true,
+          mergeStateStatus: 'UNKNOWN',
+          mergeable: 'CONFLICTING',
+          statusCheckRollup: [],
+        }),
+      ),
+    ).toEqual({ state: 'conflict' });
+  });
+
+  it('неопределённое слияние не допускает ревью даже при зелёном CI', () => {
+    expect(summarisePullRequest(pr('UNKNOWN', success))).toEqual({
+      state: 'pending',
+      why: 'GitHub ещё не определил возможность слияния pull request',
+    });
+  });
+
+  it.each(['не json', '', 'null', '{}', rollup(success)])(
+    'непрочитанное слияние не объявляется конфликтом или успехом: %s',
+    (json) => expect(summarisePullRequest(json).state).toBe('pending'),
+  );
+
+  it('повреждённый список проверок сохраняет ожидание', () => {
+    expect(
+      summarisePullRequest(JSON.stringify({ mergeable: 'MERGEABLE', statusCheckRollup: {} })),
+    ).toEqual({ state: 'pending', why: 'ответ GitHub о проверках не разобрался' });
+  });
+
+  it.each([
+    { checks: [], expected: { state: 'pending', why: 'проверок ещё нет' } },
+    { checks: [success], expected: { state: 'success' } },
+    {
+      checks: [check('типы', 'COMPLETED', 'FAILURE')],
+      expected: { state: 'failure', failed: 'типы' },
+    },
+    {
+      checks: [check('типы', 'IN_PROGRESS', null)],
+      expected: { state: 'pending', why: 'идут: типы' },
+    },
+  ])('при MERGEABLE сохраняется результат CI: $expected.state', ({ checks, expected }) => {
+    expect(summarisePullRequest(pr('MERGEABLE', ...checks))).toEqual(expected);
+  });
+
+  it('живой переходник запрашивает конфликт тем же обращением, что и проверки', () => {
+    const asked = [];
+    const io = createIo({
+      root: '/repo',
+      config: resolveConfig({}).config,
+      now: 'сейчас',
+      run: (args, program) => {
+        asked.push({ args, program });
+        return { code: 0, stdout: pr('CONFLICTING') };
+      },
+    });
+    expect(io.readExternal({ links: { pr: 141 } }, 'ci')).toEqual({ state: 'conflict' });
+    expect(asked).toEqual([
+      {
+        program: 'gh',
+        args: ['pr', 'view', '141', '--json', 'mergeable,statusCheckRollup'],
+      },
+    ]);
+  });
+
+  it('ошибка запроса не использует даже похожий на конфликт stdout', () => {
+    const io = createIo({
+      root: '/repo',
+      config: resolveConfig({}).config,
+      now: 'сейчас',
+      run: () => ({ code: 1, stdout: pr('CONFLICTING') }),
+    });
+    expect(io.readExternal({ links: { pr: 141 } }, 'ci')).toEqual({
+      state: 'pending',
+      why: 'состояние проверок недоступно',
+    });
   });
 });
 
