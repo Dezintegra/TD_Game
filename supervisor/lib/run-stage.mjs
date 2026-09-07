@@ -118,9 +118,9 @@ export function startStage({
       errLines.flush();
       resolve({ code, killedBy, stdout, stderr, error: error ?? null });
     };
-    // «error» — это не упавший этап, а несостоявшийся запуск: нет такой
-    // команды, нет такого каталога. Путать их нельзя: первое лечится
-    // продолжением, второе — настройкой.
+    // Само событие «error» не означает несостоявшийся запуск: отсутствие pid
+    // супервизор отдельно обрабатывает как not-born, а ошибка уже родившегося
+    // процесса относится к обрыву сессии.
     child.on('error', (error) => done(null, error));
     child.on('close', (code) => done(code));
   });
