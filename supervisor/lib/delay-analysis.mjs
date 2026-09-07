@@ -77,9 +77,10 @@ export function delayDependencies(task, tasks = []) {
             : (item?.status ?? 'missing'),
       links: stableLinks(item?.links),
       splitInto: item?.splitInto ?? [],
+      dependsOn: item?.dependsOn ?? [],
       diagnosis: item?.delayAnalysis?.diagnosis ?? null,
     });
-    for (const child of item?.splitInto ?? []) ids.add(child);
+    for (const child of [...(item?.splitInto ?? []), ...(item?.dependsOn ?? [])]) ids.add(child);
   }
   return result.sort((a, b) => a.id.localeCompare(b.id));
 }

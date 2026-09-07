@@ -432,3 +432,35 @@ it('назначение диагностики получает захват и
   expect((await execute([action], io))[0].result).toBe('done');
   expect(io.tasks.get('0001-source').owner).toBe(io.machine);
 });
+
+it('наблюдает цепочку зависимостей исправления без нового разбора исходной задачи', async () => {
+  const io = world();
+  await diagnose(io);
+  await transfer(io, report());
+  const repair = io.created[0];
+  const prerequisite = task({ id: '0009-nested', status: 'new', statusChangedAt: now });
+  io.tasks.set(prerequisite.id, prerequisite);
+  io.tasks.set(repair.id, {
+    ...repair,
+    status: 'blocked',
+    dependsOn: [prerequisite.id],
+    blockedContext: {
+      operation: 'nested',
+      from: 'design',
+      priority: 1,
+      reasons: [
+        { taskId: prerequisite.id, reason: 'Нужна предпосылка', result: 'Результат предпосылки' },
+      ],
+    },
+  });
+  const first = decision(io).actions.find((a) => a.taskId === '0001-source');
+  expect(first.kind).toBe('observe-delay');
+  expect(first.snapshot.map((item) => item.id)).toContain(prerequisite.id);
+  await execute([first], io);
+  io.tasks.set(prerequisite.id, { ...prerequisite, status: 'implement' });
+  const changed = decision(io).actions.find((a) => a.taskId === '0001-source');
+  expect(changed.kind).toBe('observe-delay');
+  await execute([changed], io);
+  expect(io.entries.at(-1).what).toContain(`${prerequisite.id}: implement`);
+  expect(decision(io).actions.some((a) => a.taskId === '0001-source')).toBe(false);
+});
