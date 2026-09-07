@@ -1329,6 +1329,61 @@ it('явное отключение денежного потолка не оз�
 });
 
 describe('бюджет тяжести Codex', () => {
+  const userBudgetState = (userTokenLimit, global = 25000000, spent = 26093350) => ({
+    config: { ...config, provider: 'codex', codexMaxTaskTokens: global },
+    tasks: [task({ status: 'implement', userTokenLimit })],
+    registry: { entries: [entry('0001-one')] },
+    codexUsage: {
+      version: 2,
+      tasks: {
+        '0001-one': {
+          sessions: {
+            s: {
+              knownTokens: spent,
+              snapshot: { input_tokens: spent, output_tokens: 0 },
+              reasons: [],
+            },
+          },
+          launches: {},
+        },
+      },
+    },
+  });
+
+  it('явное повышение допускает прежний расход, снижение снова включает предел', () => {
+    const raised = userBudgetState({ value: 35000000 });
+    expect(kinds(run(raised))).toContain('continue-stage');
+    expect(kinds(run(userBudgetState({ value: 20000000 })))).toContain('decompose-again');
+    expect(kinds(run(userBudgetState({ value: null })))).toContain('decompose-again');
+    expect(raised.codexUsage.tasks['0001-one'].sessions.s.knownTokens).toBe(26093350);
+  });
+
+  it('индивидуальный предел действует и при отключённом общем', () => {
+    expect(kinds(run(userBudgetState({ value: 20000000 }, null)))).toContain('decompose-again');
+    expect(kinds(run(userBudgetState({ value: null }, null)))).toContain('continue-stage');
+  });
+
+  it('ошибка команды и неизвестный расход удерживают запуск без изменения попыток', () => {
+    const invalid = userBudgetState({ error: 'Неверный лимит токенов' });
+    const before = globalThis.structuredClone(invalid);
+    expect(run(invalid).actions).toEqual([]);
+    expect(run(invalid).notes.join()).toContain('Неверный лимит');
+    expect(invalid).toEqual(before);
+    const unknown = userBudgetState({ value: 35000000 });
+    unknown.codexUsage.tasks['0001-one'].sessions.s.reasons.push('decreased-usage');
+    expect(run(unknown).actions).toEqual([]);
+  });
+
+  it('команда возвращает ожидающую карточку, не меняя лимит соседней', () => {
+    const state = userBudgetState({ value: 35000000 });
+    state.tasks[0].status = 'awaiting-po';
+    state.tasks[0].returnTo = 'decompose';
+    state.answers = { '0001-one': 'Лимит токенов: 35000000' };
+    expect(kinds(run(state))).toContain('answer-question');
+    const other = userBudgetState(undefined);
+    expect(kinds(run(other))).toContain('decompose-again');
+  });
+
   const check = (tokens, status = 'implement', limit = 100) =>
     run({
       config: { ...config, provider: 'codex', codexMaxTaskTokens: limit },
