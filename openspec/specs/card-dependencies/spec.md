@@ -15,16 +15,16 @@ The supervisor SHALL preserve optional `dependsOn` metadata containing complete 
 
 ### Requirement: Gate task launches on completion
 
-The supervisor MUST only launch a task when every prerequisite is confirmed in state `closed`. Missing, invalid, self-referencing or cyclic prerequisites SHALL block launching. Archived cards SHALL satisfy prerequisites only when confirmed in `closed`.
+The supervisor MUST only launch a task when every prerequisite is confirmed in state `completed`. Missing, invalid, self-referencing or cyclic prerequisites SHALL block launching. Archived cards SHALL satisfy prerequisites under the same rules. A closed parent with explicit `splitInto` SHALL delegate completion to all its descendants; ordinary closed cards SHALL NOT satisfy a prerequisite.
 
 #### Scenario: Waiting without spending attempts
 
-- **WHEN** any prerequisite has not closed
+- **WHEN** any prerequisite has not completed
 - **THEN** the task receives no start, continuation or attempt-limit failure action, its counters remain unchanged, and the cycle reports the blocking identifiers
 
 #### Scenario: All prerequisites closed
 
-- **WHEN** every prerequisite is closed
+- **WHEN** every prerequisite is completed
 - **THEN** normal scheduling resumes on the next snapshot
 
 #### Scenario: Blocked run and ready feature
@@ -36,6 +36,11 @@ The supervisor MUST only launch a task when every prerequisite is confirmed in s
 
 - **WHEN** a prerequisite changes while a process is running
 - **THEN** the supervisor does not interrupt the process or discard its report
+
+#### Scenario: Closed without fulfillment
+
+- **WHEN** a prerequisite is closed after decomposition or loss of relevance
+- **THEN** dependent launches remain blocked until fulfillment is confirmed in completed
 
 ### Requirement: Explicit decomposition lineage
 
@@ -53,7 +58,7 @@ The supervisor SHALL persist a nonempty unique `splitInto` list of actual child 
 
 ### Requirement: Completion includes all decomposition descendants
 
-For `dependsOn` and `recovery.fixedBy`, the supervisor MUST recompute completion from every current snapshot, requiring the referenced parent and all descendants named through `splitInto` to be confirmed closed. Missing, invalid, ambiguous, cyclic or malformed descendant metadata SHALL block completion. A shared descendant without a cycle SHALL be allowed. An expected merged PR SHALL remain an additional requirement for its original dependency edge. Existing running stages SHALL not be interrupted.
+For `dependsOn` and `recovery.fixedBy`, the supervisor MUST recompute completion from every current snapshot, requiring every leaf to be confirmed completed and every parent named through `splitInto` to be completed or closed with all its descendants completed. Missing, invalid, ambiguous, cyclic or malformed descendant metadata SHALL block completion. A shared descendant without a cycle SHALL be allowed. An expected merged PR SHALL remain an additional requirement for its original dependency edge. Existing running stages SHALL not be interrupted.
 
 #### Scenario: Recovery waits after decomposition
 
@@ -63,7 +68,7 @@ For `dependsOn` and `recovery.fixedBy`, the supervisor MUST recompute completion
 #### Scenario: Nested split and final completion
 
 - **WHEN** one part closes by splitting again
-- **THEN** consumers keep waiting for its unfinished descendants and become eligible only after every part closes
+- **THEN** consumers keep waiting for its unfinished descendants and become eligible only after every leaf completes
 
 #### Scenario: Ordinary dependency and unrelated link
 
@@ -82,6 +87,6 @@ For `dependsOn` and `recovery.fixedBy`, the supervisor MUST recompute completion
 
 #### Scenario: Explicit PR result
 
-- **WHEN** all split parts close but the expected PR of the referenced predecessor is not confirmed merged
+- **WHEN** all split leaves complete but the expected PR of the referenced predecessor is not confirmed merged
 - **THEN** the consumer still waits for the PR evidence
 

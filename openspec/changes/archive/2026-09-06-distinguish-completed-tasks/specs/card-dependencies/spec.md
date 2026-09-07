@@ -9,7 +9,7 @@ The supervisor MUST only launch a task when every prerequisite is confirmed in s
 - **WHEN** any prerequisite has not completed
 - **THEN** the task receives no start, continuation or attempt-limit failure action, its counters remain unchanged, and the cycle reports the blocking identifiers
 
-#### Scenario: All prerequisites completed
+#### Scenario: All prerequisites closed
 
 - **WHEN** every prerequisite is completed
 - **THEN** normal scheduling resumes on the next snapshot
@@ -64,4 +64,5 @@ For `dependsOn` and `recovery.fixedBy`, the supervisor MUST recompute completion
 
 - **WHEN** all split leaves complete but the expected PR of the referenced predecessor is not confirmed merged
 - **THEN** the consumer still waits for the PR evidence
+
 
