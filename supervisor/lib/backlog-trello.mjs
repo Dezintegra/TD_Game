@@ -185,6 +185,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * по дыре в истории карточки.
      */
     async saveTask(task, entry) {
+      if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
+        return {
+          ok: false,
+          outcome: 'failed',
+          why: 'на доске нет меток категорий: выполните board-setup',
+        };
       const card = cardOf(task.id);
       if (!card) {
         return { ok: false, outcome: 'failed', why: `карточки задачи ${task.id} нет` };
@@ -197,10 +203,26 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
 
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
+        ...(task.blocking ? { pos: 'top' } : {}),
         // Название пересобирается из очищенного: иначе служебный префикс
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),
         desc: joinDescription(card.human, metaOf(task)),
+        // Чужие метки сохраняются; категории и флаг декомпозиции берём из задачи.
+        idLabels: [
+          ...new Set([
+            ...(cards.find((item) => item.id === card.id)?.idLabels ?? []).filter(
+              (id) =>
+                ![...labelIdByKey.entries()].some(
+                  ([key, known]) =>
+                    known === id && (key.startsWith('category-') || key === 'decomposed'),
+                ),
+            ),
+            ...labelKeysOf(task)
+              .map((key) => labelIdByKey.get(key))
+              .filter(Boolean),
+          ]),
+        ],
       });
       if (!moved.ok) return failure(moved);
 
@@ -250,6 +272,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * в журнале цикла.
      */
     async createTask(task) {
+      if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
+        return {
+          ok: false,
+          outcome: 'failed',
+          why: 'на доске нет меток категорий: выполните board-setup',
+        };
       const idList = listIdByState.get(task.status);
       if (!idList) {
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };

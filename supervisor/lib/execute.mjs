@@ -1,3 +1,5 @@
+import { transferBlocked, unblockTask } from './blockers.mjs';
+import { categoriesProblem } from './categories.mjs';
 import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
 import {
   addSpent,
@@ -112,7 +114,25 @@ async function transferReport(action, io) {
   // заводилось прежнее правило.
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
+  if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
+  const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
+  if (categoryProblem) return { result: 'failed', why: categoryProblem };
+  if (report.categories && report.requests) {
+    if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };
+    for (const request of report.requests) {
+      const problem = categoriesProblem(request?.categories, true);
+      if (problem) return { result: 'failed', why: problem };
+    }
+  }
+
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
+  if (task.status === 'review' && report.outcome === 'done' && verdict.status === 'deploy') {
+    const impact = io.deploymentImpact?.(report.links?.pr ?? task.links?.pr);
+    if (impact?.needed === false) {
+      verdict.status = 'cleanup';
+      verdict.note = (verdict.note ?? '') + '\nВыкладка игры не нужна: ' + impact.reason;
+    }
+  }
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
@@ -151,6 +171,7 @@ async function transferReport(action, io) {
   // сессия стоила денег независимо от того, чем кончилась, а вся мера затеяна
   // ровно против кругов, каждый из которых чем-то кончался.
   next = addSpent(next, report.costUsd);
+  if (report.categories) next.categories = [...report.categories];
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без
@@ -318,7 +339,11 @@ async function transferReport(action, io) {
       // снимается, и лог этапа в промпт следующих сессий не уезжает. Без этой
       // строки закрытая задача осталась бы в журнале заявлением без улики —
       // ровно тем, против чего написан третий предохранитель исхода.
-      what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
+      what:
+        (report.outcome === 'moot' && !halted) ||
+        (task.status === 'review' && verdict.status === 'cleanup')
+          ? verdict.note
+          : report.summary,
       links: report.links ?? {},
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
@@ -441,6 +466,7 @@ async function startStage(action, io) {
 
   const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
+  if (task.reanalysis) claimed.task.reanalysis = false;
 
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
@@ -1108,6 +1134,7 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'unblock-task': unblockTask,
   'push-tail': pushTail,
   'quarantine-card': quarantineCard,
   'clear-card': clearCard,

@@ -1,4 +1,5 @@
 import { canTransition } from '../config/transitions.mjs';
+import { blockerReportProblem } from './blockers.mjs';
 
 /**
  * Что означает исход этапа для состояния задачи.
@@ -20,7 +21,7 @@ import { canTransition } from '../config/transitions.mjs';
  * Проектировать такой задаче нечего, и прежде она уходила в сквозную «Ошибку»,
  * лгавшую о причине; теперь у неё есть честный конец — уборка и «Закрыто».
  */
-export const OUTCOMES = ['done', 'rejected', 'question', 'failed', 'moot', 'split'];
+export const OUTCOMES = ['done', 'rejected', 'question', 'failed', 'moot', 'split', 'blocked'];
 
 /**
  * Куда ведёт остановка задачи.
@@ -143,6 +144,18 @@ export function applyReport(task, report, limits = {}) {
 
   if (report.outcome === 'failed') {
     return halt(task, report.summary ?? 'этап завершился неуспешно', problems);
+  }
+
+  if (report.outcome === 'blocked') {
+    const problem = blockerReportProblem(task, report);
+    return problem
+      ? halt(task, problem, [problem])
+      : {
+          status: 'blocked',
+          returnTo: null,
+          note: report.summary,
+          problems: [],
+        };
   }
 
   if (report.outcome === 'question') {

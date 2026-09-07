@@ -1,3 +1,4 @@
+import { ROUTING_CONTRACT } from './routing-contract.mjs';
 /**
  * Промпт назначения: всё, что этапу нужно знать, одним куском.
  *
@@ -210,6 +211,7 @@ export function stagePrompt({
     'текст вокруг JSON допустим.',
   );
 
+  lines.push('', ROUTING_CONTRACT);
   return lines.join('\n');
 }
 
@@ -226,6 +228,11 @@ function taskDigest(task) {
     id: task.id,
     title: task.title,
     type: task.type,
+    categories: task.categories ?? [],
+    dependsOn: task.dependsOn ?? [],
+    dependencyResults: task.dependencyResults ?? [],
+    blockedContext: task.blockedContext ?? null,
+    analysisGeneration: task.analysisGeneration ?? 0,
     status: task.status,
     description: task.description ?? null,
     run: task.run ?? null,
