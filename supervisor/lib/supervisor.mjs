@@ -20,6 +20,7 @@ import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
 import { codexGitEnvironment } from './codex-environment.mjs';
 import { effectiveTokenLimit } from './user-token-limit.mjs';
+import { tokenAdmission } from './token-hold.mjs';
 
 /**
  * Хозяйство идущих этапов.
@@ -281,6 +282,8 @@ export function createSupervisor({
       try {
         assignment = prepareAssignment(assignment, previous);
         tokenLimit = effectiveTokenLimit(assignment.task, config);
+        const tokenHold = tokenAdmission(assignment.task, assignment.stage, config, codexUsage);
+        if (tokenHold) return { ok: false, reason: 'busy', why: tokenHold.explanation };
         const capped =
           provider === 'codex' &&
           assignment.stage !== 'decompose' &&
