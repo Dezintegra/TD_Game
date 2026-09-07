@@ -391,6 +391,26 @@ describe('несчастливые исходы', () => {
 });
 
 describe('опрос внешнего состояния', () => {
+  it('конфликт возвращает PR в доработку с конкретным поручением', () => {
+    const verdict = applyExternal(task({ status: 'pr', links: { pr: 141 } }), {
+      state: 'conflict',
+    });
+    expect(verdict).toMatchObject({ status: 'revise', returnTo: null });
+    expect(verdict.note).toContain('#141');
+    expect(verdict.note).toContain('конфликтует с главной веткой');
+    expect(verdict.note).toContain('обновите ветку');
+    expect(verdict.note).toContain('устраните конфликты');
+  });
+
+  it.each(['проверок ещё нет', 'идут: типы', 'состояние проверок недоступно'])(
+    'причина ожидания доходит до журнала цикла: %s',
+    (why) =>
+      expect(applyExternal(task({ status: 'pr' }), { state: 'pending', why })).toMatchObject({
+        status: 'pr',
+        note: why,
+      }),
+  );
+
   it('идущие проверки оставляют задачу на месте', () => {
     const verdict = applyExternal(task({ status: 'pr' }), { state: 'pending' });
     expect(verdict.status).toBe('pr');

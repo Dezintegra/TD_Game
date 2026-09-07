@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { pendingDependencies } from './dependencies.mjs';
 import { execute } from './execute.mjs';
+import { createIo } from './io.mjs';
+import { resolveConfig } from '../config/defaults.mjs';
 import { reconcile } from './reconcile.mjs';
 import { repairWorld } from './repair.mjs';
 import { journalAppendix } from './journal.mjs';
@@ -1402,6 +1404,47 @@ describe('сессия на идущий этап', () => {
 
 describe('внешнее состояние', () => {
   const poll = { kind: 'poll-external', taskId: '0001-one', what: 'ci' };
+
+  it('пустой CI конфликтующего PR сохраняет доработку и её причину ровно один раз', async () => {
+    const original = task({ status: 'pr', owner: 'станция-1', links: { pr: 141, change: 'work' } });
+    const io = fakeIo({ tasks: [original] });
+    io.readExternal = createIo({
+      root: '/repo',
+      config: resolveConfig({}).config,
+      now: NOW,
+      run: () => ({
+        code: 0,
+        stdout: JSON.stringify({ mergeable: 'CONFLICTING', statusCheckRollup: [] }),
+      }),
+    }).readExternal;
+    const [result] = await execute([poll], io);
+    expect(result).toMatchObject({ result: 'done', status: 'revise' });
+    expect(io.tasks.get(original.id)).toMatchObject({
+      status: 'revise',
+      owner: original.owner,
+      links: original.links,
+      attempts: original.attempts,
+    });
+    const journal = io.journals.get(original.id);
+    expect(journal).toContain('#141');
+    expect(journal).toContain('конфликтует с главной веткой');
+    expect(journal).toContain('устраните конфликты');
+    const [replayed] = await execute([poll], io);
+    expect(replayed.result).toBe('skipped');
+    expect(io.journals.get(original.id)).toBe(journal);
+  });
+
+  it('ожидание без запуска CI сообщает причину, не пишет карточку и не расходует попытки', async () => {
+    const original = task({ status: 'pr' });
+    const io = fakeIo({
+      tasks: [original],
+      external: { state: 'pending', why: 'проверок ещё нет' },
+    });
+    const [result] = await execute([poll], io);
+    expect(result).toMatchObject({ result: 'skipped', why: 'проверок ещё нет' });
+    expect(io.tasks.get(original.id)).toEqual(original);
+    expect(io.steps).toEqual([]);
+  });
 
   it('зелёные проверки открывают ревью', async () => {
     const io = fakeIo({ tasks: [task({ status: 'pr' })], external: { state: 'success' } });
