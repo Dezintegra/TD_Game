@@ -67,6 +67,109 @@ const card = (over = {}) => ({
 const backlog = (over = {}, trello = fakeTrello(), machine = null) =>
   createTrelloBacklog({ trello, config, snapshot: snapshot(over), machine });
 
+describe('публикация причины до закрытия', () => {
+  const reason = 'Предмет снят: проверка уже исправлена. Проверено: PR 166 влит.';
+  function world({ partFailure = 0, moveFailure = false, limit = 16384 } = {}) {
+    const calls = [],
+      actions = [];
+    let list = 'list-cleanup',
+      posts = 0,
+      brokenPart = partFailure,
+      brokenMove = moveFailure;
+    const trello = {
+      async get() {
+        return { ok: true, data: [...actions].reverse() };
+      },
+      async post(path, body) {
+        calls.push('comment');
+        posts++;
+        if (posts === brokenPart) return { ok: false, kind: 'offline', why: 'сеть' };
+        actions.push({ id: `comment-${posts}`, data: { text: body.text } });
+        return { ok: true, data: { id: `card-${posts}` } };
+      },
+      async put(path, body) {
+        calls.push('move');
+        if (brokenMove) return { ok: false, kind: 'offline', why: 'сеть' };
+        list = body.idList;
+        return { ok: true, data: {} };
+      },
+    };
+    const store = createTrelloBacklog({
+      trello,
+      config: { ...config, trello: { ...config.trello, maxTextLength: limit } },
+      snapshot: snapshot({ cards: [card({ idList: list })] }),
+    });
+    const task = { ...store.readTask('0031-proba'), status: 'closed', closureReason: reason };
+    const entry = {
+      from: 'cleanup',
+      to: 'closed',
+      closureReason: reason,
+      what: 'Убрано: дерева нет.',
+      source: 'supervisor',
+    };
+    return {
+      store,
+      task,
+      entry,
+      calls,
+      actions,
+      list: () => list,
+      restore: () => {
+        brokenPart = 0;
+        brokenMove = false;
+      },
+    };
+  }
+
+  it('отказывает без причины до любых записей', async () => {
+    const w = world();
+    delete w.entry.closureReason;
+    expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(false);
+    expect(w.calls).toEqual([]);
+  });
+
+  it('публикует причину до перемещения', async () => {
+    const w = world();
+    expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(true);
+    expect(w.calls).toEqual(['comment', 'move']);
+    expect(w.actions[0].data.text).toContain('**Причина закрытия**');
+    expect(w.actions[0].data.text).toContain(reason);
+  });
+
+  it.each([1, 2])(
+    'отказ части %s сохраняет колонку, повтор дописывает только отсутствующие части',
+    async (partFailure) => {
+      const w = world({ partFailure, limit: 180 });
+      w.entry.what = 'Детали уборки. '.repeat(50);
+      expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(false);
+      expect(w.list()).toBe('list-cleanup');
+      expect(w.calls).not.toContain('move');
+      w.restore();
+      expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(true);
+      expect(w.list()).toBe('list-closed');
+      expect(new Set(w.actions.map((a) => a.data.text)).size).toBe(w.actions.length);
+    },
+  );
+
+  it('отказ перемещения не дублирует комментарий при повторе', async () => {
+    const w = world({ moveFailure: true });
+    expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(false);
+    w.restore();
+    expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(true);
+    expect(w.actions).toHaveLength(1);
+    expect(w.calls).toEqual(['comment', 'move', 'move']);
+  });
+
+  it('ссылки строятся по ответу Trello на создание, включая новые карточки', async () => {
+    const w = world();
+    const created = { ...w.task, id: '0032-next', status: 'new' };
+    await w.store.createTask(created);
+    expect(w.store.taskLink(created.id)).toBe('[0032-next](https://trello.com/c/card-1)');
+    expect(w.store.readTask(created.id).closureReason).toBe(reason);
+    expect(w.store.allTaskIds()).toContain(created.id);
+  });
+});
+
 describe('чтение задач', () => {
   it('лимит читается только из истории и не записывается отчётом в metadata', async () => {
     const trello = fakeTrello();
