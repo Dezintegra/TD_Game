@@ -453,6 +453,54 @@ function dependencyReportWorld() {
 }
 
 describe('перенос отчёта с dependencyUpdates', () => {
+  it.each(['refused', 'lost-response'])(
+    'после PUT источника и сбоя POST повтор через новый IO завершает только журнал: %s',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      f.state.report.costUsd = 1.25;
+      const original = JSON.parse(JSON.stringify(f.state.report));
+      let published = null;
+      f.fixture.hook = (method, path, body) => {
+        if (method === 'POST' && path === 'cards/card-source/actions/comments') {
+          if (mode === 'lost-response') published = body.text;
+          return { ok: false, why: 'comment unavailable' };
+        }
+      };
+      expect(await execute([f.action], f.io)).toMatchObject([{ result: 'failed' }]);
+      expect(f.cards[1].idList).toBe('list-pr');
+      expect(f.state.report).toEqual(original);
+      expect(f.state.forgotten).toBe(0);
+      const savedSource = f.cards[1].desc;
+      const target = splitDescription(f.cards[0].desc);
+      target.meta.dependsOn.push('0007-new');
+      target.meta.extra.after = true;
+      f.cards[0].desc = joinDescription(target.human, target.meta);
+      f.fixture.hook = (method, path) => {
+        if (published && method === 'GET' && path === 'cards/card-source/actions')
+          return { ok: true, data: [{ data: { text: published } }] };
+      };
+      const freshIo = { ...f.io, ...f.store('B') };
+      f.calls.length = 0;
+      // Совпадения ID и этапа недостаточно: иной текст не получает квитанцию.
+      f.state.report.summary = 'Посторонний отчёт';
+      expect(await execute([f.action], freshIo)).toMatchObject([{ result: 'failed' }]);
+      expect(f.calls.some((call) => call.method === 'PUT' || call.method === 'POST')).toBe(false);
+      f.state.report = original;
+      f.calls.length = 0;
+      expect(await execute([f.action], freshIo)).toMatchObject([{ result: 'done', status: 'pr' }]);
+      expect(
+        f.calls.some((call) => call.path === 'cards/card-target' && call.method === 'GET'),
+      ).toBe(true);
+      expect(f.calls.filter((call) => call.method === 'PUT')).toEqual([]);
+      expect(
+        f.calls.filter((call) => call.path === 'cards/card-source/actions/comments'),
+      ).toHaveLength(mode === 'lost-response' ? 0 : 1);
+      expect(f.cards[1].desc).toBe(savedSource);
+      expect(splitDescription(f.cards[0].desc).meta).toEqual(target.meta);
+      expect(f.state.report).toBeNull();
+      expect(f.state.forgotten).toBe(1);
+    },
+  );
   it.each(['success', 'readback', 'release', 'blocked'])(
     'разбор задержки сохраняет порядок адресных записей и повтор: %s',
     async (mode) => {

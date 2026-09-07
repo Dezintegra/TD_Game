@@ -8,6 +8,7 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 export function dependencyFixture() {
   const { config } = resolveConfig({ trello: { board: 'b' } });
   const calls = [];
+  const comments = [];
   const cards = [
     {
       id: 'card-target',
@@ -40,6 +41,10 @@ export function dependencyFixture() {
       (item) => path === `cards/${item.id}` || path.startsWith(`cards/${item.id}/`),
     );
     if (!raw) return { ok: false, why: 'missing' };
+    if (method === 'GET' && path.endsWith('/actions'))
+      return { ok: true, data: clone(comments.filter((item) => item.cardId === raw.id)) };
+    if (method === 'POST' && path.endsWith('/actions/comments'))
+      comments.push({ cardId: raw.id, data: { text: body.text } });
     if (method === 'GET') return { ok: true, data: clone(raw) };
     if (method === 'POST' && path.endsWith('/idMembers')) {
       if (raw.idMembers.includes(body.value))

@@ -113,12 +113,25 @@ async function transferReport(action, io, context) {
   if (hasUpdates && !Array.isArray(report.dependencyUpdates))
     return { result: 'failed', why: 'dependencyUpdates: ожидается массив' };
   const updates = report.dependencyUpdates ?? [];
+  let transferred = null;
+  if (
+    updates.length &&
+    report.taskId === task.id &&
+    report.taskId === action.taskId &&
+    report.stage === action.stage &&
+    io.readTransferredReport
+  ) {
+    const saved = await io.readTransferredReport(task.id, delayKey(report), report.stage);
+    if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };
+    transferred = saved.receipt;
+  }
   if (
     updates.length &&
     (report.taskId !== task.id ||
       report.taskId !== action.taskId ||
       report.stage !== action.stage ||
       (report.stage !== task.status &&
+        !transferred &&
         task.delayAnalysis?.reportKey !== delayKey(report) &&
         !(
           report.outcome === 'blocked' &&
@@ -172,6 +185,18 @@ async function transferReport(action, io, context) {
   // но молчать об этом нельзя: отметка и есть та заметность, ради которой
   // заводилось прежнее правило.
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
+
+  // Переход уже сохранён вместе с отпечатком этого отчёта. Повторяем только
+  // подтверждение адресатов и доставку журнала, не переход и не расход.
+  if (transferred) {
+    const dependencies = await applyDependencyUpdates(task, updates, io, context);
+    if (dependencies.result) return dependencies;
+    const delivered = await io.deliverTransferredReport(task.id, delayKey(report));
+    if (!delivered.ok) return { result: 'failed', why: delivered.why ?? delivered.outcome };
+    io.forgetSession?.(task.id, report.stage);
+    io.removeReport(task.id, report.stage);
+    return { result: 'done', status: transferred.to };
+  }
 
   if (task.delayAnalysis?.reportKey === delayKey(report) && !task.delayJournal) {
     const dependencies = await applyDependencyUpdates(task, updates, io, context);
@@ -466,6 +491,7 @@ async function transferReport(action, io, context) {
       // Здесь и только здесь запись говорит словами сессии: всё остальное,
       // что конвейер пишет на доску, — его собственная механика.
       source: 'agent',
+      ...(updates.length ? { reportTransferKey: delayKey(report) } : {}),
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
     [asked, answered].filter(Boolean),

@@ -94,6 +94,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   // Подтверждённые перемещения нужны при повторе после ошибки комментария;
   // исходный снимок остаётся прежним для остальных решений цикла.
   const savedLists = new Map();
+  const attemptedReportTransfers = new Set();
 
   /**
    * Опубликовать запись журнала комментариями.
@@ -438,8 +439,50 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     return { ok: true, outcome: 'saved' };
   }
 
+  async function readTransferredReport(id, key, stage) {
+    if (
+      !attemptedReportTransfers.has(id) &&
+      !splitDescription(rawById.get(id)?.desc ?? '').meta?.reportTransfer
+    )
+      return { ok: true, receipt: null };
+    try {
+      const board = await freshCards();
+      if (!board.ok) return board;
+      const fresh = await resolveFresh(id, board, cardOf(id)?.id);
+      if (!fresh.ok) return fresh;
+      const receipt = splitDescription(fresh.raw.desc).meta?.reportTransfer;
+      if (!receipt) return { ok: true, receipt: null };
+      if (receipt.key !== key && fresh.item.task.status === stage)
+        return { ok: true, receipt: null };
+      if (
+        receipt.key !== key ||
+        receipt.to !== fresh.item.task.status ||
+        !Array.isArray(receipt.parts) ||
+        !receipt.parts.length ||
+        receipt.parts.some((part) => typeof part !== 'string' || !part)
+      )
+        return failed(`${id}: сохранённый перенос принадлежит другому отчёту или состоянию`);
+      return { ok: true, receipt, cardId: fresh.raw.id };
+    } catch (error) {
+      return failed(`${id}: подтверждение переноса отчёта: ${error.message}`);
+    }
+  }
+
+  async function deliverTransferredReport(id, key) {
+    const saved = await readTransferredReport(id, key);
+    if (!saved.ok) return saved;
+    if (!saved.receipt) return failed(`${id}: подтверждение переноса отчёта отсутствует`);
+    const posted = await comment(saved.cardId, '', 'agent', {
+      deduplicate: true,
+      parts: saved.receipt.parts,
+    });
+    return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
+  }
+
   return {
     flushDelayJournal,
+    readTransferredReport,
+    deliverTransferredReport,
     // Всё, что ниже, повторяет поверхность файлового хранилища. Разница
     // только в том, что записи возвращают обещание: доска отвечает по сети.
 
@@ -527,7 +570,9 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
           },
         };
       const closing = task.status === 'closed' && entry.from !== 'closed';
-      const journal = `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}`;
+      const journal =
+        `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}` +
+        (entry.reportTransferKey ? `\n\n<!-- report:${entry.reportTransferKey} -->` : '');
       if (closing) {
         if (typeof entry.closureReason !== 'string' || !entry.closureReason.trim())
           return { ok: false, outcome: 'failed', why: 'причина закрытия не названа' };
@@ -538,12 +583,29 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       const currentList =
         savedLists.get(card.id) ?? cards.find((item) => item.id === card.id)?.idList;
       const placeFirst = task.status === 'completed' ? currentList !== idList : task.blocking;
-      const desc = startBases.has(task.id)
+      let desc = startBases.has(task.id)
         ? withMeta(
             startBases.get(task.id).desc,
             overlayMeta(splitDescription(startBases.get(task.id).desc).meta, metaOf(task)),
           )
         : joinDescription(card.human, metaOf(task));
+      if (entry.reportTransferKey) {
+        attemptedReportTransfers.add(task.id);
+        // Квитанция и переход неделимы. Оставляем квитанцию до следующей
+        // записи задачи: потеря ответа POST не должна повторно считать расход.
+        desc = withMeta(desc, {
+          ...splitDescription(desc).meta,
+          reportTransfer: {
+            key: entry.reportTransferKey,
+            to: task.status,
+            parts: splitJournalEntry(journal, {
+              marker: mark,
+              source: entry.source,
+              limit: trelloConfig.maxTextLength,
+            }),
+          },
+        });
+      }
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
         ...(placeFirst ? { pos: 'top' } : {}),
@@ -580,6 +642,9 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         return flushDelayJournal(task);
       }
       if (closing) return { ok: true, outcome: 'saved' };
+
+      if (entry.reportTransferKey)
+        return deliverTransferredReport(task.id, entry.reportTransferKey);
 
       // Источник берётся из самой записи: переход состояния бывает и делом
       // сессии — тогда в записи её отчёт, — и распоряжением супервизора.
