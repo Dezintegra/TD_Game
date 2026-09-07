@@ -125,6 +125,8 @@ async function main() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const decision = scan({
+    now: new Date().toISOString(),
+    machine,
     ...(await buildDependencyState({ backlog, config, root, run: runCommand })),
     registry,
     codexUsage: readTokenLedger(root, config),

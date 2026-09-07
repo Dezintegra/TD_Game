@@ -1,4 +1,13 @@
 import { transferBlocked, unblockTask } from './blockers.mjs';
+import {
+  beginDelayAnalysis,
+  observeDelay,
+  reviewingDelay,
+  delayReportProblem,
+  finishDelayAnalysis,
+  delayKey,
+  rejectDelayReport,
+} from './delay-analysis.mjs';
 import { categoriesProblem } from './categories.mjs';
 import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
 import {
@@ -115,6 +124,22 @@ async function transferReport(action, io) {
   // заводилось прежнее правило.
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
+  if (task.delayAnalysis?.reportKey === delayKey(report) && !task.delayJournal) {
+    if (['blocked', 'new'].includes(task.status)) {
+      const released = await io.release?.(task);
+      if (released && !released.ok)
+        return { result: 'failed', why: released.why ?? released.outcome };
+    }
+    io.forgetSession?.(task.id, report.stage);
+    if (task.delayAnalysis.phase === 'monitoring') io.forgetSession?.(task.id, task.status);
+    io.removeReport(task.id, report.stage);
+    return { result: 'done', status: task.status };
+  }
+  if (reviewingDelay(task)) {
+    const problem = delayReportProblem(task, report) || categoriesProblem(report.categories, true);
+    if (problem) return rejectDelayReport(task, report, problem, io);
+    if (report.outcome !== 'blocked') return finishDelayAnalysis(task, report, io);
+  }
   if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
   const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
   if (categoryProblem) return { result: 'failed', why: categoryProblem };
@@ -635,6 +660,13 @@ function assignmentFor(action, io, task, branchHint) {
     task,
     journal: io.readJournal(action.taskId),
     board: io.boardDigest(),
+    delayDependencies: reviewingDelay(task)
+      ? (task.dependsOn ?? []).map((id) => ({
+          task: io.readTask(id) ??
+            io.dependencyRecords?.().find((item) => item.id === id) ?? { id, missing: true },
+          journal: io.readJournal(id),
+        }))
+      : [],
     // Пакет выкладки: выписки задач, которые сессия выкладывает вместе
     // с ведущей. Перечень фиксируется здесь, в момент выдачи сессии, и это
     // единственный источник правды о составе пакета — доску сессия не откроет,
@@ -1174,6 +1206,14 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'analyze-delay': beginDelayAnalysis,
+  'observe-delay': observeDelay,
+  'flush-delay-journal': async (action, io) => {
+    const task = io.readTask(action.taskId);
+    if (!task?.delayJournal || !io.flushDelayJournal) return { result: 'skipped' };
+    const saved = await io.flushDelayJournal(task);
+    return saved.ok ? { result: 'done' } : { result: 'failed', why: saved.why ?? saved.outcome };
+  },
   'unblock-task': unblockTask,
   'push-tail': pushTail,
   'quarantine-card': quarantineCard,

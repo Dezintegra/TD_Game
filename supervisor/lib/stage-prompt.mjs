@@ -200,6 +200,18 @@ export function stagePrompt({
   }
 
   // Опись доски нужна сверкам, которым мало своей задачи: аудит ищет
+  if (assignment.delayDependencies?.length)
+    lines.push(
+      '',
+      '## Результаты исправлений для проверки прежнего разбора',
+      '',
+      ...assignment.delayDependencies.map(
+        ({ task: dependency, journal: history }) =>
+          `Задача: ${JSON.stringify(dependency)}\nЖурнал результата:\n${clipJournal(history, journalLimit) || '_нет доступного журнала_'}`,
+      ),
+    );
+
+  // Опись доски нужна сверкам, которым мало своей задачи: аудит ищет
   // пересечения с задачами в работе, разбор — дубликаты. Целиком бэклог
   // исполнителю не нужен и вреден: чем больше он о нём знает, тем сильнее
   // соблазн его править, а править бэклог ему нельзя.
@@ -224,6 +236,7 @@ export function stagePrompt({
   );
 
   lines.push('', ROUTING_CONTRACT);
+  if (task?.delayAnalysis) lines.push('', DELAY_ANALYSIS_CONTRACT);
   return lines.join('\n');
 }
 
@@ -244,6 +257,7 @@ function taskDigest(task) {
     dependsOn: task.dependsOn ?? [],
     dependencyResults: task.dependencyResults ?? [],
     blockedContext: task.blockedContext ?? null,
+    delayAnalysis: task.delayAnalysis ?? null,
     analysisGeneration: task.analysisGeneration ?? 0,
     status: task.status,
     description: task.description ?? null,
@@ -256,3 +270,39 @@ function taskDigest(task) {
     ...(task.userTokenLimit ? { userTokenLimit: task.userTokenLimit } : {}),
   };
 }
+
+export const DELAY_ANALYSIS_CONTRACT = `## Сохранённый разбор задержки
+
+В postmortem при delayAnalysis.phase analyzing или verifying выполняй этот
+режим вместо обычного разбора падения. Возраст карточки не доказывает ошибку.
+Прочитай сохранённый диагноз, журнал, лог исходного этапа и связанные задачи.
+В analyzing выясни причину отсутствия продвижения и проверь прежние выводы,
+если они уже есть. В verifying проверяй результат исправлений на исходном
+препятствии, а не повторяй анализ постановки с нуля. Ничего не исправляй сам.
+
+В отчёте обязательны taskId, stage: postmortem, categories, routingVersion: 1,
+summary и delayAnalysis: {cause, evidence: [факты и ссылки], nextAction}.
+Все тексты должны содержать конкретные проверяемые сведения.
+
+Если необходимо исправление, верни outcome: blocked и blockers по общему
+контракту. Для каждого блокера дополнительно обязательны specificResult
+(что точно разблокирует исходную карточку и как это проверить) и preventionResult
+(общее исправление причины и проверка, защищающая от подобных повторений).
+Это два критерия приёмки, не обещание «починить». Новая requests[] должна
+описывать причину, воспроизведение и общее решение. Подходящую существующую
+карточку связывай через taskId; не создавай дубликат или карточку самого разбора.
+Если прежнее исправление выполнено, но не помогло, называй доказательства
+неудачи и необходимую доработку через новый blocked.
+
+Без необходимой починки верни outcome: done, delayAnalysis.resolution: monitor
+с причиной ожидания и следующим действием. После исправления допускается
+только resolution: resolved со specificEvidence и preventionEvidence:
+непустыми массивами доказательств устранения конкретного препятствия и
+защиты от повторения. Статус completed или closed сам по себе не доказательство.
+Если данные не подтверждают результат — blocked с необходимой доработкой.
+
+Супервизор публикует диагноз и ожидание комментариями, сохраняет их и проверяет
+связанные задачи каждый цикл. На неизменных фактах этот разбор не повторяется.
+Другие этапы с сохранённым delayAnalysis выполняют обычную назначенную работу,
+учитывая выводы разбора; самовольно повторять диагностику не нужно.
+`;
