@@ -319,10 +319,10 @@ describe('сохранение частей декомпозиции', () => {
   it('не закрывает родителя и не создаёт части при негодной заявке', async () => {
     const io = make([parts[0], { type: 'feature' }]);
     const [result] = await execute([action], io);
-    expect(result.result).toBe('failed');
+    expect(result).toMatchObject({ result: 'done', status: 'postmortem' });
     expect(result.why).toContain('передача работы не сохранена');
     expect(io.tasks.size).toBe(1);
-    expect(io.tasks.get('0001-one').status).toBe('decompose');
+    expect(io.tasks.get('0001-one')).toMatchObject({ status: 'postmortem', returnTo: 'decompose' });
   });
 });
 
@@ -2134,8 +2134,8 @@ describe('заявки на новые задачи', () => {
       },
     });
     const [result] = await execute([triage], io);
-    expect(result.result).toBe('failed');
-    expect(io.tasks.get('0001-one').status).toBe('triage');
+    expect(result).toMatchObject({ result: 'done', status: 'postmortem' });
+    expect(io.tasks.get('0001-one')).toMatchObject({ status: 'postmortem', returnTo: 'triage' });
     expect(io.tasks.size).toBe(1);
   });
 

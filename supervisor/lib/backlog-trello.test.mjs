@@ -68,6 +68,30 @@ const card = (over = {}) => ({
 const backlog = (over = {}, trello = fakeTrello(), machine = null) =>
   createTrelloBacklog({ trello, config, snapshot: snapshot(over), machine });
 
+describe('повторное отпускание назначения', () => {
+  const refused = { ok: false, kind: 'refused', why: 'member is not on the card' };
+  it.each([
+    [{ ok: true, data: { idMembers: [] } }, true],
+    [{ ok: true, data: { idMembers: ['other'] } }, true],
+    [{ ok: true, data: { idMembers: ['me-1'] } }, false],
+    [{ ok: true, data: {} }, false],
+    [{ ok: false, kind: 'offline', why: 'network' }, false],
+  ])('подтверждает отсутствие назначения свежим чтением: %j', async (current, released) => {
+    const trello = fakeTrello({ 'members/me': { ok: true, data: { id: 'me-1' } } });
+    const originalGet = trello.get;
+    trello.get = (path, query) =>
+      path === 'cards/card-1'
+        ? (trello.calls.push({ method: 'GET', path, query }), current)
+        : originalGet(path, query);
+    trello.delete = (path) => (trello.calls.push({ method: 'DELETE', path }), refused);
+    const store = backlog({ cards: [card({ idMembers: ['me-1'] })] }, trello);
+    expect(await store.release({ id: '0031-proba' })).toMatchObject({ ok: released });
+    const calls = trello.calls.filter((c) => c.path.startsWith('cards/'));
+    expect(calls.map((c) => c.method)).toEqual(['DELETE', 'GET']);
+    expect(calls[1].query).toEqual({ fields: 'idMembers' });
+  });
+});
+
 describe('публикация причины до закрытия', () => {
   const reason = 'Предмет снят: проверка уже исправлена. Проверено: PR 166 влит.';
   function world({ partFailure = 0, moveFailure = false, limit = 16384 } = {}) {

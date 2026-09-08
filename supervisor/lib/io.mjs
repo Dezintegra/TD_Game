@@ -115,9 +115,12 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * Сама задача не сохраняется вовсе: ни состояния, ни положения в очереди
      * дополнение не меняет. Поэтому и коммит здесь один, на файл журнала.
      */
-    amendTask(taskId, text, message) {
+    amendTask(taskId, text, message, source, deliveryKey = null) {
+      const marker = deliveryKey ? `<!-- delivery:${deliveryKey} -->` : null;
+      if (marker && this.readJournal(taskId).includes(marker))
+        return { ok: true, outcome: 'saved' };
       const paths = [journalPath(taskId)];
-      this.appendJournal(taskId, text);
+      this.appendJournal(taskId, marker ? `${text}\n\n${marker}\n` : text);
       const push = this.commitAndPush(paths, message);
       if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
       return { ...push, paths };

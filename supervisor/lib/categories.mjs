@@ -18,6 +18,7 @@ export function categoriesProblem(value, required = false) {
 export const ROUTING_FIELDS = [
   'delayAnalysis',
   'delayJournal',
+  'reportRejection',
   'creationKey',
   'blockedContext',
   'reanalysis',
