@@ -70,6 +70,8 @@ import {
   savingLimit,
 } from './profile.js';
 import { islandAim } from './islands.js';
+import { createProduction } from './production.js';
+import type { Production } from './production.js';
 import {
   defenceOnPath,
   defenceWorth,
@@ -189,6 +191,7 @@ export const createOpponent = (
   let nextDecisionTick = 0;
   let buildCounter = 0;
   let waitStreak = 0;
+  const production = createProduction();
 
   /**
    * Где сейчас работает доктрина островов и сколько решений на это ушло.
@@ -418,6 +421,9 @@ export const createOpponent = (
           ? profile.adapt.mix
           : phase.mix;
 
+      // Смена состава отменяет цель даже в решении, занятом другой тратой.
+      production.reconcile(mix);
+
       const attempts: AttemptRecord[] = [];
       const nearby = escortNearby(world, me, stats);
       const escorting =
@@ -532,6 +538,7 @@ export const createOpponent = (
                     nukeAwaited,
                   )
                 : tryTrain(
+                    production,
                     commands,
                     world,
                     me,
@@ -919,6 +926,7 @@ const decideMovement = (
 // ─────────────────────────────────────────────────────────────────────────
 
 const tryTrain = (
+  production: Production,
   commands: Command[],
   world: WorldState,
   me: PlayerId,
@@ -944,24 +952,8 @@ const tryTrain = (
   if (player.queue.length >= profile.spending.queueTarget) return passing(AttemptNote.QueueFull);
 
   const stats = playerStats(player);
-  const weights = [
-    [UnitType.Assault, mix[UnitType.Assault]] as const,
-    [UnitType.Sniper, mix[UnitType.Sniper]] as const,
-    [UnitType.Tesla, mix[UnitType.Tesla]] as const,
-  ];
-
-  const total = weights.reduce((sum, [, weight]) => sum + weight, 0);
-  if (total <= 0) return passing(AttemptNote.MixEmpty);
-
-  let pick = roll(total);
-  let chosen: UnitType = UnitType.Assault;
-  for (const [type, weight] of weights) {
-    if (pick < weight) {
-      chosen = type;
-      break;
-    }
-    pick -= weight;
-  }
+  const chosen = production.choose(mix, false, roll);
+  if (chosen === undefined) return passing(AttemptNote.MixEmpty);
 
   const price =
     stats.units[chosen].cost +
@@ -984,6 +976,7 @@ const tryTrain = (
       unitType: chosen,
     }),
   );
+  production.issued();
 
   return BOUGHT;
 };
