@@ -879,7 +879,9 @@ describe('жизненный цикл сессии после отчёта', () 
   ])(
     '%s после возврата и новой работы получает свежую задачу и журнал',
     async (checker, worker) => {
-      const { io, sessions, remember, transfer, launch } = world(checker);
+      const { io, sessions, remember, transfer, launch } = world(checker, {
+        evidence: { branchOnRemote: true, unpushed: 0, lastCommitAt: NOW },
+      });
       remember('0001-one', worker);
       await transfer(checker, 'rejected', { summary: 'нужна новая работа' });
       expect(io.tasks.get('0001-one').status).toBe(worker);
@@ -957,7 +959,9 @@ describe('жизненный цикл сессии после отчёта', () 
   it.each(['createTask', 'amendTask'])(
     'ошибка %s сохраняет исходную сессию и очередь отчёта',
     async (method) => {
-      const { io, sessions, transfer } = world('design');
+      const { io, sessions, transfer } = world('design', {
+        evidence: { branchOnRemote: true, unpushed: 0, lastCommitAt: NOW },
+      });
       io.tasks.set('0002-two', task({ id: '0002-two' }));
       io[method] = () => ({ ok: false, outcome: 'write-failed' });
       const [result] = await transfer('design', 'done', {
@@ -1064,11 +1068,11 @@ describe('отказанные действия при переносе отчё
     expect(io.journals.get('0001-one')).toContain('сопоставить отказ с делом нечем');
   });
 
-  it('без отказов улики не спрашиваются ни разу', async () => {
-    // Холостой ход не должен стоить ни одного лишнего вызова git.
+  it('done без отказов тоже собирает улики', async () => {
+    // Отсутствие отказов не доказывает, что этап оставил требуемый след.
     const io = fakeIo({ tasks: [task({ status: 'design' })] });
     await execute([transfer], io);
-    expect(io.steps).not.toContain('спрошены улики 0001-one');
+    expect(io.steps.filter((step) => step === 'спрошены улики 0001-one')).toHaveLength(1);
   });
 });
 
