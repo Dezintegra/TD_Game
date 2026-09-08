@@ -1,8 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Container } from 'pixi.js';
-import { MAP_CELL_COUNT, Terrain, asPlayerId, isPassable } from '@td/shared';
-import { cellIndex, cellX, cellY } from '@td/sim';
-import type { GameMap } from '@td/sim';
+import {
+  DIRECTION_SOUTH,
+  FIXED_POINT_SCALE,
+  MAP_CELL_COUNT,
+  Terrain,
+  UnitType,
+  asEntityId,
+  asPlayerId,
+  asTickNumber,
+  isPassable,
+} from '@td/shared';
+import { cellCentre, cellIndex, cellX, cellY, createWorld } from '@td/sim';
+import type { GameMap, WorldState } from '@td/sim';
 import { createScene } from './scene.js';
 import type { RendererHost, Scene } from './scene.js';
 import { TERRAIN_DIAGONAL_COUNT } from './terrain.js';
@@ -10,6 +20,9 @@ import { mountRockDiagonal } from './relief-render.js';
 import type * as TerrainModule from './terrain.js';
 import type * as ReliefModule from './relief-render.js';
 import type * as MinimapModule from './minimap.js';
+import { drawEntities } from './entities.js';
+import { worldToScreen } from './iso.js';
+import type { OverlayIntent } from './overlays.js';
 
 // Граница графики сохраняет дерево и преобразования, но не требует WebGL.
 vi.mock('pixi.js', () => {
@@ -78,9 +91,44 @@ vi.mock('./minimap.js', async (importOriginal) => ({
 
 const LOCAL_PLAYER = asPlayerId(0);
 const scenes: Scene[] = [];
+const INTENT: OverlayIntent = {
+  building: false,
+  touch: null,
+  buildKind: null,
+  aimingNuke: false,
+  hoverCell: -1,
+  hoverAllowed: false,
+  nukeRadiusCells: 0,
+  selectedCell: -1,
+};
+
+const frameWorld = (map: GameMap): WorldState => ({ ...createWorld(4242), map });
+
+const stableFrames = (
+  scene: Scene,
+  world: WorldState,
+  stimulate: (frame: number) => void,
+  observe: (frame: number) => void = () => undefined,
+): void => {
+  const baseline = scene.terrainRebuildCount;
+  const baked = vi.mocked(mountRockDiagonal).mock.calls.length;
+  expect(baseline).toBe(1);
+  expect(baked).toBe(TERRAIN_DIAGONAL_COUNT);
+  for (let frame = 0; frame < 100; frame += 1) {
+    stimulate(frame);
+    scene.setMap(world.map, LOCAL_PLAYER);
+    expect(scene.bakeTerrain(0)).toBe(false);
+    scene.render(world, LOCAL_PLAYER, INTENT);
+    observe(frame);
+    expect(scene.terrainRebuildCount).toBe(baseline);
+    expect(mountRockDiagonal).toHaveBeenCalledTimes(baked);
+  }
+  expect(drawEntities).toHaveBeenCalledTimes(100);
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(drawEntities).mockReset();
   vi.stubGlobal('document', { documentElement: {} });
   vi.stubGlobal('getComputedStyle', () => ({ getPropertyValue: () => '' }));
 });
@@ -134,7 +182,7 @@ const builtScene = (): { scene: Scene; map: GameMap } => {
   const scene = makeScene();
   const map = makeMap();
   expect(scene.terrainRebuildCount).toBe(0);
-  expect(isPassable(map.cells[cellIndex(20, 20)] ?? Terrain.Ground)).toBe(false);
+  expect(isPassable(map.cells[cellIndex(20, 20)] as Terrain)).toBe(false);
   scene.setMap(map, LOCAL_PLAYER);
   expect(scene.terrainRebuildCount).toBe(1);
   finishBaking(scene, map);
@@ -142,6 +190,70 @@ const builtScene = (): { scene: Scene; map: GameMap } => {
 };
 
 describe('инвалидация территории настоящей сцены', () => {
+  it('движение камеры сто кадров не перестраивает территорию', () => {
+    const { scene, map } = builtScene();
+    scene.centreOnCell(cellIndex(30, 30));
+    stableFrames(scene, frameWorld(map), (frame) => {
+      const before = scene.viewCentre;
+      scene.panBy(frame % 2 === 0 ? 4 : -4, 0);
+      expect(scene.viewCentre).not.toEqual(before);
+    });
+  });
+
+  it('движение существующего юнита сто кадров не перестраивает территорию', () => {
+    const { scene, map } = builtScene();
+    scene.centreOnCell(cellIndex(30, 30));
+    const unit = {
+      id: asEntityId(600),
+      owner: LOCAL_PLAYER,
+      unitType: UnitType.Assault,
+      position: cellCentre(cellIndex(30, 30)),
+      health: 100,
+      facing: DIRECTION_SOUTH,
+      readyAtTick: asTickNumber(0),
+      kills: 0,
+    };
+    const world = { ...frameWorld(map), units: [unit] };
+    const samples: { id: number; x: number; y: number }[][] = [];
+    vi.mocked(drawEntities).mockImplementation((_layers, drawn, bounds) => {
+      // Копии не позволят следующему перемещению переписать свидетельство кадра.
+      samples.push(drawn.units.map(({ id, position }) => ({ id, ...position })));
+      for (const { position } of drawn.units) {
+        const point = worldToScreen(position.x / FIXED_POINT_SCALE, position.y / FIXED_POINT_SCALE);
+        expect(point.x).toBeGreaterThan(bounds.minX);
+        expect(point.x).toBeLessThan(bounds.maxX);
+        expect(point.y).toBeGreaterThan(bounds.minY);
+        expect(point.y).toBeLessThan(bounds.maxY);
+      }
+    });
+    stableFrames(
+      scene,
+      world,
+      (frame) => {
+        unit.position = cellCentre(cellIndex(frame % 2 === 0 ? 31 : 30, 30));
+      },
+      (frame) => {
+        expect(samples[frame]).toEqual([{ id: unit.id, ...unit.position }]);
+        if (frame > 0) expect(samples[frame]).not.toEqual(samples[frame - 1]);
+      },
+    );
+    expect(samples).toHaveLength(100);
+  });
+
+  it('смена масштаба сто кадров не перестраивает территорию', () => {
+    const { scene, map } = builtScene();
+    scene.centreOnCell(cellIndex(30, 30));
+    const baseScale = scene.scale;
+    stableFrames(scene, frameWorld(map), (frame) => {
+      const target = frame % 2 === 0 ? 1.5 : 2;
+      const before = scene.scale;
+      scene.zoomBy(target / scene.zoom, 400, 300);
+      expect(scene.zoom).toBeCloseTo(target);
+      expect(scene.scale).toBeCloseTo(baseScale * target);
+      expect(scene.scale).not.toBe(before);
+    });
+  });
+
   it('подтверждает начальное построение и завершение запекания', () => {
     builtScene();
   });
@@ -154,8 +266,8 @@ describe('инвалидация территории настоящей сце�
     const changed = { ...map, cells };
     expect(changed).not.toBe(map);
     expect(changed.cells).not.toBe(map.cells);
-    expect(isPassable(map.cells[cell] ?? Terrain.Rock)).toBe(true);
-    expect(isPassable(changed.cells[cell] ?? Terrain.Ground)).toBe(false);
+    expect(isPassable(map.cells[cell] as Terrain)).toBe(true);
+    expect(isPassable(changed.cells[cell] as Terrain)).toBe(false);
     const baseline = scene.terrainRebuildCount;
     const baked = vi.mocked(mountRockDiagonal).mock.calls.length;
     scene.setMap(changed, LOCAL_PLAYER);
@@ -171,6 +283,6 @@ describe('инвалидация территории настоящей сце�
     expect(scene.bakeTerrain(0)).toBe(false);
     expect(scene.terrainRebuildCount).toBe(baseline + 1);
     expect(mountRockDiagonal).toHaveBeenCalledTimes(baked + TERRAIN_DIAGONAL_COUNT);
-    expect(isPassable(map.cells[cell] ?? Terrain.Rock)).toBe(true);
+    expect(isPassable(map.cells[cell] as Terrain)).toBe(true);
   });
 });
