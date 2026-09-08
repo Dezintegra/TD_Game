@@ -123,8 +123,10 @@ export function joinJournalParts(comments, { marker }) {
       // Перенос, добавленный внутри длинной JSON-строки, портит исходный отчёт.
       // Только явно помеченное продолжение склеивается без разделителя.
       .map((text, index) => {
-        const joined = text.startsWith(marker) && /^.*\(часть \d+ из \d+\) \[join\]\n/.test(text);
-        return `${index && !joined ? '\n' : ''}${stripMarker(text, marker)}`;
+        const body = stripMarker(text, marker);
+        const header = text.slice(0, text.length - body.length);
+        const joined = /\(часть \d+ из \d+\) \[join\]\s*$/.test(header);
+        return `${index && !joined ? '\n' : ''}${body}`;
       })
       .join('')
       .trim()

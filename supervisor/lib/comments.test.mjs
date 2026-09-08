@@ -111,6 +111,16 @@ describe('длинная запись', () => {
 describe('строка длиннее предела', () => {
   const monster = 'я'.repeat(1000);
 
+  it('похожий на заголовок текст записи не склеивает независимые комментарии', () => {
+    const comments = [
+      `${marker} [agent] первый отчёт`,
+      `${marker} [agent] пример: (часть 2 из 3) [join]\nвторой отчёт`,
+    ];
+    expect(joinJournalParts(comments, { marker })).toBe(
+      'первый отчёт\nпример: (часть 2 из 3) [join]\nвторой отчёт',
+    );
+  });
+
   it('длинная JSON-строка склеивается без добавленных переводов строк', () => {
     const value = { decisions: [monster], result: 'данные сохранены' };
     const serialized = JSON.stringify(value, null, 2);
