@@ -728,7 +728,7 @@ export function scan(state) {
   // и сотне задач в очереди тихий момент сам не наступает. Идущее
   // доделывается, отчёты переносятся, опросы идут — не берётся только новое.
   if (state.draining && eligible.length > 0) {
-    notes.push('самообновление ждёт тишины: сессий не выдаём, идущее доделываем');
+    notes.push('самообновление: новые этапы приостановлены, завершаем работу и переносим отчёты');
   }
   for (const task of [...eligible].sort(byPriorityThenAge)) {
     if (state.draining) continue;
@@ -787,7 +787,7 @@ export function scan(state) {
     }
 
     if (state.draining) {
-      notes.push(`задача ${task.id} ждёт: самообновление сливает работу`);
+      notes.push(`задача ${task.id} ждёт: самообновление ожидает завершения текущей работы`);
       continue;
     }
     if (unblocking) continue;

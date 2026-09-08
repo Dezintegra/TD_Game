@@ -38,6 +38,7 @@ export const VERDICT = {
  * @param {boolean} [params.dryRun]   тень: мира не трогаем
  * @param {number} [params.running]   живых этапов сейчас
  * @param {number} [params.pending]   отчётов, ожидающих переноса
+ * @param {object[]} [params.pendingReports] отчёты для адресной диагностики ожидания
  * @returns {{ verdict: string, notes: string[] }}
  */
 export function judgeSelfUpdate({
@@ -48,7 +49,8 @@ export function judgeSelfUpdate({
   enabled = true,
   dryRun = false,
   running = 0,
-  pending = 0,
+  pendingReports = [],
+  pending = pendingReports.length,
 }) {
   const notes = [];
   const off = (why) => ({ verdict: 'off', notes: why ? [`самообновление выключено: ${why}`] : [] });
@@ -103,8 +105,11 @@ export function judgeSelfUpdate({
   // и нет отчётов в памяти, которые он потерял бы.
   if (running > 0 || pending > 0) {
     notes.push(
-      'самообновление: новый код супервизора уже в дереве, жду тишины ' +
-        `(идёт этапов ${running}, отчётов ждёт переноса ${pending})`,
+      'самообновление: новый код супервизора уже в дереве, ожидаю завершения текущей работы ' +
+        `(идёт этапов ${running}, отчётов ждёт переноса ${pending})` +
+        (pendingReports.length
+          ? `; отчёты: ${pendingReports.map((report) => `${report.taskId}:${report.stage}`).join(', ')}`
+          : ''),
     );
     return { verdict: 'wait', notes };
   }

@@ -135,6 +135,22 @@ describe('код на диске уже сменился', () => {
     expect(notes.join()).toContain('отчётов ждёт переноса 2');
   });
 
+  it('ожидание называет задачи и этапы неприменённых отчётов', () => {
+    const { verdict, notes } = judge(
+      {
+        pendingReports: [
+          { taskId: '0027-nuke', stage: 'triage' },
+          { taskId: '0032-losses', stage: 'interpret' },
+        ],
+      },
+      fakeGit({ tree: FRESH }),
+    );
+    expect(verdict).toBe('wait');
+    expect(notes.join()).toContain('отчётов ждёт переноса 2');
+    expect(notes.join()).toContain('0027-nuke:triage, 0032-losses:interpret');
+    expect(notes.join()).toContain('ожидаю завершения текущей работы');
+  });
+
   it('незакоммиченная правка хеша не меняет и перезапуска не вызывает', () => {
     // Дерево грязное, а `HEAD:supervisor` прежний: человек работает,
     // и удалённая ветка при этом не ушла вперёд.

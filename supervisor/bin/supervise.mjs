@@ -983,6 +983,7 @@ async function loop() {
       dryRun: flags.includes('--dry-run'),
       running: supervisor.busy(),
       pending: supervisor.reports.length,
+      pendingReports: supervisor.reports,
     });
     if (update.verdict !== 'off' || turns === 1) note(update.notes);
     draining = update.verdict === 'wait';
