@@ -69,6 +69,12 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
     taskPath,
     journalPath,
 
+    appendTaskDependencies: () => ({
+      ok: false,
+      outcome: 'unsupported',
+      why: 'файловый адаптер не поддерживает dependencyUpdates',
+    }),
+
     readTask: (id) => readJson(join(root, taskPath(id))),
 
     /**

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createTrelloBacklog } from './backlog-trello.mjs';
-import { joinDescription } from './card.mjs';
+import { joinDescription, splitDescription } from './card.mjs';
+import { dependencyFixture } from './dependency-updates-fixture.mjs';
 import { checkCard } from './validate-card.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 
@@ -14,6 +15,196 @@ import { resolveConfig } from '../config/defaults.mjs';
 
 const { config } = resolveConfig({ trello: { board: 'b' } });
 const marker = config.trello.marker;
+
+describe('адресное дополнение зависимостей', () => {
+  it('доставка журнала после дополнения сохраняет его подложку и снимает только конверт', async () => {
+    const f = dependencyFixture();
+    const original = splitDescription(f.cards[0].desc);
+    const store = f.store();
+    expect(await store.appendTaskDependencies(f.update, f.context)).toMatchObject({ ok: true });
+    f.hook = (method, path) => {
+      if (method === 'GET' && path.endsWith('/actions')) return { ok: true, data: [] };
+    };
+    const current = store.readTask(f.update.taskId);
+    expect(
+      await store.saveTask(current, {
+        from: 'new',
+        to: 'new',
+        what: 'Разбор задержки',
+        source: 'agent',
+        deliveryKey: 'delay-test',
+      }),
+    ).toMatchObject({ ok: true });
+    const saved = splitDescription(f.cards[0].desc);
+    expect(saved.meta.dependsOn).toEqual(f.update.dependsOn);
+    expect(saved.meta.dependencyResults).toEqual(f.update.dependencyResults);
+    expect(saved.meta.extra).toEqual(original.meta.extra);
+    expect(saved.human).toBe(original.human);
+    expect(saved.meta).not.toHaveProperty('delayJournal');
+    expect(
+      await store.saveTask(store.readTask(f.update.taskId), {
+        from: 'new',
+        to: 'new',
+        what: 'Следующая запись',
+        source: 'agent',
+      }),
+    ).toMatchObject({ ok: true });
+    expect(splitDescription(f.cards[0].desc).meta).not.toHaveProperty('delayJournal');
+  });
+  it('повтор ребра без результата не записывает пустое поле ради нормализации', async () => {
+    const f = dependencyFixture();
+    const old = splitDescription(f.cards[0].desc);
+    f.cards[0].desc = joinDescription(old.human, { ...old.meta, dependsOn: f.update.dependsOn });
+    const before = f.cards[0].desc;
+    const store = f.store();
+    expect(
+      await store.appendTaskDependencies({ ...f.update, dependencyResults: [] }, f.context),
+    ).toMatchObject({ ok: true, outcome: 'unchanged' });
+    expect(f.cards[0].desc).toBe(before);
+    expect(f.calls.every((call) => ['GET', 'INVALIDATE'].includes(call.method))).toBe(true);
+  });
+  it('негодная принадлежность второго адресата обнаруживается общей проверкой до записи', async () => {
+    const f = dependencyFixture();
+    f.cards.push({
+      ...f.cards[0],
+      id: 'second',
+      idBoard: 'other',
+      desc: joinDescription('Other', { id: '0005-other' }),
+    });
+    expect(
+      await f
+        .store()
+        .planTaskDependencyUpdates(
+          [f.update, { ...f.update, taskId: '0005-other' }],
+          f.context.sourceId,
+        ),
+    ).toMatchObject({ ok: false });
+    expect(f.calls.every((call) => call.method === 'GET')).toBe(true);
+  });
+  it('пишет только desc, подтверждает отдельным GET, сохраняет свежие поля и повторяется без PUT', async () => {
+    const f = dependencyFixture();
+    const store = f.store();
+    const old = splitDescription(f.cards[0].desc);
+    f.cards[0].desc = joinDescription(old.human, {
+      ...old.meta,
+      dependsOn: ['0004-new'],
+      dependencyResults: [{ taskId: '0004-new', kind: 'merged-pr', pr: 7 }],
+    });
+    const result = await store.appendTaskDependencies(f.update, f.context);
+    expect(result).toMatchObject({
+      ok: true,
+      task: { status: 'new', dependsOn: ['0004-new', '0002-producer'] },
+    });
+    expect(splitDescription(f.cards[0].desc).meta.extra).toEqual(old.meta.extra);
+    expect(splitDescription(f.cards[0].desc).human).toBe(old.human);
+    const at = f.calls.findIndex((call) => call.method === 'PUT');
+    expect(Object.keys(f.calls[at].body)).toEqual(['desc']);
+    expect(f.calls[at - 1].method).toBe('INVALIDATE');
+    expect(f.calls[at + 1]).toMatchObject({ method: 'GET', path: 'cards/card-target' });
+    expect(f.cards[0].idMembers).toEqual([]);
+    f.calls.length = 0;
+    expect(await store.appendTaskDependencies(f.update, f.context)).toMatchObject({
+      ok: true,
+      outcome: 'unchanged',
+    });
+    expect(f.calls.every((call) => ['GET', 'INVALIDATE'].includes(call.method))).toBe(true);
+  });
+  it('перечитывает дополнения, появившиеся при захвате', async () => {
+    const f = dependencyFixture();
+    f.hook = (method, path) => {
+      if (method === 'POST' && path.endsWith('/idMembers')) {
+        const old = splitDescription(f.cards[0].desc);
+        f.cards[0].desc = joinDescription('Новый текст.', { ...old.meta, dependsOn: ['0004-new'] });
+      }
+    };
+    expect(await f.store().appendTaskDependencies(f.update, f.context)).toMatchObject({
+      ok: true,
+      task: { dependsOn: ['0004-new', '0002-producer'], description: 'Новый текст.' },
+    });
+  });
+  it.each(['busy', 'duplicate', 'archived', 'invalid', 'board'])(
+    'отклоняет адресата: %s',
+    async (mode) => {
+      const f = dependencyFixture();
+      const store = f.store();
+      if (mode === 'busy') f.cards[0].idMembers = ['me'];
+      if (mode === 'duplicate') f.cards.push({ ...f.cards[0], id: 'duplicate', closed: true });
+      if (mode === 'archived') f.cards[0].closed = true;
+      if (mode === 'invalid') f.cards[0].idLabels = [];
+      if (mode === 'board') f.cards[0].idBoard = 'other';
+      expect((await store.appendTaskDependencies(f.update, f.context)).ok).toBe(false);
+      expect(f.calls.some((call) => ['PUT', 'DELETE'].includes(call.method))).toBe(false);
+    },
+  );
+  it.each(
+    ['read', 'post', 'after-claim', 'put', 'confirm', 'release'].flatMap((step) =>
+      ['failure', 'throw'].map((mode) => [step, mode]),
+    ),
+  )('не подтверждает %s / %s', async (step, mode) => {
+    const f = dependencyFixture();
+    const store = f.store();
+    let reads = 0;
+    f.hook = (method, path) => {
+      if (method === 'GET' && path === 'cards/card-target') reads++;
+      const hit =
+        (step === 'read' && path === 'boards/b/cards') ||
+        (step === 'post' && method === 'POST') ||
+        (step === 'after-claim' && reads === 2 && method === 'GET') ||
+        (step === 'put' && method === 'PUT') ||
+        (step === 'confirm' && reads === 3 && method === 'GET') ||
+        (step === 'release' && method === 'DELETE');
+      if (!hit) return;
+      if (mode === 'throw') throw new Error(`broken ${step}`);
+      return { ok: false, why: `broken ${step}` };
+    };
+    const result = await store.appendTaskDependencies(f.update, f.context);
+    expect(result).toMatchObject({ ok: false });
+    expect(result.why).toContain('0003-consumer');
+    expect(store.readTask('0003-consumer').dependsOn).toBeUndefined();
+    if (['after-claim', 'put', 'confirm', 'release'].includes(step))
+      expect(f.calls.some((call) => call.method === 'DELETE')).toBe(true);
+    if (['put', 'confirm', 'release'].includes(step))
+      expect(f.invalidated).toEqual(['0003-consumer']);
+  });
+  it.each(['dependsOn', 'dependencyResults', 'extra', 'human', 'name', 'id'])(
+    'ловит потерю поля %s при readback',
+    async (field) => {
+      const f = dependencyFixture();
+      let written = false;
+      f.hook = (method, path) => {
+        if (method === 'PUT') written = true;
+        if (written && method === 'GET' && path === 'cards/card-target') {
+          const raw = { ...f.cards[0] };
+          const parts = splitDescription(raw.desc);
+          if (field === 'human') parts.human = 'Потерян';
+          else if (['name', 'id'].includes(field)) raw[field] = 'changed';
+          else delete parts.meta[field];
+          raw.desc = joinDescription(parts.human, parts.meta);
+          return { ok: true, data: raw };
+        }
+      };
+      expect((await f.store().appendTaskDependencies(f.update, f.context)).ok).toBe(false);
+      expect(f.invalidated).toEqual(['0003-consumer']);
+    },
+  );
+  it('не теряет инвалидацию, если PUT сохранился и потерял ответ', async () => {
+    const f = dependencyFixture();
+    f.hook = (method, path, body) => {
+      if (method !== 'PUT') return;
+      Object.assign(f.cards[0], body);
+      throw new Error('ответ потерян');
+    };
+    const store = f.store();
+    expect((await store.appendTaskDependencies(f.update, f.context)).ok).toBe(false);
+    expect(f.invalidated).toEqual(['0003-consumer']);
+    expect(store.readTask('0003-consumer').dependsOn).toBeUndefined();
+    f.hook = null;
+    expect(await store.appendTaskDependencies(f.update, f.context)).toMatchObject({
+      ok: true,
+      outcome: 'unchanged',
+    });
+  });
+});
 
 /** Подставной клиент Trello: помнит запросы, отвечает заданным. */
 function fakeTrello(replies = {}) {
@@ -706,10 +897,18 @@ describe('захват задачи назначением исполнител�
   const task = { id: '0031-proba', title: 'Проба пера' };
 
   /** Клиент, отвечающий на вопрос «кто я» и на назначение. */
-  const withMe = (assign) =>
+  const withMe = (assign, owner = null) =>
     fakeTrello({
       'members/me': { ok: true, data: { id: 'me-1' } },
       'cards/card-1/idMembers': assign,
+      'boards/b/cards': {
+        ok: true,
+        data: [card({ idBoard: 'b', idMembers: ['me-1'], meta: { owner } })],
+      },
+      'cards/card-1': {
+        ok: true,
+        data: card({ idBoard: 'b', idMembers: ['me-1'], meta: { owner } }),
+      },
     });
 
   it('назначает исполнителя карточке', async () => {
@@ -744,24 +943,14 @@ describe('захват задачи назначением исполнител�
     // не было, задача 0016 висела с 28.08.2026 неберущейся — и своим
     // состоянием занимала единственное место исполнителя, останавливая
     // весь бэклог.
-    const trello = withMe({
-      ok: false,
-      kind: 'refused',
-      status: 400,
-      why: 'member is already on the card',
-    });
+    const trello = withMe({ ok: false, why: 'member is already on the card' }, 'станция-1');
     const store = backlog({ cards: [card({ meta: { owner: 'станция-1' } })] }, trello, 'станция-1');
 
     expect(await store.acquire(task)).toMatchObject({ ok: true, outcome: 'ours' });
   });
 
   it('чужой захват остаётся чужим, и хозяин называется', async () => {
-    const trello = withMe({
-      ok: false,
-      kind: 'refused',
-      status: 400,
-      why: 'member is already on the card',
-    });
+    const trello = withMe({ ok: false, why: 'member is already on the card' }, 'станция-2');
     const store = backlog({ cards: [card({ meta: { owner: 'станция-2' } })] }, trello, 'станция-1');
 
     const result = await store.acquire(task);

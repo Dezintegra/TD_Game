@@ -617,6 +617,7 @@ async function turn() {
         reports: supervisor.reports,
       }),
       ...(backlog.store ?? {}),
+      dependencyEvidence: state.dependencyEvidence ?? {},
       tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
       tokenReanalysisAdmission: (task, stage) =>
         tokenReanalysisAdmission(task, stage, config, supervisor.codexUsage),

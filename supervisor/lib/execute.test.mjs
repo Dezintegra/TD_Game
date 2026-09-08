@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { pendingDependencies } from './dependencies.mjs';
 import { execute } from './execute.mjs';
+import { dependencyFixture } from './dependency-updates-fixture.mjs';
+import { joinDescription, splitDescription } from './card.mjs';
 import { createIo } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { reconcile } from './reconcile.mjs';
@@ -18,6 +20,150 @@ import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from '
  */
 
 const NOW = '2026-08-26T12:00:00+03:00';
+
+describe('свежесть Trello-start между станциями', () => {
+  const action = { kind: 'start-stage', taskId: '0003-consumer', stage: 'design' };
+  const compose = (store) => ({ ...fakeIo(), ...store, machine: 'B' });
+  it('станция B не стирает подтверждённое дополнение A старым снимком', async () => {
+    const f = dependencyFixture();
+    const a = f.store('A');
+    const b = compose(f.store('B'));
+    expect(await a.appendTaskDependencies(f.update, f.context)).toMatchObject({ ok: true });
+    const saved = f.cards[0].desc;
+    f.calls.length = 0;
+    const results = await execute(
+      [action, { kind: 'fail-stage', taskId: action.taskId, stage: 'design' }],
+      b,
+    );
+    expect(results.map((item) => item.result)).toEqual(['skipped', 'skipped']);
+    expect(results[0].why).toContain('основание старта изменилось');
+    expect(b.spawned).toEqual([]);
+    expect(b.steps).toEqual([]);
+    expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+    expect(f.cards[0].desc).toBe(saved);
+    expect(f.cards[0].idMembers).toEqual([]);
+    expect(f.calls.findIndex((call) => call.method === 'POST')).toBeLessThan(
+      f.calls.findIndex((call) => call.path === 'boards/b/cards'),
+    );
+  });
+  it('неизменный разрешённый старт сохраняет неизвестные ключи и запускается', async () => {
+    const f = dependencyFixture();
+    const original = splitDescription(f.cards[0].desc);
+    original.meta.reanalysis = true;
+    original.meta.recovery = {
+      causedBy: 'pipeline',
+      fixedBy: [],
+      returns: 0,
+      future: { keep: true },
+    };
+    f.cards[0].desc = joinDescription(original.human, original.meta);
+    const before = splitDescription(f.cards[0].desc);
+    const io = compose(f.store('B'));
+    expect(await execute([action], io)).toMatchObject([{ result: 'done' }]);
+    expect(io.spawned).toHaveLength(1);
+    const after = splitDescription(f.cards[0].desc);
+    expect(after.meta.extra).toEqual(before.meta.extra);
+    expect(after.meta.recovery.future).toEqual(before.meta.recovery.future);
+    expect(after.human).toBe(before.human);
+    expect(after.meta.owner).toBe('B');
+    expect(after.meta.reanalysis).toBe(false);
+  });
+  it.each([false, true])(
+    'доказанный PR допускается только при неизменном основании; устарело=%s',
+    async (changed) => {
+      const f = dependencyFixture();
+      f.cards.push({
+        ...f.cards[0],
+        id: 'producer',
+        name: '0002-producer · Producer',
+        idList: 'list-completed',
+        desc: joinDescription('Producer', { id: '0002-producer', links: { pr: 42 } }),
+      });
+      let store;
+      if (changed) store = f.store('B');
+      await f.store('A').appendTaskDependencies(f.update, f.context);
+      if (!changed) store = f.store('B');
+      const io = {
+        ...compose(store),
+        dependencyEvidence: {
+          42: {
+            number: 42,
+            state: 'MERGED',
+            mergedAt: '2026-09-01T00:00:00.000Z',
+            baseRefName: 'main',
+          },
+        },
+      };
+      f.calls.length = 0;
+      expect(await execute([action], io)).toMatchObject([{ result: changed ? 'skipped' : 'done' }]);
+      expect(io.spawned).toHaveLength(changed ? 0 : 1);
+      expect(f.calls.some((call) => call.method === 'PUT')).toBe(!changed);
+    },
+  );
+  it('неизменный PR без доказательства текущего цикла удерживает старт', async () => {
+    const f = dependencyFixture();
+    await f.store().appendTaskDependencies(f.update, f.context);
+    f.cards.push({
+      ...f.cards[0],
+      id: 'producer',
+      name: '0002-producer · Producer',
+      idList: 'list-completed',
+      desc: joinDescription('Producer', { id: '0002-producer', links: { pr: 42 } }),
+    });
+    const io = compose(f.store('B'));
+    f.calls.length = 0;
+    expect(await execute([action], io)).toMatchObject([
+      { result: 'skipped', why: expect.stringContaining('доказательства') },
+    ]);
+    expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+    expect(io.spawned).toEqual([]);
+  });
+  it.each([false, true])(
+    'ошибка чтения освобождает только новый захват; восстановление=%s',
+    async (recovery) => {
+      const f = dependencyFixture();
+      if (recovery) {
+        const before = splitDescription(f.cards[0].desc);
+        f.cards[0].desc = joinDescription(before.human, { ...before.meta, owner: 'B' });
+        f.cards[0].idMembers = ['me'];
+      }
+      const io = compose(f.store('B'));
+      let boards = 0;
+      f.hook = (method, path) => {
+        if (path === 'boards/b/cards' && ++boards === (recovery ? 2 : 1))
+          return { ok: false, why: 'fresh read unavailable' };
+      };
+      expect(await execute([action], io)).toMatchObject([
+        { result: 'skipped', why: expect.stringContaining('unavailable') },
+      ]);
+      expect(io.spawned).toEqual([]);
+      expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+      expect(f.cards[0].idMembers).toEqual(recovery ? ['me'] : []);
+    },
+  );
+  it('прежний владелец проверяется заново, а не по старому Map', async () => {
+    const f = dependencyFixture();
+    const before = splitDescription(f.cards[0].desc);
+    f.cards[0].desc = joinDescription(before.human, { ...before.meta, owner: 'B' });
+    f.cards[0].idMembers = ['me'];
+    const io = compose(f.store('B'));
+    f.cards[0].desc = joinDescription(before.human, { ...before.meta, owner: 'A' });
+    expect(await execute([action], io)).toMatchObject([{ result: 'raced' }]);
+    expect(f.calls.some((call) => ['PUT', 'DELETE'].includes(call.method))).toBe(false);
+  });
+  it('явно сообщает ошибку освобождения нового захвата', async () => {
+    const f = dependencyFixture();
+    const io = compose(f.store('B'));
+    f.hook = (method, path) => {
+      if (path === 'boards/b/cards' || method === 'DELETE')
+        return { ok: false, why: 'unavailable' };
+    };
+    expect(await execute([action], io)).toMatchObject([
+      { result: 'failed', why: expect.stringContaining('освобождение') },
+    ]);
+    expect(io.spawned).toEqual([]);
+  });
+});
 
 const task = (over = {}) => ({
   id: '0001-one',
@@ -267,6 +413,498 @@ function fakeIo(over = {}) {
 }
 
 const startAction = { kind: 'start-stage', taskId: '0001-one', stage: 'design' };
+
+function dependencyReportWorld() {
+  const f = dependencyFixture();
+  const sourceId = '0001-source';
+  f.cards.push({
+    ...f.cards[0],
+    id: 'card-source',
+    name: `${sourceId} · Source`,
+    idList: 'list-implement',
+    desc: joinDescription('Source', { id: sourceId, owner: 'B' }),
+    idMembers: ['me'],
+  });
+  const store = f.store('B');
+  const state = {
+    report: {
+      taskId: sourceId,
+      stage: 'implement',
+      outcome: 'done',
+      summary: 'Готово',
+      dependencyUpdates: [f.update],
+    },
+    forgotten: 0,
+  };
+  const io = {
+    ...fakeIo(),
+    ...store,
+    machine: 'B',
+    readReport: () => state.report,
+    removeReport: () => {
+      state.report = null;
+    },
+    forgetSession: () => {
+      state.forgotten++;
+    },
+  };
+  const action = { kind: 'transfer-report', taskId: sourceId, stage: 'implement' };
+  return { ...f, fixture: f, io, state, action, sourceId };
+}
+
+describe('перенос отчёта с dependencyUpdates', () => {
+  it.each(['failure', 'throw'])(
+    'повтор после ошибки освобождения адресата сохраняет отчёт до снятия захвата: %s',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      const source = JSON.parse(JSON.stringify(f.cards[1]));
+      const report = JSON.parse(JSON.stringify(f.state.report));
+      f.fixture.hook = (method, path) => {
+        if (method !== 'DELETE' || path !== 'cards/card-target/idMembers/me') return;
+        if (mode === 'throw') throw new Error('release unavailable');
+        return { ok: false, why: 'release unavailable' };
+      };
+      expect(await execute([f.action], f.io)).toMatchObject([
+        { result: 'failed', why: expect.stringContaining('release unavailable') },
+      ]);
+      const target = JSON.parse(JSON.stringify(f.cards[0]));
+      expect(target.idMembers).toEqual(['me']);
+      expect(splitDescription(target.desc).meta).toMatchObject({
+        dependsOn: f.update.dependsOn,
+        dependencyResults: f.update.dependencyResults,
+      });
+      expect(f.cards[1]).toEqual(source);
+      expect(f.state.report).toEqual(report);
+      expect(f.state.forgotten).toBe(0);
+
+      f.fixture.hook = null;
+      f.calls.length = 0;
+      const freshIo = { ...f.io, ...f.store('B') };
+      expect(await execute([f.action], freshIo)).toMatchObject([
+        { result: 'failed', why: expect.stringContaining('адресат уже назначен') },
+      ]);
+      expect(f.calls.length).toBeGreaterThan(0);
+      expect(f.calls.every((call) => call.method === 'GET')).toBe(true);
+      expect(f.cards[0]).toEqual(target);
+      expect(f.cards[1]).toEqual(source);
+      expect(f.state.report).toEqual(report);
+      expect(f.state.forgotten).toBe(0);
+
+      // Штатное освобождение моделируется отдельно: новый IO не владеет старым захватом.
+      expect(await f.store('B').release({ id: f.update.taskId })).toMatchObject({ ok: true });
+      expect(f.cards[0].idMembers).toEqual([]);
+      f.calls.length = 0;
+      expect(await execute([f.action], freshIo)).toMatchObject([{ result: 'done', status: 'pr' }]);
+      const targetCalls = f.calls.filter((call) => call.path.startsWith('cards/card-target'));
+      expect(targetCalls.length).toBeGreaterThan(0);
+      expect(targetCalls.every((call) => call.method === 'GET')).toBe(true);
+      expect(f.cards[0]).toEqual({ ...target, idMembers: [] });
+      expect(f.cards[1].idList).toBe('list-pr');
+      expect(f.state.report).toBeNull();
+      expect(f.state.forgotten).toBe(1);
+    },
+  );
+  it.each(['refused', 'lost-response', 'token-reanalysis'])(
+    'после PUT источника и сбоя POST повтор через новый IO завершает только журнал: %s',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      const expectedStatus = mode === 'token-reanalysis' ? 'review' : 'pr';
+      if (mode === 'token-reanalysis') {
+        const source = splitDescription(f.cards[1].desc);
+        source.meta.tokenReanalysis = {
+          phase: 'analyzing',
+          originStatus: 'review',
+          originPriority: 50,
+          originReturnTo: null,
+          originAttempts: { continuations: 0, cycleFailures: 0 },
+          originDecomposed: false,
+        };
+        f.cards[1].idList = 'list-decompose';
+        f.cards[1].desc = joinDescription(source.human, source.meta);
+        f.state.report.stage = 'decompose';
+        f.action.stage = 'decompose';
+        Object.assign(f.io, f.store('B'));
+      }
+      f.state.report.costUsd = 1.25;
+      const original = JSON.parse(JSON.stringify(f.state.report));
+      let published = null;
+      f.fixture.hook = (method, path, body) => {
+        if (method === 'POST' && path === 'cards/card-source/actions/comments') {
+          if (mode === 'lost-response') published = body.text;
+          return { ok: false, why: 'comment unavailable' };
+        }
+      };
+      expect(await execute([f.action], f.io)).toMatchObject([{ result: 'failed' }]);
+      expect(f.cards[1].idList).toBe(`list-${expectedStatus}`);
+      expect(f.state.report).toEqual(original);
+      expect(f.state.forgotten).toBe(0);
+      const savedSource = f.cards[1].desc;
+      const target = splitDescription(f.cards[0].desc);
+      target.meta.dependsOn.push('0007-new');
+      target.meta.extra.after = true;
+      f.cards[0].desc = joinDescription(target.human, target.meta);
+      f.fixture.hook = (method, path) => {
+        if (published && method === 'GET' && path === 'cards/card-source/actions')
+          return { ok: true, data: [{ data: { text: published } }] };
+      };
+      const freshIo = { ...f.io, ...f.store('B') };
+      f.calls.length = 0;
+      // Совпадения ID и этапа недостаточно: иной текст не получает квитанцию.
+      f.state.report.summary = 'Посторонний отчёт';
+      expect(await execute([f.action], freshIo)).toMatchObject([{ result: 'failed' }]);
+      expect(f.calls.some((call) => call.method === 'PUT' || call.method === 'POST')).toBe(false);
+      f.state.report = original;
+      f.calls.length = 0;
+      expect(await execute([f.action], freshIo)).toMatchObject([
+        { result: 'done', status: expectedStatus },
+      ]);
+      expect(
+        f.calls.some((call) => call.path === 'cards/card-target' && call.method === 'GET'),
+      ).toBe(true);
+      expect(f.calls.filter((call) => call.method === 'PUT')).toEqual([]);
+      expect(
+        f.calls.filter((call) => call.path === 'cards/card-source/actions/comments'),
+      ).toHaveLength(mode === 'lost-response' ? 0 : 1);
+      expect(f.cards[1].desc).toBe(savedSource);
+      expect(splitDescription(f.cards[0].desc).meta).toEqual(target.meta);
+      expect(f.state.report).toBeNull();
+      expect(f.state.forgotten).toBe(1);
+    },
+  );
+  it.each(['success', 'readback', 'release', 'blocked'])(
+    'разбор задержки сохраняет порядок адресных записей и повтор: %s',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      const source = splitDescription(f.cards[1].desc);
+      source.meta.delayAnalysis = {
+        phase: 'verifying',
+        originStatus: 'blocked',
+        originSince: '2026-09-01T00:00:00.000Z',
+        originAttempts: { continuations: 0, cycleFailures: 0 },
+      };
+      f.cards[1].idList = 'list-postmortem';
+      f.cards[1].desc = joinDescription(source.human, source.meta);
+      if (mode === 'blocked') f.cards[0].idList = 'list-candidate';
+      Object.assign(f.io, f.store('B'));
+      Object.assign(f.state.report, {
+        stage: 'postmortem',
+        outcome: mode === 'blocked' ? 'blocked' : 'done',
+        routingVersion: 1,
+        categories: ['infrastructure'],
+        delayAnalysis: {
+          cause: 'Ожидание артефакта',
+          evidence: ['Артефакт проверен'],
+          nextAction: 'Повторный анализ',
+          resolution: 'resolved',
+          specificEvidence: ['Артефакт доступен'],
+          preventionEvidence: ['Проверка повторного чтения прошла'],
+        },
+        ...(mode === 'blocked'
+          ? {
+              blockers: [
+                {
+                  taskId: f.update.taskId,
+                  reason: 'Нужен канал',
+                  result: 'Канал готов',
+                  specificResult: 'Артефакт доступен',
+                  preventionResult: 'Повтор защищён тестом',
+                },
+              ],
+            }
+          : {}),
+      });
+      f.action.stage = 'postmortem';
+      let wrote = false;
+      f.fixture.hook = (method, path) => {
+        if (method === 'GET' && path.endsWith('/actions')) return { ok: true, data: [] };
+        if (method === 'PUT' && path === 'cards/card-target') wrote = true;
+        if (mode === 'readback' && wrote && method === 'GET' && path === 'cards/card-target')
+          return { ok: false, why: 'readback failed' };
+        if (mode === 'release' && method === 'DELETE' && path.startsWith('cards/card-source/'))
+          return { ok: false, why: 'release failed' };
+      };
+      const result = await execute([f.action], f.io);
+      expect(result[0].result, result[0].why).toBe(
+        ['readback', 'release'].includes(mode) ? 'failed' : 'done',
+      );
+      const puts = f.calls.filter((call) => call.method === 'PUT');
+      expect(puts[0].path).toBe('cards/card-target');
+      expect(splitDescription(f.cards[0].desc).meta.dependencyResults).toEqual(
+        f.update.dependencyResults,
+      );
+      if (mode === 'readback') {
+        expect(puts).toHaveLength(1);
+        expect(f.cards[1].idList).toBe('list-postmortem');
+        expect(f.state.report).not.toBeNull();
+      } else {
+        expect(
+          f.calls.some(
+            (call) =>
+              call.path === 'cards/card-source/actions/comments' &&
+              call.body.text?.includes('Зависимости 0003-consumer подтверждены'),
+          ),
+        ).toBe(true);
+        expect(f.cards[1].idList).toBe(mode === 'blocked' ? 'list-blocked' : 'list-new');
+        if (mode === 'release') {
+          expect(f.state.report).not.toBeNull();
+          f.fixture.hook = null;
+          f.calls.length = 0;
+          Object.assign(f.io, f.store('B'));
+          expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+          expect(f.calls.some((call) => call.path === 'boards/b/cards')).toBe(true);
+          expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+        }
+        expect(f.state.report).toBeNull();
+      }
+    },
+  );
+  it.each(['success', 'readback', 'invalid-blocker', 'release'])(
+    'адресное поручение при blocked: %s',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      if (mode === 'success') {
+        f.cards[0].idList = 'list-candidate';
+        Object.assign(f.io, f.store('B'));
+      }
+      Object.assign(f.state.report, {
+        outcome: 'blocked',
+        routingVersion: 1,
+        categories: ['infrastructure'],
+        blockers: [{ taskId: f.update.taskId, reason: 'Нужен результат', result: 'Готовый канал' }],
+      });
+      if (mode === 'invalid-blocker') f.state.report.blockers[0].taskId = '0009-missing';
+      let wrote = false;
+      f.fixture.hook = (method, path) => {
+        if (method === 'PUT' && path === 'cards/card-target') wrote = true;
+        if (mode === 'readback' && wrote && method === 'GET' && path === 'cards/card-target')
+          return { ok: false, why: 'readback failed' };
+        if (mode === 'release' && method === 'DELETE' && path.startsWith('cards/card-source/'))
+          return { ok: false, why: 'release failed' };
+      };
+      const [result] = await execute([f.action], f.io);
+      expect(result.result).toBe(mode === 'success' ? 'done' : 'failed');
+      const puts = f.calls.filter((call) => call.method === 'PUT').map((call) => call.path);
+      if (mode === 'success') {
+        expect(puts).toEqual(['cards/card-target', 'cards/card-target', 'cards/card-source']);
+        expect(f.cards[1].idList).toBe('list-blocked');
+        expect(splitDescription(f.cards[0].desc).meta.dependencyResults).toEqual(
+          f.update.dependencyResults,
+        );
+        expect(splitDescription(f.cards[0].desc).meta.extra).toEqual({ nested: ['не терять'] });
+        expect(f.state.report).toBeNull();
+      } else if (mode === 'release') {
+        expect(f.cards[1].idList).toBe('list-blocked');
+        expect(f.state.report).not.toBeNull();
+        f.fixture.hook = null;
+        f.calls.length = 0;
+        Object.assign(f.io, f.store('B'));
+        expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+        expect(f.state.report).toBeNull();
+        expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+        expect(f.calls.some((call) => call.path === 'boards/b/cards')).toBe(true);
+      } else {
+        expect(puts).toEqual(mode === 'readback' ? ['cards/card-target'] : []);
+        expect(f.cards[1].idList).toBe('list-implement');
+        expect(f.state.report).not.toBeNull();
+      }
+    },
+  );
+  it('повтор после неудачной записи источника перечитывает новые зависимости и неизвестные поля', async () => {
+    const f = dependencyReportWorld();
+    const beforeSource = f.cards[1].desc;
+    f.fixture.hook = (method, path) => {
+      if (method === 'PUT' && path === 'cards/card-source')
+        return { ok: false, why: 'source unavailable' };
+    };
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'failed' }]);
+    expect(f.state.report).not.toBeNull();
+    expect(f.cards[1].desc).toBe(beforeSource);
+    const parts = splitDescription(f.cards[0].desc);
+    parts.meta.dependsOn.push('0007-new');
+    parts.meta.dependencyResults.push({ taskId: '0007-new', kind: 'merged-pr', pr: 77 });
+    parts.meta.extra.new = { keep: true };
+    f.cards[0].desc = joinDescription(parts.human, parts.meta);
+    f.fixture.hook = null;
+    f.calls.length = 0;
+    // Новая станция получает собственный Map; успех должен следовать из GET сервера.
+    Object.assign(f.io, f.store('B'));
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+    expect(f.state.report).toBeNull();
+    expect(f.calls.filter((call) => call.method === 'PUT').map((call) => call.path)).toEqual([
+      'cards/card-source',
+    ]);
+    expect(splitDescription(f.cards[0].desc).meta).toEqual(parts.meta);
+    expect(f.io.readTask(f.update.taskId).dependsOn).toEqual(['0002-producer', '0007-new']);
+  });
+  it('успешный ответ PUT и кандидат в Map не заменяют независимый readback', async () => {
+    const f = dependencyReportWorld();
+    const read = f.io.readTask;
+    f.io.readTask = (id) =>
+      id === f.update.taskId
+        ? {
+            ...read(id),
+            dependsOn: f.update.dependsOn,
+            dependencyResults: f.update.dependencyResults,
+          }
+        : read(id);
+    f.fixture.hook = (method, path, body) => {
+      if (method === 'PUT' && path === 'cards/card-target')
+        return { ok: true, data: { ...f.cards[0], ...body } };
+    };
+    expect(await execute([f.action], f.io)).toMatchObject([
+      { result: 'failed', why: expect.stringContaining('подтверждение') },
+    ]);
+    expect(f.state.report).not.toBeNull();
+    expect(f.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+  });
+  it('подтверждает адресата до записи источника и перечисляет основание в журнале', async () => {
+    const f = dependencyReportWorld();
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+    const puts = f.calls.filter((call) => call.method === 'PUT');
+    expect(puts.map((call) => call.path)).toEqual(['cards/card-target', 'cards/card-source']);
+    expect(f.cards[0].idList).toBe('list-new');
+    expect(f.state.report).toBeNull();
+    expect(
+      f.calls.find((call) => call.path === 'cards/card-source/actions/comments').body.text,
+    ).toContain(f.update.reason);
+  });
+  it.each(['confirm', 'put-response', 'put-throw'])(
+    'сохранённый PUT и сбой %s не позволяют старым действиям стереть запись',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      let wrote = false;
+      f.fixture.hook = (method, path, body) => {
+        if (method === 'PUT' && path === 'cards/card-target') {
+          wrote = true;
+          Object.assign(f.cards[0], body);
+          if (mode === 'put-throw') throw new Error('lost PUT');
+          if (mode === 'put-response') return { ok: false, why: 'lost PUT' };
+        }
+        if (wrote && mode === 'confirm' && method === 'GET' && path === 'cards/card-target')
+          return { ok: false, why: 'readback failed' };
+      };
+      const beforeSource = f.cards[1].desc;
+      const results = await execute(
+        [
+          f.action,
+          { kind: 'start-stage', taskId: f.update.taskId, stage: 'design' },
+          { kind: 'fail-stage', taskId: f.update.taskId, stage: 'design' },
+        ],
+        f.io,
+      );
+      expect(results.map((item) => item.result)).toEqual(['failed', 'skipped', 'skipped']);
+      expect(results[0].why).toContain(f.update.taskId);
+      expect(splitDescription(f.cards[0].desc).meta.dependencyResults).toEqual(
+        f.update.dependencyResults,
+      );
+      expect(f.io.readTask(f.update.taskId).dependsOn).toBeUndefined();
+      expect(f.io.spawned).toEqual([]);
+      expect(f.cards[1].desc).toBe(beforeSource);
+      expect(f.state.report).not.toBeNull();
+      expect(f.state.forgotten).toBe(0);
+      expect(f.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+      expect(f.cards[0].idMembers).toEqual([]);
+    },
+  );
+  it('исключение адаптера после callback тоже сохраняет инвалидацию', async () => {
+    const f = dependencyReportWorld();
+    f.io.appendTaskDependencies = async (update, context) => {
+      context.invalidate(update.taskId);
+      throw new Error('adapter failed');
+    };
+    expect(
+      await execute(
+        [f.action, { kind: 'start-stage', taskId: f.update.taskId, stage: 'design' }],
+        f.io,
+      ),
+    ).toMatchObject([{ result: 'failed' }, { result: 'skipped' }]);
+    expect(f.state.report).not.toBeNull();
+  });
+  it.each(['taskId', 'stage', 'outcome', 'trust'])(
+    'негодный отчёт (%s) не обращается к адресатам',
+    async (field) => {
+      const f = dependencyReportWorld();
+      if (field === 'taskId') f.state.report.taskId = '0009-wrong';
+      if (field === 'stage') f.state.report.stage = 'audit';
+      if (field === 'outcome') f.state.report.outcome = 'unknown';
+      if (field === 'trust')
+        f.state.report.denials = [{ tool_name: 'AskUserQuestion', tool_input: {} }];
+      const result = await execute([f.action], f.io);
+      expect(result[0].result).toBe('failed');
+      expect(f.calls).toEqual([]);
+      expect(f.state.report).not.toBeNull();
+    },
+  );
+  it('все адресаты валидируются до записи и до requests/amendments', async () => {
+    const f = dependencyReportWorld();
+    f.state.report.dependencyUpdates.push({ ...f.update, taskId: '0009-missing' });
+    f.state.report.requests = [
+      { type: 'note', title: 'New', description: 'Details', priority: 10 },
+    ];
+    f.state.report.amendments = [{ taskId: f.update.taskId, facts: 'Facts' }];
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'failed' }]);
+    expect(f.calls.every((call) => call.method === 'GET')).toBe(true);
+    expect(f.state.forgotten).toBe(0);
+  });
+  it.each(['absent', 'empty'])('поле %s не добавляет IO обработчика', async (mode) => {
+    const f = dependencyReportWorld();
+    if (mode === 'absent') delete f.state.report.dependencyUpdates;
+    else f.state.report.dependencyUpdates = [];
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+    expect(f.calls.every((call) => call.path.startsWith('cards/card-source'))).toBe(true);
+  });
+  it('null и неподдерживаемый адаптер отказывают явно', async () => {
+    const f = dependencyReportWorld();
+    f.state.report.dependencyUpdates = null;
+    expect(await execute([f.action], f.io)).toMatchObject([{ result: 'failed' }]);
+    f.state.report.dependencyUpdates = [f.update];
+    delete f.io.appendTaskDependencies;
+    expect(await execute([f.action], f.io)).toMatchObject([
+      { result: 'failed', why: expect.stringContaining('не поддерживает') },
+    ]);
+    expect(f.calls).toEqual([]);
+  });
+  it.each(['failed', 'question'])(
+    'законный исход %s допускает поручение адресату failed',
+    async (outcome) => {
+      const f = dependencyReportWorld();
+      f.cards[0].idList = 'list-failed';
+      f.state.report.outcome = outcome;
+      expect(await execute([f.action], f.io)).toMatchObject([{ result: 'done' }]);
+      expect(f.cards[0].idList).toBe('list-failed');
+    },
+  );
+  it('частичный успех и no-op инвалидируют адресата до следующего сканирования', async () => {
+    const f = dependencyReportWorld();
+    f.cards.push({
+      ...f.cards[0],
+      id: 'second',
+      name: '0005-second · Second',
+      idMembers: ['me'],
+      desc: joinDescription('Second', { id: '0005-second' }),
+    });
+    f.state.report.dependencyUpdates.push({ ...f.update, taskId: '0005-second' });
+    expect(
+      await execute(
+        [f.action, { kind: 'fail-stage', taskId: f.update.taskId, stage: 'design' }],
+        f.io,
+      ),
+    ).toMatchObject([{ result: 'failed' }, { result: 'skipped' }]);
+    expect(f.state.report).not.toBeNull();
+    f.cards[2].idMembers = [];
+    f.calls.length = 0;
+    expect(
+      await execute(
+        [f.action, { kind: 'start-stage', taskId: f.update.taskId, stage: 'design' }],
+        f.io,
+      ),
+    ).toMatchObject([{ result: 'done' }, { result: 'skipped' }]);
+    expect(f.calls.filter((call) => call.method === 'PUT').map((call) => call.path)).toEqual([
+      'cards/second',
+      'cards/card-source',
+    ]);
+  });
+});
 
 describe('сохранение частей декомпозиции', () => {
   const action = { kind: 'transfer-report', taskId: '0001-one', stage: 'decompose' };

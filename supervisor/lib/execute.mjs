@@ -85,13 +85,75 @@ function evidenceFor(task, stage, io) {
   };
 }
 
+async function applyDependencyUpdates(task, updates, io, context) {
+  // Все адресаты проверяются до первой записи. Неудача сохраняет весь отчёт для повтора.
+  const dependencyNotes = [];
+  if (updates.length) {
+    if (!io.planTaskDependencyUpdates || !io.appendTaskDependencies)
+      return { result: 'failed', why: 'адаптер не поддерживает dependencyUpdates' };
+    try {
+      const planned = await io.planTaskDependencyUpdates(updates, task.id);
+      if (!planned.ok) return { result: 'failed', why: planned.why };
+      for (const update of updates) {
+        const saved = await io.appendTaskDependencies(update, {
+          ...context,
+          sourceId: task.id,
+          updates,
+        });
+        if (!saved.ok)
+          return { result: 'failed', why: saved.why ?? `${update.taskId}: ${saved.outcome}` };
+        dependencyNotes.push(`Зависимости ${update.taskId} подтверждены: ${update.reason}`);
+      }
+    } catch (error) {
+      return { result: 'failed', why: `dependencyUpdates: ${error.message}` };
+    }
+  }
+
+  return { notes: dependencyNotes };
+}
+
 /** Перенести отчёт сессии в бэклог. */
-async function transferReport(action, io) {
+async function transferReport(action, io, context) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
+  const hasUpdates = Object.hasOwn(report, 'dependencyUpdates');
+  if (hasUpdates && !Array.isArray(report.dependencyUpdates))
+    return { result: 'failed', why: 'dependencyUpdates: ожидается массив' };
+  const updates = report.dependencyUpdates ?? [];
+  let transferred = null;
+  if (
+    updates.length &&
+    report.taskId === task.id &&
+    report.taskId === action.taskId &&
+    report.stage === action.stage &&
+    io.readTransferredReport
+  ) {
+    const saved = await io.readTransferredReport(task.id, delayKey(report), report.stage);
+    if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };
+    transferred = saved.receipt;
+  }
+  if (
+    updates.length &&
+    (report.taskId !== task.id ||
+      report.taskId !== action.taskId ||
+      report.stage !== action.stage ||
+      (report.stage !== task.status &&
+        !transferred &&
+        task.delayAnalysis?.reportKey !== delayKey(report) &&
+        !(
+          report.outcome === 'blocked' &&
+          task.status === 'blocked' &&
+          task.blockedContext?.from === report.stage
+        )))
+  )
+    return {
+      result: 'failed',
+      why: 'dependencyUpdates: личность или этап отчёта не совпадают с источником',
+    };
 
   if (
+    !updates.length &&
     task.status !== report.stage &&
     task.tokenReanalysis?.reportKey === tokenAnalysisReportKey(report)
   ) {
@@ -116,6 +178,7 @@ async function transferReport(action, io) {
       : { verdict: 'passing', why: null };
 
   if (trust.verdict === 'undermining') {
+    if (updates.length) return { result: 'failed', why: trust.why };
     // Отчёт при этом не пропадает. Основание записано ценой: 31.08.2026
     // задача 0006 ушла в ошибку с полностью снятыми числами шестидесяти
     // матчей, и числа эти остались лежать в логе, которого не прочитал никто.
@@ -141,7 +204,21 @@ async function transferReport(action, io) {
   // заводилось прежнее правило.
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
+  // Переход уже сохранён вместе с отпечатком этого отчёта. Повторяем только
+  // подтверждение адресатов и доставку журнала, не переход и не расход.
+  if (transferred) {
+    const dependencies = await applyDependencyUpdates(task, updates, io, context);
+    if (dependencies.result) return dependencies;
+    const delivered = await io.deliverTransferredReport(task.id, delayKey(report));
+    if (!delivered.ok) return { result: 'failed', why: delivered.why ?? delivered.outcome };
+    io.forgetSession?.(task.id, report.stage);
+    io.removeReport(task.id, report.stage);
+    return { result: 'done', status: transferred.to };
+  }
+
   if (task.delayAnalysis?.reportKey === delayKey(report) && !task.delayJournal) {
+    const dependencies = await applyDependencyUpdates(task, updates, io, context);
+    if (dependencies.result) return dependencies;
     if (['blocked', 'new'].includes(task.status)) {
       const released = await io.release?.(task);
       if (released && !released.ok)
@@ -162,9 +239,15 @@ async function transferReport(action, io) {
       return finishDelayAnalysis(task, report, io, { ownerAnswered: true });
     const problem = delayReportProblem(task, report) || categoriesProblem(report.categories, true);
     if (problem) return rejectDelayReport(task, report, problem, io);
-    if (report.outcome !== 'blocked') return finishDelayAnalysis(task, report, io);
+    if (report.outcome !== 'blocked')
+      return finishDelayAnalysis(task, report, io, {
+        beforeWrite: () => applyDependencyUpdates(task, updates, io, context),
+      });
   }
-  if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
+  if (report.outcome === 'blocked')
+    return transferBlocked(task, report, action, io, {
+      beforeWrite: () => applyDependencyUpdates(task, updates, io, context),
+    });
   const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
   if (categoryProblem) return { result: 'failed', why: categoryProblem };
   if (report.categories && report.requests) {
@@ -176,6 +259,9 @@ async function transferReport(action, io) {
   }
 
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
+  if (updates.length && verdict.problems?.length)
+    return { result: 'failed', why: verdict.problems.join('; ') };
+
   if (task.status === 'review' && report.outcome === 'done' && verdict.status === 'deploy') {
     const impact = io.deploymentImpact?.(report.links?.pr ?? task.links?.pr);
     if (impact?.needed === false) {
@@ -185,6 +271,10 @@ async function transferReport(action, io) {
   }
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  const dependencies = await applyDependencyUpdates(task, updates, io, context);
+  if (dependencies.result) return dependencies;
+  const dependencyNotes = dependencies.notes;
 
   // Остановленная задача счётчиков больше не считает: их обнулил сам переход
   // в сквозное состояние, и наращивать возвраты поверх обнулённого значило бы
@@ -445,13 +535,14 @@ async function transferReport(action, io) {
           ? verdict.note
           : report.summary,
       links: verdict.status === 'completed' ? next.links : (report.links ?? {}),
-      decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
+      decisions: [...(report.decisions ?? []), ...dependencyNotes, ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
       denials,
       denialsNote,
       // Здесь и только здесь запись говорит словами сессии: всё остальное,
       // что конвейер пишет на доску, — его собственная механика.
       source: 'agent',
+      ...(updates.length ? { reportTransferKey: delayKey(report) } : {}),
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
     [asked, answered].filter(Boolean),
@@ -560,13 +651,12 @@ async function spreadBatch(lead, report, io) {
 }
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
-async function startStage(action, io) {
-  const task = io.readTask(action.taskId);
+async function startStage(action, io, context) {
+  let task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
-  const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
+  let claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
-  if (task.reanalysis) claimed.task.reanalysis = false;
 
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
@@ -579,9 +669,44 @@ async function startStage(action, io) {
   // владельца, которая либо проходит, либо отбивается.
   const held = io.acquire ? await io.acquire(claimed.task) : { ok: true };
   if (!held.ok) {
+    if (io.requiresFreshStart) context.invalidate(task.id);
     if (held.outcome === 'taken') return { result: 'raced', why: held.why };
     return { result: 'failed', why: held.why ?? held.outcome };
   }
+
+  if (io.requiresFreshStart) {
+    let fresh;
+    try {
+      fresh = io.readStartTask
+        ? await io.readStartTask(task, { evidence: io.dependencyEvidence ?? {} })
+        : { ok: false, why: 'Trello IO не поддерживает свежее чтение старта' };
+    } catch (error) {
+      fresh = { ok: false, why: error.message };
+    }
+    if (fresh.ok) {
+      task = fresh.task;
+      claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
+      if (!claimed.task) fresh = { ok: false, why: claimed.problems.join('; ') };
+    }
+    if (!fresh.ok) {
+      context.invalidate(task.id);
+      if (held.newClaim) {
+        try {
+          const released = await io.release(task);
+          if (!released?.ok)
+            return {
+              result: 'failed',
+              why: `${fresh.why}; освобождение захвата: ${released?.why ?? 'не подтверждено'}`,
+            };
+        } catch (error) {
+          return { result: 'failed', why: `${fresh.why}; освобождение захвата: ${error.message}` };
+        }
+      }
+      return { result: 'skipped', why: fresh.why };
+    }
+  }
+
+  if (task.reanalysis) claimed.task.reanalysis = false;
 
   const push = await io.saveTask(
     claimed.task,
@@ -1297,8 +1422,18 @@ const HANDLERS = {
  */
 export async function execute(actions, io) {
   const results = [];
+  const invalidated = new Set();
+  const context = { invalidate: (id) => invalidated.add(id) };
 
   for (const action of actions) {
+    if (invalidated.has(action.taskId)) {
+      results.push({
+        action,
+        result: 'skipped',
+        why: 'данные адресата требуют нового сканирования',
+      });
+      continue;
+    }
     const handler = HANDLERS[action.kind];
     if (!handler) {
       results.push({
@@ -1309,7 +1444,7 @@ export async function execute(actions, io) {
       continue;
     }
 
-    const outcome = await handler(action, io);
+    const outcome = await handler(action, io, context);
     results.push({ action, ...outcome });
 
     if (outcome.result === 'failed' && String(outcome.why ?? '').includes('offline')) {
