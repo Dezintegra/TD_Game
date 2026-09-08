@@ -43,9 +43,80 @@ const judge = (over = {}) =>
   });
 
 describe('отказов не было', () => {
-  it('пустой перечень — попутный вердикт без разбирательства', () => {
-    // Обычный случай. Ни улик, ни таблицы следов он не касается вовсе.
+  it('пустой перечень со свежим коммитом принимается', () => {
     expect(judge({ denials: [] })).toEqual({ verdict: 'passing', why: null });
+  });
+});
+
+describe('одинаковая мерка следа независимо от отказов', () => {
+  const stale = { ...clean, lastCommitAt: '2026-09-01T11:00:00+03:00' };
+  const cases = [
+    ...['design', 'revise'].flatMap((stage) => [
+      [stage, stale, {}, 'undermining', 'не появилось ни одного коммита'],
+      [stage, clean, {}, 'passing', null],
+    ]),
+    ['implement', clean, {}, 'passing', null],
+    ['implement', stale, { pr: 129 }, 'passing', null],
+    ['implement', { ...stale, previousPr: '129' }, { pr: 129 }, 'undermining', 'тот же'],
+    ['implement', stale, {}, 'undermining', 'не называет номера pull request'],
+    [
+      'implement',
+      { ...stale, branchOnRemote: false },
+      { pr: 129 },
+      'undermining',
+      'ветки задачи нет',
+    ],
+    ['implement', { ...stale, unpushed: 2 }, { pr: 129 }, 'undermining', '2 коммит'],
+    ...['audit', 'review'].flatMap((stage) => [
+      [stage, stale, {}, 'passing', null],
+      [stage, { ...clean, branchOnRemote: false }, {}, 'undermining', 'ветки задачи нет'],
+      [stage, { ...clean, unpushed: 1 }, {}, 'undermining', '1 коммит'],
+    ]),
+    ['benchmark', {}, {}, 'undermining', 'не называет номера прогона'],
+    ['benchmark', { previousRun: '42' }, { run: 42 }, 'undermining', 'тот же'],
+    ['benchmark', { previousRun: '41' }, { run: 42 }, 'passing', null],
+    ...['branchOnRemote', 'unpushed', 'lastCommitAt', 'stageStartedAt'].map((field) => [
+      'design',
+      { ...clean, [field]: null },
+      {},
+      'unverifiable',
+      'нечем',
+    ]),
+    ...['triage', 'interpret', 'postmortem', 'deploy', 'unknown'].map((stage) => [
+      stage,
+      {},
+      {},
+      'unverifiable',
+      'нечем',
+    ]),
+  ];
+
+  it.each(cases)('%s с уликами %j и ссылками %j: %s', (stage, evidence, links, verdict, reason) => {
+    const input = { stage, evidence, report: report({ stage, links }) };
+    const absent = judgeDenials(input);
+    const empty = judgeDenials({ ...input, denials: [] });
+    const incidental = judgeDenials({ ...input, denials: [denial()] });
+    expect(absent).toEqual(empty);
+    expect(empty.verdict).toBe(verdict);
+    expect(incidental.verdict).toBe(verdict);
+    if (reason) {
+      expect(empty.why).toContain(reason);
+      expect(incidental.why).toContain(reason);
+      expect(empty.why).not.toMatch(/отказ/i);
+    } else {
+      expect(empty.why).toBeNull();
+      expect(incidental.why).toBeNull();
+    }
+    if (verdict === 'undermining') expect(incidental.why).toContain('Отказано: PowerShell');
+  });
+
+  it.each(['question', 'rejected', 'failed', 'blocked'])('%s не требует следа', (outcome) => {
+    for (const denials of [undefined, [], [denial()]]) {
+      expect(judge({ denials, report: report({ outcome }), evidence: {} })).toEqual({
+        verdict: 'passing',
+        why: null,
+      });
+    }
   });
 });
 

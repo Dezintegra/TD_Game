@@ -181,7 +181,7 @@ export function describeDenial(denial) {
 }
 
 /**
- * Подрывает ли перечень отказов доверие к отчёту.
+ * Подрывают ли отсутствие следа или обращение к человеку доверие к отчёту.
  *
  * @param {object} params
  * @param {object[]} params.denials  отказанные действия из ответа процесса
@@ -192,8 +192,6 @@ export function describeDenial(denial) {
  * @returns {{ verdict: 'passing'|'undermining'|'unverifiable', why: string|null }}
  */
 export function judgeDenials({ denials = [], report = {}, stage, evidence = {} }) {
-  if (denials.length === 0) return { verdict: 'passing', why: null };
-
   const asked = denials.filter((denial) => HUMAN_TOOLS.includes(denial?.tool_name));
   if (asked.length > 0) {
     const listed = asked.map(describeDenial).join('; ');
@@ -214,10 +212,13 @@ export function judgeDenials({ denials = [], report = {}, stage, evidence = {} }
   if (trace.kind === 'present') return { verdict: 'passing', why: null };
 
   if (trace.kind === 'none') {
-    return { verdict: 'unverifiable', why: `сопоставить отказ с делом нечем: ${trace.why}` };
+    const note =
+      denials.length > 0 ? 'сопоставить отказ с делом нечем' : 'проверить след этапа нечем';
+    return { verdict: 'unverifiable', why: `${note}: ${trace.why}` };
   }
 
   const listed = denials.map(describeDenial).join('; ');
-  const why = `этап «${stage}» отчитался об успехе, но следа нет: ${trace.why}. Отказано: ${listed}`;
+  const denied = denials.length > 0 ? `. Отказано: ${listed}` : '';
+  const why = `этап «${stage}» отчитался об успехе, но следа нет: ${trace.why}${denied}`;
   return { verdict: 'undermining', why };
 }
