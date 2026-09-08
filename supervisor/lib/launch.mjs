@@ -122,6 +122,12 @@ export async function runLaunch(
   const localDir = join(root, '.pipeline');
   const lockPath = join(localDir, 'supervisor.lock');
   const state = await io.state(lockPath);
+  if (state.kind === 'unknown' && options.mode !== 'watch') {
+    io.error(
+      `Не удалось установить владельца замка: ${state.reason}. Повторите запуск после устранения причины.`,
+    );
+    return 1;
+  }
   const live = state.kind === 'live' ? state.pid : null;
   if (options.mode === 'stop') {
     if (!live) {
@@ -131,6 +137,11 @@ export async function runLaunch(
         io.log('Брошенный замок убран.');
       }
       return 0;
+    }
+    const beforeStop = await io.state(lockPath);
+    if (beforeStop.kind !== 'live' || beforeStop.pid !== live) {
+      io.error('Владелец замка изменился или недоступен; остановка отменена.');
+      return 1;
     }
     io.log(`Снимаю супервизор (процесс ${live}) вместе с поддеревом...`);
     io.killTree(live);

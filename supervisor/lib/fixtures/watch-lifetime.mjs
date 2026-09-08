@@ -53,14 +53,14 @@ if (mode === 'writer') {
         options: parseLaunchArgs(mode === 'watch' ? ['--watch'] : []),
         root,
         explicitRoot: root,
-        entry: fileURLToPath(import.meta.url),
+        entry: join(root, 'supervisor/bin/supervise.mjs'),
         signal: controller.signal,
       },
       {
         spawn: async (params) => {
           const child = await spawnSupervisor({
             ...params,
-            argv: [fileURLToPath(import.meta.url), 'writer', root, id],
+            argv: [join(root, 'supervisor/bin/supervise.mjs'), 'writer', root, id],
           });
           writeFileSync(join(root, 'spawn.json'), JSON.stringify({ pid: child.pid, root, id }));
           return child;
