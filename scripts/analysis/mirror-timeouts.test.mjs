@@ -1,4 +1,15 @@
 import { createRequire } from 'node:module';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  rmdirSync,
+} from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   inspectSource,
@@ -7,9 +18,21 @@ import {
   aggregateRows,
   summary,
   analyzeDatabase,
+  analyzeFile,
+  formatMarkdown,
+  parseArgs,
+  runCli,
 } from './mirror-timeouts.mjs';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+
+function removeFixtureFile(file) {
+  try {
+    unlinkSync(file);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
 
 const options = {
   run: '33430184681',
@@ -92,6 +115,104 @@ describe('historical source', () => {
       db.exec('UPDATE match SET ticks=36000 WHERE world_seed=60');
       expect(inspectSource(db, options).matches[59].censored).toBe(false);
     }));
+});
+
+describe('offline CLI', () => {
+  const args = [
+    '--run',
+    options.run,
+    '--sha',
+    options.sha,
+    '--profile',
+    options.profile,
+    '--seed-start',
+    '1',
+    '--matches',
+    '60',
+    '--ticks-per-second',
+    '30',
+    '--cap-seconds',
+    '1200',
+  ];
+  it.each([[], ['--unknown', 'x'], ['--db'], ['--db', 'x', '--db', 'y']])(
+    'rejects invalid arguments %j',
+    (...argv) => {
+      expect(() => parseArgs(argv)).toThrow();
+    },
+  );
+  it('distinguishes unavailable from a measured zero and lists inventory/windows', () =>
+    withFixture((db) => {
+      const result = analyzeDatabase(db, options);
+      const markdown = formatMarkdown(result);
+      expect(markdown).toContain('нет данных');
+      expect(markdown).toContain('m60');
+      expect(markdown).toContain('900-1200s');
+      expect(markdown).toContain('Внешние сведения');
+      expect(
+        JSON.parse(JSON.stringify(result)).rows[0].sides[0].metrics.base_hp_end.value,
+      ).toBeNull();
+    }));
+  it('reads a file twice unchanged, validates real process exits and imports without action', () => {
+    const root = fileURLToPath(new URL('../../.matchlog/', import.meta.url));
+    mkdirSync(root, { recursive: true });
+    const dir = mkdtempSync(join(root, '0050-test-'));
+    const database = join(dir, 'source.sqlite');
+    const output = join(dir, 'analysis.json');
+    const importer = join(dir, 'import.mjs');
+    const modulePath = fileURLToPath(new URL('./mirror-timeouts.mjs', import.meta.url));
+    try {
+      withFixture((db) => db.prepare('VACUUM INTO ?').run(database));
+      const original = readFileSync(database);
+      const a = analyzeFile(database, options);
+      expect(analyzeFile(database, options)).toEqual(a);
+      const capture = {
+        stdout: {
+          write: () => {
+            throw new Error('Unexpected stdout with --out');
+          },
+        },
+        stderr: { write: () => {} },
+      };
+      expect(runCli(['--db', database, ...args, '--out', output], capture)).toBe(0);
+      expect(JSON.parse(readFileSync(output, 'utf8'))).toEqual(a);
+      expect(runCli(['--db', database, ...args, '--out', database], capture)).toBe(1);
+      expect(readFileSync(database)).toEqual(original);
+      const valid = spawnSync(
+        process.execPath,
+        [modulePath, '--db', database, ...args, '--out', output],
+        { encoding: 'utf8' },
+      );
+      expect(valid.stderr).not.toContain('mirror-timeouts:');
+      expect(valid.status).toBe(0);
+      expect(JSON.parse(readFileSync(output, 'utf8'))).toEqual(a);
+      const invalid = spawnSync(
+        process.execPath,
+        [modulePath, '--db', database, ...args, '--matches', '59'],
+        { encoding: 'utf8' },
+      );
+      expect(invalid.status).toBe(1);
+      const wrongSource = spawnSync(
+        process.execPath,
+        [modulePath, '--db', database, ...args.map((v) => (v === 'historic' ? 'wrong-sha' : v))],
+        { encoding: 'utf8' },
+      );
+      expect(wrongSource.status).toBe(1);
+      expect(wrongSource.stderr).toContain('revision mismatch');
+      writeFileSync(
+        importer,
+        `import ${JSON.stringify(new URL('./mirror-timeouts.mjs', import.meta.url).href)};\n`,
+      );
+      const imported = spawnSync(process.execPath, [importer], { encoding: 'utf8' });
+      expect(imported.status).toBe(0);
+      expect(imported.stdout).toBe('');
+      expect(imported.stderr).not.toContain('mirror-timeouts:');
+    } finally {
+      for (const file of [database, output, importer]) {
+        removeFixtureFile(file);
+      }
+      rmdirSync(dir);
+    }
+  });
 });
 
 const sample = (tick, values = {}) => ({

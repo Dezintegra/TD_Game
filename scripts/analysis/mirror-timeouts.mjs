@@ -1,4 +1,8 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync, existsSync, realpathSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Vite 5 не распознаёт новый встроенный модуль SQLite при прямом импорте.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
@@ -86,9 +90,205 @@ export function inspectSource(db, options) {
 export function analyzeFile(path, options) {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
-    return analyzeDatabase(db, options);
+    return {
+      ...analyzeDatabase(db, options),
+      databaseSha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+    };
   } finally {
     db.close();
+  }
+}
+
+const display = (value) =>
+  value === null || value === undefined
+    ? 'нет данных'
+    : typeof value === 'number'
+      ? String(Math.round(value * 10000) / 10000)
+      : String(value).replaceAll('|', '\\|').replaceAll('\n', ' ');
+const table = (headers, rows) =>
+  [headers, headers.map(() => '---'), ...rows]
+    .map((row) => `| ${row.map(display).join(' | ')} |`)
+    .join('\n');
+const showMetric = (m) =>
+  !m || m.value === null
+    ? `нет данных (${m?.reason ?? 'missing'})`
+    : 'denominator' in m
+      ? `${display(m.value)} [${m.numerator}/${m.denominator}]`
+      : `${display(m.value)} [n=${m.observations}]`;
+
+export function formatMarkdown(result) {
+  const lines = [
+    '# Сравнение причин остановки зеркальных матчей',
+    `Источник: run ${result.source.run}; SHA ${result.source.sha}; SQLite SHA256 ${result.databaseSha256 ?? 'in-memory'}.`,
+    `Профиль обеих сторон: ${result.source.profile}. Миры: ${result.source.seedStart}–${result.source.seedStart + result.source.matches - 1}. Тиков/с: ${result.source.ticksPerSecond}; предел: ${result.source.capSeconds} с.`,
+    `Внешние сведения (не проверены по SQLite): ${result.source.externalParameters.join(', ')}. Проверены: ${result.source.verifiedParameters.join(', ')}.`,
+    `Timeout: ${result.timeoutFraction.numerator}/${result.timeoutFraction.denominator}. Сравнение двух групп: ${result.comparisonAvailable ? 'доступно' : 'недоступно: пустая группа'}.`,
+    'Timeout — цензурированное наблюдение, нижняя граница времени до возможной победы; победитель не назначается. Отбор по будущему исходу и дожитие до отсечки создают смещение. Корреляции не доказывают причинность.',
+    'Единица сравнения — матч: сначала среднее двух годных сторон, затем равный вес матчей. Q1/медиана/Q3: линейная интерполяция (n−1)×p. sides включает все годные стороны, даже при негодной паре; pooled — отдельно суммарная доля наблюдений, не средний матч.',
+    'HP и энергия — единицы базы, доход — энергия/тик, численности — объекты, general_cell — идентификатор клетки. _net = конец минус начало; _relative_first = изменение от первого наблюдения / первый HP (не доля полного здоровья). Рост HP сохраняется. _peak включает недострой; _below_peak — сокращение относительно пика, не уничтожения.',
+    'Отсечки: последний sample не позже точки и не старше секунды, завершённые раньше исключены. Интервалы a < tick ≤ b; первый a — первый sample не позже первой секунды. Доли времени требуют полной секундной сетки. Lifetime использует все наблюдения до footer, его длины различны; конец состояния — последний sample, до секунды раньше footer.',
+    'general_dead/no_path — доли sample с general_alive/path_to_enemy=0. hp_decrease_steps — соседние секундные снижения HP, не весь урон. far_unescorted: nearby_units=0 среди решений с approach_shortest>0 и general_from_home/approach_shortest>0.5; with_army дополнительно live_units>0 при том же знаменателе.',
+    'bought_decisions — решения хотя бы с одним attempt.result=bought; saving_decisions — хотя бы wait или note=saving-for-better (возможны одновременно с покупкой); impatient_decisions — impatient=1. train_accepted — команды kind=2, accepted=1; заказ не равен появившемуся юниту. Команды считаются независимо по своему тику, без соединения с decision/attempt.',
+    '## Опись всех матчей',
+    table(
+      [
+        'match_id',
+        'world_seed',
+        'ai_seed_0',
+        'ai_seed_1',
+        'end_reason',
+        'winner',
+        'ticks',
+        'seconds',
+        'censored',
+      ],
+      result.matches.map((m) => [
+        m.match_id,
+        m.world_seed,
+        m.ai_seed_0,
+        m.ai_seed_1,
+        m.end_reason,
+        m.winner,
+        m.ticks,
+        m.seconds,
+        m.censored,
+      ]),
+    ),
+  ];
+  for (const [reason, cohort] of Object.entries(result.cohorts)) {
+    lines.push(
+      `## ${reason}`,
+      `Длительность, секунды${cohort.censored ? ' (цензурировано)' : ''}: ${JSON.stringify(cohort.durationSeconds)}.`,
+    );
+    for (const [window, data] of Object.entries(cohort.windows)) {
+      lines.push(
+        `### ${window}`,
+        `Матчей группы: ${data.matches}; завершились раньше: ${data.endedEarly}.`,
+        table(
+          [
+            'metric',
+            'n matches',
+            'sides',
+            'missing matches',
+            'observations',
+            'mean',
+            'Q1',
+            'median',
+            'Q3',
+            'pooled numerator/denominator',
+          ],
+          Object.entries(data.metrics).map(([name, m]) => [
+            name,
+            m.n,
+            m.sides,
+            m.missingMatches,
+            m.observations,
+            m.mean,
+            m.q1,
+            m.median,
+            m.q3,
+            m.pooled ? `${m.pooled.numerator}/${m.pooled.denominator}` : null,
+          ]),
+        ),
+      );
+    }
+  }
+  lines.push(
+    '## Совместные наблюдения сторон',
+    'В каждой парной строке порядок 0 / 1. Детальные показатели, числители и знаменатели всех метрик доступны в JSON (--out).',
+  );
+  const keys = [
+    'base_hp_end',
+    'base_hp_net',
+    'units_alive_end',
+    'units_alive_net',
+    'towers_end',
+    'towers_peak',
+    'walls_end',
+    'energy_end',
+    'income_per_tick_end',
+    'queue_len_end',
+    'general_dead',
+    'no_path',
+    'far_unescorted',
+    'far_unescorted_with_army',
+    'train_accepted',
+    'bought_decisions',
+    'saving_decisions',
+    'impatient_decisions',
+    'hp_decrease_steps',
+  ];
+  lines.push(
+    table(
+      [
+        'match_id',
+        'window',
+        'start ticks 0/1',
+        ...keys,
+        'last HP decrease ticks 0/1',
+        'tail ticks 0/1',
+        'train attempts 0/1',
+      ],
+      result.rows.map((row) => [
+        row.match_id,
+        row.window,
+        row.sides.map((s) => display(s.start)).join(' / '),
+        ...keys.map((key) => row.sides.map((s) => showMetric(s.metrics[key])).join(' / ')),
+        row.sides.map((s) => display(s.lastHpDecreaseTick)).join(' / '),
+        row.sides.map((s) => display(s.noDecreaseTailTicks)).join(' / '),
+        row.sides.map((s) => JSON.stringify(s.productionAttempts ?? {})).join(' / '),
+      ]),
+    ),
+  );
+  return lines.join('\n\n') + '\n';
+}
+
+export function parseArgs(args) {
+  const names = {
+    '--db': 'db',
+    '--run': 'run',
+    '--sha': 'sha',
+    '--profile': 'profile',
+    '--seed-start': 'seedStart',
+    '--matches': 'matches',
+    '--ticks-per-second': 'ticksPerSecond',
+    '--cap-seconds': 'capSeconds',
+    '--out': 'out',
+  };
+  const options = {};
+  for (let i = 0; i < args.length; i += 2) {
+    const key = names[args[i]];
+    const value = args[i + 1];
+    if (!key || key in options || !value || value.startsWith('--'))
+      throw new Error(`Invalid argument ${args[i]}`);
+    options[key] = ['seedStart', 'matches', 'ticksPerSecond', 'capSeconds'].includes(key)
+      ? Number(value)
+      : value;
+  }
+  validateOptions(options);
+  if (!options.db) throw new Error('Missing --db');
+  return options;
+}
+
+export function runCli(args = process.argv.slice(2), io = process) {
+  try {
+    const { db, out, ...options } = parseArgs(args);
+    if (out && existsSync(out)) {
+      const sourceStat = statSync(db);
+      const outputStat = statSync(out);
+      if (
+        realpathSync(db) === realpathSync(out) ||
+        (sourceStat.dev === outputStat.dev && sourceStat.ino === outputStat.ino)
+      )
+        throw new Error('--out must not overwrite the source database');
+    }
+    const result = analyzeFile(db, options);
+    if (out) writeFileSync(out, JSON.stringify(result, null, 2) + '\n');
+    else io.stdout.write(formatMarkdown(result));
+    return 0;
+  } catch (error) {
+    io.stderr.write(`mirror-timeouts: ${error.message}\n`);
+    return 1;
   }
 }
 
@@ -374,3 +574,6 @@ export function analyzeDatabase(db, options, extraWindows = []) {
   );
   return { ...result, windows, rows, cohorts };
 }
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+  process.exitCode = runCli();
