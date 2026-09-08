@@ -9,6 +9,9 @@ export function deliveryFixture({
   outcome = 'done',
   requests = false,
   denials = [],
+  taskOverrides = {},
+  memberOverrides = {},
+  reportOverrides = {},
 } = {}) {
   const base = join(import.meta.dirname, '../../../.matchlog');
   mkdirSync(base, { recursive: true });
@@ -22,10 +25,12 @@ export function deliveryFixture({
     type: 'feature',
     status: stage,
     spentUsd: 4,
+    createdAt: '2026-09-05T00:00:00Z',
     statusChangedAt: '2026-09-05T00:00:00Z',
     attempts: { continuations: 2, cycleFailures: 0 },
+    ...taskOverrides,
   };
-  const member = { ...task, id: '0002-member', title: 'Member' };
+  const member = { ...task, id: '0002-member', title: 'Member', ...memberOverrides };
   seedRecipient(boardPath, [task, member]);
   const report = {
     taskId: task.id,
@@ -42,6 +47,7 @@ export function deliveryFixture({
           amendments: [{ taskId: member.id, facts: 'Useful evidence' }],
         }
       : {}),
+    ...reportOverrides,
   };
   const entry = openReportStore(queuePath).accept(report, {
     launchId: 'launch',

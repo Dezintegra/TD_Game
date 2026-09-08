@@ -55,7 +55,11 @@ export async function transferReport(action, io) {
       let result;
       if (operation.kind === 'saveTask')
         result = await io.saveTask(args[0], args[1], args[2], args[3] ?? [], operation);
-      else if (['createTask', 'amendTask', 'askOwner', 'recordAnswer'].includes(operation.kind))
+      else if (operation.kind === 'release')
+        result = (await io.release?.(...args, operation)) ?? { ok: true };
+      else if (operation.kind === 'amendTask')
+        result = await io.amendTask(args[0], args[1], args[2], args[3], args[4], operation);
+      else if (['createTask', 'askOwner', 'recordAnswer'].includes(operation.kind))
         result = await io[operation.kind](...args, operation);
       else throw new Error(`unknown report operation ${operation.kind}`);
       if (!result?.ok)

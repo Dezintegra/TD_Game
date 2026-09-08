@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolveConfig } from '../../config/defaults.mjs';
 import { createTrelloBacklog } from '../backlog-trello.mjs';
-import { joinDescription, metaOf } from '../card.mjs';
+import { joinDescription, metaOf, labelKeysOf } from '../card.mjs';
 
 export const { config: receiptConfig } = resolveConfig({ trello: { board: 'test-board' } });
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -23,13 +23,15 @@ export function seedRecipient(path, tasks) {
       name: task.title,
       desc: joinDescription(task.description ?? '', metaOf(task)),
       idList: `list-${task.status}`,
-      idLabels: [`label-${task.type}`],
+      idLabels: labelKeysOf(task).map((key) => `label-${key}`),
+      idMembers: ['test-member'],
       pos: 10,
       closed: false,
     })),
     comments: [],
     puts: 0,
     posts: 0,
+    deletes: 0,
   };
   writeFileSync(path, JSON.stringify(state));
 }
@@ -50,7 +52,8 @@ export function openRecipient(path, config = receiptConfig) {
     let result;
     const cardId = route.split('/')[1];
     const card = state.cards.find((item) => item.id === cardId);
-    if (method === 'GET' && route.startsWith('boards/')) result = state.cards;
+    if (method === 'GET' && route === 'members/me') result = { id: 'test-member' };
+    else if (method === 'GET' && route.startsWith('boards/')) result = state.cards;
     else if (method === 'GET' && route.endsWith('/actions')) {
       let all = state.comments.filter((item) => item.cardId === cardId).toReversed();
       if (data.before) all = all.slice(all.findIndex((item) => item.id === data.before) + 1);
@@ -62,6 +65,10 @@ export function openRecipient(path, config = receiptConfig) {
       Object.assign(card, data);
       state.puts += 1;
       result = card;
+    } else if (method === 'DELETE' && card && route.includes('/idMembers/')) {
+      card.idMembers = card.idMembers.filter((id) => id !== route.split('/').at(-1));
+      state.deletes = (state.deletes ?? 0) + 1;
+      result = {};
     } else if (method === 'POST' && route === 'cards') {
       result = {
         id: `6600000000000000${String(state.cards.length).padStart(8, '0')}`,
@@ -92,6 +99,7 @@ export function openRecipient(path, config = receiptConfig) {
     get: (route, data) => request('GET', route, data),
     put: (route, data) => request('PUT', route, data),
     post: (route, data) => request('POST', route, data),
+    delete: (route, data) => request('DELETE', route, data),
   };
   return {
     store: createTrelloBacklog({ trello, config, snapshot: clone(state) }),

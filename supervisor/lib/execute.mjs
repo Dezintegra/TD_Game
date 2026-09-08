@@ -1,3 +1,12 @@
+import { unblockTask } from './blockers.mjs';
+import { changeTokenHold } from './token-hold.mjs';
+import { analyzeTokenBudget } from './token-reanalysis.mjs';
+import {
+  beginDelayAnalysis,
+  observeDelay,
+  reviewingDelay,
+  reviewingQuestion,
+} from './delay-analysis.mjs';
 import { applyExternal } from './apply-report.mjs';
 import {
   applyTransition,
@@ -13,6 +22,8 @@ import { halt } from './report-plan.mjs';
 import { transferReport } from './report-delivery.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
+import { recoverClosureReason } from './closure.mjs';
+import { journalBody } from './journal.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -53,6 +64,7 @@ async function startStage(action, io) {
 
   const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
+  if (task.reanalysis) claimed.task.reanalysis = false;
 
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
@@ -196,6 +208,13 @@ function assignmentFor(action, io, task, branchHint) {
     task,
     journal: io.readJournal(action.taskId),
     board: io.boardDigest(),
+    delayDependencies: reviewingDelay(task)
+      ? (task.dependsOn ?? []).map((id) => ({
+          task: io.readTask(id) ??
+            io.dependencyRecords?.().find((item) => item.id === id) ?? { id, missing: true },
+          journal: io.readJournal(id),
+        }))
+      : [],
     // Пакет выкладки: выписки задач, которые сессия выкладывает вместе
     // с ведущей. Перечень фиксируется здесь, в момент выдачи сессии, и это
     // единственный источник правды о составе пакета — доску сессия не откроет,
@@ -628,6 +647,15 @@ async function cleanupTask(action, io) {
 
   if (verdict.verdict === 'fail') return halt(task, verdict.why, io);
 
+  const closureReason = task.links?.pr
+    ? null
+    : recoverClosureReason(task, io.readJournal?.(task.id));
+  if (!task.links?.pr && !closureReason)
+    return {
+      result: 'failed',
+      why: 'причина закрытия отсутствует: восстановите решение о снятии предмета до уборки',
+    };
+
   if (verdict.verdict === 'proceed') {
     const swept = cleanup({ task, entry, io });
     if (!swept.finished) {
@@ -637,14 +665,24 @@ async function cleanupTask(action, io) {
     }
   }
 
-  const moved = applyTransition(task, { status: 'closed', note: verdict.why, now: io.now });
+  const status = task.links?.pr ? 'completed' : 'closed';
+  const moved = applyTransition(task, { status, note: verdict.why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
   const push = await io.saveTask(
-    moved.task,
-    { at: io.now, from: task.status, to: 'closed', what: `Убрано: ${verdict.why}.` },
-    `chore(backlog): ${task.id} закрыта`,
+    closureReason ? { ...moved.task, closureReason } : moved.task,
+    {
+      at: io.now,
+      from: task.status,
+      to: status,
+      ...(status === 'completed'
+        ? { completionSummary: task.completionSummary, links: task.links }
+        : {}),
+      what: closureReason ? 'Уборка ресурсов задачи завершена.' : `Убрано: ${verdict.why}.`,
+      ...(closureReason ? { closureReason } : {}),
+    },
+    `chore(backlog): ${task.id} ${status}`,
   );
-  return push.ok ? { result: 'done', status: 'closed' } : { result: 'failed', why: push.outcome };
+  return push.ok ? { result: 'done', status } : { result: 'failed', why: push.outcome };
 }
 
 /**
@@ -703,6 +741,18 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'hold-token-budget': changeTokenHold,
+  'refresh-token-budget': changeTokenHold,
+  'resume-token-budget': changeTokenHold,
+  'analyze-delay': beginDelayAnalysis,
+  'observe-delay': observeDelay,
+  'flush-delay-journal': async (action, io) => {
+    const task = io.readTask(action.taskId);
+    if (!task?.delayJournal || !io.flushDelayJournal) return { result: 'skipped' };
+    const saved = await io.flushDelayJournal(task);
+    return saved.ok ? { result: 'done' } : { result: 'failed', why: saved.why ?? saved.outcome };
+  },
+  'unblock-task': unblockTask,
   'push-tail': pushTail,
   'quarantine-card': quarantineCard,
   'clear-card': clearCard,
@@ -712,6 +762,7 @@ const HANDLERS = {
   'note-orphan': noteOrphan,
   'note-api-error': noteApiError,
   'decompose-again': decomposeAgain,
+  'analyze-token-budget': analyzeTokenBudget,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
   'return-task': returnTask,

@@ -4,6 +4,8 @@ import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
 import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
+import { tokenAdmission } from '../lib/token-hold.mjs';
+import { tokenReanalysisAdmission } from '../lib/token-reanalysis.mjs';
 import { spawn } from 'node:child_process';
 import { createCommandRunner } from '../lib/command-runner.mjs';
 import { buildDependencyState } from '../lib/dependency-state.mjs';
@@ -566,6 +568,7 @@ async function turn() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const state = {
+    machine,
     ...(await buildDependencyState({
       backlog,
       config,
@@ -622,6 +625,16 @@ async function turn() {
         reportStore: supervisor.reportStore,
       }),
       ...(backlog.store ?? {}),
+      tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
+      tokenReanalysisAdmission: (task, stage) =>
+        tokenReanalysisAdmission(task, stage, config, supervisor.codexUsage),
+      tokenActionBlocked: (taskId) =>
+        (backlog.store?.readTask(taskId)?.status === 'deploy' &&
+          supervisor.running().some((item) => item.stage === 'deploy')) ||
+        supervisor
+          .running()
+          .some((item) => item.taskId === taskId || item.batch?.includes(taskId)) ||
+        supervisor.reports.some((item) => item.taskId === taskId || item.batch?.includes(taskId)),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       reportStorageBlocked: () => supervisor.reportStorageBlocked,
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),

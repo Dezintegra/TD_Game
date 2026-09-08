@@ -1,3 +1,4 @@
+import { readDeploymentImpact } from './deploy-impact.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pushMain } from './push-discipline.mjs';
@@ -151,7 +152,8 @@ export function createIo({
      * Сама задача не сохраняется вовсе: ни состояния, ни положения в очереди
      * дополнение не меняет. Поэтому и коммит здесь один, на файл журнала.
      */
-    amendTask(taskId, text, message, _source, operation) {
+    amendTask(taskId, text, message, _source, deliveryKey, operation) {
+      if (deliveryKey && typeof deliveryKey === 'object') operation = deliveryKey;
       const paths = [journalPath(taskId)];
       const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
       if (!operation?.key || !this.readJournal(taskId).includes(suffix))
@@ -481,6 +483,8 @@ export function createIo({
           id: task.id,
           title: task.title,
           type: task.type,
+          categories: task.categories ?? [],
+          dependsOn: task.dependsOn ?? [],
           status: task.status,
           // Ссылки на артефакты нужны аудиту: он сопоставляет изменения
           // OpenSpec чужих задач со своим и так ловит пересечения. Без них
@@ -534,11 +538,11 @@ export function createIo({
       if (what === 'ci') {
         if (!task.links?.pr) return { state: 'pending', why: 'pull request ещё не открыт' };
         const result = run(
-          ['pr', 'view', String(task.links.pr), '--json', 'statusCheckRollup'],
+          ['pr', 'view', String(task.links.pr), '--json', 'mergeable,statusCheckRollup'],
           'gh',
         );
         if (result.code !== 0) return { state: 'pending', why: 'состояние проверок недоступно' };
-        return summariseChecks(result.stdout);
+        return summarisePullRequest(result.stdout);
       }
 
       if (!task.links?.run) return { state: 'pending', why: 'прогон ещё не запущен' };
@@ -553,6 +557,10 @@ export function createIo({
     },
 
     /** Состояние pull request. Им доказывается влитость — не хешами коммитов. */
+    deploymentImpact(number) {
+      return readDeploymentImpact({ run, root, number, mainBranch: config.mainBranch });
+    },
+
     readPr(number) {
       if (!number) return { state: 'unknown' };
       const result = run(['pr', 'view', String(number), '--json', 'state'], 'gh');
@@ -638,18 +646,33 @@ export function createIo({
      * заперлась бы у всякой задачи, зашедшей в дерево после расхождения
      * с `main`.
      *
-     * Команда не отработала — `null`, а не ноль: неизвестность здесь толкуется
-     * в пользу сохранности, удаление необратимо.
+     * После частичной уборки локальная ветка может исчезнуть раньше папки.
+     * Тогда проверяем сервер: отсутствие обеих веток означает отсутствие
+     * работы в них; ошибки чтения по-прежнему дают `null`, а не ноль.
      */
     ownCommits(branch) {
-      const result = run([
-        'rev-list',
-        '--count',
-        '--no-merges',
-        `${config.remote}/${config.mainBranch}..${branch}`,
-      ]);
-      if (result.code !== 0) return null;
-      return Number.parseInt(result.stdout.trim(), 10) || 0;
+      const count = (ref) => {
+        const result = run([
+          'rev-list',
+          '--count',
+          '--no-merges',
+          `${config.remote}/${config.mainBranch}..${ref}`,
+        ]);
+        return result.code === 0 ? Number.parseInt(result.stdout.trim(), 10) || 0 : null;
+      };
+      const local = count(branch);
+      if (local !== null) return local;
+      const found = run(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+      if (found.code !== 1) return null;
+
+      // Локальная ссылка origin/<ветка> может устареть. Код 2 ls-remote
+      // подтверждает отсутствие на сервере, любой иной отказ — неизвестность.
+      const ref = `refs/heads/${branch}`;
+      const remote = run(['ls-remote', '--exit-code', '--heads', config.remote, ref]);
+      if (remote.code === 2) return 0;
+      if (remote.code !== 0) return null;
+      const head = /^([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$/.exec(remote.stdout.trim());
+      return head?.[2] === ref ? count(head[1]) : null;
     },
 
     removeWorktree(path) {
@@ -698,6 +721,34 @@ export function createIo({
 function knownRef(result) {
   if (result.code === 0) return true;
   return String(result.stderr ?? '').trim() === '' ? false : null;
+}
+
+/**
+ * Возможность слияния проверяется раньше CI: при конфликте GitHub вообще
+ * не запускает pull_request workflow. Пустой список проверок такого PR
+ * не пополнится от ожидания — сначала нужна доработка его ветки.
+ *
+ * mergeStateStatus для этого не годится: у черновика он бывает UNKNOWN
+ * одновременно с однозначным mergeable: CONFLICTING.
+ */
+export function summarisePullRequest(json) {
+  let pr;
+  try {
+    pr = JSON.parse(json);
+  } catch {
+    return { state: 'pending', why: 'ответ GitHub о pull request не разобрался' };
+  }
+  if (pr?.mergeable === 'CONFLICTING') return { state: 'conflict' };
+  if (pr?.mergeable === 'UNKNOWN') {
+    return { state: 'pending', why: 'GitHub ещё не определил возможность слияния pull request' };
+  }
+  if (pr?.mergeable !== 'MERGEABLE') {
+    return { state: 'pending', why: 'состояние слияния pull request недоступно' };
+  }
+  if (pr.statusCheckRollup != null && !Array.isArray(pr.statusCheckRollup)) {
+    return { state: 'pending', why: 'ответ GitHub о проверках не разобрался' };
+  }
+  return summariseChecks(json);
 }
 
 /**

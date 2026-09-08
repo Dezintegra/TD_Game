@@ -11,12 +11,26 @@ import { judgeDenials } from './denials.mjs';
 import { pipelineCause, recoveryFrom } from './recovery.mjs';
 import { planAmendments, planRequests } from './requests.mjs';
 
+import { transferBlocked } from './blockers.mjs';
+import { finishTokenReanalysis, tokenAnalysisReportKey } from './token-reanalysis.mjs';
+import {
+  reviewingDelay,
+  reviewingQuestion,
+  delayReportProblem,
+  finishDelayAnalysis,
+  delayKey,
+  rejectDelayReport,
+} from './delay-analysis.mjs';
+import { categoriesProblem } from './categories.mjs';
+import { closureReasonFor, closureRequestKey } from './closure.mjs';
+import { journalBody } from './journal.mjs';
 /** План собирается теми же правилами, но все записи становятся данными. */
 export async function prepareReportPlan(action, io, saved = null) {
   if (saved) return globalThis.structuredClone(saved);
   if (!action.reportId) throw new Error('reportId is required for a durable plan');
   const operations = [];
   const cleanup = [];
+  let finalized = false;
   function record(kind, args) {
     const target = typeof args[0] === 'string' ? args[0] : args[0].id;
     operations.push({
@@ -30,6 +44,7 @@ export async function prepareReportPlan(action, io, saved = null) {
   const result = await transferReport(action, {
     ...io,
     saveTask: (...args) => record('saveTask', args),
+    release: (...args) => record('release', args),
     createTask: (...args) => record('createTask', args),
     amendTask: (...args) => record('amendTask', args),
     askOwner: (...args) => {
@@ -41,9 +56,14 @@ export async function prepareReportPlan(action, io, saved = null) {
       return null;
     },
     forgetSession: (...args) => cleanup.push(args),
-    removeReport: () => {},
+    removeReport: () => {
+      finalized = true;
+    },
   });
-  if (result.result !== 'done') throw new Error(result.why ?? 'cannot prepare report plan');
+  // Отбраковка неполного разбора тоже завершает доставку: её диагностику
+  // и расход сохраняем, хотя исход обработчика остаётся failed.
+  if (result.result !== 'done' && !finalized)
+    throw new Error(result.why ?? 'cannot prepare report plan');
   return { version: 1, reportId: action.reportId, operations, cleanup, result };
 }
 
@@ -66,6 +86,15 @@ export async function transferReport(action, io) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
+
+  if (
+    task.status !== report.stage &&
+    task.tokenReanalysis?.reportKey === tokenAnalysisReportKey(report)
+  ) {
+    io.forgetSession?.(task.id, report.stage);
+    io.removeReport(task.id, report.stage);
+    return { result: 'done', status: task.status };
+  }
 
   // Отказанные действия судят ЗДЕСЬ, а не в супервизоре, и после разбора
   // отчёта, а не до него. До разбора неизвестны ни исход, ни ссылки — то
@@ -108,7 +137,48 @@ export async function transferReport(action, io) {
   // заводилось прежнее правило.
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
+  if (task.delayAnalysis?.reportKey === delayKey(report) && !task.delayJournal) {
+    if (['blocked', 'new'].includes(task.status)) {
+      const released = await io.release?.(task);
+      if (released && !released.ok)
+        return { result: 'failed', why: released.why ?? released.outcome };
+    }
+    io.forgetSession?.(task.id, report.stage);
+    if (task.delayAnalysis.phase === 'monitoring') io.forgetSession?.(task.id, task.status);
+    io.removeReport(task.id, report.stage);
+    return { result: 'done', status: task.status };
+  }
+  if (reviewingDelay(task)) {
+    if (
+      reviewingQuestion(task) &&
+      report.taskId === task.id &&
+      report.stage === task.status &&
+      io.readAnswer?.(task.id)
+    )
+      return finishDelayAnalysis(task, report, io, { ownerAnswered: true });
+    const problem = delayReportProblem(task, report) || categoriesProblem(report.categories, true);
+    if (problem) return rejectDelayReport(task, report, problem, io);
+    if (report.outcome !== 'blocked') return finishDelayAnalysis(task, report, io);
+  }
+  if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
+  const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
+  if (categoryProblem) return { result: 'failed', why: categoryProblem };
+  if (report.categories && report.requests) {
+    if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };
+    for (const request of report.requests) {
+      const problem = categoriesProblem(request?.categories, true);
+      if (problem) return { result: 'failed', why: problem };
+    }
+  }
+
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
+  if (task.status === 'review' && report.outcome === 'done' && verdict.status === 'deploy') {
+    const impact = io.deploymentImpact?.(report.links?.pr ?? task.links?.pr);
+    if (impact?.needed === false) {
+      verdict.status = 'cleanup';
+      verdict.note = (verdict.note ?? '') + '\nВыкладка игры не нужна: ' + impact.reason;
+    }
+  }
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
 
@@ -130,6 +200,30 @@ export async function transferReport(action, io) {
       ? countRejection(moved.task)
       : resetAttempts(moved.task);
 
+  const resumedTokenAnalysis =
+    task.status === 'decompose' &&
+    task.tokenReanalysis?.phase === 'analyzing' &&
+    report.outcome === 'done' &&
+    !halted;
+  if (resumedTokenAnalysis) next = finishTokenReanalysis(task, next, report, io.now);
+
+  // Ревью знает итог реализации; уборка работает без модели и лишь доставляет его.
+  if (
+    !halted &&
+    report.outcome === 'done' &&
+    (verdict.status === 'completed' ||
+      (task.status === 'review' && ['deploy', 'cleanup'].includes(verdict.status)))
+  ) {
+    next.completionSummary = journalBody({
+      what: report.summary,
+      decisions: report.decisions,
+      links: report.links,
+    }).trim();
+    if (!next.completionSummary) delete next.completionSummary;
+  } else if (!halted && ['design', 'implement', 'revise'].includes(verdict.status)) {
+    delete next.completionSummary;
+  }
+
   // Возврат отправляет задачу на этап, где сессия уже была, и возобновлять её
   // нельзя: возобновлённая отвечает из своей памяти — «всё сделано» — и вершина
   // между кругами не меняется вовсе. Забытая сессия начинается заново и читает
@@ -147,6 +241,7 @@ export async function transferReport(action, io) {
   // сессия стоила денег независимо от того, чем кончилась, а вся мера затеяна
   // ровно против кругов, каждый из которых чем-то кончался.
   next = addSpent(next, report.costUsd);
+  if (report.categories) next.categories = [...report.categories];
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без
@@ -174,6 +269,14 @@ export async function transferReport(action, io) {
     // в проработку.
     decomposed: report.outcome === 'split',
   });
+  // Частичный план не доказывает завершение разделения: иначе потерянная
+  // часть исчезнет из ожиданий всех потребителей закрытого родителя.
+  if (verdict.status === 'closed' && plan.rejected.length > 0) {
+    return {
+      result: 'failed',
+      why: `передача работы не сохранена: ${plan.rejected.flatMap((bad) => bad.problems).join('; ')}`,
+    };
+  }
   for (const bad of plan.rejected) {
     // Негодная заявка не отменяет остального: остальные заводятся, а эта
     // остаётся в журнале с причиной, по которой её не приняли.
@@ -220,7 +323,26 @@ export async function transferReport(action, io) {
   // коммитом: правило «коммит на смысловую правку» не делает исключения
   // для порождённых.
   const created = [];
-  for (const born of plan.planned) {
+  for (const [index, planned] of plan.planned.entries()) {
+    const key = verdict.status === 'closed' ? closureRequestKey(task, report, index) : null;
+    const matches = key
+      ? io
+          .allTaskIds()
+          .map((id) => io.readTask(id))
+          .filter((item) => item?.closureRequestKey === key)
+      : [];
+    if (matches.length > 1)
+      return {
+        result: 'failed',
+        why: 'неоднозначные карточки продолжения закрываемой задачи',
+        created,
+      };
+    if (matches.length === 1) {
+      created.push(matches[0].id);
+      next = relate(next, matches[0].id);
+      continue;
+    }
+    const born = key ? { ...planned, closureRequestKey: key } : planned;
     const pushed = await io.createTask(
       born,
       `chore(backlog): ${born.id} заведена по разбору ${action.taskId}`,
@@ -228,6 +350,16 @@ export async function transferReport(action, io) {
     if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
     created.push(born.id);
     next = relate(next, born.id);
+  }
+
+  // Части — отдельная связь, не общий related с замечаниями и прогонами.
+  // Сохраняем её вместе с закрытием, только после создания всех частей.
+  if (report.outcome === 'split' && verdict.status === 'closed') {
+    next = { ...next, splitInto: [...created] };
+  }
+
+  if (!halted && (report.outcome === 'moot' || verdict.status === 'closed')) {
+    next = { ...next, closureReason: closureReasonFor(report, created, io.taskLink) };
   }
 
   // Дополнения уезжают тем же порядком и по той же причине: до смены
@@ -292,6 +424,9 @@ export async function transferReport(action, io) {
       at: io.now,
       from: task.status,
       to: verdict.status,
+      ...(verdict.status === 'completed' ? { completionSummary: next.completionSummary } : {}),
+      ...(resumedTokenAnalysis ? { restorePriority: task.tokenReanalysis.originPriority } : {}),
+      ...(verdict.status === 'closed' ? { closureReason: next.closureReason } : {}),
       // Обычно запись журнала говорит словами сессии — её `summary`. Исходу
       // `moot` этого мало: спецификация требует, чтобы запись назвала причину
       // ВМЕСТЕ с доказательством, а сложены они в одну фразу только в записке
@@ -300,8 +435,12 @@ export async function transferReport(action, io) {
       // снимается, и лог этапа в промпт следующих сессий не уезжает. Без этой
       // строки закрытая задача осталась бы в журнале заявлением без улики —
       // ровно тем, против чего написан третий предохранитель исхода.
-      what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
-      links: report.links ?? {},
+      what:
+        (report.outcome === 'moot' && !halted) ||
+        (task.status === 'review' && verdict.status === 'cleanup')
+          ? verdict.note
+          : report.summary,
+      links: verdict.status === 'completed' ? next.links : (report.links ?? {}),
       decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
       denials,

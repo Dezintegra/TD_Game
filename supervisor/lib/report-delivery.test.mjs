@@ -14,6 +14,90 @@ afterEach(() => {
 const deliver = async (f, opened) => (await execute([f.action], opened.io))[0];
 
 describe('durable report execution', () => {
+  it.each(['journal', 'release'])('recovers blocked delivery after %s failure', async (point) => {
+    const f = fixture({
+      outcome: 'blocked',
+      taskOverrides: { categories: ['infrastructure'] },
+      memberOverrides: { status: 'candidate', categories: ['infrastructure'] },
+      reportOverrides: {
+        routingVersion: 1,
+        categories: ['infrastructure'],
+        blockers: [
+          {
+            taskId: '0002-member',
+            reason: 'Required repair',
+            result: 'Repair merged',
+            dependencyResult: { kind: 'merged-pr', pr: 215 },
+          },
+        ],
+      },
+    });
+    const first = f.open();
+    first.recipient.fail(
+      point === 'release' ? 'DELETE' : 'POST',
+      point === 'release' ? '/idMembers/' : '/actions/comments',
+      'after',
+    );
+    expect((await deliver(f, first)).result).toBe('failed');
+    const savedPlan = first.store.entries()[0].plan;
+    expect(savedPlan.operations.map((op) => op.kind)).toEqual(['saveTask', 'saveTask', 'release']);
+    const second = f.open();
+    expect(await deliver(f, second)).toMatchObject({ result: 'done', status: 'blocked' });
+    expect(second.recipient.store.readTask(f.task.id)).toMatchObject({
+      status: 'blocked',
+      spentUsd: 7,
+      dependsOn: [f.member.id],
+      dependencyResults: [{ taskId: f.member.id, kind: 'merged-pr', pr: 215 }],
+    });
+    expect(second.recipient.store.readTask(f.member.id)).toMatchObject({ status: 'new' });
+    expect(second.recipient.state().cards[1].pos).toBe('top');
+    expect(second.recipient.state()).toMatchObject({ puts: 2, posts: 2, deletes: 1 });
+    expect(f.open().store.entries()).toEqual([]);
+    expect((await deliver(f, f.open())).result).toBe('skipped');
+  });
+  it.each([false, true])('delivers delay diagnosis once, invalid=%s', async (invalid) => {
+    const f = fixture({
+      stage: 'postmortem',
+      taskOverrides: {
+        categories: ['infrastructure'],
+        returnTo: 'implement',
+        delayAnalysis: {
+          phase: 'analyzing',
+          episode: 'test-delay',
+          originStatus: 'implement',
+          originSince: '2026-09-05T00:00:00Z',
+          originAttempts: { continuations: 2, cycleFailures: 0 },
+        },
+      },
+      reportOverrides: {
+        routingVersion: 1,
+        categories: ['infrastructure'],
+        ...(invalid
+          ? {}
+          : {
+              delayAnalysis: {
+                cause: 'Temporary external failure',
+                evidence: ['Confirmed response'],
+                nextAction: 'Retry original stage',
+                resolution: 'monitor',
+              },
+            }),
+      },
+    });
+    const first = f.open();
+    first.recipient.fail('POST', '/actions/comments', 'after');
+    expect((await deliver(f, first)).result).toBe('failed');
+    expect(first.store.entries()).toHaveLength(1);
+    const second = f.open();
+    expect((await deliver(f, second)).result).toBe(invalid ? 'failed' : 'done');
+    expect(second.recipient.store.readTask(f.task.id)).toMatchObject({
+      spentUsd: 7,
+      status: invalid ? 'postmortem' : 'implement',
+    });
+    expect(second.recipient.state()).toMatchObject({ puts: 1, posts: 1 });
+    expect(f.open().store.entries()).toEqual([]);
+    expect((await deliver(f, f.open())).result).toBe('skipped');
+  });
   it.each(['plan', 'intent', 'progress', 'acknowledge', 'cleanup'])(
     'retries local %s failure without repeating effects',
     async (point) => {

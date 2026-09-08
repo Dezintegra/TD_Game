@@ -176,7 +176,7 @@ describe('paused completion survives full supervisor and recipient restart', () 
     expect(final.recipient.state()).toMatchObject({ puts: 0, posts: 0 });
     const pending = actions(final);
     expect(pending.map((action) => action.kind)).toEqual(['transfer-report']);
-    expect((await execute(pending, final.io))[0].result).toBe('done');
+    expect((await execute(pending, final.io))[0]).toMatchObject({ result: 'done' });
     expect((await execute(pending, final.io))[0].result).toBe('skipped');
     expect(final.recipient.store.readTask(s.f.task.id)).toMatchObject({
       status: 'pr',

@@ -1,3 +1,4 @@
+import { reviewingDelay } from './delay-analysis.mjs';
 import {
   migrateTokenLedger,
   commitTokenLedger,
@@ -19,6 +20,9 @@ import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
 import { codexGitEnvironment } from './codex-environment.mjs';
 import { sameReportLaunch } from './report-store.mjs';
+import { effectiveTokenLimit } from './user-token-limit.mjs';
+import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
+import { tokenAdmission } from './token-hold.mjs';
 
 /**
  * Хозяйство идущих этапов.
@@ -274,13 +278,6 @@ export function createSupervisor({
         return { ok: false, reason: 'busy', why: 'ожидается сохранение или перенос отчёта' };
       }
       retryUsageCancellations();
-      if (
-        (usageWriteErrors.size || pendingUsageCancellations.size) &&
-        config.codexMaxTaskTokens != null &&
-        assignment.stage !== 'decompose' &&
-        !CROSSCUT.includes(assignment.stage)
-      )
-        return { ok: false, reason: 'busy', why: 'Не сохранён расход Codex; бюджет неизвестен' };
       if (policyBlocked)
         return {
           ok: false,
@@ -312,8 +309,31 @@ export function createSupervisor({
       const sessionId =
         (compatible ? assignment.sessionId : null) ?? (provider === 'claude' ? randomUUID() : null);
       let command;
+      let tokenLimit;
       try {
         assignment = prepareAssignment(assignment, previous);
+        tokenLimit = effectiveTokenLimit(assignment.task, config);
+        const tokenHold = tokenAdmission(assignment.task, assignment.stage, config, codexUsage);
+        if (tokenHold) return { ok: false, reason: 'busy', why: tokenHold.explanation };
+        const analysis = tokenReanalysisAdmission(
+          assignment.task,
+          assignment.stage,
+          config,
+          codexUsage,
+        );
+        if (analysis) return { ok: false, reason: 'busy', why: analysis.explanation };
+        const capped =
+          provider === 'codex' &&
+          (assignment.stage !== 'decompose' ||
+            assignment.task.tokenReanalysis?.phase === 'analyzing') &&
+          !CROSSCUT.includes(assignment.stage);
+        if (capped && tokenLimit.error) return { ok: false, reason: 'busy', why: tokenLimit.error };
+        if (
+          capped &&
+          tokenLimit.value != null &&
+          (usageWriteErrors.size || pendingUsageCancellations.size)
+        )
+          return { ok: false, reason: 'busy', why: 'Не сохранён расход Codex; бюджет неизвестен' };
         if (assignment.deployment) {
           const at = key(assignment.taskId, assignment.stage);
           known[at] = { ...known[at], deployment: assignment.deployment };
@@ -326,12 +346,25 @@ export function createSupervisor({
             task: assignment.task,
             journal: assignment.journal,
             board: assignment.board,
+            tokenBudget:
+              provider === 'codex'
+                ? { ...tokenLimit, spent: taskTokens(codexUsage, assignment.taskId) }
+                : null,
             // Разбору дают лог того этапа, из которого задача упала. Его имя
             // хранит сама задача — состоянием возврата, — и потому спрашивается
             // здесь, а не угадывается по журналу.
             stageLog:
               assignment.stage === 'postmortem'
-                ? readStageLog(assignment.taskId, assignment.task?.returnTo)
+                ? readStageLog(
+                    assignment.taskId,
+                    reviewingDelay(assignment.task)
+                      ? assignment.task.delayAnalysis.originStatus === 'blocked'
+                        ? assignment.task.blockedContext?.from
+                        : assignment.task.delayAnalysis.originStatus === 'awaiting-po'
+                          ? assignment.task.delayAnalysis.originReturnTo
+                          : assignment.task.delayAnalysis.originStatus
+                      : assignment.task?.returnTo,
+                  )
                 : null,
           }),
           config,
@@ -346,6 +379,8 @@ export function createSupervisor({
       // в него ходы и последнее действие, а пульс их оттуда читает.
       const timeoutMs = stageTimeoutMs(assignment.stage, config);
       const child = {
+        tokenLimit: tokenLimit.value,
+        tokenLimitSource: tokenLimit.source,
         taskId: assignment.taskId,
         stage: assignment.stage,
         path: assignment.path,
@@ -906,13 +941,17 @@ export function createSupervisor({
 
     const answer =
       providerOf(config) === 'codex'
-        ? readCodexAnswer(run, config, {
-            ledger: codexUsage,
-            taskId: child.taskId,
-            launchId: child.launchId,
-            deferUsage: Boolean(readCodexEvidence),
-            durableEvidence,
-          })
+        ? readCodexAnswer(
+            run,
+            { ...config, codexMaxTaskTokens: child.tokenLimit },
+            {
+              ledger: codexUsage,
+              taskId: child.taskId,
+              launchId: child.launchId,
+              deferUsage: Boolean(readCodexEvidence),
+              durableEvidence,
+            },
+          )
         : readAnswer(run);
     if (providerOf(config) === 'codex') {
       let storageError = null;
@@ -933,11 +972,11 @@ export function createSupervisor({
         ? `Codex: полнота расхода задачи неизвестна (${reasons.join(', ')})`
         : null;
       if (storageError) answer.usageError = `${answer.usageError}; ${storageError}`;
-      if (answer.usageError && config.codexMaxTaskTokens != null && answer.outcome === 'done') {
+      if (answer.usageError && child.tokenLimit != null && answer.outcome === 'done') {
         answer.outcome = 'failed';
         answer.why = answer.usageError;
       }
-      answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${config.codexMaxTaskTokens ?? 'без лимита'} токенов задачи; расход текущего запуска ${answer.usage ? 'известен' : 'неизвестен'}${answer.usageError ? `; ${answer.usageError}` : '; учёт задачи полный'}`;
+      answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${child.tokenLimit ?? 'без лимита'} токенов задачи (${child.tokenLimitSource === 'user' ? 'лимит владельца' : 'общий лимит'} при запуске); расход текущего запуска ${answer.usage ? 'известен' : 'неизвестен'}${answer.usageError ? `; ${answer.usageError}` : '; учёт задачи полный'}`;
       log(answer.tokenBudget);
     }
     // Отчёт разбирается ЗДЕСЬ, а не там, где он применяется, — потому что

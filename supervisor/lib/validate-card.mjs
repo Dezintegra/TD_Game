@@ -1,4 +1,5 @@
 import { STATES } from '../config/transitions.mjs';
+import { routingProblem } from './categories.mjs';
 
 /**
  * Проверка карточки взамен схемы задачи.
@@ -39,6 +40,8 @@ export function checkCard({ task, card }) {
   ) {
     problems.push('неверные квитанции переноса reportReceipts');
   }
+  const routing = routingProblem(task);
+  if (routing) problems.push(routing);
 
   if (card.metaBroken) {
     problems.push(

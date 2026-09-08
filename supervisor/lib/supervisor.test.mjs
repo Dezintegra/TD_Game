@@ -127,6 +127,35 @@ function harness(over = {}) {
 /** Строка итога этапа из всего, что рассказчик напечатал. */
 const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
 
+describe('индивидуальный лимит при запуске', () => {
+  it('журнал использует лимит подготовленного назначения, даже при общем null', async () => {
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider: 'codex', codexMaxTaskTokens: null },
+      prepareAssignment: (a) => ({ ...a, task: { userTokenLimit: { value: 35000000 } } }),
+    });
+    const launched = h.supervisor.spawnStage(assignment());
+    expect(launched, JSON.stringify(launched)).toMatchObject({ ok: true });
+    const emit = (event) => h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+    emit({ type: 'thread.started', thread_id: 'user-budget' });
+    emit({ type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(report) } });
+    await h.answer({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+    expect(h.logged.join('\n')).toContain('/ 35000000 токенов задачи (лимит владельца');
+  });
+
+  it('не запускает процесс с неверной командой владельца', () => {
+    const h = harness({
+      config: { provider: 'codex' },
+      prepareAssignment: (a) => ({ ...a, task: { userTokenLimit: { error: 'Неверный лимит' } } }),
+    });
+    expect(h.supervisor.spawnStage(assignment())).toMatchObject({
+      ok: false,
+      why: 'Неверный лимит',
+    });
+    expect(h.children).toHaveLength(0);
+  });
+});
+
 describe('сохранённый отчёт при ошибке учёта', () => {
   for (const valid of [true, false]) {
     it.each(['decreased-usage', 'decreased-output', 'invalid-usage', 'history', 'cached'])(
@@ -144,7 +173,7 @@ describe('сохранённый отчёт при ошибке учёта', () 
                   thread: {
                     knownTokens: 1100,
                     snapshot: { input_tokens: 1000, output_tokens: 100, cached_input_tokens: 200 },
-                    reasons: kind === 'history' ? ['legacy-unknown'] : [],
+                    reasons: [],
                   },
                 },
                 launches: {},
@@ -153,6 +182,9 @@ describe('сохранённый отчёт при ошибке учёта', () 
           },
         });
         h.supervisor.spawnStage(assignment({ continuation: true, sessionId: 'thread' }));
+        // История стала неполной уже после допуска работающего этапа.
+        if (kind === 'history')
+          h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.reasons.push('legacy-unknown');
         for (const event of [
           { type: 'thread.started', thread_id: 'thread' },
           { type: 'item.completed', item: { type: 'agent_message', text } },
@@ -203,7 +235,7 @@ describe('сохранённый отчёт при ошибке учёта', () 
               reports: h.supervisor.reports,
               codexUsage: h.supervisor.codexUsage,
             });
-            expect(next.actions).toEqual([]);
+            expect(next.actions.map((action) => action.kind)).toEqual(['hold-token-budget']);
             expect(next.notes.join()).toContain(reason);
           }
         }
@@ -259,9 +291,15 @@ describe('диагностика границ Codex в finish', () => {
     const h = harness({
       home: fileURLToPath(new URL('..', import.meta.url)),
       config: { provider: 'codex', codexMaxTaskTokens: kind === 'no-limit' ? null : 25000000 },
-      codexUsage: kind === 'numeric-history' ? { '0001-one': { old: 500 } } : {},
+      codexUsage: {},
     });
     h.supervisor.spawnStage(assignment());
+    if (kind === 'numeric-history')
+      h.supervisor.codexUsage.tasks['0001-one'].sessions.old = {
+        knownTokens: 500,
+        snapshot: null,
+        reasons: ['legacy-unknown'],
+      };
     const events = [
       { type: 'thread.started', thread_id: 'new' },
       {
@@ -516,6 +554,41 @@ describe('устойчивая очередь завершений', () => {
 });
 
 describe('порождение', () => {
+  it('последний допуск запрещает рабочий запуск до раннего анализа и его продолжение после окончательного предела', () => {
+    for (const [stage, spent, tokenReanalysis] of [
+      ['design', 150, undefined],
+      ['decompose', 250, { phase: 'analyzing', originStatus: 'design' }],
+    ]) {
+      const h = harness({
+        config: { provider: 'codex', codexTaskReanalysisTokens: 150, codexMaxTaskTokens: 250 },
+        codexUsage: {
+          version: 2,
+          tasks: {
+            '0001-one': {
+              sessions: {
+                prior: {
+                  knownTokens: spent,
+                  snapshot: { input_tokens: spent, output_tokens: 0 },
+                  reasons: [],
+                },
+              },
+              launches: {},
+            },
+          },
+        },
+      });
+      expect(
+        h.supervisor.spawnStage(
+          assignment({
+            stage,
+            task: { id: '0001-one', type: 'feature', status: stage, tokenReanalysis },
+          }),
+        ),
+      ).toMatchObject({ ok: false, reason: 'busy' });
+      expect(h.children).toHaveLength(0);
+    }
+  });
+
   it('сохраняет снимок до spawn и передаёт подготовленный путь', () => {
     const deployment = { path: '.pipeline/deploy-checkouts/deploy-test', revision: 'a'.repeat(40) };
     let observed;
@@ -596,6 +669,26 @@ describe('порождение', () => {
       assignment({
         stage: 'postmortem',
         task: { id: '0001-one', status: 'postmortem', returnTo: 'implement', title: 'проба' },
+      }),
+    );
+    expect(logsAsked).toEqual(['0001-one:implement']);
+  });
+
+  it('проверка прежнего вопроса читает лог задавшего его этапа', () => {
+    const { supervisor, logsAsked } = harness();
+    supervisor.spawnStage(
+      assignment({
+        stage: 'postmortem',
+        task: {
+          id: '0001-one',
+          status: 'postmortem',
+          returnTo: 'implement',
+          delayAnalysis: {
+            originStatus: 'awaiting-po',
+            originReturnTo: 'implement',
+            phase: 'analyzing',
+          },
+        },
       }),
     );
     expect(logsAsked).toEqual(['0001-one:implement']);
@@ -2092,7 +2185,8 @@ it('отказ Codex немедленно запрещает новые этап
     config: { provider: 'codex' },
     onPolicyBlocked: (why) => paused.push(why),
   });
-  expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+  const launched = h.supervisor.spawnStage(assignment());
+  expect(launched, JSON.stringify(launched)).toMatchObject({ ok: true });
   const denial = {
     type: 'item.completed',
     item: {
@@ -2124,7 +2218,8 @@ it('передаёт Git-авторизацию рабочему Codex окру�
       getCodexEnvironment: () => env,
       onSpawn: (call) => calls.push(call),
     });
-    expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+    const launched = h.supervisor.spawnStage(assignment());
+    expect(launched, JSON.stringify(launched)).toMatchObject({ ok: true });
     const call = calls[0];
     expect(call.args.join()).not.toContain('test-token');
     expect(call.args.join()).not.toContain('AUTHORIZATION');
