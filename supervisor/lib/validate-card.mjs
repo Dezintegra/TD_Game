@@ -33,6 +33,13 @@ const RUN_KINDS = ['arena', 'perf', 'bench-tick'];
  */
 export function checkCard({ task, card }) {
   const problems = [];
+  if (
+    Object.hasOwn(task, 'reportReceipts') &&
+    (!Array.isArray(task.reportReceipts) ||
+      task.reportReceipts.some((key) => typeof key !== 'string' || !/^[a-f0-9]{32}$/.test(key)))
+  ) {
+    problems.push('неверные квитанции переноса reportReceipts');
+  }
   const routing = routingProblem(task);
   if (routing) problems.push(routing);
 

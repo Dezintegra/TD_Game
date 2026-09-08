@@ -5,6 +5,9 @@ import { pushMain } from './push-discipline.mjs';
 import { removeWorktree } from './remove-worktree.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
+import { hasReceipt, withReceipt, partReceipt } from './report-receipts.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { nextId } from './requests.mjs';
 
 /**
  * Переходник к настоящему миру: файлы, git, деревья.
@@ -55,7 +58,17 @@ const readJson = (path) => {
  * @param {() => number} params.elapsed сколько секунд идёт цикл
  * @param {object[]} [params.reports] отчёты, ожидающие переноса
  */
-export function createIo({ root, config, git, now, machine, run, elapsed, reports = [] }) {
+export function createIo({
+  root,
+  config,
+  git,
+  now,
+  machine,
+  run,
+  elapsed,
+  reports = [],
+  reportStore = null,
+}) {
   const local = (...parts) => join(root, config.paths.local, ...parts);
   const ensure = (dir) => mkdirSync(dir, { recursive: true });
 
@@ -64,6 +77,7 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
   const registryPath = () => local('registry.json');
 
   return {
+    reportStore,
     now,
     machine,
     taskPath,
@@ -85,15 +99,38 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * @param {object} entry запись журнала об этом переходе
      * @param {string} message сообщение коммита — доске оно не нужно
      */
-    saveTask(task, entry, message, extraPaths = []) {
-      const appendix = journalAppendix(task, this.readJournal(task.id), entry);
+    saveTask(task, entry, message, extraPaths = [], operation) {
+      const current = operation?.key ? this.readTask(task.id) : null;
+      if (
+        operation?.key &&
+        !hasReceipt(current, operation.key) &&
+        !isDeepStrictEqual(current, operation.expected)
+      ) {
+        return { ok: false, outcome: 'conflict', why: `report delivery conflicts with ${task.id}` };
+      }
+      const journal = this.readJournal(task.id);
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      const appendix = journalAppendix(task, journal, entry);
       // Попутные пути — файл вопросов, например. Они обязаны уехать ТЕМ ЖЕ
       // коммитом: разъехавшись, задача в ожидании осталась бы без вопроса
       // либо вопрос без задачи.
       const paths = [taskPath(task.id), journalPath(task.id), ...extraPaths];
 
-      this.writeTask(task);
-      this.appendJournal(task.id, appendix);
+      if (!operation?.key || !hasReceipt(current, operation.key)) {
+        this.writeTask(operation?.key ? withReceipt(task, operation.key, current) : task);
+      }
+      if (!operation?.key || !journal.includes(suffix))
+        this.appendJournal(task.id, appendix + suffix);
+
+      if (operation?.key && run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome, paths };
+      }
 
       const push = this.commitAndPush(paths, message);
       // Неудача ДО коммита прибирается сразу: иначе один сорвавшийся `add`
@@ -115,18 +152,57 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * Сама задача не сохраняется вовсе: ни состояния, ни положения в очереди
      * дополнение не меняет. Поэтому и коммит здесь один, на файл журнала.
      */
-    amendTask(taskId, text, message) {
+    amendTask(taskId, text, message, _source, deliveryKey, operation) {
+      if (deliveryKey && typeof deliveryKey === 'object') operation = deliveryKey;
       const paths = [journalPath(taskId)];
-      this.appendJournal(taskId, text);
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      if (!operation?.key || !this.readJournal(taskId).includes(suffix))
+        this.appendJournal(taskId, text + suffix);
+      else if (run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome, paths };
+      }
       const push = this.commitAndPush(paths, message);
       if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
       return { ...push, paths };
     },
 
     /** Завести новую задачу: запись плюс отправка своим коммитом. */
-    createTask(task, message) {
+    reserveReportTask(task, operation, reservedIds = []) {
+      const ids = this.allTaskIds();
+      const existing = ids
+        .map((id) => this.readTask(id))
+        .find((item) => hasReceipt(item, operation.key));
+      if (existing) return { ok: true, task: { ...task, id: existing.id } };
+      const taken = [...ids, ...reservedIds];
+      return {
+        ok: true,
+        task: taken.some((id) => id.split('-')[0] === task.id.split('-')[0])
+          ? { ...task, id: nextId(taken, task.title) }
+          : task,
+      };
+    },
+
+    createTask(task, message, operation) {
       const paths = [taskPath(task.id)];
-      this.writeTask(task);
+      const current = operation?.key ? this.readTask(task.id) : null;
+      if (operation?.key && current && !hasReceipt(current, operation.key))
+        return { ok: false, outcome: 'conflict' };
+      if (!current) this.writeTask(operation?.key ? withReceipt(task, operation.key) : task);
+      else if (operation?.key && run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome, paths };
+      }
       const push = this.commitAndPush(paths, message);
       if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
       return { ...push, paths };
@@ -156,7 +232,10 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * застревала навсегда, а владелец продукта видел пустой файл и не знал,
      * что его ждут.
      */
-    askOwner(task, report) {
+    askOwner(task, report, operation) {
+      const previous = this.readQuestions();
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      if (operation?.key && previous.includes(suffix)) return this.finishReportQuestion();
       const block = renderQuestion({
         taskId: task.id,
         askedAt: now,
@@ -164,7 +243,8 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
         summary: report.summary,
         decisions: report.decisions ?? [],
       });
-      this.writeQuestions(appendQuestion(this.readQuestions(), block));
+      this.writeQuestions(appendQuestion(previous, block) + suffix);
+      if (operation?.key) return this.finishReportQuestion();
       return this.questionsPath();
     },
 
@@ -174,15 +254,35 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * Сама сессия файла вопросов не трогает: писатель у бэклога один. Она
      * кладёт ответ в отчёт, а сюда он попадает уже рукой оркестратора.
      */
-    recordAnswer(task, action, report) {
+    recordAnswer(task, action, report, operation) {
+      const previous = this.readQuestions();
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      if (operation?.key && previous.includes(suffix)) return this.finishReportQuestion();
       const answer = report?.decisions?.[0];
-      if (!answer) return null;
+      if (!answer) return operation?.key ? { ok: true } : null;
 
-      const filled = recordAnswerIn(this.readQuestions(), action.taskId, answer);
+      const filled = recordAnswerIn(previous, action.taskId, answer);
       if (!filled) return null;
 
-      this.writeQuestions(filled);
+      this.writeQuestions(filled + suffix);
+      if (operation?.key) return this.finishReportQuestion();
       return this.questionsPath();
+    },
+
+    finishReportQuestion() {
+      const paths = [this.questionsPath()];
+      if (run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome };
+      }
+      const push = this.commitAndPush(paths, 'chore(backlog): deliver report question');
+      if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
+      return push;
     },
 
     /**
@@ -407,10 +507,23 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * деревьев из реестра: сессия с деревом физически не могла положить
      * файл в основное. Искать больше негде, и двойников не бывает.
      */
-    readReport: (id, stage) =>
-      reports.find((report) => report.taskId === id && report.stage === stage) ?? null,
+    readReport: (id, stage, reportId) =>
+      reportStore
+        ? (reportStore
+            .entries()
+            .find((entry) =>
+              reportId ? entry.reportId === reportId : entry.taskId === id && entry.stage === stage,
+            )?.report ?? null)
+        : (reports.find((report) => report.taskId === id && report.stage === stage) ?? null),
 
-    removeReport(id, stage) {
+    removeReport(id, stage, reportId) {
+      if (reportStore) {
+        if (!reportId) throw new Error('durable report acknowledgement requires reportId');
+        const entry = reportStore.get(reportId);
+        if (entry && (entry.taskId !== id || entry.stage !== stage))
+          throw new Error('report identity mismatch');
+        return reportStore.acknowledge(reportId);
+      }
       const at = reports.findIndex((report) => report.taskId === id && report.stage === stage);
       if (at !== -1) reports.splice(at, 1);
     },
