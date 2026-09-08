@@ -346,13 +346,14 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
             dependsOn: candidate.dependsOn,
             dependencyResults: candidate.dependencyResults,
           });
+        // Сохранённое дополнение не доказывает освобождение прежнего захвата.
+        if (fresh.raw.idMembers?.length)
+          return { ok: false, outcome: 'busy', why: 'адресат уже назначен исполнителю' };
         if (alreadyPresent()) {
           context.invalidate(update.taskId);
           confirmed = fresh.raw;
           return { ok: true, outcome: 'unchanged' };
         }
-        if (fresh.raw.idMembers?.length)
-          return { ok: false, outcome: 'busy', why: 'адресат уже назначен исполнителю' };
         const me = await whoAmI();
         if (!me.ok) return me;
         const taken = await trello.post(`cards/${fresh.raw.id}/idMembers`, { value: me.id });

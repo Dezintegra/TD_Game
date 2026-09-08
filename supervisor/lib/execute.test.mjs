@@ -453,6 +453,57 @@ function dependencyReportWorld() {
 }
 
 describe('перенос отчёта с dependencyUpdates', () => {
+  it.each(['failure', 'throw'])(
+    'повтор после ошибки освобождения адресата сохраняет отчёт до снятия захвата: %s',
+    async (mode) => {
+      const f = dependencyReportWorld();
+      const source = JSON.parse(JSON.stringify(f.cards[1]));
+      const report = JSON.parse(JSON.stringify(f.state.report));
+      f.fixture.hook = (method, path) => {
+        if (method !== 'DELETE' || path !== 'cards/card-target/idMembers/me') return;
+        if (mode === 'throw') throw new Error('release unavailable');
+        return { ok: false, why: 'release unavailable' };
+      };
+      expect(await execute([f.action], f.io)).toMatchObject([
+        { result: 'failed', why: expect.stringContaining('release unavailable') },
+      ]);
+      const target = JSON.parse(JSON.stringify(f.cards[0]));
+      expect(target.idMembers).toEqual(['me']);
+      expect(splitDescription(target.desc).meta).toMatchObject({
+        dependsOn: f.update.dependsOn,
+        dependencyResults: f.update.dependencyResults,
+      });
+      expect(f.cards[1]).toEqual(source);
+      expect(f.state.report).toEqual(report);
+      expect(f.state.forgotten).toBe(0);
+
+      f.fixture.hook = null;
+      f.calls.length = 0;
+      const freshIo = { ...f.io, ...f.store('B') };
+      expect(await execute([f.action], freshIo)).toMatchObject([
+        { result: 'failed', why: expect.stringContaining('адресат уже назначен') },
+      ]);
+      expect(f.calls.length).toBeGreaterThan(0);
+      expect(f.calls.every((call) => call.method === 'GET')).toBe(true);
+      expect(f.cards[0]).toEqual(target);
+      expect(f.cards[1]).toEqual(source);
+      expect(f.state.report).toEqual(report);
+      expect(f.state.forgotten).toBe(0);
+
+      // Штатное освобождение моделируется отдельно: новый IO не владеет старым захватом.
+      expect(await f.store('B').release({ id: f.update.taskId })).toMatchObject({ ok: true });
+      expect(f.cards[0].idMembers).toEqual([]);
+      f.calls.length = 0;
+      expect(await execute([f.action], freshIo)).toMatchObject([{ result: 'done', status: 'pr' }]);
+      const targetCalls = f.calls.filter((call) => call.path.startsWith('cards/card-target'));
+      expect(targetCalls.length).toBeGreaterThan(0);
+      expect(targetCalls.every((call) => call.method === 'GET')).toBe(true);
+      expect(f.cards[0]).toEqual({ ...target, idMembers: [] });
+      expect(f.cards[1].idList).toBe('list-pr');
+      expect(f.state.report).toBeNull();
+      expect(f.state.forgotten).toBe(1);
+    },
+  );
   it.each(['refused', 'lost-response', 'token-reanalysis'])(
     'после PUT источника и сбоя POST повтор через новый IO завершает только журнал: %s',
     async (mode) => {
