@@ -21,6 +21,11 @@
     "attempts"
   ],
   "properties": {
+    "reportReceipts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-f0-9]{32}$" }
+    },
     "delayAnalysis": {
       "type": "object",
       "description": "Сохранённый разбор задержки и критерии проверки исправлений."

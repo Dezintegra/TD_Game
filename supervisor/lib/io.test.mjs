@@ -2,6 +2,23 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createIo, summariseChecks, summarisePullRequest } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
+import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
+
+it('читает и подтверждает ту же устойчивую очередь по reportId', () => {
+  const f = deliveryFixture();
+  try {
+    const { config } = resolveConfig({});
+    const reportStore = f.open().store;
+    const io = createIo({ root: f.root, config, reportStore });
+    expect(io.readReport(f.task.id, f.report.stage, f.entry.reportId)).toEqual(f.report);
+    expect(() => io.removeReport(f.task.id, f.report.stage)).toThrow('reportId');
+    io.removeReport(f.task.id, f.report.stage, f.entry.reportId);
+    expect(reportStore.entries()).toEqual([]);
+    expect(f.open().store.entries()).toEqual([]);
+  } finally {
+    f.cleanup();
+  }
+});
 
 /**
  * Проверки сведения состояния проверок CI к одному ответу.

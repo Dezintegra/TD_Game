@@ -76,6 +76,10 @@ export function runCycle({ git, state, config, now, pid, lock, isAlive, ourAutho
   //    Человек проверяется первым: его рубильник снимается только руками,
   //    значит именно он определяет, когда работа пойдёт, — даже если сервер
   //    уже ответил.
+  if (state.reportStorageBlocked) {
+    notes.push('отчёт не сохранён: планирование остановлено');
+    return { ...nothing('blocked'), lock: held };
+  }
   if (state.paused) {
     notes.push('взведён рубильник паузы: ничего не порождаем');
     // Вторая причина называется тоже: снимет её автомат сам, но человек,

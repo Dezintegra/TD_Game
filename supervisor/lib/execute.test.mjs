@@ -7,6 +7,44 @@ import { reconcile } from './reconcile.mjs';
 import { repairWorld } from './repair.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
+import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
+
+it('досылает журнал передвинутого участника по сохранённому плану до ведущей', async () => {
+  const f = deliveryFixture({ stage: 'deploy', batch: true });
+  try {
+    const first = f.open();
+    first.recipient.fail('POST', '/actions/comments');
+    expect((await execute([f.action], first.io))[0].result).toBe('failed');
+    expect(first.recipient.store.readTask(f.member.id).status).toBe('cleanup');
+    expect(first.recipient.store.readTask(f.task.id).status).toBe('deploy');
+    const second = f.open();
+    expect((await execute([f.action], second.io))[0].result).toBe('done');
+    expect(second.recipient.state()).toMatchObject({ puts: 2, posts: 2 });
+    expect(second.recipient.store.readTask(f.member.id).spentUsd).toBe(4);
+    expect(second.recipient.store.readTask(f.task.id).spentUsd).toBe(7);
+    expect(f.open().store.entries()).toEqual([]);
+    expect((await execute([f.action], f.open().io))[0].result).toBe('skipped');
+  } finally {
+    f.cleanup();
+  }
+});
+
+it('повторно проверяет очередь до действий из уже устаревшего снимка', async () => {
+  const f = deliveryFixture();
+  try {
+    const opened = f.open();
+    const actions = [{ kind: 'continue-stage', taskId: f.task.id, stage: 'implement' }];
+    const result = await execute(actions, opened.io);
+    expect(result[0]).toMatchObject({ result: 'skipped', why: 'pending report owns this task' });
+    expect(opened.recipient.state().puts).toBe(0);
+    opened.io.reportStorageBlocked = () => true;
+    expect((await execute([{ ...actions[0], taskId: 'other' }], opened.io))[0].result).toBe(
+      'failed',
+    );
+  } finally {
+    f.cleanup();
+  }
+});
 
 /**
  * Проверки исполнения решений.

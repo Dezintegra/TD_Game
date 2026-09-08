@@ -166,6 +166,8 @@ export function parseCard(card, { stateByList, labelKeyById }) {
 
   const task = {
     id: meta?.id ?? null,
+    ...(Object.hasOwn(meta ?? {}, 'spentUsd') ? { spentUsd: meta.spentUsd } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'reportReceipts') ? { reportReceipts: meta.reportReceipts } : {}),
     ...(Object.hasOwn(meta ?? {}, 'tokenHold') ? { tokenHold: meta.tokenHold } : {}),
     ...(Object.hasOwn(meta ?? {}, 'tokenReanalysis')
       ? { tokenReanalysis: meta.tokenReanalysis }
@@ -257,6 +259,8 @@ function labelKeys(idLabels, labelKeyById) {
 export function metaOf(task) {
   return {
     id: task.id,
+    ...(Object.hasOwn(task, 'spentUsd') ? { spentUsd: task.spentUsd } : {}),
+    ...(Object.hasOwn(task, 'reportReceipts') ? { reportReceipts: task.reportReceipts } : {}),
     ...(Object.hasOwn(task, 'tokenHold') ? { tokenHold: task.tokenHold } : {}),
     ...(Object.hasOwn(task, 'tokenReanalysis') ? { tokenReanalysis: task.tokenReanalysis } : {}),
     ...routingFields(task),

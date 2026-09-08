@@ -177,7 +177,7 @@ export function scan(state) {
 
   notes.push(...duplicateNumbers(tasks));
 
-  if (paused) {
+  if (paused || state.reportStorageBlocked) {
     notes.push('взведён рубильник паузы: конвейер не порождает работы');
     return { actions, notes };
   }
@@ -279,6 +279,7 @@ export function scan(state) {
       taskId: report.taskId,
       stage: report.stage,
       outcome: report.outcome,
+      ...(report.reportId ? { reportId: report.reportId } : {}),
     });
   }
 
@@ -535,7 +536,11 @@ export function scan(state) {
       actions.push({ kind: 'refresh-token-budget', ...common });
   }
   const engaged = tasks.filter(
-    (task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id) && !tokenHeld.has(task.id),
+    (task) =>
+      NEEDS_SESSION.includes(task.status) &&
+      !held.has(task.id) &&
+      !tokenHeld.has(task.id) &&
+      (!hasReport(task.id) || isRunning(task.id)),
   );
   let busy = engaged.length >= config.maxConcurrent;
 
@@ -752,7 +757,13 @@ export function scan(state) {
   // Сначала сохраняем разблокировку; обычную очередь выбираем по следующему снимку.
   const unblocking = actions.some((action) => action.kind === 'unblock-task');
   const queue = tasks
-    .filter((task) => task.status === 'new' && !held.has(task.id) && !tokenHeld.has(task.id))
+    .filter(
+      (task) =>
+        task.status === 'new' &&
+        !held.has(task.id) &&
+        !tokenHeld.has(task.id) &&
+        !hasReport(task.id),
+    )
     .sort(byPriorityThenAge);
 
   // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
@@ -837,7 +848,18 @@ export function scan(state) {
   }
   actions.push(...delayed.values());
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
-  return { actions, notes };
+  return {
+    actions: actions.filter(
+      // Досылка не меняет карточку и снимает условие, удерживающее перенос.
+      (action) =>
+        action.kind === 'transfer-report' ||
+        action.kind === 'push-tail' ||
+        (action.kind === 'flush-delay-journal' &&
+          !reports.some((report) => report.reportId && report.taskId === action.taskId)) ||
+        !hasReport(action.taskId),
+    ),
+    notes,
+  };
 }
 
 /** Есть ли вообще работа. Ради этого ответа сканер и запускается 288 раз в сутки. */

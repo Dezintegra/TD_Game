@@ -19,6 +19,7 @@ import { parseReport } from './parse-report.mjs';
 import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
 import { codexGitEnvironment } from './codex-environment.mjs';
+import { sameReportLaunch } from './report-store.mjs';
 import { effectiveTokenLimit } from './user-token-limit.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import { tokenAdmission } from './token-hold.mjs';
@@ -62,6 +63,7 @@ export function createSupervisor({
   nowMs = () => Date.now(),
   saveStages = () => {},
   stages = {},
+  reportStore = null,
   codexUsage = {},
   saveCodexUsage = () => {},
   onPolicyBlocked = () => {},
@@ -83,6 +85,17 @@ export function createSupervisor({
   let policyBlocked = false;
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
+  const pendingAcceptances = new Map();
+  const reportViews = () =>
+    reportStore
+      ? reportStore.entries().map((entry) => ({
+          ...entry.report,
+          reportId: entry.reportId,
+          launchId: entry.launchId,
+          startedAt: entry.startedAt,
+          machine: entry.machine,
+        }))
+      : reports;
   /**
    * Исходы осиротевших этапов, дождавшиеся записи в журнал задачи.
    *
@@ -139,7 +152,13 @@ export function createSupervisor({
         ],
       };
     },
-    reports,
+    get reports() {
+      return reportViews();
+    },
+    reportStore,
+    get reportStorageBlocked() {
+      return pendingAcceptances.size > 0;
+    },
     orphanOutcomes,
     apiFailures,
     initialize: adoptOrphans,
@@ -225,8 +244,10 @@ export function createSupervisor({
      */
     forgetSession(taskId, stage) {
       if (!(key(taskId, stage) in known)) return false;
+      const next = { ...known };
+      delete next[key(taskId, stage)];
+      saveStages(next);
       delete known[key(taskId, stage)];
-      saveStages(known);
       return true;
     },
 
@@ -247,6 +268,15 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
+      if (
+        pendingAcceptances.size ||
+        reportViews().some(
+          (report) =>
+            report.taskId === assignment.taskId || report.batch?.includes(assignment.taskId),
+        )
+      ) {
+        return { ok: false, reason: 'busy', why: 'ожидается сохранение или перенос отчёта' };
+      }
       retryUsageCancellations();
       if (policyBlocked)
         return {
@@ -355,7 +385,7 @@ export function createSupervisor({
         stage: assignment.stage,
         path: assignment.path,
         sessionId,
-        launchId: provider === 'codex' ? randomUUID() : null,
+        launchId: randomUUID(),
         usageOrdinal: 0,
         startedAt: now(),
         startedMs: nowMs(),
@@ -622,6 +652,31 @@ export function createSupervisor({
     let changed = false;
     for (const [at, value] of Object.entries(known)) {
       if (!value?.live) continue;
+      const cutAt = at.lastIndexOf(':');
+      const context = { ...value.live, taskId: at.slice(0, cutAt), stage: at.slice(cutAt + 1) };
+      const candidates =
+        reportStore
+          ?.entries()
+          .filter((entry) => entry.taskId === context.taskId && entry.stage === context.stage) ??
+        [];
+      const matching = candidates.filter((entry) => sameReportLaunch(entry, context));
+      if (
+        matching.length > 1 ||
+        (!context.launchId &&
+          candidates.some(
+            (entry) => !context.machine || !context.startedAt || !entry.machine || !entry.startedAt,
+          ))
+      ) {
+        throw new Error(`неоднозначный сохранённый отчёт запуска ${at}`);
+      }
+      if (matching.length === 1) {
+        const kept = { ...value };
+        delete kept.live;
+        const next = { ...known, [at]: kept };
+        saveStages(next);
+        known[at] = kept;
+        continue;
+      }
       if (value.provider === 'codex') {
         const taskId = at.slice(0, at.lastIndexOf(':'));
         const launchId =
@@ -675,6 +730,7 @@ export function createSupervisor({
    * длиной в один срок этапа.
    */
   function sweep() {
+    retryAcceptedReports();
     retryUsageCancellations();
     for (const orphan of [...orphans.values()]) {
       const verdict = judgeOrphan(orphan);
@@ -874,9 +930,6 @@ export function createSupervisor({
    * которому доступен и разобранный отчёт, и git.
    */
   function finish(child, run) {
-    children.delete(child.taskId);
-    stopPulse();
-
     let durableEvidence = null;
     if (providerOf(config) === 'codex' && readCodexEvidence) {
       try {
@@ -941,6 +994,23 @@ export function createSupervisor({
     // получает пустую строку и возвращает `{ report: null, why }`. Исключений
     // он не бросает, защиты не требует.
     const parsed = parseReport(answer.result);
+    const accepted = answer.outcome === 'done' && parsed.report?.stage === child.stage;
+    if (reportStore && accepted) {
+      pendingAcceptances.set(key(child.taskId, child.stage), {
+        report: {
+          ...parsed.report,
+          taskId: child.taskId,
+          denials: answer.denials,
+          costUsd: answer.cost ?? 0,
+          ...(child.batch ? { batch: child.batch } : {}),
+        },
+        launch: { launchId: child.launchId, startedAt: child.startedAt, machine },
+        sessionId: answer.sessionId,
+      });
+      retryAcceptedReports();
+    }
+    children.delete(child.taskId);
+    stopPulse();
     writeStageLog(child.taskId, child.stage, renderLog(child, run, answer, parsed));
 
     // Итог этапа одной строкой: то, ради чего человек и смотрит в консоль,
@@ -978,7 +1048,7 @@ export function createSupervisor({
     // разделив их, мы получили бы миг, в котором на диске лежит дескриптор
     // мёртвого процесса.
     const at = key(child.taskId, child.stage);
-    if (known[at]) {
+    if (known[at] && !(reportStore && accepted)) {
       const kept = { ...known[at] };
       delete kept.live;
       known[at] = answer.sessionId ? { ...kept, sessionId: answer.sessionId } : kept;
@@ -1057,18 +1127,37 @@ export function createSupervisor({
     //
     // Отсутствие стоимости в ответе — ноль, а не беда: ответ без неё законен,
     // и ронять из-за этого перенос отчёта нечем оправдать.
-    reports.push({
-      ...parsed.report,
-      taskId: child.taskId,
-      denials: answer.denials,
-      costUsd: answer.cost ?? 0,
-      // Перечень пакета едет с отчётом по той же причине, что отказы
-      // и стоимость: у переноса своего источника нет. Сессия перечня
-      // не пишет — отчёт властен только над своим пакетом, и что это
-      // за пакет, знает породивший, а не порождённый.
-      ...(child.batch ? { batch: child.batch } : {}),
-    });
+    if (!reportStore)
+      reports.push({
+        ...parsed.report,
+        taskId: child.taskId,
+        denials: answer.denials,
+        costUsd: answer.cost ?? 0,
+        // Перечень пакета едет с отчётом по той же причине, что отказы
+        // и стоимость: у переноса своего источника нет. Сессия перечня
+        // не пишет — отчёт властен только над своим пакетом, и что это
+        // за пакет, знает породивший, а не порождённый.
+        ...(child.batch ? { batch: child.batch } : {}),
+      });
     log(`этап ${child.taskId}:${child.stage} закончен с исходом ${parsed.report.outcome}`);
+  }
+
+  function retryAcceptedReports() {
+    for (const [at, pending] of pendingAcceptances) {
+      try {
+        reportStore.accept(pending.report, pending.launch);
+        if (known[at]) {
+          const kept = { ...known[at] };
+          delete kept.live;
+          if (pending.sessionId) kept.sessionId = pending.sessionId;
+          saveStages({ ...known, [at]: kept });
+          known[at] = kept;
+        }
+        pendingAcceptances.delete(at);
+      } catch (error) {
+        log(`не сохранён отчёт ${at}; планирование остановлено: ${error.message}`);
+      }
+    }
   }
 }
 
