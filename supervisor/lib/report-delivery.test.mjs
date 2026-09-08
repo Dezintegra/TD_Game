@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execute } from './execute.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
+import { prepareReportPlan } from './report-plan.mjs';
 
 const fixtures = [];
 const fixture = (options) => {
@@ -14,6 +15,65 @@ afterEach(() => {
 const deliver = async (f, opened) => (await execute([f.action], opened.io))[0];
 
 describe('durable report execution', () => {
+  it.each(['response', 'progress'])(
+    'keeps same-slug request identities after collision and lost %s',
+    async (point) => {
+      const f = fixture({
+        reportOverrides: {
+          requests: [0, 1].map((index) => ({
+            type: 'note',
+            title: 'Same title',
+            description: `Request ${index}`,
+            priority: 50,
+          })),
+        },
+      });
+      const first = f.open();
+      const plan = await prepareReportPlan(f.action, first.io);
+      first.store.update(f.entry.reportId, { plan });
+      expect(plan.result.created).toEqual(['0003-same-title', '0004-same-title']);
+      await first.recipient.store.createTask({ ...f.member, id: '0003-occupied' });
+      const resumed = f.open();
+      if (point === 'response') resumed.recipient.fail('POST', 'cards', 'after');
+      else {
+        const update = resumed.store.update;
+        resumed.store.update = (id, changes) => {
+          if (changes.progress?.at(-1) === plan.operations[0].key)
+            throw new Error('lost creation progress');
+          return update(id, changes);
+        };
+      }
+      expect((await deliver(f, resumed)).result).toBe('failed');
+      const afterFirst = f.open();
+      const born = afterFirst.recipient.store
+        .allTaskIds()
+        .filter((id) => id.endsWith('same-title'));
+      // Номер второй заявки зарезервирован всем планом, первая его не забирает.
+      expect(born).toEqual(['0005-same-title']);
+      await afterFirst.recipient.store.createTask({ ...f.member, id: '0004-occupied' });
+      const second = f.open();
+      second.recipient.fail('POST', 'cards', 'after');
+      expect((await deliver(f, second)).result).toBe('failed');
+      const pending = second.store.entries()[0];
+      expect(pending.progress).toContain(plan.operations[0].key);
+      expect(pending.plan.operations[0]).toEqual(resumed.store.entries()[0].plan.operations[0]);
+      const final = f.open();
+      expect(await deliver(f, final)).toMatchObject({
+        result: 'done',
+        created: ['0005-same-title', '0006-same-title'],
+      });
+      expect(final.recipient.store.readTask(f.task.id).links.related).toEqual([
+        '0005-same-title',
+        '0006-same-title',
+      ]);
+      expect(final.recipient.store.readTask('0005-same-title').description).toContain('Request 0');
+      expect(final.recipient.store.readTask('0006-same-title').description).toContain('Request 1');
+      expect(final.recipient.state().cards).toHaveLength(6);
+      expect(final.recipient.state()).toMatchObject({ puts: 1, posts: 5 });
+      expect(f.open().store.entries()).toEqual([]);
+      expect((await deliver(f, f.open())).result).toBe('skipped');
+    },
+  );
   it.each(['journal', 'release'])('recovers blocked delivery after %s failure', async (point) => {
     const f = fixture({
       outcome: 'blocked',

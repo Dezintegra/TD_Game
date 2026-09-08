@@ -173,16 +173,17 @@ export function createIo({
     },
 
     /** Завести новую задачу: запись плюс отправка своим коммитом. */
-    reserveReportTask(task, operation) {
+    reserveReportTask(task, operation, reservedIds = []) {
       const ids = this.allTaskIds();
       const existing = ids
         .map((id) => this.readTask(id))
         .find((item) => hasReceipt(item, operation.key));
       if (existing) return { ok: true, task: { ...task, id: existing.id } };
+      const taken = [...ids, ...reservedIds];
       return {
         ok: true,
-        task: ids.some((id) => id.split('-')[0] === task.id.split('-')[0])
-          ? { ...task, id: nextId(ids, task.title) }
+        task: taken.some((id) => id.split('-')[0] === task.id.split('-')[0])
+          ? { ...task, id: nextId(taken, task.title) }
           : task,
       };
     },

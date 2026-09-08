@@ -10,6 +10,17 @@ function replaceId(value, before, after) {
   return value;
 }
 
+function renameRequest(entry, index, id) {
+  const before = entry.plan.operations[index].args[0].id;
+  // Ключ операции остаётся идентичностью заявки. Уже подтверждённые
+  // операции и исходные снимки не переписываются при выборе её номера.
+  for (const operation of entry.plan.operations) {
+    if (entry.progress.includes(operation.key)) continue;
+    operation.args = replaceId(operation.args, before, id);
+  }
+  entry.plan.result = replaceId(entry.plan.result, before, id);
+}
+
 /** Намерение переживает сбой; квитанция получателя решает судьбу повтора. */
 export async function transferReport(action, io) {
   if (!io.reportStore || !action.reportId) return transferLegacyReport(action, io);
@@ -40,11 +51,16 @@ export async function transferReport(action, io) {
       const intent = `intent:${operation.key}`;
       if (!entry.progress.includes(intent)) {
         if (operation.kind === 'createTask' && io.reserveReportTask) {
-          const reserved = await io.reserveReportTask(operation.args[0], operation);
+          const reservedIds = entry.plan.operations
+            .filter((item) => item.kind === 'createTask' && item.key !== operation.key)
+            .map((item) => item.args[0].id);
+          const reserved = await io.reserveReportTask(operation.args[0], operation, reservedIds);
           if (!reserved.ok) throw new Error(reserved.why ?? reserved.outcome);
+          if (reservedIds.some((id) => id.split('-')[0] === reserved.task.id.split('-')[0]))
+            throw new Error('request reservation conflicts with another planned operation');
           const oldId = operation.args[0].id;
           if (reserved.task.id !== oldId) {
-            entry.plan = replaceId(entry.plan, oldId, reserved.task.id);
+            renameRequest(entry, index, reserved.task.id);
             operation = entry.plan.operations[index];
           }
         }

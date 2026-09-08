@@ -432,7 +432,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * значит и разбора не получит, и заметить её можно только глазами
      * в журнале цикла.
      */
-    async reserveReportTask(task, operation) {
+    async reserveReportTask(task, operation, reservedIds = []) {
       const found = await reportCards();
       if (!found.ok) return found;
       const metas = found.cards
@@ -442,7 +442,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       if (matches.length > 1)
         return { ok: false, outcome: 'conflict', why: 'duplicate creation receipt' };
       if (matches.length) return { ok: true, task: { ...task, id: matches[0].id } };
-      const ids = metas.map((meta) => meta.id).filter(Boolean);
+      const ids = [...metas.map((meta) => meta.id).filter(Boolean), ...reservedIds];
       const occupied = ids.some((id) => id.split('-')[0] === task.id.split('-')[0]);
       return { ok: true, task: occupied ? { ...task, id: nextId(ids, task.title) } : task };
     },
