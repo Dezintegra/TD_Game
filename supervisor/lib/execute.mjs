@@ -38,6 +38,7 @@ import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { closureReasonFor, closureRequestKey, recoverClosureReason } from './closure.mjs';
 import { journalBody } from './journal.mjs';
+import { finishReportRejection, hasReportRejection, rejectReport } from './report-rejection.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -91,6 +92,13 @@ async function transferReport(action, io) {
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
 
+  if (hasReportRejection(task, report)) return finishReportRejection(task, report, io);
+  const result = await transferReportCore(action, io, task, report);
+  // Только явный отказ проверки: сеть и частичная запись должны повторяться.
+  return result.reportRejected ? rejectReport(task, report, result.why, io) : result;
+}
+
+async function transferReportCore(action, io, task, report) {
   if (
     task.status !== report.stage &&
     task.tokenReanalysis?.reportKey === tokenAnalysisReportKey(report)
@@ -166,12 +174,13 @@ async function transferReport(action, io) {
   }
   if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
   const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
-  if (categoryProblem) return { result: 'failed', why: categoryProblem };
+  if (categoryProblem) return { result: 'failed', why: categoryProblem, reportRejected: true };
   if (report.categories && report.requests) {
-    if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };
+    if (!Array.isArray(report.requests))
+      return { result: 'failed', why: 'requests не массив', reportRejected: true };
     for (const request of report.requests) {
       const problem = categoriesProblem(request?.categories, true);
-      if (problem) return { result: 'failed', why: problem };
+      if (problem) return { result: 'failed', why: problem, reportRejected: true };
     }
   }
 
@@ -279,6 +288,7 @@ async function transferReport(action, io) {
     return {
       result: 'failed',
       why: `передача работы не сохранена: ${plan.rejected.flatMap((bad) => bad.problems).join('; ')}`,
+      reportRejected: true,
     };
   }
   for (const bad of plan.rejected) {

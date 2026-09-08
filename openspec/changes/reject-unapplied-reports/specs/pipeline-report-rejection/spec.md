@@ -25,6 +25,18 @@ The supervisor SHALL distinguish report-content rejection from transient storage
 - **WHEN** postmortem supplies a report with a permanent content error
 - **THEN** its full report is preserved and the task moves to failed without recursively starting another postmortem
 
+#### Scenario: Large report
+
+- **WHEN** the rejected report exceeds the card-description or single-comment text limit
+- **THEN** the full JSON is delivered in journal parts before the transition, without storing the full report in the card description
+- **AND** joining parts preserves long JSON strings without introducing line breaks inside them
+
+#### Scenario: Repeated claim release
+
+- **WHEN** removing the supervisor's assignment fails but a fresh card read confirms its member is already absent
+- **THEN** release succeeds so an already applied report can leave the queue
+- **AND** a failed read or a still assigned member preserves the original failure
+
 #### Scenario: Source stage already changed
 
 - **WHEN** a rejected report refers to an earlier stage than the current task

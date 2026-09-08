@@ -174,7 +174,7 @@ export async function transferBlocked(task, report, action, io) {
   // PUT мог пройти, а запись комментария — оборваться. Состояние уже применено.
   if (task.status === 'blocked' && task.blockedContext?.from === report.stage) {
     if (task.blockedContext.operation !== blockerOperation(task, report))
-      return { result: 'failed', why: 'карточка ожидает по другому отчёту' };
+      return { result: 'failed', why: 'карточка ожидает по другому отчёту', reportRejected: true };
     const released = await io.release?.(task);
     if (released && !released.ok)
       return { result: 'failed', why: released.why ?? released.outcome };
@@ -192,7 +192,7 @@ export async function transferBlocked(task, report, action, io) {
         .map((id) => io.readTask(id))
         .filter(Boolean);
   const plan = planBlockers(task, report, known, io.now);
-  if (plan.problem) return { result: 'failed', why: plan.problem };
+  if (plan.problem) return { result: 'failed', why: plan.problem, reportRejected: true };
   for (const born of plan.planned) {
     const saved = await io.createTask(born, `chore(backlog): prerequisite ${born.id}`);
     if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };

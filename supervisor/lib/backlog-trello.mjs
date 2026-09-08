@@ -589,7 +589,17 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       if (!me.ok) return me;
 
       const freed = await trello.delete(`cards/${card.id}/idMembers/${me.id}`);
-      return freed.ok ? { ok: true, outcome: 'released' } : failure(freed);
+      if (freed.ok) return { ok: true, outcome: 'released' };
+      // DELETE мог уже пройти, а ответ — потеряться. Не гадаем по тексту ошибки:
+      // подтверждаем отсутствие назначения свежим чтением и не трогаем чужие.
+      const current = await trello.get(`cards/${card.id}`, { fields: 'idMembers' });
+      if (
+        current.ok &&
+        Array.isArray(current.data?.idMembers) &&
+        !current.data.idMembers.includes(me.id)
+      )
+        return { ok: true, outcome: 'released' };
+      return failure(freed);
     },
 
     /**

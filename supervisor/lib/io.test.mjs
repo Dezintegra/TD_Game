@@ -3,6 +3,22 @@ import { describe, expect, it } from 'vitest';
 import { createIo, summariseChecks, summarisePullRequest } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 
+it('доставка полного отчёта в файловый журнал не дублируется при повторе', () => {
+  const { config } = resolveConfig({});
+  const io = createIo({ root: '/repo', config, now: '2026-09-08T12:00:00Z' });
+  let journal = '';
+  let commits = 0;
+  io.readJournal = () => journal;
+  io.appendJournal = (id, text) => (journal += text);
+  io.commitAndPush = () => (commits++, { ok: true });
+  for (let i = 0; i < 2; i++)
+    expect(
+      io.amendTask('0027-nuke', 'полный отчёт', 'сохранить', 'supervisor', 'report-key').ok,
+    ).toBe(true);
+  expect(commits).toBe(1);
+  expect(journal.match(/полный отчёт/g)).toHaveLength(1);
+});
+
 /**
  * Проверки сведения состояния проверок CI к одному ответу.
  *

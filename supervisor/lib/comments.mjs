@@ -47,13 +47,13 @@ export function prefixOf(marker, source = DEFAULT_SOURCE) {
 /**
  * Сколько знаков резервируется под заголовок части.
  *
- * ` (часть 10 из 12)` плюс два перевода строки — с запасом; длина самой
+ * ` (часть 10 из 12) [join]` плюс два перевода строки — с запасом; длина самой
  * приставки прибавляется к этому отдельно, потому что теги источника
  * разной длины. Резерв считается один на все части, чтобы разбиение
  * не зависело от того, сколько частей получится: иначе счёт зациклится
  * сам на себе.
  */
-const HEADER_RESERVE = 26;
+const HEADER_RESERVE = 33;
 
 /**
  * Разбить запись журнала на комментарии.
@@ -80,7 +80,7 @@ export function splitJournalEntry(text, { marker, source, limit = MAX_TEXT }) {
   let current = '';
 
   const flush = () => {
-    if (current !== '') chunks.push(current);
+    if (current !== '') chunks.push({ text: current });
     current = '';
   };
 
@@ -89,7 +89,8 @@ export function splitJournalEntry(text, { marker, source, limit = MAX_TEXT }) {
     // не опубликовать вовсе.
     if (line.length > room) {
       flush();
-      for (let at = 0; at < line.length; at += room) chunks.push(line.slice(at, at + room));
+      for (let at = 0; at < line.length; at += room)
+        chunks.push({ text: line.slice(at, at + room), join: at > 0 });
       continue;
     }
 
@@ -104,7 +105,10 @@ export function splitJournalEntry(text, { marker, source, limit = MAX_TEXT }) {
   flush();
 
   const total = chunks.length;
-  return chunks.map((chunk, index) => `${prefix} (часть ${index + 1} из ${total})\n\n${chunk}`);
+  return chunks.map(
+    (chunk, index) =>
+      `${prefix} (часть ${index + 1} из ${total})${chunk.join ? ' [join]' : ''}\n\n${chunk.text}`,
+  );
 }
 
 /**
@@ -114,10 +118,17 @@ export function splitJournalEntry(text, { marker, source, limit = MAX_TEXT }) {
  * получает историю задачи и должна видеть её целой, а не в кусках.
  */
 export function joinJournalParts(comments, { marker }) {
-  return comments
-    .map((text) => stripMarker(text, marker))
-    .join('\n')
-    .trim();
+  return (
+    comments
+      // Перенос, добавленный внутри длинной JSON-строки, портит исходный отчёт.
+      // Только явно помеченное продолжение склеивается без разделителя.
+      .map((text, index) => {
+        const joined = text.startsWith(marker) && /^.*\(часть \d+ из \d+\) \[join\]\n/.test(text);
+        return `${index && !joined ? '\n' : ''}${stripMarker(text, marker)}`;
+      })
+      .join('')
+      .trim()
+  );
 }
 
 /**
@@ -131,7 +142,7 @@ export function joinJournalParts(comments, { marker }) {
  */
 export function stripMarker(text, marker) {
   const head = new RegExp(
-    `^${escapeForRegExp(marker)}\\s*(?:\\[[^\\]\\n]*\\]\\s*)?(?:\\(часть \\d+ из \\d+\\)\\s*\\n+)?`,
+    `^${escapeForRegExp(marker)}\\s*(?:\\[[^\\]\\n]*\\]\\s*)?(?:\\(часть \\d+ из \\d+\\)(?: \\[join\\])?\\s*\\n+)?`,
   );
   const found = head.exec(text);
   return found ? text.slice(found[0].length) : text;
