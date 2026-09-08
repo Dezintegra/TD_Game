@@ -1,12 +1,7 @@
 import { unblockTask } from './blockers.mjs';
 import { changeTokenHold } from './token-hold.mjs';
 import { analyzeTokenBudget } from './token-reanalysis.mjs';
-import {
-  beginDelayAnalysis,
-  observeDelay,
-  reviewingDelay,
-  reviewingQuestion,
-} from './delay-analysis.mjs';
+import { beginDelayAnalysis, observeDelay, reviewingDelay } from './delay-analysis.mjs';
 import { applyExternal } from './apply-report.mjs';
 import {
   applyTransition,
@@ -23,7 +18,6 @@ import { transferReport } from './report-delivery.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { recoverClosureReason } from './closure.mjs';
-import { journalBody } from './journal.mjs';
 
 /**
  * Исполнение решений сканера.
