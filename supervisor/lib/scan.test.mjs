@@ -1220,6 +1220,79 @@ describe('хвосты', () => {
   });
 });
 
+describe('приоритет внешнего опроса', () => {
+  const arena = (over = {}) =>
+    task({
+      type: 'run',
+      status: 'benchmark',
+      links: { run: '123' },
+      run: { kind: 'arena' },
+      ...over,
+    });
+  const poll = { kind: 'poll-external', taskId: '0001-one', what: 'run' };
+
+  it.each(['continuations', 'spawnFailures', 'cost'])(
+    'опрос исключает решение по пределу %s даже после timeout на занятой машине',
+    (limit) => {
+      const original = arena({
+        attempts: {
+          continuations: limit === 'continuations' ? config.maxContinuations : 0,
+          spawnFailures: limit === 'spawnFailures' ? config.maxSpawnFailures : 0,
+        },
+        spentUsd: limit === 'cost' ? 100 : 0,
+      });
+      const result = run({
+        config: { ...config, provider: 'claude', maxTaskCostUsd: 100 },
+        tasks: [original, task({ id: '0002-busy', status: 'design' })],
+        running: [{ taskId: '0002-busy', stage: 'design' }],
+        orphans: [{ taskId: original.id, stage: 'benchmark', outcome: 'timeout' }],
+      });
+      expect(
+        result.actions.filter((a) => a.taskId === original.id && a.kind !== 'note-orphan'),
+      ).toEqual([poll]);
+      expect(original.spentUsd).toBe(limit === 'cost' ? 100 : 0);
+    },
+  );
+
+  it('без номера исчерпание останавливает задачу даже без свободного места', () => {
+    const result = run({
+      tasks: [
+        arena({ links: { run: null }, attempts: { continuations: config.maxContinuations } }),
+        task({ id: '0002-busy', status: 'design' }),
+      ],
+      running: [{ taskId: '0002-busy', stage: 'design' }],
+    });
+    expect(result.actions.filter((a) => a.taskId === '0001-one')).toEqual([
+      expect.objectContaining({
+        kind: 'fail-stage',
+        stage: 'benchmark',
+        reason: 'этап не доводится до конца, продолжения исчерпаны',
+      }),
+    ]);
+  });
+
+  it('опрос оставляет свободное место другой задаче', () => {
+    const result = run({
+      tasks: [arena(), task({ id: '0002-other', type: 'note', status: 'triage' })],
+    });
+    expect(result.actions).toContainEqual(poll);
+    expect(result.actions.filter((a) => a.kind === 'continue-stage')).toEqual([
+      expect.objectContaining({ taskId: '0002-other', stage: 'triage' }),
+    ]);
+  });
+
+  it.each([
+    ['arena', null],
+    ['perf', '123'],
+  ])('%s без внешнего опроса получает сессию', (kind, runId) => {
+    const result = run({ tasks: [arena({ run: { kind }, links: { run: runId } })] });
+    expect(kinds(result)).not.toContain('poll-external');
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'continue-stage', stage: 'benchmark' }),
+    );
+  });
+});
+
 describe('ожидание и уборка', () => {
   it('открытый pull request опрашивается', () => {
     const result = run({ tasks: [task({ id: '0001-one', status: 'pr' })] });
