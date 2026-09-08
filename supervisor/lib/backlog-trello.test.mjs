@@ -267,6 +267,79 @@ describe('чтение задач', () => {
 });
 
 describe('сохранение задачи', () => {
+  it('второе чтение и запись видят переход и поля первого PUT в том же снимке', async () => {
+    const source = card({ idList: 'list-benchmark' });
+    const trello = fakeTrello();
+    const store = backlog({ cards: [source] }, trello);
+    const initial = store.readTask('0031-proba');
+    const first = { ...initial, status: 'interpret', links: { ...initial.links, run: '123' } };
+    expect(
+      (
+        await store.saveTask(first, {
+          from: 'benchmark',
+          to: 'interpret',
+          what: 'Прогон закончен.',
+        })
+      ).ok,
+    ).toBe(true);
+    const intermediate = store.readTask(initial.id);
+    expect(intermediate).toMatchObject({ status: 'interpret', links: { run: '123' } });
+    const firstPut = trello.calls.find((call) => call.method === 'PUT');
+    expect(source).toMatchObject({ desc: firstPut.body.desc, idList: 'list-interpret' });
+
+    expect(
+      (
+        await store.saveTask(
+          { ...intermediate, spentUsd: 7 },
+          {
+            from: intermediate.status,
+            to: intermediate.status,
+            what: 'Расход учтён.',
+          },
+        )
+      ).ok,
+    ).toBe(true);
+    const puts = trello.calls.filter((call) => call.method === 'PUT');
+    expect(puts).toHaveLength(2);
+    expect(puts[1].body).toMatchObject({ idList: 'list-interpret' });
+    expect(puts[1].body.desc).toContain('"run":"123"');
+    expect(puts[1].body.desc).toContain('"spentUsd":7');
+    expect(source).toMatchObject({ desc: puts[1].body.desc, idList: 'list-interpret' });
+    expect(store.readTask(initial.id)).toMatchObject({
+      status: 'interpret',
+      links: { run: '123' },
+      spentUsd: 7,
+    });
+    expect(backlog({ cards: [source] }).readTask(initial.id)).toMatchObject({
+      status: 'interpret',
+      links: { run: '123' },
+      spentUsd: 7,
+    });
+  });
+
+  it('отказ PUT не публикует неподтверждённый переход в памяти', async () => {
+    const source = card({ idList: 'list-benchmark' });
+    const before = { ...source };
+    const trello = fakeTrello({ 'cards/card-1': { ok: false, kind: 'offline', why: 'сеть' } });
+    const store = backlog({ cards: [source] }, trello);
+    const initial = store.readTask('0031-proba');
+    expect(
+      (
+        await store.saveTask(
+          { ...initial, status: 'interpret', spentUsd: 7 },
+          {
+            from: 'benchmark',
+            to: 'interpret',
+            what: 'Прогон закончен.',
+          },
+        )
+      ).ok,
+    ).toBe(false);
+    expect(trello.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+    expect(store.readTask(initial.id)).toEqual(initial);
+    expect(source).toEqual(before);
+  });
+
   const task = (over = {}) => ({
     id: '0031-proba',
     type: 'feature',

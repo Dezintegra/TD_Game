@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { pendingDependencies } from './dependencies.mjs';
 import { execute } from './execute.mjs';
+import { scan } from './scan.mjs';
 import { createIo } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { reconcile } from './reconcile.mjs';
@@ -1441,6 +1442,112 @@ describe('сессия на идущий этап', () => {
     const io = fakeIo({ tasks: [task({ status: 'benchmark' })], entry: null });
     const [result] = await execute([{ ...carryOn, stage: 'benchmark' }], io);
     expect(result.result).toBe('done');
+  });
+});
+
+describe('исполнение оборота внешнего прогона', () => {
+  const { config } = resolveConfig({});
+  const poll = { kind: 'poll-external', taskId: '0001-one', what: 'run' };
+
+  it.each([
+    ['success', false, false],
+    ['pending', false, false],
+    ['offline', false, false],
+    ['failure', false, false],
+    ['success', true, true],
+    ['pending', true, true],
+  ])('%s, предел=%s, машина занята=%s', async (state, exhausted, busy) => {
+    const original = task({
+      type: 'run',
+      status: 'benchmark',
+      run: { kind: 'arena', expectation: 'измерить темп' },
+      links: { run: '123' },
+      attempts: { continuations: exhausted ? config.maxContinuations : 1, cycleFailures: 0 },
+    });
+    const other = task({ id: '0002-busy', status: 'design' });
+    const io = fakeIo({ tasks: busy ? [original, other] : [original] });
+    const calls = [];
+    io.readExternal = createIo({
+      root: '/repo',
+      config,
+      now: NOW,
+      run: (args, command) => {
+        calls.push({ args, command });
+        return state === 'offline'
+          ? { code: 1, stdout: '' }
+          : {
+              code: 0,
+              stdout: JSON.stringify({
+                status: state === 'pending' ? 'in_progress' : 'completed',
+                conclusion: state,
+              }),
+            };
+      },
+    }).readExternal;
+    const freshPlan = (occupied) =>
+      scan({
+        config,
+        tasks: [...io.tasks.values()],
+        running: occupied ? [{ taskId: other.id, stage: 'design' }] : [],
+      }).actions;
+    // timeout уже завершил процесс; сканер видит задачу без живой сессии.
+    const plan = scan({
+      config,
+      tasks: [...io.tasks.values()],
+      running: busy ? [{ taskId: other.id, stage: 'design' }] : [],
+      orphans: [{ taskId: original.id, stage: 'benchmark', outcome: 'timeout' }],
+    }).actions;
+    expect(plan.filter((action) => action.kind !== 'note-orphan')).toEqual([poll]);
+    await execute(plan, io);
+    expect(calls).toEqual([
+      { command: 'gh', args: ['run', 'view', '123', '--json', 'status,conclusion'] },
+    ]);
+    const saved = io.readTask(original.id);
+    expect(saved.status).toBe(
+      state === 'success' ? 'interpret' : state === 'failure' ? 'postmortem' : 'benchmark',
+    );
+    if (state === 'failure') {
+      expect(saved.returnTo).toBe('benchmark');
+      expect(saved.attempts).toEqual({
+        continuations: 0,
+        cycleFailures: 0,
+        rejections: 0,
+        spawnFailures: 0,
+        apiErrors: 0,
+      });
+    } else {
+      expect(saved.attempts).toEqual(original.attempts);
+    }
+    expect(io.spawned).toEqual([]);
+    expect(io.readJournal(original.id)).not.toContain('Этапу выдана сессия');
+
+    if (state === 'success') {
+      if (exhausted) {
+        for (const occupied of [true, false]) {
+          expect(freshPlan(occupied).filter((action) => action.taskId === original.id)).toEqual([
+            {
+              kind: 'fail-stage',
+              taskId: original.id,
+              stage: 'interpret',
+              reason: 'этап не доводится до конца, продолжения исчерпаны',
+            },
+          ]);
+        }
+      } else {
+        expect(freshPlan(false)).toContainEqual(
+          expect.objectContaining({
+            kind: 'continue-stage',
+            taskId: original.id,
+            stage: 'interpret',
+          }),
+        );
+      }
+    } else if (state !== 'failure') {
+      expect(freshPlan(busy).filter((action) => action.taskId === original.id)).toEqual([poll]);
+      expect(io.readJournal(original.id)).not.toContain('benchmark → interpret');
+    } else {
+      expect(io.readJournal(original.id)).toContain('прогон не удался');
+    }
   });
 });
 
