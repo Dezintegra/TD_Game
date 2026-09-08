@@ -209,7 +209,8 @@ describe('адресное дополнение зависимостей', () =>
 /** Подставной клиент Trello: помнит запросы, отвечает заданным. */
 function fakeTrello(replies = {}) {
   const calls = [];
-  const answer = (path) => replies[path] ?? replies.default ?? { ok: true, data: {} };
+  const answer = (path) =>
+    replies[path] ?? replies.default ?? { ok: true, data: path.endsWith('/actions') ? [] : {} };
   return {
     calls,
     get: (path, query) => (calls.push({ method: 'GET', path, query }), answer(path)),
@@ -318,6 +319,33 @@ describe('публикация причины до закрытия', () => {
     expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(false);
     expect(w.calls).toEqual([]);
   });
+
+  it.each([1, 2, 'move', null])(
+    'итог completed доставляется до переноса при сбое %s',
+    async (failure) => {
+      const w = world({
+        partFailure: typeof failure === 'number' ? failure : 0,
+        moveFailure: failure === 'move',
+        limit: 250,
+      });
+      w.task.status = 'completed';
+      w.task.completionSummary =
+        'Исправлен двойной расчёт. Единая формула проверена регрессионным тестом. '.repeat(12);
+      w.entry.to = 'completed';
+      delete w.entry.closureReason;
+      const first = await w.store.saveTask(w.task, w.entry);
+      expect(first.ok).toBe(failure === null);
+      if (failure !== null) {
+        expect(w.list()).toBe('list-cleanup');
+        w.restore();
+        expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(true);
+      }
+      expect(w.list()).toBe('list-completed');
+      expect(w.calls[0]).toBe('comment');
+      expect(w.actions.map((a) => a.data.text).join('\n')).toContain('Итог задачи');
+      expect(new Set(w.actions.map((a) => a.data.text)).size).toBe(w.actions.length);
+    },
+  );
 
   it('публикует причину до перемещения', async () => {
     const w = world();
@@ -462,7 +490,7 @@ describe('сохранение задачи', () => {
     const puts = trello.calls.filter((call) => call.method === 'PUT');
     expect(puts).toHaveLength(1);
     expect(puts[0].body).toMatchObject({ idList: 'list-completed', pos: 'top' });
-    expect(trello.calls.filter((call) => call.method === 'GET')).toHaveLength(0);
+    expect(trello.calls.filter((call) => call.method === 'GET')).toHaveLength(1);
   });
 
   it.each(['completed', 'cleanup'])(
@@ -479,10 +507,13 @@ describe('сохранение задачи', () => {
     },
   );
 
-  it('повтор после сбоя комментария не обгоняет более позднее завершение', async () => {
+  it('сбой комментария откладывает само завершение и позицию карточки', async () => {
     const order = ['old-card'];
     let failComment = true;
     const trello = {
+      async get() {
+        return { ok: true, data: [] };
+      },
       async put(path, body) {
         const id = path.split('/')[1];
         if (body.pos === 'top') {
@@ -511,7 +542,7 @@ describe('сохранение задачи', () => {
     failComment = false;
     await store.saveTask(task({ id: '0032-next', status: 'completed' }), completedEntry);
     expect((await store.saveTask(first, completedEntry)).ok).toBe(true);
-    expect(order).toEqual(['card-2', 'card-1', 'old-card']);
+    expect(order).toEqual(['card-1', 'card-2', 'old-card']);
   });
 
   it('неудачное перемещение оставляет запрос верхней позиции для повтора', async () => {
@@ -806,6 +837,32 @@ describe('журнал', () => {
 });
 
 describe('ответ владельца продукта', () => {
+  it.each(['analyzing', 'waiting', 'verifying'])(
+    'не теряет ответ после начала проверки вопроса: %s',
+    (phase) => {
+      const store = backlog({
+        cards: [
+          card({
+            idList: 'list-postmortem',
+            meta: {
+              statusChangedAt: '2026-08-27T14:00:00.000Z',
+              returnTo: 'implement',
+              delayAnalysis: {
+                originStatus: 'awaiting-po',
+                originSince: '2026-08-27T12:00:00.000Z',
+                phase,
+              },
+            },
+          }),
+        ],
+        comments: [
+          { id: 'c1', cardId: 'card-1', date: '2026-08-27T11:00:00.000Z', text: 'Старый ответ' },
+          { id: 'c2', cardId: 'card-1', date: '2026-08-27T13:00:00.000Z', text: 'Новое решение' },
+        ],
+      });
+      expect(store.readAnswer('0031-proba')).toBe('Новое решение');
+    },
+  );
   it('находится после перехода в ожидание', () => {
     const store = backlog({
       cards: [

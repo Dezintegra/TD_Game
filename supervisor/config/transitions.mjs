@@ -14,6 +14,7 @@ export const STATES = [
   // а входящая корзина должна быть слева от очереди, а не после «Закрыто».
   'candidate',
   'blocked',
+  'token-limit',
   'new',
   'triage',
   // Анализ на дробность стоит ПЕРЕД проработкой: колонки доски идут
@@ -54,6 +55,20 @@ export const TERMINAL = ['completed', 'closed', 'failed'];
  * и задумано: поднимают задачу из `failed`, куда она вот-вот попадёт.
  */
 export const CROSSCUT = ['postmortem', 'failed', 'awaiting-po'];
+
+// Удержание бюджета не начинает новый этап и не сбрасывает его попытки.
+export const TOKEN_CAPPED_STAGES = [
+  'triage',
+  'design',
+  'audit',
+  'implement',
+  'benchmark',
+  'interpret',
+  'review',
+  'revise',
+  'deploy',
+];
+export const TOKEN_RESUME_STATES = ['new', 'decompose', ...TOKEN_CAPPED_STAGES];
 
 /**
  * Маршруты по типам задач.
@@ -147,6 +162,7 @@ export const STATE_CLASS = {
   // а не машину. Для раскладки это та же очередь, что и `new`.
   candidate: 'queue',
   blocked: 'waiting',
+  'token-limit': 'waiting',
   new: 'queue',
   triage: 'resource',
   // Анализ читает карточку и доску, но читает сессией — значит занимает
@@ -249,11 +265,32 @@ export function canTransition(task, to) {
   if (from === to) {
     return { ok: false, reason: 'задача уже в этом состоянии' };
   }
+  if (from === 'token-limit')
+    return {
+      ok: TOKEN_RESUME_STATES.includes(to) && to === task.tokenHold?.resumeStatus,
+      reason: 'из ожидания бюджета возвращаются только на сохранённый этап',
+    };
+  if (to === 'token-limit')
+    return {
+      ok: [...TOKEN_RESUME_STATES, 'awaiting-po'].includes(from),
+      reason: 'бюджет удерживает обычный запуск с сохранением этапа',
+    };
+  if (
+    from === 'decompose' &&
+    task.tokenReanalysis?.phase === 'analyzing' &&
+    to === task.tokenReanalysis.originStatus &&
+    TOKEN_RESUME_STATES.includes(to)
+  )
+    return { ok: true, reason: 'неделимая задача продолжает этап до бюджетного анализа' };
   if (
     from === 'postmortem' &&
     ['analyzing', 'verifying'].includes(task.delayAnalysis?.phase) &&
     (to === 'blocked' ||
       to === task.delayAnalysis.originStatus ||
+      (task.delayAnalysis.originStatus === 'awaiting-po' &&
+        task.delayAnalysis.phase === 'verifying' &&
+        task.delayAnalysis.diagnosis?.waitingFor === 'dependencies' &&
+        to === task.delayAnalysis.originReturnTo) ||
       (to === 'new' &&
         task.delayAnalysis.originStatus === 'blocked' &&
         task.delayAnalysis.phase === 'verifying'))

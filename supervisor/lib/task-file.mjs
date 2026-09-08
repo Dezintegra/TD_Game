@@ -36,11 +36,14 @@ export function applyTransition(task, { status, note, now }) {
   // Записав здесь покидаемое состояние, мы дали бы `returnTo: 'postmortem'`,
   // и человек, поднимая задачу из ошибки, вернул бы её в разбор, а не
   // в имплементацию. Поэтому из сквозного в сквозное возврат НАСЛЕДУЕТСЯ.
-  const returnTo = CROSSCUT.includes(status)
-    ? CROSSCUT.includes(task.status)
+  const returnTo =
+    status === 'token-limit' || task.status === 'token-limit'
       ? task.returnTo
-      : task.status
-    : null;
+      : CROSSCUT.includes(status)
+        ? CROSSCUT.includes(task.status)
+          ? task.returnTo
+          : task.status
+        : null;
 
   const history = [...(task.history ?? []), { at: now, from: task.status, to: status, note }].slice(
     -HISTORY_LIMIT,

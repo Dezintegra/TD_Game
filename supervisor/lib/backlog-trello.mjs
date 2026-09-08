@@ -570,12 +570,15 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
           },
         };
       const closing = task.status === 'closed' && entry.from !== 'closed';
+      const completing = task.status === 'completed' && entry.from !== 'completed';
       const journal =
-        `**${entry.from} → ${entry.to}**\n\n${journalBody(entry)}` +
+        `**${entry.from} → ${entry.to}**\n\n${journalBody({ ...entry, completionSummary: task.completionSummary ?? entry.completionSummary })}` +
         (entry.reportTransferKey ? `\n\n<!-- report:${entry.reportTransferKey} -->` : '');
       if (closing) {
         if (typeof entry.closureReason !== 'string' || !entry.closureReason.trim())
           return { ok: false, outcome: 'failed', why: 'причина закрытия не названа' };
+      }
+      if (closing || completing) {
         const written = await comment(card.id, journal, entry.source, { deduplicate: true });
         if (!written.ok) return failure(written);
       }
@@ -609,6 +612,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       const moved = await trello.put(`cards/${card.id}`, {
         idList,
         ...(placeFirst ? { pos: 'top' } : {}),
+        ...(Number.isFinite(entry.restorePriority) ? { pos: entry.restorePriority } : {}),
         // Название пересобирается из очищенного: иначе служебный префикс
         // припишется поверх прежнего и будет расти с каждым переходом.
         name: nameWithId(task.id, titleOf(card.name) || task.title),
@@ -641,7 +645,7 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         }
         return flushDelayJournal(task);
       }
-      if (closing) return { ok: true, outcome: 'saved' };
+      if (closing || completing) return { ok: true, outcome: 'saved' };
 
       if (entry.reportTransferKey)
         return deliverTransferredReport(task.id, entry.reportTransferKey);
@@ -991,7 +995,11 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       if (!item) return null;
       const found = findAnswer(commentsByCard.get(item.card.id) ?? [], {
         marker: mark,
-        since: item.task.statusChangedAt,
+        since:
+          item.task.delayAnalysis?.originStatus === 'awaiting-po' &&
+          ['analyzing', 'waiting', 'verifying'].includes(item.task.delayAnalysis.phase)
+            ? item.task.delayAnalysis.originSince
+            : item.task.statusChangedAt,
       });
       return found?.text ?? null;
     },

@@ -40,6 +40,7 @@ export const DEFAULTS = {
   stageModels: {},
   codexWindowsSandbox: 'elevated',
   // Эвристика тяжести задачи; кэш уже входит во входные токены.
+  codexTaskReanalysisTokens: 15_000_000,
   codexMaxTaskTokens: 25_000_000,
   claudeCommand: 'claude',
 
@@ -381,6 +382,7 @@ export const DEFAULTS = {
       candidate: 'Кандидаты',
       new: 'Заведено',
       blocked: 'Заблокированы',
+      'token-limit': 'Лимит токенов',
       triage: 'Разбор',
       decompose: 'Декомпозиция',
       design: 'Проработка',

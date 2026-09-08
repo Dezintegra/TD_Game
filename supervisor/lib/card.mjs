@@ -1,4 +1,5 @@
 import { CATEGORIES, routingFields } from './categories.mjs';
+import { tokenPanel, withoutTokenPanel } from './token-hold.mjs';
 
 /**
  * Превращение карточки Trello в задачу и обратно.
@@ -44,7 +45,7 @@ export function splitDescription(desc = '') {
   const human = (desc.slice(0, open) + desc.slice(close + BLOCK_CLOSE.length)).trim();
 
   try {
-    return { human, meta: JSON.parse(inner) };
+    return { human: withoutTokenPanel(human), meta: JSON.parse(inner) };
   } catch {
     // Испорченный блок не притворяется пустым: потерять здесь владельца
     // задачи значило бы отдать её второй машине.
@@ -58,7 +59,9 @@ export function joinDescription(human, meta) {
   // Экранируем его в JSON, иначе чтение оборвёт весь машинный блок посередине.
   const encoded = JSON.stringify(meta).replace(/-->/g, '--\\u003e');
   const block = `${BLOCK_OPEN}\n${encoded}\n${BLOCK_CLOSE}`;
-  return human ? `${human.trim()}\n\n${block}` : block;
+  return [tokenPanel(meta?.tokenHold), withoutTokenPanel(human ?? ''), block]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 /**
@@ -163,6 +166,10 @@ export function parseCard(card, { stateByList, labelKeyById }) {
 
   const task = {
     id: meta?.id ?? null,
+    ...(Object.hasOwn(meta ?? {}, 'tokenHold') ? { tokenHold: meta.tokenHold } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'tokenReanalysis')
+      ? { tokenReanalysis: meta.tokenReanalysis }
+      : {}),
     ...routingFields(meta),
     ...(labels.categories.length ? { categories: labels.categories } : {}),
     type: labels.types[0] ?? null,
@@ -176,6 +183,7 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     statusChangedAt: meta?.statusChangedAt ?? createdAtOf(card.id),
     owner: meta?.owner ?? null,
     returnTo: meta?.returnTo ?? null,
+    ...(Object.hasOwn(meta ?? {}, 'question') ? { question: meta.question } : {}),
     links: { change: null, pr: null, run: null, related: [], ...(meta?.links ?? {}) },
     attempts: { continuations: 0, cycleFailures: 0, ...(meta?.attempts ?? {}) },
     // Дробление уже проводили — этап анализа задача пропускает. Признак
@@ -186,6 +194,9 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     ...(Object.hasOwn(meta ?? {}, 'dependsOn') ? { dependsOn: meta.dependsOn } : {}),
     ...(Object.hasOwn(meta ?? {}, 'splitInto') ? { splitInto: meta.splitInto } : {}),
     ...(Object.hasOwn(meta ?? {}, 'closureReason') ? { closureReason: meta.closureReason } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'completionSummary')
+      ? { completionSummary: meta.completionSummary }
+      : {}),
     ...(Object.hasOwn(meta ?? {}, 'closureRequestKey')
       ? { closureRequestKey: meta.closureRequestKey }
       : {}),
@@ -246,10 +257,16 @@ function labelKeys(idLabels, labelKeyById) {
 export function metaOf(task) {
   return {
     id: task.id,
+    ...(Object.hasOwn(task, 'tokenHold') ? { tokenHold: task.tokenHold } : {}),
+    ...(Object.hasOwn(task, 'tokenReanalysis') ? { tokenReanalysis: task.tokenReanalysis } : {}),
     ...routingFields(task),
+    ...(Object.hasOwn(task, 'question') ? { question: task.question } : {}),
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
     ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),
     ...(Object.hasOwn(task, 'closureReason') ? { closureReason: task.closureReason } : {}),
+    ...(Object.hasOwn(task, 'completionSummary')
+      ? { completionSummary: task.completionSummary }
+      : {}),
     ...(Object.hasOwn(task, 'closureRequestKey')
       ? { closureRequestKey: task.closureRequestKey }
       : {}),

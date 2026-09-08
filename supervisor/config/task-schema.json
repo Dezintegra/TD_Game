@@ -44,6 +44,11 @@
       "minLength": 1,
       "description": "Причина прекращения исходной работы с доказательством или конкретными продолжениями; сохраняется до конца уборки."
     },
+    "completionSummary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Самостоятельный итог всей задачи, подготовленный до завершения и сохраняемый для итогового комментария."
+    },
     "closureRequestKey": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$",
@@ -119,6 +124,7 @@
         "failed",
         "awaiting-po",
         "blocked",
+        "token-limit",
         "decompose"
       ]
     },
@@ -400,6 +406,14 @@
           }
         }
       }
+    },
+    "tokenReanalysis": {
+      "type": "object",
+      "description": "Сохранённый контекст и результат раннего бюджетного анализа Codex."
+    },
+    "tokenHold": {
+      "type": "object",
+      "description": "Сохранённый этап и производная панель ожидания бюджета; не источник разрешения на расход."
     }
   },
   "allOf": [

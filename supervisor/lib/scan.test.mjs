@@ -1352,26 +1352,28 @@ describe('бюджет тяжести Codex', () => {
 
   it('явное повышение допускает прежний расход, снижение снова включает предел', () => {
     const raised = userBudgetState({ value: 35000000 });
+    expect(kinds(run(raised))).toContain('analyze-token-budget');
+    raised.tasks[0].tokenReanalysis = { phase: 'completed' };
     expect(kinds(run(raised))).toContain('continue-stage');
-    expect(kinds(run(userBudgetState({ value: 20000000 })))).toContain('decompose-again');
-    expect(kinds(run(userBudgetState({ value: null })))).toContain('decompose-again');
+    expect(kinds(run(userBudgetState({ value: 20000000 })))).toContain('hold-token-budget');
+    expect(kinds(run(userBudgetState({ value: null })))).toContain('hold-token-budget');
     expect(raised.codexUsage.tasks['0001-one'].sessions.s.knownTokens).toBe(26093350);
   });
 
   it('индивидуальный предел действует и при отключённом общем', () => {
-    expect(kinds(run(userBudgetState({ value: 20000000 }, null)))).toContain('decompose-again');
-    expect(kinds(run(userBudgetState({ value: null }, null)))).toContain('continue-stage');
+    expect(kinds(run(userBudgetState({ value: 20000000 }, null)))).toContain('hold-token-budget');
+    expect(kinds(run(userBudgetState({ value: null }, null)))).toContain('analyze-token-budget');
   });
 
   it('ошибка команды и неизвестный расход удерживают запуск без изменения попыток', () => {
     const invalid = userBudgetState({ error: 'Неверный лимит токенов' });
     const before = globalThis.structuredClone(invalid);
-    expect(run(invalid).actions).toEqual([]);
+    expect(run(invalid).actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
     expect(run(invalid).notes.join()).toContain('Неверный лимит');
     expect(invalid).toEqual(before);
     const unknown = userBudgetState({ value: 35000000 });
     unknown.codexUsage.tasks['0001-one'].sessions.s.reasons.push('decreased-usage');
-    expect(run(unknown).actions).toEqual([]);
+    expect(run(unknown).actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
   });
 
   it('команда возвращает ожидающую карточку, не меняя лимит соседней', () => {
@@ -1381,7 +1383,7 @@ describe('бюджет тяжести Codex', () => {
     state.answers = { '0001-one': 'Лимит токенов: 35000000' };
     expect(kinds(run(state))).toContain('answer-question');
     const other = userBudgetState(undefined);
-    expect(kinds(run(other))).toContain('decompose-again');
+    expect(kinds(run(other))).toContain('hold-token-budget');
   });
 
   const check = (tokens, status = 'implement', limit = 100) =>
@@ -1410,21 +1412,21 @@ describe('бюджет тяжести Codex', () => {
         },
       },
     });
-  it('суммирует сессии и отправляет на дробление ровно на границе', () => {
+  it('суммирует сессии и переводит в ожидание ровно на границе', () => {
     expect(kinds(check(99))).toContain('continue-stage');
     const result = check(100);
-    expect(result.actions.find((a) => a.kind === 'decompose-again').reason).toContain(
+    expect(result.actions.find((a) => a.kind === 'hold-token-budget').budget.explanation).toContain(
       '100 токенов при бюджете 100',
     );
     expect(kinds(result)).not.toContain('continue-stage');
   });
   it('допускает анализ и восстановление; null отключает только этот бюджет', () => {
     for (const status of ['decompose', 'postmortem'])
-      expect(kinds(check(101, status))).not.toContain('decompose-again');
+      expect(kinds(check(101, status))).not.toContain('hold-token-budget');
     expect(kinds(check(101, 'implement', null))).toContain('continue-stage');
   });
 
-  it('legacy-unknown удерживает без расходования попытки, известный предел по-прежнему ведёт в decompose', () => {
+  it('legacy-unknown удерживает без расходования попытки, известный предел виден отдельной причиной', () => {
     const card = task({ status: 'implement', attempts: { continuations: 1, cycleFailures: 0 } });
     const before = JSON.parse(JSON.stringify(card));
     const checkLegacy = (tokens, limit = 100, status = 'implement') =>
@@ -1435,17 +1437,17 @@ describe('бюджет тяжести Codex', () => {
         codexUsage: JSON.parse(JSON.stringify(migrateTokenLedger({ '0001-one': { s: tokens } }))),
       });
     const held = checkLegacy(99);
-    expect(held.actions).toEqual([]);
+    expect(held.actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
     expect(held.notes.join()).toContain('legacy-unknown');
     expect(card).toEqual(before);
-    expect(kinds(checkLegacy(100))).toContain('decompose-again');
+    expect(kinds(checkLegacy(100))).toContain('hold-token-budget');
     expect(kinds(checkLegacy(99, null))).toContain('continue-stage');
     for (const status of ['decompose', 'postmortem']) {
       expect(kinds(checkLegacy(99, 100, status))).toContain('continue-stage');
-      expect(kinds(checkLegacy(100, 100, status))).not.toContain('decompose-again');
+      expect(kinds(checkLegacy(100, 100, status))).not.toContain('hold-token-budget');
     }
     for (const status of ['failed', 'awaiting-po']) {
-      expect(kinds(checkLegacy(100, 100, status))).not.toContain('decompose-again');
+      expect(kinds(checkLegacy(100, 100, status))).not.toContain('hold-token-budget');
       expect(checkLegacy(99, 100, status).notes.join()).not.toContain('legacy-unknown');
     }
   });
@@ -1477,7 +1479,7 @@ describe('бюджет тяжести Codex', () => {
           ...state,
           config: { ...config, provider: 'codex', codexMaxTaskTokens: 100 },
         });
-        expect(held.actions).toEqual([]);
+        expect(held.actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
         expect(held.notes.join()).toContain(unknown);
         expect(
           kinds(
