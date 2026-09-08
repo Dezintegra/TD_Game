@@ -49,31 +49,31 @@ function fixture() {
 }
 
 describe('readSupervisorState', () => {
-  it('uses only signal zero and distinguishes dead, inaccessible and unknown', async () => {
+  it('uses identity and distinguishes dead, inaccessible and unknown', async () => {
     const read = vi.fn(async () => '{"pid":123}');
-    const probe = vi.fn();
-    expect(await readSupervisorState('lock', { read, probe })).toEqual({ kind: 'live', pid: 123 });
-    expect(probe).toHaveBeenCalledWith(123, 0);
-    probe.mockImplementation(() => {
-      throw Object.assign(new Error('denied'), { code: 'EPERM' });
-    });
-    expect(await readSupervisorState('lock', { read, probe })).toMatchObject({
+    const identify = vi.fn(async () => ({ kind: 'live', pid: 123 }));
+    expect(await readSupervisorState('lock', { read, identify })).toEqual({
       kind: 'live',
-      denied: true,
+      pid: 123,
     });
-    probe.mockImplementation(() => {
-      throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+    expect(identify).toHaveBeenCalledWith(123, 'lock');
+    identify.mockResolvedValue({ kind: 'unknown', reason: 'denied' });
+    expect(await readSupervisorState('lock', { read, identify })).toMatchObject({
+      kind: 'unknown',
     });
-    expect(await readSupervisorState('lock', { read, probe })).toEqual({ kind: 'waiting' });
+    identify.mockResolvedValue({ kind: 'waiting' });
+    expect(await readSupervisorState('lock', { read, identify })).toEqual({ kind: 'waiting' });
     read.mockResolvedValue('bad json');
-    expect(await readSupervisorState('lock', { read, probe })).toMatchObject({ kind: 'unknown' });
+    expect(await readSupervisorState('lock', { read, identify })).toMatchObject({
+      kind: 'unknown',
+    });
     read.mockRejectedValue(Object.assign(new Error('denied'), { code: 'EACCES' }));
-    expect(await readSupervisorState('lock', { read, probe })).toMatchObject({
+    expect(await readSupervisorState('lock', { read, identify })).toMatchObject({
       kind: 'unknown',
       reason: 'denied',
     });
     read.mockRejectedValue(Object.assign(new Error('gone'), { code: 'ENOENT' }));
-    expect(await readSupervisorState('lock', { read, probe })).toEqual({ kind: 'waiting' });
+    expect(await readSupervisorState('lock', { read, identify })).toEqual({ kind: 'waiting' });
   });
 });
 

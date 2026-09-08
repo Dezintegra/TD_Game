@@ -3,25 +3,19 @@ import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { Buffer } from 'node:buffer';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { supervisorIdentity } from './process-identity.mjs';
 
 export const CHUNK_BYTES = 64 * 1024;
 const FRAGMENT_CHARS = 4096;
 
 export async function readSupervisorState(
   lockPath,
-  { read = readFile, probe = process.kill } = {},
+  { read = readFile, identify = supervisorIdentity } = {},
 ) {
   try {
     const lock = JSON.parse(await read(lockPath, 'utf8'));
     if (!Number.isInteger(lock.pid) || lock.pid <= 0) throw new Error('некорректный PID');
-    try {
-      probe(lock.pid, 0);
-      return { kind: 'live', pid: lock.pid };
-    } catch (error) {
-      if (error.code === 'EPERM') return { kind: 'live', pid: lock.pid, denied: true };
-      if (error.code === 'ESRCH') return { kind: 'waiting' };
-      throw error;
-    }
+    return await identify(lock.pid, lockPath);
   } catch (error) {
     return error.code === 'ENOENT'
       ? { kind: 'waiting' }
