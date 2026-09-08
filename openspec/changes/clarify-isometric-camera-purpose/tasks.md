@@ -1,6 +1,6 @@
 ## 1. Согласовать Purpose с действующей камерой
 
-- [ ] 1.1 Заменить последний абзац Purpose в `openspec/specs/isometric-view/spec.md` точным текстом из раздела «Точная замена последнего абзаца Purpose» в `design.md` и отметить этот пункт выполненным в `openspec/changes/clarify-isometric-camera-purpose/tasks.md` (до 30 минут, один самостоятельно проверяемый коммит).
+- [x] 1.1 Заменить последний абзац Purpose в `openspec/specs/isometric-view/spec.md` точным текстом из раздела «Точная замена последнего абзаца Purpose» в `design.md` и отметить этот пункт выполненным в `openspec/changes/clarify-isometric-camera-purpose/tasks.md` (до 30 минут, один самостоятельно проверяемый коммит).
 
   Проверка результата: Purpose называет неподвижные углы, масштаб игрока
   относительно дефолта, свойство сдвига при фиксированном масштабе и
