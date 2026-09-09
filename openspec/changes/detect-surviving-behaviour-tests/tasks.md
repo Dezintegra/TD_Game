@@ -1,0 +1,21 @@
+## 1. Модель результатов
+
+- [ ] 1.1 За 1–2 часа реализовать в `scripts/mutation/model.mjs` проверку каталога и классификацию detected/survived/uncovered/error, а в `scripts/mutation/model.test.mjs` — сценарии пропущенного теста, пустых пар, красного контроля, ошибки hook, несовпадения id и смешанных результатов. Проверка: `npx vitest run --root scripts mutation/model.test.mjs`. После этого самостоятельного коммита и немедленного push implement открывает черновой PR.
+
+## 2. Изолированный адаптер
+
+- [ ] 2.1 За 2 часа добавить `scripts/mutation/execute.mjs`, `scripts/mutation/vitest.config.ts`, `scripts/mutation/setup.ts`, `scripts/mutation/reporter.ts`, `scripts/mutation/execute.test.mjs` и короткие фикстуры в `scripts/mutation/fixtures/` с расширением `.fixture.ts`. Адаптер выполняет одну пару в двух свежих процессах, проверяет единый экземпляр shared, применение/сохранение tuning и изменение производной величины, точное имя и исполнение тела теста; ограничивает срок и завершает workers. Проверка: `npx vitest run --root scripts mutation/execute.test.mjs`. Фикстуры подтверждают assertion в теле, assertion в beforeEach, import error, skip/todo, отсутствующий selector, сброс tuning, timeout, оборванный/чужой отчёт и нейтральность следующего запуска. Фикстуры не должны попадать в обычный игровой набор.
+
+## 3. Реальный список и сводка
+
+- [ ] 3.1 За 2 часа добавить `scripts/mutation/catalog.mjs`, `scripts/mutation/run.mjs`, `scripts/mutation/run.test.mjs` и `scripts/mutation/report.mjs`; соединить адаптер с тремя парами из design и сохранением JSON/Markdown/логов в `.matchlog/mutation/`. Полные имена describe/it зафиксировать дословно. Проверка: `npx vitest run --root scripts mutation/run.test.mjs` — запускает именно три выбранных существующих теста в baseline/mutant и требует 3 detected без ошибок; дополнительно тестирует известный survived на короткой фикстуре и валидную дополнительную мутацию без пары, которая даёт uncovered без изменения успешного exit. Это узкая интеграционная проверка, не полный матчевый набор. При неожиданной красноте следовать ограничениям design, не скрывать результат. Повторный запуск проверяет отсутствие утечки состояния и старых результатов.
+
+## 4. Расписание и уведомление
+
+- [ ] 4.1 За 1–2 часа добавить `.github/workflows/mutation.yml`, `scripts/mutation/issue.mjs`, `scripts/mutation/issue.test.mjs`, `scripts/mutation/workflow.test.mjs` и `docs/mutation-canaries.md`. Workflow вызывает готовый runner, сохраняет итог после ошибки, публикует поимённый Issue для survived на main, имеет только schedule и workflow_dispatch. Проверки: `npx vitest run --root scripts mutation/issue.test.mjs mutation/workflow.test.mjs` — имитация GitHub API подтверждает create/update, полный список survived, отсутствие публикации на диагностической ветке и видимый отказ API; сторож workflow проверяет расписание, команду runner, права, always-публикацию артефактов и отсутствие PR/push событий. Документ описывает четыре исхода, ограничения покрытия, добавление пары и ручной запуск. Исполнитель этапа сам Issue не создаёт и ночного запуска не ожидает.
+
+## Правила каждого коммита
+
+Каждый пункт — отдельный самостоятельно проверяемый коммит с немедленным push. Все команды выполняются из назначенного дерева; приведённые формы `npx vitest` и `git -C` покрыты `supervisor/config/stage-settings.json`. Перед проверками implement устанавливает зависимости по своему контракту; design их не устанавливает.
+
+В состав каждого коммита допускаются только рабочие пути соответствующего пункта и отметка этого пункта в `openspec/changes/detect-surviving-behaviour-tests/tasks.md`. Все файлы добавлять явным перечнем через `git -C <дерево> add -- <пути>`, включая конкретные новые фикстуры. Проверить имена и содержание индекса командами `git -C <дерево> diff --cached --name-only` и `git -C <дерево> diff --cached`; после коммита проверить `git -C <дерево> show --stat HEAD` и `git -C <дерево> show HEAD`. Никаких изменений `.matchlog/mutation/` в индексе или коммите; соседние изменения и несвязанные правки в разрешённых файлах также исключены. Отметка выполнения не заменяет проверку поведения. Правки игровых правил, основных спецификаций и чужих каталогов изменений этим планом не разрешены.
