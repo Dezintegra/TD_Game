@@ -23,6 +23,33 @@ function launch(tuning, result = { status: 0, signal: null }) {
 }
 
 describe('доставка множителей в процесс арены', () => {
+  it.each(['0.5', '1'])('доставляет ограниченную дальность %s', (value) => {
+    expect(launch(`--assault-range ${value}`).status).toBe(0);
+  });
+  it.each(['0.8', '2', '0', 'NaN', 'Infinity', '$(whoami)'])(
+    'отвергает дальность %s до spawn',
+    (value) => {
+      const result = launch(`--assault-range ${value}`);
+      expect(result.status).toBe(1);
+      expect(result.spawn).not.toHaveBeenCalled();
+    },
+  );
+  it('доставляет подмножество отдельно от tuning', () => {
+    expect(buildArenaArgs({ ...env, TRACE_ASSAULT_SEEDS: '5000,5002' })).toEqual([
+      ...baseArgs,
+      '--trace-assault-seeds',
+      '5000,5002',
+    ]);
+    expect(buildArenaArgs({ ...env, TRACE_ASSAULT_SEEDS: '  ' })).toEqual(baseArgs);
+  });
+  it.each(['5000,5000', '4999', '5024', '5000.5', '5000;echo', '5000,'])(
+    'отвергает trace %s до spawn',
+    (value) => {
+      const spawn = vi.fn();
+      expect(runArenaWorkflow({ ...env, TRACE_ASSAULT_SEEDS: value }, spawn, vi.fn())).toBe(1);
+      expect(spawn).not.toHaveBeenCalled();
+    },
+  );
   it.each([undefined, '', ' \t\r\n '])('сохраняет прежний argv при пустом вводе %j', (input) => {
     const { spawn, status, error } = launch(input);
     expect(status).toBe(0);

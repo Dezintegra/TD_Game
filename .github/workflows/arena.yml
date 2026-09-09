@@ -37,6 +37,11 @@ on:
         type: string
         required: false
         default: ''
+      trace_assault_seeds:
+        description: Seed для подробной диагностики Assault через запятую
+        type: string
+        required: false
+        default: ''
 
 jobs:
   arena:
@@ -73,6 +78,7 @@ jobs:
           SEED: ${{ inputs.seed }}
           SECONDS_LIMIT: ${{ inputs.seconds }}
           TUNING_ARGS: ${{ inputs.tuning_args }}
+          TRACE_ASSAULT_SEEDS: ${{ inputs.trace_assault_seeds }}
         run: node scripts/arena-workflow.mjs
 
       - name: Собрать базу из логов
