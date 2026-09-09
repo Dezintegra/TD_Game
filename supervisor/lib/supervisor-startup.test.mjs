@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { openReportStore } from './report-store.mjs';
+import { createStageLogMaintenance, STAGE_LOG_DAY_MS } from './stage-logs.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import {
   claimSupervisorLock,
@@ -48,6 +49,68 @@ function claimArgs(state, over = {}) {
 }
 
 describe('startup под общим lock guard', () => {
+  it.each([true, false])(
+    'очистка после восстановления runtime доступна только владельцу: %s',
+    (available) => {
+      const state = world(available ? null : { pid: 202, takenAt: NOW, refreshedAt: NOW });
+      let time = 0;
+      const owned = createOwnedSupervisor({
+        claim: () => claimSupervisorLock(claimArgs(state)),
+        createSupervisor: () => {
+          state.events.push('restore-runtime');
+          const maintainStageLogs = createStageLogMaintenance({
+            now: () => time,
+            ownsLock: () => state.lock()?.pid === 101,
+            getProtection: () => [],
+            store: {
+              prune: (getProtection) => {
+                getProtection();
+                state.events.push('prune-logs');
+                return { removed: [] };
+              },
+            },
+          });
+          maintainStageLogs();
+          return { maintainStageLogs };
+        },
+      });
+      if (!available) {
+        expect(owned.supervisor).toBeNull();
+        expect(state.events).toEqual([]);
+        return;
+      }
+      expect(state.events).toEqual(['claim-lock', 'restore-runtime', 'prune-logs']);
+      owned.supervisor.maintainStageLogs();
+      expect(state.events.filter((event) => event === 'prune-logs')).toHaveLength(1);
+      time += STAGE_LOG_DAY_MS;
+      owned.supervisor.maintainStageLogs();
+      expect(state.events.filter((event) => event === 'prune-logs')).toHaveLength(2);
+    },
+  );
+
+  it('живой entrypoint подключает очистку после runtime, под замком и в обычном цикле', () => {
+    const source = readFileSync(new URL('../bin/supervise.mjs', import.meta.url), 'utf8');
+    const factory = source.slice(
+      source.indexOf('function createRuntimeSupervisor()'),
+      source.indexOf('let supervisor;'),
+    );
+    expect(factory.indexOf('const runtime = createSupervisor(')).toBeLessThan(
+      factory.indexOf('runtime.maintainStageLogs();'),
+    );
+    expect(factory).toContain('ownsLock: () => readLock()?.pid === process.pid');
+    expect(factory).toContain("readLiveLogProtection(local('stages.json'))");
+    expect(factory).toContain('runtime.stageLogProtection()');
+    expect(factory).toContain('if (protectionError) throw protectionError');
+    expect(source).toContain('createSupervisor: createRuntimeSupervisor');
+    const turn = source.slice(
+      source.indexOf('async function turn()'),
+      source.indexOf('const OUTCOME'),
+    );
+    expect(turn.indexOf('writeLock(refreshLock')).toBeLessThan(
+      turn.indexOf('supervisor.maintainStageLogs();'),
+    );
+    expect(turn).toContain('supervisor.maintainStageLogs();');
+  });
   it('не читает очередь до замка и не запускает recovery при повреждении очереди', () => {
     const f = deliveryFixture();
     try {

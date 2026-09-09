@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deploySshHost, deploySshOptions } from './deploy-ssh.mjs';
+import { deployPerfArgs } from './deploy-perf.mjs';
 
 // ── Ключи ────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -33,6 +34,8 @@ if (argv.includes('--help') || argv.includes('-h')) {
       '  --dir <каталог>   каталог на сервере (по умолчанию td)',
       '  --no-cache        собрать образы с нуля, не доверяя кешу слоёв',
       '  --no-perf         выложить без замера частоты кадров (осознанно!)',
+      '  --client-port N   порт клиента локального замера (также --client-port=N)',
+      '  --port N          порт сервера локального замера (также --port=N)',
       '',
       'Пример: pnpm run deploy -- --ref origin/main',
     ].join('\n'),
@@ -73,6 +76,12 @@ const run = (cmd, args, opts = {}) => {
 };
 
 // ── Проверки до того, как что-то трогать ─────────────────────────────
+let perfArgs;
+try {
+  perfArgs = deployPerfArgs(argv);
+} catch (error) {
+  die(error.message);
+}
 let root;
 try {
   root = capture('git', ['rev-parse', '--show-toplevel']);
@@ -116,7 +125,7 @@ if (skipPerf) {
   note('ВНИМАНИЕ: замер частоты кадров пропущен по ключу --no-perf');
 } else {
   step('Замеряю частоту кадров перед выкладкой');
-  run('pnpm', ['e2e:perf'], { cwd: root, shell: true });
+  run('pnpm', perfArgs, { cwd: root, shell: true });
   note('отрисовка держит порог');
 }
 
