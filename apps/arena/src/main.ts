@@ -12,6 +12,7 @@ import { replayAndReport } from './replay.js';
 import { ingestFile, isLogName, openDatabase } from './ingest.js';
 import { reportBatch, reportMatch } from './report.js';
 import { printTempo } from './tempo.js';
+import { compareAssaultDatabases, assaultReportMarkdown } from './assault-report.js';
 import { parseAssaultOptions, assaultWorkerArgs, assaultMatchOptions } from './assault-options.js';
 import type { AssaultOptions } from './assault-options.js';
 
@@ -351,6 +352,18 @@ const main = async (): Promise<void> => {
   const flags = flagsOf(rest);
 
   switch (command) {
+    case 'assault-report': {
+      const before = flags.get('before'),
+        after = flags.get('after');
+      if (!before || !after) throw new Error('assault-report requires --before and --after');
+      const result = compareAssaultDatabases(before, after);
+      process.stdout.write(
+        flags.get('format') === 'markdown'
+          ? assaultReportMarkdown(result)
+          : `${JSON.stringify(result, null, 2)}\n`,
+      );
+      return;
+    }
     case 'run':
       await runBatch(flags);
       return;
