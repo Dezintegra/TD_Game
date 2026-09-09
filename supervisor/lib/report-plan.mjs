@@ -68,7 +68,7 @@ export async function prepareReportPlan(action, io, saved = null) {
 }
 
 /**
- * Улики о деле этапа: их спрашивают, только когда этапу в чём-то отказали.
+ * Улики о деле этапа: каждый done проверяется независимо от отказов.
  *
  * Отметка начала этапа живёт у супервизора, рядом с идентификатором сессии,
  * а прочее берётся из git. Складываются они здесь, потому что сам суд над
@@ -96,20 +96,17 @@ export async function transferReport(action, io) {
     return { result: 'done', status: task.status };
   }
 
-  // Отказанные действия судят ЗДЕСЬ, а не в супервизоре, и после разбора
+  // След и отказанные действия судят ЗДЕСЬ, а не в супервизоре, и после разбора
   // отчёта, а не до него. До разбора неизвестны ни исход, ни ссылки — то
   // есть ровно то, чем след и проверяется; суд получался бы вслепую и
   // потому не мог не быть грубым.
   const denials = report.denials ?? [];
-  const trust =
-    denials.length > 0
-      ? judgeDenials({
-          denials,
-          report,
-          stage: action.stage,
-          evidence: evidenceFor(task, action.stage, io),
-        })
-      : { verdict: 'passing', why: null };
+  const trust = judgeDenials({
+    denials,
+    report,
+    stage: action.stage,
+    evidence: report.outcome === 'done' ? evidenceFor(task, action.stage, io) : {},
+  });
 
   if (trust.verdict === 'undermining') {
     // Отчёт при этом не пропадает. Основание записано ценой: 31.08.2026

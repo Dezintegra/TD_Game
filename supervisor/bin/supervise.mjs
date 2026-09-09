@@ -2,7 +2,7 @@
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
-import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
+import { createAssignmentPreparer } from '../lib/benchmark-source.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
 import { tokenAdmission } from '../lib/token-hold.mjs';
 import { tokenReanalysisAdmission } from '../lib/token-reanalysis.mjs';
@@ -45,6 +45,11 @@ import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { openReportStore } from '../lib/report-store.mjs';
+import {
+  openStageLogs,
+  createStageLogMaintenance,
+  readLiveLogProtection,
+} from '../lib/stage-logs.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
 import {
   claimSupervisorLock,
@@ -414,15 +419,19 @@ function sessionFiles(dir, suffix) {
   });
 }
 function createRuntimeSupervisor() {
-  return createSupervisor({
+  const stageLogs = openStageLogs(local('logs'), {
+    diagnose: (message) => note(message, TAG.warn),
+  });
+  let protectionError;
+  try {
+    readLiveLogProtection(local('stages.json'));
+  } catch (error) {
+    protectionError = error;
+  }
+  const runtime = createSupervisor({
     reportStore: openReportStore(local('pending-reports.json')),
     getCodexEnvironment: () => codexEnvironment,
-    prepareAssignment: (assignment, previous) => {
-      const prepared = prepareDeploySnapshot(root, config, assignment, previous);
-      if (providerOf(config) === 'codex')
-        prepareCodexPerfFiles(root, prepared.path ? resolve(root, prepared.path) : root);
-      return prepared;
-    },
+    prepareAssignment: createAssignmentPreparer(root, config),
     config,
     root,
     readCodexEvidence: (child) => {
@@ -464,26 +473,21 @@ function createRuntimeSupervisor() {
     },
     say,
     log: (line) => note(line, null),
-    writeStageLog: (taskId, stage, text) => {
-      // Вывод процесса целиком — взамен списка сессий, в котором этапы
-      // больше не видны. Взамен неравноценное: кода возврата, стоимости
-      // и перечня отказов в списке не было вовсе.
-      mkdirSync(local('logs'), { recursive: true });
-      writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
-    },
-    // Тот же лог читается обратно — разбором упавшей задачи, и только им.
-    // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
-    // без лога всё равно начинается, а сам факт его отсутствия — улика.
-    readStageLog: (taskId, stage) => {
-      if (!stage) return null;
-      const path = local('logs', `${taskId}-${stage}.log`);
-      return {
-        stage,
-        path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
-        text: existsSync(path) ? readFileSync(path, 'utf8') : null,
-      };
-    },
+    writeStageLog: stageLogs.writeStageLog,
+    readStageLog: stageLogs.readStageLog,
+    readStageLogs: stageLogs.readStageLogs,
   });
+  runtime.maintainStageLogs = createStageLogMaintenance({
+    store: stageLogs,
+    ownsLock: () => readLock()?.pid === process.pid,
+    getProtection: () => {
+      if (protectionError) throw protectionError;
+      return [...readLiveLogProtection(local('stages.json')), ...runtime.stageLogProtection()];
+    },
+    diagnose: (message) => note(message, TAG.warn),
+  });
+  runtime.maintainStageLogs();
+  return runtime;
 }
 
 let supervisor;
@@ -514,6 +518,7 @@ async function turn() {
   // потому, что замок брался внутри цикла и до него не доходило дело при
   // недоступной доске.
   writeLock(refreshLock(readLock() ?? newLock(process.pid, now), now));
+  supervisor.maintainStageLogs();
 
   // Один `git fetch` на оборот — свой, а не по случаю. До сих пор удалённая
   // ветка обновлялась в общем `.git` только тогда, когда её подтягивала

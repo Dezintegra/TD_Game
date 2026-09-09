@@ -8,6 +8,7 @@ import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from '
 import { hasReceipt, withReceipt, partReceipt } from './report-receipts.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { nextId } from './requests.mjs';
+import { CI_PR_FIELDS, hasContradictoryCheck, confirmContradictoryCi } from './ci-confirmation.mjs';
 
 /**
  * Переходник к настоящему миру: файлы, git, деревья.
@@ -538,12 +539,19 @@ export function createIo({
     readExternal(task, what) {
       if (what === 'ci') {
         if (!task.links?.pr) return { state: 'pending', why: 'pull request ещё не открыт' };
-        const result = run(
-          ['pr', 'view', String(task.links.pr), '--json', 'mergeable,statusCheckRollup'],
-          'gh',
-        );
+        const result = run(['pr', 'view', String(task.links.pr), '--json', CI_PR_FIELDS], 'gh');
         if (result.code !== 0) return { state: 'pending', why: 'состояние проверок недоступно' };
-        return summarisePullRequest(result.stdout);
+        const summary = summarisePullRequest(result.stdout);
+        let pr;
+        try {
+          pr = JSON.parse(result.stdout);
+        } catch {
+          return summary;
+        }
+        if (pr?.mergeable === 'MERGEABLE' && hasContradictoryCheck(pr)) {
+          return confirmContradictoryCi({ pr, number: task.links.pr, run });
+        }
+        return summary;
       }
 
       if (!task.links?.run) return { state: 'pending', why: 'прогон ещё не запущен' };
@@ -589,16 +597,16 @@ export function createIo({
     },
 
     /**
-     * Улики о деле этапа: по ним отказ разрешений судят попутным или подрывающим.
+     * Улики о деле этапа: по ним проверяют след каждого успешного отчёта.
      *
-     * Спрашиваются ТОЛЬКО при непустом перечне отказов — а это редкий случай.
-     * При обычном отчёте не делается ни одного лишнего вызова git.
+     * Спрашиваются при done независимо от отказов. Прочие исходы не требуют
+     * следа и не вызывают этот сборщик.
      *
      * Свежести `origin/<ветка>` добывать не нужно, и это не упущение:
      * дополнительные рабочие деревья делят с основным один каталог `.git`,
      * поэтому отправка из дерева задачи обновляет удалённую ссылку в том же
      * репозитории, откуда читает супервизор. Отдельный `git fetch` стоил бы
-     * сети на каждом отказе и не добавил бы ни одного факта.
+     * сети на каждом успешном отчёте и не добавил бы ни одного факта.
      *
      * Этап доводом не приходит намеренно: набор улик один и тот же для всех
      * этапов — так он объявлен и в замысле, — а разбирает их по этапам тот,
