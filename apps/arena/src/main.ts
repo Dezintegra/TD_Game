@@ -12,6 +12,7 @@ import { replayAndReport } from './replay.js';
 import { ingestFile, isLogName, openDatabase } from './ingest.js';
 import { reportBatch, reportMatch } from './report.js';
 import { printTempo } from './tempo.js';
+import { TUNING_FLAGS } from './tuning-flags.js';
 
 /**
  * Арена — инструмент разработки, а не часть игры.
@@ -132,22 +133,6 @@ const numberFlag = (flags: ReadonlyMap<string, string>, name: string, fallback: 
 // ─────────────────────────────────────────────────────────────────────────
 // Настройка правил
 // ─────────────────────────────────────────────────────────────────────────
-
-/**
- * Ключи, которыми правила двигают снаружи.
- *
- * Имя ключа человеческое, поле — из `RuleTuning`. Читает их приложение,
- * а не `packages/shared`: чтение среды и разбор командной строки — дело
- * приложения, библиотека остаётся изоморфной.
- */
-const TUNING_FLAGS: Readonly<Record<string, keyof RuleTuning>> = {
-  income: 'income',
-  speed: 'speed',
-  'tower-hp': 'towerHealth',
-  'base-hp': 'baseHealth',
-  radius: 'unitRadius',
-  map: 'map',
-};
 
 /** Собрать множители из ключей. Пустой ответ означает «правила как задуманы». */
 const tuningOf = (flags: ReadonlyMap<string, string>): Partial<RuleTuning> => {
