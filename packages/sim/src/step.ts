@@ -13,6 +13,8 @@ import {
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { applyCommand } from './apply.js';
+import { observePostCrowd } from './combat-observer.js';
+import type { CombatObserver } from './combat-observer.js';
 import { TargetKind, buildCombatIndices, damageEntity, resolveCombat } from './combat.js';
 import { separateUnits } from './crowd.js';
 import { cellCentre } from './map.js';
@@ -49,8 +51,13 @@ import type { WorldState } from './world.js';
  * Меняете его — обновляйте эталон в determinism.golden.match.test.ts тем же
  * коммитом, как требует CLAUDE.md.
  */
-export const step = (state: WorldState, commands: readonly Command[]): WorldState => {
+export const step = (
+  state: WorldState,
+  commands: readonly Command[],
+  observer?: CombatObserver,
+): WorldState => {
   const working = toWorking(state);
+  if (observer !== undefined) working.observation = { observer, sequence: 0 };
 
   // Матч окончен — мир замирает. Тик всё равно растёт: часы идут,
   // даже когда играть уже не во что.
@@ -109,6 +116,7 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
   // Стреляй он раньше, выстрел уходил бы туда, где машины уже нет,
   // а накрытие считалось бы по строю, которого на поле не осталось.
   separateUnits(working, stats);
+  observePostCrowd(working);
 
   resolveCombat(working, stats, buildCombatIndices(working));
   detonateNukes(working, stats);

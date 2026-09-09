@@ -474,6 +474,13 @@ export const hasHostileInSight = (
   owner: PlayerId,
   origin: Vec2,
   range: number,
+  witness?: (
+    kind: 'unit' | 'general',
+    id: number,
+    owner: number,
+    subtype: number | null,
+    distance: number,
+  ) => void,
 ): boolean => {
   if (range <= 0) return false;
 
@@ -489,6 +496,7 @@ export const hasHostileInSight = (
     if (!seesPoint(working, false, origin, { x: unit.x, y: unit.y })) return;
 
     found = true;
+    witness?.('unit', unit.id, unit.owner, unit.unitType, squaredDistance(origin, unit));
   });
 
   if (found) return true;
@@ -498,6 +506,7 @@ export const hasHostileInSight = (
     if (squaredDistance(origin, { x: general.x, y: general.y }) > reach) continue;
     if (!seesPoint(working, false, origin, { x: general.x, y: general.y })) continue;
 
+    witness?.('general', general.owner, general.owner, null, squaredDistance(origin, general));
     return true;
   }
 
@@ -537,6 +546,13 @@ export const hasArmedStructureInSight = (
   origin: Vec2,
   range: number,
   elevated: boolean,
+  witness?: (
+    kind: 'structure',
+    id: number,
+    owner: number,
+    subtype: number,
+    distance: number,
+  ) => void,
 ): boolean => {
   if (range <= 0) return false;
 
@@ -556,6 +572,13 @@ export const hasArmedStructureInSight = (
     if (!seesStructure(working, elevated, origin, structure)) return;
 
     found = true;
+    witness?.(
+      'structure',
+      structure.id,
+      structure.owner,
+      structure.kind,
+      structureDistance(origin, structure),
+    );
   });
 
   return found;

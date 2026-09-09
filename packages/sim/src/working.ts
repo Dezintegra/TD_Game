@@ -14,6 +14,7 @@ import type {
 } from '@td/shared';
 import { StructureKind } from '@td/shared';
 import { cellCentre } from './map.js';
+import type { CombatObservationContext } from './combat-observer.js';
 import type { GameMap } from './map.js';
 import { buildOccupancy } from './occupancy.js';
 import type { Occupancy } from './occupancy.js';
@@ -123,6 +124,7 @@ export interface WorkingNuke {
 }
 
 export interface Working {
+  observation?: CombatObservationContext;
   tick: TickNumber;
   rng: RngState;
   map: GameMap;
