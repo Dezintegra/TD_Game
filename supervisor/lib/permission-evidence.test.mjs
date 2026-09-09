@@ -52,6 +52,45 @@ describe('permission evidence (synthetic normalized events, not a live probe)', 
     expect(input).toEqual(before);
   });
 
+  describe.each(['baseline', 'additive'])('missing source in %s', (run) => {
+    const other = run === 'baseline' ? 'additive' : 'baseline';
+    const partial = (missing) => {
+      const input = fixture();
+      input.loading[run].status = 'not-applied';
+      delete input[missing][other];
+      return input;
+    };
+
+    it.each(['contexts', 'loading'])('preserves proof with incomplete %s', (missing) => {
+      expect(classifyPermissionEvidence(partial(missing))).toEqual({
+        settings: 'not-applied',
+        target: 'unknown',
+        verified: false,
+        reason: 'source-not-applied',
+      });
+    });
+
+    const invalid = [
+      ['untrusted provenance', (e) => (e.loading[run].provenance = 'model')],
+      ['missing context', (e) => delete e.contexts[run]],
+      ...['session', 'tool', 'digest'].flatMap((key) => [
+        [`mismatched ${key}`, (e) => (e.loading[run][key] = 'other')],
+        [`empty ${key}`, (e) => (e.contexts[run][key] = e.loading[run][key] = '')],
+      ]),
+    ];
+    describe.each(['contexts', 'loading'])('incomplete %s', (missing) => {
+      it.each(invalid)('rejects %s', (_name, mutate) => {
+        const input = partial(missing);
+        mutate(input);
+        expect(classifyPermissionEvidence(input)).toMatchObject({
+          settings: 'unknown',
+          target: 'unknown',
+          verified: false,
+        });
+      });
+    });
+  });
+
   const cases = [
     [
       'both controls pass',

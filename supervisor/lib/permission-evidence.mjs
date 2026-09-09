@@ -25,15 +25,20 @@ export function classifyPermissionEvidence(evidence = {}) {
     item?.provenance === 'launch-metadata' &&
     ['session', 'tool', 'digest'].every((key) => item[key] === context[key]);
 
+  const runs = ['baseline', 'additive'];
+  // Неполнота другого захода не отменяет достоверное отсутствие источника.
+  if (
+    runs.some(
+      (run) => loaded(loading?.[run], contexts?.[run]) && loading[run].status === 'not-applied',
+    )
+  ) {
+    return result('not-applied', 'unknown', 'source-not-applied');
+  }
   if (!validContext(contexts?.baseline) || !validContext(contexts?.additive)) {
     return unknown('missing-context');
   }
-  const runs = ['baseline', 'additive'];
   if (runs.some((run) => !loaded(loading?.[run], contexts[run]))) {
     return unknown('unconfirmed-loading');
-  }
-  if (runs.some((run) => loading[run].status === 'not-applied')) {
-    return result('not-applied', 'unknown', 'source-not-applied');
   }
   if (runs.some((run) => loading[run].status !== 'confirmed')) {
     return unknown('unconfirmed-loading');
