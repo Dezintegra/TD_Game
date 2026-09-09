@@ -52,6 +52,25 @@ const card = (over = {}) => ({
   ...over,
 });
 
+describe('наличие параметров заказа', () => {
+  it.each([null, [], {}, 'broken'])('сохраняет заданное значение %j для диагностики', (params) => {
+    const meta = metaOf({ id: '0308-test', type: 'run', run: { params } });
+    const parsed = parseCard(
+      card({ idLabels: ['l-run', 'l-arena'], desc: joinDescription('', meta) }),
+      ctx,
+    );
+    expect(parsed.task.run).toHaveProperty('params', params);
+    expect(meta.run).toEqual({ params });
+  });
+  it('не подставляет пустой объект отсутствующим параметрам', () => {
+    const meta = metaOf({ id: '0308-test', type: 'run', run: { kind: 'arena' } });
+    expect(meta).not.toHaveProperty('run');
+    expect(
+      parseCard(card({ idLabels: ['l-run'], desc: joinDescription('', meta) }), ctx).task.run,
+    ).not.toHaveProperty('params');
+  });
+});
+
 describe('машинный блок', () => {
   it('вырезается из описания, не задевая человеческого текста', () => {
     const desc = joinDescription('Текст человека.', { id: '0031-x', owner: null });

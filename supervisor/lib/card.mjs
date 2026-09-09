@@ -214,7 +214,11 @@ export function parseCard(card, { stateByList, labelKeyById }) {
   if (meta?.recovery) task.recovery = recoveryOf(meta.recovery);
 
   if (task.type === 'run') {
-    task.run = { kind: labels.runKinds[0] ?? null, expectation: expectationOf(human) };
+    task.run = {
+      kind: labels.runKinds[0] ?? null,
+      expectation: expectationOf(human),
+      ...(Object.hasOwn(meta?.run ?? {}, 'params') ? { params: meta.run.params } : {}),
+    };
   }
 
   return {
@@ -259,6 +263,9 @@ function labelKeys(idLabels, labelKeyById) {
 export function metaOf(task) {
   return {
     id: task.id,
+    ...(task.type === 'run' && Object.hasOwn(task.run ?? {}, 'params')
+      ? { run: { params: task.run.params } }
+      : {}),
     ...(Object.hasOwn(task, 'spentUsd') ? { spentUsd: task.spentUsd } : {}),
     ...(Object.hasOwn(task, 'reportReceipts') ? { reportReceipts: task.reportReceipts } : {}),
     ...(Object.hasOwn(task, 'tokenHold') ? { tokenHold: task.tokenHold } : {}),
