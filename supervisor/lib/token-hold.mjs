@@ -1,5 +1,5 @@
 import { TOKEN_CAPPED_STAGES, TOKEN_RESUME_STATES } from '../config/transitions.mjs';
-import { taskTokens, taskTokenStatus } from './token-budget.mjs';
+import { taskTokens, taskTokenStatus, tokenAccountingAllowed } from './token-budget.mjs';
 import { effectiveTokenLimit } from './user-token-limit.mjs';
 import { applyTransition } from './task-file.mjs';
 
@@ -16,7 +16,7 @@ export function tokenAdmission(task, stage, config, ledger = {}) {
     ? 'invalid-limit'
     : budget.value != null && spent >= budget.value
       ? 'exhausted'
-      : budget.value != null && !accounting.complete
+      : budget.value != null && !tokenAccountingAllowed(accounting)
         ? 'unknown-usage'
         : null;
   if (!reason) return null;
@@ -26,6 +26,7 @@ export function tokenAdmission(task, stage, config, ledger = {}) {
     source: budget.source,
     reason,
     accountingComplete: accounting.complete,
+    ...(accounting.acceptedIncomplete ? { acceptedIncomplete: true } : {}),
     accountingReasons: accounting.reasons,
     explanation:
       budget.error ??
@@ -119,7 +120,12 @@ export async function changeTokenHold(action, io) {
       from: task.status,
       to: next.task.status,
       what: resume
-        ? 'Бюджет разрешает продолжение; сохранённый этап и счётчики восстановлены.'
+        ? [
+            'Бюджет разрешает продолжение; сохранённый этап и счётчики восстановлены.',
+            io.tokenAccountingNote?.(task.id),
+          ]
+            .filter(Boolean)
+            .join(' ')
         : tokenPanel(next.task.tokenHold),
       source: 'supervisor',
       ...(resume ? { restorePriority: task.tokenHold.originPriority } : {}),
@@ -157,7 +163,7 @@ export function tokenPanel(hold) {
     '',
     'Для продолжения владелец пишет новый комментарий в интерфейсе этой карточки: **Лимит токенов: <полный бюджет>**. Укажите целое число больше расхода; это полный лимит, а не добавка. После достаточного повышения карточка вернётся на сохранённый этап автоматически.',
   ];
-  if (hold.accountingComplete === false)
+  if (hold.accountingComplete === false && !hold.acceptedIncomplete)
     lines.push(
       'Сначала необходимо восстановить учёт расхода; повышение лимита само по себе неизвестный расход не разрешает.',
     );
