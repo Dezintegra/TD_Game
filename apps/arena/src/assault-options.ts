@@ -9,6 +9,11 @@ export const parseAssaultOptions = (
   batch: readonly number[],
 ): AssaultOptions => {
   const rawRange = flags.get('assault-range');
+  if (
+    rawRange !== undefined &&
+    !/^[+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e[+-]?[0-9]+)?$/i.test(rawRange)
+  )
+    throw new Error('--assault-range: expected decimal 0.5 or 1');
   const range = rawRange === undefined ? 1 : Number(rawRange);
   if (range !== 0.5 && range !== 1) throw new Error('--assault-range: expected 0.5 or 1');
   const raw = flags.get('trace-assault-seeds')?.trim() ?? '';

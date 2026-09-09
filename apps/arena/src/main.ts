@@ -30,13 +30,16 @@ const USAGE = `
 
   arena run [--matches N] [--seed N] [--profiles A,B] [--jobs N] [--seconds N]
             [--income K] [--speed K] [--tower-hp K] [--base-hp K]
-            [--radius K] [--map K]
+            [--radius K] [--map K] [--assault-range 0.5|1]
+            [--trace-assault-seeds N,N,...]
       Прогнать N матчей компьютер-против-компьютера. Матчи независимы
       и считаются параллельно по числу ядер.
 
-      Шесть последних ключей — множители правил на время прогона: базовый
+      Семь множителей правил на время прогона: базовый
       доход, скорость машин, прочность стреляющих построек, прочность базы,
-      личный радиус машины и сторона карты. Единица означает «как задумано».
+      личный радиус машины, сторона карты и дальность штурмовика.
+      Единица означает «как задумано». Дальность допускает только 0.5/1.
+      Трасса включается только для перечисленных seed текущей пачки.
       Пересборки они не требуют, но и в игру не попадают: это инструмент
       замера.
 
@@ -64,6 +67,10 @@ const USAGE = `
 
   arena report [идентификатор матча]
       Напечатать сводку. Без аргумента — по всей пачке.
+
+  arena assault-report --before <sqlite> --after <sqlite> [--format markdown]
+      Сравнить опыт с дальностью 2/4 на общей ревизии попарно по seed.
+      По умолчанию печатает JSON; базы открываются только для чтения.
 
 Логи и база лежат в .matchlog/ в корне репозитория. Записи матчей,
 сыгранных людьми, кладёт туда же игровой сервер, запущенный с MATCHLOG=1.
@@ -113,6 +120,8 @@ const flagsOf = (argv: readonly string[]): ReadonlyMap<string, string> => {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === undefined || !token.startsWith('--')) continue;
+    if (token.startsWith('--assault-range=') || token.startsWith('--trace-assault-seeds='))
+      throw new Error('diagnostic flags require a separate value');
 
     const next = argv[index + 1];
     if (

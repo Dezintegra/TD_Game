@@ -39,9 +39,12 @@ describe('параметры диагностического опыта', () =>
       ).toThrow();
     },
   );
-  it.each(['0.8', '0', '2', 'NaN', 'Infinity', 'true'])('отвергает дальность %s', (raw) => {
-    expect(() => parseAssaultOptions(new Map([['assault-range', raw]]), [1])).toThrow();
-  });
+  it.each(['0.8', '0', '2', 'NaN', 'Infinity', 'true', '0x1', '0b1', ' 1'])(
+    'отвергает дальность %s',
+    (raw) => {
+      expect(() => parseAssaultOptions(new Map([['assault-range', raw]]), [1])).toThrow();
+    },
+  );
   it('пустое умолчание не включает трассу и не добавляет флаги', () => {
     expect(assaultWorkerArgs(parseAssaultOptions(new Map(), [1]), [1])).toEqual([]);
   });
