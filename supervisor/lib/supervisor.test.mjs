@@ -22,7 +22,7 @@ import { parseReport } from './parse-report.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import { openStageLogs } from './stage-logs.mjs';
 import { openReportStore } from './report-store.mjs';
-import { prepareBenchmarkSource } from './benchmark-source.mjs';
+import { createAssignmentPreparer, prepareBenchmarkSource } from './benchmark-source.mjs';
 
 /**
  * Проверки хозяйства идущих этапов.
@@ -436,6 +436,18 @@ const assignment = (over = {}) => ({
 const report = { taskId: '0001-one', stage: 'design', outcome: 'done', summary: 'сделано' };
 
 describe('источник локального benchmark до порождения', () => {
+  it.each([false, true])(
+    'потерянные params не порождают процесс, continuation=%s',
+    (continuation) => {
+      const h = harness({ prepareAssignment: createAssignmentPreparer('/repo', config) });
+      const result = h.supervisor.spawnStage(
+        assignment({ stage: 'benchmark', continuation, task: { run: { kind: 'arena' } } }),
+      );
+      expect(result).toMatchObject({ ok: false, reason: 'not-born' });
+      expect(result.why).toContain('0001-one: run.params');
+      expect(h.children).toHaveLength(0);
+    },
+  );
   it.each(['perf', 'bench-tick'])('старая карточка %s без source не порождает процесс', (kind) => {
     const h = harness({ prepareAssignment: (a) => prepareBenchmarkSource('/repo', a) });
     const result = h.supervisor.spawnStage(

@@ -249,10 +249,9 @@ describe.each(['claude', 'codex'])('производственная компо�
   });
   it('сохраняет прежнюю подготовку arena, interpret и deploy', () => {
     const h = harness(provider);
-    for (const input of [
-      assignment(undefined, 'arena'),
-      { ...assignment(undefined), stage: 'interpret' },
-    ]) {
+    const arena = assignment(undefined, 'arena');
+    arena.task.run.params = { matches: 20, seed: 1 };
+    for (const input of [arena, { ...assignment(undefined), stage: 'interpret' }]) {
       expect(h.prepareAssignment(input)).toBe(input);
       expect(h.ops.git).not.toHaveBeenCalled();
       if (provider === 'codex')

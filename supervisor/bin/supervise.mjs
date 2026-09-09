@@ -63,6 +63,7 @@ import { runCycle } from '../lib/cycle.mjs';
 import { judgeSelfUpdate } from '../lib/self-update.mjs';
 import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
 import { createTrelloBacklog } from '../lib/backlog-trello.mjs';
+import { recoverRunParams, afterRunParamRecovery } from '../lib/run-param-recovery.mjs';
 import { sortCards } from '../lib/validate-card.mjs';
 
 /**
@@ -398,6 +399,7 @@ async function openBacklog({ mayWrite }) {
     invalid,
     marked,
     store,
+    snapshot: board,
     closedDependencyIds: store.closedDependencyIds(),
     dependencyRecords: store.dependencyRecords(),
     notes: [
@@ -556,6 +558,21 @@ async function turn() {
     return backlog.outcome;
   }
 
+  const runRecovery =
+    config.backlog === 'trello'
+      ? await recoverRunParams({
+          store: backlog.store,
+          snapshot: backlog.snapshot,
+          mayWrite,
+          ownsCycle: readLock()?.pid === process.pid,
+          machine,
+          running: supervisor.running(),
+          reports: supervisor.reports,
+          maxAutoReturns: config.maxAutoReturns,
+          now,
+        })
+      : { deferred: new Set(), notes: [] };
+
   // Опись доски строкой: сколько задач прочитано, сколько идёт, сколько ждёт
   // человека и сколько не разобралось. Это первое, о чём спрашивают, глядя
   // в консоль, и последнее, что видно из журнала цикла.
@@ -674,21 +691,23 @@ async function turn() {
       supervisor.reports.flatMap((report) => [report.taskId, ...(report.batch ?? [])]),
     );
     for (const item of repairWorld(
-      repair.repairs.filter((repair) => !pendingIds.has(repair.taskId)),
+      repair.repairs.filter(
+        (repair) => !pendingIds.has(repair.taskId) && !runRecovery.deferred.has(repair.taskId),
+      ),
       io,
     )) {
       if (item.result === 'done') continue;
       note(`починка ${item.kind} ${item.taskId ?? ''}: ${item.why}`);
     }
 
-    const executed = await execute(result.actions, io);
+    const executed = await execute(afterRunParamRecovery(result.actions, runRecovery.deferred), io);
     for (const item of executed) {
       if (item.result === 'done') continue;
       note(`${item.action?.kind ?? 'действие'} ${item.action?.taskId ?? ''}: ${item.why}`);
     }
   }
 
-  note([...backlog.notes, ...repair.notes, ...result.notes]);
+  note([...backlog.notes, ...runRecovery.notes, ...repair.notes, ...result.notes]);
   return result.outcome;
 }
 

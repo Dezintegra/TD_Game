@@ -1,0 +1,25 @@
+[
+  {
+    "targetTaskId": "0308-podobrat-kandidata-etalonnoy-pary-tri-so",
+    "sourceTaskId": "0095-podobrat-paru-profiley-na-kotoroy-dolya-",
+    "sourceStage": "design",
+    "launchId": "3f106aea-07c1-4e67-a4f8-17c496a49bd7",
+    "requestKey": "screen-reference-pairs",
+    "fixedByTaskId": "0310-sohranyat-run-params-pri-zapisi-i-chteni",
+    "params": {
+      "ref": "b08fd3b648db710725e8751d8bdaf4f41fc0597f",
+      "matches": 20,
+      "seed": 1,
+      "seconds": 1200,
+      "tuning_args": "",
+      "profilePairs": [
+        ["baseline-2026-08", "wall-light-2026-08"],
+        ["wall-light-2026-08", "baseline-2026-08"],
+        ["baseline-2026-08", "combined-2026-08"],
+        ["combined-2026-08", "baseline-2026-08"],
+        ["baseline-2026-08", "economy-2026-08"],
+        ["economy-2026-08", "baseline-2026-08"]
+      ]
+    }
+  }
+]
