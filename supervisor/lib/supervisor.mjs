@@ -829,6 +829,7 @@ export function createSupervisor({
       const cut = at.lastIndexOf(':');
       const taskId = at.slice(0, cut);
       if (
+        value.provider !== 'codex' ||
         value.live ||
         value.usageRecoveryBlocked ||
         children.has(taskId) ||

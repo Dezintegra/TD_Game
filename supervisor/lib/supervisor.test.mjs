@@ -2594,6 +2594,7 @@ describe('автоматическое восстановление удержа
   });
   it('не трогает живую или оставленную без опознания сессию даже после перезапуска', () => {
     for (const value of [
+      { ...stages['0001-one:implement'], provider: 'claude' },
       { ...stages['0001-one:implement'], usageRecoveryBlocked: true },
       {
         ...stages['0001-one:implement'],
