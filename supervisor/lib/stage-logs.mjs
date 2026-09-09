@@ -13,6 +13,58 @@ const historyPattern = new RegExp(
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const stamp = (value) => new Date(value).toISOString().replaceAll(':', '-');
 const ordered = (a, b) => b.startedAt.localeCompare(a.startedAt) || b.name.localeCompare(a.name);
+export const STAGE_LOG_DAY_MS = 24 * 60 * 60 * 1000;
+export const STAGE_LOG_RETENTION_MS = 30 * STAGE_LOG_DAY_MS;
+
+/** Мягкий readStages не годится для удаления: повреждение не означает пустоту. */
+export function readLiveLogProtection(path, { disk = fs } = {}) {
+  let value;
+  try {
+    value = JSON.parse(disk.readFileSync(path, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('unknown stages state');
+  return Object.entries(value).flatMap(([key, entry]) => {
+    if (typeof entry === 'string') return [];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+      throw new Error('unknown stage descriptor');
+    if (entry.live == null) return [];
+    const separator = key.lastIndexOf(':');
+    return [
+      {
+        taskId: key.slice(0, separator),
+        stage: key.slice(separator + 1),
+        launchId: entry.live?.launchId,
+      },
+    ];
+  });
+}
+
+/** Суточный проход вызывается обычным циклом; замок проверяется до чтения защиты. */
+export function createStageLogMaintenance({
+  store,
+  getProtection,
+  ownsLock,
+  now = Date.now,
+  diagnose = () => {},
+}) {
+  let last = null;
+  return () => {
+    try {
+      if (!ownsLock()) return { skipped: true };
+      const time = now();
+      if (last !== null && time - last < STAGE_LOG_DAY_MS) return { skipped: true };
+      last = time;
+      return store.prune(getProtection);
+    } catch (error) {
+      diagnose(`Очистка логов пропущена: ${error.message}`);
+      return { skipped: true, error: error.message };
+    }
+  };
+}
 
 export function stageLogIdentity(taskId, stage, launch = {}) {
   if (launch.launchId && new RegExp(`^${idPattern}$`).test(launch.launchId)) return launch.launchId;
@@ -132,7 +184,9 @@ export function openStageLogs(directory, { disk = fs, now = Date.now, diagnose =
           const legacyId = `legacy-${digest(Buffer.concat([Buffer.from(prefix), previous.bytes]))}`;
           const headerDate = /^начат: +([^\r\n]+)/m.exec(previous.bytes.toString('utf8'))?.[1];
           const date = Number.isFinite(Date.parse(headerDate)) ? headerDate : previous.stat.mtimeMs;
-          const path = entryPath(taskId, stage, date, legacyId);
+          const path =
+            history.find((item) => item.launchId === legacyId)?.path ??
+            entryPath(taskId, stage, date, legacyId);
           publish(path, previous.bytes, { age: previous.stat.mtimeMs });
         }
       }
@@ -222,5 +276,54 @@ export function openStageLogs(directory, { disk = fs, now = Date.now, diagnose =
       return { stage, entries: [], error: error.message };
     }
   }
-  return { writeStageLog, readStageLog, readStageLogs };
+  function protectionSnapshot(getProtection) {
+    const entries = getProtection();
+    if (!Array.isArray(entries)) throw new Error('unknown log protection');
+    const launches = new Set();
+    const pairs = new Set();
+    for (const entry of entries) {
+      const prefix = pair(entry?.taskId, entry?.stage);
+      if (typeof entry.launchId === 'string' && new RegExp(`^${idPattern}$`).test(entry.launchId))
+        launches.add(`${prefix}:${entry.launchId}`);
+      else pairs.add(prefix);
+    }
+    return (entry) =>
+      pairs.has(pair(entry.taskId, entry.stage)) ||
+      launches.has(`${pair(entry.taskId, entry.stage)}:${entry.launchId}`);
+  }
+  function prune(getProtection) {
+    const removed = [];
+    try {
+      protectionSnapshot(getProtection);
+      let history;
+      try {
+        history = list();
+      } catch (error) {
+        if (error.code === 'ENOENT') return { removed };
+        throw error;
+      }
+      const counts = new Map();
+      const cutoff = now() - STAGE_LOG_RETENTION_MS;
+      for (const entry of history) {
+        const prefix = pair(entry.taskId, entry.stage);
+        const count = (counts.get(prefix) ?? 0) + 1;
+        counts.set(prefix, count);
+        if (count <= 3 || entry.mtimeMs >= cutoff) continue;
+        // Защиту перечитываем перед каждым удалением, включая неприменённые отчёты.
+        if (protectionSnapshot(getProtection)(entry)) continue;
+        try {
+          if (regular(entry.path).mtimeMs >= cutoff) continue;
+          disk.unlinkSync(entry.path);
+          removed.push(entry.path);
+        } catch (error) {
+          diagnose(`Удаление лога ${entry.path}: ${error.message}`);
+        }
+      }
+      return { removed };
+    } catch (error) {
+      diagnose(`Очистка логов пропущена: ${error.message}`);
+      return { removed, skipped: true, error: error.message };
+    }
+  }
+  return { writeStageLog, readStageLog, readStageLogs, prune };
 }

@@ -157,6 +157,28 @@ export function createSupervisor({
       return reportViews();
     },
     reportStore,
+    stageLogProtection() {
+      return [
+        ...[...children.values()].map(({ taskId, stage, launchId }) => ({
+          taskId,
+          stage,
+          launchId,
+        })),
+        ...Object.entries(known)
+          .filter(([, value]) => value.live != null)
+          .map(([at, value]) => ({
+            taskId: at.slice(0, at.lastIndexOf(':')),
+            stage: at.slice(at.lastIndexOf(':') + 1),
+            launchId: value.live.launchId,
+          })),
+        ...(reportStore ? reportStore.entries() : reports),
+        ...[...pendingAcceptances.values()].map(({ report, launch }) => ({
+          ...launch,
+          taskId: report.taskId,
+          stage: report.stage,
+        })),
+      ];
+    },
     get reportStorageBlocked() {
       return pendingAcceptances.size > 0;
     },

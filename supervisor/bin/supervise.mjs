@@ -45,7 +45,11 @@ import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { openReportStore } from '../lib/report-store.mjs';
-import { openStageLogs } from '../lib/stage-logs.mjs';
+import {
+  openStageLogs,
+  createStageLogMaintenance,
+  readLiveLogProtection,
+} from '../lib/stage-logs.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
 import {
   claimSupervisorLock,
@@ -418,7 +422,13 @@ function createRuntimeSupervisor() {
   const stageLogs = openStageLogs(local('logs'), {
     diagnose: (message) => note(message, TAG.warn),
   });
-  return createSupervisor({
+  let protectionError;
+  try {
+    readLiveLogProtection(local('stages.json'));
+  } catch (error) {
+    protectionError = error;
+  }
+  const runtime = createSupervisor({
     reportStore: openReportStore(local('pending-reports.json')),
     getCodexEnvironment: () => codexEnvironment,
     prepareAssignment: (assignment, previous) => {
@@ -472,6 +482,17 @@ function createRuntimeSupervisor() {
     readStageLog: stageLogs.readStageLog,
     readStageLogs: stageLogs.readStageLogs,
   });
+  runtime.maintainStageLogs = createStageLogMaintenance({
+    store: stageLogs,
+    ownsLock: () => readLock()?.pid === process.pid,
+    getProtection: () => {
+      if (protectionError) throw protectionError;
+      return [...readLiveLogProtection(local('stages.json')), ...runtime.stageLogProtection()];
+    },
+    diagnose: (message) => note(message, TAG.warn),
+  });
+  runtime.maintainStageLogs();
+  return runtime;
 }
 
 let supervisor;
@@ -502,6 +523,7 @@ async function turn() {
   // потому, что замок брался внутри цикла и до него не доходило дело при
   // недоступной доске.
   writeLock(refreshLock(readLock() ?? newLock(process.pid, now), now));
+  supervisor.maintainStageLogs();
 
   // Один `git fetch` на оборот — свой, а не по случаю. До сих пор удалённая
   // ветка обновлялась в общем `.git` только тогда, когда её подтягивала

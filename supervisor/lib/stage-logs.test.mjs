@@ -1,7 +1,14 @@
 import * as fs from 'node:fs';
 import { resolve, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { openStageLogs, stageLogIdentity } from './stage-logs.mjs';
+import {
+  openStageLogs,
+  stageLogIdentity,
+  readLiveLogProtection,
+  createStageLogMaintenance,
+  STAGE_LOG_DAY_MS,
+  STAGE_LOG_RETENTION_MS,
+} from './stage-logs.mjs';
 
 const task = '0082-preserve-logs';
 const stage = 'implement';
@@ -27,6 +34,186 @@ function setup(options = {}) {
 }
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('возрастная очистка', () => {
+  const time = Date.parse('2026-10-01T12:00:00.000Z');
+  function populated(options = {}) {
+    const fixture = setup({ now: () => time - STAGE_LOG_RETENTION_MS - 1, ...options });
+    const files = [1, 2, 3, 4, 5].map(
+      (n) => fixture.store.writeStageLog(task, stage, `TEXT-${n}`, launch(n)).path,
+    );
+    return {
+      ...fixture,
+      files,
+      cleaner: openStageLogs(fixture.root, {
+        now: () => time,
+        diagnose: (message) => fixture.diagnostics.push(message),
+      }),
+    };
+  }
+
+  it('удаляет строго старше срока, оставляет границу и последние три независимо от возраста', () => {
+    const { root, files, cleaner } = populated();
+    const boundary = new Date(time - STAGE_LOG_RETENTION_MS);
+    fs.utimesSync(files[1], boundary, boundary);
+    expect(cleaner.prune(() => []).removed).toEqual([files[0]]);
+    expect(files.map((path) => fs.existsSync(path))).toEqual([false, true, true, true, true]);
+    const nextDay = openStageLogs(root, { now: () => time + STAGE_LOG_DAY_MS });
+    expect(nextDay.prune(() => []).removed).toEqual([files[1]]);
+    expect(files.slice(2).every((path) => fs.existsSync(path))).toBe(true);
+    expect(fs.existsSync(join(root, `${task}-${stage}.log`))).toBe(true);
+  });
+
+  it('считает минимум отдельно для каждой пары, оставляя свежую старшую запись', () => {
+    const { root, files, cleaner } = populated();
+    const writer = openStageLogs(root, { now: () => time - STAGE_LOG_RETENTION_MS - 1 });
+    const review = [1, 2, 3, 4].map(
+      (n) => writer.writeStageLog(task, 'review', `REVIEW-${n}`, launch(n)).path,
+    );
+    fs.utimesSync(files[0], new Date(time), new Date(time));
+    expect(new Set(cleaner.prune(() => []).removed)).toEqual(new Set([files[1], review[0]]));
+    expect(fs.existsSync(files[0])).toBe(true);
+    expect(review.slice(1).every((path) => fs.existsSync(path))).toBe(true);
+  });
+
+  it('legacy сохраняет возраст при импорте и удаляется только вне последних трёх', () => {
+    const { root, store } = setup({ now: () => time });
+    const alias = join(root, `${task}-${stage}.log`);
+    fs.writeFileSync(alias, 'old legacy');
+    const age = new Date('2025-01-01T00:00:00Z');
+    fs.utimesSync(alias, age, age);
+    store.writeStageLog(task, stage, 'first', launch(1));
+    const legacy = store.readStageLogs(task, stage).entries[1].path;
+    expect(store.prune(() => []).removed).toEqual([]);
+    store.writeStageLog(task, stage, 'second', launch(2));
+    store.writeStageLog(task, stage, 'third', launch(3));
+    expect(store.prune(() => []).removed).toEqual([legacy]);
+  });
+
+  it('защищает запуск и неприменённый отчёт до снятия защиты', () => {
+    const { files, cleaner } = populated();
+    const protection = [1, 2].map((n) => ({ taskId: task, stage, launchId: launch(n).launchId }));
+    expect(cleaner.prune(() => protection).removed).toEqual([]);
+    expect(cleaner.prune(() => protection.slice(1)).removed).toEqual([files[0]]);
+    expect(cleaner.prune(() => []).removed).toEqual([files[1]]);
+  });
+
+  it.each([undefined, 'unknown-id'])('неполная идентичность %s защищает всю пару', (launchId) => {
+    const { files, cleaner } = populated();
+    expect(cleaner.prune(() => [{ taskId: task, stage, launchId }]).removed).toEqual([]);
+    expect(files.every((path) => fs.existsSync(path))).toBe(true);
+  });
+
+  it.each([
+    () => {
+      throw new Error('unreadable protection');
+    },
+    () => null,
+    () => [{ taskId: null, stage }],
+  ])('неизвестная защита отменяет проход', (getProtection) => {
+    const { files, cleaner, diagnostics } = populated();
+    expect(cleaner.prune(getProtection)).toMatchObject({ skipped: true, removed: [] });
+    expect(files.every((path) => fs.existsSync(path))).toBe(true);
+    expect(diagnostics.join('\n')).toContain('Очистка логов пропущена');
+  });
+
+  it('перед удалением перечитывает защиту, не доверяя прежнему пустому снимку', () => {
+    const { files, cleaner } = populated();
+    let calls = 0;
+    expect(cleaner.prune(() => (++calls === 1 ? [] : [{ taskId: task, stage }])).removed).toEqual(
+      [],
+    );
+    expect(calls).toBe(3);
+    expect(files.every((path) => fs.existsSync(path))).toBe(true);
+  });
+
+  it('копии, каталоги, ссылки и неизвестные файлы не удаляются; ошибка unlink не останавливает проход', () => {
+    const { root, files, diagnostics } = populated();
+    fs.writeFileSync(join(root, 'unknown.log'), 'keep');
+    const directory = files[0].replace(launch(1).launchId, launch(6).launchId);
+    fs.mkdirSync(directory);
+    const linked = files[0].replace(launch(1).launchId, launch(7).launchId);
+    fs.writeFileSync(linked, 'link target marker');
+    const removed = [];
+    const cleaner = openStageLogs(root, {
+      now: () => time,
+      diagnose: (message) => diagnostics.push(message),
+      disk: {
+        ...fs,
+        lstatSync(path) {
+          const stat = fs.lstatSync(path);
+          return path === linked
+            ? { ...stat, isFile: () => true, isSymbolicLink: () => true }
+            : stat;
+        },
+        unlinkSync(path) {
+          if (path === files[1]) throw new Error('cannot unlink');
+          removed.push(path);
+          fs.unlinkSync(path);
+        },
+      },
+    });
+    expect(cleaner.prune(() => []).removed).toEqual([files[0]]);
+    expect(removed).toEqual([files[0]]);
+    expect(fs.existsSync(linked)).toBe(true);
+    expect(fs.existsSync(directory)).toBe(true);
+    expect(fs.existsSync(join(root, 'unknown.log'))).toBe(true);
+    expect(fs.existsSync(join(root, `${task}-${stage}.log`))).toBe(true);
+    expect(diagnostics.join('\n')).toContain('cannot unlink');
+  });
+
+  it('читает защиту live строго: отсутствие файла допустимо, повреждение не пустота', () => {
+    const { root } = setup();
+    const path = join(root, 'stages.json');
+    expect(readLiveLogProtection(path)).toEqual([]);
+    fs.writeFileSync(
+      path,
+      JSON.stringify({ [`${task}:${stage}`]: { live: { launchId: launch(1).launchId } } }),
+    );
+    expect(readLiveLogProtection(path)).toEqual([
+      { taskId: task, stage, launchId: launch(1).launchId },
+    ]);
+    fs.writeFileSync(path, '{');
+    expect(() => readLiveLogProtection(path)).toThrow();
+    fs.writeFileSync(path, '[]');
+    expect(() => readLiveLogProtection(path)).toThrow('unknown stages state');
+    expect(() =>
+      readLiveLogProtection(path, {
+        disk: {
+          readFileSync() {
+            throw new Error('EACCES');
+          },
+        },
+      }),
+    ).toThrow('EACCES');
+  });
+
+  it('следующий суточный проход не требует перезапуска и проверяет владельца замка', () => {
+    const { files, cleaner } = populated();
+    let clock = time;
+    let owned = false;
+    let reads = 0;
+    let protectedEntries = [{ taskId: task, stage }];
+    const maintain = createStageLogMaintenance({
+      store: cleaner,
+      now: () => clock,
+      ownsLock: () => owned,
+      getProtection: () => {
+        reads++;
+        return protectedEntries;
+      },
+    });
+    expect(maintain().skipped).toBe(true);
+    expect(reads).toBe(0);
+    owned = true;
+    expect(maintain().removed).toEqual([]);
+    protectedEntries = [];
+    clock += STAGE_LOG_DAY_MS - 1;
+    expect(maintain().skipped).toBe(true);
+    clock++;
+    expect(maintain().removed).toEqual([files[1], files[0]]);
+  });
 });
 
 describe('история заходов', () => {
@@ -85,6 +272,20 @@ describe('история заходов', () => {
     expect(entries[0].path).toBe(alias);
     expect(entries[0].historyPath).toBeTruthy();
     expect(entries[0].text).toContain('LEGACY');
+  });
+
+  it('восстановленная legacy-копия без даты не размножает историю после смены mtime', () => {
+    const { root, store } = setup();
+    const alias = join(root, `${task}-${stage}.log`);
+    fs.writeFileSync(alias, 'LEGACY WITHOUT HEADER');
+    const age = new Date('2026-09-01T00:00:00Z');
+    fs.utimesSync(alias, age, age);
+    store.writeStageLog(task, stage, 'FIRST', launch(1));
+    const count = fs.readdirSync(root).length;
+    fs.utimesSync(alias, new Date('2026-09-02T00:00:00Z'), new Date('2026-09-02T00:00:00Z'));
+    store.writeStageLog(task, stage, 'REPLAY', launch(1));
+    expect(fs.readdirSync(root)).toHaveLength(count);
+    expect(store.readStageLogs(task, stage).entries).toHaveLength(2);
   });
 
   it.each(['stale', 'missing', 'unreadable'])(

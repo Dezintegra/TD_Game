@@ -442,6 +442,80 @@ const envelope = (over = {}) => ({
 });
 
 describe('история логов в назначении разбора', () => {
+  it('снимок защиты содержит живой запуск, а после завершения — сохранённый отчёт', async () => {
+    const parent = resolve('.matchlog');
+    mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(join(parent, 'log-protection-'));
+    try {
+      const queue = openReportStore(join(root, 'queue.json'));
+      const h = harness({ reportStore: queue });
+      h.supervisor.spawnStage(assignment());
+      const live = h.supervisor.stageLogProtection();
+      expect(live[0]).toMatchObject({ taskId: '0001-one', stage: 'design' });
+      expect(live[0].launchId).toBeTruthy();
+      await h.answer(envelope());
+      const pending = h.supervisor.stageLogProtection();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject(live[0]);
+      expect(pending[0].launchId).toBe(h.wrote[0].launch.launchId);
+      queue.acknowledge(queue.entries()[0].reportId);
+      expect(h.supervisor.stageLogProtection()).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('снимок защиты сохраняет неизвестную идентичность сироты и несохранённый отчёт', async () => {
+    const orphan = harness({
+      stages: {
+        '0002-orphan:implement': {
+          live: {
+            pid: 900,
+            image: 'claude.exe',
+            machine: 'станция-1',
+            startedAt: NOW,
+            timeoutMs: 9999999,
+          },
+        },
+      },
+    });
+    expect(orphan.supervisor.stageLogProtection()).toContainEqual({
+      taskId: '0002-orphan',
+      stage: 'implement',
+      launchId: undefined,
+    });
+    const h = harness({
+      reportStore: {
+        entries: () => [],
+        accept: () => {
+          throw new Error('queue write failed');
+        },
+      },
+    });
+    h.supervisor.spawnStage(assignment());
+    await h.answer(envelope());
+    expect(h.supervisor.stageLogProtection()).toContainEqual(
+      expect.objectContaining({
+        taskId: '0001-one',
+        stage: 'design',
+        launchId: h.wrote[0].launch.launchId,
+      }),
+    );
+  });
+
+  it('ошибка чтения очереди защиты не превращается в пустой снимок', () => {
+    let fail = false;
+    const h = harness({
+      reportStore: {
+        entries: () => {
+          if (fail) throw new Error('queue unreadable');
+          return [];
+        },
+      },
+    });
+    fail = true;
+    expect(() => h.supervisor.stageLogProtection()).toThrow('queue unreadable');
+  });
   it('фиксированный review содержит полный второй rejected после применения первого', async () => {
     const parent = resolve('.matchlog');
     mkdirSync(parent, { recursive: true });
