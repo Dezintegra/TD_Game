@@ -13,6 +13,23 @@ import { nextId, planAmendments, planRequests, taskFromRequest, translit } from 
  */
 
 const NOW = '2026-08-27T12:00:00+03:00';
+it.each([null, [], { value: undefined }, { value: NaN }, { value: () => 1 }])(
+  'не создаёт заявку с несохраняемыми params #%#',
+  (params) => {
+    const result = taskFromRequest(
+      {
+        type: 'run',
+        title: 'Заказ',
+        description: 'Точный заказ',
+        categories: ['infrastructure'],
+        run: { kind: 'arena', expectation: 'Ожидание', params },
+      },
+      { id: '0310-test', now: NOW },
+    );
+    expect(result.task).toBeNull();
+    expect(result.problems.join(' ')).toContain('run.params');
+  },
+);
 const schema = loadSchema(fileURLToPath(new URL('../config/task-schema.json', import.meta.url)));
 
 const request = (over = {}) => ({

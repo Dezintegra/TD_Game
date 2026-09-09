@@ -1,6 +1,7 @@
 import { dependencyFormatProblem } from './dependencies.mjs';
 import { categoriesProblem } from './categories.mjs';
 import { runSourceProblem } from './run-source.mjs';
+import { runParamsProblem } from './run-params.mjs';
 /**
  * Заявки на новые задачи.
  *
@@ -114,6 +115,10 @@ export function taskFromRequest(
     problems.push('прогон заявлен без ожидаемого результата');
   }
   if (type === 'run') {
+    if (Object.hasOwn(request.run ?? {}, 'params')) {
+      const paramsProblem = runParamsProblem(request.run.params);
+      if (paramsProblem) problems.push(paramsProblem);
+    }
     const sourceProblem = runSourceProblem(request.run);
     if (sourceProblem) problems.push(sourceProblem);
   }

@@ -1,6 +1,20 @@
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { prepareBenchmarkSource } from './benchmark-source.mjs';
+import { createAssignmentPreparer, prepareBenchmarkSource } from './benchmark-source.mjs';
+
+it.each([false, true])('проверяет заказ до ACL и источника, continuation=%s', (continuation) => {
+  const ops = { git: vi.fn(), prepareDeploySnapshot: vi.fn(), prepareCodexPerfFiles: vi.fn() };
+  const prepare = createAssignmentPreparer('/repo', { provider: 'codex' }, ops);
+  expect(() =>
+    prepare({
+      taskId: '0308-test',
+      stage: 'benchmark',
+      continuation,
+      task: { run: { kind: 'arena' } },
+    }),
+  ).toThrow('0308-test: run.params');
+  for (const operation of Object.values(ops)) expect(operation).not.toHaveBeenCalled();
+});
 
 const root = resolve('fixture/main');
 const other = resolve('fixture/outside tree');

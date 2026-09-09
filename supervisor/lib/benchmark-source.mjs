@@ -5,10 +5,15 @@ import { isLocalRun, runSourceProblem } from './run-source.mjs';
 import { prepareDeploySnapshot } from './deploy-snapshot.mjs';
 import { prepareCodexPerfFiles } from './codex-perf-files.mjs';
 import { providerOf } from './provider.mjs';
+import { benchmarkRunProblem } from './run-params.mjs';
 
 /** Общая композиция запуска: ошибки источника должны предшествовать подготовке ACL. */
 export function createAssignmentPreparer(root, config, ops = {}) {
   return (assignment, previous) => {
+    if (assignment.stage === 'benchmark') {
+      const problem = benchmarkRunProblem(assignment.task?.run);
+      if (problem) throw new Error(`${assignment.taskId ?? assignment.task?.id}: ${problem}`);
+    }
     const prepared = prepareBenchmarkSource(
       root,
       (ops.prepareDeploySnapshot ?? prepareDeploySnapshot)(root, config, assignment, previous),
