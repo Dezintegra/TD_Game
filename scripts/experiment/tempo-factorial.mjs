@@ -26,8 +26,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const ARENA_MAIN = join(repoRoot, 'apps', 'arena', 'dist', 'main.js');
@@ -94,158 +93,173 @@ export const cells = (factors = FACTORS) => {
  */
 export const shardOf = (list, shard, of) => list.filter((_cell, index) => index % of === shard);
 
-// ── Ключи ────────────────────────────────────────────────────────────
+// Импорт матрицы не должен разбирать чужие аргументы или загружать SQLite.
+async function main() {
+  const { DatabaseSync } = await import('node:sqlite');
 
-const argv = process.argv.slice(2);
-const flag = (name, fallback) => {
-  const at = argv.indexOf(`--${name}`);
-  return at !== -1 && argv[at + 1] !== undefined ? argv[at + 1] : fallback;
-};
-const numeric = (name, fallback) => Number(flag(name, String(fallback)));
+  // ── Ключи ────────────────────────────────────────────────────────────
 
-// ── Прогон одной ячейки ──────────────────────────────────────────────
-
-const arena = (args, dir) => {
-  execFileSync(process.execPath, ['--no-warnings', ARENA_MAIN, ...args], {
-    stdio: 'inherit',
-    env: { ...process.env, ARENA_DIR: dir },
-  });
-};
-
-const quantile = (sorted, share) =>
-  sorted.length === 0 ? 0 : sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * share))];
-
-const metricsOf = (dbPath) => {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-
-  const rows = db.prepare("select winner, ticks, end_reason from match where kind = 'arena'").all();
-  // Средние по ходу матча — не итог, а объяснение итога: они говорят,
-  // ЧЕМ ячейка отличается, а не только насколько она быстрее.
-  const shape = db
-    .prepare(
-      `select avg(units_alive) as units, avg(towers) as towers, avg(walls) as walls,
-              avg(energy) as energy, avg(income_per_tick) as income,
-              max(upgrade_total_level) as upgrades
-         from sample`,
-    )
-    .all()[0];
-
-  db.close();
-
-  const ticks = rows.map((row) => Number(row.ticks)).sort((a, b) => a - b);
-  const matches = rows.length;
-  const share = (predicate) => (matches === 0 ? 0 : rows.filter(predicate).length / matches);
-
-  return {
-    matches,
-    medianTicks: quantile(ticks, 0.5),
-    minTicks: ticks[0] ?? 0,
-    maxTicks: ticks[ticks.length - 1] ?? 0,
-    meanTicks: matches === 0 ? 0 : Math.round(ticks.reduce((sum, it) => sum + it, 0) / matches),
-    timeoutShare: share((row) => row.end_reason === 'timeout'),
-    winShare0: share((row) => row.winner === 0),
-    winShare1: share((row) => row.winner === 1),
-    // Каждое число округляется: это тенденция, а не точный отсчёт,
-    // и пятнадцать знаков после запятой только мешали бы читать.
-    avgUnits: Math.round(Number(shape?.units ?? 0) * 10) / 10,
-    avgTowers: Math.round(Number(shape?.towers ?? 0) * 10) / 10,
-    avgWalls: Math.round(Number(shape?.walls ?? 0) * 10) / 10,
-    avgEnergy: Math.round(Number(shape?.energy ?? 0)),
-    avgIncome: Math.round(Number(shape?.income ?? 0) * 10) / 10,
-    maxUpgrades: Number(shape?.upgrades ?? 0),
+  const argv = process.argv.slice(2);
+  const flag = (name, fallback) => {
+    const at = argv.indexOf(`--${name}`);
+    return at !== -1 && argv[at + 1] !== undefined ? argv[at + 1] : fallback;
   };
-};
+  const numeric = (name, fallback) => Number(flag(name, String(fallback)));
 
-const runCell = (cell, { matches, seed, profiles, jobs }) => {
-  const dir = join(LOGS_ROOT, cell.id);
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
+  // ── Прогон одной ячейки ──────────────────────────────────────────────
 
-  const started = Date.now();
+  const arena = (args, dir) => {
+    execFileSync(process.execPath, ['--no-warnings', ARENA_MAIN, ...args], {
+      stdio: 'inherit',
+      env: { ...process.env, ARENA_DIR: dir },
+    });
+  };
 
-  try {
-    arena(
-      [
-        'run',
-        '--matches',
-        String(matches),
-        '--seed',
-        String(seed),
-        '--profiles',
-        profiles,
-        '--jobs',
-        String(jobs),
-        // Перебираются только те величины, что есть в ячейке: остальные
-        // остаются задуманными, и передавать по ним «единицу» незачем —
-        // лишний ключ в строке запуска читался бы как «здесь тоже правили».
-        ...Object.keys(FLAG_OF)
-          .filter((key) => cell[key] !== undefined)
-          .flatMap((key) => [FLAG_OF[key], String(cell[key])]),
-      ],
-      dir,
-    );
-    arena(['ingest'], dir);
+  const quantile = (sorted, share) =>
+    sorted.length === 0
+      ? 0
+      : sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * share))];
 
-    const dbPath = join(dir, 'arena.sqlite');
-    if (!existsSync(dbPath)) throw new Error('база не создалась — прогон не дал логов');
+  const metricsOf = (dbPath) => {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+
+    const rows = db
+      .prepare("select winner, ticks, end_reason from match where kind = 'arena'")
+      .all();
+    // Средние по ходу матча — не итог, а объяснение итога: они говорят,
+    // ЧЕМ ячейка отличается, а не только насколько она быстрее.
+    const shape = db
+      .prepare(
+        `select avg(units_alive) as units, avg(towers) as towers, avg(walls) as walls,
+                avg(energy) as energy, avg(income_per_tick) as income,
+                max(upgrade_total_level) as upgrades
+           from sample`,
+      )
+      .all()[0];
+
+    db.close();
+
+    const ticks = rows.map((row) => Number(row.ticks)).sort((a, b) => a - b);
+    const matches = rows.length;
+    const share = (predicate) => (matches === 0 ? 0 : rows.filter(predicate).length / matches);
 
     return {
-      ...cell,
-      wallSeconds: Math.round((Date.now() - started) / 1000),
-      ...metricsOf(dbPath),
+      matches,
+      medianTicks: quantile(ticks, 0.5),
+      minTicks: ticks[0] ?? 0,
+      maxTicks: ticks[ticks.length - 1] ?? 0,
+      meanTicks: matches === 0 ? 0 : Math.round(ticks.reduce((sum, it) => sum + it, 0) / matches),
+      timeoutShare: share((row) => row.end_reason === 'timeout'),
+      winShare0: share((row) => row.winner === 0),
+      winShare1: share((row) => row.winner === 1),
+      // Каждое число округляется: это тенденция, а не точный отсчёт,
+      // и пятнадцать знаков после запятой только мешали бы читать.
+      avgUnits: Math.round(Number(shape?.units ?? 0) * 10) / 10,
+      avgTowers: Math.round(Number(shape?.towers ?? 0) * 10) / 10,
+      avgWalls: Math.round(Number(shape?.walls ?? 0) * 10) / 10,
+      avgEnergy: Math.round(Number(shape?.energy ?? 0)),
+      avgIncome: Math.round(Number(shape?.income ?? 0) * 10) / 10,
+      maxUpgrades: Number(shape?.upgrades ?? 0),
     };
-  } catch (error) {
-    // Ячейка, которая не считается, — это тоже результат, и он ценнее
-    // молчания: крайние сочетания (тесная карта при раздутом радиусе)
-    // вполне могут оказаться неиграбельными. Ронять из-за одной такой
-    // остальные двенадцать нельзя.
-    return {
-      ...cell,
-      wallSeconds: Math.round((Date.now() - started) / 1000),
-      error: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    // Логи сносятся сразу: подробная запись матча весит мегабайты,
-    // а нужна она только до сборки базы. Диск runner'а не резиновый.
+  };
+
+  const runCell = (cell, { matches, seed, profiles, jobs }) => {
+    const dir = join(LOGS_ROOT, cell.id);
     rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+
+    const started = Date.now();
+
+    try {
+      arena(
+        [
+          'run',
+          '--matches',
+          String(matches),
+          '--seed',
+          String(seed),
+          '--profiles',
+          profiles,
+          '--jobs',
+          String(jobs),
+          // Перебираются только те величины, что есть в ячейке: остальные
+          // остаются задуманными, и передавать по ним «единицу» незачем —
+          // лишний ключ в строке запуска читался бы как «здесь тоже правили».
+          ...Object.keys(FLAG_OF)
+            .filter((key) => cell[key] !== undefined)
+            .flatMap((key) => [FLAG_OF[key], String(cell[key])]),
+        ],
+        dir,
+      );
+      arena(['ingest'], dir);
+
+      const dbPath = join(dir, 'arena.sqlite');
+      if (!existsSync(dbPath)) throw new Error('база не создалась — прогон не дал логов');
+
+      return {
+        ...cell,
+        wallSeconds: Math.round((Date.now() - started) / 1000),
+        ...metricsOf(dbPath),
+      };
+    } catch (error) {
+      // Ячейка, которая не считается, — это тоже результат, и он ценнее
+      // молчания: крайние сочетания (тесная карта при раздутом радиусе)
+      // вполне могут оказаться неиграбельными. Ронять из-за одной такой
+      // остальные двенадцать нельзя.
+      return {
+        ...cell,
+        wallSeconds: Math.round((Date.now() - started) / 1000),
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      // Логи сносятся сразу: подробная запись матча весит мегабайты,
+      // а нужна она только до сборки базы. Диск runner'а не резиновый.
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  // ── Точка входа ──────────────────────────────────────────────────────
+
+  const shard = numeric('shard', 0);
+  const of = Math.max(1, numeric('of', 1));
+  const matches = numeric('matches', 5);
+  const seed = numeric('seed', 9000);
+  const jobs = numeric('jobs', 2);
+  const profiles = flag('profiles', 'baseline-2026-08,baseline-2026-08');
+  const out = flag('out', `experiment-shard-${String(shard)}.json`);
+  const only = flag('only', '');
+  const factorsRaw = flag('factors', '');
+
+  const all = cells(factorsRaw === '' ? undefined : JSON.parse(factorsRaw));
+  const mine = only === '' ? shardOf(all, shard, of) : all.filter((cell) => cell.id === only);
+
+  process.stdout.write(
+    `ячеек всего ${String(all.length)}, в этой задаче ${String(mine.length)} ` +
+      `(доля ${String(shard)} из ${String(of)}), матчей на ячейку ${String(matches)}\n` +
+      `величины: ${factorsRaw === '' ? 'полная матрица' : factorsRaw}\n`,
+  );
+
+  const results = [];
+  for (const [index, cell] of mine.entries()) {
+    const shown = Object.keys(FLAG_OF)
+      .filter((key) => cell[key] !== undefined)
+      .map((key) => `${key} ×${String(cell[key])}`)
+      .join(', ');
+
+    process.stdout.write(
+      `\n── ${cell.id} (${String(index + 1)}/${String(mine.length)}): ${shown}\n`,
+    );
+
+    results.push(runCell(cell, { matches, seed, profiles, jobs }));
+    writeFileSync(out, JSON.stringify({ seed, matches, profiles, results }, null, 2), 'utf8');
   }
-};
 
-// ── Точка входа ──────────────────────────────────────────────────────
-
-const shard = numeric('shard', 0);
-const of = Math.max(1, numeric('of', 1));
-const matches = numeric('matches', 5);
-const seed = numeric('seed', 9000);
-const jobs = numeric('jobs', 2);
-const profiles = flag('profiles', 'baseline-2026-08,baseline-2026-08');
-const out = flag('out', `experiment-shard-${String(shard)}.json`);
-const only = flag('only', '');
-const factorsRaw = flag('factors', '');
-
-const all = cells(factorsRaw === '' ? undefined : JSON.parse(factorsRaw));
-const mine = only === '' ? shardOf(all, shard, of) : all.filter((cell) => cell.id === only);
-
-process.stdout.write(
-  `ячеек всего ${String(all.length)}, в этой задаче ${String(mine.length)} ` +
-    `(доля ${String(shard)} из ${String(of)}), матчей на ячейку ${String(matches)}\n` +
-    `величины: ${factorsRaw === '' ? 'полная матрица' : factorsRaw}\n`,
-);
-
-const results = [];
-for (const [index, cell] of mine.entries()) {
-  const shown = Object.keys(FLAG_OF)
-    .filter((key) => cell[key] !== undefined)
-    .map((key) => `${key} ×${String(cell[key])}`)
-    .join(', ');
-
-  process.stdout.write(`\n── ${cell.id} (${String(index + 1)}/${String(mine.length)}): ${shown}\n`);
-
-  results.push(runCell(cell, { matches, seed, profiles, jobs }));
-  writeFileSync(out, JSON.stringify({ seed, matches, profiles, results }, null, 2), 'utf8');
+  const broken = results.filter((row) => row.error !== undefined).length;
+  process.stdout.write(
+    `\nготово: ячеек ${String(results.length)}, не сосчиталось ${String(broken)}; итог в ${out}\n`,
+  );
 }
 
-const broken = results.filter((row) => row.error !== undefined).length;
-process.stdout.write(
-  `\nготово: ячеек ${String(results.length)}, не сосчиталось ${String(broken)}; итог в ${out}\n`,
-);
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  await main();
+}
