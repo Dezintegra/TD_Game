@@ -1,4 +1,6 @@
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { URLSearchParams } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createIo, summariseChecks, summarisePullRequest } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -29,6 +31,432 @@ it('читает и подтверждает ту же устойчивую оч
  */
 
 const check = (name, status, conclusion) => ({ name, status, conclusion });
+
+// Только исходные PR/run/jobs фактические; список runs и повторные ответы моделируются.
+const ciObservation = JSON.parse(
+  readFileSync(new URL('./testing/ci-pr-219.json', import.meta.url), 'utf8'),
+);
+function confirmationFixture(edit = () => {}, intercept = () => null) {
+  const f = JSON.parse(JSON.stringify(ciObservation));
+  f.runs = [f.run];
+  edit(f);
+  const calls = [];
+  const run = (args, tool, _cwd, options) => {
+    calls.push({ args, tool, options });
+    const override = intercept(args, calls.length, f);
+    if (override) return override;
+    let data;
+    if (args[0] === 'pr') data = f.pr;
+    else if (args[1].includes('/jobs?')) {
+      const id = Number(args[1].split('/runs/')[1].split('/')[0]);
+      const jobs = f.jobs.jobs.filter((j) => j.run_id === id);
+      const page = Number(new URLSearchParams(args[1].split('?')[1]).get('page'));
+      data = { total_count: jobs.length, jobs: jobs.slice((page - 1) * 100, page * 100) };
+    } else if (args[1].includes('?head_sha=')) {
+      const page = Number(new URLSearchParams(args[1].split('?')[1]).get('page'));
+      data = {
+        total_count: f.runs.length,
+        workflow_runs: f.runs.slice((page - 1) * 100, page * 100),
+      };
+    } else data = f.runs.find((r) => r.id === Number(args[1].split('/').at(-1)));
+    return { code: 0, stdout: JSON.stringify(data) };
+  };
+  const io = createIo({ root: '.', config: resolveConfig({}).config, run });
+  return { f, calls, poll: () => io.readExternal({ links: { pr: 219 } }, 'ci') };
+}
+
+describe('подтверждение противоречивого CI через readExternal', () => {
+  it('разрешает фактическое противоречие обеих API с четырьмя SKIPPED', () => {
+    const f = confirmationFixture();
+    expect(summarisePullRequest(JSON.stringify(f.f.pr)).state).toBe('pending');
+    expect(f.poll()).toEqual({ state: 'success' });
+    expect(f.calls).toHaveLength(7);
+    expect(f.calls[2].args[1]).toContain('/attempts/1/jobs?per_page=100&page=1');
+    expect(f.calls.filter((c) => c.args[0] === 'pr')).toHaveLength(2);
+    expect(f.calls.every((c) => c.tool === 'gh')).toBe(true);
+    expect(f.calls.slice(1).every((c) => c.options.timeout === 15000)).toBe(true);
+  });
+
+  it.each([
+    [
+      'workflow работает',
+      (f) => {
+        f.run.status = 'in_progress';
+        f.run.conclusion = null;
+      },
+    ],
+    [
+      'задание работает',
+      (f) => {
+        f.jobs.jobs[1].status = 'in_progress';
+        f.jobs.jobs[1].conclusion = null;
+        f.pr.statusCheckRollup[1].status = 'IN_PROGRESS';
+        f.pr.statusCheckRollup[1].conclusion = null;
+      },
+    ],
+    [
+      'нет времени задания',
+      (f) => {
+        f.jobs.jobs[0].completed_at = null;
+      },
+    ],
+    [
+      'время задания не совпало',
+      (f) => {
+        f.jobs.jobs[0].completed_at = '2026-09-08T20:39:28Z';
+      },
+    ],
+    [
+      'нет conclusion',
+      (f) => {
+        f.jobs.jobs[0].conclusion = null;
+      },
+    ],
+    [
+      'SHA запуска',
+      (f) => {
+        f.run.head_sha = 'a'.repeat(40);
+      },
+    ],
+    [
+      'SHA задания',
+      (f) => {
+        f.jobs.jobs[0].head_sha = 'a'.repeat(40);
+      },
+    ],
+    [
+      'repo запуска',
+      (f) => {
+        f.run.repository.full_name = 'other/repo';
+      },
+    ],
+    [
+      'PR запуска',
+      (f) => {
+        f.run.pull_requests[0].number = 220;
+      },
+    ],
+    [
+      'head связи PR',
+      (f) => {
+        f.run.pull_requests[0].head.sha = 'a'.repeat(40);
+      },
+    ],
+    [
+      'ссылка в другой repo',
+      (f) => {
+        f.pr.statusCheckRollup[0].detailsUrl = f.pr.statusCheckRollup[0].detailsUrl.replace(
+          'TD_Game',
+          'Other',
+        );
+      },
+    ],
+    [
+      'другой job ID',
+      (f) => {
+        f.jobs.jobs[0].id += 1;
+      },
+    ],
+    [
+      'другой run ID задания',
+      (f) => {
+        f.jobs.jobs[0].run_id += 1;
+      },
+    ],
+    [
+      'новая попытка',
+      (f) => {
+        f.run.run_attempt += 1;
+      },
+    ],
+    [
+      'другой attempt задания',
+      (f) => {
+        f.jobs.jobs[0].run_attempt += 1;
+      },
+    ],
+    [
+      'потеря задания',
+      (f) => {
+        f.jobs.jobs.pop();
+      },
+    ],
+    [
+      'лишнее задание',
+      (f) => {
+        f.jobs.jobs.push({ ...f.jobs.jobs[0], id: 99 });
+      },
+    ],
+    [
+      'дубликат задания',
+      (f) => {
+        f.jobs.jobs.push(f.jobs.jobs[0]);
+      },
+    ],
+    [
+      'дубликат проверки',
+      (f) => {
+        f.pr.statusCheckRollup.push(f.pr.statusCheckRollup[0]);
+      },
+    ],
+    [
+      'неизвестный тип',
+      (f) => {
+        f.pr.statusCheckRollup[1].__typename = 'StatusContext';
+      },
+    ],
+    [
+      'новый run',
+      (f) => {
+        f.runs.push({ ...f.run, id: f.run.id + 1, status: 'in_progress', conclusion: null });
+      },
+    ],
+    [
+      'новый workflow',
+      (f) => {
+        f.runs.push({ ...f.run, id: f.run.id + 1, workflow_id: 99 });
+      },
+    ],
+  ])('%s сохраняет pending', (_name, edit) => {
+    const f = confirmationFixture(edit);
+    expect(f.poll().state).toBe('pending');
+  });
+
+  it.each(['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED'])(
+    'конечный %s даёт failure',
+    (conclusion) => {
+      for (const target of ['job', 'run']) {
+        const f = confirmationFixture((data) => {
+          if (target === 'run') data.run.conclusion = conclusion.toLowerCase();
+          else {
+            data.pr.statusCheckRollup[1].conclusion = conclusion;
+            data.jobs.jobs[1].conclusion = conclusion.toLowerCase();
+          }
+        });
+        expect(f.poll().state).toBe('failure');
+      }
+    },
+  );
+
+  it.each(['CONFLICTING', 'UNKNOWN'])('%s имеет приоритет в обоих чтениях', (mergeable) => {
+    const first = confirmationFixture((f) => {
+      f.pr.mergeable = mergeable;
+    });
+    expect(first.poll().state).toBe(mergeable === 'CONFLICTING' ? 'conflict' : 'pending');
+    expect(first.calls).toHaveLength(1);
+    const second = confirmationFixture(
+      () => {},
+      (args, n, f) => {
+        if (args[0] === 'pr' && n > 1) f.pr.mergeable = mergeable;
+      },
+    );
+    expect(second.poll().state).toBe(mergeable === 'CONFLICTING' ? 'conflict' : 'pending');
+  });
+
+  it.each(['head', 'checks', 'attempt', 'runs', 'conclusion'])(
+    'смена %s во время сверки отменяет успех',
+    (field) => {
+      const f = confirmationFixture(
+        () => {},
+        (_args, n, data) => {
+          if (n === 5 && field === 'head') data.pr.headRefOid = 'b'.repeat(40);
+          if (n === 5 && field === 'checks') data.pr.statusCheckRollup[1].name = 'changed';
+          if (n === 6 && field === 'attempt') data.run.run_attempt += 1;
+          if (n === 6 && field === 'conclusion') data.run.conclusion = 'failure';
+          if (n === 7 && field === 'runs') data.runs.push({ ...data.run, id: data.run.id + 1 });
+        },
+      );
+      expect(f.poll().state).toBe('pending');
+    },
+  );
+
+  it('перестановка проверок не отменяет доказательство', () => {
+    const f = confirmationFixture(
+      () => {},
+      (_args, n, data) => {
+        if (n === 5) data.pr.statusCheckRollup.reverse();
+      },
+    );
+    expect(f.poll().state).toBe('success');
+  });
+
+  it.each([1, 2, 3, 4, 5, 6, 7])(
+    'ошибка или повреждённый JSON запроса %s не дают успеха',
+    (step) => {
+      for (const result of [{ code: 1 }, { code: 0, stdout: '{' }, { code: 0, stdout: 'null' }]) {
+        const f = confirmationFixture(
+          () => {},
+          (_args, n) => (n === step ? result : null),
+        );
+        expect(f.poll().state).toBe('pending');
+      }
+    },
+  );
+
+  it.each(['status', 'conclusion', 'completedAt'])('без тройки (%s) нет fallback', (field) => {
+    const f = confirmationFixture((data) => {
+      data.pr.statusCheckRollup[0][field] = null;
+    });
+    expect(f.poll().state).toBe('pending');
+    expect(f.calls).toHaveLength(1);
+  });
+
+  it('обычный SUCCESS/SKIPPED и все SKIPPED обходятся одним чтением', () => {
+    for (const skipped of [false, true]) {
+      const f = confirmationFixture((data) => {
+        data.pr.statusCheckRollup.forEach((c) => {
+          c.status = 'COMPLETED';
+          if (skipped) c.conclusion = 'SKIPPED';
+        });
+      });
+      expect(f.poll().state).toBe(skipped ? 'pending' : 'success');
+      expect(f.calls).toHaveLength(1);
+    }
+  });
+
+  function manyJobs(f) {
+    for (let i = 0; i < 101; i += 1) {
+      const id = 200000000000 + i;
+      const c = {
+        ...f.pr.statusCheckRollup[1],
+        name: `matrix ${i}`,
+        detailsUrl: f.pr.statusCheckRollup[1].detailsUrl.replace(/job\/[0-9]+$/, `job/${id}`),
+      };
+      f.pr.statusCheckRollup.push(c);
+      f.jobs.jobs.push({ ...f.jobs.jobs[1], id, name: c.name, html_url: c.detailsUrl });
+    }
+  }
+
+  it('проверяет несколько страниц jobs и несколько workflows', () => {
+    const f = confirmationFixture((data) => {
+      manyJobs(data);
+      const other = { ...data.run, id: data.run.id + 1, workflow_id: data.run.workflow_id + 1 };
+      data.runs.push(other);
+      const c = data.pr.statusCheckRollup[1];
+      const j = data.jobs.jobs.find((x) => x.html_url === c.detailsUrl);
+      c.detailsUrl = c.detailsUrl.replace(String(data.run.id), String(other.id));
+      j.html_url = c.detailsUrl;
+      j.run_id = other.id;
+    });
+    expect(f.poll().state).toBe('success');
+    expect(f.calls.some((c) => c.args[1].includes('page=2'))).toBe(true);
+  });
+
+  it.each(['error', 'truncated', 'duplicate'])('вторая страница %s запрещает успех', (fault) => {
+    const f = confirmationFixture(manyJobs, (args, _n, data) => {
+      if (args[1]?.includes('/jobs?') && args[1].includes('page=2')) {
+        if (fault === 'error') return { code: 1 };
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            total_count: data.jobs.jobs.length,
+            jobs: fault === 'duplicate' ? [data.jobs.jobs[0]] : [],
+          }),
+        };
+      }
+    });
+    expect(f.poll().state).toBe('pending');
+  });
+
+  it('получает все страницы списка runs и отклоняет потерю второй', () => {
+    const edit = (data) => {
+      for (let i = 1; i <= 101; i += 1) data.runs.push({ ...data.run, id: data.run.id - i });
+    };
+    const f = confirmationFixture(edit);
+    expect(f.poll().state).toBe('success');
+    expect(
+      f.calls.filter(
+        (c) => c.args[1].includes('event=pull_request') && c.args[1].includes('page=2'),
+      ),
+    ).toHaveLength(2);
+    const broken = confirmationFixture(edit, (args) =>
+      args[1]?.includes('event=pull_request') && args[1].includes('page=2') ? { code: 1 } : null,
+    );
+    expect(broken.poll().state).toBe('pending');
+  });
+
+  it.each(['missing', 'duplicate', 'unlinked', 'truncated', 'wrong-id'])(
+    'список или метаданные %s сохраняют pending',
+    (fault) => {
+      const f = confirmationFixture(
+        () => {},
+        (args, n, data) => {
+          if (n === 2 && fault === 'wrong-id')
+            return { code: 0, stdout: JSON.stringify({ ...data.run, id: 42 }) };
+          if (!args[1]?.includes('event=pull_request')) return null;
+          const runs =
+            fault === 'missing'
+              ? []
+              : fault === 'duplicate'
+                ? [data.run, data.run]
+                : fault === 'unlinked'
+                  ? [data.run, { ...data.run, id: 42, pull_requests: [] }]
+                  : [data.run];
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              total_count: fault === 'truncated' ? 2 : runs.length,
+              workflow_runs: runs,
+            }),
+          };
+        },
+      );
+      expect(f.poll().state).toBe('pending');
+    },
+  );
+
+  it.each(['in_progress', 'failure'])(
+    'другой workflow %s не скрывается успехом первого',
+    (status) => {
+      const f = confirmationFixture((data) => {
+        const other = {
+          ...data.run,
+          id: data.run.id + 1,
+          workflow_id: 99,
+          status: status === 'failure' ? 'completed' : status,
+          conclusion: status === 'failure' ? 'failure' : null,
+        };
+        data.runs.push(other);
+        const c = data.pr.statusCheckRollup[1];
+        const j = data.jobs.jobs[1];
+        c.detailsUrl = c.detailsUrl.replace(String(data.run.id), String(other.id));
+        j.html_url = c.detailsUrl;
+        j.run_id = other.id;
+        c.status = status === 'failure' ? 'COMPLETED' : 'IN_PROGRESS';
+        c.conclusion = other.conclusion?.toUpperCase() ?? '';
+        j.status = other.status;
+        j.conclusion = other.conclusion ?? '';
+      });
+      expect(f.poll().state).toBe(status === 'failure' ? 'failure' : 'pending');
+    },
+  );
+
+  it('ограничивает сбор тридцатью запросами и не кеширует успех', () => {
+    const f = confirmationFixture(
+      () => {},
+      (args, n, data) => {
+        if (args[1]?.includes('/jobs?')) {
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              total_count: 10000,
+              jobs: Array.from({ length: 100 }, (_, i) => ({
+                ...data.jobs.jobs[0],
+                id: n * 100 + i,
+              })),
+            }),
+          };
+        }
+      },
+    );
+    expect(f.poll().why).toContain('бюджет');
+    expect(f.calls).toHaveLength(31);
+    const normal = confirmationFixture();
+    expect(normal.poll().state).toBe('success');
+    normal.f.run.run_attempt += 1;
+    expect(normal.poll().state).toBe('pending');
+  });
+});
 
 const rollup = (...checks) => JSON.stringify({ statusCheckRollup: checks });
 
@@ -186,7 +614,13 @@ describe('возможность слияния при опросе CI', () => {
     expect(asked).toEqual([
       {
         program: 'gh',
-        args: ['pr', 'view', '141', '--json', 'mergeable,statusCheckRollup'],
+        args: [
+          'pr',
+          'view',
+          '141',
+          '--json',
+          'mergeable,statusCheckRollup,number,url,state,headRefOid',
+        ],
       },
     ]);
   });

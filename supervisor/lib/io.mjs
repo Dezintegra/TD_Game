@@ -8,6 +8,7 @@ import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from '
 import { hasReceipt, withReceipt, partReceipt } from './report-receipts.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { nextId } from './requests.mjs';
+import { CI_PR_FIELDS, hasContradictoryCheck, confirmContradictoryCi } from './ci-confirmation.mjs';
 
 /**
  * Переходник к настоящему миру: файлы, git, деревья.
@@ -538,12 +539,19 @@ export function createIo({
     readExternal(task, what) {
       if (what === 'ci') {
         if (!task.links?.pr) return { state: 'pending', why: 'pull request ещё не открыт' };
-        const result = run(
-          ['pr', 'view', String(task.links.pr), '--json', 'mergeable,statusCheckRollup'],
-          'gh',
-        );
+        const result = run(['pr', 'view', String(task.links.pr), '--json', CI_PR_FIELDS], 'gh');
         if (result.code !== 0) return { state: 'pending', why: 'состояние проверок недоступно' };
-        return summarisePullRequest(result.stdout);
+        const summary = summarisePullRequest(result.stdout);
+        let pr;
+        try {
+          pr = JSON.parse(result.stdout);
+        } catch {
+          return summary;
+        }
+        if (pr?.mergeable === 'MERGEABLE' && hasContradictoryCheck(pr)) {
+          return confirmContradictoryCi({ pr, number: task.links.pr, run });
+        }
+        return summary;
       }
 
       if (!task.links?.run) return { state: 'pending', why: 'прогон ещё не запущен' };
