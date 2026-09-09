@@ -1,6 +1,6 @@
 ## 1. Модель результатов
 
-- [ ] 1.1 За 1–2 часа реализовать в `scripts/mutation/model.mjs` проверку каталога и классификацию detected/survived/uncovered/error, а в `scripts/mutation/model.test.mjs` — сценарии пропущенного теста, пустых пар, красного контроля, ошибки hook, несовпадения id и смешанных результатов. Проверка: `npx vitest run --root scripts mutation/model.test.mjs`. После этого самостоятельного коммита и немедленного push implement открывает черновой PR.
+- [x] 1.1 За 1–2 часа реализовать в `scripts/mutation/model.mjs` проверку каталога и классификацию detected/survived/uncovered/error, а в `scripts/mutation/model.test.mjs` — сценарии пропущенного теста, пустых пар, красного контроля, ошибки hook, несовпадения id и смешанных результатов. Проверка: `npx vitest run --root scripts mutation/model.test.mjs`. После этого самостоятельного коммита и немедленного push implement открывает черновой PR.
 
 ## 2. Изолированный адаптер
 
