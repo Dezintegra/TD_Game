@@ -255,7 +255,9 @@ describe('цена состояния', () => {
  * на порчу ниже читались прежним образом.
  */
 const uncoveredMergeCommands = (permissions) =>
-  uncoveredForStage(permissions, 'review', STAGE_COMMANDS);
+  uncoveredForStage(permissions, 'review', {
+    review: STAGE_COMMANDS.review.filter((command) => command.startsWith('gh pr ')),
+  });
 
 /**
  * Этапы, чьи команды закрыты ОСОЗНАННО, — с причиной и с тем, чем закрытие
@@ -276,11 +278,9 @@ const DELIBERATELY_CLOSED = {};
  * зависит от того, чем этап занят.
  *
  * У `review` таких программ не объявлено, и это нарочно: его перечень —
- * осознанно короткая выборка из скилла (`gh pr checks` шага 2 в неё не входит),
- * а весь путь ревью покрыт одним приставочным правилом `gh pr:*`, при котором
- * выборка и полный перечень неразличимы. Перекраивать выборку здесь нельзя
- * и по второй причине: её заводит незаархивированное `undraft-before-merge`,
- * это его предмет.
+ * осознанно короткая выборка допуска CI и вливания. Общий вход review-ci
+ * требует отдельного разрешения и сторожится в review-ci-contract.test.mjs;
+ * остальные команды скилла не становятся частью выборки автоматически.
  */
 const GATED_PROGRAMS = {
   deploy: ['ssh', 'node scripts/deploy-remote.mjs', 'node scripts/deploy.mjs', 'pnpm e2e:perf'],
