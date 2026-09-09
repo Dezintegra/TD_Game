@@ -30,6 +30,8 @@
 
 /** Множители правил. Единица означает «как задумано», без правки. */
 export interface RuleTuning {
+  /** Лабораторное сравнение двух и четырёх клеток без смены ревизии. */
+  assaultRange: number;
   /** Базовый доход в секунду. Только вверх имеет смысл: см. `balance.ts`. */
   income: number;
   /** Скорость машин. Тянет за собой Теслу и генерала — они выведены от базы. */
@@ -53,6 +55,7 @@ export interface RuleTuning {
 }
 
 const NEUTRAL: RuleTuning = {
+  assaultRange: 1,
   income: 1,
   speed: 1,
   towerHealth: 1,
@@ -111,6 +114,9 @@ export const applyRuleTuning = (tuning: Partial<RuleTuning>): void => {
 
   for (const [key, value] of Object.entries(tuning)) {
     if (value === undefined) continue;
+    if (key === 'assaultRange' && value !== 0.5 && value !== 1) {
+      throw new Error('дальность штурмовика допускает только множители 0.5 и 1');
+    }
     if (!Number.isFinite(value) || value <= 0) {
       throw new Error(
         `множитель «${key}» должен быть положительным числом, получено «${String(value)}»`,

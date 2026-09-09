@@ -1,6 +1,6 @@
 ## 1. Лабораторный контроль
 
-- [ ] 1.1 Добавить `RuleTuning.assaultRange` с нейтральным 1 и допустимыми 0.5/1, пересчёт только дальности Assault и проверки независимых характеристик, сброса и lock. Оценка: 1 час. Пути: `packages/shared/src/rules.ts`, `packages/shared/src/balance.ts`, `packages/shared/src/rules.test.ts`. Проверка: `npx vitest run --root packages/shared src/rules.test.ts`; при 0.5 получаются две клетки, при 1 — четыре, прочие характеристики прежние, поздняя настройка отвергается. После этого самостоятельного коммита открыть черновой PR по правилам implement.
+- [x] 1.1 Добавить `RuleTuning.assaultRange` с нейтральным 1 и допустимыми 0.5/1, пересчёт только дальности Assault и проверки независимых характеристик, сброса и lock. Оценка: 1 час. Пути: `packages/shared/src/rules.ts`, `packages/shared/src/balance.ts`, `packages/shared/src/rules.test.ts`. Проверка: `npx vitest run --root packages/shared src/rules.test.ts`; при 0.5 получаются две клетки, при 1 — четыре, прочие характеристики прежние, поздняя настройка отвергается. После этого самостоятельного коммита открыть черновой PR по правилам implement.
 
 ## 2. Наблюдение действующего боя
 
