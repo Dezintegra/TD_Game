@@ -6,6 +6,7 @@ import { prepareDeploySnapshot } from './deploy-snapshot.mjs';
 import { prepareCodexPerfFiles } from './codex-perf-files.mjs';
 import { providerOf } from './provider.mjs';
 import { benchmarkRunProblem } from './run-params.mjs';
+import { confirmRecoveredAssignment } from './run-param-recovery.mjs';
 
 /** Общая композиция запуска: ошибки источника должны предшествовать подготовке ACL. */
 export function createAssignmentPreparer(root, config, ops = {}) {
@@ -13,6 +14,7 @@ export function createAssignmentPreparer(root, config, ops = {}) {
     if (assignment.stage === 'benchmark') {
       const problem = benchmarkRunProblem(assignment.task?.run);
       if (problem) throw new Error(`${assignment.taskId ?? assignment.task?.id}: ${problem}`);
+      assignment = confirmRecoveredAssignment(assignment);
     }
     const prepared = prepareBenchmarkSource(
       root,

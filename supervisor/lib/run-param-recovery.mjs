@@ -29,6 +29,35 @@ export function recoveredOrderProblem(task, recipes = runParamRecoveries) {
   return null;
 }
 
+/** Сверка той же сборкой промпта, которую использует порождение этапа. */
+export function confirmRecoveredAssignment(assignment, makePrompt = stagePrompt) {
+  const task = assignment.task;
+  const recipe = runParamRecoveries.find((item) => item.targetTaskId === task?.id);
+  if (!recipe) return assignment;
+  const problem = recoveredOrderProblem(task);
+  if (problem) throw new Error(problem);
+  const params = paramsFromPrompt(makePrompt({ assignment, task }));
+  if (!isDeepStrictEqual(params, recipe.params))
+    throw new Error(`${task.id}: run.params потеряны при сборке назначения`);
+  return {
+    ...assignment,
+    reason: [
+      assignment.reason,
+      `run.params сверены при подготовке benchmark: ${recipe.requestKey}, launchId ${recipe.launchId}; новый снимок и назначение совпадают.`,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  };
+}
+
+/** Отложенная запись не должна блокировать доставку уже готового отчёта. */
+export const afterRunParamRecovery = (actions, deferred) =>
+  actions.filter(
+    (action) =>
+      action.kind === 'transfer-report' ||
+      ![action.taskId, ...(action.batch ?? [])].some((id) => deferred.has(id)),
+  );
+
 const empty = (params) =>
   params &&
   typeof params === 'object' &&
@@ -53,11 +82,14 @@ export async function recoverRunParams({
 }) {
   const deferred = new Set();
   const notes = [];
+  const diagnostics = [];
   for (const recipe of recipes) {
     const id = recipe.targetTaskId;
+    let canJournal = false;
     const diagnose = (why) => {
       deferred.add(id);
       notes.push(`${id}: восстановление run.params: ${why}`);
+      if (canJournal) diagnostics.push({ id, why, key: recoveryKey(recipe, `diagnostic:${why}`) });
     };
     if (
       !mayWrite ||
@@ -86,6 +118,7 @@ export async function recoverRunParams({
       diagnose('карточка недоступна либо имеет чужого владельца');
       continue;
     }
+    canJournal = true;
     // Завершённый замер не становится новым заказом от появления рецепта.
     if (task.links?.run || ['interpret', 'completed', 'closed', 'cleanup'].includes(task.status))
       continue;
@@ -178,6 +211,22 @@ export async function recoverRunParams({
       if (!ready) deferred.add(id);
     } catch (error) {
       diagnose(error.message);
+    }
+  }
+  for (const { id, why, key } of diagnostics) {
+    try {
+      const result = await store.amendTask(
+        id,
+        `Восстановление run.params остановлено: ${why}`,
+        'run parameter recovery diagnostic',
+        'supervisor',
+        null,
+        { key },
+      );
+      if (!result.ok)
+        notes.push(`${id}: диагностика не доставлена: ${result.why ?? result.outcome}`);
+    } catch (error) {
+      notes.push(`${id}: диагностика не доставлена: ${error.message}`);
     }
   }
   return { deferred, notes };

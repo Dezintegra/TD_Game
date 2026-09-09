@@ -1,6 +1,37 @@
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createAssignmentPreparer, prepareBenchmarkSource } from './benchmark-source.mjs';
+import { runParamRecoveries, recoveryKey } from './run-param-recovery.mjs';
+import { withReceipt } from './report-receipts.mjs';
+
+it.each([false, true])(
+  'повторно сверяет полный восстановленный заказ, continuation=%s',
+  (continuation) => {
+    const recipe = runParamRecoveries[0];
+    const task = withReceipt(
+      {
+        id: recipe.targetTaskId,
+        run: { kind: 'arena', params: JSON.parse(JSON.stringify(recipe.params)) },
+      },
+      recoveryKey(recipe, 'ready'),
+    );
+    const ops = {
+      prepareDeploySnapshot: (_root, _config, assignment) => assignment,
+      prepareCodexPerfFiles: vi.fn(),
+    };
+    const prepare = createAssignmentPreparer('/repo', { provider: 'codex' }, ops);
+    const assignment = { taskId: task.id, stage: 'benchmark', continuation, task };
+    expect(prepare(assignment).reason).toContain('run.params сверены');
+    ops.prepareCodexPerfFiles.mockClear();
+    task.run.params.matches = 1;
+    expect(() => prepare(assignment)).toThrow('не совпадают');
+    expect(ops.prepareCodexPerfFiles).not.toHaveBeenCalled();
+    task.run.params = recipe.params;
+    delete task.reportReceipts;
+    expect(() => prepare(assignment)).toThrow('ещё не подтверждены');
+    expect(ops.prepareCodexPerfFiles).not.toHaveBeenCalled();
+  },
+);
 
 it.each([false, true])('проверяет заказ до ACL и источника, continuation=%s', (continuation) => {
   const ops = { git: vi.fn(), prepareDeploySnapshot: vi.fn(), prepareCodexPerfFiles: vi.fn() };

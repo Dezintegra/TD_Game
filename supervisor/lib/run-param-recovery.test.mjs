@@ -43,7 +43,7 @@ function fixture() {
     desc: joinDescription(task.description, metaOf(task)),
   }));
   const comments = [];
-  const state = { fail: null, lost: null, writes: 0, posts: 0 };
+  const state = { fail: null, lost: null, writes: 0, posts: 0, failWriteAt: 0, failPostAt: 0 };
   const trello = {
     async get(path) {
       if (state.fail === 'get') return { ok: false, why: 'get failed' };
@@ -58,7 +58,8 @@ function fixture() {
     },
     async put(path, body) {
       state.writes++;
-      if (state.fail === 'put') return { ok: false, why: 'put failed' };
+      if (state.fail === 'put' || state.writes === state.failWriteAt)
+        return { ok: false, why: 'put failed' };
       Object.assign(
         cards.find((c) => c.id === path.split('/')[1]),
         clone(body),
@@ -67,7 +68,8 @@ function fixture() {
     },
     async post(path, body) {
       state.posts++;
-      if (state.fail === 'post') return { ok: false, why: 'post failed' };
+      if (state.fail === 'post' || state.posts === state.failPostAt)
+        return { ok: false, why: 'post failed' };
       comments.push({ cardId: path.split('/')[1], text: body.text, date: '2026-09-09T00:00:00Z' });
       return state.lost === 'post' ? { ok: false, why: 'lost post response' } : { ok: true };
     },
@@ -101,6 +103,21 @@ function fixture() {
 }
 
 describe('адресное восстановление', () => {
+  it.each([1, 2, 3])('повторяет сбой записи/комментария части %s', async (part) => {
+    for (const field of ['failWriteAt', 'failPostAt']) {
+      const f = fixture();
+      f.state[field] = part;
+      await recoverRunParams(f.fresh());
+      const second = await recoverRunParams(f.fresh());
+      if (part > 1) expect(second.deferred.has(recipe.targetTaskId)).toBe(true);
+      f.state[field] = 0;
+      for (let i = 0; i < 3; i++) await recoverRunParams(f.fresh());
+      expect(
+        hasReceipt(f.fresh().store.readTask(recipe.targetTaskId), recoveryKey(recipe, 'ready')),
+      ).toBe(true);
+      expect(new Set(f.comments.map((c) => c.text)).size).toBe(f.comments.length);
+    }
+  });
   it('рецепт точно совпадает с проверенной выдержкой design 0095', () => {
     const design = readFileSync(
       new URL('../../openspec/changes/preserve-run-params/design.md', import.meta.url),
