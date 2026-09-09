@@ -10,7 +10,7 @@ import {
   UnitType,
 } from './balance.js';
 import { BASE_INSET_CELLS, MAP_CELL_COUNT, MAP_WIDTH_CELLS } from './constants.js';
-import { applyRuleTuning, resetRuleTuning, ruleTuningIsNeutral } from './rules.js';
+import { applyRuleTuning, lockRuleTuning, resetRuleTuning, ruleTuningIsNeutral } from './rules.js';
 
 /**
  * Настройка правил.
@@ -35,6 +35,38 @@ afterEach(() => {
 });
 
 describe('настройка правил', () => {
+  it('контроль дальности меняет только дальность Assault и сбрасывается', () => {
+    const units = structuredClone(UNIT_STATS);
+    const structures = structuredClone(STRUCTURE_STATS);
+    const general = structuredClone(GENERAL_STATS);
+    applyRuleTuning({ assaultRange: 0.5 });
+    expect(UNIT_STATS).toEqual({
+      ...units,
+      [UnitType.Assault]: { ...units[UnitType.Assault], range: 2000 },
+    });
+    expect(STRUCTURE_STATS).toEqual(structures);
+    expect(GENERAL_STATS).toEqual(general);
+    expect(ruleTuningIsNeutral()).toBe(false);
+    applyRuleTuning({ assaultRange: 1 });
+    expect(UNIT_STATS).toEqual(units);
+    expect(UNIT_STATS[UnitType.Assault].range).toBe(4000);
+    applyRuleTuning({ assaultRange: 0.5 });
+    resetRuleTuning();
+    expect(UNIT_STATS).toEqual(units);
+    expect(ruleTuningIsNeutral()).toBe(true);
+  });
+
+  it.each([0, -1, 0.8, 2, NaN, Infinity])('отвергает дальность %s', (assaultRange) => {
+    expect(() => applyRuleTuning({ assaultRange })).toThrow();
+    expect(UNIT_STATS[UnitType.Assault].range).toBe(4000);
+  });
+
+  it('запирает дальность вместе с остальными правилами', () => {
+    applyRuleTuning({ assaultRange: 0.5 });
+    lockRuleTuning();
+    expect(() => applyRuleTuning({ assaultRange: 1 })).toThrow(/заперта/);
+    expect(UNIT_STATS[UnitType.Assault].range).toBe(2000);
+  });
   it('без вызова оставляет правила задуманными', () => {
     expect(ruleTuningIsNeutral()).toBe(true);
     expect(BASE_INCOME_PER_TICK).toBe(10);

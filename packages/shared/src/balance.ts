@@ -272,7 +272,7 @@ const buildUnitStats = (): Readonly<Record<UnitType, UnitStats>> => ({
     health: BASE_HEALTH, // ×1
     attack: BASE_ATTACK, // ×1
     cooldownTicks: BASE_COOLDOWN_TICKS, // ×1
-    range: cellsToUnits(BASE_UNIT_RANGE_CELLS), // ×1
+    range: Math.round(cellsToUnits(BASE_UNIT_RANGE_CELLS) * ruleTuning().assaultRange),
     speed: BASE_SPEED_UNITS_PER_TICK, // ×1
     structureDamagePercent: 100, // ×1
     cost: BASE_UNIT_COST, // ×1

@@ -17,13 +17,16 @@ import {
   UNIT_INDIRECT_FIRE,
   UNIT_STATS,
   UNIT_WEAPON,
+  UnitType,
   asTickNumber,
   directionTowards,
   isArmedStructure,
   onRuleTuningApplied,
   veteranRank,
 } from '@td/shared';
-import type { PlayerId, UnitType, Vec2 } from '@td/shared';
+import type { PlayerId, Vec2 } from '@td/shared';
+import { emitCombatObservation, observeTerminal } from './combat-observer.js';
+import type { CombatIdentity } from './combat-observer.js';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
 import {
@@ -474,6 +477,13 @@ export const hasHostileInSight = (
   owner: PlayerId,
   origin: Vec2,
   range: number,
+  witness?: (
+    kind: 'unit' | 'general',
+    id: number,
+    owner: number,
+    subtype: number | null,
+    distance: number,
+  ) => void,
 ): boolean => {
   if (range <= 0) return false;
 
@@ -489,6 +499,7 @@ export const hasHostileInSight = (
     if (!seesPoint(working, false, origin, { x: unit.x, y: unit.y })) return;
 
     found = true;
+    witness?.('unit', unit.id, unit.owner, unit.unitType, squaredDistance(origin, unit));
   });
 
   if (found) return true;
@@ -498,6 +509,7 @@ export const hasHostileInSight = (
     if (squaredDistance(origin, { x: general.x, y: general.y }) > reach) continue;
     if (!seesPoint(working, false, origin, { x: general.x, y: general.y })) continue;
 
+    witness?.('general', general.owner, general.owner, null, squaredDistance(origin, general));
     return true;
   }
 
@@ -537,6 +549,13 @@ export const hasArmedStructureInSight = (
   origin: Vec2,
   range: number,
   elevated: boolean,
+  witness?: (
+    kind: 'structure',
+    id: number,
+    owner: number,
+    subtype: number,
+    distance: number,
+  ) => void,
 ): boolean => {
   if (range <= 0) return false;
 
@@ -556,6 +575,13 @@ export const hasArmedStructureInSight = (
     if (!seesStructure(working, elevated, origin, structure)) return;
 
     found = true;
+    witness?.(
+      'structure',
+      structure.id,
+      structure.owner,
+      structure.kind,
+      structureDistance(origin, structure),
+    );
   });
 
   return found;
@@ -762,6 +788,15 @@ export const damageEntity = (
       if (unit.health > 0) return false;
 
       unit.alive = false;
+      if (working.observation !== undefined && unit.unitType === UnitType.Assault) {
+        observeTerminal(
+          working,
+          { kind: 'unit', id: unit.id, owner: unit.owner, subtype: unit.unitType },
+          unit.health + amount,
+          unit.health,
+          'damage',
+        );
+      }
       recordBlast(working, BlastKind.Unit, unit.owner, position(unit));
       return true;
     }
@@ -773,6 +808,15 @@ export const damageEntity = (
       if (structure.health > 0) return false;
 
       structure.alive = false;
+      if (working.observation !== undefined && isArmedStructure(structure.kind)) {
+        observeTerminal(
+          working,
+          { kind: 'structure', id: structure.id, owner: structure.owner, subtype: structure.kind },
+          structure.health + amount,
+          structure.health,
+          'damage',
+        );
+      }
       working.structuresDirty = true;
       recordBlast(working, BlastKind.Structure, structure.owner, structurePosition(structure));
       return true;
@@ -935,13 +979,57 @@ const fire = (
   const aim = targetPosition(working, target);
   if (aim === undefined) return;
 
-  const lethal = dealDamage(
-    working,
-    statsTable,
-    shooter,
-    target,
-    damageAgainst(working, target, attack, structureDamagePercent),
-  );
+  const assault =
+    working.observation !== undefined && shooter.kind === ShooterKind.Unit
+      ? working.units[shooter.index]
+      : undefined;
+  const observed = assault?.unitType === UnitType.Assault ? assault : undefined;
+  const direct =
+    observed === undefined
+      ? undefined
+      : target.kind === TargetKind.Unit
+        ? working.units[target.index]
+        : target.kind === TargetKind.Structure
+          ? working.structures[target.index]
+          : working.generals[target.index];
+  const identity: CombatIdentity | undefined =
+    direct === undefined
+      ? undefined
+      : {
+          kind:
+            target.kind === TargetKind.Unit
+              ? 'unit'
+              : target.kind === TargetKind.Structure
+                ? 'structure'
+                : 'general',
+          id: 'id' in direct ? direct.id : direct.owner,
+          owner: direct.owner,
+          subtype: 'unitType' in direct ? direct.unitType : 'kind' in direct ? direct.kind : null,
+        };
+  const healthBefore = direct?.health ?? 0;
+  const killsBefore = observed?.kills ?? 0;
+  const damage = damageAgainst(working, target, attack, structureDamagePercent);
+  const lethal = dealDamage(working, statsTable, shooter, target, damage);
+  if (observed !== undefined && direct !== undefined && identity !== undefined) {
+    emitCombatObservation(working, {
+      type: 'assault-shot',
+      tick: working.tick,
+      sequence: 0,
+      phase: 'combat',
+      shooter: { kind: 'unit', id: observed.id, owner: observed.owner, subtype: observed.unitType },
+      target: identity,
+      from: { ...origin },
+      to: { ...aim },
+      damage,
+      healthBefore,
+      healthAfter: direct.health,
+      healthLost: Math.max(0, healthBefore) - Math.max(0, direct.health),
+      lethal,
+      killsBefore,
+      readyAtTick: observed.readyAtTick,
+      cooldown: statsOf(statsTable, observed.owner).units[observed.unitType].cooldownTicks,
+    });
+  }
 
   // Накрытие опознаётся по оружию, а не по типу юнита: разряд и площадь —
   // одно и то же оружие, и раздавать их порознь было бы двумя правилами

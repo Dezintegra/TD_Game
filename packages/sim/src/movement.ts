@@ -7,6 +7,7 @@
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   STRUCTURE_STATS,
+  UnitType,
   directionTowards,
   onRuleTuningApplied,
 } from '@td/shared';
@@ -19,6 +20,8 @@ import {
   unitElevation,
 } from './combat.js';
 import type { CombatIndices } from './combat.js';
+import { emitCombatObservation } from './combat-observer.js';
+import type { AssaultMotion } from './combat-observer.js';
 import { NO_STRUCTURE } from './occupancy.js';
 import { UNREACHABLE, bestStep } from './navigation.js';
 import { statsOf } from './stats.js';
@@ -134,6 +137,27 @@ export const moveUnits = (
     const elevation = unitElevation(unit.unitType);
 
     const target = targets.get(unit.owner);
+    const motion: AssaultMotion | undefined =
+      working.observation !== undefined && unit.unitType === UnitType.Assault
+        ? {
+            type: 'assault-motion',
+            tick: working.tick,
+            sequence: 0,
+            phase: 'movement',
+            unit: { kind: 'unit', id: unit.id, owner: unit.owner, subtype: unit.unitType },
+            stance: stances.get(unit.owner) ?? AttackStance.Breakthrough,
+            targetStructure: target?.id ?? null,
+            range: baseline.range,
+            readyAtTick: unit.readyAtTick,
+            cooldown: baseline.cooldownTicks,
+            before: { ...origin },
+            after: { ...origin },
+            reason: 'no-navigation',
+            witness: null,
+            distanceSquared: null,
+            visible: null,
+          }
+        : undefined;
     if (
       target !== undefined &&
       // Расстояние до основания, а не до центра: у базы основание три
@@ -147,6 +171,22 @@ export const moveUnits = (
       seesStructure(working, elevation.structures, origin, target)
     ) {
       // Цель в радиусе и на линии огня — дальше идти незачем.
+      if (motion !== undefined) {
+        motion.reason = 'assigned-target';
+        motion.witness = {
+          kind: 'structure',
+          id: target.id,
+          owner: target.owner,
+          subtype: target.kind,
+        };
+        motion.distanceSquared = squaredDistanceToFootprint(
+          unit,
+          target.cell,
+          STRUCTURE_STATS[target.kind].footprintRadius,
+        );
+        motion.visible = true;
+        emitCombatObservation(working, motion);
+      }
       continue;
     }
 
@@ -170,7 +210,21 @@ export const moveUnits = (
     // её сломать.
     if (
       stances.get(unit.owner) === AttackStance.Engage &&
-      (hasHostileInSight(working, indices.units, unit.owner, origin, baseline.range) ||
+      (hasHostileInSight(
+        working,
+        indices.units,
+        unit.owner,
+        origin,
+        baseline.range,
+        motion === undefined
+          ? undefined
+          : (kind, id, owner, subtype, distance) => {
+              motion.reason = 'hostile';
+              motion.witness = { kind, id, owner, subtype };
+              motion.distanceSquared = distance;
+              motion.visible = true;
+            },
+      ) ||
         hasArmedStructureInSight(
           working,
           indices.structures,
@@ -178,13 +232,25 @@ export const moveUnits = (
           origin,
           baseline.range,
           elevation.structures,
+          motion === undefined
+            ? undefined
+            : (kind, id, owner, subtype, distance) => {
+                motion.reason = 'armed-structure';
+                motion.witness = { kind, id, owner, subtype };
+                motion.distanceSquared = distance;
+                motion.visible = true;
+              },
         ))
     ) {
+      if (motion !== undefined) emitCombatObservation(working, motion);
       continue;
     }
 
     const field = working.nav[unit.owner];
-    if (field === undefined) continue;
+    if (field === undefined) {
+      if (motion !== undefined) emitCombatObservation(working, motion);
+      continue;
+    }
 
     const cell = cellAt(unit);
 
@@ -202,16 +268,45 @@ export const moveUnits = (
       cell,
       deadEnd,
     );
-    if (step.cell < 0) continue;
+    if (step.cell < 0) {
+      if (motion !== undefined) {
+        motion.reason = 'no-step';
+        emitCombatObservation(working, motion);
+      }
+      continue;
+    }
 
     if (step.structureIndex !== NO_STRUCTURE) {
       // Дорогу перегородила разрушимая постройка. Стоим и ломаем её —
       // выбор цели на этапе стрельбы увидит этот индекс.
       unit.blockedBy = step.structureIndex;
+      if (motion !== undefined) {
+        motion.reason = 'obstacle';
+        const obstacle = working.structures[step.structureIndex];
+        if (obstacle !== undefined) {
+          motion.witness = {
+            kind: 'structure',
+            id: obstacle.id,
+            owner: obstacle.owner,
+            subtype: obstacle.kind,
+          };
+          motion.distanceSquared = squaredDistanceToFootprint(
+            unit,
+            obstacle.cell,
+            STRUCTURE_STATS[obstacle.kind].footprintRadius,
+          );
+        }
+        emitCombatObservation(working, motion);
+      }
       continue;
     }
 
-    moveUnitTowards(working, unit, cellCentre(step.cell), baseline.speed);
+    const moved = moveUnitTowards(working, unit, cellCentre(step.cell), baseline.speed);
+    if (motion !== undefined) {
+      motion.reason = moved ? 'step' : 'occupancy';
+      motion.after = { x: unit.x, y: unit.y };
+      emitCombatObservation(working, motion);
+    }
   }
 };
 
@@ -220,13 +315,13 @@ const moveUnitTowards = (
   unit: WorkingUnit,
   towards: Vec2,
   speed: number,
-): void => {
+): boolean => {
   const next = advance(unit, towards, speed);
 
   // Страховка от прохода сквозь постройку, появившуюся после последнего
   // пересчёта поля: поле может отставать на несколько тиков, занятость —
   // никогда.
-  if (isBlocked(working, next.x, next.y)) return;
+  if (isBlocked(working, next.x, next.y)) return false;
 
   // Машина разворачивается по ходу шага — и только если шаг состоялся:
   // упёршийся в стену юнит смотрит туда же, куда смотрел. Румб берётся
@@ -238,6 +333,7 @@ const moveUnitTowards = (
 
   unit.x = clamp(next.x, MAP_MAX_X);
   unit.y = clamp(next.y, MAP_MAX_Y);
+  return true;
 };
 
 /**

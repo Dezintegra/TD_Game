@@ -16,3 +16,10 @@ export * from './world.js';
 export * from './stats.js';
 export * from './step.js';
 export * from './checksum.js';
+export type {
+  CombatObserver,
+  CombatObservation,
+  CombatIdentity,
+  AssaultMotion,
+  AssaultPosition,
+} from './combat-observer.js';

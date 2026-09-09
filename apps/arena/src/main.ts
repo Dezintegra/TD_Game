@@ -12,6 +12,9 @@ import { replayAndReport } from './replay.js';
 import { ingestFile, isLogName, openDatabase } from './ingest.js';
 import { reportBatch, reportMatch } from './report.js';
 import { printTempo } from './tempo.js';
+import { compareAssaultDatabases, assaultReportMarkdown } from './assault-report.js';
+import { parseAssaultOptions, assaultWorkerArgs, assaultMatchOptions } from './assault-options.js';
+import type { AssaultOptions } from './assault-options.js';
 
 /**
  * Арена — инструмент разработки, а не часть игры.
@@ -27,13 +30,16 @@ const USAGE = `
 
   arena run [--matches N] [--seed N] [--profiles A,B] [--jobs N] [--seconds N]
             [--income K] [--speed K] [--tower-hp K] [--base-hp K]
-            [--radius K] [--map K]
+            [--radius K] [--map K] [--assault-range 0.5|1]
+            [--trace-assault-seeds N,N,...]
       Прогнать N матчей компьютер-против-компьютера. Матчи независимы
       и считаются параллельно по числу ядер.
 
-      Шесть последних ключей — множители правил на время прогона: базовый
+      Семь множителей правил на время прогона: базовый
       доход, скорость машин, прочность стреляющих построек, прочность базы,
-      личный радиус машины и сторона карты. Единица означает «как задумано».
+      личный радиус машины, сторона карты и дальность штурмовика.
+      Единица означает «как задумано». Дальность допускает только 0.5/1.
+      Трасса включается только для перечисленных seed текущей пачки.
       Пересборки они не требуют, но и в игру не попадают: это инструмент
       замера.
 
@@ -61,6 +67,10 @@ const USAGE = `
 
   arena report [идентификатор матча]
       Напечатать сводку. Без аргумента — по всей пачке.
+
+  arena assault-report --before <sqlite> --after <sqlite> [--format markdown]
+      Сравнить опыт с дальностью 2/4 на общей ревизии попарно по seed.
+      По умолчанию печатает JSON; базы открываются только для чтения.
 
 Логи и база лежат в .matchlog/ в корне репозитория. Записи матчей,
 сыгранных людьми, кладёт туда же игровой сервер, запущенный с MATCHLOG=1.
@@ -110,8 +120,15 @@ const flagsOf = (argv: readonly string[]): ReadonlyMap<string, string> => {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === undefined || !token.startsWith('--')) continue;
+    if (token.startsWith('--assault-range=') || token.startsWith('--trace-assault-seeds='))
+      throw new Error('diagnostic flags require a separate value');
 
     const next = argv[index + 1];
+    if (
+      (token === '--assault-range' || token === '--trace-assault-seeds') &&
+      flags.has(token.slice(2))
+    )
+      throw new Error(`duplicate ${token}`);
     flags.set(token.slice(2), next === undefined || next.startsWith('--') ? 'true' : next);
   }
 
@@ -147,6 +164,7 @@ const TUNING_FLAGS: Readonly<Record<string, keyof RuleTuning>> = {
   'base-hp': 'baseHealth',
   radius: 'unitRadius',
   map: 'map',
+  'assault-range': 'assaultRange',
 };
 
 /** Собрать множители из ключей. Пустой ответ означает «правила как задуманы». */
@@ -170,6 +188,7 @@ const tuningOf = (flags: ReadonlyMap<string, string>): Partial<RuleTuning> => {
  */
 const tuningArgs = (tuning: Partial<RuleTuning>): readonly string[] =>
   Object.entries(TUNING_FLAGS).flatMap(([flag, field]) => {
+    if (field === 'assaultRange') return [];
     const value = tuning[field];
     return value === undefined ? [] : [`--${flag}`, String(value)];
   });
@@ -181,11 +200,17 @@ const tuningArgs = (tuning: Partial<RuleTuning>): readonly string[] =>
 const matchIdOf = (seed: number, profiles: readonly string[]): string =>
   `s${String(seed)}-${profiles.join('-vs-')}`;
 
-const runOne = (seed: number, profiles: readonly string[], seconds: number | undefined): void => {
+const runOne = (
+  seed: number,
+  profiles: readonly string[],
+  seconds: number | undefined,
+  diagnostic: AssaultOptions,
+): void => {
   const matchId = matchIdOf(seed, profiles);
   const log = createLogWriter(logPathFor(LOG_DIR, matchId));
 
   const result = runMatch({
+    ...assaultMatchOptions(diagnostic, seed),
     matchId,
     worldSeed: seed,
     // Seed противника отличается от seed мира: иначе манера игры была бы
@@ -219,7 +244,7 @@ const chunked = (seeds: readonly number[], jobs: number): readonly (readonly num
 
 const spawnWorker = (self: string, args: readonly string[]): Promise<void> =>
   new Promise((done, fail) => {
-    const child = spawn(process.execPath, [self, ...args], { stdio: 'inherit' });
+    const child = spawn(process.execPath, [self, ...args], { stdio: 'inherit', shell: false });
 
     child.on('error', fail);
     child.on('exit', (code) => {
@@ -238,11 +263,13 @@ const runBatch = async (flags: ReadonlyMap<string, string>): Promise<void> => {
   const jobs = Math.max(1, numberFlag(flags, 'jobs', Math.max(1, availableParallelism() - 1)));
 
   const tuning = tuningOf(flags);
+  const seeds = Array.from({ length: matches }, (_unused, index) => firstSeed + index);
+  const diagnostic = parseAssaultOptions(flags, seeds);
+  if (diagnostic.enabled) tuning.assaultRange = diagnostic.range;
   applyRuleTuning(tuning);
 
   mkdirSync(LOG_DIR, { recursive: true });
 
-  const seeds = Array.from({ length: matches }, (_unused, index) => firstSeed + index);
   process.stdout.write(
     `прогон ${String(matches)} матчей, ${String(jobs)} процессов, ` +
       `профили ${profiles.join(' против ')}\n`,
@@ -260,7 +287,7 @@ const runBatch = async (flags: ReadonlyMap<string, string>): Promise<void> => {
   const started = Date.now();
 
   if (jobs === 1) {
-    for (const seed of seeds) runOne(seed, profiles, seconds);
+    for (const seed of seeds) runOne(seed, profiles, seconds, diagnostic);
   } else {
     // Матчи независимы, разделяемого состояния нет, поэтому параллелизм
     // сводится к раздаче seed по процессам: каждый пишет свой файл,
@@ -277,6 +304,7 @@ const runBatch = async (flags: ReadonlyMap<string, string>): Promise<void> => {
           profiles.join(','),
           ...(seconds === undefined ? [] : ['--seconds', String(seconds)]),
           ...tuningArgs(tuning),
+          ...assaultWorkerArgs(diagnostic, chunk),
         ]),
       ),
     );
@@ -333,6 +361,18 @@ const main = async (): Promise<void> => {
   const flags = flagsOf(rest);
 
   switch (command) {
+    case 'assault-report': {
+      const before = flags.get('before'),
+        after = flags.get('after');
+      if (!before || !after) throw new Error('assault-report requires --before and --after');
+      const result = compareAssaultDatabases(before, after);
+      process.stdout.write(
+        flags.get('format') === 'markdown'
+          ? assaultReportMarkdown(result)
+          : `${JSON.stringify(result, null, 2)}\n`,
+      );
+      return;
+    }
     case 'run':
       await runBatch(flags);
       return;
@@ -342,12 +382,13 @@ const main = async (): Promise<void> => {
       const seeds = (flags.get('seeds') ?? '').split(',').map(Number).filter(Number.isFinite);
       const profiles = (flags.get('profiles') ?? DEFAULT_PROFILE_ID).split(',');
       const seconds = flags.has('seconds') ? numberFlag(flags, 'seconds', 0) : undefined;
+      const diagnostic = parseAssaultOptions(flags, seeds);
 
       // Множители применяются и здесь: дочерний процесс — отдельная память
       // со своими копиями всех таблиц, и правила родителя ему не наследуются.
       applyRuleTuning(tuningOf(flags));
 
-      for (const seed of seeds) runOne(seed, profiles, seconds);
+      for (const seed of seeds) runOne(seed, profiles, seconds, diagnostic);
       return;
     }
 

@@ -8,6 +8,7 @@ const TUNING_FLAGS = new Set([
   '--base-hp',
   '--radius',
   '--map',
+  '--assault-range',
 ]);
 const DECIMAL = /^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
 
@@ -28,6 +29,8 @@ export function parseTuningArgs(input = '') {
       );
     }
     seen.add(flag);
+    if (flag === '--assault-range' && Number(value) !== 0.5 && Number(value) !== 1)
+      throw new Error('tuning_args: --assault-range допускает только 0.5/1');
   }
   return tokens;
 }
@@ -37,6 +40,24 @@ export function buildArenaArgs(env) {
   if (env.PROFILES) args.push('--profiles', env.PROFILES);
   if (env.SECONDS_LIMIT) args.push('--seconds', env.SECONDS_LIMIT);
   args.push(...parseTuningArgs(env.TUNING_ARGS));
+  const trace = env.TRACE_ASSAULT_SEEDS?.trim() ?? '';
+  if (trace) {
+    const raw = trace.split(',');
+    if (raw.some((value) => !/^[0-9]+$/.test(value)))
+      throw new Error('trace_assault_seeds: invalid seed');
+    const seeds = raw.map(Number),
+      first = Number(env.SEED),
+      count = Number(env.MATCHES);
+    if (
+      !Number.isSafeInteger(first) ||
+      !Number.isSafeInteger(count) ||
+      count <= 0 ||
+      new Set(seeds).size !== seeds.length ||
+      seeds.some((seed) => !Number.isSafeInteger(seed) || seed < first || seed >= first + count)
+    )
+      throw new Error('trace_assault_seeds: duplicate or outside batch');
+    args.push('--trace-assault-seeds', seeds.join(','));
+  }
   return args;
 }
 

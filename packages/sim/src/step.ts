@@ -10,9 +10,12 @@ import {
   asPlayerId,
   directionTowards,
   distanceSquared,
+  isArmedStructure,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { applyCommand } from './apply.js';
+import { observePostCrowd, observeEndTick, observeTerminal } from './combat-observer.js';
+import type { CombatObserver } from './combat-observer.js';
 import { TargetKind, buildCombatIndices, damageEntity, resolveCombat } from './combat.js';
 import { separateUnits } from './crowd.js';
 import { cellCentre } from './map.js';
@@ -49,8 +52,13 @@ import type { WorldState } from './world.js';
  * Меняете его — обновляйте эталон в determinism.golden.match.test.ts тем же
  * коммитом, как требует CLAUDE.md.
  */
-export const step = (state: WorldState, commands: readonly Command[]): WorldState => {
+export const step = (
+  state: WorldState,
+  commands: readonly Command[],
+  observer?: CombatObserver,
+): WorldState => {
   const working = toWorking(state);
+  if (observer !== undefined) working.observation = { observer, sequence: 0 };
 
   // Матч окончен — мир замирает. Тик всё равно растёт: часы идут,
   // даже когда играть уже не во что.
@@ -65,6 +73,7 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
       applyCommand(working, command, index);
     });
 
+    observeEndTick(working);
     return fromWorking(working);
   }
 
@@ -79,6 +88,7 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
   const stats = allPlayerStats(working.players);
 
   advanceConstruction(working, stats);
+  if (working.observation !== undefined) working.observation.phase = 'demolition';
   advanceDemolition(working, stats);
   respawnGenerals(working, stats);
   runProduction(working, stats);
@@ -109,8 +119,11 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
   // Стреляй он раньше, выстрел уходил бы туда, где машины уже нет,
   // а накрытие считалось бы по строю, которого на поле не осталось.
   separateUnits(working, stats);
+  observePostCrowd(working);
 
+  if (working.observation !== undefined) working.observation.phase = 'combat';
   resolveCombat(working, stats, buildCombatIndices(working));
+  if (working.observation !== undefined) working.observation.phase = 'nuke';
   detonateNukes(working, stats);
 
   if (working.structuresDirty) {
@@ -120,6 +133,7 @@ export const step = (state: WorldState, commands: readonly Command[]): WorldStat
   }
 
   resolveVictory(working);
+  observeEndTick(working);
 
   return fromWorking(working);
 };
@@ -214,6 +228,15 @@ const advanceDemolition = (working: Working, stats: readonly PlayerStats[]): voi
 
     if (working.tick >= structure.demolishAtTick) {
       structure.alive = false;
+      if (working.observation !== undefined && isArmedStructure(structure.kind)) {
+        observeTerminal(
+          working,
+          { kind: 'structure', id: structure.id, owner: structure.owner, subtype: structure.kind },
+          structure.health,
+          structure.health,
+          'demolition',
+        );
+      }
       working.structuresDirty = true;
       continue;
     }
