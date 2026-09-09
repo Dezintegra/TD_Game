@@ -1,8 +1,35 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  rmdirSync,
+  linkSync,
+  symlinkSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { analyzeDatabases, MATCH_FIELDS, METRICS, validateConfig } from './paired-cutoffs.mjs';
+import {
+  analyzeDatabases,
+  MATCH_FIELDS,
+  METRICS,
+  validateConfig,
+  parseArgs,
+} from './paired-cutoffs.mjs';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+function removeFixture(path, remove = unlinkSync) {
+  try {
+    remove(path);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
 const source = {
   db: 'unused.sqlite',
   run: 'run-1',
@@ -219,6 +246,135 @@ describe('paired cutoff populations', () => {
         reason: 'нет общих доживших миров',
       });
     }));
+});
+
+describe('paired cutoff CLI', () => {
+  it.each([
+    [],
+    ['--config'],
+    ['--unknown', 'x'],
+    ['--config', 'x', '--config', 'y'],
+    ['--config', 'x', '--out', 'x', '--out', 'y'],
+  ])('rejects malformed arguments %j', (...args) => {
+    expect(() => parseArgs(args)).toThrow();
+  });
+  it('reports the known pair and n, preserves inputs, rejects aliases and imports without action', () => {
+    const root = fileURLToPath(new URL('../../.matchlog/', import.meta.url));
+    mkdirSync(root, { recursive: true });
+    const dir = mkdtempSync(join(root, '0096-test-'));
+    const paths = {
+      a: join(dir, 'a.sqlite'),
+      b: join(dir, 'b.sqlite'),
+      config: join(dir, 'config.json'),
+      out: join(dir, 'out.json'),
+      importer: join(dir, 'import.mjs'),
+      link: join(dir, 'alias'),
+      junction: join(dir, 'dir-alias'),
+    };
+    const script = fileURLToPath(new URL('./paired-cutoffs.mjs', import.meta.url));
+    const run = (...args) =>
+      spawnSync(process.execPath, [script, '--config', paths.config, ...args], {
+        encoding: 'utf8',
+      });
+    const cfg = config();
+    cfg.before.db = 'a.sqlite';
+    cfg.after.db = 'b.sqlite';
+    const saveConfig = () => writeFileSync(paths.config, JSON.stringify(cfg));
+    const hash = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+    try {
+      withPair((a, b) => {
+        reversal(a, b);
+        a.prepare('VACUUM INTO ?').run(paths.a);
+        b.prepare('VACUUM INTO ?').run(paths.b);
+      }, cfg);
+      saveConfig();
+      const originals = [paths.a, paths.b, paths.config].map(hash);
+      const markdown = run();
+      expect(markdown.status).toBe(0);
+      expect(markdown.stdout).toContain(
+        '| 300 | towers | объекты, включая недострой | 0 | 2 | 2 | 1 | 1 | 10 | 11 | 1 |',
+      );
+      expect(markdown.stdout).toContain(
+        'Внешние сведения (не проверены по SQLite): run, ticksPerSecond, capSeconds',
+      );
+      expect(markdown.stdout).toContain('Проверены по SQLite: sha, profiles, seedStart, matches');
+      expect(markdown.stdout).toContain('before-ended-before-cutoff');
+      expect(markdown.stdout).toContain('after/1: missing-or-stale-sample');
+      expect(markdown.stdout).toContain('не доказывает причинность');
+      expect(run().stdout).toBe(markdown.stdout);
+      expect(run('--out', paths.out).status).toBe(0);
+      const jsonText = readFileSync(paths.out, 'utf8');
+      const result = JSON.parse(jsonText);
+      expect(metric(result)).toMatchObject({ n: 1, meanA: 10, meanB: 11, meanDelta: 1 });
+      expect(result.sources.before.databaseSha256).toBe(originals[0]);
+      expect(result.sources.after.databaseSha256).toBe(originals[1]);
+      expect(result.sources.before.db).toBe(paths.a);
+      expect(run('--out', paths.out).status).toBe(0);
+      expect(readFileSync(paths.out, 'utf8')).toBe(jsonText);
+      for (const input of [paths.a, paths.b, paths.config]) {
+        for (const target of [input, join(dir, '.', input.slice(dir.length + 1))]) {
+          const denied = run('--out', target);
+          expect(denied.status).toBe(1);
+          expect(denied.stdout).toBe('');
+          expect(denied.stderr).toContain('must not overwrite');
+        }
+        linkSync(input, paths.link);
+        expect(run('--out', paths.link).stderr).toContain('must not overwrite');
+        unlinkSync(paths.link);
+      }
+      // Junction на Windows не требует права создания символьных ссылок на файлы.
+      symlinkSync(dir, paths.junction, process.platform === 'win32' ? 'junction' : 'dir');
+      expect(run('--out', join(paths.junction, 'a.sqlite')).stderr).toContain('must not overwrite');
+      if (process.platform === 'win32') rmdirSync(paths.junction);
+      else unlinkSync(paths.junction);
+      expect([paths.a, paths.b, paths.config].map(hash)).toEqual(originals);
+      writeFileSync(
+        paths.importer,
+        `import ${JSON.stringify(new URL('./paired-cutoffs.mjs', import.meta.url).href)};\n`,
+      );
+      const imported = spawnSync(
+        process.execPath,
+        [paths.importer, '--config', 'missing.json', '--out', paths.a],
+        { encoding: 'utf8' },
+      );
+      expect(imported.status).toBe(0);
+      expect(imported.stdout).toBe('');
+      expect(imported.stderr).not.toContain('paired-cutoffs:');
+      expect(hash(paths.a)).toBe(originals[0]);
+      cfg.cutoffsSeconds = [1201];
+      saveConfig();
+      expect(run().stdout).toContain('нет общих доживших миров');
+      expect(run('--out', paths.out).status).toBe(0);
+      expect(metric(JSON.parse(readFileSync(paths.out, 'utf8')), 1201)).toMatchObject({
+        n: 0,
+        meanA: null,
+        meanB: null,
+        meanDelta: null,
+      });
+      cfg.before.sha = 'unexpected';
+      saveConfig();
+      const invalid = run();
+      expect(invalid.status).toBe(1);
+      expect(invalid.stdout).toBe('');
+      expect(invalid.stderr).toContain('before:');
+      cfg.before.sha = 'historic';
+      cfg.cutoffsSeconds = [300];
+      cfg.after = { ...cfg.before };
+      saveConfig();
+      expect(run('--out', paths.out).status).toBe(0);
+      expect(metric(JSON.parse(readFileSync(paths.out, 'utf8')))).toMatchObject({
+        n: 2,
+        meanDelta: 0,
+      });
+      expect([paths.a, paths.b].map(hash)).toEqual(originals.slice(0, 2));
+    } finally {
+      removeFixture(paths.junction, process.platform === 'win32' ? rmdirSync : unlinkSync);
+      for (const key of ['link', 'a', 'b', 'config', 'out', 'importer']) {
+        removeFixture(paths[key]);
+      }
+      rmdirSync(dir);
+    }
+  });
 });
 
 describe('source validation', () => {

@@ -1,4 +1,8 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync, existsSync, realpathSync, statSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Vite 5 не распознаёт прямой импорт нового встроенного SQLite.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
@@ -316,7 +320,13 @@ export function analyzeFiles(config) {
   try {
     const after = new DatabaseSync(config.after.db, { readOnly: true });
     try {
-      return analyzeDatabases(before, after, config);
+      const result = analyzeDatabases(before, after, config);
+      for (const name of ['before', 'after']) {
+        result.sources[name].databaseSha256 = createHash('sha256')
+          .update(readFileSync(config[name].db))
+          .digest('hex');
+      }
+      return result;
     } finally {
       after.close();
     }
@@ -324,3 +334,165 @@ export function analyzeFiles(config) {
     before.close();
   }
 }
+
+const display = (value) =>
+  value === null
+    ? 'нет данных'
+    : typeof value === 'number'
+      ? String(Number(value.toFixed(4)))
+      : String(value).replaceAll('|', '\\|').replaceAll('\r', ' ').replaceAll('\n', ' ');
+const table = (headers, rows) =>
+  [headers, headers.map(() => '---'), ...rows]
+    .map((row) => `| ${row.map(display).join(' | ')} |`)
+    .join('\n');
+
+export function formatMarkdown(result) {
+  const lines = [
+    '# Парное сравнение отсечек',
+    'Направление разности: B−A (after−before). Результат относится только к совместно дожившим мирам, не ко всей пачке, и сам по себе не доказывает причинность. Неизменность генератора мира и реализации профилей между SHA проверяет автор интерпретации.',
+    'n — число годных пар миров данной метрики и стороны. Все три средних используют эти же пары. commonSurvivors — общее дожившее пересечение до проверки снимков. n сторон может различаться; both требует четыре годных значения, усредняет стороны внутри мира и затем миры с равным весом.',
+    'Снимок: последний не позже отсечки/footer, не старше секунды; дубликат на выбранном тике недоступен. Ноль — наблюдение, пропуск — нет данных. Доли general_alive/path_to_enemy относятся к точке, не ко времени. towers включает недострой. Единицы исторической базы не пересчитываются современными константами.',
+  ];
+  for (const [name, label] of [
+    ['before', 'A'],
+    ['after', 'B'],
+  ]) {
+    const s = result.sources[name];
+    lines.push(
+      `## ${label}: ${display(s.run)}`,
+      table(
+        [
+          'db',
+          'SHA',
+          'SQLite SHA256',
+          'profiles 0 / 1',
+          'seedStart',
+          'matches',
+          'ticksPerSecond',
+          'capSeconds',
+        ],
+        [
+          [
+            s.db,
+            s.sha,
+            s.databaseSha256 ?? 'in-memory',
+            s.profiles.join(' / '),
+            s.seedStart,
+            s.matches,
+            s.ticksPerSecond,
+            s.capSeconds,
+          ],
+        ],
+      ),
+      `Внешние сведения (не проверены по SQLite): ${s.externalParameters.join(', ')}. Проверены по SQLite: ${s.verifiedParameters.join(', ')}.`,
+    );
+  }
+  lines.push(
+    '## Величины на общих мирах',
+    table(
+      [
+        'секунды',
+        'метрика',
+        'единицы',
+        'сторона',
+        'survivorBefore',
+        'survivorAfter',
+        'commonSurvivors',
+        'n',
+        'A',
+        'B',
+        'B−A',
+        'причины пропусков',
+      ],
+      result.cutoffs.flatMap((cutoff) =>
+        cutoff.metrics.map((m) => {
+          const reasons = new Map();
+          for (const pair of m.excluded)
+            for (const r of pair.reasons) {
+              const key = `${r.source}/${r.player}: ${r.reason}`;
+              reasons.set(key, (reasons.get(key) ?? 0) + 1);
+            }
+          return [
+            cutoff.seconds,
+            m.metric,
+            m.unit,
+            m.side,
+            cutoff.survivorBefore,
+            cutoff.survivorAfter,
+            cutoff.commonSurvivors,
+            m.n,
+            m.meanA,
+            m.meanB,
+            m.meanDelta,
+            [m.reason, ...[...reasons].map(([key, n]) => `${key} (${n})`)]
+              .filter(Boolean)
+              .join('; ') || '—',
+          ];
+        }),
+      ),
+    ),
+  );
+  lines.push(
+    '## Исключения миров',
+    table(
+      ['секунды', 'world_seed', 'причины'],
+      result.cutoffs.flatMap((c) =>
+        c.excluded.map((w) => [c.seconds, w.world_seed, w.reasons.join('; ')]),
+      ),
+    ),
+    'Полная опись миров, выбранные тики, значения и причины исключений каждой метрики доступны в JSON (--out).',
+  );
+  return lines.join('\n\n') + '\n';
+}
+
+export function parseArgs(args) {
+  const options = {};
+  for (let i = 0; i < args.length; i += 2) {
+    const name = args[i];
+    const value = args[i + 1];
+    if (
+      !['--config', '--out'].includes(name) ||
+      name in options ||
+      !nonempty(value) ||
+      value.startsWith('--')
+    )
+      throw new Error(`Invalid argument ${name}`);
+    options[name] = value;
+  }
+  if (!options['--config']) throw new Error('Missing --config');
+  return { config: options['--config'], out: options['--out'] };
+}
+
+function protectInputs(out, inputs) {
+  if (!out || !existsSync(out)) return;
+  const outputStat = statSync(out, { bigint: true });
+  for (const input of inputs) {
+    const inputStat = statSync(input, { bigint: true });
+    if (
+      realpathSync(input) === realpathSync(out) ||
+      (inputStat.dev === outputStat.dev && inputStat.ino === outputStat.ino)
+    )
+      throw new Error('--out must not overwrite an input database or config');
+  }
+}
+
+export function runCli(args = process.argv.slice(2), io = process) {
+  try {
+    const options = parseArgs(args);
+    const configPath = resolve(options.config);
+    const config = validateConfig(JSON.parse(readFileSync(configPath, 'utf8')));
+    for (const name of ['before', 'after'])
+      config[name] = { ...config[name], db: resolve(dirname(configPath), config[name].db) };
+    protectInputs(options.out, [configPath, config.before.db, config.after.db]);
+    const result = analyzeFiles(config);
+    if (options.out) writeFileSync(options.out, JSON.stringify(result, null, 2) + '\n');
+    else io.stdout.write(formatMarkdown(result));
+    return 0;
+  } catch (error) {
+    io.stderr.write(`paired-cutoffs: ${error.message}\n`);
+    return 1;
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+  process.exitCode = runCli();
