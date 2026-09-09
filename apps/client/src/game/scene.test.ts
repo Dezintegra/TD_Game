@@ -15,7 +15,7 @@ import { cellCentre, cellIndex, cellX, cellY, createWorld } from '@td/sim';
 import type { GameMap, WorldState } from '@td/sim';
 import { createScene } from './scene.js';
 import type { RendererHost, Scene } from './scene.js';
-import { TERRAIN_DIAGONAL_COUNT } from './terrain.js';
+import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid } from './terrain.js';
 import { mountRockDiagonal } from './relief-render.js';
 import type * as TerrainModule from './terrain.js';
 import type * as ReliefModule from './relief-render.js';
@@ -38,6 +38,7 @@ vi.mock('pixi.js', () => {
   }
   class Container {
     children: Container[] = [];
+    visible = true;
     position = new Point();
     scale = new Point(1, 1);
     x = 0;
@@ -60,7 +61,15 @@ vi.mock('pixi.js', () => {
 });
 vi.mock('./terrain.js', async (importOriginal) => ({
   ...(await importOriginal<typeof TerrainModule>()),
-  drawGround: vi.fn(),
+  drawField: vi.fn(),
+  drawGrid: vi.fn(),
+}));
+vi.mock('./clouds-render.js', () => ({
+  createCloudLayer: () => ({
+    layer: new Container(),
+    update: vi.fn(),
+    destroy: vi.fn(),
+  }),
 }));
 vi.mock('./relief-render.js', async (importOriginal) => ({
   ...(await importOriginal<typeof ReliefModule>()),
@@ -109,6 +118,7 @@ const stableFrames = (
   world: WorldState,
   stimulate: (frame: number) => void,
   observe: (frame: number) => void = () => undefined,
+  intent: OverlayIntent = INTENT,
 ): void => {
   const baseline = scene.terrainRebuildCount;
   const baked = vi.mocked(mountRockDiagonal).mock.calls.length;
@@ -118,7 +128,7 @@ const stableFrames = (
     stimulate(frame);
     scene.setMap(world.map, LOCAL_PLAYER);
     expect(scene.bakeTerrain(0)).toBe(false);
-    scene.render(world, LOCAL_PLAYER, INTENT);
+    scene.render(world, LOCAL_PLAYER, intent);
     observe(frame);
     expect(scene.terrainRebuildCount).toBe(baseline);
     expect(mountRockDiagonal).toHaveBeenCalledTimes(baked);
@@ -190,6 +200,36 @@ const builtScene = (): { scene: Scene; map: GameMap } => {
 };
 
 describe('инвалидация территории настоящей сцены', () => {
+  it('сто переключений строительства меняют видимость сетки без перестроения', () => {
+    const { scene, map } = builtScene();
+    expect(drawField).toHaveBeenCalledTimes(1);
+    expect(drawGrid).toHaveBeenCalledTimes(1);
+    // Берём именно слой, построенный сценой, не подменяя настоящий showGrid.
+    const grid = vi.mocked(drawGrid).mock.calls[0]![0];
+    const field = vi.mocked(drawField).mock.calls[0]![0];
+    expect(grid).not.toBe(field);
+    expect(grid.visible).toBe(false);
+    const intent = { ...INTENT };
+    const modes = new Set<boolean>();
+    stableFrames(
+      scene,
+      frameWorld(map),
+      (frame) => {
+        intent.building = frame % 2 === 0;
+        expect(grid.visible).toBe(!intent.building);
+        modes.add(intent.building);
+      },
+      () => {
+        expect(grid.visible).toBe(intent.building);
+        expect(field.visible).toBe(true);
+        expect(drawField).toHaveBeenCalledTimes(1);
+        expect(drawGrid).toHaveBeenCalledTimes(1);
+      },
+      intent,
+    );
+    expect(modes).toEqual(new Set([true, false]));
+  });
+
   it('движение камеры сто кадров не перестраивает территорию', () => {
     const { scene, map } = builtScene();
     scene.centreOnCell(cellIndex(30, 30));
