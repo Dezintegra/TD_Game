@@ -2,6 +2,26 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isLocalRun, runSourceProblem } from './run-source.mjs';
+import { prepareDeploySnapshot } from './deploy-snapshot.mjs';
+import { prepareCodexPerfFiles } from './codex-perf-files.mjs';
+import { providerOf } from './provider.mjs';
+
+/** Общая композиция запуска: ошибки источника должны предшествовать подготовке ACL. */
+export function createAssignmentPreparer(root, config, ops = {}) {
+  return (assignment, previous) => {
+    const prepared = prepareBenchmarkSource(
+      root,
+      (ops.prepareDeploySnapshot ?? prepareDeploySnapshot)(root, config, assignment, previous),
+      ops,
+    );
+    if (providerOf(config) === 'codex')
+      (ops.prepareCodexPerfFiles ?? prepareCodexPerfFiles)(
+        root,
+        prepared.path ? resolve(root, prepared.path) : root,
+      );
+    return prepared;
+  };
+}
 
 function git(cwd, ...args) {
   return execFileSync('git', ['-C', cwd, ...args], {
