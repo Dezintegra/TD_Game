@@ -8,6 +8,10 @@ import {
   completeTokenLaunch,
   taskTokens,
   taskTokenStatus,
+  recoverTokenLaunch,
+  acceptedTokenMinimum,
+  tokenAccountingAllowed,
+  tokenAccountingNote,
 } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
 import { CROSSCUT } from '../config/transitions.mjs';
@@ -236,6 +240,7 @@ export function createSupervisor({
     /** Идентификатор сессии прошлого захода на этот этап, если он был. */
     lastSession: (taskId, stage) => {
       const saved = known[key(taskId, stage)];
+      if (acceptedTokenMinimum(codexUsage.tasks[taskId]?.sessions[saved?.sessionId])) return null;
       return (saved?.provider ?? 'claude') === providerOf(config)
         ? (saved?.sessionId ?? null)
         : null;
@@ -330,7 +335,10 @@ export function createSupervisor({
       const previous = known[key(assignment.taskId, assignment.stage)];
       const compatible = !previous || (previous.provider ?? 'claude') === provider;
       const sessionId =
-        (compatible ? assignment.sessionId : null) ?? (provider === 'claude' ? randomUUID() : null);
+        (compatible &&
+        !acceptedTokenMinimum(codexUsage.tasks[assignment.taskId]?.sessions[assignment.sessionId])
+          ? assignment.sessionId
+          : null) ?? (provider === 'claude' ? randomUUID() : null);
       let command;
       let tokenLimit;
       try {
@@ -730,6 +738,7 @@ export function createSupervisor({
           `дескриптор ${at} записан станцией «${value.live.machine}», а мы «${machine}»: ` +
             'не судим и стираем — номер процесса чужой машины здесь ничего не значит',
         );
+        value.usageRecoveryBlocked = true;
         delete value.live;
         changed = true;
         continue;
@@ -810,6 +819,62 @@ export function createSupervisor({
           : 'срок вышел, но опознать процесс не удалось — оставлен работать',
       );
     }
+    recoverInterruptedUsage();
+  }
+
+  /** Восстановление не порождает модель и не переносит отчёт вместо ревью. */
+  function recoverInterruptedUsage() {
+    if (providerOf(config) !== 'codex' || !readCodexEvidence) return;
+    for (const [at, value] of Object.entries(known)) {
+      const cut = at.lastIndexOf(':');
+      const taskId = at.slice(0, cut);
+      if (
+        value.provider !== 'codex' ||
+        value.live ||
+        value.usageRecoveryBlocked ||
+        children.has(taskId) ||
+        orphans.has(taskId) ||
+        Object.entries(known).some(
+          ([other, item]) => other.startsWith(taskId + ':') && item.live,
+        ) ||
+        reportViews().some((item) => item.taskId === taskId || item.batch?.includes(taskId)) ||
+        pendingAcceptances.size
+      )
+        continue;
+      const task = codexUsage.tasks[taskId];
+      const launches = Object.entries(task?.launches ?? {}).filter(
+        ([, launch]) =>
+          launch.sessionId === value.sessionId &&
+          launch.completed &&
+          launch.reasons.length &&
+          !launch.recovery,
+      );
+      if (launches.length !== 1) continue;
+      try {
+        const evidence = readCodexEvidence({
+          taskId,
+          stage: at.slice(cut + 1),
+          sessionId: value.sessionId,
+          startedAt: value.startedAt,
+          recovery: true,
+        });
+        let changed = false;
+        persistUsage(taskId, (next) => {
+          changed = recoverTokenLaunch(next, taskId, launches[0][0], evidence);
+        });
+        if (changed) usageWriteErrors.delete(taskId);
+        if (changed)
+          log(
+            'Восстановлен расход ' +
+              taskId +
+              ': ' +
+              (tokenAccountingNote(codexUsage, taskId) ||
+                'полный накопитель подтверждён журналом.'),
+          );
+      } catch (error) {
+        log('Не восстановлен расход ' + taskId + ': ' + error.message);
+      }
+    }
   }
 
   /** Сколько миллисекунд идёт процесс. `null` — сверить нечем. */
@@ -828,6 +893,7 @@ export function createSupervisor({
    * и разбор узнают, почему прошлый заход не дал ничего.
    */
   function release(orphan, outcome, why) {
+    if (outcome === 'left' || outcome === 'killed') known[orphan.at].usageRecoveryBlocked = true;
     orphans.delete(orphan.taskId);
     orphanOutcomes.push({
       taskId: orphan.taskId,
@@ -997,7 +1063,7 @@ export function createSupervisor({
         child.taskId,
       );
       const reasons = [...new Set([...answer.usageStatus.reasons, ...status.reasons])];
-      answer.usageError = reasons.length
+      answer.usageError = !tokenAccountingAllowed(status)
         ? `Codex: полнота расхода задачи неизвестна (${reasons.join(', ')})`
         : null;
       if (storageError) answer.usageError = `${answer.usageError}; ${storageError}`;
@@ -1005,7 +1071,7 @@ export function createSupervisor({
         answer.outcome = 'failed';
         answer.why = answer.usageError;
       }
-      answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${child.tokenLimit ?? 'без лимита'} токенов задачи (${child.tokenLimitSource === 'user' ? 'лимит владельца' : 'общий лимит'} при запуске); расход текущего запуска ${answer.usage ? 'известен' : 'неизвестен'}${answer.usageError ? `; ${answer.usageError}` : '; учёт задачи полный'}`;
+      answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${child.tokenLimit ?? 'без лимита'} токенов задачи (${child.tokenLimitSource === 'user' ? 'лимит владельца' : 'общий лимит'} при запуске); расход текущего запуска ${answer.usage ? 'известен' : 'неизвестен'}${answer.usageError ? `; ${answer.usageError}` : tokenAccountingNote(codexUsage, child.taskId) ? '; ' + tokenAccountingNote(codexUsage, child.taskId) : '; учёт задачи полный'}`;
       log(answer.tokenBudget);
     }
     // Отчёт разбирается ЗДЕСЬ, а не там, где он применяется, — потому что
@@ -1221,6 +1287,7 @@ function remembered(value) {
     startedAt: value?.startedAt ?? null,
     ...(value?.provider ? { provider: value.provider } : {}),
     ...(value?.deployment ? { deployment: value.deployment } : {}),
+    ...(value?.usageRecoveryBlocked ? { usageRecoveryBlocked: true } : {}),
   };
   return value?.live ? { ...kept, live: value.live } : kept;
 }
