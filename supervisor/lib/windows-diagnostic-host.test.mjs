@@ -21,6 +21,7 @@ function context() {
       return { root: 'fixture-main', cwd: 'fixture-tree' };
     }),
     verifyFixture: vi.fn(() => ({ control: 'hash' })),
+    sources: vi.fn(() => ({ module: 'hash' })),
     git: vi.fn(() => 'a'.repeat(40)),
     exec: vi.fn(() => 'git version 2.0'),
     cliVersion: vi.fn(() => {
@@ -32,9 +33,9 @@ function context() {
 }
 
 describe('Windows host preparation with substituted effects', () => {
-  it('separates host readiness, CLI startup and permission acceptance', () => {
+  it('separates host readiness, CLI startup and permission acceptance', async () => {
     const { options, effects, calls } = context();
-    const result = prepareProjectSkillHost(options, effects);
+    const result = await prepareProjectSkillHost(options, effects);
     expect(calls).toEqual(['identify', 'fixture', 'cli']);
     expect(result).toMatchObject({
       status: 'ready',
@@ -54,12 +55,12 @@ describe('Windows host preparation with substituted effects', () => {
     'toplevel-mismatch',
     'registration-mismatch',
     'reparse-point',
-  ])('identity failure %s forbids setup and CLI', (kind) => {
+  ])('identity failure %s forbids setup and CLI', async (kind) => {
     const { options, effects } = context();
     effects.identify.mockImplementation(() => {
       throw Object.assign(new Error(kind), { hostCode: kind });
     });
-    const result = prepareProjectSkillHost(options, effects);
+    const result = await prepareProjectSkillHost(options, effects);
     expect(result).toMatchObject({
       status: 'failed',
       hostReady: false,
@@ -70,44 +71,44 @@ describe('Windows host preparation with substituted effects', () => {
     expect(effects.createFixture).not.toHaveBeenCalled();
     expect(effects.cliVersion).not.toHaveBeenCalled();
   });
-  it('occupied evidence forbids even identity checks', () => {
+  it('occupied evidence forbids even identity checks', async () => {
     const { options, effects } = context();
     effects.reserve.mockImplementation(() => {
       throw Object.assign(new Error(), { code: 'EEXIST' });
     });
-    expect(prepareProjectSkillHost(options, effects).error.kind).toBe('EEXIST');
+    expect((await prepareProjectSkillHost(options, effects)).error.kind).toBe('EEXIST');
     expect(effects.identify).not.toHaveBeenCalled();
   });
-  it('a setup refusal preserves hashes and does not try the CLI', () => {
+  it('a setup refusal preserves hashes and does not try the CLI', async () => {
     const { options, effects } = context();
     effects.createFixture.mockImplementation(() => {
       throw Object.assign(new Error(), { code: 'EPERM' });
     });
-    const result = prepareProjectSkillHost(options, effects);
+    const result = await prepareProjectSkillHost(options, effects);
     expect(result.error.kind).toBe('EPERM');
     expect(result.consumerPreserved).toBe(true);
     expect(effects.cliVersion).not.toHaveBeenCalled();
   });
-  it('unknown old evidence blocks setup and never claims preservation', () => {
+  it('unknown old evidence blocks setup and never claims preservation', async () => {
     const { options, effects } = context();
     effects.previous.mockReturnValue({ status: 'unknown', reason: 'EACCES' });
-    const result = prepareProjectSkillHost(options, effects);
+    const result = await prepareProjectSkillHost(options, effects);
     expect(result.previousPreserved).toBe(false);
     expect(effects.createFixture).not.toHaveBeenCalled();
   });
-  it('changed inventory invalidates readiness', () => {
+  it('changed inventory invalidates readiness', async () => {
     const { options, effects } = context();
     effects.snapshot
       .mockReturnValueOnce({ a: 'hash' })
       .mockReturnValueOnce({ a: 'hash', b: 'new' });
-    const result = prepareProjectSkillHost(options, effects);
+    const result = await prepareProjectSkillHost(options, effects);
     expect(result.status).toBe('failed');
     expect(result.hostReady).toBe(false);
   });
-  it('rejects a foreign home before reserving evidence', () => {
+  it('rejects a foreign home before reserving evidence', async () => {
     const { options, effects } = context();
     options.home = resolve('foreign');
-    expect(prepareProjectSkillHost(options, effects).error.kind).toBe('home-mismatch');
+    expect((await prepareProjectSkillHost(options, effects)).error.kind).toBe('home-mismatch');
     expect(effects.reserve).not.toHaveBeenCalled();
   });
   it('enforces a ten-minute deadline', () => {

@@ -1,6 +1,12 @@
 import { dirname, join, resolve } from 'node:path';
 import { release } from 'node:os';
 import { Buffer } from 'node:buffer';
+import { spawn, spawnSync } from 'node:child_process';
+import { isDeepStrictEqual } from 'node:util';
+import { codexInvocation } from './provider.mjs';
+import { codexChildEnvironment, codexGitEnvironment } from './codex-environment.mjs';
+import { createKillTree, startStage } from './run-stage.mjs';
+import { modelForStage } from './stage-model.mjs';
 import {
   CONSUMER_TASK,
   CONSUMER_CHANGE,
@@ -14,6 +20,7 @@ import {
   verifyHostFixture,
   sha256,
   samePath,
+  TARGETS,
 } from './project-skill-host-fixture.mjs';
 
 export const HOST_TASK = '0302-podgotovit-razreshennyy-windows-marshrut';
@@ -119,7 +126,7 @@ function reserveEvidence(workspace, io) {
 }
 
 /** Настоящий prepare вызывается только владельцем между исполняющими сессиями. */
-export function prepareProjectSkillHost({ workspace, home, config = {} }, effects = {}) {
+export async function prepareProjectSkillHost({ workspace, home, config = {} }, effects = {}) {
   workspace = resolve(workspace);
   const io = hostIO(effects);
   const started = io.now();
@@ -152,6 +159,8 @@ export function prepareProjectSkillHost({ workspace, home, config = {} }, effect
     evidence.identity = consumer.identity;
     evidence.sourceSha = io.git(workspace, 'rev-parse', 'HEAD');
     if (!/^[a-f0-9]{40}$/.test(evidence.sourceSha)) throw hostError('source-sha');
+    evidence.sources = (io.sources ?? hostSourceSnapshot)(workspace, io);
+    evidence.configDigest = sha256(JSON.stringify(config));
     evidence.consumerBefore = snapshot(consumer, io);
     evidence.previousBefore = previous(consumer.identity.root, io);
     if (evidence.previousBefore.status !== 'available')
@@ -163,8 +172,8 @@ export function prepareProjectSkillHost({ workspace, home, config = {} }, effect
     evidence.hostReady = true;
     evidence.phase = 'cli-start';
     evidence.versions.git = io.exec('git', ['--version']);
-    if (!io.cliVersion) throw hostError('cli-version-effect-required');
-    evidence.versions.codex = io.cliVersion(config, io);
+    io.cliBudgetMs = Math.max(1, Math.min(10000, 600000 - (io.now() - started)));
+    evidence.versions.codex = await (io.cliVersion ?? hostCliVersion)(config, io, workspace);
     io.checkTime();
     evidence.cliStart = true;
     evidence.phase = 'complete';
@@ -206,4 +215,230 @@ export function prepareProjectSkillHost({ workspace, home, config = {} }, effect
     }
   }
   return evidence;
+}
+
+// Полный список исполняемых модулей этой поставки; личные настройки не читаются.
+export const HOST_SOURCES = [
+  'supervisor/lib/windows-diagnostic-host.mjs',
+  'supervisor/lib/project-skill-host-fixture.mjs',
+  'supervisor/lib/codex-environment.mjs',
+  'supervisor/lib/provider.mjs',
+  'supervisor/lib/run-stage.mjs',
+  'supervisor/lib/codex-perf-files.mjs',
+  'supervisor/lib/token-budget.mjs',
+  'supervisor/lib/stage-model.mjs',
+  'supervisor/bin/prepare-project-skill-host.mjs',
+  'supervisor/bin/codex-runner.mjs',
+  'supervisor/pipeline.config.json',
+  'supervisor/config/stage-settings.json',
+];
+
+export function hostSourceSnapshot(workspace, io) {
+  if (io.git(workspace, 'status', '--porcelain', '--untracked-files=all', '--', ...HOST_SOURCES))
+    throw hostError('dirty-host-source');
+  const head = io.git(workspace, 'rev-parse', 'HEAD');
+  if (head !== io.git(workspace, 'rev-parse', '@{u}')) throw hostError('unpushed-host-source');
+  return Object.fromEntries(
+    HOST_SOURCES.map((file) => {
+      ordinaryPath(join(workspace, file), false, io);
+      return [file, sha256(io.fs.readFileSync(join(workspace, file)))];
+    }),
+  );
+}
+
+export async function hostCliVersion(config, io, workspace) {
+  io.checkTime();
+  const run = await (io.start ?? startStage)({
+    command: { ...codexInvocation(config, ['--version']), cwd: workspace, stdin: '' },
+    timeoutMs: io.cliBudgetMs ?? 10000,
+    spawn,
+    killTree: createKillTree((program, args) => spawnSync(program, args, { windowsHide: true })),
+  }).finished;
+  if (run.code !== 0 || run.error || run.killedBy)
+    throw Object.assign(new Error('CLI start failed'), {
+      hostCode: run.killedBy ? 'timeout' : classifyHostError(run.error ?? { stderr: run.stderr }),
+      status: run.code,
+    });
+  const version = /^codex-cli [0-9]+\.[0-9]+\.[0-9]+(?:[-+.][a-zA-Z0-9.-]+)?$/.exec(
+    run.stdout.trim(),
+  );
+  if (!version) throw hostError('cli-version-unknown');
+  io.checkTime();
+  return version[0];
+}
+
+/** callbacks поступают из закреплённого кода опыта, никогда из CLI или RPC модели. */
+export function projectSkillHostEffects(
+  {
+    workspace,
+    home,
+    config,
+    evidence,
+    evidenceHash,
+    checkerStartedAt,
+    resolveProjectSkillWrites,
+    codexExecutionArgs,
+    invocation,
+    runProbeSession,
+    env = process.env,
+  },
+  effects = {},
+) {
+  let io = hostIO(effects);
+  const fixture = evidence.fixture;
+  const verify = io.verifyFixture ?? verifyHostFixture;
+  const sourceSnapshot = io.sources ?? hostSourceSnapshot;
+  let phaseIndex = 0;
+  let started = false;
+  let assignment;
+  let targetSession;
+  const configDigest = sha256(JSON.stringify(config));
+  function guard() {
+    if (
+      evidence.schemaVersion !== 1 ||
+      evidence.status !== 'ready' ||
+      !evidence.hostReady ||
+      !evidence.cliStart ||
+      evidence.permissionAcceptance !== 'not-run' ||
+      !Array.isArray(evidence.sessions) ||
+      evidence.sessions.length ||
+      !evidence.consumerPreserved ||
+      !evidence.previousPreserved ||
+      !samePath(evidence.workspace, workspace) ||
+      evidence.sourcePr?.sha !== PR_SOURCE ||
+      !Number.isFinite(Date.parse(checkerStartedAt)) ||
+      !(Date.parse(evidence.finishedAt) < Date.parse(checkerStartedAt))
+    )
+      throw hostError('host-evidence-invalid');
+    const file = ordinaryPath(join(workspace, HOST_EVIDENCE), false, io);
+    const bytes = io.fs.readFileSync(file);
+    if (sha256(bytes) !== evidenceHash || !isDeepStrictEqual(JSON.parse(String(bytes)), evidence))
+      throw hostError('host-evidence-changed');
+    if (
+      configDigest !== evidence.configDigest ||
+      sha256(JSON.stringify(config)) !== configDigest ||
+      !isDeepStrictEqual(sourceSnapshot(workspace, io), evidence.sources)
+    )
+      throw hostError('host-source-changed');
+  }
+  function resolveAssignment() {
+    const current = resolveProjectSkillWrites({ ...fixture, home });
+    if (
+      !isDeepStrictEqual(
+        current.files,
+        TARGETS.map((file) => resolve(fixture.cwd, file)),
+      )
+    )
+      throw hostError('grant-set-mismatch');
+    if (assignment && !isDeepStrictEqual(current, assignment))
+      throw hostError('assignment-changed');
+    assignment ??= JSON.parse(JSON.stringify(current));
+    return current;
+  }
+  return {
+    setup(requestedWorkspace) {
+      if (started || !samePath(requestedWorkspace, workspace))
+        throw hostError('probe-already-started');
+      guard();
+      verify(workspace, fixture, io);
+      resolveAssignment();
+      // Готовый стенд допускает ровно один прежний опыт: новый adapter не обнуляет лимит.
+      io.fs.writeFileSync(
+        join(fixture.stand, 'probe-started.json'),
+        JSON.stringify({ maxSessions: 2, maxResumes: 1 }),
+        { flag: 'wx' },
+      );
+      started = true;
+      return fixture;
+    },
+    async runSession(command, phase) {
+      if (!started || phase !== ['baseline', 'target', 'resume'][phaseIndex])
+        throw hostError('phase-budget');
+      io = hostIO(effects);
+      guard();
+      verify(workspace, fixture, io, phase);
+      const grants = resolveAssignment();
+      const args = [
+        'exec',
+        '--ignore-user-config',
+        '--json',
+        ...codexExecutionArgs(
+          config,
+          fixture.root,
+          fixture.cwd,
+          'win32',
+          phase === 'baseline' ? [] : grants.files,
+        ),
+        '-c',
+        'project_doc_max_bytes=0',
+      ];
+      const model = modelForStage(config, 'codex', 'implement');
+      if (model) args.push('--model', model);
+      if (phase === 'resume') args.push('resume', targetSession);
+      args.push('-');
+      const expected = invocation(config, args);
+      const gitdir = io.git(fixture.cwd, 'rev-parse', '--absolute-git-dir');
+      const files = [
+        ...new Set([
+          resolve(fixture.root, '.git'),
+          resolve(gitdir),
+          resolve(fixture.root, '.perf-lock'),
+          resolve(fixture.root, '.perf-log.jsonl'),
+          ...(phase === 'baseline' ? [] : grants.files),
+        ]),
+      ];
+      const profile =
+        'permissions={td-pipeline={extends=":workspace",filesystem={' +
+        files.map((file) => JSON.stringify(file.replaceAll('\\', '/')) + '="write"').join(',') +
+        '},network={enabled=true}}}';
+      if (
+        command.profile !== profile ||
+        !args.includes('approval_policy="never"') ||
+        !args.includes('default_permissions="td-pipeline"') ||
+        !args.includes(
+          `windows.sandbox=${JSON.stringify(config.codexWindowsSandbox ?? 'elevated')}`,
+        )
+      )
+        throw hostError('exact-profile-mismatch');
+      if (
+        command.cwd !== fixture.cwd ||
+        command.program !== expected.program ||
+        !isDeepStrictEqual(command.args, expected.args) ||
+        !isDeepStrictEqual(command.grants, grants) ||
+        command.profile !== args.find((arg) => arg.startsWith('permissions='))
+      )
+        throw hostError('profile-mismatch');
+      if (
+        (await (io.cliVersion ?? hostCliVersion)(config, io, workspace)) !== evidence.versions.codex
+      )
+        throw hostError('cli-version-changed');
+      const cleanEnv = Object.fromEntries(
+        Object.entries(env).filter(
+          ([key]) =>
+            !/^GIT_(?:CONFIG.*|TRACE.*|CURL_VERBOSE|DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)$/i.test(
+              key,
+            ),
+        ),
+      );
+      const childEnv = codexGitEnvironment(
+        codexChildEnvironment({ env: cleanEnv, ...(io.getToken ? { getToken: io.getToken } : {}) }),
+        fixture.root,
+        fixture.cwd,
+      );
+      const result = await runProbeSession({ ...command, env: childEnv }, phase);
+      phaseIndex++;
+      if (phase === 'target')
+        targetSession = result.events?.find((event) => event.type === 'thread.started')?.thread_id;
+      try {
+        guard();
+        resolveAssignment();
+        verify(workspace, fixture, io, phase, true);
+      } catch (error) {
+        // События исходного опыта остаются у его классификатора даже при порче контроля.
+        result.run = { ...result.run, code: 1, stopReason: classifyHostError(error) };
+        phaseIndex = 3;
+      }
+      return result;
+    },
+  };
 }
