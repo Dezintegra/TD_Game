@@ -50,6 +50,8 @@
       "Bash(node supervisor/bin/board-setup.mjs)",
       "PowerShell(node .matchlog/*)",
       "Bash(node .matchlog/*)",
+      "PowerShell(node --check:*)",
+      "Bash(node --check:*)",
 
       "Bash(git -C:*)",
       "Bash(git --no-pager:*)",
