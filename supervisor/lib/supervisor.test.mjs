@@ -22,6 +22,7 @@ import { parseReport } from './parse-report.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import { openStageLogs } from './stage-logs.mjs';
 import { openReportStore } from './report-store.mjs';
+import { prepareBenchmarkSource } from './benchmark-source.mjs';
 
 /**
  * Проверки хозяйства идущих этапов.
@@ -433,6 +434,38 @@ const assignment = (over = {}) => ({
 });
 
 const report = { taskId: '0001-one', stage: 'design', outcome: 'done', summary: 'сделано' };
+
+describe('источник локального benchmark до порождения', () => {
+  it.each(['perf', 'bench-tick'])('старая карточка %s без source не порождает процесс', (kind) => {
+    const h = harness({ prepareAssignment: (a) => prepareBenchmarkSource('/repo', a) });
+    const result = h.supervisor.spawnStage(
+      assignment({ stage: 'benchmark', task: { run: { kind, params: { change: 'visual' } } } }),
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'not-born' });
+    expect(result.why).toContain('run.params.source');
+    expect(h.children).toHaveLength(0);
+  });
+  it('ошибка доступа к источнику попадает в штатную диагностику', () => {
+    const h = harness({
+      prepareAssignment: (a) =>
+        prepareBenchmarkSource('/repo', a, {
+          git: () => {
+            throw new Error('EACCES');
+          },
+        }),
+    });
+    const result = h.supervisor.spawnStage(
+      assignment({
+        stage: 'benchmark',
+        task: { run: { kind: 'perf', params: { source: { branch: 'visual' } } } },
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, reason: 'not-born' });
+    expect(result.why).toContain('EACCES');
+    expect(result.why).toContain('visual');
+    expect(h.children).toHaveLength(0);
+  });
+});
 
 const envelope = (over = {}) => ({
   is_error: false,

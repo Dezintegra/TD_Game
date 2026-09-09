@@ -22,6 +22,49 @@ const request = (over = {}) => ({
   ...over,
 });
 
+describe.each(['perf', 'bench-tick'])('приёмка источника %s', (kind) => {
+  const accept = (run) =>
+    taskFromRequest(request({ type: 'run', categories: ['infrastructure'], run }), {
+      id: '0089-perf',
+      now: NOW,
+      sourceId: '0041-visual',
+    });
+  it.each([{ branch: 'worktree-0041-visual' }, { worktree: '../another station tree' }])(
+    'сохраняет %j без проверки диска',
+    (source) => {
+      const run = { kind, params: { source, change: 'visual', seed: 42 }, expectation: '55 FPS' };
+      const { task, problems } = accept(run);
+      expect(problems).toEqual([]);
+      expect(task.run).toEqual(run);
+      expect(validateTask(task, schema)).toEqual([]);
+    },
+  );
+  it.each([
+    undefined,
+    {},
+    { branch: '' },
+    { worktree: 42 },
+    { branch: 'main', worktree: '.' },
+    { branch: 'main', extra: true },
+  ])('не создаёт задачу при %j', (source) => {
+    const { task, problems } = accept({
+      kind,
+      params: { source, change: 'visual' },
+      expectation: '55 FPS',
+    });
+    expect(task).toBeNull();
+    expect(problems.join(' ')).toContain('run.params.source');
+  });
+  it('независимо проверяет expectation', () => {
+    expect(accept({ kind, params: { source: { branch: 'main' } } }).problems).toContain(
+      'прогон заявлен без ожидаемого результата',
+    );
+    const { problems } = accept({ kind });
+    expect(problems).toContain('прогон заявлен без ожидаемого результата');
+    expect(problems.join(' ')).toContain('run.params.source');
+  });
+});
+
 describe('идентификатор', () => {
   it('первый номер начинается с единицы', () => {
     expect(nextId([], 'Проба')).toMatch(/^0001-/);
@@ -246,7 +289,11 @@ describe('причина в конвейере', () => {
         request({
           type: 'run',
           area: 'pipeline',
-          run: { kind: 'bench-tick', expectation: 'стоимость тика не выросла' },
+          run: {
+            kind: 'bench-tick',
+            params: { source: { branch: 'main' } },
+            expectation: 'стоимость тика не выросла',
+          },
         }),
       ],
       'interpret',

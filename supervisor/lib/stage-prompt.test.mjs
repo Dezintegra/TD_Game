@@ -29,6 +29,22 @@ const assignment = {
   path: '.claude/worktrees/0042-fix-tesla-price',
 };
 
+it('передаёт подтверждённый источник локального замера без сокращения SHA', () => {
+  const benchmarkSource = {
+    source: { worktree: '../source' },
+    path: '/source',
+    branch: null,
+    head: 'a'.repeat(40),
+  };
+  const text = stagePrompt({
+    task,
+    assignment: { ...assignment, stage: 'benchmark', path: benchmarkSource.path, benchmarkSource },
+  });
+  const payload = JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)[1]);
+  expect(payload.worktree).toBe(benchmarkSource.path);
+  expect(payload.benchmarkSource).toEqual(benchmarkSource);
+});
+
 describe('несколько выдержек', () => {
   it('ограничивает три больших лога 30 000 знаками содержимого, оставляя края', () => {
     const entries = [5, 4, 3, 2, 1].map((n) => ({
