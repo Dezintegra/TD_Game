@@ -73,6 +73,59 @@ const observe = (world: WorldState) => {
 };
 
 describe('факты движения Assault', () => {
+  it('выстрел сохраняет прямую цель, урон и добивание', () => {
+    const world = scene();
+    const { events } = observe({
+      ...world,
+      structures: world.structures.map((s) => (s.id === 10 ? { ...s, health: 1 } : s)),
+    });
+    expect(events.find((e) => e.type === 'assault-shot')).toMatchObject({
+      target: { kind: 'structure', id: 10 },
+      damage: 10,
+      healthBefore: 1,
+      healthAfter: -9,
+      healthLost: 1,
+      lethal: true,
+      readyAtTick: 31,
+      cooldown: 30,
+    });
+  });
+
+  it('перезарядка и гибель до стрельбы не создают выстрел', () => {
+    const world = scene();
+    expect(
+      observe({
+        ...world,
+        units: world.units.map((u) => ({ ...u, readyAtTick: asTickNumber(100) })),
+      }).events.some((e) => e.type === 'assault-shot'),
+    ).toBe(false);
+    const dead = {
+      ...world,
+      units: world.units.map((u) => ({ ...u, health: 1 })),
+      structures: world.structures.map((s) => ({ ...s, readyAtTick: asTickNumber(0) })),
+    };
+    expect(observe(dead).events.some((e) => e.type === 'assault-shot')).toBe(false);
+  });
+
+  it('встречный юнит получает выстрел вместо башни', () => {
+    const world = scene(false);
+    const { events } = observe({
+      ...world,
+      units: [
+        ...world.units,
+        {
+          ...world.units[0]!,
+          id: asEntityId(12),
+          owner: asPlayerId(1),
+          position: cellCentre(cellIndex(18, 21)),
+          readyAtTick: asTickNumber(100),
+        },
+      ],
+    });
+    expect(events.find((e) => e.type === 'assault-shot')).toMatchObject({
+      target: { kind: 'unit', id: 12 },
+    });
+  });
   it.each([false, true])('различает отсутствие шага и пролом: %s', (breach) => {
     const world = scene(false, AttackStance.Breakthrough);
     const working = toWorking({
@@ -132,7 +185,7 @@ describe('факты движения Assault', () => {
         tick: 1,
         distanceSquared: 6250000,
       });
-      expect(events.map((e) => e.sequence)).toEqual([0, 1]);
+      expect(events.map((e) => e.sequence)).toEqual(events.map((_e, i) => i));
     },
   );
 

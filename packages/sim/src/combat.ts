@@ -17,13 +17,16 @@ import {
   UNIT_INDIRECT_FIRE,
   UNIT_STATS,
   UNIT_WEAPON,
+  UnitType,
   asTickNumber,
   directionTowards,
   isArmedStructure,
   onRuleTuningApplied,
   veteranRank,
 } from '@td/shared';
-import type { PlayerId, UnitType, Vec2 } from '@td/shared';
+import type { PlayerId, Vec2 } from '@td/shared';
+import { emitCombatObservation } from './combat-observer.js';
+import type { CombatIdentity } from './combat-observer.js';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
 import {
@@ -958,13 +961,57 @@ const fire = (
   const aim = targetPosition(working, target);
   if (aim === undefined) return;
 
-  const lethal = dealDamage(
-    working,
-    statsTable,
-    shooter,
-    target,
-    damageAgainst(working, target, attack, structureDamagePercent),
-  );
+  const assault =
+    working.observation !== undefined && shooter.kind === ShooterKind.Unit
+      ? working.units[shooter.index]
+      : undefined;
+  const observed = assault?.unitType === UnitType.Assault ? assault : undefined;
+  const direct =
+    observed === undefined
+      ? undefined
+      : target.kind === TargetKind.Unit
+        ? working.units[target.index]
+        : target.kind === TargetKind.Structure
+          ? working.structures[target.index]
+          : working.generals[target.index];
+  const identity: CombatIdentity | undefined =
+    direct === undefined
+      ? undefined
+      : {
+          kind:
+            target.kind === TargetKind.Unit
+              ? 'unit'
+              : target.kind === TargetKind.Structure
+                ? 'structure'
+                : 'general',
+          id: 'id' in direct ? direct.id : direct.owner,
+          owner: direct.owner,
+          subtype: 'unitType' in direct ? direct.unitType : 'kind' in direct ? direct.kind : null,
+        };
+  const healthBefore = direct?.health ?? 0;
+  const killsBefore = observed?.kills ?? 0;
+  const damage = damageAgainst(working, target, attack, structureDamagePercent);
+  const lethal = dealDamage(working, statsTable, shooter, target, damage);
+  if (observed !== undefined && direct !== undefined && identity !== undefined) {
+    emitCombatObservation(working, {
+      type: 'assault-shot',
+      tick: working.tick,
+      sequence: 0,
+      phase: 'combat',
+      shooter: { kind: 'unit', id: observed.id, owner: observed.owner, subtype: observed.unitType },
+      target: identity,
+      from: { ...origin },
+      to: { ...aim },
+      damage,
+      healthBefore,
+      healthAfter: direct.health,
+      healthLost: Math.max(0, healthBefore) - Math.max(0, direct.health),
+      lethal,
+      killsBefore,
+      readyAtTick: observed.readyAtTick,
+      cooldown: statsOf(statsTable, observed.owner).units[observed.unitType].cooldownTicks,
+    });
+  }
 
   // Накрытие опознаётся по оружию, а не по типу юнита: разряд и площадь —
   // одно и то же оружие, и раздавать их порознь было бы двумя правилами

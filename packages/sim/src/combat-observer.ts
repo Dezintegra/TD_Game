@@ -47,7 +47,25 @@ export interface AssaultPosition {
   position: Vec2;
 }
 
-export type CombatObservation = AssaultMotion | AssaultPosition;
+export interface AssaultShot {
+  type: 'assault-shot';
+  tick: number;
+  sequence: number;
+  phase: 'combat';
+  shooter: CombatIdentity;
+  target: CombatIdentity;
+  from: Vec2;
+  to: Vec2;
+  damage: number;
+  healthBefore: number;
+  healthAfter: number;
+  healthLost: number;
+  lethal: boolean;
+  killsBefore: number;
+  readyAtTick: number;
+  cooldown: number;
+}
+export type CombatObservation = AssaultMotion | AssaultPosition | AssaultShot;
 export type CombatObserver = (event: CombatObservation) => void;
 export interface CombatObservationContext {
   observer: CombatObserver;
