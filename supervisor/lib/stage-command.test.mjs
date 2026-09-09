@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { resolve } from 'node:path';
 import { stageCommand, stageTimeoutMs } from './stage-command.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 
@@ -20,6 +21,23 @@ const { config } = resolveConfig({
 const root = '/repo';
 const home = '/repo/supervisor';
 const flag = (args, name) => args[args.indexOf(name) + 1];
+
+it('Claude получает подтверждённое дерево локального benchmark вне main', () => {
+  const path = resolve('external tree');
+  const command = stageCommand({
+    root,
+    home,
+    config,
+    prompt: 'назначение',
+    assignment: { stage: 'benchmark', path, benchmarkSource: { path, head: 'a'.repeat(40) } },
+  });
+  expect(command.cwd).toBe(path);
+  for (const stage of ['interpret', 'benchmark']) {
+    expect(stageCommand({ root, home, config, prompt: '', assignment: { stage, path } }).cwd).toBe(
+      root,
+    );
+  }
+});
 
 describe('свои пути считаются от каталога инструмента', () => {
   // Ради этих трёх проверок изменение и затевалось. Пока умолчания несли

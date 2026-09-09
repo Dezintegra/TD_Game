@@ -100,6 +100,7 @@ export function stagePrompt({
         stage: assignment.stage,
         branch: assignment.branch ?? null,
         worktree: assignment.path ?? null,
+        ...(assignment.benchmarkSource ? { benchmarkSource: assignment.benchmarkSource } : {}),
         ...(assignment.deploymentRevision
           ? { deploymentRevision: assignment.deploymentRevision }
           : {}),

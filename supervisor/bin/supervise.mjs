@@ -2,7 +2,7 @@
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
-import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
+import { createAssignmentPreparer } from '../lib/benchmark-source.mjs';
 import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
 import { tokenAdmission } from '../lib/token-hold.mjs';
 import { tokenReanalysisAdmission } from '../lib/token-reanalysis.mjs';
@@ -431,12 +431,7 @@ function createRuntimeSupervisor() {
   const runtime = createSupervisor({
     reportStore: openReportStore(local('pending-reports.json')),
     getCodexEnvironment: () => codexEnvironment,
-    prepareAssignment: (assignment, previous) => {
-      const prepared = prepareDeploySnapshot(root, config, assignment, previous);
-      if (providerOf(config) === 'codex')
-        prepareCodexPerfFiles(root, prepared.path ? resolve(root, prepared.path) : root);
-      return prepared;
-    },
+    prepareAssignment: createAssignmentPreparer(root, config),
     config,
     root,
     readCodexEvidence: (child) => {
