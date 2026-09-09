@@ -25,7 +25,7 @@ import {
   veteranRank,
 } from '@td/shared';
 import type { PlayerId, Vec2 } from '@td/shared';
-import { emitCombatObservation } from './combat-observer.js';
+import { emitCombatObservation, observeTerminal } from './combat-observer.js';
 import type { CombatIdentity } from './combat-observer.js';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
@@ -788,6 +788,15 @@ export const damageEntity = (
       if (unit.health > 0) return false;
 
       unit.alive = false;
+      if (working.observation !== undefined && unit.unitType === UnitType.Assault) {
+        observeTerminal(
+          working,
+          { kind: 'unit', id: unit.id, owner: unit.owner, subtype: unit.unitType },
+          unit.health + amount,
+          unit.health,
+          'damage',
+        );
+      }
       recordBlast(working, BlastKind.Unit, unit.owner, position(unit));
       return true;
     }
@@ -799,6 +808,15 @@ export const damageEntity = (
       if (structure.health > 0) return false;
 
       structure.alive = false;
+      if (working.observation !== undefined && isArmedStructure(structure.kind)) {
+        observeTerminal(
+          working,
+          { kind: 'structure', id: structure.id, owner: structure.owner, subtype: structure.kind },
+          structure.health + amount,
+          structure.health,
+          'damage',
+        );
+      }
       working.structuresDirty = true;
       recordBlast(working, BlastKind.Structure, structure.owner, structurePosition(structure));
       return true;

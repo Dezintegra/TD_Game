@@ -73,6 +73,78 @@ const observe = (world: WorldState) => {
 };
 
 describe('факты движения Assault', () => {
+  it('nuke завершает тик после выстрела и сохраняет оба погибших объекта', () => {
+    const world = scene();
+    const { events } = observe({
+      ...world,
+      nukes: [
+        {
+          id: asEntityId(20),
+          owner: asPlayerId(1),
+          cell: cellIndex(19, 20),
+          radius: 5000,
+          damage: 1000,
+          detonateAtTick: asTickNumber(1),
+        },
+      ],
+    });
+    const terminal = events.filter((e) => e.type === 'assault-terminal');
+    expect(terminal).toMatchObject([
+      { phase: 'nuke', entity: { id: 11 }, healthAfter: -900 },
+      { phase: 'nuke', entity: { id: 10 }, healthAfter: -810 },
+    ]);
+    expect(events.findIndex((e) => e.type === 'assault-shot')).toBeLessThan(
+      events.indexOf(terminal[0]!),
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: 'assault-end-tick',
+      participants: [
+        { id: 11, alive: false, health: -900 },
+        { id: 10, alive: false, health: -810 },
+      ],
+    });
+  });
+
+  it('собственный разбор отличается от урона и сохраняется на тике победы', () => {
+    const world = scene();
+    const { events } = observe({
+      ...world,
+      structures: world.structures
+        .filter((s) => s.owner === 1)
+        .map((s) => (s.id === 10 ? { ...s, demolishAtTick: asTickNumber(1) } : s)),
+    });
+    expect(events.find((e) => e.type === 'assault-terminal')).toMatchObject({
+      phase: 'demolition',
+      reason: 'demolition',
+      entity: { id: 10 },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'assault-end-tick',
+      winner: 1,
+      participants: expect.arrayContaining([expect.objectContaining({ id: 10, alive: false })]),
+    });
+  });
+
+  it('конец тика хранит HP башни после позднего взрыва', () => {
+    const world = scene();
+    const { events } = observe({
+      ...world,
+      nukes: [
+        {
+          id: asEntityId(20),
+          owner: asPlayerId(1),
+          cell: cellIndex(20, 20),
+          radius: 1000,
+          damage: 50,
+          detonateAtTick: asTickNumber(1),
+        },
+      ],
+    });
+    expect(events.find((e) => e.type === 'assault-shot')).toMatchObject({ healthAfter: 190 });
+    expect(events.at(-1)).toMatchObject({
+      participants: expect.arrayContaining([expect.objectContaining({ id: 10, health: 140 })]),
+    });
+  });
   it('выстрел сохраняет прямую цель, урон и добивание', () => {
     const world = scene();
     const { events } = observe({
