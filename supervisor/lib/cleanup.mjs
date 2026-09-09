@@ -38,6 +38,13 @@ export const VERDICTS = {
  * @returns {{ verdict: string, why: string }}
  */
 export function mayCleanup({ task, entry, pr, unpushed, ownCommits }) {
+  // Отсутствие дерева не доказывает вливание: после частичной уборки
+  // результат проверяется заново до перевода карточки в «Выполнено».
+  if (!entry && task.links?.pr && pr?.state !== 'merged') {
+    return pr?.state === 'unknown'
+      ? { verdict: 'wait', why: 'состояние pull request недоступно' }
+      : { verdict: 'fail', why: 'pull request не влит, выполнение не подтверждено' };
+  }
   if (!entry) {
     return { verdict: 'skip', why: 'дерева нет, убирать нечего' };
   }
@@ -54,7 +61,7 @@ export function mayCleanup({ task, entry, pr, unpushed, ownCommits }) {
       // Содержимое ветки узнать не удалось. Удаление необратимо, поэтому
       // неизвестность толкуется в пользу сохранности.
       return {
-        verdict: 'fail',
+        verdict: 'wait',
         why: 'pull request не заводился, а содержимое ветки узнать не удалось',
       };
     }
@@ -103,6 +110,8 @@ export function cleanup({ task, entry, io }) {
   if (tree.ok) done.push('дерево удалено');
   else left.push(`дерево осталось: ${tree.why}`);
 
+  // Занятая папка не мешает убрать доступные ветки: повтор держится
+  // на записи реестра и состоянии карточки, а не на сохранении веток.
   const local = io.deleteBranch(entry.branch);
   if (local.ok) done.push('локальная ветка удалена');
   else left.push(`локальная ветка осталась: ${local.why}`);

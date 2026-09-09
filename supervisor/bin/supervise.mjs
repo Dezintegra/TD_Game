@@ -2,8 +2,10 @@
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
-import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
-import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
+import { createAssignmentPreparer } from '../lib/benchmark-source.mjs';
+import { readTokenLedger, writeTokenLedger, tokenAccountingNote } from '../lib/token-budget.mjs';
+import { tokenAdmission } from '../lib/token-hold.mjs';
+import { tokenReanalysisAdmission } from '../lib/token-reanalysis.mjs';
 import { spawn } from 'node:child_process';
 import { createCommandRunner } from '../lib/command-runner.mjs';
 import { buildDependencyState } from '../lib/dependency-state.mjs';
@@ -42,6 +44,12 @@ import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
+import { openReportStore } from '../lib/report-store.mjs';
+import {
+  openStageLogs,
+  createStageLogMaintenance,
+  readLiveLogProtection,
+} from '../lib/stage-logs.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
 import {
   claimSupervisorLock,
@@ -411,26 +419,41 @@ function sessionFiles(dir, suffix) {
   });
 }
 function createRuntimeSupervisor() {
-  return createSupervisor({
+  const stageLogs = openStageLogs(local('logs'), {
+    diagnose: (message) => note(message, TAG.warn),
+  });
+  let protectionError;
+  try {
+    readLiveLogProtection(local('stages.json'));
+  } catch (error) {
+    protectionError = error;
+  }
+  const runtime = createSupervisor({
+    reportStore: openReportStore(local('pending-reports.json')),
     getCodexEnvironment: () => codexEnvironment,
-    prepareAssignment: (assignment, previous) => {
-      const prepared = prepareDeploySnapshot(root, config, assignment, previous);
-      if (providerOf(config) === 'codex')
-        prepareCodexPerfFiles(root, prepared.path ? resolve(root, prepared.path) : root);
-      return prepared;
-    },
+    prepareAssignment: createAssignmentPreparer(root, config),
     config,
     root,
     readCodexEvidence: (child) => {
       if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
+      let evidencePath = child.path;
+      if (child.recovery) {
+        const entries = readRegistry(root, config).entries.filter(
+          (item) => item.taskId === child.taskId,
+        );
+        if (entries.length !== 1 || !entries[0].path)
+          return { ok: false, reason: 'unknown-task-cwd' };
+        evidencePath = entries[0].path;
+      }
       const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
       const paths = sessionFiles(join(codexHome, 'sessions'), `${child.sessionId}.jsonl`);
       if (paths.length !== 1) return { ok: false, reason: 'ambiguous-session-evidence' };
       try {
         return sessionEvidence(readFileSync(paths[0], 'utf8'), {
           sessionId: child.sessionId,
-          cwd: child.path ? resolve(root, child.path) : root,
+          cwd: evidencePath ? resolve(root, evidencePath) : root,
           after: child.startedAt,
+          allowIncomplete: child.recovery === true,
         });
       } catch {
         return { ok: false, reason: 'malformed-session-evidence' };
@@ -460,26 +483,21 @@ function createRuntimeSupervisor() {
     },
     say,
     log: (line) => note(line, null),
-    writeStageLog: (taskId, stage, text) => {
-      // Вывод процесса целиком — взамен списка сессий, в котором этапы
-      // больше не видны. Взамен неравноценное: кода возврата, стоимости
-      // и перечня отказов в списке не было вовсе.
-      mkdirSync(local('logs'), { recursive: true });
-      writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
-    },
-    // Тот же лог читается обратно — разбором упавшей задачи, и только им.
-    // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
-    // без лога всё равно начинается, а сам факт его отсутствия — улика.
-    readStageLog: (taskId, stage) => {
-      if (!stage) return null;
-      const path = local('logs', `${taskId}-${stage}.log`);
-      return {
-        stage,
-        path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
-        text: existsSync(path) ? readFileSync(path, 'utf8') : null,
-      };
-    },
+    writeStageLog: stageLogs.writeStageLog,
+    readStageLog: stageLogs.readStageLog,
+    readStageLogs: stageLogs.readStageLogs,
   });
+  runtime.maintainStageLogs = createStageLogMaintenance({
+    store: stageLogs,
+    ownsLock: () => readLock()?.pid === process.pid,
+    getProtection: () => {
+      if (protectionError) throw protectionError;
+      return [...readLiveLogProtection(local('stages.json')), ...runtime.stageLogProtection()];
+    },
+    diagnose: (message) => note(message, TAG.warn),
+  });
+  runtime.maintainStageLogs();
+  return runtime;
 }
 
 let supervisor;
@@ -510,6 +528,7 @@ async function turn() {
   // потому, что замок брался внутри цикла и до него не доходило дело при
   // недоступной доске.
   writeLock(refreshLock(readLock() ?? newLock(process.pid, now), now));
+  supervisor.maintainStageLogs();
 
   // Один `git fetch` на оборот — свой, а не по случаю. До сих пор удалённая
   // ветка обновлялась в общем `.git` только тогда, когда её подтягивала
@@ -527,6 +546,10 @@ async function turn() {
   // супервизора, мог кончиться минуту назад, и место обязано освободиться
   // этим же оборотом, а не при следующем перезапуске.
   supervisor.sweep();
+  if (supervisor.reportStorageBlocked) {
+    note('Планирование остановлено: отчёт ещё не сохранён на диск.', TAG.error);
+    return 'paused';
+  }
 
   const paused = isPaused(root, config);
   const apiPaused = isApiPaused(root, config);
@@ -560,6 +583,7 @@ async function turn() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const state = {
+    machine,
     ...(await buildDependencyState({
       backlog,
       config,
@@ -575,6 +599,7 @@ async function turn() {
     orphans: supervisor.orphanOutcomes,
     apiFailures: supervisor.apiFailures,
     codexUsage: supervisor.codexUsage,
+    reportStorageBlocked: supervisor.reportStorageBlocked,
     answers: readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.
@@ -612,9 +637,22 @@ async function turn() {
         run: runCommand,
         elapsed,
         reports: supervisor.reports,
+        reportStore: supervisor.reportStore,
       }),
       ...(backlog.store ?? {}),
+      tokenAccountingNote: (taskId) => tokenAccountingNote(supervisor.codexUsage, taskId),
+      tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
+      tokenReanalysisAdmission: (task, stage) =>
+        tokenReanalysisAdmission(task, stage, config, supervisor.codexUsage),
+      tokenActionBlocked: (taskId) =>
+        (backlog.store?.readTask(taskId)?.status === 'deploy' &&
+          supervisor.running().some((item) => item.stage === 'deploy')) ||
+        supervisor
+          .running()
+          .some((item) => item.taskId === taskId || item.batch?.includes(taskId)) ||
+        supervisor.reports.some((item) => item.taskId === taskId || item.batch?.includes(taskId)),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
+      reportStorageBlocked: () => supervisor.reportStorageBlocked,
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),
       // Исход сироты и его забвение — та же пара, что чтение и снятие отчёта:
@@ -643,7 +681,13 @@ async function turn() {
     // возвращаемое здесь выбрасывалось, провалившаяся `finish-claim`
     // молчала: в журнале каждый оборот стояло «доводим взятие до конца»,
     // и ни разу — «не довели». Так и вышли двое суток простоя 31.08.2026.
-    for (const item of repairWorld(repair.repairs, io)) {
+    const pendingIds = new Set(
+      supervisor.reports.flatMap((report) => [report.taskId, ...(report.batch ?? [])]),
+    );
+    for (const item of repairWorld(
+      repair.repairs.filter((repair) => !pendingIds.has(repair.taskId)),
+      io,
+    )) {
       if (item.result === 'done') continue;
       note(`починка ${item.kind} ${item.taskId ?? ''}: ${item.why}`);
     }
@@ -969,7 +1013,7 @@ async function loop() {
       enabled: config.selfUpdate !== false,
       dryRun: flags.includes('--dry-run'),
       running: supervisor.busy(),
-      pending: supervisor.reports.length,
+      pending: supervisor.reports.length + Number(supervisor.reportStorageBlocked),
     });
     if (update.verdict !== 'off' || turns === 1) note(update.notes);
     draining = update.verdict === 'wait';

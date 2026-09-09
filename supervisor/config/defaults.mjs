@@ -40,6 +40,7 @@ export const DEFAULTS = {
   stageModels: {},
   codexWindowsSandbox: 'elevated',
   // Эвристика тяжести задачи; кэш уже входит во входные токены.
+  codexTaskReanalysisTokens: 15_000_000,
   codexMaxTaskTokens: 25_000_000,
   claudeCommand: 'claude',
 
@@ -380,6 +381,8 @@ export const DEFAULTS = {
     lists: {
       candidate: 'Кандидаты',
       new: 'Заведено',
+      blocked: 'Заблокированы',
+      'token-limit': 'Лимит токенов',
       triage: 'Разбор',
       decompose: 'Декомпозиция',
       design: 'Проработка',
@@ -392,6 +395,7 @@ export const DEFAULTS = {
       revise: 'Доработка',
       deploy: 'Выкладка',
       cleanup: 'Уборка',
+      completed: 'Выполнено',
       closed: 'Закрыто',
       postmortem: 'Разбор ошибки',
       failed: 'Ошибка',
@@ -408,6 +412,10 @@ export const DEFAULTS = {
      * дополнений, а читать их всё равно нужно ради типа задачи.
      */
     labels: {
+      'category-ux': { name: 'Игровой UX', color: 'sky_dark' },
+      'category-mechanics': { name: 'Игровые механики', color: 'green_dark' },
+      'category-balance': { name: 'Игровой баланс', color: 'orange_dark' },
+      'category-infrastructure': { name: 'Инфраструктура разработки', color: 'purple_dark' },
       feature: { name: 'feature', color: 'green' },
       run: { name: 'run', color: 'blue' },
       note: { name: 'note', color: 'yellow' },

@@ -37,11 +37,13 @@
       "Edit(.matchlog/**)",
 
       "PowerShell(node supervisor/bin/cycle.mjs:*)",
+      "PowerShell(node supervisor/bin/review-ci.mjs:*)",
       "PowerShell(node supervisor/bin/board.mjs:*)",
       "PowerShell(node supervisor/bin/snapshot.mjs:*)",
       "PowerShell(node supervisor/bin/launch.mjs --help)",
       "PowerShell(node supervisor/bin/board-setup.mjs)",
       "Bash(node supervisor/bin/cycle.mjs:*)",
+      "Bash(node supervisor/bin/review-ci.mjs:*)",
       "Bash(node supervisor/bin/board.mjs:*)",
       "Bash(node supervisor/bin/snapshot.mjs:*)",
       "Bash(node supervisor/bin/launch.mjs --help)",

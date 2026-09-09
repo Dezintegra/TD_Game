@@ -18,7 +18,8 @@ const marker = config.trello.marker;
 /** Подставной клиент Trello: помнит запросы, отвечает заданным. */
 function fakeTrello(replies = {}) {
   const calls = [];
-  const answer = (path) => replies[path] ?? replies.default ?? { ok: true, data: {} };
+  const answer = (path) =>
+    replies[path] ?? replies.default ?? { ok: true, data: path.endsWith('/actions') ? [] : {} };
   return {
     calls,
     get: (path, query) => (calls.push({ method: 'GET', path, query }), answer(path)),
@@ -67,7 +68,157 @@ const card = (over = {}) => ({
 const backlog = (over = {}, trello = fakeTrello(), machine = null) =>
   createTrelloBacklog({ trello, config, snapshot: snapshot(over), machine });
 
+describe('публикация причины до закрытия', () => {
+  const reason = 'Предмет снят: проверка уже исправлена. Проверено: PR 166 влит.';
+  function world({ partFailure = 0, moveFailure = false, limit = 16384 } = {}) {
+    const calls = [],
+      actions = [];
+    let list = 'list-cleanup',
+      posts = 0,
+      brokenPart = partFailure,
+      brokenMove = moveFailure;
+    const trello = {
+      async get() {
+        return { ok: true, data: [...actions].reverse() };
+      },
+      async post(path, body) {
+        calls.push('comment');
+        posts++;
+        if (posts === brokenPart) return { ok: false, kind: 'offline', why: 'сеть' };
+        actions.push({ id: `comment-${posts}`, data: { text: body.text } });
+        return { ok: true, data: { id: `card-${posts}` } };
+      },
+      async put(path, body) {
+        calls.push('move');
+        if (brokenMove) return { ok: false, kind: 'offline', why: 'сеть' };
+        list = body.idList;
+        return { ok: true, data: {} };
+      },
+    };
+    const store = createTrelloBacklog({
+      trello,
+      config: { ...config, trello: { ...config.trello, maxTextLength: limit } },
+      snapshot: snapshot({ cards: [card({ idList: list })] }),
+    });
+    const task = { ...store.readTask('0031-proba'), status: 'closed', closureReason: reason };
+    const entry = {
+      from: 'cleanup',
+      to: 'closed',
+      closureReason: reason,
+      what: 'Убрано: дерева нет.',
+      source: 'supervisor',
+    };
+    return {
+      store,
+      task,
+      entry,
+      calls,
+      actions,
+      list: () => list,
+      restore: () => {
+        brokenPart = 0;
+        brokenMove = false;
+      },
+    };
+  }
+
+  it('отказывает без причины до любых записей', async () => {
+    const w = world();
+    delete w.entry.closureReason;
+    expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(false);
+    expect(w.calls).toEqual([]);
+  });
+
+  it.each([1, 2, 'move', null])(
+    'итог completed доставляется до переноса при сбое %s',
+    async (failure) => {
+      const w = world({
+        partFailure: typeof failure === 'number' ? failure : 0,
+        moveFailure: failure === 'move',
+        limit: 250,
+      });
+      w.task.status = 'completed';
+      w.task.completionSummary =
+        'Исправлен двойной расчёт. Единая формула проверена регрессионным тестом. '.repeat(12);
+      w.entry.to = 'completed';
+      delete w.entry.closureReason;
+      const first = await w.store.saveTask(w.task, w.entry);
+      expect(first.ok).toBe(failure === null);
+      if (failure !== null) {
+        expect(w.list()).toBe('list-cleanup');
+        w.restore();
+        expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(true);
+      }
+      expect(w.list()).toBe('list-completed');
+      expect(w.calls[0]).toBe('comment');
+      expect(w.actions.map((a) => a.data.text).join('\n')).toContain('Итог задачи');
+      expect(new Set(w.actions.map((a) => a.data.text)).size).toBe(w.actions.length);
+    },
+  );
+
+  it('публикует причину до перемещения', async () => {
+    const w = world();
+    expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(true);
+    expect(w.calls).toEqual(['comment', 'move']);
+    expect(w.actions[0].data.text).toContain('**Причина закрытия**');
+    expect(w.actions[0].data.text).toContain(reason);
+  });
+
+  it.each([1, 2])(
+    'отказ части %s сохраняет колонку, повтор дописывает только отсутствующие части',
+    async (partFailure) => {
+      const w = world({ partFailure, limit: 180 });
+      w.entry.what = 'Детали уборки. '.repeat(50);
+      expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(false);
+      expect(w.list()).toBe('list-cleanup');
+      expect(w.calls).not.toContain('move');
+      w.restore();
+      expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(true);
+      expect(w.list()).toBe('list-closed');
+      expect(new Set(w.actions.map((a) => a.data.text)).size).toBe(w.actions.length);
+    },
+  );
+
+  it('отказ перемещения не дублирует комментарий при повторе', async () => {
+    const w = world({ moveFailure: true });
+    expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(false);
+    w.restore();
+    expect((await w.store.saveTask(w.task, w.entry)).ok).toBe(true);
+    expect(w.actions).toHaveLength(1);
+    expect(w.calls).toEqual(['comment', 'move', 'move']);
+  });
+
+  it('ссылки строятся по ответу Trello на создание, включая новые карточки', async () => {
+    const w = world();
+    const created = { ...w.task, id: '0032-next', status: 'new' };
+    await w.store.createTask(created);
+    expect(w.store.taskLink(created.id)).toBe('[0032-next](https://trello.com/c/card-1)');
+    expect(w.store.readTask(created.id).closureReason).toBe(reason);
+    expect(w.store.allTaskIds()).toContain(created.id);
+  });
+});
+
 describe('чтение задач', () => {
+  it('лимит читается только из истории и не записывается отчётом в metadata', async () => {
+    const trello = fakeTrello();
+    const store = backlog(
+      {
+        cards: [card({ meta: { userTokenLimit: { value: 999 } } })],
+        userTokenLimits: { 'card-1': { value: 35, actionId: 'human' } },
+      },
+      trello,
+    );
+    const task = store.readTask('0031-proba');
+    expect(task.userTokenLimit.value).toBe(35);
+    await store.saveTask({ ...task, userTokenLimit: { value: 999 } }, { from: 'new', to: 'new' });
+    expect(trello.calls.find((x) => x.method === 'PUT').body.desc).not.toContain('userTokenLimit');
+    expect(store.readTask('0031-proba').userTokenLimit.value).toBe(35);
+    expect(
+      backlog({ cards: [card({ meta: { userTokenLimit: { value: 999 } } })] }).readTask(
+        '0031-proba',
+      ).userTokenLimit,
+    ).toBeUndefined();
+  });
   it('сохраняет архивный результат и негодные совпадения идентификатора', () => {
     const store = backlog({
       cards: [
@@ -130,6 +281,103 @@ describe('сохранение задачи', () => {
   });
 
   const entry = { at: '2026-08-27T11:00:00.000Z', from: 'new', to: 'design', what: 'Взята.' };
+
+  it.each([
+    ['feature', 'cleanup'],
+    ['run', 'interpret'],
+    ['note', 'triage'],
+  ])('новая выполненная задача %s оказывается сверху одним запросом', async (type, from) => {
+    const trello = fakeTrello();
+    const store = backlog({ cards: [card({ idList: `list-${from}` })] }, trello);
+    const result = await store.saveTask(task({ type, status: 'completed' }), {
+      ...entry,
+      from,
+      to: 'completed',
+    });
+
+    expect(result.ok).toBe(true);
+    const puts = trello.calls.filter((call) => call.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(puts[0].body).toMatchObject({ idList: 'list-completed', pos: 'top' });
+    expect(trello.calls.filter((call) => call.method === 'GET')).toHaveLength(1);
+  });
+
+  it.each(['completed', 'cleanup'])(
+    'выполненная карточка сохраняет место при повторе с from=%s и blocking',
+    async (from) => {
+      const trello = fakeTrello();
+      const store = backlog({ cards: [card({ idList: 'list-completed' })] }, trello);
+      await store.saveTask(task({ status: 'completed', blocking: true }), {
+        ...entry,
+        from,
+        to: 'completed',
+      });
+      expect(trello.calls.find((call) => call.method === 'PUT').body).not.toHaveProperty('pos');
+    },
+  );
+
+  it('сбой комментария откладывает само завершение и позицию карточки', async () => {
+    const order = ['old-card'];
+    let failComment = true;
+    const trello = {
+      async get() {
+        return { ok: true, data: [] };
+      },
+      async put(path, body) {
+        const id = path.split('/')[1];
+        if (body.pos === 'top') {
+          const previous = order.indexOf(id);
+          if (previous !== -1) order.splice(previous, 1);
+          order.unshift(id);
+        }
+        return { ok: true, data: {} };
+      },
+      async post() {
+        return failComment ? { ok: false, kind: 'offline' } : { ok: true, data: {} };
+      },
+    };
+    const store = backlog(
+      {
+        cards: [
+          card({ idList: 'list-cleanup' }),
+          card({ id: 'card-2', idList: 'list-cleanup', meta: { id: '0032-next' } }),
+        ],
+      },
+      trello,
+    );
+    const completedEntry = { ...entry, from: 'cleanup', to: 'completed' };
+    const first = task({ status: 'completed' });
+    expect((await store.saveTask(first, completedEntry)).ok).toBe(false);
+    failComment = false;
+    await store.saveTask(task({ id: '0032-next', status: 'completed' }), completedEntry);
+    expect((await store.saveTask(first, completedEntry)).ok).toBe(true);
+    expect(order).toEqual(['card-1', 'card-2', 'old-card']);
+  });
+
+  it('неудачное перемещение оставляет запрос верхней позиции для повтора', async () => {
+    const replies = { 'cards/card-1': { ok: false, kind: 'offline' } };
+    const trello = fakeTrello(replies);
+    const store = backlog({ cards: [card({ idList: 'list-cleanup' })] }, trello);
+    const completedEntry = { ...entry, from: 'cleanup', to: 'completed' };
+    expect((await store.saveTask(task({ status: 'completed' }), completedEntry)).ok).toBe(false);
+    replies['cards/card-1'] = { ok: true, data: {} };
+    expect((await store.saveTask(task({ status: 'completed' }), completedEntry)).ok).toBe(true);
+    expect(
+      trello.calls.filter((call) => call.method === 'PUT').map((call) => call.body.pos),
+    ).toEqual(['top', 'top']);
+  });
+
+  it.each([false, true])(
+    'сохраняет правило позиции рабочей очереди при blocking=%s',
+    async (blocking) => {
+      const trello = fakeTrello();
+      const store = backlog({ cards: [card()] }, trello);
+      await store.saveTask(task({ blocking }), entry);
+      expect(trello.calls.find((call) => call.method === 'PUT').body.pos).toBe(
+        blocking ? 'top' : undefined,
+      );
+    },
+  );
 
   it('переезд в колонку и правка отметок делаются одним запросом', async () => {
     const trello = fakeTrello();
@@ -398,6 +646,32 @@ describe('журнал', () => {
 });
 
 describe('ответ владельца продукта', () => {
+  it.each(['analyzing', 'waiting', 'verifying'])(
+    'не теряет ответ после начала проверки вопроса: %s',
+    (phase) => {
+      const store = backlog({
+        cards: [
+          card({
+            idList: 'list-postmortem',
+            meta: {
+              statusChangedAt: '2026-08-27T14:00:00.000Z',
+              returnTo: 'implement',
+              delayAnalysis: {
+                originStatus: 'awaiting-po',
+                originSince: '2026-08-27T12:00:00.000Z',
+                phase,
+              },
+            },
+          }),
+        ],
+        comments: [
+          { id: 'c1', cardId: 'card-1', date: '2026-08-27T11:00:00.000Z', text: 'Старый ответ' },
+          { id: 'c2', cardId: 'card-1', date: '2026-08-27T13:00:00.000Z', text: 'Новое решение' },
+        ],
+      });
+      expect(store.readAnswer('0031-proba')).toBe('Новое решение');
+    },
+  );
   it('находится после перехода в ожидание', () => {
     const store = backlog({
       cards: [
@@ -638,7 +912,7 @@ describe('архивные предшественники', () => {
   it('подтверждает только проверенные архивные карточки в closed', () => {
     const store = backlog({
       cards: [
-        card({ closed: true, idList: 'list-closed' }),
+        card({ closed: true, idList: 'list-completed' }),
         card({ id: 'card-2', closed: true, meta: { id: '0032-failed' }, idList: 'list-failed' }),
         card({
           id: 'card-3',

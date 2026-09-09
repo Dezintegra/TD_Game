@@ -42,6 +42,48 @@ const entry = (taskId, over = {}) => ({
 const run = (state) => scan({ config, ...state });
 const kinds = (result) => result.actions.map((action) => action.kind);
 
+describe('неподтверждённая доставка', () => {
+  it.each(['pr', 'cleanup', 'failed', 'awaiting-po', 'new'])(
+    'не даёт конкурирующих действий участнику в %s',
+    (status) => {
+      const lead = task({ status: 'deploy' });
+      const member = task({
+        id: '0002-member',
+        status,
+        returnTo: 'design',
+        recovery: { causedBy: 'pipeline', fixedBy: [] },
+      });
+      const independent = task({ id: '0003-independent', type: 'note' });
+      const report = {
+        taskId: lead.id,
+        stage: 'deploy',
+        reportId: 'pending',
+        outcome: 'done',
+        batch: [lead.id, member.id],
+      };
+      const result = run({
+        tasks: [lead, member, independent],
+        reports: [report],
+        registry: { entries: [entry(lead.id), entry(member.id)] },
+        answers: { [member.id]: true },
+        orphans: [{ taskId: member.id, stage: 'deploy' }],
+        apiFailures: [{ taskId: member.id, stage: 'deploy' }],
+      });
+      expect(result.actions.filter((action) => action.taskId === member.id)).toEqual([]);
+      expect(result.actions.find((action) => action.taskId === lead.id)).toMatchObject({
+        kind: 'transfer-report',
+        reportId: 'pending',
+      });
+      expect(result.actions.find((action) => action.taskId === independent.id)).toMatchObject({
+        kind: 'start-stage',
+      });
+    },
+  );
+  it('ошибка сохранения блокирует весь сканер', () => {
+    expect(run({ tasks: [task()], reportStorageBlocked: true }).actions).toEqual([]);
+  });
+});
+
 describe('пустая картина', () => {
   it('пустой бэклог не даёт работы', () => {
     const result = run({ tasks: [] });
@@ -1239,7 +1281,10 @@ describe('возврат из ошибки по вине конвейера', ()
 
   it('закрытая починка возвращает задачу', () => {
     const result = run({
-      tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 }), fix('closed')],
+      tasks: [
+        fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 1 }),
+        fix('completed'),
+      ],
     });
     expect(result.actions).toContainEqual({ ...returned, fixedBy: ['0091-fix'] });
   });
@@ -1256,12 +1301,12 @@ describe('возврат из ошибки по вине конвейера', ()
     expect(result.notes.join()).toContain('0091-fix (не разобрана)');
   });
 
-  it('починки, которой нет нигде, не ждут: она закрыта и убрана', () => {
-    // Идентификатор проверен при разборе, и исчезнуть иначе он не мог.
+  it('исчезновение починки не доказывает завершение', () => {
     const result = run({
       tasks: [fallen({ causedBy: 'pipeline', fixedBy: ['0091-fix'], returns: 0 })],
     });
-    expect(result.actions).toContainEqual({ ...returned, fixedBy: ['0091-fix'] });
+    expect(kinds(result)).not.toContain('return-task');
+    expect(result.notes.join()).toContain('нет подтверждения выполнения');
   });
 
   it('причина в задаче или без вердикта — конвейер не трогает', () => {
@@ -1301,8 +1346,8 @@ describe('порядок действий', () => {
       reports: [{ taskId: '0001-one', stage: 'design', outcome: 'done' }],
       tails: { main: 1, branches: {} },
     });
-    // Взятия новой задачи здесь нет и быть не должно: исполнитель занят
-    // задачей 0001, и освободится он не раньше, чем её отчёт перенесут.
+    // Противоречивый снимок всё ещё называет живой процесс: квоту нельзя
+    // освободить только по отчёту, пока живость не снята супервизором.
     expect(kinds(result)).toEqual(['push-tail', 'transfer-report']);
   });
 
@@ -1326,6 +1371,63 @@ it('явное отключение денежного потолка не оз�
 });
 
 describe('бюджет тяжести Codex', () => {
+  const userBudgetState = (userTokenLimit, global = 25000000, spent = 26093350) => ({
+    config: { ...config, provider: 'codex', codexMaxTaskTokens: global },
+    tasks: [task({ status: 'implement', userTokenLimit })],
+    registry: { entries: [entry('0001-one')] },
+    codexUsage: {
+      version: 2,
+      tasks: {
+        '0001-one': {
+          sessions: {
+            s: {
+              knownTokens: spent,
+              snapshot: { input_tokens: spent, output_tokens: 0 },
+              reasons: [],
+            },
+          },
+          launches: {},
+        },
+      },
+    },
+  });
+
+  it('явное повышение допускает прежний расход, снижение снова включает предел', () => {
+    const raised = userBudgetState({ value: 35000000 });
+    expect(kinds(run(raised))).toContain('analyze-token-budget');
+    raised.tasks[0].tokenReanalysis = { phase: 'completed' };
+    expect(kinds(run(raised))).toContain('continue-stage');
+    expect(kinds(run(userBudgetState({ value: 20000000 })))).toContain('hold-token-budget');
+    expect(kinds(run(userBudgetState({ value: null })))).toContain('hold-token-budget');
+    expect(raised.codexUsage.tasks['0001-one'].sessions.s.knownTokens).toBe(26093350);
+  });
+
+  it('индивидуальный предел действует и при отключённом общем', () => {
+    expect(kinds(run(userBudgetState({ value: 20000000 }, null)))).toContain('hold-token-budget');
+    expect(kinds(run(userBudgetState({ value: null }, null)))).toContain('analyze-token-budget');
+  });
+
+  it('ошибка команды и неизвестный расход удерживают запуск без изменения попыток', () => {
+    const invalid = userBudgetState({ error: 'Неверный лимит токенов' });
+    const before = globalThis.structuredClone(invalid);
+    expect(run(invalid).actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
+    expect(run(invalid).notes.join()).toContain('Неверный лимит');
+    expect(invalid).toEqual(before);
+    const unknown = userBudgetState({ value: 35000000 });
+    unknown.codexUsage.tasks['0001-one'].sessions.s.reasons.push('decreased-usage');
+    expect(run(unknown).actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
+  });
+
+  it('команда возвращает ожидающую карточку, не меняя лимит соседней', () => {
+    const state = userBudgetState({ value: 35000000 });
+    state.tasks[0].status = 'awaiting-po';
+    state.tasks[0].returnTo = 'decompose';
+    state.answers = { '0001-one': 'Лимит токенов: 35000000' };
+    expect(kinds(run(state))).toContain('answer-question');
+    const other = userBudgetState(undefined);
+    expect(kinds(run(other))).toContain('hold-token-budget');
+  });
+
   const check = (tokens, status = 'implement', limit = 100) =>
     run({
       config: { ...config, provider: 'codex', codexMaxTaskTokens: limit },
@@ -1352,21 +1454,21 @@ describe('бюджет тяжести Codex', () => {
         },
       },
     });
-  it('суммирует сессии и отправляет на дробление ровно на границе', () => {
+  it('суммирует сессии и переводит в ожидание ровно на границе', () => {
     expect(kinds(check(99))).toContain('continue-stage');
     const result = check(100);
-    expect(result.actions.find((a) => a.kind === 'decompose-again').reason).toContain(
+    expect(result.actions.find((a) => a.kind === 'hold-token-budget').budget.explanation).toContain(
       '100 токенов при бюджете 100',
     );
     expect(kinds(result)).not.toContain('continue-stage');
   });
   it('допускает анализ и восстановление; null отключает только этот бюджет', () => {
     for (const status of ['decompose', 'postmortem'])
-      expect(kinds(check(101, status))).not.toContain('decompose-again');
+      expect(kinds(check(101, status))).not.toContain('hold-token-budget');
     expect(kinds(check(101, 'implement', null))).toContain('continue-stage');
   });
 
-  it('legacy-unknown удерживает без расходования попытки, известный предел по-прежнему ведёт в decompose', () => {
+  it('legacy-unknown удерживает без расходования попытки, известный предел виден отдельной причиной', () => {
     const card = task({ status: 'implement', attempts: { continuations: 1, cycleFailures: 0 } });
     const before = JSON.parse(JSON.stringify(card));
     const checkLegacy = (tokens, limit = 100, status = 'implement') =>
@@ -1377,17 +1479,17 @@ describe('бюджет тяжести Codex', () => {
         codexUsage: JSON.parse(JSON.stringify(migrateTokenLedger({ '0001-one': { s: tokens } }))),
       });
     const held = checkLegacy(99);
-    expect(held.actions).toEqual([]);
+    expect(held.actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
     expect(held.notes.join()).toContain('legacy-unknown');
     expect(card).toEqual(before);
-    expect(kinds(checkLegacy(100))).toContain('decompose-again');
+    expect(kinds(checkLegacy(100))).toContain('hold-token-budget');
     expect(kinds(checkLegacy(99, null))).toContain('continue-stage');
     for (const status of ['decompose', 'postmortem']) {
       expect(kinds(checkLegacy(99, 100, status))).toContain('continue-stage');
-      expect(kinds(checkLegacy(100, 100, status))).not.toContain('decompose-again');
+      expect(kinds(checkLegacy(100, 100, status))).not.toContain('hold-token-budget');
     }
     for (const status of ['failed', 'awaiting-po']) {
-      expect(kinds(checkLegacy(100, 100, status))).not.toContain('decompose-again');
+      expect(kinds(checkLegacy(100, 100, status))).not.toContain('hold-token-budget');
       expect(checkLegacy(99, 100, status).notes.join()).not.toContain('legacy-unknown');
     }
   });
@@ -1419,7 +1521,7 @@ describe('бюджет тяжести Codex', () => {
           ...state,
           config: { ...config, provider: 'codex', codexMaxTaskTokens: 100 },
         });
-        expect(held.actions).toEqual([]);
+        expect(held.actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
         expect(held.notes.join()).toContain(unknown);
         expect(
           kinds(
@@ -1486,10 +1588,10 @@ describe('зависимости карточек', () => {
 
   it('запускает только после закрытия всех предшественников', () => {
     const dependent = task({ dependsOn: ['0002-base', '0003-base'] });
-    const base = task({ id: '0002-base', status: 'closed' });
+    const base = task({ id: '0002-base', status: 'completed' });
     expect(run({ tasks: [dependent, base] }).actions).toEqual([]);
     expect(
-      run({ tasks: [dependent, base, task({ id: '0003-base', status: 'closed' })] }).actions,
+      run({ tasks: [dependent, base, task({ id: '0003-base', status: 'completed' })] }).actions,
     ).toContainEqual({ kind: 'start-stage', taskId: dependent.id, stage: 'decompose' });
   });
 
