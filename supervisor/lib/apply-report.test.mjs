@@ -21,6 +21,131 @@ const task = (over = {}) => ({
 
 const report = (over = {}) => ({ stage: 'design', outcome: 'done', ...over });
 
+describe('waiting-ci', () => {
+  function pair(stage = 'review') {
+    const t = task({ status: stage, links: { pr: 238, change: 'preserve-run-params' } });
+    const r = {
+      taskId: t.id,
+      stage,
+      outcome: 'waiting-ci',
+      links: t.links,
+      findings: [],
+      ciWait: {
+        pr: 238,
+        expectedHead: 'a'.repeat(40),
+        observedHead: 'a'.repeat(40),
+        state: 'pending',
+        exitCode: 2,
+        why: 'UNKNOWN',
+        mode: 'ordinary',
+        runs: [],
+        checkpoint: stage === 'review' ? 'entry' : 'revise-recovery',
+      },
+      recoveryEvidence: {
+        taskId: t.id,
+        pr: 238,
+        change: t.links.change,
+        source: '/review.log',
+        session: 'session',
+        startedAt: '2026-09-09T07:00:00Z',
+        returnId: 'receipt',
+        pendingOnly: true,
+        complete: true,
+        unresolved: [],
+        reason: 'полный итог содержит только UNKNOWN',
+      },
+    };
+    return { t, r };
+  }
+  it.each(['entry', 'pre-merge'])(
+    'pending на входе %s идёт в pr даже при лимите возвратов',
+    (checkpoint) => {
+      const { t, r } = pair();
+      t.attempts = { rejections: 9 };
+      r.ciWait.checkpoint = checkpoint;
+      expect(applyReport(t, r, { maxRejections: 3 }).status).toBe('pr');
+    },
+  );
+  it.each(['pending', 'success'])('revise-recovery %s идёт через pr', (state) => {
+    const { t, r } = pair('revise');
+    Object.assign(r.ciWait, { state, exitCode: state === 'pending' ? 2 : 0 });
+    expect(applyReport(t, r).status).toBe('pr');
+  });
+  it.each([
+    (r) => {
+      r.ciWait.pr = 239;
+    },
+    (r) => {
+      r.taskId = 'other';
+    },
+    (r) => {
+      r.ciWait.expectedHead = 'abc';
+    },
+    (r) => {
+      r.ciWait.observedHead = '';
+    },
+    (r) => {
+      r.ciWait.exitCode = 1;
+    },
+    (r) => {
+      r.ciWait.exitCode = 64;
+    },
+    (r) => {
+      r.findings = ['реальное замечание'];
+    },
+    (r) => {
+      delete r.findings;
+    },
+    (r) => {
+      r.conflict = true;
+    },
+    (r) => {
+      r.ciWait.state = 'failure';
+    },
+    (r) => {
+      r.ciWait.state = 'conflict';
+    },
+    (r) => {
+      r.ciWait.checkpoint = 'revise-recovery';
+    },
+    (r) => {
+      r.ciWait.runs = null;
+    },
+    (r) => {
+      r.ciWait.why = '';
+    },
+  ])('не скрывает непригодный результат', (mutate) => {
+    const { t, r } = pair();
+    mutate(r);
+    expect(applyReport(t, r).status).toBe('postmortem');
+  });
+  it.each(['design', 'implement', 'audit', 'benchmark', 'deploy'])('запрещён из %s', (stage) => {
+    const { t, r } = pair(stage);
+    expect(applyReport(t, r).status).toBe('postmortem');
+  });
+  it('не требует совпадения head для ожидания, но требует его для success восстановления', () => {
+    const { t, r } = pair();
+    r.ciWait.observedHead = 'b'.repeat(40);
+    expect(applyReport(t, r).status).toBe('pr');
+    r.ciWait.observedHead = null;
+    expect(applyReport(t, r).status).toBe('pr');
+    const recovery = pair('revise');
+    Object.assign(recovery.r.ciWait, {
+      state: 'success',
+      exitCode: 0,
+      observedHead: 'b'.repeat(40),
+    });
+    expect(applyReport(recovery.t, recovery.r).status).toBe('postmortem');
+  });
+  it('revise требует полного доказательства текущего возврата', () => {
+    for (const field of Object.keys(pair('revise').r.recoveryEvidence)) {
+      const { t, r } = pair('revise');
+      delete r.recoveryEvidence[field];
+      expect(applyReport(t, r).status, field).toBe('postmortem');
+    }
+  });
+});
+
 describe('успешный этап двигает задачу по маршруту', () => {
   it.each([
     ['design', 'audit'],

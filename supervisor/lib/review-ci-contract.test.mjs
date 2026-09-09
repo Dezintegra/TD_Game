@@ -58,6 +58,7 @@ function violations(
       'pending не отменяет подтверждённый success',
       '`failed`',
       '`rejected`',
+      '`waiting-ci`',
       '`--watch` здесь не применяют',
     ],
     'вход',
@@ -69,10 +70,11 @@ function violations(
       'git -C <дерево> rev-parse HEAD',
       'тот же сохранённый SHA',
       'Изменился локальный',
-      'HEAD — `rejected`',
+      'HEAD — `waiting-ci`',
       'прежний ответ не годится',
       'gh pr merge <pr> --merge --match-head-commit <sha>',
       'Watch запрещён',
+      'checkpoint `pre-merge`',
     ],
     'вливание',
   );
@@ -151,6 +153,11 @@ describe('контракт инструкции review и источника CI'
     expect(violations(review, spec, settings.permissions, commands)).toContain(
       'команда отсутствует в перечне review',
     );
+  });
+  it('revise сохраняет узкое разрешение общего входа', () => {
+    expect(STAGE_COMMANDS.revise).toContain(actual);
+    expect(uncoveredForStage(settings.permissions, 'revise')).toEqual([]);
+    expect(read('supervisor/skills/revise.md')).toContain('`waiting-ci` без фиктивного коммита');
   });
   it('новое разрешение не открывает запуск супервизора и произвольные скрипты', () => {
     for (const command of [

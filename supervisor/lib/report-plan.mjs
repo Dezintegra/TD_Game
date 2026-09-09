@@ -105,7 +105,9 @@ export async function transferReport(action, io) {
     denials,
     report,
     stage: action.stage,
-    evidence: report.outcome === 'done' ? evidenceFor(task, action.stage, io) : {},
+    evidence: ['done', 'waiting-ci'].includes(report.outcome)
+      ? evidenceFor(task, action.stage, io)
+      : {},
   });
 
   if (trust.verdict === 'undermining') {
@@ -169,6 +171,23 @@ export async function transferReport(action, io) {
   }
 
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
+  if (report.outcome === 'waiting-ci' && task.status === 'revise' && verdict.status === 'pr') {
+    const evidence = report.recoveryEvidence;
+    const journal = io.readJournal?.(task.id);
+    const tail =
+      typeof journal === 'string' ? journal.slice(journal.lastIndexOf('**review → revise**')) : '';
+    if (
+      !tail.startsWith('**review → revise**') ||
+      !journal.includes(evidence.returnId) ||
+      !tail.includes(evidence.session) ||
+      !tail.includes(evidence.startedAt)
+    ) {
+      return {
+        result: 'failed',
+        why: 'waiting-ci: журнал не подтверждает идентичность текущего возврата',
+      };
+    }
+  }
   if (task.status === 'review' && report.outcome === 'done' && verdict.status === 'deploy') {
     const impact = io.deploymentImpact?.(report.links?.pr ?? task.links?.pr);
     if (impact?.needed === false) {
@@ -196,6 +215,11 @@ export async function transferReport(action, io) {
     : report.outcome === 'rejected'
       ? countRejection(moved.task)
       : resetAttempts(moved.task);
+
+  if (!halted && report.outcome === 'waiting-ci') {
+    next.attempts.rejections = task.attempts?.rejections ?? 0;
+    io.forgetSession?.(action.taskId, 'review');
+  }
 
   const resumedTokenAnalysis =
     task.status === 'decompose' &&
