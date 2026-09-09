@@ -95,7 +95,7 @@ describe('безопасный импорт', () => {
     async (...argv) => {
       process.argv = argv;
       const module = await load();
-      expect(Object.keys(module).sort()).toEqual(['FACTORS', 'cells', 'shardOf']);
+      expect(Object.keys(module).sort()).toEqual(['FACTORS', 'FLAG_OF', 'cells', 'shardOf']);
       for (const mock of Object.values(io)) expect(mock).not.toHaveBeenCalled();
       expect(output).not.toHaveBeenCalled();
     },

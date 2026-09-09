@@ -50,7 +50,7 @@ export const FACTORS = {
 };
 
 /** Ключ множителя в арене. Имена намеренно человеческие, а не как в коде. */
-const FLAG_OF = {
+export const FLAG_OF = {
   income: '--income',
   speed: '--speed',
   towerHp: '--tower-hp',
