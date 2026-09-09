@@ -305,6 +305,10 @@ describe('paired cutoff CLI', () => {
       expect(run('--out', paths.out).status).toBe(0);
       const jsonText = readFileSync(paths.out, 'utf8');
       const result = JSON.parse(jsonText);
+      expect(result.interpretationLimits).toContain('только к совместно дожившим мирам');
+      expect(result.interpretationLimits).toContain('не ко всей пачке');
+      expect(result.interpretationLimits).toContain('сам по себе не доказывает причинность');
+      expect(markdown.stdout).toContain(result.interpretationLimits);
       expect(metric(result)).toMatchObject({ n: 1, meanA: 10, meanB: 11, meanDelta: 1 });
       expect(result.sources.before.databaseSha256).toBe(originals[0]);
       expect(result.sources.after.databaseSha256).toBe(originals[1]);
