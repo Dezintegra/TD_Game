@@ -689,3 +689,523 @@ console.log(JSON.stringify({ status: run.status, error: run.error?.message, stde
 process.exitCode = run.status ?? 1;
 
 ```
+
+
+## Диагностическое продолжение после PR 230
+
+Дата: 09.09.2026. База main: 7a12154389c659a17c8023c45670d6180837fd22;
+голова перед пробой: 1249d4f. Claude Code 2.1.265, claude-opus-4-8,
+acceptEdits; cwd — назначенное дерево 0078, ОС и Git прежние.
+Протокол и лимит предварительно отправлены коммитом 1249d4f.
+
+Гипотеза: исходный полный снимок мог не применяться. Help CLI предупреждает
+о молчаливом игнорировании невалидных settings в print mode; это лишь гипотеза,
+а не диагноз сохранённого force-результата. Новое условие — добавочный точный
+deny безопасного чтения. Force-матрица не повторялась.
+
+Расход нового лимита: 2 из 3 сессий. Baseline начат 2026-09-09T01:43:08.967Z,
+длительность 66201 мс; additive начат 2026-09-09T01:44:15.176Z,
+длительность 28900 мс. Оба CLI завершились с кодом 0.
+Третий запуск условный: разрешён только после доказанного исправления загрузки.
+Такое исправление не установлено; третья сессия не запускалась.
+
+### Источники и сопоставимость
+
+| Роль | Наличие и происхождение | Применимость / подтверждение |
+| --- | --- | --- |
+| stage-settings | known: полный файл ветки побайтово после нормализации CRLF сверен с main | передан абсолютным --settings; digest baseline совпадает с прежней пробой |
+| project | unknown: дополнительные источники не отключались | содержимое и загрузка не проверялись |
+| local | unknown: дополнительные источники не отключались | содержимое и загрузка не проверялись |
+| user | unknown: личные файлы не читались | наличие, загрузка и неизменность не подтверждены |
+| managed | unknown: личные/managed файлы не читались | наличие, загрузка и неизменность не подтверждены |
+| CLI override | known: ключи перечислены ниже, режим и cwd одинаковы | additive отличается только двумя точными deny; остальные источники unknown |
+
+Имена ключей запуска: -p, --model, --permission-mode, --permission-prompts,
+--settings, --output-format, --verbose, --no-session-persistence.
+Промпт подан через stdin. --setting-sources не передавался; режим, provider,
+глобальные настройки и исходные allow/deny не менялись. Файлы снимков:
+.matchlog/0078-lease-probe/loading-20260909/baseline.json и additive.json.
+Полный исходный permissions-снимок приведён выше; его digest не изменился.
+Сравнение разобранных полных снимков после удаления добавок: true.
+Единственные добавки:
+
+```json
+[
+  "Bash(git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix)",
+  "PowerShell(git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix)"
+]
+```
+
+### Наблюдения и границы вывода
+
+В baseline оба чтения прошли через каждый native-инструмент. В additive
+show-prefix получил связанный отказ политики в Bash и PowerShell,
+is-inside-work-tree вернул true. Отказанные команды не повторялись и не
+обходились. Это подтверждает действие добавочного точного deny в новой сессии,
+но не действие старого wildcard force-deny.
+
+Неизменность остальных источников между заходами не доказана:
+otherSourcesUnchanged=false означает отсутствие свидетельства, а не найденное
+изменение. Метаданные до запусков не снимались; проверка после не восстановит
+их достоверно. Числовой exitCode Git native-поток не выдаёт; нормализованный 0
+выведен из успешного tool_result с stdout/stderr, а не из кода процесса Claude.
+
+Классификатор с полным нормализованным независимым контролем возвращает
+settings=unknown, target=unknown, verified=false, reason=incomparable-or-incomplete
+для обеих оболочек. Старые positive/negative не перепривязаны к новой сессии:
+в baseline чтения они отсутствуют. Даже доказанная сопоставимость новых чтений
+сама по себе не связала бы историческую force-матрицу с новой сессией.
+
+Безопасного следующего запуска в текущем протоколе нет: исправление загрузки
+не доказано, повтор матрицы и изменение force-deny по прохождению обоих
+контролей запрещены. Исходная приёмка 1.1 не выполнена; пункт остаётся открытым.
+PR 227, исходный результат и тесты сохранены. Это неполный результат, не done.
+
+### Очищенные native-события и классификация
+
+Сохранены только команды стенда, связанные tool_use_id, ответы этих команд,
+session/tool и digest. Личные данные и сырой поток не включены.
+
+```json
+{
+  "baseline": {
+    "started": "2026-09-09T01:43:08.967Z",
+    "durationMs": 66201,
+    "status": 0,
+    "digest": "35d3247c16810c2ff53b7c4eb8dd365713ca784a878d4326814dce25ae64e698",
+    "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+    "tools": [
+      "Bash",
+      "PowerShell"
+    ],
+    "complete": true,
+    "events": [
+      {
+        "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+        "tool": "Bash",
+        "toolUseId": "toolu_015Nn3hAnBZtgTs5WLhT4Nte",
+        "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix",
+        "responses": [
+          {
+            "isError": false,
+            "content": "(Bash completed with no output)",
+            "stdout": "",
+            "stderr": ""
+          }
+        ]
+      },
+      {
+        "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+        "tool": "Bash",
+        "toolUseId": "toolu_019TCXMk4rFvyYY7r3KVEvBc",
+        "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --is-inside-work-tree",
+        "responses": [
+          {
+            "isError": false,
+            "content": "true",
+            "stdout": "true",
+            "stderr": ""
+          }
+        ]
+      },
+      {
+        "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+        "tool": "PowerShell",
+        "toolUseId": "toolu_01AfGumUfNPcfiWBGEonmjjM",
+        "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix",
+        "responses": [
+          {
+            "isError": false,
+            "content": "(PowerShell completed with no output)",
+            "stdout": "",
+            "stderr": ""
+          }
+        ]
+      },
+      {
+        "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+        "tool": "PowerShell",
+        "toolUseId": "toolu_01GkrrbdHLXJmWCspEqaeTPE",
+        "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --is-inside-work-tree",
+        "responses": [
+          {
+            "isError": false,
+            "content": "true",
+            "stdout": "true",
+            "stderr": ""
+          }
+        ]
+      }
+    ],
+    "denials": []
+  },
+  "additive": {
+    "started": "2026-09-09T01:44:15.176Z",
+    "durationMs": 28900,
+    "status": 0,
+    "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178",
+    "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+    "tools": [
+      "Bash",
+      "PowerShell"
+    ],
+    "complete": true,
+    "events": [
+      {
+        "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+        "tool": "Bash",
+        "toolUseId": "toolu_01XmM3W7Wea4hyyT7dywhFyL",
+        "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix",
+        "responses": [
+          {
+            "isError": true,
+            "content": "Permission to use Bash with command git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix has been denied."
+          }
+        ]
+      },
+      {
+        "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+        "tool": "Bash",
+        "toolUseId": "toolu_01ETfCXuuYjp8w7S8WiUyvBE",
+        "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --is-inside-work-tree",
+        "responses": [
+          {
+            "isError": false,
+            "content": "true",
+            "stdout": "true",
+            "stderr": ""
+          }
+        ]
+      },
+      {
+        "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+        "tool": "PowerShell",
+        "toolUseId": "toolu_01AvAWMBcXvc56VEBS4KXbkM",
+        "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix",
+        "responses": [
+          {
+            "isError": true,
+            "content": "Permission to use PowerShell with command git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix has been denied."
+          }
+        ]
+      },
+      {
+        "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+        "tool": "PowerShell",
+        "toolUseId": "toolu_01DtqS7j1LGFrJxSYqLtmUUU",
+        "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --is-inside-work-tree",
+        "responses": [
+          {
+            "isError": false,
+            "content": "true",
+            "stdout": "true",
+            "stderr": ""
+          }
+        ]
+      }
+    ],
+    "denials": [
+      {
+        "tool": "Bash",
+        "toolUseId": "toolu_01XmM3W7Wea4hyyT7dywhFyL"
+      },
+      {
+        "tool": "PowerShell",
+        "toolUseId": "toolu_01AvAWMBcXvc56VEBS4KXbkM"
+      }
+    ]
+  },
+  "classifications": {
+    "Bash": {
+      "evidence": {
+        "contexts": {
+          "baseline": {
+            "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+            "tool": "Bash",
+            "digest": "35d3247c16810c2ff53b7c4eb8dd365713ca784a878d4326814dce25ae64e698"
+          },
+          "additive": {
+            "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+            "tool": "Bash",
+            "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178"
+          }
+        },
+        "loading": {
+          "baseline": {
+            "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+            "tool": "Bash",
+            "digest": "35d3247c16810c2ff53b7c4eb8dd365713ca784a878d4326814dce25ae64e698",
+            "provenance": "launch-metadata",
+            "status": "confirmed"
+          },
+          "additive": {
+            "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+            "tool": "Bash",
+            "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178",
+            "provenance": "launch-metadata",
+            "status": "confirmed"
+          }
+        },
+        "nativeToolAvailable": true,
+        "complete": true,
+        "comparison": {
+          "onlyAdditiveDeny": true,
+          "otherSourcesUnchanged": false
+        },
+        "independent": {
+          "baseline": {
+            "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+            "tool": "Bash",
+            "digest": "35d3247c16810c2ff53b7c4eb8dd365713ca784a878d4326814dce25ae64e698",
+            "toolUseId": "toolu_015Nn3hAnBZtgTs5WLhT4Nte",
+            "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix",
+            "native": true,
+            "complete": true,
+            "kind": "program-result",
+            "exitCode": 0,
+            "exitCodeBasis": "native successful tool result; numeric exit code not emitted"
+          },
+          "denied": {
+            "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+            "tool": "Bash",
+            "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178",
+            "toolUseId": "toolu_01XmM3W7Wea4hyyT7dywhFyL",
+            "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix",
+            "native": true,
+            "complete": true,
+            "kind": "policy-denied"
+          },
+          "companion": {
+            "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+            "tool": "Bash",
+            "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178",
+            "toolUseId": "toolu_01ETfCXuuYjp8w7S8WiUyvBE",
+            "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --is-inside-work-tree",
+            "native": true,
+            "complete": true,
+            "kind": "program-result",
+            "exitCode": 0,
+            "exitCodeBasis": "native successful tool result; numeric exit code not emitted"
+          }
+        },
+        "positive": {
+          "kind": "missing",
+          "complete": false
+        },
+        "negative": {
+          "kind": "missing",
+          "complete": false
+        }
+      },
+      "result": {
+        "settings": "unknown",
+        "target": "unknown",
+        "verified": false,
+        "reason": "incomparable-or-incomplete"
+      }
+    },
+    "PowerShell": {
+      "evidence": {
+        "contexts": {
+          "baseline": {
+            "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+            "tool": "PowerShell",
+            "digest": "35d3247c16810c2ff53b7c4eb8dd365713ca784a878d4326814dce25ae64e698"
+          },
+          "additive": {
+            "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+            "tool": "PowerShell",
+            "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178"
+          }
+        },
+        "loading": {
+          "baseline": {
+            "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+            "tool": "PowerShell",
+            "digest": "35d3247c16810c2ff53b7c4eb8dd365713ca784a878d4326814dce25ae64e698",
+            "provenance": "launch-metadata",
+            "status": "confirmed"
+          },
+          "additive": {
+            "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+            "tool": "PowerShell",
+            "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178",
+            "provenance": "launch-metadata",
+            "status": "confirmed"
+          }
+        },
+        "nativeToolAvailable": true,
+        "complete": true,
+        "comparison": {
+          "onlyAdditiveDeny": true,
+          "otherSourcesUnchanged": false
+        },
+        "independent": {
+          "baseline": {
+            "session": "1cc9617c-a985-4621-b5bb-498a0d92304a",
+            "tool": "PowerShell",
+            "digest": "35d3247c16810c2ff53b7c4eb8dd365713ca784a878d4326814dce25ae64e698",
+            "toolUseId": "toolu_01AfGumUfNPcfiWBGEonmjjM",
+            "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix",
+            "native": true,
+            "complete": true,
+            "kind": "program-result",
+            "exitCode": 0,
+            "exitCodeBasis": "native successful tool result; numeric exit code not emitted"
+          },
+          "denied": {
+            "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+            "tool": "PowerShell",
+            "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178",
+            "toolUseId": "toolu_01AvAWMBcXvc56VEBS4KXbkM",
+            "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --show-prefix",
+            "native": true,
+            "complete": true,
+            "kind": "policy-denied"
+          },
+          "companion": {
+            "session": "db44e3b3-dc16-4360-ad9b-01ada39bba45",
+            "tool": "PowerShell",
+            "digest": "ee212e32322fd4325c87abea26290d7e859bfb53a3f1c9cbd2ffb5a9d49b0178",
+            "toolUseId": "toolu_01DtqS7j1LGFrJxSYqLtmUUU",
+            "command": "git -C \"C:/src/dezintegra/TD_Game/.claude/worktrees/0078-proverit-ne-perekryvaet-li-zapret-git-c-/.matchlog/0078-lease-probe/PowerShell-force\" rev-parse --is-inside-work-tree",
+            "native": true,
+            "complete": true,
+            "kind": "program-result",
+            "exitCode": 0,
+            "exitCodeBasis": "native successful tool result; numeric exit code not emitted"
+          }
+        },
+        "positive": {
+          "kind": "missing",
+          "complete": false
+        },
+        "negative": {
+          "kind": "missing",
+          "complete": false
+        }
+      },
+      "result": {
+        "settings": "unknown",
+        "target": "unknown",
+        "verified": false,
+        "reason": "incomparable-or-incomplete"
+      }
+    }
+  }
+}
+```
+
+### Проверки продолжения
+
+- pnpm install --frozen-lockfile --prefer-offline: успешно.
+- pnpm test:pipeline: 2356 passed, 1 failed; watch-lifetime, replacement writer,
+  Timed out: new PID and both streams (ранее известная карточка 0284).
+  Все 5 lease-тестов и 126 тестов протокола/классификатора прошли.
+- ESLint lease-теста и Prettier настройки, revise и lease-теста: успешно.
+- Validate: ровно допустимая ошибка отсутствия дельт; status: 3/4.
+- На единственном просмотре CI PR 227 проверки формата/линта и быстрые тесты
+  зелёные; это наблюдение до коммита настоящего результата, не его проверка.
+- Git предупреждал об отказе чтения <user>/.config/git/ignore; операции
+  завершались успешно, обход предупреждения не применялся.
+
+### Исходный сценарий новых запусков
+
+```js
+import { mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import { resolve, join, sep } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { classifyPermissionEvidence } from '../supervisor/lib/permission-evidence.mjs';
+
+const root = realpathSync(process.cwd());
+const home = resolve(root, '.matchlog/0078-lease-probe/loading-20260909');
+const fixture = realpathSync(resolve(root, '.matchlog/0078-lease-probe/PowerShell-force'));
+if (!fixture.startsWith(root + sep)) throw new Error('Fixture outside workspace');
+mkdirSync(home);
+const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const settings = readFileSync(resolve(root, 'supervisor/config/stage-settings.json'), 'utf8');
+const git = spawnSync('git', ['-C', root, 'show', 'origin/main:supervisor/config/stage-settings.json'], { encoding: 'utf8', windowsHide: true });
+if (git.status !== 0 || git.stdout.trim() !== settings.replaceAll('\r\n', '\n').trim()) throw new Error('Snapshot differs from main');
+const commands = ['--show-prefix', '--is-inside-work-tree'].map(flag => `git -C "${fixture.replaceAll('\\', '/')}" rev-parse ${flag}`);
+const baseline = JSON.parse(settings);
+const additive = structuredClone(baseline);
+additive.permissions.deny.push(...['Bash', 'PowerShell'].map(tool => `${tool}(${commands[0]})`));
+const snapshots = { baseline: settings, additive: JSON.stringify(additive, null, 2) };
+const results = {};
+for (const [name, snapshot] of Object.entries(snapshots)) {
+  const path = join(home, `${name}.json`);
+  writeFileSync(path, snapshot, { flag: 'wx' });
+  const start = Date.now();
+  writeFileSync(join(home, `${name}-started.json`), JSON.stringify({ start: new Date(start).toISOString(), digest: hash(snapshot) }), { flag: 'wx' });
+  const args = ['-p', '--model', 'claude-opus-4-8', '--permission-mode', 'acceptEdits', '--permission-prompts', 'none', '--settings', path, '--output-format', 'stream-json', '--verbose', '--no-session-persistence'];
+  const prompt = `Perform only a bounded permission diagnostic. For each AVAILABLE native Bash and PowerShell tool call exactly these two harmless read commands ONCE, separately, preserving quoting. No setup, no edits, no other commands, no subagents, no personal files, no questions. A denied command MUST NOT be retried or bypassed; still call the distinct companion command. Do not emulate missing tools. Commands: ${JSON.stringify(commands)}`;
+  const run = spawnSync('claude', args, { cwd: root, input: prompt, encoding: 'utf8', windowsHide: true, timeout: 300000, maxBuffer: 16 * 1024 * 1024 });
+  const events = (run.stdout ?? '').split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+  const init = events.find(e => e.type === 'system' && e.subtype === 'init');
+  const final = events.findLast(e => e.type === 'result');
+  const uses = events.flatMap(e => (e.message?.content ?? []).filter(b => b.type === 'tool_use' && ['Bash', 'PowerShell'].includes(b.name) && commands.includes(b.input?.command)).map(b => ({ session: e.session_id, tool: b.name, toolUseId: b.id, command: b.input.command })));
+  const selected = uses.map(use => {
+    const responses = events.flatMap(e => (e.message?.content ?? []).filter(b => b.type === 'tool_result' && b.tool_use_id === use.toolUseId).map(b => ({ b, result: e.tool_use_result })));
+    return { ...use, responses: responses.map(({ b, result }) => ({ isError: b.is_error ?? false, content: b.content, ...(result && typeof result === 'object' ? { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode } : {}) })) };
+  });
+  results[name] = { started: new Date(start).toISOString(), durationMs: Date.now() - start, status: run.status, errorCode: run.error?.code, digest: hash(snapshot), session: init?.session_id, tools: (init?.tools ?? []).filter(t => ['Bash', 'PowerShell'].includes(t)), complete: !!final && run.status === 0, events: selected, denials: (final?.permission_denials ?? []).filter(d => uses.some(u => u.toolUseId === d.tool_use_id)).map(d => ({ tool: d.tool_name, toolUseId: d.tool_use_id })) };
+  writeFileSync(join(home, `${name}-selected.json`), JSON.stringify(results[name], null, 2));
+  console.log(JSON.stringify({ name, ...results[name] }));
+}
+const classification = {};
+for (const tool of ['Bash', 'PowerShell']) {
+  const contexts = Object.fromEntries(Object.entries(results).map(([name, result]) => [name, { session: result.session, tool, digest: result.digest }]));
+  const evidence = { contexts, loading: Object.fromEntries(Object.entries(contexts).map(([name, context]) => [name, { ...context, provenance: 'launch-metadata', status: 'confirmed' }])), nativeToolAvailable: Object.values(results).every(r => r.tools.includes(tool)), complete: Object.values(results).every(r => r.complete), comparison: { onlyAdditiveDeny: true, otherSourcesUnchanged: false } };
+  classification[tool] = { evidence, result: classifyPermissionEvidence(evidence) };
+}
+writeFileSync(join(home, 'classification.json'), JSON.stringify(classification, null, 2));
+console.log(JSON.stringify(classification));
+
+```
+
+Первичная классификация сценария консервативна: otherSourcesUnchanged=false.
+После чтения отобранных событий независимые контроли нормализованы повторно
+без новых сессий следующим кодом; результат unknown остался прежним.
+
+```js
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { classifyPermissionEvidence } from '../supervisor/lib/permission-evidence.mjs';
+
+const home = resolve('.matchlog/0078-lease-probe/loading-20260909');
+const read = name => JSON.parse(readFileSync(resolve(home, name), 'utf8'));
+const baseline = read('baseline-selected.json');
+const additive = read('additive-selected.json');
+const before = read('baseline.json');
+const after = read('additive.json');
+const additions = after.permissions.deny.splice(before.permissions.deny.length);
+const onlyAdditiveDeny = JSON.stringify(before) === JSON.stringify(after) && additions.length === 2;
+const classifications = {};
+for (const tool of ['Bash', 'PowerShell']) {
+  const contexts = Object.fromEntries(Object.entries({ baseline, additive }).map(([name, run]) => [name, { session: run.session, tool, digest: run.digest }]));
+  const normalize = (run, suffix) => {
+    const matches = run.events.filter(e => e.tool === tool && e.command.endsWith(suffix));
+    if (matches.length !== 1 || matches[0].responses.length !== 1) return { kind: 'missing', complete: false };
+    const event = matches[0];
+    const response = event.responses[0];
+    const denial = run.denials.some(d => d.toolUseId === event.toolUseId && d.tool === tool);
+    const policyDenied = denial && response.isError && response.content === `Permission to use ${tool} with command ${event.command} has been denied.`;
+    const programSuccess = !response.isError && response.stderr === '' && typeof response.stdout === 'string';
+    return { session: run.session, tool, digest: run.digest, toolUseId: event.toolUseId, command: event.command, native: true, complete: policyDenied || programSuccess, kind: policyDenied ? 'policy-denied' : programSuccess ? 'program-result' : 'missing', ...(programSuccess ? { exitCode: 0, exitCodeBasis: 'native successful tool result; numeric exit code not emitted' } : {}) };
+  };
+  const evidence = {
+    contexts,
+    loading: Object.fromEntries(Object.entries(contexts).map(([name, context]) => [name, { ...context, provenance: 'launch-metadata', status: 'confirmed' }])),
+    nativeToolAvailable: [baseline, additive].every(r => r.tools.includes(tool)),
+    complete: baseline.complete && additive.complete,
+    comparison: { onlyAdditiveDeny, otherSourcesUnchanged: false },
+    independent: { baseline: normalize(baseline, '--show-prefix'), denied: normalize(additive, '--show-prefix'), companion: normalize(additive, '--is-inside-work-tree') },
+    positive: { kind: 'missing', complete: false },
+    negative: { kind: 'missing', complete: false },
+  };
+  classifications[tool] = { evidence, result: classifyPermissionEvidence(evidence) };
+}
+writeFileSync(resolve(home, 'classification.json'), JSON.stringify(classifications, null, 2));
+
+```
