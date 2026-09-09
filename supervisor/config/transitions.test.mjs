@@ -1135,7 +1135,10 @@ describe('этапы и скиллы', () => {
     // остаётся объявленным, но неисполнимым — отчёт без доказательства
     // не применяется вовсе, и заход пропадает целиком.
     const text = skillText('design');
-    const missing = [...OUTCOMES, 'evidence'].filter((mark) => !text.includes(`\`${mark}\``));
+    // waiting-ci ограничен review/revise и проработке недоступен.
+    const missing = [...OUTCOMES.filter((outcome) => outcome !== 'waiting-ci'), 'evidence'].filter(
+      (mark) => !text.includes(`\`${mark}\``),
+    );
     expect(missing.map((mark) => `design.md: ${mark}`)).toEqual([]);
   });
 

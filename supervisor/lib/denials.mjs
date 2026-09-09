@@ -202,6 +202,12 @@ export function judgeDenials({ denials = [], report = {}, stage, evidence = {} }
   // Отчёт, ничего не объявлявший сделанным, годен сам по себе. Вопрос
   // и замечания читают как они есть, а `failed` и так ведёт в разбор,
   // где отказ становится уликой.
+  if (report.outcome === 'waiting-ci') {
+    const trace = branchTrace(evidence);
+    return trace.kind === 'present'
+      ? { verdict: 'passing', why: null }
+      : { verdict: 'undermining', why: `waiting-ci: ${trace.why}` };
+  }
   if (report.outcome !== 'done') return { verdict: 'passing', why: null };
 
   const check = CHECKS[TRACE[stage]];

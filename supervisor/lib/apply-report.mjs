@@ -22,7 +22,99 @@ import { tokenReanalysisProblem } from './token-reanalysis.mjs';
  * Проектировать такой задаче нечего, и прежде она уходила в сквозную «Ошибку»,
  * лгавшую о причине; теперь у неё есть честный конец — уборка и «Закрыто».
  */
-export const OUTCOMES = ['done', 'rejected', 'question', 'failed', 'moot', 'split', 'blocked'];
+export const OUTCOMES = [
+  'done',
+  'rejected',
+  'question',
+  'failed',
+  'moot',
+  'split',
+  'blocked',
+  'waiting-ci',
+];
+
+/** Ожидание не служит обходом замечаний и не удостоверяет право на merge. */
+export function ciWaitProblem(task, report) {
+  const nonempty = (value) => typeof value === 'string' && value.trim().length > 0;
+  const sha = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value);
+  const wait = report.ciWait;
+  if (!['review', 'revise'].includes(task.status))
+    return 'waiting-ci допустим только review/revise';
+  if (report.taskId !== task.id) return 'waiting-ci: чужая задача';
+  if (
+    !wait ||
+    !Number.isSafeInteger(wait.pr) ||
+    wait.pr <= 0 ||
+    wait.pr !== task.links?.pr ||
+    report.links?.pr !== wait.pr
+  )
+    return 'waiting-ci: PR не совпал с назначением';
+  if (report.links?.change != null && report.links.change !== task.links?.change)
+    return 'waiting-ci: изменение не совпало с назначением';
+  if (!sha(wait.expectedHead) || !(wait.observedHead === null || sha(wait.observedHead)))
+    return 'waiting-ci: нужен полный ожидаемый и пригодный наблюдаемый SHA';
+  if (
+    !nonempty(wait.why) ||
+    !['ordinary', 'confirmed'].includes(wait.mode) ||
+    !Array.isArray(wait.runs) ||
+    wait.runs.some(
+      (run) =>
+        !run ||
+        !Number.isSafeInteger(run.id) ||
+        run.id <= 0 ||
+        !Number.isSafeInteger(run.attempt) ||
+        run.attempt <= 0 ||
+        !sha(run.head),
+    )
+  )
+    return 'waiting-ci: непригодные сведения CI';
+  if (
+    !Array.isArray(report.findings) ||
+    report.findings.length ||
+    report.conflict === true ||
+    wait.failed
+  )
+    return 'waiting-ci: отсутствие самостоятельных замечаний не подтверждено';
+  const recovery = task.status === 'revise';
+  if (
+    !(recovery
+      ? wait.checkpoint === 'revise-recovery'
+      : ['entry', 'pre-merge'].includes(wait.checkpoint))
+  )
+    return 'waiting-ci: checkpoint не соответствует этапу';
+  if (
+    !(wait.state === 'pending' && wait.exitCode === 2) &&
+    !(
+      recovery &&
+      wait.state === 'success' &&
+      wait.exitCode === 0 &&
+      wait.observedHead === wait.expectedHead
+    )
+  )
+    return 'waiting-ci: непригодная пара state/exitCode';
+  if (wait.state === 'pending' && (wait.mode !== 'ordinary' || wait.runs.length))
+    return 'waiting-ci: pending не содержит подтверждённых runs';
+  if (recovery) {
+    const evidence = report.recoveryEvidence;
+    if (
+      !evidence ||
+      evidence.taskId !== task.id ||
+      evidence.pr !== wait.pr ||
+      evidence.change !== task.links?.change ||
+      !nonempty(evidence.source) ||
+      !nonempty(evidence.session) ||
+      !nonempty(evidence.returnId) ||
+      !Number.isFinite(Date.parse(evidence.startedAt)) ||
+      evidence.pendingOnly !== true ||
+      evidence.complete !== true ||
+      !Array.isArray(evidence.unresolved) ||
+      evidence.unresolved.length ||
+      !nonempty(evidence.reason)
+    )
+      return 'waiting-ci: не доказан текущий ошибочный возврат revise';
+  }
+  return null;
+}
 
 /**
  * Куда ведёт остановка задачи.
@@ -169,6 +261,19 @@ export function applyReport(task, report, limits = {}) {
 
   if (report.outcome === 'failed') {
     return halt(task, report.summary ?? 'этап завершился неуспешно', problems);
+  }
+
+  if (report.outcome === 'waiting-ci') {
+    const problem = ciWaitProblem(task, report);
+    const transition = canTransition(task, 'pr');
+    if (problem || !transition.ok)
+      return halt(task, problem ?? transition.reason, [problem ?? transition.reason]);
+    return {
+      status: 'pr',
+      returnTo: null,
+      note: `Ожидание допуска CI: ${report.ciWait.why}`,
+      problems: [],
+    };
   }
 
   if (report.outcome === 'blocked') {

@@ -100,6 +100,10 @@ export const uncoveredCommands = (permissions, commands) => {
  * от прежнего сторожа вливания осознанной выборкой; подробности у него же.
  */
 export const STAGE_COMMANDS = {
+  // Узкая выборка восстановления ожидания, как выборка review ниже.
+  revise: [
+    'node supervisor/bin/review-ci.mjs --pr 1 --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  ],
   /**
    * Выборка допуска CI и вливания. Общий вход CI требует своего разрешения;
    * остальные команды этапа этим перечнем не объявляются проверенными.

@@ -31,6 +31,39 @@ function fixture(over = {}) {
   };
 }
 describe('stable report plan', () => {
+  it('waiting-ci сохраняет возвраты, ссылки и расход и забывает review', async () => {
+    const { action, io, report, task } = fixture({
+      status: 'review',
+      links: { pr: 238 },
+      attempts: { rejections: 2, continuations: 4 },
+    });
+    Object.assign(report, {
+      outcome: 'waiting-ci',
+      links: task.links,
+      findings: [],
+      ciWait: {
+        pr: 238,
+        expectedHead: 'a'.repeat(40),
+        observedHead: null,
+        state: 'pending',
+        exitCode: 2,
+        why: 'UNKNOWN',
+        mode: 'ordinary',
+        runs: [],
+        checkpoint: 'entry',
+      },
+    });
+    io.stageEvidence = () => ({ branchOnRemote: true, unpushed: 0 });
+    const plan = await prepareReportPlan(action, io);
+    expect(plan.operations[0].args[0]).toMatchObject({
+      status: 'pr',
+      links: { pr: 238 },
+      attempts: { rejections: 2, continuations: 0 },
+    });
+    expect(plan.cleanup).toContainEqual([task.id, 'review']);
+    expect(plan.operations[0].args[0].spentUsd).toBe(3);
+    expect(await prepareReportPlan(action, {}, plan)).toEqual(plan);
+  });
   it('freezes accounting, transition, journal and cleanup without writing', async () => {
     const { action, io } = fixture();
     const plan = await prepareReportPlan(action, io);

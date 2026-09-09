@@ -1,6 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import { describeDenial, judgeDenials } from './denials.mjs';
 
+describe('след ожидания допуска', () => {
+  it.each(['review', 'revise'])('%s требует ветку, но не свежий коммит', (stage) => {
+    const report = { outcome: 'waiting-ci' };
+    expect(
+      judgeDenials({ report, stage, evidence: { branchOnRemote: true, unpushed: 0 } }).verdict,
+    ).toBe('passing');
+    for (const evidence of [
+      {},
+      { branchOnRemote: false, unpushed: 0 },
+      { branchOnRemote: true, unpushed: 1 },
+    ])
+      expect(judgeDenials({ report, stage, evidence }).verdict).toBe('undermining');
+    expect(
+      judgeDenials({
+        report,
+        stage,
+        evidence: { branchOnRemote: true, unpushed: 0 },
+        denials: [{ tool_name: 'AskUserQuestion' }],
+      }).verdict,
+    ).toBe('undermining');
+  });
+});
+
 /**
  * Проверки суда над отказами.
  *
