@@ -3,7 +3,7 @@ import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
 import { createAssignmentPreparer } from '../lib/benchmark-source.mjs';
-import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
+import { readTokenLedger, writeTokenLedger, tokenAccountingNote } from '../lib/token-budget.mjs';
 import { tokenAdmission } from '../lib/token-hold.mjs';
 import { tokenReanalysisAdmission } from '../lib/token-reanalysis.mjs';
 import { spawn } from 'node:child_process';
@@ -436,14 +436,24 @@ function createRuntimeSupervisor() {
     root,
     readCodexEvidence: (child) => {
       if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
+      let evidencePath = child.path;
+      if (child.recovery) {
+        const entries = readRegistry(root, config).entries.filter(
+          (item) => item.taskId === child.taskId,
+        );
+        if (entries.length !== 1 || !entries[0].path)
+          return { ok: false, reason: 'unknown-task-cwd' };
+        evidencePath = entries[0].path;
+      }
       const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
       const paths = sessionFiles(join(codexHome, 'sessions'), `${child.sessionId}.jsonl`);
       if (paths.length !== 1) return { ok: false, reason: 'ambiguous-session-evidence' };
       try {
         return sessionEvidence(readFileSync(paths[0], 'utf8'), {
           sessionId: child.sessionId,
-          cwd: child.path ? resolve(root, child.path) : root,
+          cwd: evidencePath ? resolve(root, evidencePath) : root,
           after: child.startedAt,
+          allowIncomplete: child.recovery === true,
         });
       } catch {
         return { ok: false, reason: 'malformed-session-evidence' };
@@ -630,6 +640,7 @@ async function turn() {
         reportStore: supervisor.reportStore,
       }),
       ...(backlog.store ?? {}),
+      tokenAccountingNote: (taskId) => tokenAccountingNote(supervisor.codexUsage, taskId),
       tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
       tokenReanalysisAdmission: (task, stage) =>
         tokenReanalysisAdmission(task, stage, config, supervisor.codexUsage),

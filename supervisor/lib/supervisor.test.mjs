@@ -2509,3 +2509,117 @@ it('передаёт Git-авторизацию рабочему Codex окру�
     ).not.toContain('test-token');
   }
 });
+
+describe('автоматическое восстановление удержанного расхода', () => {
+  const stopped = () => ({
+    version: 2,
+    tasks: {
+      '0001-one': {
+        sessions: {
+          s: { knownTokens: 0, snapshot: null, reasons: ['missing-usage', 'stdout-unavailable'] },
+        },
+        launches: {
+          old: {
+            sessionId: 's',
+            baseline: { input_tokens: 0, output_tokens: 0 },
+            observations: {},
+            completed: true,
+            reasons: ['missing-usage', 'stdout-unavailable'],
+          },
+        },
+      },
+    },
+  });
+  const proof = {
+    ok: true,
+    source: 'token_usage_record',
+    complete: false,
+    digest: 'a'.repeat(64),
+    turnId: 't',
+    snapshot: { input_tokens: 10, output_tokens: 2 },
+  };
+  const stages = { '0001-one:implement': { provider: 'codex', sessionId: 's', startedAt: NOW } };
+  it('при старте сохраняет минимум и следующее успешное завершение не блокируется старым хвостом', async () => {
+    let saves = 0;
+    const h = harness({
+      config: { provider: 'codex' },
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      codexUsage: stopped(),
+      stages,
+      readCodexEvidence: (child) =>
+        child.recovery ? proof : { ok: true, snapshot: { input_tokens: 3, output_tokens: 1 } },
+      saveCodexUsage: () => {
+        saves++;
+      },
+    });
+    expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(12);
+    expect(h.supervisor.lastSession('0001-one', 'implement')).toBeNull();
+    h.supervisor.sweep();
+    expect(saves).toBe(1);
+    expect(
+      h.supervisor.spawnStage(assignment({ sessionId: 's', continuation: true })),
+    ).toMatchObject({ ok: true });
+    const child = h.children[0];
+    child.stdout.emit('data', JSON.stringify({ type: 'thread.started', thread_id: 'new' }) + '\n');
+    child.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: JSON.stringify(report) },
+      }) + '\n',
+    );
+    await h.answer({ type: 'turn.completed', usage: { input_tokens: 3, output_tokens: 1 } });
+    expect(h.supervisor.reports).toHaveLength(1);
+    expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(16);
+    expect(h.logged.join('\n')).toContain('неизвестный хвост');
+    expect(h.logged.join('\n')).not.toContain('учёт задачи полный');
+  });
+  it('после ошибки записи не даёт допуск, затем сохраняет и восстанавливает', () => {
+    let fail = true;
+    const h = harness({
+      config: { provider: 'codex' },
+      codexUsage: stopped(),
+      stages,
+      readCodexEvidence: () => proof,
+      saveCodexUsage: () => {
+        if (fail) throw Error('disk');
+      },
+    });
+    expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(0);
+    expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').complete).toBe(false);
+    fail = false;
+    h.supervisor.sweep();
+    expect(taskTokenStatus(h.supervisor.codexUsage, '0001-one').acceptedIncomplete).toBe(true);
+    expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(12);
+  });
+  it('не трогает живую или оставленную без опознания сессию даже после перезапуска', () => {
+    for (const value of [
+      { ...stages['0001-one:implement'], provider: 'claude' },
+      { ...stages['0001-one:implement'], usageRecoveryBlocked: true },
+      {
+        ...stages['0001-one:implement'],
+        live: {
+          pid: 123,
+          machine: 'станция-1',
+          startedAt: NOW,
+          startedMs: 1000000,
+          timeoutMs: 2700000,
+          launchId: 'old',
+        },
+      },
+    ]) {
+      let reads = 0;
+      const h = harness({
+        config: { provider: 'codex' },
+        codexUsage: stopped(),
+        stages: { '0001-one:implement': value },
+        readCodexEvidence: () => {
+          reads++;
+          return proof;
+        },
+      });
+      expect(reads).toBe(0);
+      expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(0);
+    }
+  });
+});

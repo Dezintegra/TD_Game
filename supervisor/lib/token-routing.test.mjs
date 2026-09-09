@@ -1,3 +1,4 @@
+import { recoverTokenLaunch, tokenAccountingNote } from './token-budget.mjs';
 import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { scan } from './scan.mjs';
@@ -251,4 +252,34 @@ describe('переходы ожидания бюджета', () => {
     expect(calls.at(-1).body.desc).not.toContain('token-budget-panel');
     expect(calls.at(-1).body.desc).toContain('Текст владельца');
   });
+});
+
+it('автоматически возвращает удержанную задачу после принятия минимума с записью неопределённости', async () => {
+  const data = ledger(0, ['missing-usage', 'stdout-unavailable']);
+  data.tasks['0001-one'].sessions.s.snapshot = null;
+  data.tasks['0001-one'].launches.l = {
+    sessionId: 's',
+    baseline: { input_tokens: 0, output_tokens: 0 },
+    observations: {},
+    completed: true,
+    reasons: ['missing-usage', 'stdout-unavailable'],
+  };
+  const w = world({ codexUsage: data });
+  await w.apply(w.next().actions);
+  expect(w.state.tasks[0].status).toBe('token-limit');
+  expect(
+    recoverTokenLaunch(data, '0001-one', 'l', {
+      ok: true,
+      source: 'token_usage_record',
+      complete: false,
+      digest: 'a'.repeat(64),
+      snapshot: { input_tokens: 10, output_tokens: 2 },
+    }),
+  ).toBe(true);
+  w.io.tokenAccountingNote = (id) => tokenAccountingNote(data, id);
+  expect(w.next().actions.map((a) => a.kind)).toEqual(['resume-token-budget']);
+  await w.apply(w.next().actions);
+  expect(w.state.tasks[0].status).toBe('implement');
+  expect(w.saved.at(-1).entry.what).toContain('неизвестный хвост');
+  expect(w.saved.at(-1).entry.what).toContain('12 токенов');
 });

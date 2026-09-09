@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { TOKEN_CAPPED_STAGES, TOKEN_RESUME_STATES } from '../config/transitions.mjs';
 import { tokenAdmission } from './token-hold.mjs';
-import { taskTokens, taskTokenStatus } from './token-budget.mjs';
+import { taskTokens, taskTokenStatus, tokenAccountingAllowed } from './token-budget.mjs';
 import { applyTransition, resetAttempts } from './task-file.mjs';
 
 /** Ранний анализ не повышает окончательный бюджет и назначается один раз. */
@@ -15,7 +15,7 @@ export function tokenReanalysisAdmission(task, stage, config, ledger = {}) {
     !Number.isSafeInteger(threshold) ||
     threshold <= 0 ||
     tokenAdmission(task, stage, config, ledger) ||
-    !taskTokenStatus(ledger, task.id).complete
+    !tokenAccountingAllowed(taskTokenStatus(ledger, task.id))
   )
     return null;
   const spent = taskTokens(ledger, task.id);
