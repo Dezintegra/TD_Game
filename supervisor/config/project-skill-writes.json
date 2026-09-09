@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "taskId": "0083-pravka-purpose-speki-ne-dostavlyaetsya-d",
+      "change": "guard-declared-purpose-updates",
+      "stages": ["implement", "revise"],
+      "files": [
+        ".agents/skills/openspec-archive-change/SKILL.md",
+        ".agents/skills/openspec-sync-specs/SKILL.md"
+      ]
+    }
+  ]
+}

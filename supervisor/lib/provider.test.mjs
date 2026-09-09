@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { stageCommand } from './stage-command.mjs';
 import { checkEnvironment } from './environment.mjs';
-import { providerOf, readCodexAnswer } from './provider.mjs';
+import { codexExecutionArgs, providerOf, readCodexAnswer } from './provider.mjs';
 import { beginTokenLaunch, taskTokens } from './token-budget.mjs';
 
 const home = fileURLToPath(new URL('..', import.meta.url));
@@ -21,6 +21,29 @@ const events = [
 const run = (items = events, code = 0) => ({
   stdout: items.map((event) => JSON.stringify(event)).join('\n'),
   code,
+});
+
+it('точные скиллы дополняют Windows-профиль без расширения родителей', () => {
+  const files = [
+    'C:/fixture/tree/.agents/skills/archive/SKILL.md',
+    'C:/fixture/tree/.agents/skills/sync/SKILL.md',
+  ];
+  const args = codexExecutionArgs({}, '/fixture', '/fixture/tree', 'win32', files);
+  const profile = args.find((arg) => arg.startsWith('permissions='));
+  for (const file of files) expect(profile).toContain(JSON.stringify(file) + '="write"');
+  expect(profile).not.toContain('"C:/fixture/tree/.agents"="write"');
+  expect(profile).not.toContain('"C:/fixture/tree/.agents/skills"="write"');
+  expect(profile).not.toContain('/other/SKILL.md');
+  expect(profile).toContain('extends=":workspace"');
+  expect(profile).toContain('/.git');
+  expect(profile).toContain('/.perf-lock');
+  expect(profile).toContain('/.perf-log.jsonl');
+  expect(args).toContain('approval_policy="never"');
+  expect(args).toContain('windows.sandbox="elevated"');
+  expect(args).not.toContain('sandbox_mode="workspace-write"');
+  expect(() => codexExecutionArgs({}, '/fixture', '/fixture/tree', 'linux', files)).toThrow(
+    'Windows',
+  );
 });
 
 describe('выбор исполнителя', () => {

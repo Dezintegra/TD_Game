@@ -41,6 +41,7 @@
       "PowerShell(node supervisor/bin/snapshot.mjs:*)",
       "PowerShell(node supervisor/bin/launch.mjs --help)",
       "PowerShell(node supervisor/bin/board-setup.mjs)",
+      "PowerShell(node supervisor/bin/check-project-skill-writes.mjs --run)",
       "Bash(node supervisor/bin/cycle.mjs:*)",
       "Bash(node supervisor/bin/board.mjs:*)",
       "Bash(node supervisor/bin/snapshot.mjs:*)",
