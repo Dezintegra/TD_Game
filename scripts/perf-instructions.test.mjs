@@ -106,16 +106,16 @@ it('прежняя глобальная выборка ошибочно нахо
   expect(checkBenchmarkCommands(historicalSource)).toHaveLength(2);
 });
 
-const preparation = 'pnpm e2e:perf -- --client-port 5199 --port 3055 --check-only';
-const measurement = 'pnpm e2e:perf -- --client-port 5199 --port 3055';
-const explanations = [
-  `Пояснение: ${preparation}.\nПояснение: ${measurement}.`,
-  `Пояснение: \`${preparation}\`.\nПояснение: \`${measurement}\`.`,
-  ...['text', 'json', ''].map(
-    (language) =>
-      `\`\`\`\`${language}\n   1. Спроси машину: \`${preparation}\`\n\`\`\`powershell\n${measurement}\n\`\`\`\n\`\`\`\``,
-  ),
-];
+function commandExplanations([preparation, measurement]) {
+  return [
+    `Пояснение: ${preparation}.\nПояснение: ${measurement}.`,
+    `Пояснение: \`${preparation}\`.\nПояснение: \`${measurement}\`.`,
+    ...['text', 'json', ''].map(
+      (language) =>
+        `\`\`\`\`${language}\n   1. Спроси машину: \`${preparation}\`\n\`\`\`powershell\n${measurement}\n\`\`\`\n\`\`\`\``,
+    ),
+  ];
+}
 
 function insertExplanation(source, extra, inside = true) {
   const position = inside ? benchmarkCommands(source).end : source.length;
@@ -130,12 +130,37 @@ function mutateBenchmark(source, index, transform) {
   return source.slice(0, start) + replacement + source.slice(start + command.length);
 }
 
+function changePort(command, flag, transform) {
+  const pattern = new RegExp(`(${flag})(?:=|[ \\t]+)([0-9]+)(?=\\s|$)`);
+  expect(command, `портовый ключ ${flag} присутствует`).toMatch(pattern);
+  return command.replace(pattern, (_, key, port) => transform(key, Number(port)));
+}
+
+function nextPort(port) {
+  return ((port + 9) % 65535) + 1;
+}
+
+function changePorts(command) {
+  for (const flag of ['--client-port', '--port'])
+    command = changePort(command, flag, (key, port) => `${key} ${nextPort(port)}`);
+  return command;
+}
+
+function withChangedPorts(source) {
+  for (const index of [0, 1]) source = mutateBenchmark(source, index, changePorts);
+  return source;
+}
+
 for (const [name, source] of [
   ['живая инструкция', benchmarkSource],
+  // Весь набор, включая мутации, обязан переживать новую пару в живом тексте.
+  ['живая инструкция с заменёнными портами', withChangedPorts(benchmarkSource)],
   ['PR 219', historicalSource],
 ]) {
+  const commands = benchmarkCommands(source).commands.map(({ command }) => command);
+  const explanations = commandExplanations(commands);
   it(`${name}: подготовка и замер используют одну пару ключей`, () => {
-    expect(checkBenchmarkCommands(source)).toEqual([preparation, measurement]);
+    checkBenchmarkCommands(source);
   });
   for (const newline of ['\n', '\r\n']) {
     it(`${name}: перевод строк ${JSON.stringify(newline)} не меняет результат`, () => {
@@ -145,10 +170,7 @@ for (const [name, source] of [
   for (const [index, extra] of explanations.entries()) {
     for (const inside of [true, false]) {
       it(`${name}: пояснение ${index}, внутри perf: ${inside}`, () => {
-        expect(checkBenchmarkCommands(insertExplanation(source, extra, inside))).toEqual([
-          preparation,
-          measurement,
-        ]);
+        expect(checkBenchmarkCommands(insertExplanation(source, extra, inside))).toEqual(commands);
       });
     }
   }
@@ -163,13 +185,13 @@ for (const [name, source] of [
             ? `${command}\`\n   1. Спроси машину: \`${command}`
             : `${command}\n      ${command}`,
       ],
-      ...['--client-port 5199', '--port 3055'].map((flag) => [
+      ...['--client-port', '--port'].map((flag) => [
         `потеря ${flag}`,
-        (command) => command.replace(flag, ''),
+        (command) => changePort(command, flag, () => ''),
       ]),
-      ...['5199', '3055'].map((port) => [
-        `рассогласование ${port}`,
-        (command) => command.replace(port, String(Number(port) + 10)),
+      ...['--client-port', '--port'].map((flag) => [
+        `рассогласование ${flag}`,
+        (command) => changePort(command, flag, (key, port) => `${key} ${nextPort(port)}`),
       ]),
       [
         'неверный check-only',
@@ -197,24 +219,20 @@ for (const [name, source] of [
     let broken = withExplanations;
     for (const index of [0, 1])
       broken = mutateBenchmark(broken, index, (command) =>
-        command.replace(' --client-port 5199 --port 3055', ''),
+        changePort(
+          changePort(command, '--client-port', () => ''),
+          '--port',
+          () => '',
+        ),
       );
     expect(() => checkBenchmarkCommands(broken)).toThrow();
   });
   it(`${name}: согласованная замена портов допустима`, () => {
-    let changed = source;
-    for (const index of [0, 1])
-      changed = mutateBenchmark(changed, index, (command) =>
-        command.replace('5199', '5209').replace('3055', '3065'),
-      );
-    expect(checkBenchmarkCommands(changed)).toEqual(
-      [preparation, measurement].map((command) =>
-        command.replace('5199', '5209').replace('3055', '3065'),
-      ),
-    );
+    const changed = withChangedPorts(source);
+    expect(checkBenchmarkCommands(changed)).toEqual(commands.map(changePorts));
   });
   it(`${name}: дублирование отдельного powershell-блока обнаруживается`, () => {
-    const broken = insertExplanation(source, `   \`\`\`powershell\n   ${measurement}\n   \`\`\``);
+    const broken = insertExplanation(source, `   \`\`\`powershell\n   ${commands[1]}\n   \`\`\``);
     expect(() => checkBenchmarkCommands(broken)).toThrow();
   });
   it(`${name}: номера шагов и отступы блока не зашиты в стороже`, () => {
