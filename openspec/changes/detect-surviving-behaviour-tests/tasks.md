@@ -4,7 +4,7 @@
 
 ## 2. Изолированный адаптер
 
-- [ ] 2.1 За 2 часа добавить `scripts/mutation/execute.mjs`, `scripts/mutation/vitest.config.ts`, `scripts/mutation/setup.ts`, `scripts/mutation/reporter.ts`, `scripts/mutation/execute.test.mjs` и короткие фикстуры в `scripts/mutation/fixtures/` с расширением `.fixture.ts`. Адаптер выполняет одну пару в двух свежих процессах, проверяет единый экземпляр shared, применение/сохранение tuning и изменение производной величины, точное имя и исполнение тела теста; ограничивает срок и завершает workers. Проверка: `npx vitest run --root scripts mutation/execute.test.mjs`. Фикстуры подтверждают assertion в теле, assertion в beforeEach, import error, skip/todo, отсутствующий selector, сброс tuning, timeout, оборванный/чужой отчёт и нейтральность следующего запуска. Фикстуры не должны попадать в обычный игровой набор.
+- [x] 2.1 За 2 часа добавить `scripts/mutation/execute.mjs`, `scripts/mutation/vitest.config.ts`, `scripts/mutation/setup.ts`, `scripts/mutation/reporter.ts`, `scripts/mutation/execute.test.mjs` и короткие фикстуры в `scripts/mutation/fixtures/` с расширением `.fixture.ts`. Адаптер выполняет одну пару в двух свежих процессах, проверяет единый экземпляр shared, применение/сохранение tuning и изменение производной величины, точное имя и исполнение тела теста; ограничивает срок и завершает workers. Проверка: `npx vitest run --root scripts mutation/execute.test.mjs`. Фикстуры подтверждают assertion в теле, assertion в beforeEach, import error, skip/todo, отсутствующий selector, сброс tuning, timeout, оборванный/чужой отчёт и нейтральность следующего запуска. Фикстуры не должны попадать в обычный игровой набор.
 
 ## 3. Реальный список и сводка
 
