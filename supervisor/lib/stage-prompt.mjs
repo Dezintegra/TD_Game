@@ -80,6 +80,7 @@ export function stagePrompt({
   board = [],
   journalLimit = 12000,
   stageLog = null,
+  stageLogs = null,
   tokenBudget = null,
 }) {
   const lines = [];
@@ -205,18 +206,26 @@ export function stagePrompt({
   // имя файла складывается из двух полей и его легко перепутать, лог бывает
   // в сотни килобайт, а перечислять каталог через оболочку исполнителю
   // запрещено — составная команда оборачивается молчаливым отказом.
-  if (stageLog) {
-    lines.push(
-      '',
-      `## Лог упавшего этапа (${stageLog.stage})`,
-      '',
-      `Файл: \`${stageLog.path}\``,
-      '',
-      stageLog.text
-        ? ['```', clipMiddle(stageLog.text, 4000, 6000), '```'].join('\n')
-        : '_Лога нет: этап либо не породился, либо супервизор умер прежде, ' +
-            'чем записал. Это само по себе улика._',
-    );
+  const history = stageLogs ?? (stageLog ? { stage: stageLog.stage, entries: [stageLog] } : null);
+  if (history) {
+    lines.push('', `## Лог упавшего этапа (${history.stage ?? 'исходный этап неизвестен'})`, '');
+    if (history.error) lines.push(`История недоступна: ${history.error}`, '');
+    if (!history.entries?.length) lines.push('_Лога нет: доступных заходов нет._');
+    for (const entry of (history.entries ?? []).slice(0, 3)) {
+      lines.push(
+        `### Заход ${entry.launchId ?? 'legacy'}`,
+        `Этап: ${entry.stage ?? history.stage}; начат: ${entry.startedAt ?? 'неизвестно'}`,
+        `Файл: \`${entry.path ?? 'путь неизвестен'}\` (источник выдержки)`,
+        ...(entry.historyPath ? [`Историческая копия: \`${entry.historyPath}\``] : []),
+        ...(entry.diagnostic ? [`Совместимая копия: ${entry.diagnostic}`] : []),
+        ...(entry.error ? [`Ошибка чтения: ${entry.error}`] : []),
+        '',
+        entry.text
+          ? ['```', clipMiddle(entry.text, 4000, 6000), '```'].join('\n')
+          : '_Лога нет: этап либо не породился, либо супервизор умер прежде, чем записал. Это само по себе улика._',
+        '',
+      );
+    }
   }
 
   // Опись доски нужна сверкам, которым мало своей задачи: аудит ищет

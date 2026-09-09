@@ -8,9 +8,9 @@ import {
   commitTokenLedger,
 } from './token-budget.mjs';
 import { readCodexAnswer } from './provider.mjs';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
@@ -20,6 +20,8 @@ import { TAG } from './console.mjs';
 import { scan } from './scan.mjs';
 import { parseReport } from './parse-report.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
+import { openStageLogs } from './stage-logs.mjs';
+import { openReportStore } from './report-store.mjs';
 
 /**
  * Проверки хозяйства идущих этапов.
@@ -55,6 +57,10 @@ function harness(over = {}) {
     if (!over.stillborn) child.pid = 1000 + children.length;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.stdin.end = (text) => {
+      child.prompt = text;
+    };
     children.push(child);
     return child;
   };
@@ -102,7 +108,11 @@ function harness(over = {}) {
     // довода содержимое лога не видно ни одной проверке. Шапку его до сих пор
     // не читал никто, кроме человека, — оттого расхождение в ней и прожило
     // так долго.
-    writeStageLog: (taskId, stage, text) => wrote.push({ taskId, stage, text }),
+    writeStageLog: (taskId, stage, text, launch) => {
+      wrote.push({ taskId, stage, text, launch });
+      return over.writeStageLog?.(taskId, stage, text, launch);
+    },
+    readStageLogs: over.readStageLogs,
     // Рассказчик подставной, и метка запоминается отдельно от текста: судить
     // её по знакам в строке значило бы проверять раскраску, а не выбор.
     say: { line: (tag, text) => said.push({ tag, text }) },
@@ -429,6 +439,235 @@ const envelope = (over = {}) => ({
   session_id: 'сессия-от-приложения',
   result: JSON.stringify(report),
   ...over,
+});
+
+describe('история логов в назначении разбора', () => {
+  it('снимок защиты содержит живой запуск, а после завершения — сохранённый отчёт', async () => {
+    const parent = resolve('.matchlog');
+    mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(join(parent, 'log-protection-'));
+    try {
+      const queue = openReportStore(join(root, 'queue.json'));
+      const h = harness({ reportStore: queue });
+      h.supervisor.spawnStage(assignment());
+      const live = h.supervisor.stageLogProtection();
+      expect(live[0]).toMatchObject({ taskId: '0001-one', stage: 'design' });
+      expect(live[0].launchId).toBeTruthy();
+      await h.answer(envelope());
+      const pending = h.supervisor.stageLogProtection();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject(live[0]);
+      expect(pending[0].launchId).toBe(h.wrote[0].launch.launchId);
+      queue.acknowledge(queue.entries()[0].reportId);
+      expect(h.supervisor.stageLogProtection()).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('снимок защиты сохраняет неизвестную идентичность сироты и несохранённый отчёт', async () => {
+    const orphan = harness({
+      stages: {
+        '0002-orphan:implement': {
+          live: {
+            pid: 900,
+            image: 'claude.exe',
+            machine: 'станция-1',
+            startedAt: NOW,
+            timeoutMs: 9999999,
+          },
+        },
+      },
+    });
+    expect(orphan.supervisor.stageLogProtection()).toContainEqual({
+      taskId: '0002-orphan',
+      stage: 'implement',
+      launchId: undefined,
+    });
+    const h = harness({
+      reportStore: {
+        entries: () => [],
+        accept: () => {
+          throw new Error('queue write failed');
+        },
+      },
+    });
+    h.supervisor.spawnStage(assignment());
+    await h.answer(envelope());
+    expect(h.supervisor.stageLogProtection()).toContainEqual(
+      expect.objectContaining({
+        taskId: '0001-one',
+        stage: 'design',
+        launchId: h.wrote[0].launch.launchId,
+      }),
+    );
+  });
+
+  it('ошибка чтения очереди защиты не превращается в пустой снимок', () => {
+    let fail = false;
+    const h = harness({
+      reportStore: {
+        entries: () => {
+          if (fail) throw new Error('queue unreadable');
+          return [];
+        },
+      },
+    });
+    fail = true;
+    expect(() => h.supervisor.stageLogProtection()).toThrow('queue unreadable');
+  });
+  it('фиксированный review содержит полный второй rejected после применения первого', async () => {
+    const parent = resolve('.matchlog');
+    mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(join(parent, 'review-history-'));
+    try {
+      const store = openStageLogs(root);
+      const queue = openReportStore(join(root, 'queue.json'));
+      let tick = 0;
+      const h = harness({
+        reportStore: queue,
+        writeStageLog: store.writeStageLog,
+        now: () => new Date(Date.UTC(2026, 7, 1, 0, 0, tick++)).toISOString(),
+      });
+      for (const summary of ['first finding', 'second finding']) {
+        expect(h.supervisor.spawnStage(assignment({ stage: 'review' })).ok).toBe(true);
+        const result = JSON.stringify({ ...report, stage: 'review', outcome: 'rejected', summary });
+        await h.answer(envelope({ result }));
+        expect(readFileSync(join(root, '0001-one-review.log'), 'utf8')).toContain(result);
+        queue.acknowledge(queue.entries()[0].reportId);
+      }
+      const latest = readFileSync(join(root, '0001-one-review.log'), 'utf8');
+      expect(latest).toContain('исход отчёта:  rejected');
+      expect(latest).not.toContain('first finding');
+      expect(store.readStageLogs('0001-one', 'review').entries).toHaveLength(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  it.each(['implement', 'review'])(
+    'два захода %s сохраняются и доставляются без дубля копии',
+    async (stage) => {
+      const parent = resolve('.matchlog');
+      mkdirSync(parent, { recursive: true });
+      const root = mkdtempSync(join(parent, 'stage-history-integration-'));
+      try {
+        const store = openStageLogs(root);
+        let tick = 0;
+        const h = harness({
+          writeStageLog: store.writeStageLog,
+          readStageLogs: store.readStageLogs,
+          now: () => new Date(Date.UTC(2026, 7, 1, 0, 0, tick++)).toISOString(),
+        });
+        for (const marker of ['FIRST-CAUSE', 'SECOND-FAILURE']) {
+          expect(
+            h.supervisor.spawnStage(assignment({ stage, sessionId: 'same', continuation: true }))
+              .ok,
+          ).toBe(true);
+          h.children.at(-1).stderr.emit('data', `tail-${marker}`);
+          await h.answer(
+            envelope({
+              result: marker,
+              permission_denials: [
+                { tool_name: 'Bash', tool_input: { command: 'denied-command' } },
+              ],
+            }),
+            1,
+          );
+        }
+        const alias = join(root, `0001-one-${stage}.log`);
+        const entries = store.readStageLogs('0001-one', stage).entries;
+        expect(entries).toHaveLength(2);
+        expect(readdirSync(root)).toHaveLength(3);
+        expect(readFileSync(alias, 'utf8')).toBe(readFileSync(entries[0].historyPath, 'utf8'));
+        expect(readFileSync(alias, 'utf8')).toContain('SECOND-FAILURE');
+        expect(readFileSync(alias, 'utf8')).not.toContain('FIRST-CAUSE');
+        expect(h.wrote[0].launch.launchId).not.toBe(h.wrote[1].launch.launchId);
+        expect(h.wrote[0].launch.startedAt).not.toBe(h.wrote[1].launch.startedAt);
+        expect(
+          h.supervisor.spawnStage(assignment({ stage: 'postmortem', task: { returnTo: stage } }))
+            .ok,
+        ).toBe(true);
+        // Промпт приходит по stdin, как у настоящего процесса.
+        const asked = harness({
+          readStageLogs: store.readStageLogs,
+        });
+        expect(
+          asked.supervisor.spawnStage(
+            assignment({ stage: 'postmortem', task: { returnTo: stage } }),
+          ).ok,
+        ).toBe(true);
+        const prompt = asked.children[0].prompt;
+        expect(prompt).toContain(alias);
+        expect(prompt).toContain(entries[0].historyPath);
+        expect(prompt).toContain(entries[1].path);
+        expect(prompt).toContain('FIRST-CAUSE');
+        expect(prompt).toContain('SECOND-FAILURE');
+        expect(prompt.indexOf('SECOND-FAILURE')).toBeLessThan(prompt.indexOf('FIRST-CAUSE'));
+        expect(prompt).toContain('denied-command');
+        expect(prompt).toContain('tail-SECOND-FAILURE');
+        expect(prompt.split('### Заход ')).toHaveLength(3);
+        await asked.answer(envelope({ result: 'end' }), 1);
+        await h.answer(envelope({ result: 'end' }), 1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    { returnTo: 'implement' },
+    { delayAnalysis: { phase: 'analyzing', originStatus: 'review' } },
+    {
+      delayAnalysis: { phase: 'verifying', originStatus: 'blocked' },
+      blockedContext: { from: 'revise' },
+    },
+    {
+      delayAnalysis: { phase: 'analyzing', originStatus: 'awaiting-po', originReturnTo: 'design' },
+    },
+    {},
+  ])('сохраняет выбор исходного этапа для %j', async (task) => {
+    const expected =
+      task.returnTo ??
+      task.blockedContext?.from ??
+      task.delayAnalysis?.originReturnTo ??
+      task.delayAnalysis?.originStatus;
+    const calls = [];
+    const h = harness({
+      readStageLogs: (taskId, stage) => {
+        calls.push({ taskId, stage });
+        return { stage, entries: [] };
+      },
+    });
+    expect(
+      h.supervisor.spawnStage(
+        assignment({ stage: 'postmortem', task: { ...task, status: 'postmortem' } }),
+      ).ok,
+    ).toBe(true);
+    expect(calls).toEqual([{ taskId: '0001-one', stage: expected }]);
+    await h.answer(envelope({ result: 'end' }), 1);
+  });
+
+  it('ошибка диагностической записи не теряет принятый отчёт после перезапуска', async () => {
+    const parent = resolve('.matchlog');
+    mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(join(parent, 'stage-log-report-'));
+    try {
+      const path = join(root, 'reports.json');
+      const h = harness({
+        reportStore: openReportStore(path),
+        writeStageLog: () => {
+          throw new Error('log EACCES');
+        },
+      });
+      h.supervisor.spawnStage(assignment());
+      await h.answer(envelope());
+      expect(openReportStore(path).entries()[0].report).toMatchObject(report);
+      expect(h.supervisor.busy()).toBe(0);
+      expect(h.logged.join('\n')).toContain('log EACCES');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('устойчивая очередь завершений', () => {

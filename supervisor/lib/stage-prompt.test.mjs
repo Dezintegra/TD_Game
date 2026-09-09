@@ -29,6 +29,70 @@ const assignment = {
   path: '.claude/worktrees/0042-fix-tesla-price',
 };
 
+describe('несколько выдержек', () => {
+  it('ограничивает три больших лога 30 000 знаками содержимого, оставляя края', () => {
+    const entries = [5, 4, 3, 2, 1].map((n) => ({
+      stage: 'implement',
+      launchId: `launch-${n}`,
+      startedAt: `start-${n}`,
+      path: `/logs/${n}.log`,
+      text: `HEAD-${n}` + String(n).repeat(20000) + `TAIL-${n}`,
+    }));
+    const prompt = stagePrompt({ assignment, task, stageLogs: { stage: 'implement', entries } });
+    const excerpt = prompt.slice(
+      prompt.indexOf('## Лог упавшего этапа'),
+      prompt.indexOf('## Отчёт'),
+    );
+    const blocks = [...excerpt.matchAll(/```\n([\s\S]*?)\n```/g)].map((match) => match[1]);
+    expect(blocks).toHaveLength(3);
+    let contentLength = 0;
+    blocks.forEach((block, index) => {
+      const n = 5 - index;
+      expect(block).toContain(`HEAD-${n}`);
+      expect(block).toContain(`TAIL-${n}`);
+      expect(block).toContain('пропущено 10012 знаков');
+      contentLength += block.replace(/\n\n\[…пропущено [^\n]+\]\n\n/, '').length;
+    });
+    expect(contentLength).toBe(30000);
+    expect(excerpt).not.toContain('HEAD-2');
+  });
+
+  it('содержит один текст на пару путей, а ошибку файла показывает рядом с остальными', () => {
+    const entries = [
+      {
+        path: '/logs/latest.log',
+        historyPath: '/logs/history.log',
+        text: 'UNIQUE-SECOND',
+        stage: 'implement',
+        launchId: 'second',
+      },
+      { path: '/logs/missing.log', error: 'ENOENT', stage: 'implement' },
+      {
+        path: '/logs/first.log',
+        text: 'UNIQUE-FIRST',
+        diagnostic: '/logs/latest.log: stale',
+        stage: 'implement',
+      },
+    ];
+    const prompt = stagePrompt({ assignment, task, stageLogs: { stage: 'implement', entries } });
+    expect(prompt.split('UNIQUE-SECOND')).toHaveLength(2);
+    expect(prompt).toContain('Историческая копия: `/logs/history.log`');
+    expect(prompt).toContain('Ошибка чтения: ENOENT');
+    expect(prompt).toContain('UNIQUE-FIRST');
+    expect(prompt).toContain('/logs/latest.log: stale');
+  });
+
+  it('явно называет отсутствие истории и неизвестный этап', () => {
+    const prompt = stagePrompt({
+      assignment,
+      task,
+      stageLogs: { stage: null, entries: [], error: 'unknown task or stage' },
+    });
+    expect(prompt).toContain('исходный этап неизвестен');
+    expect(prompt).toContain('Лога нет');
+  });
+});
+
 it('новый анализ 0032 получает основание ожидания и артефакты 0120', () => {
   const predecessor = {
     id: '0120-progon-areny-s-priborom-pomeh-yadernogo-',
