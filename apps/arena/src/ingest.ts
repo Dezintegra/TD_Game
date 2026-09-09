@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { constants, gunzipSync } from 'node:zlib';
 import type { DatabaseSync } from 'node:sqlite';
 import { LOG_SUFFIX } from './log.js';
-import { CHILD_TABLES, SCHEMA } from './schema.js';
+import { CHILD_TABLES, SCHEMA, ASSAULT_MIGRATION } from './schema.js';
 import type { LogRecord } from './records.js';
 
 /**
@@ -110,6 +110,7 @@ export const openDatabase = (path: string): DatabaseSync => {
 
   const db = new Database(path);
   db.exec(SCHEMA);
+  db.exec(ASSAULT_MIGRATION);
 
   return db;
 };
@@ -194,6 +195,37 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
     );
 
     for (const record of records) {
+      if (record.t === 'match' && record.traceVersion !== undefined) {
+        db.prepare('insert into assault_metadata values (?, ?)').run(
+          matchId,
+          JSON.stringify(record),
+        );
+        rows += 1;
+      }
+      if ('sequence' in record && record.t.startsWith('assault-')) {
+        db.prepare('insert into assault_event values (?, ?, ?, ?, ?)').run(
+          matchId,
+          record.tick,
+          record.sequence,
+          record.t,
+          JSON.stringify(record),
+        );
+        rows += 1;
+      }
+      if (
+        record.t === 'sample' &&
+        record.readyTowers !== undefined &&
+        record.underConstructionTowers !== undefined
+      ) {
+        db.prepare('insert into assault_sample values (?, ?, ?, ?, ?)').run(
+          matchId,
+          record.tick,
+          record.player,
+          record.readyTowers,
+          record.underConstructionTowers,
+        );
+        rows += 1;
+      }
       switch (record.t) {
         case 'sample':
           insertSample.run(

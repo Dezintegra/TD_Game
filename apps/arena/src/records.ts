@@ -1,4 +1,20 @@
 import type { AttemptNote, AttemptResult, DecisionRecord } from '@td/ai';
+import type { RuleTuning } from '@td/shared';
+import type { CombatObservation } from '@td/sim';
+
+export type AssaultTraceRecord = CombatObservation extends infer E
+  ? E extends CombatObservation
+    ? E & { readonly t: E['type'] }
+    : never
+  : never;
+export interface AssaultTowerRecord {
+  readonly t: 'assault-tower';
+  readonly tick: number;
+  readonly sequence: number;
+  readonly id: number;
+  readonly owner: number;
+  readonly event: 'appeared' | 'ready' | 'removed';
+}
 
 /**
  * Строки лога.
@@ -17,6 +33,12 @@ import type { AttemptNote, AttemptResult, DecisionRecord } from '@td/ai';
 
 /** Заголовок матча. Первая строка файла. */
 export interface MatchHeader {
+  readonly tuning?: Readonly<RuleTuning>;
+  readonly effectiveAssaultRange?: number;
+  readonly traceVersion?: number;
+  readonly traceEnabled?: boolean;
+  readonly tickRate?: number;
+  readonly tickCap?: number;
   readonly t: 'match';
   readonly matchId: string;
   readonly kind: 'arena' | 'replay';
@@ -48,6 +70,8 @@ export interface MatchFooter {
 
 /** Состояние стороны на момент времени. Снимается раз в игровую секунду. */
 export interface SampleRecord {
+  readonly readyTowers?: number;
+  readonly underConstructionTowers?: number;
   readonly t: 'sample';
   readonly tick: number;
   readonly player: number;
@@ -160,6 +184,8 @@ export interface DecisionLogRecord extends Omit<DecisionRecord, 'attempts' | 'fr
 }
 
 export type LogRecord =
+  | AssaultTraceRecord
+  | AssaultTowerRecord
   | MatchHeader
   | MatchFooter
   | SampleRecord

@@ -164,6 +164,9 @@ create index if not exists command_by_match  on command  (match_id, player, tick
 
 /** Таблицы, зависящие от матча. Чистятся при повторной сборке. */
 export const CHILD_TABLES: readonly string[] = [
+  'assault_metadata',
+  'assault_event',
+  'assault_sample',
   'sample',
   'tower',
   'wall_site',
@@ -172,3 +175,19 @@ export const CHILD_TABLES: readonly string[] = [
   'frontier',
   'command',
 ];
+
+/** Отдельная версия миграции сохраняет прежние таблицы и смысл sample.towers. */
+export const ASSAULT_MIGRATION = `
+create table if not exists arena_migration (name text primary key);
+create table if not exists assault_metadata (match_id text primary key, payload text not null);
+create table if not exists assault_event (
+  match_id text not null, tick integer not null, sequence integer not null,
+  type text not null, payload text not null, primary key (match_id, tick, type, sequence)
+);
+create table if not exists assault_sample (
+  match_id text not null, tick integer not null, player integer not null,
+  ready integer not null, under_construction integer not null,
+  primary key (match_id, tick, player)
+);
+insert or ignore into arena_migration values ('assault-trace-v1');
+`;

@@ -5,6 +5,9 @@
   TICKS_PER_SECOND,
   asPlayerId,
   flatten,
+  UNIT_STATS,
+  UnitType,
+  ruleTuning,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { UNREACHABLE, cellAt, checksum, createWorld, playerStats, step } from '@td/sim';
@@ -28,6 +31,7 @@ import type {
   WallSiteRecord,
 } from './records.js';
 import { codeVersion } from './version.js';
+import { ASSAULT_TRACE_VERSION, createAssaultTrace, initialAssaultState } from './assault-trace.js';
 
 /**
  * Безголовый матч.
@@ -71,6 +75,8 @@ const TOWERS_EVERY = 10 * TICKS_PER_SECOND;
 export const CHECKSUM_EVERY = TICKS_PER_SECOND;
 
 export interface MatchOptions {
+  readonly traceAssault?: boolean;
+  readonly assaultExperiment?: boolean;
   readonly matchId: string;
   readonly worldSeed: number;
   readonly aiSeeds: readonly number[];
@@ -122,7 +128,12 @@ export interface MatchResult {
   readonly recovered: ReadonlyMap<number, readonly Command[]>;
 }
 
-const sampleOf = (world: WorldState, player: PlayerId, pathToEnemy: boolean): SampleRecord => {
+const sampleOf = (
+  world: WorldState,
+  player: PlayerId,
+  pathToEnemy: boolean,
+  diagnostic = false,
+): SampleRecord => {
   const state = world.players[player];
   const general = world.generals[player];
   const stats = state === undefined ? undefined : playerStats(state);
@@ -151,6 +162,24 @@ const sampleOf = (world: WorldState, player: PlayerId, pathToEnemy: boolean): Sa
   }
 
   return {
+    ...(diagnostic
+      ? {
+          readyTowers: world.structures.filter(
+            (s) =>
+              s.owner === player &&
+              s.kind !== StructureKind.Base &&
+              s.kind !== StructureKind.Wall &&
+              world.tick >= s.builtAtTick,
+          ).length,
+          underConstructionTowers: world.structures.filter(
+            (s) =>
+              s.owner === player &&
+              s.kind !== StructureKind.Base &&
+              s.kind !== StructureKind.Wall &&
+              world.tick < s.builtAtTick,
+          ).length,
+        }
+      : {}),
     t: 'sample',
     tick: world.tick,
     player,
@@ -219,6 +248,16 @@ export const runMatch = (options: MatchOptions): MatchResult => {
     // Время съёмки — метка для человека, а не входные данные. В самой
     // симуляции часов нет и быть не может.
     startedAt: new Date().toISOString(),
+    ...(options.assaultExperiment || options.traceAssault
+      ? {
+          tuning: { ...ruleTuning() },
+          effectiveAssaultRange: UNIT_STATS[UnitType.Assault].range,
+          traceVersion: ASSAULT_TRACE_VERSION,
+          traceEnabled: options.traceAssault === true,
+          tickRate: TICKS_PER_SECOND,
+          tickCap,
+        }
+      : {}),
   };
   log.write(header);
 
@@ -247,6 +286,9 @@ export const runMatch = (options: MatchOptions): MatchResult => {
   }
 
   let world = createWorld(worldSeed);
+  const observer = options.traceAssault
+    ? createAssaultTrace(log, initialAssaultState(world))
+    : undefined;
   const checksums = new Map<number, number>();
   const started = Date.now();
 
@@ -257,7 +299,7 @@ export const runMatch = (options: MatchOptions): MatchResult => {
 
     for (const command of scripted?.get(world.tick) ?? []) issued.push(command);
 
-    const next = step(world, issued);
+    const next = step(world, issued, observer);
 
     if (issued.length > 0) {
       const refused = new Map(next.rejections.map((entry) => [entry.index, entry.reason]));
@@ -346,7 +388,14 @@ export const runMatch = (options: MatchOptions): MatchResult => {
       const connected = basesConnected(world, asPlayerId(0));
 
       for (let player = 0; player < PLAYERS_PER_MATCH; player += 1) {
-        log.write(sampleOf(world, asPlayerId(player), connected));
+        log.write(
+          sampleOf(
+            world,
+            asPlayerId(player),
+            connected,
+            options.assaultExperiment || options.traceAssault,
+          ),
+        );
       }
     }
 
