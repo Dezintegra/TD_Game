@@ -1,7 +1,7 @@
 # interrupted-token-recovery Specification
 
 ## Purpose
-TBD - created by archiving change recover-interrupted-token-usage. Update Purpose after archive.
+Автоматически восстанавливать подтверждённый минимум расхода остановленных запусков Codex и разрешать продолжение задачи, сохраняя неизвестный хвост и прежний учётный бюджет.
 ## Requirements
 ### Requirement: Восстановление остановленного запуска по проверяемому минимуму
 
