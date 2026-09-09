@@ -72,6 +72,7 @@ export function createSupervisor({
   log = () => {},
   writeStageLog = () => {},
   readStageLog = () => null,
+  readStageLogs = null,
   /** Рассказчик. По умолчанию немой: счётная часть обязана работать и без него. */
   say = { line: () => {} },
   setPulse = nodeSetInterval,
@@ -353,9 +354,15 @@ export function createSupervisor({
             // Разбору дают лог того этапа, из которого задача упала. Его имя
             // хранит сама задача — состоянием возврата, — и потому спрашивается
             // здесь, а не угадывается по журналу.
-            stageLog:
+            stageLogs:
               assignment.stage === 'postmortem'
-                ? readStageLog(
+                ? (
+                    readStageLogs ??
+                    ((taskId, stage) => ({
+                      stage,
+                      entries: [readStageLog(taskId, stage)].filter(Boolean),
+                    }))
+                  )(
                     assignment.taskId,
                     reviewingDelay(assignment.task)
                       ? assignment.task.delayAnalysis.originStatus === 'blocked'
@@ -1011,7 +1018,19 @@ export function createSupervisor({
     }
     children.delete(child.taskId);
     stopPulse();
-    writeStageLog(child.taskId, child.stage, renderLog(child, run, answer, parsed));
+    // Диагностический файл не является квитанцией отчёта: его отказ не должен
+    // прерывать завершение и последующую доставку принятого результата.
+    try {
+      writeStageLog(child.taskId, child.stage, renderLog(child, run, answer, parsed), {
+        launchId: child.launchId,
+        startedAt: child.startedAt,
+        machine,
+        sessionId: answer.sessionId ?? child.sessionId,
+        pid: child.handle.pid,
+      });
+    } catch (error) {
+      log(`Запись лога ${child.taskId}/${child.stage}: ${error.message}`);
+    }
 
     // Итог этапа одной строкой: то, ради чего человек и смотрит в консоль,
     // отойдя на час. В журнале этапа то же самое есть подробнее, но журнал

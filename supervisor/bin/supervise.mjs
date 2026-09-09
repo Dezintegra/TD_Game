@@ -45,6 +45,7 @@ import { createIo } from '../lib/io.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { openReportStore } from '../lib/report-store.mjs';
+import { openStageLogs } from '../lib/stage-logs.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
 import {
   claimSupervisorLock,
@@ -414,6 +415,9 @@ function sessionFiles(dir, suffix) {
   });
 }
 function createRuntimeSupervisor() {
+  const stageLogs = openStageLogs(local('logs'), {
+    diagnose: (message) => note(message, TAG.warn),
+  });
   return createSupervisor({
     reportStore: openReportStore(local('pending-reports.json')),
     getCodexEnvironment: () => codexEnvironment,
@@ -464,25 +468,9 @@ function createRuntimeSupervisor() {
     },
     say,
     log: (line) => note(line, null),
-    writeStageLog: (taskId, stage, text) => {
-      // Вывод процесса целиком — взамен списка сессий, в котором этапы
-      // больше не видны. Взамен неравноценное: кода возврата, стоимости
-      // и перечня отказов в списке не было вовсе.
-      mkdirSync(local('logs'), { recursive: true });
-      writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
-    },
-    // Тот же лог читается обратно — разбором упавшей задачи, и только им.
-    // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
-    // без лога всё равно начинается, а сам факт его отсутствия — улика.
-    readStageLog: (taskId, stage) => {
-      if (!stage) return null;
-      const path = local('logs', `${taskId}-${stage}.log`);
-      return {
-        stage,
-        path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
-        text: existsSync(path) ? readFileSync(path, 'utf8') : null,
-      };
-    },
+    writeStageLog: stageLogs.writeStageLog,
+    readStageLog: stageLogs.readStageLog,
+    readStageLogs: stageLogs.readStageLogs,
   });
 }
 
