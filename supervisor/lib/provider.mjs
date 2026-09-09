@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { codexPerfPaths } from './codex-perf-files.mjs';
 import { modelForStage } from './stage-model.mjs';
+import { resolveProjectSkillWrites } from './project-skill-writes.mjs';
 import {
   migrateTokenLedger,
   beginTokenLaunch,
@@ -32,7 +33,15 @@ export function codexInvocation(config, args) {
   };
 }
 
-export function codexExecutionArgs(config, root, cwd, platform = process.platform) {
+export function codexExecutionArgs(
+  config,
+  root,
+  cwd,
+  platform = process.platform,
+  skillFiles = [],
+) {
+  if (skillFiles.length && platform !== 'win32')
+    throw new Error('Назначенные скиллы требуют Windows-профиля');
   const args = [
     '-c',
     'approval_policy="never"',
@@ -64,7 +73,7 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const filesystem = [...new Set([common, gitdir, ...codexPerfPaths(root, cwd)])]
+    const filesystem = [...new Set([common, gitdir, ...codexPerfPaths(root, cwd), ...skillFiles])]
       .map((path) => JSON.stringify(path.replaceAll('\\', '/')) + '="write"')
       .join(',');
     args.push(
@@ -89,7 +98,13 @@ export function codexStageCommand({ assignment, prompt, config, root, home }) {
     : resolve(home, config.skillsDir);
   const rules = readFileSync(join(skillDir, `${assignment.stage}.md`), 'utf8');
   const cwd = assignment.path ? resolve(root, assignment.path) : root;
-  const args = ['exec', '--ignore-user-config', '--json', ...codexExecutionArgs(config, root, cwd)];
+  const skillWrites = resolveProjectSkillWrites({ home, root, cwd, assignment });
+  const args = [
+    'exec',
+    '--ignore-user-config',
+    '--json',
+    ...codexExecutionArgs(config, root, cwd, process.platform, skillWrites.files),
+  ];
   const model = modelForStage(config, 'codex', assignment.stage);
   if (model) args.push('--model', model);
   if (assignment.continuation && assignment.sessionId) args.push('resume', assignment.sessionId);
@@ -97,6 +112,7 @@ export function codexStageCommand({ assignment, prompt, config, root, home }) {
   return {
     ...codexInvocation(config, args),
     cwd,
+    skillWrites,
     stdin: `Правила автономного этапа:\n${rules}\n\nРабочее дерево уже назначено супервизором; повторно спрашивать о его создании не нужно. Выполни только назначенный этап. Не вызывай интерактивные вопросы: если нужен ответ человека, верни его в JSON-отчёте по правилам этапа.\n\n${prompt}`,
   };
 }
