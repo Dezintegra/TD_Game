@@ -39,9 +39,45 @@ export const WAIT_FROM = [
   'benchmark',
   'interpret',
 ];
-function acceptedWait(task) {
+/**
+ * Предел принятого ожидания.
+ *
+ * Ожидание результата — законное состояние, а не заминка, и платить за разбор
+ * ему незачем. Но БЕССРОЧНОЕ освобождение от разбора превращает застой
+ * в вечный: 09.09.2026 тридцать шесть карточек простояли в «Заблокированы»,
+ * не получив ни строки в собственном журнале, потому что правило прямо
+ * освобождало их «спустя пять часов, сутки и сто циклов».
+ *
+ * Отсюда отдельная величина, крупнее обычного порога задержки: сутки против
+ * пяти часов. Пять часов — мерка заминки на этапе, сутки — мерка того, что
+ * ожидание не кончится само.
+ */
+export const WAIT_LIMIT_HOURS = 24;
+
+/** Пережило ли ожидание свой предел. */
+function waitOverdue(task, now) {
+  const since = task.statusChangedAt ?? task.createdAt;
+  const elapsed = Date.parse(now) - Date.parse(since);
+  return Number.isFinite(elapsed) && elapsed > WAIT_LIMIT_HOURS * 3600000;
+}
+
+/**
+ * Мерки «ждать заведомо некого» здесь нет намеренно.
+ *
+ * Соблазн был: считать ожидание пропавшей, негодной или двусмысленной карточки
+ * безнадёжным и разбирать его немедленно. Мерка оказалась ненадёжной. Снимок
+ * доски не обязан быть полным — архивные карточки в него не входят вовсе,
+ * а мерка запуска честно засчитывает их по отдельному перечню закрытых. Значит
+ * «пропала» на неполном снимке означает не беду, а неполный снимок, и разбор
+ * ушёл бы платить за каждую задачу, ждущую архивного предшественника.
+ *
+ * Ожидание закрытой карточки при этом разбирается и без такой мерки: ребро
+ * снимается вместе с обоснованием, и задача выходит обычной разблокировкой.
+ * Остальное ловит предел по сроку.
+ */
+function acceptedWait(task, { now } = {}) {
   const context = task.blockedContext;
-  return (
+  const shaped =
     task.status === 'blocked' &&
     !task.delayAnalysis &&
     !dependencyFormatProblem(task) &&
@@ -56,8 +92,8 @@ function acceptedWait(task) {
         task.dependsOn.includes(item.taskId) &&
         nonempty(item.reason) &&
         nonempty(item.result),
-    )
-  );
+    );
+  return shaped && !waitOverdue(task, now);
 }
 
 export function delayStateProblem(task) {
@@ -124,14 +160,21 @@ export function delayDependencies(task, tasks = []) {
 
 export function delayDecision(task, { now, tasks = [], answered = false }) {
   if (task.delayJournal) return { kind: 'flush-delay-journal', taskId: task.id };
-  if (acceptedWait(task)) return null;
+  if (acceptedWait(task, { now })) return null;
   if (task.status === 'awaiting-po' && answered) return null;
   if (!DELAY_STATES.includes(task.status) || reviewingDelay(task)) return null;
   const saved = task.delayAnalysis;
   const snapshot = delayDependencies(task, tasks);
   const facts = delayFacts(task);
+  // Второй затвор бессрочности. Для ожидания эпизод считался неизменным
+  // по одной лишь сохранённой фазе, без сверки времени, — и потому наблюдение
+  // глушило повторный разбор навсегда, даже когда ожидание пережило предел.
+  // Отсчёт идёт от входа в статус, а разбор возвращает задачу в «Заблокированы»
+  // заново: значит платный разбор случается не чаще раза в сутки ожидания.
+  const overdueWait = task.status === 'blocked' && waitOverdue(task, now);
   const sameEpisode =
     saved &&
+    !overdueWait &&
     ((task.status === 'blocked' && saved.phase === 'waiting') ||
       (task.status === saved.originStatus && task.statusChangedAt === saved.originSince));
   if (sameEpisode) {
