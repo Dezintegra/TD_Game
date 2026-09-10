@@ -33,6 +33,7 @@ import { createGit } from '../lib/git.mjs';
 import {
   isApiPaused,
   isPaused,
+  readLastDeploy,
   readApiPause,
   readAnswers,
   readPermissions,
@@ -479,6 +480,17 @@ function createRuntimeSupervisor() {
     // Пустой объект здесь при первом сохранении стёр бы весь прежний реестр.
     codexUsage: readTokenLedger(root, config),
     saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
+    // Отметка о состоявшейся выкладке: от неё считается срок следующего
+    // пакета. Ошибка записи глотается намеренно — цена ей одна выкладка
+    // раньше срока, а падение этапа из-за неудачной отметки дороже.
+    markDeployed: (at) => {
+      try {
+        ensureLocal();
+        writeFileSync(local('last-deploy'), `${at}\n`);
+      } catch {
+        // Отметка не легла: следующий пакет уедет по числу карточек.
+      }
+    },
     onPolicyBlocked: (why) => {
       ensureLocal();
       writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
@@ -613,6 +625,9 @@ async function turn() {
     paused,
     apiPaused,
     draining,
+    // От неё считается срок следующего пакета выкладки. Отсутствие отметки —
+    // законный ответ «не выкладывали»: сканер считает такой срок вышедшим.
+    lastDeployAt: readLastDeploy(root, config),
     tails: { main: git.tail() ?? 0, branches: {} },
   };
 

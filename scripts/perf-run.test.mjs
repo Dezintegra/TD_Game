@@ -162,3 +162,37 @@ describe('реальные места запуска обёртки', () => {
     expect(mocks.write).not.toHaveBeenCalled();
   });
 });
+
+describe('исход замера различает просадку и поломку', () => {
+  it('порог взят — ноль', async () => {
+    await expect(run([])).rejects.toThrow('exit:0');
+    expect(mocks.record.mock.calls[0][0]).toMatchObject({ passed: true });
+  });
+
+  it('числа есть, порог не взят — два', async () => {
+    // Числа до этого места уже получены и записаны в журнал, значит замер
+    // СОСТОЯЛСЯ, и его неуспех может означать только непройденный порог.
+    // Прежде отдавался код самого Playwright, и вызывающему было нечем
+    // отличить «пятьдесят пять не набрали» от «браузер не нашёлся» —
+    // из-за чего выкладка падала на просадке.
+    mocks.spawn.mockImplementation(() => ({
+      on: (name, fn) => {
+        if (name === 'close') fn(1);
+      },
+    }));
+    await expect(run([])).rejects.toThrow('exit:2');
+    expect(mocks.record.mock.calls[0][0]).toMatchObject({ passed: false });
+  });
+
+  it('процесс не запустился вовсе — тоже два, потому что числа всё же есть', async () => {
+    // Единственный настоящий «замер не состоялся» отсекается выше проверкой
+    // «ни одного числа» и до этого места не доходит; здесь мок журнала числа
+    // отдаёт, поэтому исход — просадка.
+    mocks.spawn.mockImplementation(() => ({
+      on: (name, fn) => {
+        if (name === 'error') fn(new Error('нет браузера'));
+      },
+    }));
+    await expect(run([])).rejects.toThrow('exit:2');
+  });
+});

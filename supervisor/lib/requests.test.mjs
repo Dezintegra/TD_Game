@@ -22,7 +22,11 @@ const request = (over = {}) => ({
   ...over,
 });
 
-describe.each(['perf', 'bench-tick'])('приёмка источника %s', (kind) => {
+// Замер кадров из этого перечня выбыл: отдельной задачей он больше
+// не заводится вовсе, и проверять его источник стало не на чем.
+// Приёмка источника остаётся у стоимости тика — она меряет счёт, а не
+// отрисовку, и живой машины не требует.
+describe.each(['bench-tick'])('приёмка источника %s', (kind) => {
   const accept = (run) =>
     taskFromRequest(request({ type: 'run', categories: ['infrastructure'], run }), {
       id: '0089-perf',
@@ -62,6 +66,37 @@ describe.each(['perf', 'bench-tick'])('приёмка источника %s', (k
     const { problems } = accept({ kind });
     expect(problems).toContain('прогон заявлен без ожидаемого результата');
     expect(problems.join(' ')).toContain('run.params.source');
+  });
+});
+
+describe('замер кадров отдельной задачей', () => {
+  it('не заводится вовсе: он делается только перед выкладкой', () => {
+    const { task, problems } = taskFromRequest(
+      request({
+        type: 'run',
+        categories: ['infrastructure'],
+        run: {
+          kind: 'perf',
+          params: { source: { branch: 'main' } },
+          expectation: '55 кадров',
+        },
+      }),
+      { id: '0089-perf', now: NOW, sourceId: '0041-visual' },
+    );
+    expect(task).toBeNull();
+    expect(problems.join(' ')).toContain('только перед выкладкой');
+  });
+
+  it('прочие виды прогона заводятся по-прежнему', () => {
+    const { task } = taskFromRequest(
+      request({
+        type: 'run',
+        categories: ['infrastructure'],
+        run: { kind: 'arena', params: {}, expectation: 'доля побед в вилке' },
+      }),
+      { id: '0090-arena', now: NOW, sourceId: '0041-visual' },
+    );
+    expect(task.run.kind).toBe('arena');
   });
 });
 
@@ -268,19 +303,32 @@ describe('причина в конвейере', () => {
   const plan = (requests, sourceStage) =>
     planRequests(requests, { existingIds: [], now: NOW, sourceId: '0001-one', sourceStage });
 
-  it('одна область pipeline не делает находку обязательной', () => {
+  it('область pipeline уводит находку в обслуживание, но обязательной не делает', () => {
     // 02.09.2026 починки разрешений pnpm и сгорающих продолжений простояли
     // в кандидатах часами: разборы честно не назвали их блокирующими,
     // а прочим этапам метить было нечем. Зона причины — другой вопрос,
     // чем срочность, и право на него есть у всех.
+    //
+    // Теперь такая находка идёт в «Обслуживание»: владельцу продукта решать
+    // про игру, а не про то, какое правило этапа понято двояко. Признаком
+    // остаётся объявленная область, а не догадка по заголовку. Обязательной
+    // находку это по-прежнему не делает — первое место в очереди даёт только
+    // признак blocking.
     for (const stage of ['implement', 'review', 'triage', 'postmortem', null]) {
       const { planned } = plan([pipeline], stage);
       expect(planned[0], `этап ${stage}`).toMatchObject({
-        status: 'candidate',
+        status: 'maintenance',
         area: 'pipeline',
       });
+      expect(planned[0].blocking, `этап ${stage}`).toBeUndefined();
       expect(validateTask(planned[0], schema), `этап ${stage}`).toEqual([]);
     }
+  });
+
+  it('находка про игру остаётся кандидатом и ждёт владельца продукта', () => {
+    const { planned } = plan([request({ title: 'Штурмовик бьёт не туда' })], 'implement');
+    expect(planned[0]).toMatchObject({ status: 'candidate' });
+    expect(planned[0].area).toBeUndefined();
   });
 
   it('прогон минует кандидатов без автоматического первого места', () => {

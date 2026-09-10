@@ -304,6 +304,8 @@ describe('непокрытые команды этапа', () => {
       'PowerShell(node scripts/deploy-remote.mjs:*)',
       'Bash(node scripts/deploy.mjs:*)',
       'PowerShell(node scripts/deploy.mjs:*)',
+      'Bash(node scripts/ensure-deploy-host.mjs:*)',
+      'PowerShell(node scripts/ensure-deploy-host.mjs:*)',
       'Bash(pnpm e2e:perf:*)',
       'PowerShell(pnpm e2e:perf:*)',
     ],
@@ -448,6 +450,57 @@ describe('пакетная выкладка', () => {
     });
   const three = ['0002-a', '0003-b', '0004-c'];
   const registry = { entries: three.map((id) => entry(id)) };
+  const five = [...three, '0005-d', '0006-e'];
+  // Свежий вход в статус: иначе задача старше пяти часов позовёт разбор
+  // задержки, и он опередит выкладку — проверка осталась бы без предмета.
+  const fresh = (id, at) => deploying(id, { statusChangedAt: at });
+
+  it('копит пакет, пока не набралось довольно и не вышел срок', () => {
+    const result = run({
+      now: '2026-09-10T12:00:00Z',
+      lastDeployAt: '2026-09-10T11:00:00Z',
+      tasks: three.map((id) => fresh(id, '2026-09-10T11:50:00Z')),
+      registry,
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(result.notes.join(' ')).toContain('пакет выкладки копится: 3 из 5');
+  });
+
+  it('набранный пакет едет, не дожидаясь срока', () => {
+    const result = run({
+      now: '2026-09-10T12:00:00Z',
+      lastDeployAt: '2026-09-10T11:00:00Z',
+      tasks: five.map((id) => fresh(id, '2026-09-10T11:50:00Z')),
+      registry: { entries: five.map((id) => entry(id)) },
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'continue-stage', taskId: '0002-a', batch: five }),
+    );
+  });
+
+  it('одинокая задача едет по сроку, не дожидаясь пятерых', () => {
+    const result = run({
+      now: '2026-09-10T17:00:00Z',
+      lastDeployAt: '2026-09-10T11:00:00Z',
+      tasks: [fresh('0002-a', '2026-09-10T16:50:00Z')],
+      registry: { entries: [entry('0002-a')] },
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'continue-stage', taskId: '0002-a', batch: ['0002-a'] }),
+    );
+    expect(result.notes.join(' ')).toContain('срок выкладки вышел');
+  });
+
+  it('без записи о прошлой выкладке первый пакет не ждёт ничего', () => {
+    // Иначе первая же выкладка на чистой станции простояла бы пять часов
+    // без всякой причины.
+    const result = run({
+      now: '2026-09-10T12:00:00Z',
+      tasks: [fresh('0002-a', '2026-09-10T11:50:00Z')],
+      registry: { entries: [entry('0002-a')] },
+    });
+    expect(kinds(result)).toContain('continue-stage');
+  });
 
   it.each(['done', 'failed'])('отчёт %s удерживает весь пакет до свежего снимка', (outcome) => {
     const result = run({
@@ -604,7 +657,11 @@ describe('исключительные продолжения', () => {
       config: { ...roomy, provider: 'codex', codexMaxTaskTokens: 100 },
       tasks: [deploy(), ordinary()],
       registry: { entries: [entry('0001-deploy'), entry('0009-design')] },
-      codexUsage: migrateTokenLedger({ '0001-deploy': { old: 1 } }),
+      // Расход РАВЕН пределу: удерживает именно исчерпание. Прежде здесь стоял
+      // расход 1, и выкладку удерживал неизвестный расход старого реестра —
+      // теперь он запуск не удерживает вовсе, и такая выкладка честно заняла
+      // бы машину целиком, оставив проверку без предмета.
+      codexUsage: migrateTokenLedger({ '0001-deploy': { old: 100 } }),
     });
     expect(result.actions).toContainEqual(
       expect.objectContaining({
@@ -795,6 +852,39 @@ describe('приоритеты', () => {
       ],
     });
     expect(result.actions[0].taskId).toBe('0002-old');
+  });
+
+  it('обслуживание берётся раньше обычной очереди, даже уступая в приоритете', () => {
+    const result = run({
+      tasks: [
+        task({ id: '0001-queued', status: 'new', priority: 1 }),
+        task({ id: '0002-fix', status: 'maintenance', priority: 90 }),
+      ],
+    });
+    expect(result.actions[0]).toMatchObject({ kind: 'start-stage', taskId: '0002-fix' });
+  });
+
+  it('внутри обслуживания порядок прежний: положение, затем возраст', () => {
+    const result = run({
+      config: { ...config, maxConcurrent: 5 },
+      tasks: [
+        task({ id: '0001-later', status: 'maintenance', priority: 90 }),
+        task({ id: '0002-sooner', status: 'maintenance', priority: 10 }),
+      ],
+    });
+    expect(result.actions[0].taskId).toBe('0002-sooner');
+  });
+
+  it('удержанное зависимостью обслуживание уступает место готовой очереди', () => {
+    const result = run({
+      tasks: [
+        task({ id: '0002-fix', status: 'maintenance', priority: 1, dependsOn: ['0009-missing'] }),
+        task({ id: '0001-queued', status: 'new', priority: 90 }),
+      ],
+    });
+    expect(result.actions.filter((a) => a.kind === 'start-stage')).toEqual([
+      expect.objectContaining({ taskId: '0001-queued' }),
+    ]);
   });
 });
 
@@ -1407,15 +1497,24 @@ describe('бюджет тяжести Codex', () => {
     expect(kinds(run(userBudgetState({ value: null }, null)))).toContain('analyze-token-budget');
   });
 
-  it('ошибка команды и неизвестный расход удерживают запуск без изменения попыток', () => {
+  it('ошибка команды удерживает запуск без изменения попыток', () => {
     const invalid = userBudgetState({ error: 'Неверный лимит токенов' });
     const before = globalThis.structuredClone(invalid);
     expect(run(invalid).actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
     expect(run(invalid).notes.join()).toContain('Неверный лимит');
     expect(invalid).toEqual(before);
+  });
+
+  it('неизвестный расход запуск не удерживает, а называет себя в журнале задачи', () => {
+    // Расход 26 093 350 при разрешённых 35 000 000: по деньгам задача чиста,
+    // и держал её только неполный учёт. Ровно так 08–09.09.2026 встали две
+    // карточки, а за ними тридцать две ждущих.
     const unknown = userBudgetState({ value: 35000000 });
     unknown.codexUsage.tasks['0001-one'].sessions.s.reasons.push('decreased-usage');
-    expect(run(unknown).actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
+    const result = run(unknown);
+    expect(result.actions.map((a) => a.kind)).toEqual(['continue-stage']);
+    expect(result.actions[0].unaccounted).toContain('decreased-usage');
+    expect(result.actions[0].unaccounted).toContain('запуск состоялся');
   });
 
   it('команда возвращает ожидающую карточку, не меняя лимит соседней', () => {
@@ -1468,7 +1567,7 @@ describe('бюджет тяжести Codex', () => {
     expect(kinds(check(101, 'implement', null))).toContain('continue-stage');
   });
 
-  it('legacy-unknown удерживает без расходования попытки, известный предел виден отдельной причиной', () => {
+  it('legacy-unknown запуск не удерживает, а исчерпание удерживает по-прежнему', () => {
     const card = task({ status: 'implement', attempts: { continuations: 1, cycleFailures: 0 } });
     const before = JSON.parse(JSON.stringify(card));
     const checkLegacy = (tokens, limit = 100, status = 'implement') =>
@@ -1478,10 +1577,14 @@ describe('бюджет тяжести Codex', () => {
         registry: { entries: [entry('0001-one')] },
         codexUsage: JSON.parse(JSON.stringify(migrateTokenLedger({ '0001-one': { s: tokens } }))),
       });
-    const held = checkLegacy(99);
-    expect(held.actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
-    expect(held.notes.join()).toContain('legacy-unknown');
+    // Старый реестр не знает расхода по сессии, и прежде одного этого хватало
+    // на бессрочное удержание. Теперь заход идёт, а неизвестность названа
+    // в записи журнала задачи — один раз на выданную сессию.
+    const launched = checkLegacy(99);
+    expect(launched.actions.map((a) => a.kind)).toEqual(['continue-stage']);
+    expect(launched.actions[0].unaccounted).toContain('legacy-unknown');
     expect(card).toEqual(before);
+    // Исчерпание — утверждение о деньгах, и оно удерживает как удерживало.
     expect(kinds(checkLegacy(100))).toContain('hold-token-budget');
     expect(kinds(checkLegacy(99, null))).toContain('continue-stage');
     for (const status of ['decompose', 'postmortem']) {
@@ -1495,7 +1598,7 @@ describe('бюджет тяжести Codex', () => {
   });
 
   it.each(['unfinished-launch', 'storage-error', 'decreased-usage', 'invalid-usage'])(
-    'не выдаёт запуск при %s после смены этапа',
+    'выдаёт запуск при %s, называя неучтённый заход',
     (unknown) => {
       const ledger = migrateTokenLedger({});
       if (unknown === 'unfinished-launch') beginTokenLaunch(ledger, '0001-one', 'persisted');
@@ -1517,12 +1620,15 @@ describe('бюджет тяжести Codex', () => {
           registry: { entries: [entry('0001-one')] },
           codexUsage: ledger,
         };
-        const held = run({
+        // Все четыре причины неполноты учёта прежде удерживали запуск, и все
+        // четыре лечились одним и тем же несуществующим действием владельца.
+        // Теперь заход идёт, а причина названа в записи журнала задачи.
+        const launched = run({
           ...state,
           config: { ...config, provider: 'codex', codexMaxTaskTokens: 100 },
         });
-        expect(held.actions.map((a) => a.kind)).toEqual(['hold-token-budget']);
-        expect(held.notes.join()).toContain(unknown);
+        expect(launched.actions.map((a) => a.kind)).toEqual(['continue-stage']);
+        expect(launched.actions[0].unaccounted).toContain(unknown);
         expect(
           kinds(
             run({ ...state, config: { ...config, provider: 'codex', codexMaxTaskTokens: null } }),
@@ -1532,10 +1638,14 @@ describe('бюджет тяжести Codex', () => {
     },
   );
 
-  it('не отдаёт слот двум удержанным legacy-задачам без живого процесса', () => {
+  it('не отдаёт слот двум удержанным задачам без живого процесса', () => {
+    // Расход равен пределу, то есть обе удержаны исчерпанием. Прежде их
+    // удерживала неизвестность старого реестра при расходе 10; теперь она
+    // запуск не удерживает, и задачи честно заняли бы единственное место —
+    // проверка осталась бы без предмета.
     const ledger = migrateTokenLedger({
-      '0012-design': { old: 10 },
-      '0236-deploy': { old: 10 },
+      '0012-design': { old: 100 },
+      '0236-deploy': { old: 100 },
     });
     const result = run({
       config: { ...config, provider: 'codex', codexMaxTaskTokens: 100, maxConcurrent: 1 },

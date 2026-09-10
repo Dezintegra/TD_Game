@@ -120,6 +120,7 @@ export const STAGE_COMMANDS = {
     'pnpm e2e:perf -- --check-only',
     'pnpm e2e:perf',
     'pnpm e2e:perf -- --history',
+    'node scripts/ensure-deploy-host.mjs',
     'node scripts/deploy.mjs --ref <хеш> --no-perf',
   ],
 };
