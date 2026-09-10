@@ -246,8 +246,13 @@ describe('сохранённый отчёт при ошибке учёта', () 
               reports: h.supervisor.reports,
               codexUsage: h.supervisor.codexUsage,
             });
-            expect(next.actions.map((action) => action.kind)).toEqual(['hold-token-budget']);
-            expect(next.notes.join()).toContain(reason);
+            // Отчёт по-прежнему не применён — это проверено выше и не менялось.
+            // А вот запуск неполный учёт больше не удерживает: задача идёт
+            // дальше, называя неучтённый заход в записи журнала задачи.
+            // Прежде здесь стоял 'hold-token-budget', и снять его владельцу
+            // продукта было нечем: полноту учёта лимитом не поднимают.
+            expect(next.actions.map((action) => action.kind)).toEqual(['continue-stage']);
+            expect(next.actions[0].unaccounted).toContain(reason);
           }
         }
       },

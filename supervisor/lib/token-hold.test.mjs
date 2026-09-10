@@ -3,7 +3,7 @@ import { resolveConfig } from '../config/defaults.mjs';
 import { canTransition, stateClass } from '../config/transitions.mjs';
 import { joinDescription, metaOf, parseCard, splitDescription } from './card.mjs';
 import { applyTransition } from './task-file.mjs';
-import { tokenAdmission, tokenHoldProblem } from './token-hold.mjs';
+import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
 
 const config = { ...resolveConfig({}).config, provider: 'codex', codexMaxTaskTokens: 100 };
 const task = {
@@ -89,13 +89,15 @@ describe('контекст ожидания бюджета', () => {
 });
 
 describe('бюджетный допуск', () => {
-  it('использует только эффективный предел, различая исчерпание и неполный учёт', () => {
+  it('удерживает только по деньгам: исчерпание и негодный лимит', () => {
     expect(
       tokenAdmission(task, 'implement', config, { '0001-test': { session: 100 } }).reason,
     ).toBe('exhausted');
-    expect(tokenAdmission(task, 'implement', config, { '0001-test': { session: 99 } }).reason).toBe(
-      'unknown-usage',
-    );
+    // Неполный учёт запуска больше не удерживает. Прежде здесь стоял
+    // 'unknown-usage', и он же 08–09.09.2026 держал тридцать две задачи
+    // лечением, которого не существует: повышение лимита полноту учёта
+    // не меняет. Незнание расхода — поломка учёта, а не решение о деньгах.
+    expect(tokenAdmission(task, 'implement', config, { '0001-test': { session: 99 } })).toBeNull();
     expect(tokenAdmission(task, 'implement', config, {})).toBeNull();
     expect(
       tokenAdmission({ ...task, tokenHold: { limit: 999 } }, 'implement', config, {
@@ -125,6 +127,32 @@ describe('бюджетный допуск', () => {
         'implement',
         { ...config, provider: 'claude' },
         { '0001-test': { session: 1000 } },
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('запись о неучтённом заходе', () => {
+  it('называет причины неполноты и не предлагает поднять лимит', () => {
+    const note = unaccountedLaunchNote(task, 'implement', config, {
+      '0001-test': { session: 99 },
+    });
+    expect(note).toContain('посчитать не удалось');
+    expect(note).toContain('запуск состоялся');
+    expect(note).not.toContain('Лимит токенов:');
+  });
+
+  it('молчит при полном учёте и на несчитаемых этапах', () => {
+    expect(unaccountedLaunchNote(task, 'implement', config, {})).toBeNull();
+    expect(
+      unaccountedLaunchNote(task, 'postmortem', config, { '0001-test': { session: 99 } }),
+    ).toBeNull();
+    expect(
+      unaccountedLaunchNote(
+        task,
+        'implement',
+        { ...config, provider: 'claude' },
+        { '0001-test': { session: 99 } },
       ),
     ).toBeNull();
   });

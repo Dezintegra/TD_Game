@@ -88,6 +88,27 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   /** Карточка задачи вместе с разобранным человеческим текстом. */
   const cardOf = (id) => byId.get(id)?.card ?? null;
 
+  /**
+   * Ответ владельца продукта — первый комментарий без пометки после вопроса.
+   *
+   * Отсчёт ведётся от даты вопроса, а при живой проверке смысла ожидания —
+   * от даты, с которой эта проверка началась: разбор задержки переставляет
+   * `statusChangedAt`, и без оговорки ответ, пришедший до него, потерялся бы.
+   */
+  const answerFor = (id) => {
+    const item = byId.get(id);
+    if (!item) return null;
+    const found = findAnswer(commentsByCard.get(item.card.id) ?? [], {
+      marker: mark,
+      since:
+        item.task.delayAnalysis?.originStatus === 'awaiting-po' &&
+        ['analyzing', 'waiting', 'verifying'].includes(item.task.delayAnalysis.phase)
+          ? item.task.delayAnalysis.originSince
+          : item.task.statusChangedAt,
+    });
+    return found?.text ?? null;
+  };
+
   // Подтверждённые перемещения нужны при повторе после ошибки комментария;
   // исходный снимок остаётся прежним для остальных решений цикла.
   const savedLists = new Map();
@@ -765,18 +786,30 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     },
 
     /** Ответ владельца продукта — первый комментарий без пометки после вопроса. */
-    readAnswer(id) {
-      const item = byId.get(id);
-      if (!item) return null;
-      const found = findAnswer(commentsByCard.get(item.card.id) ?? [], {
-        marker: mark,
-        since:
-          item.task.delayAnalysis?.originStatus === 'awaiting-po' &&
-          ['analyzing', 'waiting', 'verifying'].includes(item.task.delayAnalysis.phase)
-            ? item.task.delayAnalysis.originSince
-            : item.task.statusChangedAt,
-      });
-      return found?.text ?? null;
+    readAnswer: answerFor,
+
+    /**
+     * Ответы владельца по всем ждущим карточкам разом.
+     *
+     * Сканеру нужна именно карта: действие, возвращающее задачу из «Ждёт
+     * ответа», рождается по ней одной. Собиралась она чтением
+     * `manage/questions.md`, и после переезда вопросов на доску ответ
+     * владельца не доходил до сканера вовсе — карточка ждала вечно, сколько
+     * бы комментариев ей ни написали. Проверено 10.09.2026 на 0009 и 0010:
+     * ответ лежал сутки, разбор его видел, а сканер — нет.
+     *
+     * Опрашиваются только ждущие карточки. Комментарий под задачей в работе
+     * ответом не является: вопроса там нет, и принять за ответ можно было бы
+     * любую заметку на полях.
+     */
+    ownerAnswers() {
+      const answers = Object.create(null);
+      for (const [id, item] of byId) {
+        if (item.task.status !== 'awaiting-po') continue;
+        const text = answerFor(id);
+        if (text) answers[id] = text;
+      }
+      return answers;
     },
 
     /** Разобранные карточки — для сканера и для проверки при чтении. */

@@ -33,6 +33,7 @@ import { createGit } from '../lib/git.mjs';
 import {
   isApiPaused,
   isPaused,
+  readLastDeploy,
   readApiPause,
   readAnswers,
   readPermissions,
@@ -398,6 +399,9 @@ async function openBacklog({ mayWrite }) {
     invalid,
     marked,
     store,
+    // Ответы владельца снимаются здесь же, из того же снимка доски:
+    // сканер получает карту готовой, как и команды лимита токенов.
+    ownerAnswers: store.ownerAnswers(),
     closedDependencyIds: store.closedDependencyIds(),
     dependencyRecords: store.dependencyRecords(),
     notes: [
@@ -476,6 +480,17 @@ function createRuntimeSupervisor() {
     // Пустой объект здесь при первом сохранении стёр бы весь прежний реестр.
     codexUsage: readTokenLedger(root, config),
     saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
+    // Отметка о состоявшейся выкладке: от неё считается срок следующего
+    // пакета. Ошибка записи глотается намеренно — цена ей одна выкладка
+    // раньше срока, а падение этапа из-за неудачной отметки дороже.
+    markDeployed: (at) => {
+      try {
+        ensureLocal();
+        writeFileSync(local('last-deploy'), `${at}\n`);
+      } catch {
+        // Отметка не легла: следующий пакет уедет по числу карточек.
+      }
+    },
     onPolicyBlocked: (why) => {
       ensureLocal();
       writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
@@ -600,7 +615,9 @@ async function turn() {
     apiFailures: supervisor.apiFailures,
     codexUsage: supervisor.codexUsage,
     reportStorageBlocked: supervisor.reportStorageBlocked,
-    answers: readAnswers(root, config),
+    // Бэклог на доске отвечает сам; файловый — прежним разделом
+    // `manage/questions.md`, который для него и остаётся местом ответа.
+    answers: backlog.ownerAnswers ?? readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.
     permissions: providerOf(config) === 'claude' ? readPermissions(home, config) : null,
@@ -608,6 +625,9 @@ async function turn() {
     paused,
     apiPaused,
     draining,
+    // От неё считается срок следующего пакета выкладки. Отсутствие отметки —
+    // законный ответ «не выкладывали»: сканер считает такой срок вышедшим.
+    lastDeployAt: readLastDeploy(root, config),
     tails: { main: git.tail() ?? 0, branches: {} },
   };
 

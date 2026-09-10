@@ -232,3 +232,32 @@ describe('durable report execution', () => {
     expect(first.recipient.state()).toMatchObject({ puts: 0, posts: 0 });
   });
 });
+
+describe('отметка о состоявшейся выкладке', () => {
+  it('ставится после применения всего плана', async () => {
+    const f = fixture({ stage: 'deploy', batch: true });
+    const opened = f.open();
+    const marks = [];
+    opened.io.markDeployed = (at) => marks.push(at);
+    expect((await deliver(f, opened)).result).toBe('done');
+    expect(marks).toEqual([opened.io.now]);
+  });
+
+  it('упавшая выкладка срок следующего пакета не двигает', async () => {
+    const f = fixture({ stage: 'deploy', batch: true, outcome: 'failed' });
+    const opened = f.open();
+    const marks = [];
+    opened.io.markDeployed = (at) => marks.push(at);
+    await deliver(f, opened);
+    expect(marks).toEqual([]);
+  });
+
+  it('обычный этап отметки не ставит', async () => {
+    const f = fixture();
+    const opened = f.open();
+    const marks = [];
+    opened.io.markDeployed = (at) => marks.push(at);
+    expect((await deliver(f, opened)).result).toBe('done');
+    expect(marks).toEqual([]);
+  });
+});

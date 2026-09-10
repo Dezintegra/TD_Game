@@ -12,10 +12,17 @@ const pair = {
   probe: 'baseHealth',
   rationale: 'Fixture',
 };
+// `ref` задаётся явно, а не берётся у среды. По умолчанию `runCanaries`
+// читает `GITHUB_REF`, и от него зависит шапка отчёта: на `refs/heads/main`
+// печатается «Mode: main», в остальных случаях — «Mode: diagnostic».
+// Проверка, полагавшаяся на умолчание, была зелёной на pull request
+// (`refs/pull/<номер>/merge`) и краснела после вливания, где ref уже
+// главная ветка. Режим проверяется ниже отдельно, обеими сторонами.
 const options = {
   mutations: [mutation],
   pairs: [pair],
   sha: 'test-sha',
+  ref: 'refs/pull/1/merge',
   outputRoot: resolve(projectRoot, '.matchlog/mutation/runner-fixtures'),
 };
 it.each([
@@ -38,7 +45,18 @@ it.each([
   );
   const markdown = await readFile(resolve(report.directory, 'summary.md'), 'utf8');
   expect(markdown).toContain(pair.fullName.join(' > '));
-  expect(markdown).toContain('diagnostic');
+});
+// Режим отчёта решает, пишутся ли Issue, поэтому проверяется с обеих
+// сторон условия. Раньше проверялась только одна, да и та — той веткой,
+// которая случайно оказалась у среды прогона.
+it.each([
+  ['refs/heads/main', 'Mode: main'],
+  ['refs/pull/1/merge', 'Mode: diagnostic (no Issue writes)'],
+  ['local', 'Mode: diagnostic (no Issue writes)'],
+])('reports mode for ref %s', async (ref, expected) => {
+  const execute = vi.fn(async () => ({ status: 'detected' }));
+  const report = await runCanaries({ ...options, ref, execute });
+  expect(await readFile(resolve(report.directory, 'summary.md'), 'utf8')).toContain(expected);
 });
 it('keeps an unpaired mutation visible without executing it', async () => {
   const execute = vi.fn(async () => ({ status: 'detected' }));

@@ -1,11 +1,13 @@
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
-import { tokenAdmission, tokenHoldProblem } from './token-hold.mjs';
+import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
+import { planEdgeResolutions } from './resolve-dependents.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import {
   CROSSCUT,
   NEEDS_SESSION,
   NEEDS_WORKTREE,
+  QUEUE_STATES,
   canTransition,
   stateClass,
 } from '../config/transitions.mjs';
@@ -33,6 +35,10 @@ export const ACTIONS = [
   'analyze-delay',
   'observe-delay',
   'unblock-task',
+  // Снятие ожидания у ждущих закрытую карточку. Стоит рядом с разблокировкой
+  // намеренно: обе разбирают застой, и обе дешёвые — ни сессии, ни дерева.
+  'resolve-dependents',
+  'settle-maintenance',
   'hold-token-budget',
   'refresh-token-budget',
   'resume-token-budget',
@@ -163,6 +169,9 @@ export function scan(state) {
     config,
     paused = false,
     apiPaused = false,
+    // Часы приходят доводом, как и всё остальное: сканер их не берёт сам,
+    // иначе один и тот же снимок давал бы разные ответы.
+    now,
   } = state;
 
   const actions = [];
@@ -408,7 +417,8 @@ export function scan(state) {
   const held = new Map();
   // Проверяем до квот и пределов попыток: ожидание не является запуском.
   for (const task of tasks) {
-    if (!['new', 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status)) continue;
+    if (![...QUEUE_STATES, 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status))
+      continue;
     if (isRunning(task.id) || hasReport(task.id)) continue;
     // Диагностике нужны результаты блокеров, но ожидать их для самого разбора нельзя.
     if (reviewingDelay(task)) continue;
@@ -419,11 +429,12 @@ export function scan(state) {
       mainBranch: config.mainBranch,
     });
     if (pending.length === 0) {
-      if (
-        task.status === 'blocked' &&
-        task.dependsOn?.length &&
-        task.blockedContext?.reasons?.length
-      ) {
+      // Непустого dependsOn здесь больше не требуется. Снятие ожидания
+      // у ждущих закрытую карточку оставляет перечень пустым, и прежнее
+      // условие удержало бы такую задачу в «Заблокированы» навсегда —
+      // ровно та беда, ради которой снятие и заводилось. Законность
+      // ожидания доказывает сохранённое основание, а не остаток рёбер.
+      if (task.status === 'blocked' && task.blockedContext?.reasons?.length) {
         actions.push({
           kind: 'unblock-task',
           taskId: task.id,
@@ -448,6 +459,35 @@ export function scan(state) {
     if (uncovered.length === 0) continue;
     held.set(task.id, uncovered);
     notes.push(heldNote(task.id, task.status, uncovered));
+  }
+
+  // Кандидаты, чья объявленная область работы — конвейер, переезжают
+  // в «Обслуживание». Разбирается этим и то, что накопилось до введения
+  // очереди: на 10.09.2026 таких кандидатов было большинство, и предложения
+  // по игре тонули среди них.
+  //
+  // Переносится только объявленная область. Догадка по заголовку отвергнута:
+  // на глаз карточка про конвейер и карточка про игру неразличимы, а ошибка
+  // отнесения стоит владельцу продукта потерянного предложения.
+  for (const task of tasks) {
+    if (task.status !== 'candidate' || task.area !== 'pipeline') continue;
+    if (hasReport(task.id) || isRunning(task.id)) continue;
+    actions.push({ kind: 'settle-maintenance', taskId: task.id });
+  }
+
+  // Рёбра, ведущие в закрытые карточки, снимаются с обоснованием. Планируется
+  // по снимку доски: так разбирается и уже накопившийся затор, и переживается
+  // обрыв на середине — неснятое ребро попадёт в план следующего оборота.
+  for (const plan of planEdgeResolutions({
+    tasks,
+    records: state.dependencyRecords ?? [],
+  })) {
+    if (hasReport(plan.taskId)) continue;
+    actions.push({ kind: 'resolve-dependents', ...plan });
+    notes.push(
+      `задача ${plan.taskId}: снимаем ожидание закрытых карточек — ` +
+        plan.edges.map((edge) => edge.dependencyId).join(', '),
+    );
   }
 
   // Нечитаемые правила не держат ничего: «не знаем, значит держим» остановило
@@ -483,7 +523,8 @@ export function scan(state) {
   const tokenHeld = new Set();
   for (const task of tasks) {
     const waiting = task.status === 'token-limit';
-    if (!waiting && task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (!waiting && !QUEUE_STATES.includes(task.status) && !NEEDS_SESSION.includes(task.status))
+      continue;
     if (task.delayJournal) continue;
     if (task.status === 'deploy' && running.some((item) => item.stage === 'deploy')) continue;
     if (isRunning(task.id) || hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id))
@@ -497,7 +538,7 @@ export function scan(state) {
     // Зависимости и разрешения не превращаются в бюджетное ожидание.
     if (!waiting && held.has(task.id)) continue;
     const resumeStatus = waiting ? task.tokenHold.resumeStatus : task.status;
-    const stage = resumeStatus === 'new' ? firstStage(task) : resumeStatus;
+    const stage = QUEUE_STATES.includes(resumeStatus) ? firstStage(task) : resumeStatus;
     const budget = tokenAdmission(task, stage, config, state.codexUsage ?? {});
     if (!budget) {
       if (waiting) actions.push({ kind: 'resume-token-budget', taskId: task.id, stage });
@@ -697,13 +738,41 @@ export function scan(state) {
   deploying.sort(byPriorityThenAge);
   const batchOf = new Map();
   if (deploying.length > 0) {
-    const [lead, ...rest] = deploying;
-    batchOf.set(
-      lead.id,
-      deploying.map((task) => task.id),
-    );
-    for (const other of rest) {
-      notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
+    // Пакет не отправляется, едва в нём появилась первая задача. Условий два,
+    // и достаточно любого: накопилось довольно карточек либо прошло довольно
+    // времени с прошлой выкладки.
+    //
+    // Прежде условие было одно — «есть хоть одна», — и каждая доведённая
+    // задача звала свою выкладку. Выкладка эксклюзивна: она занимает машину
+    // целиком, а на боевом сервере поднимает и перезапускает игру. Делать это
+    // по разу на карточку дорого и для машины, и для игроков.
+    //
+    // Срок нужен рядом с порогом затем, чтобы одинокая задача не ждала
+    // вечно: пять карточек могут не набраться неделю.
+    const since = Date.parse(state.lastDeployAt ?? '');
+    const elapsed = Number.isFinite(since) ? Date.parse(now) - since : null;
+    const waited = elapsed === null || elapsed >= config.deployBatchHours * 3600000;
+    const enough = deploying.length >= config.deployBatchSize;
+    if (!enough && !waited) {
+      const hours = elapsed === null ? '—' : (elapsed / 3600000).toFixed(1);
+      notes.push(
+        `пакет выкладки копится: ${deploying.length} из ${config.deployBatchSize}, ` +
+          `с прошлой выкладки прошло ${hours} ч из ${config.deployBatchHours}`,
+      );
+    } else {
+      const [lead, ...rest] = deploying;
+      batchOf.set(
+        lead.id,
+        deploying.map((task) => task.id),
+      );
+      notes.push(
+        enough
+          ? `пакет выкладки набран: ${deploying.length} задач, ведущая ${lead.id}`
+          : `срок выкладки вышел: ведущая ${lead.id}, в пакете ${deploying.length}`,
+      );
+      for (const other of rest) {
+        notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
+      }
     }
   }
   let eligible = waitingForSession.filter(
@@ -741,6 +810,7 @@ export function scan(state) {
       notes.push(`задача ${task.id} ждёт сессию: свободных мест нет`);
       continue;
     }
+    const unaccounted = unaccountedLaunchNote(task, task.status, config, state.codexUsage ?? {});
     actions.push({
       kind: 'continue-stage',
       taskId: task.id,
@@ -749,6 +819,10 @@ export function scan(state) {
       // Перечень пакета есть только у ведущей выкладки; прочим действиям
       // поле не нужно, и его нет вовсе — отсутствие и есть «не пакет».
       ...(batchOf.has(task.id) ? { batch: batchOf.get(task.id) } : {}),
+      // Заход без учёта расхода. Поле есть только тогда, когда учёт неполон,
+      // и уезжает в журнал задачи вместе с записью о выданной сессии — то есть
+      // один раз на состоявшееся порождение, а не каждый оборот.
+      ...(unaccounted ? { unaccounted } : {}),
     });
     free -= 1;
   }
@@ -756,15 +830,22 @@ export function scan(state) {
   // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
   // Сначала сохраняем разблокировку; обычную очередь выбираем по следующему снимку.
   const unblocking = actions.some((action) => action.kind === 'unblock-task');
+  // Очередей две, и порядок между ними задаётся здесь одной сортировкой,
+  // а не отдельным проходом: второй проход стал бы вторым местом, где
+  // решается очерёдность, и однажды они разошлись бы. Внутри каждой очереди
+  // порядок прежний — положение карточки, затем возраст.
   const queue = tasks
     .filter(
       (task) =>
-        task.status === 'new' &&
+        QUEUE_STATES.includes(task.status) &&
         !held.has(task.id) &&
         !tokenHeld.has(task.id) &&
         !hasReport(task.id),
     )
-    .sort(byPriorityThenAge);
+    .sort(
+      (a, b) =>
+        QUEUE_STATES.indexOf(a.status) - QUEUE_STATES.indexOf(b.status) || byPriorityThenAge(a, b),
+    );
 
   // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
   const runWaiting = queue.some((task) => task.type === 'run');
@@ -808,6 +889,9 @@ export function scan(state) {
     }
     if (runWaiting && task.type !== 'run') continue;
 
+    // Записи о неучтённом заходе здесь нет намеренно: взятие в работу сессии
+    // не порождает — это делает `continue-stage` следующим оборотом, и там же
+    // запись ложится в журнал задачи.
     actions.push({ kind: 'start-stage', taskId: task.id, stage });
     busy = true;
   }

@@ -272,7 +272,11 @@ export async function unblockTask(action, io) {
   const task = io.readTask(action.taskId);
   if (task?.status !== 'blocked')
     return { result: 'skipped', why: 'карточка уже не заблокирована' };
-  if (!task.blockedContext?.reasons?.length || !task.dependsOn?.length)
+  // Непустого dependsOn не требуется: снятие ожидания у ждущих закрытую
+  // карточку оставляет перечень пустым, и прежнее условие держало бы такую
+  // задачу в «Заблокированы» навсегда. Законность ожидания доказывает
+  // сохранённое основание, а не остаток рёбер.
+  if (!task.blockedContext?.reasons?.length)
     return { result: 'skipped', why: 'нет сохранённого основания ожидания' };
   const tasks = io
     .allTaskIds()
@@ -285,16 +289,24 @@ export async function unblockTask(action, io) {
     mainBranch: action.mainBranch,
   });
   if (pending.length) return { result: 'skipped', why: pending.join(', ') };
+  // Перечень может оказаться пустым: ожидание закрытой карточки снимается
+  // вместе с ребром. Тогда называем то, чего задача ждала, по сохранённому
+  // основанию — оно переживает снятие намеренно.
+  const awaited = (
+    task.dependsOn?.length
+      ? task.dependsOn
+      : (task.blockedContext?.reasons ?? []).map((item) => item.taskId)
+  ).join(', ');
   if (task.delayAnalysis)
     return beginDelayAnalysis(
       {
         taskId: task.id,
         mode: 'verify',
-        reason: `Исправления выполнены: ${task.dependsOn.join(', ')}. Проверить сохранённый разбор, конкретное разблокирование и защиту от повторения.`,
+        reason: `Исправления выполнены: ${awaited}. Проверить сохранённый разбор, конкретное разблокирование и защиту от повторения.`,
       },
       io,
     );
-  const note = `Предшественники выполнены: ${task.dependsOn.join(', ')}. Новый анализ с учётом их результата.`;
+  const note = `Предшественники выполнены: ${awaited}. Новый анализ с учётом их результата.`;
   const moved = applyTransition(task, { status: 'new', now: io.now, note });
   const next = {
     ...moved.task,

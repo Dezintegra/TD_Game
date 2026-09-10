@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CommandKind, StructureKind, TICKS_PER_SECOND, UnitType, asPlayerId } from '@td/shared';
+import { CommandKind, StructureKind, TICKS_PER_SECOND, asPlayerId } from '@td/shared';
 import type { Command } from '@td/shared';
 import { createWorld, step } from '@td/sim';
 import { createOpponent } from './opponent.js';
@@ -12,6 +12,13 @@ import {
 } from './profile.js';
 import type { AiProfile, PhaseProfile } from './profile.js';
 import type { DecisionRecord } from './observer.js';
+import {
+  SIEGE_SEEDS,
+  evaluateSiegeCanary,
+  firstSiegeOrderTick,
+  siegeStopReason,
+} from './test-support/siege-canary.js';
+import type { SiegeResult } from './test-support/siege-canary.js';
 
 /**
  * Три способности, которых у противника не было: снайперская башня,
@@ -27,7 +34,7 @@ const AI = asPlayerId(0);
 const RIVAL = asPlayerId(1);
 
 /**
- * Мир, в котором играются все проверки файла.
+ * Мир проверок крепости и роя. Осадная канарейка использует все пять миров.
  *
  * Был 4242, стал 31337 — вместе с переходом на карту 38 × 38, и смена
  * эта не косметическая. Замер зондом на пяти мирах после уменьшения поля:
@@ -97,10 +104,21 @@ const built = (played: Played, kind: StructureKind): number =>
     (command) => command.kind === CommandKind.Build && command.structure === kind,
   ).length;
 
-const trained = (played: Played, type: UnitType): number =>
-  played.commands.filter(
-    (command) => command.kind === CommandKind.TrainUnit && command.unitType === type,
-  ).length;
+const playSiege = (seed: number): SiegeResult => {
+  const mine = createOpponent(AI, seed, SIEGE_PROFILE);
+  const rival = createOpponent(RIVAL, seed + 1, BASELINE_PROFILE);
+  let world = createWorld(seed);
+  let firstOrderTick: number | null = null;
+  for (;;) {
+    const reason = siegeStopReason(world.tick, world.winner, firstOrderTick);
+    if (reason !== null) {
+      return { seed, stopTick: world.tick, reason, winner: world.winner, firstOrderTick };
+    }
+    const issued = mine.decide(world);
+    firstOrderTick = firstSiegeOrderTick(issued, AI);
+    world = step(world, [...issued, ...rival.decide(world)]);
+  }
+};
 
 describe('вид башни задаётся весами профиля', () => {
   // Один матч на обе проверки: они об одном и том же прогоне, а считается
@@ -128,7 +146,7 @@ describe('вид башни задаётся весами профиля', () =>
 });
 
 /**
- * Сколько игровых секунд отсматривают проверки поведения.
+ * Сколько игровых секунд отсматривают проверки роя.
  *
  * Было 420 — «с запасом», и запас кончился. Залп генерала
  * (`give-the-general-a-salvo`) удлинил всё: по замеру арены на сорока
@@ -144,11 +162,8 @@ describe('вид башни задаётся весами профиля', () =>
  * изначально, только отсчитанный от измеренного срока, а не от
  * предполагаемого.
  *
- * Окно общее для рывка и для Теслы. Сдвинулся не рывок, а ВЕСЬ матч,
- * и покупка за двадцать пять секунд дохода уехала ровно так же:
- * на прежних 420 осадный профиль не успевал заказать ни одной машины.
- * Разные числа для двух проверок означали бы, что причина у них разная,
- * а она одна.
+ * Исторически окно было общим с Теслой. Теперь её предел закреплён
+ * отдельно: изменение осадной канарейки не должно менять проверки роя.
  */
 const HORIZON_SECONDS = 960;
 
@@ -165,14 +180,13 @@ const HORIZON_SECONDS = 960;
  */
 
 describe('состав войска доходит до Теслы', () => {
-  it('осадный профиль заказывает Теслу', () => {
-    // Ради этого и заведён горизонт накопления в полтораста секунд: Тесла
-    // стоит двадцать пять секунд дохода, и при базовом терпении желание
-    // объявляется недостижимым.
-    const played = play(SIEGE_PROFILE, HORIZON_SECONDS);
-
-    expect(trained(played, UnitType.Tesla)).toBeGreaterThan(0);
-  });
+  it('осадный профиль заказывает Теслу минимум в трёх из пяти миров', () => {
+    const results = SIEGE_SEEDS.map(playSiege);
+    const evaluation = evaluateSiegeCanary(results);
+    console.info(evaluation.diagnostic);
+    expect(evaluation.passed, evaluation.diagnostic).toBe(true);
+    // Пять последовательных миров дороже одного; игровой горизонт не меняется.
+  }, 600_000);
 
   /*
    * Проверки «профиль по умолчанию Теслу не заказывает» здесь больше нет,
