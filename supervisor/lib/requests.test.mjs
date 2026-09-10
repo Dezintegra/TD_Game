@@ -268,19 +268,32 @@ describe('причина в конвейере', () => {
   const plan = (requests, sourceStage) =>
     planRequests(requests, { existingIds: [], now: NOW, sourceId: '0001-one', sourceStage });
 
-  it('одна область pipeline не делает находку обязательной', () => {
+  it('область pipeline уводит находку в обслуживание, но обязательной не делает', () => {
     // 02.09.2026 починки разрешений pnpm и сгорающих продолжений простояли
     // в кандидатах часами: разборы честно не назвали их блокирующими,
     // а прочим этапам метить было нечем. Зона причины — другой вопрос,
     // чем срочность, и право на него есть у всех.
+    //
+    // Теперь такая находка идёт в «Обслуживание»: владельцу продукта решать
+    // про игру, а не про то, какое правило этапа понято двояко. Признаком
+    // остаётся объявленная область, а не догадка по заголовку. Обязательной
+    // находку это по-прежнему не делает — первое место в очереди даёт только
+    // признак blocking.
     for (const stage of ['implement', 'review', 'triage', 'postmortem', null]) {
       const { planned } = plan([pipeline], stage);
       expect(planned[0], `этап ${stage}`).toMatchObject({
-        status: 'candidate',
+        status: 'maintenance',
         area: 'pipeline',
       });
+      expect(planned[0].blocking, `этап ${stage}`).toBeUndefined();
       expect(validateTask(planned[0], schema), `этап ${stage}`).toEqual([]);
     }
+  });
+
+  it('находка про игру остаётся кандидатом и ждёт владельца продукта', () => {
+    const { planned } = plan([request({ title: 'Штурмовик бьёт не туда' })], 'implement');
+    expect(planned[0]).toMatchObject({ status: 'candidate' });
+    expect(planned[0].area).toBeUndefined();
   });
 
   it('прогон минует кандидатов без автоматического первого места', () => {

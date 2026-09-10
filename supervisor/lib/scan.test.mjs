@@ -800,6 +800,39 @@ describe('приоритеты', () => {
     });
     expect(result.actions[0].taskId).toBe('0002-old');
   });
+
+  it('обслуживание берётся раньше обычной очереди, даже уступая в приоритете', () => {
+    const result = run({
+      tasks: [
+        task({ id: '0001-queued', status: 'new', priority: 1 }),
+        task({ id: '0002-fix', status: 'maintenance', priority: 90 }),
+      ],
+    });
+    expect(result.actions[0]).toMatchObject({ kind: 'start-stage', taskId: '0002-fix' });
+  });
+
+  it('внутри обслуживания порядок прежний: положение, затем возраст', () => {
+    const result = run({
+      config: { ...config, maxConcurrent: 5 },
+      tasks: [
+        task({ id: '0001-later', status: 'maintenance', priority: 90 }),
+        task({ id: '0002-sooner', status: 'maintenance', priority: 10 }),
+      ],
+    });
+    expect(result.actions[0].taskId).toBe('0002-sooner');
+  });
+
+  it('удержанное зависимостью обслуживание уступает место готовой очереди', () => {
+    const result = run({
+      tasks: [
+        task({ id: '0002-fix', status: 'maintenance', priority: 1, dependsOn: ['0009-missing'] }),
+        task({ id: '0001-queued', status: 'new', priority: 90 }),
+      ],
+    });
+    expect(result.actions.filter((a) => a.kind === 'start-stage')).toEqual([
+      expect.objectContaining({ taskId: '0001-queued' }),
+    ]);
+  });
 });
 
 describe('исходы осиротевших этапов', () => {

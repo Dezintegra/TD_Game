@@ -751,6 +751,27 @@ const HANDLERS = {
   },
   'unblock-task': unblockTask,
   'resolve-dependents': resolveDependents,
+  // Переезд кандидата про конвейер в «Обслуживание». Ни сессии, ни дерева:
+  // это смена колонки, и всё, что ей нужно, — объявленная область работы.
+  'settle-maintenance': async (action, io) => {
+    const task = io.readTask(action.taskId);
+    if (task?.status !== 'candidate' || task.area !== 'pipeline')
+      return { result: 'skipped', why: 'карточка уже не кандидат про конвейер' };
+    const note =
+      'Переезд в «Обслуживание»: объявленная область работы — конвейер. ' +
+      'Одобрения владельца продукта такая задача не ждёт; кандидатами остаются ' +
+      'предложения про игру.';
+    const moved = applyTransition(task, { status: 'maintenance', now: io.now, note });
+    if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+    const saved = await io.saveTask(
+      moved.task,
+      { at: io.now, from: 'candidate', to: 'maintenance', what: note, source: 'supervisor' },
+      `chore(backlog): ${task.id} candidate → maintenance`,
+    );
+    return saved.ok
+      ? { result: 'done', status: 'maintenance' }
+      : { result: 'failed', why: saved.why ?? saved.outcome };
+  },
   'push-tail': pushTail,
   'quarantine-card': quarantineCard,
   'clear-card': clearCard,

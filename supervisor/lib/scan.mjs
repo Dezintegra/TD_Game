@@ -7,6 +7,7 @@ import {
   CROSSCUT,
   NEEDS_SESSION,
   NEEDS_WORKTREE,
+  QUEUE_STATES,
   canTransition,
   stateClass,
 } from '../config/transitions.mjs';
@@ -37,6 +38,7 @@ export const ACTIONS = [
   // Снятие ожидания у ждущих закрытую карточку. Стоит рядом с разблокировкой
   // намеренно: обе разбирают застой, и обе дешёвые — ни сессии, ни дерева.
   'resolve-dependents',
+  'settle-maintenance',
   'hold-token-budget',
   'refresh-token-budget',
   'resume-token-budget',
@@ -412,7 +414,8 @@ export function scan(state) {
   const held = new Map();
   // Проверяем до квот и пределов попыток: ожидание не является запуском.
   for (const task of tasks) {
-    if (!['new', 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status)) continue;
+    if (![...QUEUE_STATES, 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status))
+      continue;
     if (isRunning(task.id) || hasReport(task.id)) continue;
     // Диагностике нужны результаты блокеров, но ожидать их для самого разбора нельзя.
     if (reviewingDelay(task)) continue;
@@ -453,6 +456,20 @@ export function scan(state) {
     if (uncovered.length === 0) continue;
     held.set(task.id, uncovered);
     notes.push(heldNote(task.id, task.status, uncovered));
+  }
+
+  // Кандидаты, чья объявленная область работы — конвейер, переезжают
+  // в «Обслуживание». Разбирается этим и то, что накопилось до введения
+  // очереди: на 10.09.2026 таких кандидатов было большинство, и предложения
+  // по игре тонули среди них.
+  //
+  // Переносится только объявленная область. Догадка по заголовку отвергнута:
+  // на глаз карточка про конвейер и карточка про игру неразличимы, а ошибка
+  // отнесения стоит владельцу продукта потерянного предложения.
+  for (const task of tasks) {
+    if (task.status !== 'candidate' || task.area !== 'pipeline') continue;
+    if (hasReport(task.id) || isRunning(task.id)) continue;
+    actions.push({ kind: 'settle-maintenance', taskId: task.id });
   }
 
   // Рёбра, ведущие в закрытые карточки, снимаются с обоснованием. Планируется
@@ -503,7 +520,8 @@ export function scan(state) {
   const tokenHeld = new Set();
   for (const task of tasks) {
     const waiting = task.status === 'token-limit';
-    if (!waiting && task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (!waiting && !QUEUE_STATES.includes(task.status) && !NEEDS_SESSION.includes(task.status))
+      continue;
     if (task.delayJournal) continue;
     if (task.status === 'deploy' && running.some((item) => item.stage === 'deploy')) continue;
     if (isRunning(task.id) || hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id))
@@ -517,7 +535,7 @@ export function scan(state) {
     // Зависимости и разрешения не превращаются в бюджетное ожидание.
     if (!waiting && held.has(task.id)) continue;
     const resumeStatus = waiting ? task.tokenHold.resumeStatus : task.status;
-    const stage = resumeStatus === 'new' ? firstStage(task) : resumeStatus;
+    const stage = QUEUE_STATES.includes(resumeStatus) ? firstStage(task) : resumeStatus;
     const budget = tokenAdmission(task, stage, config, state.codexUsage ?? {});
     if (!budget) {
       if (waiting) actions.push({ kind: 'resume-token-budget', taskId: task.id, stage });
@@ -781,15 +799,22 @@ export function scan(state) {
   // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
   // Сначала сохраняем разблокировку; обычную очередь выбираем по следующему снимку.
   const unblocking = actions.some((action) => action.kind === 'unblock-task');
+  // Очередей две, и порядок между ними задаётся здесь одной сортировкой,
+  // а не отдельным проходом: второй проход стал бы вторым местом, где
+  // решается очерёдность, и однажды они разошлись бы. Внутри каждой очереди
+  // порядок прежний — положение карточки, затем возраст.
   const queue = tasks
     .filter(
       (task) =>
-        task.status === 'new' &&
+        QUEUE_STATES.includes(task.status) &&
         !held.has(task.id) &&
         !tokenHeld.has(task.id) &&
         !hasReport(task.id),
     )
-    .sort(byPriorityThenAge);
+    .sort(
+      (a, b) =>
+        QUEUE_STATES.indexOf(a.status) - QUEUE_STATES.indexOf(b.status) || byPriorityThenAge(a, b),
+    );
 
   // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
   const runWaiting = queue.some((task) => task.type === 'run');

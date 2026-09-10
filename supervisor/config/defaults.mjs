@@ -380,6 +380,7 @@ export const DEFAULTS = {
      */
     lists: {
       candidate: 'Кандидаты',
+      maintenance: 'Обслуживание',
       new: 'Заведено',
       blocked: 'Заблокированы',
       'token-limit': 'Лимит токенов',
