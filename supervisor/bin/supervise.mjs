@@ -398,6 +398,9 @@ async function openBacklog({ mayWrite }) {
     invalid,
     marked,
     store,
+    // Ответы владельца снимаются здесь же, из того же снимка доски:
+    // сканер получает карту готовой, как и команды лимита токенов.
+    ownerAnswers: store.ownerAnswers(),
     closedDependencyIds: store.closedDependencyIds(),
     dependencyRecords: store.dependencyRecords(),
     notes: [
@@ -600,7 +603,9 @@ async function turn() {
     apiFailures: supervisor.apiFailures,
     codexUsage: supervisor.codexUsage,
     reportStorageBlocked: supervisor.reportStorageBlocked,
-    answers: readAnswers(root, config),
+    // Бэклог на доске отвечает сам; файловый — прежним разделом
+    // `manage/questions.md`, который для него и остаётся местом ответа.
+    answers: backlog.ownerAnswers ?? readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.
     permissions: providerOf(config) === 'claude' ? readPermissions(home, config) : null,
