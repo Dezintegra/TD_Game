@@ -304,6 +304,8 @@ describe('непокрытые команды этапа', () => {
       'PowerShell(node scripts/deploy-remote.mjs:*)',
       'Bash(node scripts/deploy.mjs:*)',
       'PowerShell(node scripts/deploy.mjs:*)',
+      'Bash(node scripts/ensure-deploy-host.mjs:*)',
+      'PowerShell(node scripts/ensure-deploy-host.mjs:*)',
       'Bash(pnpm e2e:perf:*)',
       'PowerShell(pnpm e2e:perf:*)',
     ],

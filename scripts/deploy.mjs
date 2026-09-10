@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deploySshHost, deploySshOptions } from './deploy-ssh.mjs';
+import { ensureDeployHost } from './ensure-deploy-host.mjs';
 import { deployPerfArgs } from './deploy-perf.mjs';
 
 // ── Ключи ────────────────────────────────────────────────────────────
@@ -95,19 +96,15 @@ try {
   die('это не репозиторий git — запускать надо из дерева проекта');
 }
 
+// Машина прерываемая, и облако гасит её не позже чем через сутки. Раньше
+// сценарий на этом умирал, подсказав человеку команду подъёма; теперь
+// поднимает сам — подтверждения на это не спрашивают, потому что иначе
+// автономная выкладка упиралась бы в него каждый раз, когда облако
+// погасило машину.
 step(`Проверяю связь с сервером «${host}»`);
-const reach = spawnSync('ssh', [...sshOptions, '--', host, 'true'], {
-  stdio: 'ignore',
-});
-if (reach.status !== 0) {
-  die(
-    `сервер «${host}» не отвечает.\n` +
-      `  Проверьте: ssh ${host}\n` +
-      `  Если машина прерываемая, облако могло её остановить:\n` +
-      `  yc compute instance start td`,
-  );
-}
-note('связь есть');
+const prepared = await ensureDeployHost({ host, log: note });
+if (!prepared.ok) die(`сервер «${host}» не готов: ${prepared.why}`);
+note(prepared.started ? 'машина поднята, связь есть' : 'связь есть');
 
 // Docker-файлы лежат в дереве, но в репозиторий их пока не закоммитили.
 // Поэтому они добавляются в архив отдельно, поверх выгрузки из git.
