@@ -1,4 +1,5 @@
-import { LOBBY_CAPACITY, LobbyError } from '@td/protocol';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { LOBBY_CAPACITY, LOBBY_PASSWORD_MAX_LENGTH, LobbyError } from '@td/protocol';
 import { checkName, computerMindOf } from '@td/shared';
 import type { MatchSide } from '@td/shared';
 import type { LobbySummary, LobbyView, MatchView, PlayerView } from '@td/protocol';
@@ -30,6 +31,76 @@ export const DISCONNECT_GRACE_MS = 15_000;
 
 export type LobbyResult<T> =
   { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: LobbyError };
+
+/**
+ * Замок комнаты: соль и хеш пароля.
+ *
+ * Открытым текстом пароль не хранится нигде и ни мгновения дольше самой
+ * сверки. Наружу — ни в `LobbyView`, ни в `LobbySummary`, ни в поток
+ * состояния — не уходит ни пароль, ни хеш, ни соль: список комнат видят
+ * все, и любое из трёх там означало бы, что замка нет.
+ */
+interface Lock {
+  readonly salt: Buffer;
+  readonly hash: Buffer;
+}
+
+/**
+ * Чем считается хеш и почему не медленной функцией.
+ *
+ * HMAC-SHA-256 с солью на комнату. Медленная функция вывода ключа
+ * (scrypt, argon2) здесь была бы не «надёжнее», а хуже, и по двум
+ * причинам сразу.
+ *
+ * ПЕРВАЯ, и она решающая. Синхронный scrypt со стойкими параметрами
+ * занимает около сотни миллисекунд, и занимает он их у ЕДИНСТВЕННОГО
+ * потока, в котором сервер шагает всеми идущими матчами. Вход в комнату
+ * стал бы заиканием во всех чужих партиях разом — то самое, чего главное
+ * требование проекта не допускает. Асинхронный вариант потянул бы
+ * за собой асинхронность через всё хранилище комнат ради секрета,
+ * который живёт минуты.
+ *
+ * ВТОРАЯ. Медленный хеш защищает от перебора того, кто хеш УКРАЛ.
+ * Красть здесь нечего: хеш живёт в памяти процесса, не пишется на диск,
+ * не уходит по сети и умирает вместе с комнатой. Остаётся перебор через
+ * сам вход, а его скорость задаёт сеть и сервер, а не стойкость функции.
+ *
+ * Чего этот выбор НЕ даёт, сказано прямо: ограничения числа попыток
+ * входа нет, и подбор короткого пароля через сеть остаётся возможным.
+ * Пароль здесь — засов от случайного гостя, а не защита учётной записи.
+ */
+const lockOf = (password: string): Lock => {
+  const salt = randomBytes(16);
+  return { salt, hash: hashWith(salt, password) };
+};
+
+const hashWith = (salt: Buffer, password: string): Buffer =>
+  createHmac('sha256', salt).update(password, 'utf8').digest();
+
+/**
+ * Сверка постоянного времени.
+ *
+ * Обычное сравнение буферов выходит на первом же несовпавшем байте,
+ * и по времени ответа подбирается хеш побайтно. Здесь сравнивать
+ * особенно нечего — длина у HMAC-SHA-256 постоянная, — но привычка
+ * сравнивать секреты как попало однажды доедет туда, где длина
+ * переменная.
+ */
+const unlocks = (lock: Lock, password: string): boolean =>
+  timingSafeEqual(lock.hash, hashWith(lock.salt, password));
+
+/**
+ * Пароль годен, если он не пуст и не длиннее предела.
+ *
+ * Пробелы не срезаются. Пароль — не подпись: игрок вправе назначить
+ * его с пробелом на конце, и срезание молча сделало бы вход по такому
+ * паролю невозможным для того, кто ввёл его в точности.
+ *
+ * А вот пароль из одних пробелов отвергается: назначить его можно
+ * только по ошибке, а войти по нему — только угадав число пробелов.
+ */
+const checkPassword = (password: string): boolean =>
+  password.length > 0 && password.length <= LOBBY_PASSWORD_MAX_LENGTH && password.trim().length > 0;
 
 interface Slot {
   readonly id: string;
@@ -85,6 +156,8 @@ interface LobbyRecord {
   readonly title: string;
   readonly slots: Slot[];
   match: MatchRecord | null;
+  /** Замок, либо null у открытой комнаты. */
+  readonly lock: Lock | null;
 }
 
 export interface LobbyStoreOptions {
@@ -126,8 +199,17 @@ export interface LobbyStoreOptions {
 }
 
 export interface LobbyStore {
-  create(playerId: string, name: string, title: string): LobbyResult<LobbyView>;
-  join(playerId: string, name: string, lobbyId: string): LobbyResult<LobbyView>;
+  /**
+   * Завести комнату. Пустой пароль означает открытую комнату — ровно так,
+   * как было до появления паролей: поле никто не заполнял.
+   */
+  create(playerId: string, name: string, title: string, password?: string): LobbyResult<LobbyView>;
+  /**
+   * Войти. Пароль сверяется ЗДЕСЬ, на сервере, и только здесь: в комнату
+   * стучатся напрямую по сети, и проверка на клиенте не защищает ни
+   * от чего — её обходит любой, кто умеет послать запрос руками.
+   */
+  join(playerId: string, name: string, lobbyId: string, password?: string): LobbyResult<LobbyView>;
   /** Возвращает true, если состояние изменилось и его стоит разослать. */
   leave(playerId: string): boolean;
   setReady(playerId: string, ready: boolean): LobbyResult<LobbyView>;
@@ -309,12 +391,16 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
   };
 
   return {
-    create(playerId, name, title) {
+    create(playerId, name, title, password = '') {
       const checkedName = checkName(name);
       if (!checkedName.ok) return { ok: false, error: LobbyError.BadName };
 
       const checkedTitle = checkName(title);
       if (!checkedTitle.ok) return { ok: false, error: LobbyError.BadTitle };
+
+      if (password !== '' && !checkPassword(password)) {
+        return { ok: false, error: LobbyError.BadPassword };
+      }
 
       // Создать комнату и остаться в прежней — состояние, которого игрок
       // не желал ни в одном сценарии.
@@ -325,13 +411,14 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
         title: checkedTitle.name,
         slots: [newSlot(playerId, checkedName.name)],
         match: null,
+        lock: password === '' ? null : lockOf(password),
       };
       lobbies.set(lobby.id, lobby);
 
       return { ok: true, value: lobbyView(lobby, playerId) };
     },
 
-    join(playerId, name, lobbyId) {
+    join(playerId, name, lobbyId, password = '') {
       const checkedName = checkName(name);
       if (!checkedName.ok) return { ok: false, error: LobbyError.BadName };
 
@@ -343,8 +430,21 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
       if (existing !== undefined) {
         // Повторный вход в свою же комнату — не ошибка, а обычный исход
         // двойного нажатия. Имя при этом обновляем: игрок мог его сменить.
+        //
+        // Пароль тут не спрашивается, и это не дыра: место в комнате уже
+        // занято этим игроком, и спрашивать пароль у того, кто внутри,
+        // значило бы выгонять его при перезагрузке страницы. Кто вправе
+        // занять место заново — вопрос восстановления участника,
+        // и он этой задачей не решается (см. `proposal.md`, Non-goals).
         existing.name = checkedName.name;
         return { ok: true, value: lobbyView(lobby, playerId) };
+      }
+
+      // Пароль сверяется ДО проверки на заполненность. Порядок выбран
+      // намеренно: иначе по разнице ответов «занято» и «пароль не тот»
+      // посторонний узнавал бы, сколько человек в закрытой комнате.
+      if (lobby.lock !== null && !unlocks(lobby.lock, password)) {
+        return { ok: false, error: LobbyError.WrongPassword };
       }
 
       if (lobby.slots.length >= LOBBY_CAPACITY) return { ok: false, error: LobbyError.Full };
@@ -456,6 +556,9 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
           players: lobby.slots.length,
           capacity: LOBBY_CAPACITY,
           computer: host === undefined ? false : options.computerProfileOf?.(host.id) !== undefined,
+          // Наружу уходит только признак. Ни соль, ни хеш, ни тем более
+          // сам пароль в списке комнат не появляются: список видят все.
+          locked: lobby.lock !== null,
         });
       }
 

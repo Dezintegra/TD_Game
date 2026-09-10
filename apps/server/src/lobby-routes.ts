@@ -40,7 +40,13 @@ const statusOf = (error: LobbyError): number => {
   switch (error) {
     case LobbyError.BadName:
     case LobbyError.BadTitle:
+    case LobbyError.BadPassword:
       return 400;
+    // Не 401: тот код обещает заголовок `WWW-Authenticate` и разговор
+    // о способе входа, которого здесь нет. Пароль комнаты — не учётная
+    // запись, и правильный ответ на «пароль не тот» именно «нельзя».
+    case LobbyError.WrongPassword:
+      return 403;
     case LobbyError.NotFound:
       return 404;
     // Заполненная комната, начавшийся матч, готовность в одиночестве —
@@ -195,11 +201,14 @@ export const registerLobbyRoutes = (
     });
   });
 
-  app.post<{ Body: { playerId?: string; name?: string; title?: string } }>(
+  // Пароль ходит телом POST, а не строкой запроса, и это не мелочь:
+  // строка запроса попадает в журналы сервера, в историю браузера
+  // и в заголовок `Referer` при переходе со страницы.
+  app.post<{ Body: { playerId?: string; name?: string; title?: string; password?: string } }>(
     '/api/lobbies',
     (request, reply) => {
-      const { playerId = '', name = '', title = '' } = request.body;
-      const created = store.create(playerId, name, title);
+      const { playerId = '', name = '', title = '', password = '' } = request.body;
+      const created = store.create(playerId, name, title, password);
       if (reply409(reply, created)) return;
 
       broadcast();
@@ -207,17 +216,17 @@ export const registerLobbyRoutes = (
     },
   );
 
-  app.post<{ Params: { id: string }; Body: { playerId?: string; name?: string } }>(
-    '/api/lobbies/:id/join',
-    (request, reply) => {
-      const { playerId = '', name = '' } = request.body;
-      const joined = store.join(playerId, name, request.params.id);
-      if (reply409(reply, joined)) return;
+  app.post<{
+    Params: { id: string };
+    Body: { playerId?: string; name?: string; password?: string };
+  }>('/api/lobbies/:id/join', (request, reply) => {
+    const { playerId = '', name = '', password = '' } = request.body;
+    const joined = store.join(playerId, name, request.params.id, password);
+    if (reply409(reply, joined)) return;
 
-      broadcast();
-      void reply.send(joined);
-    },
-  );
+    broadcast();
+    void reply.send(joined);
+  });
 
   app.post<{ Body: { playerId?: string } }>('/api/lobbies/leave', (request, reply) => {
     const { playerId = '' } = request.body;

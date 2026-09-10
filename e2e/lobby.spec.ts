@@ -118,6 +118,54 @@ test('созданная комната появляется у соседа б�
   }
 });
 
+test('комната под паролем видна замком и пускает только по паролю', async ({ browser }) => {
+  const hosting = await browser.newContext();
+  const guesting = await browser.newContext();
+
+  try {
+    const host = await hosting.newPage();
+    const guest = await guesting.newPage();
+    const title = uniqueTitle();
+
+    await identify(host, 'Аня');
+    await identify(guest, 'Боря');
+
+    await host.getByTestId('lobby-title').fill(title);
+    await host.getByTestId('lobby-password').fill('тайна');
+    await host.getByTestId('lobby-create').click();
+    await expect(host.getByTestId('room')).toBeVisible();
+
+    // Замок виден ДО попытки входа: иначе гость тыкается вслепую.
+    const row = rowOf(guest, title);
+    await expect(row).toBeVisible();
+    await expect(row).toHaveAttribute('data-locked', 'true');
+    await expect(row.getByTestId('lobby-row-locked')).toBeVisible();
+
+    // Первое нажатие раскрывает поле, а не уходит в сервер с пустым
+    // паролем: отказ, которого можно не получать, получать незачем.
+    await row.getByTestId('lobby-join').click();
+    const field = row.getByTestId('lobby-row-password');
+    await expect(field).toBeVisible();
+
+    // Неверный пароль оставляет гостя в списке и говорит почему.
+    await field.fill('не та');
+    await field.press('Enter');
+    await expect(guest.getByText('Пароль не подошёл')).toBeVisible();
+    await expect(guest.getByTestId('room')).toBeHidden();
+    // Место в комнате не занято ни одной неудачной попыткой.
+    await expect(host.getByTestId('room-slot')).toHaveCount(1);
+
+    // Верный — пускает, и дальше комната обычная.
+    await field.fill('тайна');
+    await field.press('Enter');
+    await expect(guest.getByTestId('room')).toBeVisible();
+    await expect(host.getByTestId('room-slot')).toHaveCount(2);
+  } finally {
+    await hosting.close();
+    await guesting.close();
+  }
+});
+
 test('комната появляется и закрывается, не сдвинув меню', async ({ browser }) => {
   const watching = await browser.newContext();
   const creating = await browser.newContext();

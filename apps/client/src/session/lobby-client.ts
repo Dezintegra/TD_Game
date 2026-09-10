@@ -36,6 +36,8 @@ export const lobbyErrorText: Record<ActionError, string> = {
   [LobbyError.NeedOpponent]: 'Сначала дождитесь соперника',
   [LobbyError.BadName]: 'Имя не подходит',
   [LobbyError.BadTitle]: 'Название не подходит',
+  [LobbyError.WrongPassword]: 'Пароль не подошёл',
+  [LobbyError.BadPassword]: 'Пароль не подходит',
   [UNREACHABLE]: 'Сервер не отвечает',
 };
 
@@ -46,8 +48,24 @@ export interface LobbyClient {
   listen(playerId: string): void;
   /** Закрывает поток. */
   stop(): void;
-  create(playerId: string, name: string, title: string): Promise<ActionError | null>;
-  join(playerId: string, name: string, lobbyId: string): Promise<ActionError | null>;
+  /** Пустой пароль означает открытую комнату. */
+  create(
+    playerId: string,
+    name: string,
+    title: string,
+    password: string,
+  ): Promise<ActionError | null>;
+  /**
+   * Пароль уходит серверу и сверяется ТАМ. Клиент его не проверяет
+   * и проверять не вправе: в комнату стучатся напрямую по сети,
+   * и проверка здесь не защитила бы ни от чего.
+   */
+  join(
+    playerId: string,
+    name: string,
+    lobbyId: string,
+    password: string,
+  ): Promise<ActionError | null>;
   leave(playerId: string): Promise<void>;
   setReady(playerId: string, ready: boolean): Promise<ActionError | null>;
 }
@@ -126,10 +144,11 @@ export const createLobbyClient = (handlers: LobbyClientHandlers): LobbyClient =>
       handlers.onConnected(false);
     },
 
-    create: (playerId, name, title) => post('/api/lobbies', { playerId, name, title }),
+    create: (playerId, name, title, password) =>
+      post('/api/lobbies', { playerId, name, title, password }),
 
-    join: (playerId, name, lobbyId) =>
-      post(`/api/lobbies/${encodeURIComponent(lobbyId)}/join`, { playerId, name }),
+    join: (playerId, name, lobbyId, password) =>
+      post(`/api/lobbies/${encodeURIComponent(lobbyId)}/join`, { playerId, name, password }),
 
     async leave(playerId) {
       await post('/api/lobbies/leave', { playerId });

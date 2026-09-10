@@ -395,20 +395,21 @@ export const sessionActions = {
     store.getState().setProfile(null);
   },
 
-  async createLobby(title: string): Promise<ActionError | null> {
+  /** Пустой пароль означает открытую комнату — как было до паролей. */
+  async createLobby(title: string, password = ''): Promise<ActionError | null> {
     const { profile, setError } = store.getState();
     if (profile === null) return null;
 
-    const error = await lobby.create(profile.id, profile.name, title);
+    const error = await lobby.create(profile.id, profile.name, title, password);
     setError(error);
     return error;
   },
 
-  async joinLobby(lobbyId: string): Promise<ActionError | null> {
+  async joinLobby(lobbyId: string, password = ''): Promise<ActionError | null> {
     const { profile, setError } = store.getState();
     if (profile === null) return null;
 
-    const error = await lobby.join(profile.id, profile.name, lobbyId);
+    const error = await lobby.join(profile.id, profile.name, lobbyId, password);
     setError(error);
     return error;
   },
@@ -524,8 +525,10 @@ export const sessionActions = {
         tried.add(room.id);
 
         // Выход из прежней комнаты не нужен: сервер выводит из неё сам
-        // при входе в другую.
-        const joinError = await lobby.join(profile.id, profile.name, room.id);
+        // при входе в другую. Пароль пустой: дежурные комнаты компьютера
+        // открыты всем — закрывать их не от кого, они и заведены затем,
+        // чтобы в них входили.
+        const joinError = await lobby.join(profile.id, profile.name, room.id, '');
         if (joinError === null) {
           await this.toggleReady(true);
           return null;

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import { Button, Panel, TextField } from '@td/ui';
 import { NAME_MAX_LENGTH } from '@td/shared';
+import { LOBBY_PASSWORD_MAX_LENGTH, LobbyError } from '@td/protocol';
 import type { LobbySummary } from '@td/protocol';
 import { lobbyErrorText } from '../session/lobby-client.js';
 import { useSessionStore } from '../session/session-store.js';
@@ -64,12 +65,13 @@ export const LobbyList = () => {
   const manners = mannerList === '' ? [] : mannerList.split('\n');
 
   const [title, setTitle] = useState(() => defaultTitle(profile?.name ?? ''));
+  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
 
   const create = (event: FormEvent): void => {
     event.preventDefault();
     setBusy(true);
-    void sessionActions.createLobby(title).finally(() => setBusy(false));
+    void sessionActions.createLobby(title, password).finally(() => setBusy(false));
   };
 
   return (
@@ -93,6 +95,26 @@ export const LobbyList = () => {
             <Button type="submit" data-testid="lobby-create" disabled={busy}>
               Создать
             </Button>
+          </div>
+
+          {/* Пароль — вторая строка, а не третье поле в ряд. Он нужен
+              меньшинству, и стоять он обязан так, чтобы большинство
+              его не заполняло: пустой пароль означает открытую комнату,
+              ровно как было до его появления. */}
+          <div style={{ marginTop: 'var(--td-space-2)' }}>
+            <TextField
+              id="lobby-password"
+              data-testid="lobby-password"
+              type="password"
+              label="Пароль — если комната не для всех"
+              value={password}
+              maxLength={LOBBY_PASSWORD_MAX_LENGTH}
+              // Менеджеру паролей тут делать нечего: это пароль комнаты
+              // на десять минут, а не от учётной записи.
+              autoComplete="off"
+              placeholder="без пароля"
+              onChange={(event) => setPassword(event.target.value)}
+            />
           </div>
         </form>
 
@@ -253,11 +275,61 @@ const clipStyle: CSSProperties = {
 const LobbyRow = ({ lobby }: { lobby: LobbySummary }) => {
   const full = lobby.players >= lobby.capacity;
 
+  /**
+   * Пароль спрашивается ЗДЕСЬ, в самой строке, а не отдельным окном.
+   *
+   * Окно пришлось бы закрывать, оно перекрыло бы список, и игрок потерял
+   * бы из виду ту комнату, в которую целился. Строка же остаётся
+   * на месте, и видно, к какой именно комнате относится поле.
+   */
+  const [asking, setAsking] = useState(false);
+  const [password, setPassword] = useState('');
+  const [refused, setRefused] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const enter = (secret: string): void => {
+    setBusy(true);
+    void sessionActions
+      .joinLobby(lobby.id, secret)
+      .then((error) => {
+        // Отказ по паролю остаётся в строке: поле не закрывается,
+        // введённое не стирается — опечатку исправляют, а не набирают
+        // заново.
+        setRefused(error === LobbyError.WrongPassword);
+      })
+      .finally(() => setBusy(false));
+  };
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    enter(password);
+  };
+
   return (
-    <div style={rowStyle} data-testid="lobby-row" data-computer={String(lobby.computer)}>
+    <div
+      style={{ ...rowStyle, flexWrap: 'wrap' }}
+      data-testid="lobby-row"
+      data-computer={String(lobby.computer)}
+      data-locked={String(lobby.locked)}
+    >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-        <span style={clipStyle} data-testid="lobby-row-title">
-          {lobby.title}
+        <span style={{ ...clipStyle, display: 'flex', gap: 'var(--td-space-1)' }}>
+          {/* Замок стоит ДО попытки входа. Без него игрок жмёт «Войти»,
+              получает отказ и только тогда узнаёт, что нужен пароль,
+              которого у него нет. */}
+          {lobby.locked && (
+            <span
+              data-testid="lobby-row-locked"
+              aria-label="комната под паролем"
+              title="Комната под паролем"
+              style={{ flexShrink: 0, color: 'var(--td-text-muted-3)' }}
+            >
+              🔒
+            </span>
+          )}
+          <span style={clipStyle} data-testid="lobby-row-title">
+            {lobby.title}
+          </span>
         </span>
         <span
           style={{
@@ -305,18 +377,47 @@ const LobbyRow = ({ lobby }: { lobby: LobbySummary }) => {
 
         <Button
           data-testid="lobby-join"
-          disabled={full}
+          disabled={full || busy}
           // Заполненная комната не исчезает из списка, а показывается
           // недоступной: игрок должен видеть, что комната есть и что
           // места в ней кончились, а не гадать, куда она делась.
           variant={full ? 'ghost' : 'accent'}
           onClick={() => {
-            void sessionActions.joinLobby(lobby.id);
+            // У закрытой комнаты первое нажатие раскрывает поле,
+            // а не уходит в сервер с пустым паролем: отказ, которого
+            // можно не получать, получать незачем.
+            if (lobby.locked && !asking) {
+              setAsking(true);
+              return;
+            }
+            enter(password);
           }}
         >
           {full ? 'Занято' : 'Войти'}
         </Button>
       </div>
+
+      {lobby.locked && asking && (
+        <form onSubmit={submit} style={{ flexBasis: '100%', marginTop: 'var(--td-space-2)' }}>
+          <TextField
+            id={`lobby-password-${lobby.id}`}
+            data-testid="lobby-row-password"
+            type="password"
+            // Поле берёт фокус само: игрок уже нажал «Войти», и второе
+            // нажатие ради того, чтобы начать печатать, — лишнее.
+            autoFocus
+            autoComplete="off"
+            label="Пароль комнаты"
+            value={password}
+            maxLength={LOBBY_PASSWORD_MAX_LENGTH}
+            error={refused ? 'Пароль не подошёл' : undefined}
+            onChange={(event) => {
+              setPassword(event.target.value);
+              setRefused(false);
+            }}
+          />
+        </form>
+      )}
     </div>
   );
 };
