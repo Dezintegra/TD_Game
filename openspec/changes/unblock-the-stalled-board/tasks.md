@@ -79,22 +79,20 @@
 
 ## 5. Замер перестаёт сторожить выкладку
 
-- [ ] 5.1 Различить исходы замера: `scripts/perf-run.mjs` отдаёт 2 при взятом
-  замере с непройденным порогом и 1 при несостоявшемся. `scripts/deploy.mjs`
-  продолжает выкладку при 2, называя просадку, и умирает при 1.
-  Проверка: `npx vitest run scripts/perf-run.test.mjs` либо узкий тест разбора
-  кодов, если файла нет — завести его.
-  Пути: `scripts/perf-run.mjs`, `scripts/deploy.mjs`, тест разбора кодов,
+- [x] 5.1 Различить исходы замера: `scripts/perf-run.mjs` отдаёт 2 при взятом
+  замере с непройденным порогом и 1 при несостоявшемся (последнее отсекается
+  выше проверкой «ни одного числа»). `scripts/deploy.mjs` продолжает выкладку
+  при 2, называя просадку в конце вывода, и умирает при 1.
+  Проверка: `npx vitest run --root scripts perf-run.test.mjs`.
+  Пути: `scripts/perf-run.mjs`, `scripts/perf-run.test.mjs`, `scripts/deploy.mjs`,
   отметка пункта здесь.
 
-- [ ] 5.2 Оставить замер только перед выкладкой: отклонять заявку на прогон вида
-  `perf`, убрать предложение замера по ходу обычной задачи из скиллов и из
-  `CLAUDE.md`. Заявку на просадку класть в «Обслуживание» с ревизией, медианами,
-  порогом, занятостью и составом пакета.
-  Проверка: `npx vitest run --root supervisor lib/requests.test.mjs config/transitions.test.mjs`.
+- [x] 5.2 Оставить замер только перед выкладкой: отклонять заявку на прогон вида
+  `perf`, убрать предложение замера по ходу обычной задачи из скилла ревью
+  и из `CLAUDE.md`. Ручной запуск человеком правилом не ограничивается.
+  Проверка: `npx vitest run --root supervisor lib/requests.test.mjs lib/benchmark-source-contract.test.mjs`.
   Пути: `supervisor/lib/requests.mjs`, `supervisor/lib/requests.test.mjs`,
-  `supervisor/skills/deploy.md`, `supervisor/skills/benchmark.md`, `CLAUDE.md`,
-  отметка пункта здесь.
+  `supervisor/skills/review.md`, `CLAUDE.md`, отметка пункта здесь.
 
 ## 6. Выкладка пакетом по порогу и сроку
 

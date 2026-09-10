@@ -22,7 +22,11 @@ const request = (over = {}) => ({
   ...over,
 });
 
-describe.each(['perf', 'bench-tick'])('приёмка источника %s', (kind) => {
+// Замер кадров из этого перечня выбыл: отдельной задачей он больше
+// не заводится вовсе, и проверять его источник стало не на чем.
+// Приёмка источника остаётся у стоимости тика — она меряет счёт, а не
+// отрисовку, и живой машины не требует.
+describe.each(['bench-tick'])('приёмка источника %s', (kind) => {
   const accept = (run) =>
     taskFromRequest(request({ type: 'run', categories: ['infrastructure'], run }), {
       id: '0089-perf',
@@ -62,6 +66,37 @@ describe.each(['perf', 'bench-tick'])('приёмка источника %s', (k
     const { problems } = accept({ kind });
     expect(problems).toContain('прогон заявлен без ожидаемого результата');
     expect(problems.join(' ')).toContain('run.params.source');
+  });
+});
+
+describe('замер кадров отдельной задачей', () => {
+  it('не заводится вовсе: он делается только перед выкладкой', () => {
+    const { task, problems } = taskFromRequest(
+      request({
+        type: 'run',
+        categories: ['infrastructure'],
+        run: {
+          kind: 'perf',
+          params: { source: { branch: 'main' } },
+          expectation: '55 кадров',
+        },
+      }),
+      { id: '0089-perf', now: NOW, sourceId: '0041-visual' },
+    );
+    expect(task).toBeNull();
+    expect(problems.join(' ')).toContain('только перед выкладкой');
+  });
+
+  it('прочие виды прогона заводятся по-прежнему', () => {
+    const { task } = taskFromRequest(
+      request({
+        type: 'run',
+        categories: ['infrastructure'],
+        run: { kind: 'arena', params: {}, expectation: 'доля побед в вилке' },
+      }),
+      { id: '0090-arena', now: NOW, sourceId: '0041-visual' },
+    );
+    expect(task.run.kind).toBe('arena');
   });
 });
 
