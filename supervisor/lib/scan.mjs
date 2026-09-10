@@ -169,6 +169,9 @@ export function scan(state) {
     config,
     paused = false,
     apiPaused = false,
+    // Часы приходят доводом, как и всё остальное: сканер их не берёт сам,
+    // иначе один и тот же снимок давал бы разные ответы.
+    now,
   } = state;
 
   const actions = [];
@@ -735,13 +738,41 @@ export function scan(state) {
   deploying.sort(byPriorityThenAge);
   const batchOf = new Map();
   if (deploying.length > 0) {
-    const [lead, ...rest] = deploying;
-    batchOf.set(
-      lead.id,
-      deploying.map((task) => task.id),
-    );
-    for (const other of rest) {
-      notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
+    // Пакет не отправляется, едва в нём появилась первая задача. Условий два,
+    // и достаточно любого: накопилось довольно карточек либо прошло довольно
+    // времени с прошлой выкладки.
+    //
+    // Прежде условие было одно — «есть хоть одна», — и каждая доведённая
+    // задача звала свою выкладку. Выкладка эксклюзивна: она занимает машину
+    // целиком, а на боевом сервере поднимает и перезапускает игру. Делать это
+    // по разу на карточку дорого и для машины, и для игроков.
+    //
+    // Срок нужен рядом с порогом затем, чтобы одинокая задача не ждала
+    // вечно: пять карточек могут не набраться неделю.
+    const since = Date.parse(state.lastDeployAt ?? '');
+    const elapsed = Number.isFinite(since) ? Date.parse(now) - since : null;
+    const waited = elapsed === null || elapsed >= config.deployBatchHours * 3600000;
+    const enough = deploying.length >= config.deployBatchSize;
+    if (!enough && !waited) {
+      const hours = elapsed === null ? '—' : (elapsed / 3600000).toFixed(1);
+      notes.push(
+        `пакет выкладки копится: ${deploying.length} из ${config.deployBatchSize}, ` +
+          `с прошлой выкладки прошло ${hours} ч из ${config.deployBatchHours}`,
+      );
+    } else {
+      const [lead, ...rest] = deploying;
+      batchOf.set(
+        lead.id,
+        deploying.map((task) => task.id),
+      );
+      notes.push(
+        enough
+          ? `пакет выкладки набран: ${deploying.length} задач, ведущая ${lead.id}`
+          : `срок выкладки вышел: ведущая ${lead.id}, в пакете ${deploying.length}`,
+      );
+      for (const other of rest) {
+        notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
+      }
     }
   }
   let eligible = waitingForSession.filter(

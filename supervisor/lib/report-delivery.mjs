@@ -85,6 +85,18 @@ export async function transferReport(action, io) {
     }
     for (const args of entry.plan.cleanup) await io.forgetSession?.(...args);
     store.acknowledge(entry.reportId);
+    // Отметка о выкладке ставится ЗДЕСЬ — после того как весь план применён
+    // и принят, а не при его составлении. От неё считается срок следующего
+    // пакета, и план, составленный, но не доехавший, отодвинул бы этот срок
+    // на пять часов ни за что.
+    //
+    // Ставится она по состоявшейся выкладке: упавший заход срок не двигает.
+    if (
+      entry.stage === 'deploy' &&
+      entry.report?.outcome === 'done' &&
+      Array.isArray(entry.report?.batch)
+    )
+      io.markDeployed?.(io.now);
     return entry.plan.result;
   } catch (error) {
     return { result: 'failed', why: `pending report ${entry.reportId}: ${error.message}` };

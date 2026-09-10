@@ -448,6 +448,57 @@ describe('пакетная выкладка', () => {
     });
   const three = ['0002-a', '0003-b', '0004-c'];
   const registry = { entries: three.map((id) => entry(id)) };
+  const five = [...three, '0005-d', '0006-e'];
+  // Свежий вход в статус: иначе задача старше пяти часов позовёт разбор
+  // задержки, и он опередит выкладку — проверка осталась бы без предмета.
+  const fresh = (id, at) => deploying(id, { statusChangedAt: at });
+
+  it('копит пакет, пока не набралось довольно и не вышел срок', () => {
+    const result = run({
+      now: '2026-09-10T12:00:00Z',
+      lastDeployAt: '2026-09-10T11:00:00Z',
+      tasks: three.map((id) => fresh(id, '2026-09-10T11:50:00Z')),
+      registry,
+    });
+    expect(kinds(result)).not.toContain('continue-stage');
+    expect(result.notes.join(' ')).toContain('пакет выкладки копится: 3 из 5');
+  });
+
+  it('набранный пакет едет, не дожидаясь срока', () => {
+    const result = run({
+      now: '2026-09-10T12:00:00Z',
+      lastDeployAt: '2026-09-10T11:00:00Z',
+      tasks: five.map((id) => fresh(id, '2026-09-10T11:50:00Z')),
+      registry: { entries: five.map((id) => entry(id)) },
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'continue-stage', taskId: '0002-a', batch: five }),
+    );
+  });
+
+  it('одинокая задача едет по сроку, не дожидаясь пятерых', () => {
+    const result = run({
+      now: '2026-09-10T17:00:00Z',
+      lastDeployAt: '2026-09-10T11:00:00Z',
+      tasks: [fresh('0002-a', '2026-09-10T16:50:00Z')],
+      registry: { entries: [entry('0002-a')] },
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'continue-stage', taskId: '0002-a', batch: ['0002-a'] }),
+    );
+    expect(result.notes.join(' ')).toContain('срок выкладки вышел');
+  });
+
+  it('без записи о прошлой выкладке первый пакет не ждёт ничего', () => {
+    // Иначе первая же выкладка на чистой станции простояла бы пять часов
+    // без всякой причины.
+    const result = run({
+      now: '2026-09-10T12:00:00Z',
+      tasks: [fresh('0002-a', '2026-09-10T11:50:00Z')],
+      registry: { entries: [entry('0002-a')] },
+    });
+    expect(kinds(result)).toContain('continue-stage');
+  });
 
   it.each(['done', 'failed'])('отчёт %s удерживает весь пакет до свежего снимка', (outcome) => {
     const result = run({
