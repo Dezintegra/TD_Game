@@ -299,7 +299,9 @@ async function continueStage(action, io) {
       at: io.now,
       from: task.status,
       to: task.status,
-      what: `Этапу выдана сессия: ${action.reason}.`,
+      what: [`Этапу выдана сессия: ${action.reason}.`, action.unaccounted]
+        .filter(Boolean)
+        .join(' '),
     },
     `chore(backlog): ${task.id} сессия на этап ${task.status}`,
   );

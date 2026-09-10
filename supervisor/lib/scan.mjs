@@ -1,6 +1,6 @@
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
-import { tokenAdmission, tokenHoldProblem } from './token-hold.mjs';
+import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import {
   CROSSCUT,
@@ -741,6 +741,7 @@ export function scan(state) {
       notes.push(`задача ${task.id} ждёт сессию: свободных мест нет`);
       continue;
     }
+    const unaccounted = unaccountedLaunchNote(task, task.status, config, state.codexUsage ?? {});
     actions.push({
       kind: 'continue-stage',
       taskId: task.id,
@@ -749,6 +750,10 @@ export function scan(state) {
       // Перечень пакета есть только у ведущей выкладки; прочим действиям
       // поле не нужно, и его нет вовсе — отсутствие и есть «не пакет».
       ...(batchOf.has(task.id) ? { batch: batchOf.get(task.id) } : {}),
+      // Заход без учёта расхода. Поле есть только тогда, когда учёт неполон,
+      // и уезжает в журнал задачи вместе с записью о выданной сессии — то есть
+      // один раз на состоявшееся порождение, а не каждый оборот.
+      ...(unaccounted ? { unaccounted } : {}),
     });
     free -= 1;
   }
@@ -808,6 +813,9 @@ export function scan(state) {
     }
     if (runWaiting && task.type !== 'run') continue;
 
+    // Записи о неучтённом заходе здесь нет намеренно: взятие в работу сессии
+    // не порождает — это делает `continue-stage` следующим оборотом, и там же
+    // запись ложится в журнал задачи.
     actions.push({ kind: 'start-stage', taskId: task.id, stage });
     busy = true;
   }

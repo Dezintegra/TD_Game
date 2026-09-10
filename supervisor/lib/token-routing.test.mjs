@@ -172,18 +172,20 @@ describe('переходы ожидания бюджета', () => {
     },
   );
 
-  it('сохраняет неизвестный расход и зависимости после повышения', async () => {
+  it('после повышения возвращает задачу и при неполном учёте, сохраняя зависимости', async () => {
     const w = world();
     await w.apply(w.next().actions);
+    expect(w.state.tasks[0].status).toBe('token-limit');
+    // Повышение лимита выпускает карточку независимо от полноты учёта.
+    // Прежде неполный учёт удерживал её и после повышения, и выйти она
+    // не могла вовсе: допуск смотрел на полноту учёта отдельно от суммы,
+    // а поднять полноту владельцу продукта нечем.
     w.state.tasks[0].userTokenLimit = { value: 200 };
     w.state.codexUsage = ledger(100, ['decreased-usage']);
-    await w.apply(w.next().actions);
-    expect(w.state.tasks[0].status).toBe('token-limit');
-    expect(w.state.tasks[0].tokenHold.reason).toBe('unknown-usage');
-    w.state.codexUsage = ledger();
     w.state.tasks[0].dependsOn = ['0002-missing'];
     await w.apply(w.next().actions);
     expect(w.state.tasks[0].status).toBe('implement');
+    // Зависимости при этом держат запуск по-прежнему: бюджет их не подменяет.
     expect(w.next().actions).toEqual([]);
     expect(w.next().notes.join()).toContain('0002-missing');
   });
@@ -254,7 +256,7 @@ describe('переходы ожидания бюджета', () => {
   });
 });
 
-it('автоматически возвращает удержанную задачу после принятия минимума с записью неопределённости', async () => {
+it('неполный учёт не удерживает заход, а принятый минимум снимает и запись о нём', async () => {
   const data = ledger(0, ['missing-usage', 'stdout-unavailable']);
   data.tasks['0001-one'].sessions.s.snapshot = null;
   data.tasks['0001-one'].launches.l = {
@@ -265,8 +267,16 @@ it('автоматически возвращает удержанную зад�
     reasons: ['missing-usage', 'stdout-unavailable'],
   };
   const w = world({ codexUsage: data });
-  await w.apply(w.next().actions);
-  expect(w.state.tasks[0].status).toBe('token-limit');
+
+  // Прежде такой задачи хватало на удержание в «Лимите токенов» навсегда:
+  // расход неизвестен, а повышение лимита незнание не лечит. Теперь заход
+  // идёт, и о неполноте учёта говорит запись в журнале задачи — один раз
+  // на выданную сессию, а не каждый оборот.
+  const before = w.next().actions.find((action) => action.kind === 'continue-stage');
+  expect(w.state.tasks[0].status).toBe('implement');
+  expect(before.unaccounted).toContain('посчитать не удалось');
+  expect(before.unaccounted).not.toContain('Лимит токенов:');
+
   expect(
     recoverTokenLaunch(data, '0001-one', 'l', {
       ok: true,
@@ -277,9 +287,11 @@ it('автоматически возвращает удержанную зад�
     }),
   ).toBe(true);
   w.io.tokenAccountingNote = (id) => tokenAccountingNote(data, id);
-  expect(w.next().actions.map((a) => a.kind)).toEqual(['resume-token-budget']);
-  await w.apply(w.next().actions);
-  expect(w.state.tasks[0].status).toBe('implement');
-  expect(w.saved.at(-1).entry.what).toContain('неизвестный хвост');
-  expect(w.saved.at(-1).entry.what).toContain('12 токенов');
+
+  // Принятый минимум прерванного запуска делает учёт допустимым, и запись
+  // о неучтённом заходе исчезает сама: политика восстановления сохранена.
+  const after = w.next().actions.find((action) => action.kind === 'continue-stage');
+  expect(after.unaccounted).toBeUndefined();
+  expect(tokenAccountingNote(data, '0001-one')).toContain('неизвестный хвост');
+  expect(tokenAccountingNote(data, '0001-one')).toContain('12 токенов');
 });
