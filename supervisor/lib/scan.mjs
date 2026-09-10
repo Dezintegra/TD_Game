@@ -1,6 +1,7 @@
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
 import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
+import { planEdgeResolutions } from './resolve-dependents.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import {
   CROSSCUT,
@@ -33,6 +34,9 @@ export const ACTIONS = [
   'analyze-delay',
   'observe-delay',
   'unblock-task',
+  // Снятие ожидания у ждущих закрытую карточку. Стоит рядом с разблокировкой
+  // намеренно: обе разбирают застой, и обе дешёвые — ни сессии, ни дерева.
+  'resolve-dependents',
   'hold-token-budget',
   'refresh-token-budget',
   'resume-token-budget',
@@ -419,11 +423,12 @@ export function scan(state) {
       mainBranch: config.mainBranch,
     });
     if (pending.length === 0) {
-      if (
-        task.status === 'blocked' &&
-        task.dependsOn?.length &&
-        task.blockedContext?.reasons?.length
-      ) {
+      // Непустого dependsOn здесь больше не требуется. Снятие ожидания
+      // у ждущих закрытую карточку оставляет перечень пустым, и прежнее
+      // условие удержало бы такую задачу в «Заблокированы» навсегда —
+      // ровно та беда, ради которой снятие и заводилось. Законность
+      // ожидания доказывает сохранённое основание, а не остаток рёбер.
+      if (task.status === 'blocked' && task.blockedContext?.reasons?.length) {
         actions.push({
           kind: 'unblock-task',
           taskId: task.id,
@@ -448,6 +453,21 @@ export function scan(state) {
     if (uncovered.length === 0) continue;
     held.set(task.id, uncovered);
     notes.push(heldNote(task.id, task.status, uncovered));
+  }
+
+  // Рёбра, ведущие в закрытые карточки, снимаются с обоснованием. Планируется
+  // по снимку доски: так разбирается и уже накопившийся затор, и переживается
+  // обрыв на середине — неснятое ребро попадёт в план следующего оборота.
+  for (const plan of planEdgeResolutions({
+    tasks,
+    records: state.dependencyRecords ?? [],
+  })) {
+    if (hasReport(plan.taskId)) continue;
+    actions.push({ kind: 'resolve-dependents', ...plan });
+    notes.push(
+      `задача ${plan.taskId}: снимаем ожидание закрытых карточек — ` +
+        plan.edges.map((edge) => edge.dependencyId).join(', '),
+    );
   }
 
   // Нечитаемые правила не держат ничего: «не знаем, значит держим» остановило

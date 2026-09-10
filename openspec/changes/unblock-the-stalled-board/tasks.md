@@ -1,23 +1,25 @@
-## 1. Закрытие снимает ожидание у ждущих
+﻿## 1. Закрытие снимает ожидание у ждущих
 
-- [ ] 1.1 Ввести разрешение рёбер при закрытии: в `supervisor/lib/closure.mjs`
-  собрать ждущих закрываемую карточку по `dependsOn` и `recovery.fixedBy`,
-  при непустом `splitInto` перевести ребро на части, иначе снять. В
-  `supervisor/lib/scan.mjs` планировать действие по снимку доски, чтобы
-  разбирался и уже накопившийся затор. Комментарий ждущей карточке содержит
-  причину закрытия предшественника дословно и основание снятия.
-  Проверка: `npx vitest run --root supervisor lib/closure.test.mjs lib/scan.test.mjs`.
-  Пути: `supervisor/lib/closure.mjs`, `supervisor/lib/closure.test.mjs`,
-  `supervisor/lib/scan.mjs`, `supervisor/lib/scan.test.mjs`,
+- [x] 1.1 Ввести снятие рёбер, ведущих в закрытые карточки: новый модуль
+  `supervisor/lib/resolve-dependents.mjs` планирует снятие по снимку доски
+  (так разбирается и уже накопившийся затор) и исполняет его действием
+  `resolve-dependents`. Закрытие дроблением ребро сохраняет: работа переехала
+  в части, а не отпала. Комментарий ждущей карточке содержит причину закрытия
+  предшественника дословно и основание снятия.
+  Проверка: `npx vitest run --root supervisor lib/resolve-dependents.test.mjs lib/scan.test.mjs`.
+  Пути: `supervisor/lib/resolve-dependents.mjs`,
+  `supervisor/lib/resolve-dependents.test.mjs`, `supervisor/lib/scan.mjs`,
   `supervisor/lib/execute.mjs`, отметка пункта здесь.
 
-- [ ] 1.2 Закрепить частичность и повторность: неудача на одной ждущей карточке
-  не отменяет остальных и не мешает закрытию; повтор на неизменном снимке
-  не дублирует комментарий; снятие последнего ребра возвращает задачу в очередь
-  обычной разблокировкой с сохранением счётчиков, положения и артефактов.
-  Проверка: `npx vitest run --root supervisor lib/closure.test.mjs lib/dependencies.test.mjs`.
-  Пути: `supervisor/lib/closure.test.mjs`, `supervisor/lib/dependencies.test.mjs`,
-  отметка пункта здесь.
+- [x] 1.2 Закрепить частичность, повторность и выход из ожидания: неудача
+  на одной ждущей карточке не отменяет остальных; повтор на неизменном снимке
+  не пишет ничего; вместе с ребром снимается запись ожидаемого влитого PR,
+  иначе карточка станет негодной; сохранённое основание `blockedContext`
+  переживает снятие, и по нему задача выходит из «Заблокированы» обычной
+  разблокировкой с сохранением счётчиков, положения и артефактов.
+  Проверка: `npx vitest run --root supervisor lib/resolve-dependents.test.mjs lib/blockers.test.mjs`.
+  Пути: `supervisor/lib/resolve-dependents.test.mjs`, `supervisor/lib/blockers.mjs`,
+  `supervisor/lib/blockers.test.mjs`, отметка пункта здесь.
 
 ## 2. Неизвестный расход перестаёт удерживать
 

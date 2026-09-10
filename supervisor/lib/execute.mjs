@@ -1,4 +1,5 @@
 import { unblockTask } from './blockers.mjs';
+import { resolveDependents } from './resolve-dependents.mjs';
 import { changeTokenHold } from './token-hold.mjs';
 import { analyzeTokenBudget } from './token-reanalysis.mjs';
 import { beginDelayAnalysis, observeDelay, reviewingDelay } from './delay-analysis.mjs';
@@ -749,6 +750,7 @@ const HANDLERS = {
     return saved.ok ? { result: 'done' } : { result: 'failed', why: saved.why ?? saved.outcome };
   },
   'unblock-task': unblockTask,
+  'resolve-dependents': resolveDependents,
   'push-tail': pushTail,
   'quarantine-card': quarantineCard,
   'clear-card': clearCard,
