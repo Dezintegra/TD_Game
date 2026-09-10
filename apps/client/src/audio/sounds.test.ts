@@ -3,6 +3,7 @@ import { BLAST_LIFETIME_TICKS, BlastKind, NUKE_DELAY_TICKS, TICKS_PER_SECOND } f
 import { createFilter, peakOf, rms, zeroCrossings } from './dsp.js';
 import {
   LOOPING,
+  NUKE_FALL_TICKS,
   SOUNDS,
   SOUND_PEAK,
   SOUND_SECONDS,
@@ -304,8 +305,45 @@ describe('выстрелы', () => {
 });
 
 describe('ядерный удар', () => {
-  it('свист длится ровно задержку удара', () => {
-    expect(SOUND_SECONDS[Sound.NukeFall]).toBeCloseTo(NUKE_DELAY_TICKS / TICKS_PER_SECOND, 6);
+  it('свист занимает конец окна подлёта, а не всё окно', () => {
+    // Главное свойство: свист приходит К ПОПАДАНИЮ. Растянутый на всё
+    // окно, он перестаёт быть предупреждением — предупреждает то,
+    // что началось, а не то, что звучало всё время.
+    expect(SOUND_SECONDS[Sound.NukeFall]).toBeCloseTo(NUKE_FALL_TICKS / TICKS_PER_SECOND, 6);
+    expect(NUKE_FALL_TICKS).toBeLessThan(NUKE_DELAY_TICKS);
+    expect(NUKE_FALL_TICKS).toBeGreaterThan(NUKE_DELAY_TICKS / 2);
+  });
+
+  it('пуск успевает отзвучать до попадания', () => {
+    // Пуск начинается вместе с записью о ракете, и переживать саму
+    // ракету он не вправе: гул после взрыва слышен поломкой.
+    expect(SOUND_SECONDS[Sound.NukeLaunch]).toBeLessThan(NUKE_DELAY_TICKS / TICKS_PER_SECOND);
+  });
+
+  it('пуск ниже свиста, и спутать их нельзя', () => {
+    // Оба звука ядерные, оба редкие, и звучат они в разных местах
+    // экрана — тем важнее, чтобы они различались на слух. Развёртки
+    // у них противоположны, и грубая мерка высоты это ловит:
+    // у гула двигателя переходов через ноль в разы меньше, чем
+    // у свиста летящего тела.
+    const launch = first(Sound.NukeLaunch);
+    const fall = first(Sound.NukeFall);
+
+    expect(zeroCrossings(launch) / launch.length).toBeLessThan(
+      zeroCrossings(fall) / fall.length / 2,
+    );
+  });
+
+  it('пуск набирает тело и держит его, а не хлопает', () => {
+    // Двигатель выходит на режим за треть секунды и дальше работает.
+    // Хлопок вместо этого означал бы взрыв на старте, а не пуск.
+    const samples = first(Sound.NukeLaunch);
+    const [headFrom, headTo] = quarter(samples, 0);
+    const [bodyFrom, bodyTo] = quarter(samples, 1);
+    const [tailFrom, tailTo] = quarter(samples, 3);
+
+    expect(rms(samples, bodyFrom, bodyTo)).toBeGreaterThan(rms(samples, headFrom, headTo));
+    expect(rms(samples, tailFrom, tailTo)).toBeLessThan(rms(samples, bodyFrom, bodyTo));
   });
 
   it('свист нарастает и понижается', () => {

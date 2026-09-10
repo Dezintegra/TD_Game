@@ -103,7 +103,9 @@ export const Sound = {
   BlastGeneral: 'blast-general',
   /** Разрушение постройки. */
   BlastStructure: 'blast-structure',
-  /** Свист снижающейся ядерной ракеты. */
+  /** Пуск ядерной ракеты. Звучит у базы владельца. */
+  NukeLaunch: 'nuke-launch',
+  /** Свист снижающейся ядерной ракеты. Звучит у цели, к попаданию. */
   NukeFall: 'nuke-fall',
   /** Ядерный удар. */
   NukeBlast: 'nuke-blast',
@@ -122,6 +124,28 @@ const seconds = (ticks: number): number => ticks / TICKS_PER_SECOND;
 
 const MISSILE_FLIGHT_SECONDS =
   seconds(SHOT_LIFETIME_TICKS[ShotWeapon.Missile]) * MISSILE_FLIGHT_SHARE;
+
+/**
+ * Сколько последних тиков подлёта занимает свист.
+ *
+ * Короче окна подлёта намеренно, и это решение владельца продукта,
+ * а не подгонка под запись: свист обязан приходить К ПОПАДАНИЮ, а не
+ * тянуться все три секунды `NUKE_DELAY_TICKS` от самого пуска. Тянущийся
+ * во всю длину свист занимает собой весь напряжённый отрезок и перестаёт
+ * быть предупреждением: предупреждает то, что началось, а не то, что
+ * звучало всё время.
+ *
+ * Отсюда и разделение обязанностей у ядерной ракеты: о пуске сообщает
+ * `NukeLaunch` у базы стрелявшего, о скором попадании — свист у цели,
+ * о попадании — сам удар. Раньше всё это делал один свист.
+ *
+ * Две трети окна, то есть две секунды из трёх. Ровно столько длится
+ * внятная часть принесённой владельцем записи: дальше у неё остаётся
+ * хвост ниже пятой доли пика, который всё равно ушёл бы в затухание.
+ * Секунда на пустое место в начале подлёта — это ещё и та тишина,
+ * на фоне которой слышно сам пуск.
+ */
+export const NUKE_FALL_TICKS = Math.round((NUKE_DELAY_TICKS * 2) / 3);
 
 /**
  * Длительности.
@@ -144,7 +168,12 @@ export const SOUND_SECONDS: Readonly<Record<Sound, number>> = {
   [Sound.BlastUnit]: seconds(BLAST_LIFETIME_TICKS[BlastKind.Unit]) + 0.05,
   [Sound.BlastGeneral]: seconds(BLAST_LIFETIME_TICKS[BlastKind.General]) + 0.3,
   [Sound.BlastStructure]: seconds(BLAST_LIFETIME_TICKS[BlastKind.Structure]) + 0.5,
-  [Sound.NukeFall]: seconds(NUKE_DELAY_TICKS),
+  // Пуск короче окна подлёта: он сообщает о начале, а не сопровождает
+  // полёт. Длина взята от записи владельца — столько в ней держится
+  // разгон двигателя, дальше начинается ровный гул, у которого нет
+  // ни начала, ни конца, и в игре он читался бы просто шумом.
+  [Sound.NukeLaunch]: 1.6,
+  [Sound.NukeFall]: seconds(NUKE_FALL_TICKS),
   [Sound.NukeBlast]: seconds(BLAST_LIFETIME_TICKS[BlastKind.Nuke]),
   [Sound.Rotor]: 0.5,
 };
@@ -173,6 +202,11 @@ export const SOUND_PEAK: Readonly<Record<Sound, number>> = {
   [Sound.BlastUnit]: 0.42,
   [Sound.BlastGeneral]: 0.58,
   [Sound.BlastStructure]: 0.88,
+  // Пуск тише свиста: он звучит у ЧУЖОЙ базы, то есть у края обзора
+  // или за ним, и громкий пуск читался бы ударом не там, где надо.
+  // Свист же приходит туда, куда игрок сейчас смотрит или обязан
+  // посмотреть.
+  [Sound.NukeLaunch]: 0.42,
   [Sound.NukeFall]: 0.5,
   [Sound.NukeBlast]: 1,
   // Тише самого тихого события более чем вдвое, и это не осторожность,
@@ -199,6 +233,10 @@ export const SOUND_PEAK: Readonly<Record<Sound, number>> = {
 export const SOUND_PRIORITY: Readonly<Record<Sound, number>> = {
   [Sound.NukeBlast]: 100,
   [Sound.NukeFall]: 90,
+  // Пуск ниже свиста и удара, но выше всего остального. Порядок здесь
+  // временной: чем ближе событие к попаданию, тем меньше у игрока
+  // остаётся времени и тем дороже промолчать.
+  [Sound.NukeLaunch]: 80,
   [Sound.BlastStructure]: 70,
   [Sound.BlastGeneral]: 60,
   [Sound.Missile]: 50,
@@ -242,6 +280,7 @@ export const VARIANTS: Readonly<Record<Sound, number>> = {
   [Sound.BlastUnit]: 4,
   [Sound.BlastGeneral]: 2,
   [Sound.BlastStructure]: 3,
+  [Sound.NukeLaunch]: 1,
   [Sound.NukeFall]: 1,
   [Sound.NukeBlast]: 1,
   [Sound.Rotor]: 1,
@@ -258,6 +297,7 @@ export const LOOPING: Readonly<Record<Sound, boolean>> = {
   [Sound.BlastUnit]: false,
   [Sound.BlastGeneral]: false,
   [Sound.BlastStructure]: false,
+  [Sound.NukeLaunch]: false,
   [Sound.NukeFall]: false,
   [Sound.NukeBlast]: false,
   [Sound.Rotor]: true,
@@ -1005,12 +1045,96 @@ const renderMissile = (sampleRate: number, seed: number): Float32Array => {
 };
 
 /**
+ * Пуск ядерной ракеты.
+ *
+ * Посчитанный запасной путь под запись владельца, а не самостоятельный
+ * замысел: по устройству модуля запись перекрывает выкладку, а не
+ * отменяет её (см. вводный комментарий `assets.ts`), и без выкладки пуск
+ * замолчал бы от первой же неудачной загрузки.
+ *
+ * Форма выведена из самой записи, а не придумана: тишина, короткий
+ * розжиг с треском, за ним низкий гул, который набирает тело за треть
+ * секунды и дальше только держится. Гул низкий намеренно — у записи
+ * владельца переходов через ноль около двухсот в секунду, то есть это
+ * низ, а не шипение; сделай мы его ярким, он спорил бы со свистом
+ * подлёта, у которого в пять раз выше.
+ *
+ * Направление развёртки обратное свисту: у пуска низ поднимается
+ * (двигатель выходит на режим), у свиста опускается (тело приближается).
+ * Одинаковая развёртка сделала бы два ядерных события неразличимыми
+ * на слух, а различать их нужно — они говорят игроку разное.
+ */
+const renderNukeLaunch = (sampleRate: number, seed: number): Float32Array => {
+  const total = SOUND_SECONDS[Sound.NukeLaunch];
+
+  /** Сколько длится розжиг: до него тишина, после — ровный гул. */
+  const ignition = 0.22;
+
+  const crackNoise = noiseFrom(seed ^ 0x9e3779b9);
+  const crackFilter = createFilter(sampleRate, 'high');
+  const crackDecay = createDecay(sampleRate, 0.028);
+
+  // Шум гула срезается ДВАЖДЫ. Один срез оставляет слишком много верха:
+  // фильтр двухполюсный, и у белого шума то, что осталось за спадом,
+  // всё равно перевешивает низ по числу переходов через ноль — а вместе
+  // с ним и по слуху. Гул, у которого верха столько же, сколько
+  // у свиста, от свиста и не отличается.
+  const roarNoise = noiseFrom(seed ^ 0x243f6a88);
+  const roarLow = createFilter(sampleRate, 'low');
+  const roarLower = createFilter(sampleRate, 'low');
+  const roarSweep = createSweep(120, 260);
+
+  const subSweep = createSweep(32, 54);
+
+  let roarCutoff = 120;
+  let subHz = 32;
+  let subPhase = 0;
+  let harmonicPhase = 0;
+
+  return bake(sampleRate, total, SOUND_PEAK[Sound.NukeLaunch], (time, index) => {
+    const share = Math.min(1, time / total);
+    if (index % CONTROL_STEP === 0) {
+      roarCutoff = roarSweep(Math.min(1, time / 0.9));
+      subHz = subSweep(Math.min(1, time / 1.1));
+    }
+
+    // Розжиг: короткий треск, гаснущий за десятые доли секунды.
+    let sum = 0;
+    const crack = crackDecay();
+    if (crack > 1e-4) sum += crackFilter(crackNoise(), 1800, 0.9) * crack * 0.4;
+
+    // Тело гула нарастает за треть секунды и дальше держится ровно:
+    // двигатель вышел на режим и работает. Уводится в тишину последней
+    // четвертью — иначе обрыв на полном ходу слышен щелчком, а не концом.
+    const rise = attackAt(time, 0.34);
+    const release = share < 0.75 ? 1 : 1 - (share - 0.75) / 0.25;
+    const envelope = rise * release;
+
+    sum += roarLower(roarLow(roarNoise(), roarCutoff, 0.9), roarCutoff, 0.9) * envelope * 1.1;
+
+    // Подпор снизу: без него гул слышен шумом, а не работающей машиной.
+    // Вторая гармоника вдвое тише основы — она и делает тон тоном,
+    // а не гудком.
+    subPhase += subHz / sampleRate;
+    harmonicPhase += (subHz * 2) / sampleRate;
+    sum += Math.sin(2 * Math.PI * subPhase) * envelope * 0.95;
+    sum += Math.sin(2 * Math.PI * harmonicPhase) * envelope * 0.4;
+
+    // Дрожание в семь процентов и на низкой частоте: тяга неровная,
+    // и ровный гул читался бы генератором. Тот же приём, что вибрато
+    // у свиста, только медленнее и глубже — там летящее тело, тут
+    // работающий двигатель.
+    return sum * (1 + 0.07 * Math.sin(2 * Math.PI * 3.1 * time + ignition));
+  });
+};
+
+/**
  * Свист снижающейся ядерной ракеты.
  *
  * Высота падает, громкость растёт — сочетание, которое ухо читает как
- * «падает прямо сюда» без всякого обучения. Три секунды ровно:
- * это `NUKE_DELAY_TICKS`, то самое время на реакцию, ради которого
- * задержка и заведена.
+ * «падает прямо сюда» без всякого обучения. Длится `NUKE_FALL_TICKS`,
+ * то есть последние две трети окна подлёта: свист приходит к попаданию,
+ * а не тянется от самого пуска — о пуске теперь сообщает `NukeLaunch`.
  *
  * Вибрато в полтора процента — то, что отличает падающее тело
  * от лабораторного генератора.
@@ -1185,6 +1309,8 @@ export const renderSound = (sound: Sound, variant: number, sampleRate: number): 
       return renderGeneralBlast(sampleRate, seed);
     case Sound.BlastStructure:
       return renderBlast(sampleRate, seed, STRUCTURE_BLAST);
+    case Sound.NukeLaunch:
+      return renderNukeLaunch(sampleRate, seed);
     case Sound.NukeFall:
       return renderNukeFall(sampleRate, seed);
     case Sound.NukeBlast:
