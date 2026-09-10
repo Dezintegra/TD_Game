@@ -700,6 +700,55 @@ describe('ответ владельца продукта', () => {
     });
     expect(store.readAnswer('0031-proba')).toBeNull();
   });
+
+  it('карта ответов собирается по всем ждущим карточкам разом', () => {
+    const store = backlog({
+      cards: [
+        card({
+          idList: 'list-awaiting-po',
+          meta: { statusChangedAt: '2026-08-27T12:00:00.000Z', returnTo: 'design' },
+        }),
+        card({
+          id: 'card-2',
+          name: '0032-vtoraya · Вторая проба',
+          desc: joinDescription(
+            'Что нужно сделать.',
+            meta({
+              id: '0032-vtoraya',
+              statusChangedAt: '2026-08-27T12:00:00.000Z',
+              returnTo: 'implement',
+            }),
+          ),
+          idList: 'list-awaiting-po',
+        }),
+      ],
+      comments: [
+        { id: 'c1', cardId: 'card-1', date: '2026-08-27T13:00:00.000Z', text: 'Берите второй.' },
+        {
+          id: 'c2',
+          cardId: 'card-2',
+          date: '2026-08-27T13:30:00.000Z',
+          text: 'Оставить как есть.',
+        },
+      ],
+    });
+    expect(store.ownerAnswers()).toEqual({
+      '0031-proba': 'Берите второй.',
+      '0032-vtoraya': 'Оставить как есть.',
+    });
+  });
+
+  it('карта не берёт комментарии под карточками, которые ответа не ждут', () => {
+    const store = backlog({
+      cards: [
+        card({ idList: 'list-implement', meta: { statusChangedAt: '2026-08-27T12:00:00.000Z' } }),
+      ],
+      comments: [
+        { id: 'c1', cardId: 'card-1', date: '2026-08-27T13:00:00.000Z', text: 'заметка на полях' },
+      ],
+    });
+    expect(store.ownerAnswers()).toEqual({});
+  });
 });
 
 describe('захват задачи назначением исполнителя', () => {

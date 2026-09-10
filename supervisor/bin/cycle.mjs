@@ -105,6 +105,7 @@ async function openBacklog(config) {
   return {
     ok: true,
     ...sortCards(store.parsedCards()),
+    ownerAnswers: store.ownerAnswers(),
     closedDependencyIds: store.closedDependencyIds(),
     dependencyRecords: store.dependencyRecords(),
   };
@@ -130,7 +131,9 @@ async function main() {
     ...(await buildDependencyState({ backlog, config, root, run: runCommand })),
     registry,
     codexUsage: readTokenLedger(root, config),
-    answers: readAnswers(root, config),
+    // Смотрящий прогон обязан видеть ту же картину, что боевой цикл:
+    // ответы берутся из того же снимка доски, а не из файла вопросов.
+    answers: backlog.ownerAnswers ?? readAnswers(root, config),
     // Правила разрешений — доводом, как и всё прочее: сканер сам диска
     // не трогает. Смотрящий прогон обязан видеть ту же картину, что боевой
     // цикл, иначе он показывал бы работу, которой цикл не сделает.
