@@ -3,8 +3,14 @@ import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { availableParallelism } from 'node:os';
-import { TICKS_PER_SECOND, applyRuleTuning, ruleTuning, ruleTuningIsNeutral } from '@td/shared';
-import type { RuleTuning } from '@td/shared';
+import {
+  GROWTH_MODELS,
+  TICKS_PER_SECOND,
+  applyRuleTuning,
+  ruleTuning,
+  ruleTuningIsNeutral,
+} from '@td/shared';
+import type { GrowthModel, RuleTuning } from '@td/shared';
 import { DEFAULT_PROFILE_ID } from '@td/ai';
 import { createLogWriter, logPathFor } from './log.js';
 import { runMatch } from './match.js';
@@ -12,7 +18,7 @@ import { replayAndReport } from './replay.js';
 import { ingestFile, isLogName, openDatabase } from './ingest.js';
 import { reportBatch, reportMatch } from './report.js';
 import { printTempo } from './tempo.js';
-import { TUNING_FLAGS } from './tuning-flags.js';
+import { TUNING_CHOICE_FLAGS, TUNING_FLAGS } from './tuning-flags.js';
 
 /**
  * Арена — инструмент разработки, а не часть игры.
@@ -29,12 +35,23 @@ const USAGE = `
   arena run [--matches N] [--seed N] [--profiles A,B] [--jobs N] [--seconds N]
             [--income K] [--speed K] [--tower-hp K] [--base-hp K]
             [--radius K] [--map K]
+            [--income-effect P] [--income-effect-model geometric|linear]
+            [--income-cost P] [--income-cost-model geometric|linear]
+            [--income-base-cost K]
       Прогнать N матчей компьютер-против-компьютера. Матчи независимы
       и считаются параллельно по числу ядер.
 
-      Шесть последних ключей — множители правил на время прогона: базовый
-      доход, скорость машин, прочность стреляющих построек, прочность базы,
-      личный радиус машины и сторона карты. Единица означает «как задумано».
+      Ключи настройки правил на время прогона. Множители (единица означает
+      «как задумано»): базовый доход, скорость машин, прочность стреляющих
+      построек, прочность базы, личный радиус машины, сторона карты
+      и базовая цена уровня добычи энергии.
+
+      Пять ключей с приставкой income- описывают кривую экономики целиком:
+      прибавка за уровень в процентах (задумано 10) и модель её роста,
+      рост цены уровня в процентах (задумано 25) и модель его роста,
+      множитель базовой цены. Модель «geometric» — сложный процент, как
+      задумано; «linear» — прибавка той же доли от базы за уровень.
+
       Пересборки они не требуют, но и в игру не попадают: это инструмент
       замера.
 
@@ -134,16 +151,32 @@ const numberFlag = (flags: ReadonlyMap<string, string>, name: string, fallback: 
 // Настройка правил
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Собрать множители из ключей. Пустой ответ означает «правила как задуманы». */
+/** Собрать настройку из ключей. Пустой ответ означает «правила как задуманы». */
 const tuningOf = (flags: ReadonlyMap<string, string>): Partial<RuleTuning> => {
-  const tuning: Partial<RuleTuning> = {};
+  const tuning: Record<string, number | string> = {};
 
   for (const [flag, field] of Object.entries(TUNING_FLAGS)) {
     if (!flags.has(flag)) continue;
     tuning[field] = numberFlag(flags, flag, 1);
   }
 
-  return tuning;
+  // Ключ-слово проверяется здесь, а не в `applyRuleTuning`: опечатку
+  // в командной строке надо называть там, где её сделали, и до того,
+  // как процесс начнёт считать первый матч.
+  for (const [flag, field] of Object.entries(TUNING_CHOICE_FLAGS)) {
+    const raw = flags.get(flag);
+    if (raw === undefined) continue;
+
+    if (!GROWTH_MODELS.includes(raw as GrowthModel)) {
+      throw new Error(
+        `флаг --${flag} должен быть одним из: ${GROWTH_MODELS.join(', ')}; получено «${raw}»`,
+      );
+    }
+
+    tuning[field] = raw;
+  }
+
+  return tuning as Partial<RuleTuning>;
 };
 
 /**
@@ -154,7 +187,7 @@ const tuningOf = (flags: ReadonlyMap<string, string>): Partial<RuleTuning> => {
  * и заметить это по сводке невозможно: она усредняет и то, и другое.
  */
 const tuningArgs = (tuning: Partial<RuleTuning>): readonly string[] =>
-  Object.entries(TUNING_FLAGS).flatMap(([flag, field]) => {
+  Object.entries({ ...TUNING_FLAGS, ...TUNING_CHOICE_FLAGS }).flatMap(([flag, field]) => {
     const value = tuning[field];
     return value === undefined ? [] : [`--${flag}`, String(value)];
   });
