@@ -117,6 +117,17 @@ describe('форма звуков', () => {
 
     expect(SOUND_PEAK[Sound.Rotor] * 2).toBeLessThan(quietest);
   });
+
+  it('выстрел генерала не проваливается под самое тихое событие', () => {
+    // Ракету убавили нарочно, и черта, ниже которой убавлять нельзя,
+    // здесь же: под самым тихим событием таблицы выстрел генерала
+    // перестал бы читаться в бою, а он событие рядовое — генерал
+    // стреляет весь матч, а не раз в партию.
+    const events = SOUNDS.filter((sound) => sound !== Sound.Rotor && sound !== Sound.Missile);
+    const quietest = Math.min(...events.map((sound) => SOUND_PEAK[sound]));
+
+    expect(SOUND_PEAK[Sound.Missile]).toBeGreaterThan(quietest);
+  });
 });
 
 describe('варианты', () => {
