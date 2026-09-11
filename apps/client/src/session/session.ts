@@ -1,4 +1,5 @@
 import { FRAME_WORK_BUDGET_MS, NAME_MAX_LENGTH, checkName } from '@td/shared';
+import { LOBBY_CAPACITY } from '@td/protocol';
 import type { NameError } from '@td/shared';
 import { startGame } from '../game/bootstrap.js';
 import type { Game } from '../game/bootstrap.js';
@@ -279,6 +280,16 @@ const defaultRoomTitle = (name: string): string => {
 };
 
 /**
+ * Сколько «Начать заново» ждёт позванного дежурного.
+ *
+ * Ровно столько же, сколько держится приглашение на сервере
+ * (`COMPUTER_INVITE_TIMEOUT_MS`). Ждать дольше нечего: там оно уже снято,
+ * и дежурный не придёт. Ждать меньше — значит бросить ожидание раньше,
+ * чем сервер перестанет его обслуживать.
+ */
+const COMPUTER_WAIT_MS = 10_000;
+
+/**
  * Ключ идущего матча и счётчик поколений.
  *
  * Ключ отвечает на вопрос «тот же это матч или другой»: перерисовка
@@ -494,8 +505,12 @@ export const sessionActions = {
    *
    * Заводит НОВУЮ комнату и зовёт в неё ту же манеру: прежняя комната
    * ушла вместе с матчем, а звать соперника можно только в свою.
-   * Готовность подтверждается сама, как только дежурный войдёт, —
-   * это делает обработчик состояния ниже.
+   *
+   * Готовность подтверждается САМА, как только дежурный вошёл. Второго
+   * согласия тут спрашивать не за что: игрок уже нажал «Начать заново»,
+   * и это оно и есть. В обычной комнате правило обратное — там готовность
+   * жмёт человек, потому что согласие дают на конкретного соперника,
+   * а его до входа не знают.
    */
   async restartWithComputer(): Promise<void> {
     const { profile } = store.getState();
@@ -504,7 +519,52 @@ export const sessionActions = {
     const created = await this.createLobby(defaultRoomTitle(profile.name), '');
     if (created !== null) return;
 
-    await this.inviteComputer(lastProfile);
+    const invited = await this.inviteComputer(lastProfile);
+    if (invited !== null) return;
+
+    // Ждём событием, а не опросом: состояние комнат приходит потоком,
+    // и подписка на него уже есть. Срок — тот же, что у приглашения
+    // на сервере: дольше ждать нечего, там оно уже снято.
+    await new Promise<void>((resolve) => {
+      /**
+       * Подписка и таймер лежат в общем держателе, потому что ссылаются
+       * друг на друга: снимая ожидание, надо погасить оба, а какое
+       * из двух сработало — неизвестно.
+       */
+      const waiting: { stop?: () => void; timer?: ReturnType<typeof setTimeout> } = {};
+
+      // Сработать может и подписка, и срок; гасят они одно и то же,
+      // поэтому снятие идемпотентно.
+      let settled = false;
+
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+
+        if (waiting.timer !== undefined) clearTimeout(waiting.timer);
+        waiting.stop?.();
+        resolve();
+      };
+
+      waiting.timer = setTimeout(finish, COMPUTER_WAIT_MS);
+      waiting.stop = store.subscribe((state) => {
+        const room = state.view.lobby;
+        // Комната пропала — игрок ушёл сам или её снесло. Ждать нечего.
+        if (room === null) {
+          finish();
+          return;
+        }
+
+        if (room.slots.length < LOBBY_CAPACITY) return;
+
+        // Ожидание снимается ДО подтверждения готовности, а не после.
+        // `toggleReady` меняет состояние немедленно, до ответа сервера,
+        // и живая подписка сработала бы на нашем же действии — то есть
+        // позвала бы сама себя.
+        finish();
+        void sessionActions.toggleReady(true);
+      });
+    });
   },
 
   /**
