@@ -49,9 +49,24 @@ export const FACTORS = {
   map: [0.5, 1, 1.5],
 };
 
-/** Ключ множителя в арене. Имена намеренно человеческие, а не как в коде. */
+/**
+ * Ключ величины в арене. Имена намеренно человеческие, а не как в коде.
+ *
+ * Таблица обязана покрывать ВСЕ поля `RuleTuning` — за этим следит
+ * `tuning-flags.test.mjs`. Иначе заведённая ручка оказалась бы доступна
+ * арене, но недоступна перебору, и узналось бы об этом в тот день, когда
+ * ею захотели померить.
+ *
+ * Пять ключей экономики берут не множитель, а процент или слово. Развёртке
+ * это безразлично: уровни она подставляет как есть, а проверяет их арена.
+ */
 export const FLAG_OF = {
   income: '--income',
+  incomeEffect: '--income-effect',
+  incomeEffectModel: '--income-effect-model',
+  incomeCost: '--income-cost',
+  incomeCostModel: '--income-cost-model',
+  incomeBaseCost: '--income-base-cost',
   speed: '--speed',
   towerHp: '--tower-hp',
   baseHp: '--base-hp',

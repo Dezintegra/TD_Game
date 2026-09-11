@@ -46,7 +46,11 @@ async function load() {
   // Исходники сохраняют независимость от старого dist и неполных таблиц CLI.
   rules = await import('../../packages/shared/src/rules.ts');
   rules.resetRuleTuning();
-  const { TUNING_FLAGS } = await import('../../apps/arena/src/tuning-flags.ts');
+  // Таблиц у арены две: числовые ключи и ключи-слова. Разведены они
+  // ради разбора, а покрывать состав правил обязаны вместе — здесь они
+  // и сводятся обратно в одну.
+  const arena = await import('../../apps/arena/src/tuning-flags.ts');
+  const TUNING_FLAGS = { ...arena.TUNING_FLAGS, ...arena.TUNING_CHOICE_FLAGS };
   const factorial = await import('./tempo-factorial.mjs');
   const fields = Object.keys(rules.ruleTuning());
   expect(fields.length).toBeGreaterThan(0);
