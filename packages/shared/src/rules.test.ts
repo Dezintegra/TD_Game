@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   BASE_INCOME_PER_TICK,
   GENERAL_STATS,
+  UPGRADE_BRANCHES,
+  UPGRADE_BRANCH_COUNT,
+  UpgradeStat,
+  UpgradeTarget,
   SEPARATION_WALL_CLEARANCE,
   STRUCTURE_STATS,
   StructureKind,
@@ -160,6 +164,87 @@ describe('настройка правил', () => {
     }).toThrow();
     expect(() => {
       applyRuleTuning({ speed: Number.NaN });
+    }).toThrow();
+  });
+});
+
+describe('кривая добычи энергии', () => {
+  /** Ветка добычи энергии. Ищется по смыслу, а не по номеру: номер сдвинется. */
+  const incomeBranch = () => {
+    const branch = UPGRADE_BRANCHES.find(
+      (entry) => entry.target === UpgradeTarget.Base && entry.stat === UpgradeStat.Income,
+    );
+    if (branch === undefined) throw new Error('ветка добычи энергии пропала из таблицы');
+    return branch;
+  };
+
+  it('без настройки кривая ровно та, что задумана', () => {
+    // Числа записаны прямо, а не взяты из самой ветки: проверка обязана
+    // упасть, если задуманное однажды подменят умолчанием настройки.
+    const branch = incomeBranch();
+
+    expect(branch.effectPercent).toBe(10);
+    expect(branch.costGrowthPercent).toBe(25);
+    expect(branch.costModel ?? 'geometric').toBe('geometric');
+    expect(branch.effectModel ?? 'geometric').toBe('geometric');
+    expect(ruleTuningIsNeutral()).toBe(true);
+  });
+
+  it('заказанная кривая доезжает до таблицы веток', () => {
+    applyRuleTuning({
+      incomeEffectPercent: 40,
+      incomeEffectModel: 'linear',
+      incomeCostPercent: 10,
+      incomeCostModel: 'linear',
+      incomeBaseCost: 2,
+    });
+
+    const branch = incomeBranch();
+
+    expect(branch.effectPercent).toBe(40);
+    expect(branch.effectModel).toBe('linear');
+    expect(branch.costGrowthPercent).toBe(10);
+    expect(branch.costModel).toBe('linear');
+    expect(branch.baseCost).toBe(6000);
+  });
+
+  it('пересборка таблицы не двигает ни длину, ни порядок', () => {
+    // Индекс ветки едет в команде покупки и лежит в сохранённых записях
+    // матчей. Сдвинься порядок — и старые записи стали бы бессмыслицей,
+    // а просмотр по индексу в ядре смотрел бы не на ту ветку.
+    const before = UPGRADE_BRANCHES.map((entry) => `${entry.target}:${entry.stat}`);
+
+    applyRuleTuning({ incomeEffectPercent: 40, incomeCostModel: 'linear' });
+
+    expect(UPGRADE_BRANCHES.map((entry) => `${entry.target}:${entry.stat}`)).toEqual(before);
+    expect(UPGRADE_BRANCHES.length).toBe(UPGRADE_BRANCH_COUNT);
+  });
+
+  it('кривая экономики не трогает соседних веток', () => {
+    const neighbour = UPGRADE_BRANCHES.findIndex(
+      (entry) => entry.target === UpgradeTarget.UnitAssault && entry.stat === UpgradeStat.Attack,
+    );
+    const before = { ...UPGRADE_BRANCHES[neighbour] };
+
+    applyRuleTuning({ incomeEffectPercent: 40, incomeCostPercent: 0, incomeCostModel: 'linear' });
+
+    expect(UPGRADE_BRANCHES[neighbour]).toEqual(before);
+  });
+
+  it('нулевой процент принят, отрицательный отвергнут', () => {
+    // Плоская цена уровня — предельный случай перебора, а не опечатка.
+    expect(() => {
+      applyRuleTuning({ incomeCostPercent: 0 });
+    }).not.toThrow();
+
+    expect(() => {
+      applyRuleTuning({ incomeEffectPercent: -5 });
+    }).toThrow();
+  });
+
+  it('неизвестная модель роста отвергнута', () => {
+    expect(() => {
+      applyRuleTuning({ incomeCostModel: 'квадратичная' as never });
     }).toThrow();
   });
 });

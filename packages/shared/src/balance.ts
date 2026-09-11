@@ -1,5 +1,6 @@
 import { TICKS_PER_SECOND } from './constants.js';
 import { PPM_ONE, applyPpm, combinePpm, compoundPpm } from './percent.js';
+import type { GrowthModel } from './percent.js';
 import { onRuleTuningApplied, ruleTuning } from './rules.js';
 import { cellsToUnits } from './units.js';
 
@@ -1232,7 +1233,25 @@ export interface UpgradeBranch {
    * и так до конца матча).
    */
   readonly maxLevel?: number;
+  /**
+   * Как растёт цена уровня. Отсутствует — сложным процентом.
+   *
+   * Умолчание названо здесь один раз и действует на все ветки:
+   * дописывать `'geometric'` в каждый литерал значило бы тридцать
+   * четыре строки, не несущие смысла. Заполняет поле только ветка
+   * добычи энергии, и только по заказу замера — см. `rules.ts`.
+   */
+  readonly costModel?: GrowthModel;
+  /** Как растёт сама характеристика. Отсутствует — сложным процентом. */
+  readonly effectModel?: GrowthModel;
 }
+
+/** Модель роста ветки с подставленным умолчанием. */
+export const costModelOf = (branch: UpgradeBranch): GrowthModel => branch.costModel ?? 'geometric';
+
+/** То же для характеристики. Две функции, потому что модели независимы. */
+export const effectModelOf = (branch: UpgradeBranch): GrowthModel =>
+  branch.effectModel ?? 'geometric';
 
 /** Достигнут ли потолок ветки. Ветка без потолка не достигает его никогда. */
 export const isUpgradeMaxed = (branch: UpgradeBranch, level: number): boolean =>
@@ -1346,7 +1365,7 @@ const towerBranches = (target: UpgradeTarget, cost: number): readonly UpgradeBra
  * едет в команде покупки, поэтому вставлять новые ветки можно только
  * в конец, иначе сохранённые записи матчей потеряют смысл.
  */
-export const UPGRADE_BRANCHES: readonly UpgradeBranch[] = [
+const buildUpgradeBranches = (): readonly UpgradeBranch[] => [
   ...unitBranches(UpgradeTarget.UnitAssault, energy(40)),
   ...unitBranches(UpgradeTarget.UnitSniper, energy(60)),
   ...unitBranches(UpgradeTarget.UnitTesla, energy(120)),
@@ -1358,15 +1377,25 @@ export const UPGRADE_BRANCHES: readonly UpgradeBranch[] = [
   branch(UpgradeTarget.General, UpgradeStat.Speed, 'Скорость', energy(80), GAIN),
   branch(UpgradeTarget.General, UpgradeStat.BuildRadius, 'Радиус стройки', energy(80), GAIN),
   branch(UpgradeTarget.General, UpgradeStat.RespawnTime, 'Воскрешение', energy(80), REDUCE),
+  // ─────────────────────────────────────────────────────────────────────
+  // Добыча энергии — единственная ветка, чью кривую двигает настройка
+  // правил. Задуманные числа стоят умолчаниями в `rules.ts`, поэтому
+  // без настройки эта запись в точности та же, что и прежде:
+  // цена 100, рост цены 25 процентов сложным процентом, прибавка
+  // 10 процентов сложным процентом.
+  //
+  // Двадцать пять процентов вместо десяти — прямое требование замысла.
+  // Экономика усиливает сама себя, поэтому дорожать должна быстрее всех.
+  // ─────────────────────────────────────────────────────────────────────
   {
     target: UpgradeTarget.Base,
     stat: UpgradeStat.Income,
     label: 'Добыча энергии',
-    baseCost: energy(100),
-    // Двадцать пять процентов вместо десяти — прямое требование замысла.
-    // Экономика усиливает сама себя, поэтому дорожать должна быстрее всех.
-    costGrowthPercent: 25,
-    effectPercent: GAIN,
+    baseCost: Math.max(1, Math.round(energy(100) * ruleTuning().incomeBaseCost)),
+    costGrowthPercent: ruleTuning().incomeCostPercent,
+    costModel: ruleTuning().incomeCostModel,
+    effectPercent: ruleTuning().incomeEffectPercent,
+    effectModel: ruleTuning().incomeEffectModel,
   },
   // ─────────────────────────────────────────────────────────────────────
   // Дальность стрельбы юнитов. Строго в КОНЕЦ таблицы.
@@ -1475,6 +1504,17 @@ export const UPGRADE_BRANCHES: readonly UpgradeBranch[] = [
     maxLevel: NUKE_COOLDOWN_MAX_LEVEL,
   },
 ];
+
+/**
+ * Таблица веток. Пересобирается при настройке правил — см. хвост файла.
+ *
+ * `let`, а не `const`, ровно по той же причине, по какой `let` у базового
+ * дохода: замер перебирает модели экономики, и каждое сочетание иначе
+ * требовало бы своей сборки. Порядок и длина таблицы при пересборке
+ * не меняются НИКОГДА — от них зависят и индекс в команде покупки,
+ * и сохранённые записи матчей, и просмотр по индексу в ядре.
+ */
+export let UPGRADE_BRANCHES: readonly UpgradeBranch[] = buildUpgradeBranches();
 
 export const UPGRADE_BRANCH_COUNT = UPGRADE_BRANCHES.length;
 
@@ -1803,6 +1843,11 @@ onRuleTuningApplied(() => {
 
   BASE_INCOME_PER_TICK = Math.max(1, Math.round(BASE_INCOME_PER_TICK_BY_DESIGN * income));
   BASE_SPEED_UNITS_PER_TICK = Math.max(1, Math.round(BASE_SPEED_BY_DESIGN * speed));
+
+  // Таблица веток пересобирается ПОСЛЕ корней и до всего, что её читает.
+  // Длина и порядок при этом неизменны, поэтому построенный на загрузке
+  // модуля просмотр по индексу остаётся верным.
+  UPGRADE_BRANCHES = buildUpgradeBranches();
 
   UNIT_STATS = buildUnitStats();
   STRUCTURE_STATS = buildStructureStats();

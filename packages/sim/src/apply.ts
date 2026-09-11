@@ -22,13 +22,16 @@
   UpgradeTarget,
   asEntityId,
   asTickNumber,
+  costModelOf,
   directionTowards,
   distanceSquared,
+  effectModelOf,
   growPpm,
   isUpgradeMaxed,
   isValidDirection,
   isValidStance,
   nukeBaseExclusion,
+  stepPpm,
 } from '@td/shared';
 import type { Command, PlayerId, UnitType } from '@td/shared';
 import { killGeneral } from './combat.js';
@@ -445,8 +448,11 @@ const buyUpgrade = (working: Working, player: WorkingPlayer, branchIndex: number
   player.energy -= cost;
   player.upgrades[branchIndex] = {
     level: current.level + 1,
-    effectPpm: growPpm(current.effectPpm, branch.effectPercent),
-    costPpm: growPpm(current.costPpm, branch.costGrowthPercent),
+    // Шаг по объявленной моделью ветки: умножение при сложном проценте,
+    // прибавка при линейном. Модели независимы — цена может расти прямой
+    // при геометрической прибавке, и ради этого сочетания ручки и заведены.
+    effectPpm: stepPpm(current.effectPpm, branch.effectPercent, effectModelOf(branch)),
+    costPpm: stepPpm(current.costPpm, branch.costGrowthPercent, costModelOf(branch)),
   };
 
   // Улучшение типа поднимает цену покупки этого типа. У генерала
