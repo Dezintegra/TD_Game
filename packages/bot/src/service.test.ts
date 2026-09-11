@@ -312,6 +312,35 @@ describe('служба компьютерных соперников', () => {
     running.close();
   });
 
+  it('непринятое объявление отменяет вход, а не только запуск', async () => {
+    // Служба запустилась, когда регистрация была открыта, а к моменту
+    // приглашения сервер объявление отверг — перезапустился с другим
+    // секретом или закрыл регистрацию. Войти всё равно нельзя: дежурный
+    // встал бы в комнате непомеченным, то есть человеком на вид, и игрок
+    // сел бы играть с компьютером, думая, что играет с человеком.
+    const fake = createFake();
+    let accept = true;
+    const flaky: Fake = {
+      ...fake,
+      fetch: (url, init) =>
+        url.endsWith('/api/computer/declare') && !accept
+          ? Promise.resolve({ ok: false, status: 403, body: null, text: () => Promise.resolve('') })
+          : fake.fetch(url, init),
+    };
+
+    const running = service(flaky);
+    await settle();
+
+    accept = false;
+    await fake.push(WATCHER, listView(room(PROFILE)));
+    await settle();
+
+    expect(fake.posts.filter((post) => post.path.includes('/join'))).toHaveLength(0);
+    expect(running.idleCount).toBe(0);
+
+    running.close();
+  });
+
   it('распавшаяся комната уводит дежурного', async () => {
     // Комната распалась, пока дежурный шёл: хозяин передумал и вышел.
     // Держать дежурного дальше не за чем — звать его будут заново.

@@ -260,16 +260,14 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
   };
 
   /**
-   * Сказать серверу, кто мы такие.
+   * Сказать серверу, кто мы такие. Возвращает, принято ли объявление.
    *
-   * Объявляются все когда-либо выданные личности, а не только живые
-   * дежурные: отыгравший агент уходит, а его сторона в только что
-   * законченном матче обязана остаться помеченной компьютерной. Иначе
-   * на экране итога соперник задним числом превратился бы в человека —
-   * ровно та беда, ради которой `issued` и заведён отдельно от `agents`.
+   * Ответ важен, а не для порядка: непринятое объявление означает, что
+   * сервер не считает наших дежурных компьютерными, и вошедший встанет
+   * в комнате человеком на вид.
    */
-  const announce = async (): Promise<void> => {
-    if (closed || secret === undefined) return;
+  const announce = async (): Promise<boolean> => {
+    if (closed || secret === undefined) return false;
 
     // Личности и манера объявляются РАЗНЫМИ списками. Личности —
     // все когда-либо выданные, а не только живые: отыгравший агент
@@ -280,7 +278,7 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
     // Манера же объявляется ВСЕГДА, даже когда живых дежурных нет вовсе.
     // Их и не бывает, пока никто не позвал, — а список манер нужен игроку
     // ровно в этот момент, до приглашения.
-    await api.declare(
+    return api.declare(
       secret,
       [...issued].map((id) => ({ id, profile })),
       [{ id: profile, title }],
@@ -309,13 +307,25 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
     // Объявляемся ПЕРЕД входом, а не после: сервер помечает комнату
     // компьютерной по объявленным личностям, и войди дежурный раньше
     // объявления — комната мелькнула бы в списке человеческой.
+    //
+    // Непринятое объявление отменяет вход целиком. Это то же правило,
+    // что при запуске службы, и та же причина: непомеченный дежурный
+    // в комнате — это ложь игроку о том, с кем он играет, а она хуже
+    // недоступного соперника.
     void announce()
-      .then(() => api.join(agent.id, agent.name, lobbyId))
-      .then((entered) => {
-        if (!entered) {
-          options.log?.(`Компьютер ${agent.name}: войти в ${lobbyId} не вышло`);
-          retire(agent);
+      .then(async (accepted) => {
+        if (!accepted) {
+          options.log?.(
+            `Компьютер ${agent.name}: объявление не принято, в ${lobbyId} не иду — ` +
+              'иначе встал бы в комнате непомеченным.',
+          );
+          return false;
         }
+
+        return api.join(agent.id, agent.name, lobbyId);
+      })
+      .then((entered) => {
+        if (!entered) retire(agent);
       })
       .finally(() => {
         agent.joining = false;
