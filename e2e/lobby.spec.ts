@@ -147,10 +147,13 @@ test('комната под паролем видна замком и пуска
     const field = row.getByTestId('lobby-row-password');
     await expect(field).toBeVisible();
 
-    // Неверный пароль оставляет гостя в списке и говорит почему.
+    // Неверный пароль оставляет гостя в списке и говорит почему — прямо
+    // у поля, а не общей строкой внизу экрана: опечатку исправляют там,
+    // где её набрали.
     await field.fill('не та');
     await field.press('Enter');
-    await expect(guest.getByText('Пароль не подошёл')).toBeVisible();
+    await expect(row.getByText('Пароль не подошёл')).toBeVisible();
+    await expect(guest.getByTestId('lobby-error')).toHaveCount(0);
     await expect(guest.getByTestId('room')).toBeHidden();
     // Место в комнате не занято ни одной неудачной попыткой.
     await expect(host.getByTestId('room-slot')).toHaveCount(1);

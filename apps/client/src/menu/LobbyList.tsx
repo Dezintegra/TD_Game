@@ -114,7 +114,10 @@ export const LobbyList = () => {
         </p>
       </Panel>
 
-      {error !== null && (
+      {/* Отказ по паролю сюда НЕ попадает: его показывает сама строка,
+          прямо у поля ввода. Второй раз внизу экрана он был бы дублем
+          и уводил бы взгляд от того места, где опечатку исправляют. */}
+      {error !== null && error !== LobbyError.WrongPassword && (
         <div data-testid="lobby-error" style={{ color: 'var(--td-error)' }}>
           {lobbyErrorText[error]}
         </div>
