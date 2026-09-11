@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  AttackStance,
   DIRECTION_SOUTH,
   FIXED_POINT_SCALE,
   GENERAL_STATS,
@@ -21,7 +22,13 @@ import { createWorld } from './world.js';
 import type { GeneralState, StructureState, UnitState, WorldState } from './world.js';
 import { step } from './step.js';
 import { cellCentre, cellIndex } from './map.js';
-import { TargetKind, buildCombatIndices, chooseTarget } from './combat.js';
+import {
+  TargetKind,
+  TargetOrder,
+  buildCombatIndices,
+  chooseTarget,
+  targetOrderOf,
+} from './combat.js';
 import type { Target } from './combat.js';
 import { toWorking } from './working.js';
 
@@ -139,6 +146,8 @@ interface Shot {
   readonly indirect?: boolean;
   readonly globalTarget?: number;
   readonly blockedBy?: number;
+  /** Порядок перебора целей. Не указан — общий. */
+  readonly order?: TargetOrder;
 }
 
 /** Кого выберет стрелок игрока, стоящий в середине поля. */
@@ -156,6 +165,7 @@ const targetOf = (world: WorldState, shot: Shot): Target | undefined => {
     shot.indirect === true
       ? { living: false, structures: true }
       : { living: shot.elevated, structures: shot.elevated },
+    shot.order ?? TargetOrder.Default,
   );
 };
 
@@ -475,5 +485,109 @@ describe('стреляющая постройка как цель', () => {
     expect(
       targetOf(world, { range: UNIT_RANGE, elevated: false, globalTarget: wallIndex }),
     ).toEqual({ kind: TargetKind.Structure, index: wallIndex });
+  });
+});
+
+/**
+ * Правила выбора цели по типу машины в режиме «Бой».
+ *
+ * Вне «Боя» порядок у всех общий: «Прорыв» — приказ идти к цели, а не
+ * другой способ выбирать, по кому стрелять. Поэтому каждое правило ниже
+ * проверяется вместе со своей границей: в общем порядке та же расстановка
+ * даёт другой ответ.
+ */
+describe('штурмовик в «Бою» бьёт ближайшую цель', () => {
+  const TOWER_ID = 50;
+  const WALL_ID = 51;
+  const FOE_UNIT = 60;
+
+  const nearest = { range: UNIT_RANGE, elevated: false, order: TargetOrder.Nearest } as const;
+
+  it('подошедший юнит перебивает назначенную базу', () => {
+    // Ровно случай из постановки: штурмовик бил базу, рядом появился
+    // юнит — огонь переключается, потому что юнит ближе.
+    const world = arrange({ units: [unit(FOE_UNIT, FOE, 1, 0)] });
+    const enemyBase = world.structures.findIndex((entry) => entry.owner === FOE);
+
+    expect(targetOf(world, { ...nearest, globalTarget: enemyBase })?.kind).toBe(TargetKind.Unit);
+  });
+
+  it('поставленная в упор башня перебивает юнита подальше', () => {
+    const world = arrange({
+      structures: [structure(TOWER_ID, FOE, StructureKind.TowerBasic, 1, 0)],
+      units: [unit(FOE_UNIT, FOE, 2, 0)],
+    });
+
+    expect(targetOf(world, nearest)).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, TOWER_ID),
+    });
+  });
+
+  it('стена не в счёт, даже будучи ближайшей', () => {
+    // Цели разведены по разным осям намеренно: стоя на одной линии,
+    // стена закрыла бы юнита от огня, и проверка поймала бы линию огня,
+    // а не правило выбора.
+    const world = arrange({
+      structures: [structure(WALL_ID, FOE, StructureKind.Wall, 1, 0)],
+      units: [unit(FOE_UNIT, FOE, 0, 2)],
+    });
+
+    expect(targetOf(world, nearest)?.kind).toBe(TargetKind.Unit);
+  });
+
+  it('а в общем порядке та же стена выбирается', () => {
+    // Граница правила: не будь этой проверки, тест выше был бы зелен
+    // и в мире, где по стенам не стреляет вообще никто.
+    const world = arrange({ structures: [structure(WALL_ID, FOE, StructureKind.Wall, 1, 0)] });
+
+    expect(targetOf(world, { range: UNIT_RANGE, elevated: false })).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, WALL_ID),
+    });
+  });
+
+  it('назначенная стена всё же обстреливается: приказ не отменяется', () => {
+    const world = arrange({
+      structures: [structure(WALL_ID, FOE, StructureKind.Wall, 1, 0)],
+      units: [unit(FOE_UNIT, FOE, 2, 0)],
+    });
+    const wallIndex = structureIndex(world, WALL_ID);
+
+    expect(targetOf(world, { ...nearest, globalTarget: wallIndex })).toEqual({
+      kind: TargetKind.Structure,
+      index: wallIndex,
+    });
+  });
+
+  it('стена, перегородившая путь, ломается несмотря на правило', () => {
+    // Запечатанный стенами проход обязан оставаться проходимым: замысел
+    // называет запечатывание ходом, который ПОКУПАЕТ ВРЕМЯ, а не отменяет
+    // атаку. Не будь этой ступени, войско встало бы перед стеной навсегда.
+    const world = arrange({
+      structures: [structure(WALL_ID, FOE, StructureKind.Wall, 1, 0)],
+      units: [unit(FOE_UNIT, FOE, 2, 0)],
+    });
+    const wallIndex = structureIndex(world, WALL_ID);
+
+    expect(targetOf(world, { ...nearest, blockedBy: wallIndex })).toEqual({
+      kind: TargetKind.Structure,
+      index: wallIndex,
+    });
+  });
+});
+
+describe('порядок выбирается по типу машины и режиму', () => {
+  it('штурмовик получает свой порядок только в «Бою»', () => {
+    expect(targetOrderOf(UnitType.Assault, AttackStance.Engage)).toBe(TargetOrder.Nearest);
+    expect(targetOrderOf(UnitType.Assault, AttackStance.Breakthrough)).toBe(TargetOrder.Default);
+  });
+
+  it('прочие типы пока ходят общим порядком', () => {
+    // Снайпер и Тесла получат свои правила задачами 0277 и 0278.
+    for (const type of [UnitType.Sniper, UnitType.Tesla]) {
+      expect(targetOrderOf(type, AttackStance.Engage)).toBe(TargetOrder.Default);
+      expect(targetOrderOf(type, AttackStance.Breakthrough)).toBe(TargetOrder.Default);
+    }
   });
 });

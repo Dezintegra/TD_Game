@@ -1,4 +1,5 @@
 import {
+  AttackStance,
   BlastKind,
   DIRECTION_STOP,
   FIXED_POINT_SCALE,
@@ -17,13 +18,14 @@ import {
   UNIT_INDIRECT_FIRE,
   UNIT_STATS,
   UNIT_WEAPON,
+  UnitType,
   asTickNumber,
   directionTowards,
   isArmedStructure,
   onRuleTuningApplied,
   veteranRank,
 } from '@td/shared';
-import type { PlayerId, UnitType, Vec2 } from '@td/shared';
+import type { PlayerId, Vec2 } from '@td/shared';
 import { cellAt, cellCentre, squaredDistanceToFootprint } from './map.js';
 import { hasLineOfSight } from './sight.js';
 import {
@@ -245,6 +247,30 @@ export const seesStructure = (
     STRUCTURE_STATS[structure.kind].footprintRadius,
   );
 
+/**
+ * Ближайшая из нескольких находок.
+ *
+ * Ступенчатый перебор отвечает «первая, где нашлось», и для порядка,
+ * где ступеней нет вовсе — просто ближайшая цель, — он не годится:
+ * сравнивать надо находки разных видов между собой. Отсюда и возврат
+ * `Candidate` у поисковых функций: расстояние нужно наружу, а не только
+ * внутри перебора.
+ *
+ * Ничья разрешается тем же правилом, что и внутри вида, — меньшим
+ * идентификатором. Иначе исход зависел бы от порядка доводов здесь,
+ * то есть от того, кого автор перечислил первым.
+ */
+const pickNearest = (...found: readonly Candidate[]): Target | undefined => {
+  const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
+
+  for (const candidate of found) {
+    if (candidate.target === undefined) continue;
+    consider(best, candidate.target, candidate.distance, candidate.id);
+  }
+
+  return best.target;
+};
+
 /** Ближайший видимый вражеский генерал. Ничья — по меньшему индексу. */
 const nearestGeneral = (
   working: Working,
@@ -252,7 +278,7 @@ const nearestGeneral = (
   origin: Vec2,
   reach: number,
   elevated: boolean,
-): Target | undefined => {
+): Candidate => {
   const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
 
   working.generals.forEach((general, index) => {
@@ -269,7 +295,7 @@ const nearestGeneral = (
     consider(best, { kind: TargetKind.General, index }, distance, index);
   });
 
-  return best.target;
+  return best;
 };
 
 /** Ближайший видимый вражеский юнит. */
@@ -281,7 +307,7 @@ const nearestUnit = (
   range: number,
   reach: number,
   elevated: boolean,
-): Target | undefined => {
+): Candidate => {
   const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
 
   forEachNear(indices.units, origin, range, (index) => {
@@ -296,16 +322,21 @@ const nearestUnit = (
     consider(best, { kind: TargetKind.Unit, index }, distance, unit.id);
   });
 
-  return best.target;
+  return best;
 };
 
 /**
  * Ближайшая видимая вражеская постройка.
  *
- * `armedOnly` отбирает только стреляющие. Отдельного обхода рядом
- * не заведено намеренно: два похожих перебора с почти одинаковыми
- * условиями разъехались бы на первой же правке — в одном не забыли бы
- * про основание базы, в другом забыли.
+ * `armedOnly` отбирает только стреляющие, `walls` — учитывать ли стены
+ * вовсе. Отдельного обхода рядом не заведено намеренно: два похожих
+ * перебора с почти одинаковыми условиями разъехались бы на первой же
+ * правке — в одном не забыли бы про основание базы, в другом забыли.
+ *
+ * Стены исключаются не ради экономии, а по правилу: штурмовик и снайпер
+ * в «Бою» стену за цель не считают. Из ПРЕГРАДЫ это их не выводит —
+ * перегородившая путь постройка выбирается отдельной ступенью и до этого
+ * перебора не доходит.
  */
 const nearestStructure = (
   working: Working,
@@ -316,7 +347,8 @@ const nearestStructure = (
   reach: number,
   elevated: boolean,
   armedOnly: boolean,
-): Target | undefined => {
+  walls = true,
+): Candidate => {
   const best: Candidate = { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
 
   // Радиус поиска расширен на размер самого крупного основания.
@@ -327,6 +359,7 @@ const nearestStructure = (
     const structure = working.structures[index];
     if (structure === undefined || !structure.alive || structure.owner === owner) return;
     if (armedOnly && !isArmedStructure(structure.kind)) return;
+    if (!walls && structure.kind === StructureKind.Wall) return;
 
     const distance = structureDistance(origin, structure);
     if (distance > reach) return;
@@ -336,8 +369,33 @@ const nearestStructure = (
     consider(best, { kind: TargetKind.Structure, index }, distance, structure.id);
   });
 
-  return best.target;
+  return best;
 };
+
+/**
+ * Порядок, в котором стрелок перебирает цели.
+ *
+ * Порядков несколько потому, что в режиме «Бой» разные машины заняты
+ * разной работой, и общая лестница описывает только одну из них. Вне
+ * «Боя» порядок у всех общий: «Прорыв» — это приказ идти к цели, а не
+ * другой способ выбирать, по кому стрелять.
+ */
+export const TargetOrder = {
+  /** Общий: приказ, генерал, преграда, юниты, башни, прочие постройки. */
+  Default: 0,
+  /**
+   * Штурмовик в «Бою»: ближайшая цель, и только она.
+   *
+   * Ступеней здесь нет вовсе, кроме преграды: штурмовик — основа атаки,
+   * его дело бить то, что ближе, а не выбирать. Отсюда и то, что прямой
+   * приказ игрока в этом порядке не стоит выше: подошедший вплотную юнит
+   * или поставленная в упор башня перебивают назначенную базу, потому что
+   * они БЛИЖЕ. Стены в счёт не идут вовсе — кроме перегородившей путь.
+   */
+  Nearest: 1,
+} as const;
+
+export type TargetOrder = (typeof TargetOrder)[keyof typeof TargetOrder];
 
 /**
  * Выбор цели по приоритету:
@@ -383,6 +441,10 @@ const nearestStructure = (
  * На каждой ступени цель обязана быть видимой: расстояния мало, нужна
  * ещё и свободная линия. Проверка стоит обхода нескольких клеток
  * и делается последней — после отсева по расстоянию, который куда дешевле.
+ *
+ * Порядок этот общий, но не единственный: в режиме «Бой» у каждого типа
+ * юнита он свой, см. `TargetOrder`. Башни, база и генерал ходят общим
+ * всегда — режим есть свойство войска, а не построек.
  */
 export const chooseTarget = (
   working: Working,
@@ -393,6 +455,7 @@ export const chooseTarget = (
   globalTargetIndex: number,
   blockedBy: number,
   elevation: Elevation,
+  order: TargetOrder = TargetOrder.Default,
 ): Target | undefined => {
   if (range <= 0) return undefined;
 
@@ -406,21 +469,73 @@ export const chooseTarget = (
     return seesStructure(working, elevation.structures, origin, structure);
   };
 
+  // Преграда выбирается раньше всего прочего в любом порядке, кроме общего,
+  // где выше неё стоит только прямой приказ игрока. Это и есть та граница,
+  // на которой «стены не в счёт» перестаёт действовать: стена, перегородившая
+  // путь целиком, остаётся ломаемой. Иначе запечатанный проход остановил бы
+  // войско навсегда, а замысел прямо называет запечатывание осмысленным
+  // ходом, который лишь ПОКУПАЕТ ВРЕМЯ.
+  const blocking = (): Target | undefined =>
+    blockedBy >= 0 && structureInReach(blockedBy)
+      ? { kind: TargetKind.Structure, index: blockedBy }
+      : undefined;
+
+  if (order === TargetOrder.Nearest) {
+    // Назначенная цель участвует в конкурсе наравне с прочими, а не стоит
+    // над ним: в этом и состоит правило штурмовика — поставленная в упор
+    // башня перебивает далёкую базу, потому что она ближе.
+    //
+    // Но участвует она ВСЕГДА, даже будучи стеной. Исключение стен —
+    // про автоматический выбор, а не про приказ: игрок, назначивший стену,
+    // вправе видеть, что по ней стреляют, и «не в счёт» тут означает
+    // «не отвлекаться на чужие стены по дороге», а не «не слушать приказ».
+    const assigned: Candidate =
+      globalTargetIndex >= 0 && structureInReach(globalTargetIndex)
+        ? {
+            target: { kind: TargetKind.Structure, index: globalTargetIndex },
+            distance: structureDistance(
+              origin,
+              working.structures[globalTargetIndex] as WorkingStructure,
+            ),
+            id: working.structures[globalTargetIndex]?.id ?? 0,
+          }
+        : { target: undefined, distance: Number.POSITIVE_INFINITY, id: 0 };
+
+    return (
+      blocking() ??
+      pickNearest(
+        assigned,
+        nearestGeneral(working, owner, origin, reach, elevation.living),
+        nearestUnit(working, indices, owner, origin, range, reach, elevation.living),
+        nearestStructure(
+          working,
+          indices,
+          owner,
+          origin,
+          range,
+          reach,
+          elevation.structures,
+          false,
+          false,
+        ),
+      )
+    );
+  }
+
   if (globalTargetIndex >= 0 && structureInReach(globalTargetIndex)) {
     return { kind: TargetKind.Structure, index: globalTargetIndex };
   }
 
   const general = nearestGeneral(working, owner, origin, reach, elevation.living);
-  if (general !== undefined) return general;
-
-  if (blockedBy >= 0 && structureInReach(blockedBy)) {
-    return { kind: TargetKind.Structure, index: blockedBy };
-  }
+  if (general.target !== undefined) return general.target;
 
   return (
-    nearestUnit(working, indices, owner, origin, range, reach, elevation.living) ??
-    nearestStructure(working, indices, owner, origin, range, reach, elevation.structures, true) ??
+    blocking() ??
+    nearestUnit(working, indices, owner, origin, range, reach, elevation.living).target ??
+    nearestStructure(working, indices, owner, origin, range, reach, elevation.structures, true)
+      .target ??
     nearestStructure(working, indices, owner, origin, range, reach, elevation.structures, false)
+      .target
   );
 };
 
@@ -986,12 +1101,26 @@ export const resolveCombat = (
   const targetFor = (owner: PlayerId): number =>
     globalTargets[working.players.findIndex((player) => player.id === owner)] ?? -1;
 
+  // Режим владельца юнита. Берётся один раз на тик и наперёд: он есть
+  // свойство игрока, а не юнита, и искать его для каждой машины заново
+  // значило бы двести поисков в массиве там, где хватает двух.
+  const stanceFor = (owner: PlayerId): AttackStance =>
+    working.players.find((player) => player.id === owner)?.stance ?? AttackStance.Breakthrough;
+
   working.structures.forEach((structure, index) => {
     fireStructure(working, statsTable, indices, structure, index, targetFor(structure.owner));
   });
 
   working.units.forEach((unit, index) => {
-    fireUnit(working, statsTable, indices, unit, index, targetFor(unit.owner));
+    fireUnit(
+      working,
+      statsTable,
+      indices,
+      unit,
+      index,
+      targetFor(unit.owner),
+      targetOrderOf(unit.unitType, stanceFor(unit.owner)),
+    );
   });
 
   working.generals.forEach((general, index) => {
@@ -1076,6 +1205,20 @@ const aimFacing = (
   return heading === DIRECTION_STOP ? current : heading;
 };
 
+/**
+ * Каким порядком юнит перебирает цели.
+ *
+ * Вне «Боя» порядок общий у всех: «Прорыв» — приказ идти к цели, а не
+ * другой способ выбирать, по кому стрелять. Смешай мы одно с другим,
+ * переключатель режима менял бы разом и маршрут, и приоритеты, и объяснить
+ * игроку такое было бы нечем.
+ */
+export const targetOrderOf = (unitType: UnitType, stance: AttackStance): TargetOrder => {
+  if (stance !== AttackStance.Engage) return TargetOrder.Default;
+
+  return unitType === UnitType.Assault ? TargetOrder.Nearest : TargetOrder.Default;
+};
+
 const fireUnit = (
   working: Working,
   statsTable: readonly PlayerStats[],
@@ -1083,6 +1226,7 @@ const fireUnit = (
   unit: WorkingUnit,
   index: number,
   globalTarget: number,
+  order: TargetOrder,
 ): void => {
   if (!unit.alive) return;
   if (working.tick < unit.readyAtTick) return;
@@ -1099,6 +1243,7 @@ const fireUnit = (
     globalTarget,
     unit.blockedBy,
     unitElevation(unit.unitType),
+    order,
   );
   if (target === undefined) return;
 

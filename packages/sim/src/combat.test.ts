@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
+  AttackStance,
   DIRECTION_SOUTH,
   FIRST_MISSILE_SIDE,
   MAP_CELL_COUNT,
@@ -123,6 +124,27 @@ const arrange = (
   };
 };
 
+/**
+ * Мир, где обе стороны прорываются.
+ *
+ * Нужен там, где по стене стреляет ШТУРМОВИК. В «Бою» чужая стена ему
+ * не цель — правило 0276, — а проверки ниже не про выбор цели вовсе:
+ * они про силу урона, ветеранский ранг и след взрыва, и стена служит
+ * в них просто мишенью с большим запасом прочности.
+ */
+const breaking = (world: WorldState): WorldState => ({
+  ...world,
+  players: world.players.map((player) => ({ ...player, stance: AttackStance.Breakthrough })),
+});
+
+/** Назначить постройку общей целью игрока: прямой приказ, а не автоматика. */
+const targeting = (world: WorldState, id: number): WorldState => ({
+  ...world,
+  players: world.players.map((player, index) =>
+    index === 0 ? { ...player, targetStructure: asEntityId(id) } : player,
+  ),
+});
+
 const structureById = (world: WorldState, id: number): StructureState | undefined =>
   world.structures.find((entry) => entry.id === asEntityId(id));
 
@@ -145,16 +167,20 @@ describe('стрельба и урон', () => {
     const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
 
     const bySniper = step(
-      arrange(
-        [structure(50, 1, StructureKind.Wall, 0, 0, wallHealth)],
-        [unit(60, 0, UnitType.Sniper, 2, 0, 100)],
+      breaking(
+        arrange(
+          [structure(50, 1, StructureKind.Wall, 0, 0, wallHealth)],
+          [unit(60, 0, UnitType.Sniper, 2, 0, 100)],
+        ),
       ),
       [],
     );
     const byAssault = step(
-      arrange(
-        [structure(50, 1, StructureKind.Wall, 0, 0, wallHealth)],
-        [unit(60, 0, UnitType.Assault, 1, 0, 100)],
+      breaking(
+        arrange(
+          [structure(50, 1, StructureKind.Wall, 0, 0, wallHealth)],
+          [unit(60, 0, UnitType.Assault, 1, 0, 100)],
+        ),
       ),
       [],
     );
@@ -437,9 +463,18 @@ describe('линия огня', () => {
   it('стена как цель обстреливается, а не прячет сама себя', () => {
     const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
 
-    const world = arrange(
-      [structure(51, 1, StructureKind.Wall, 1, 0, wallHealth)],
-      [unit(61, 0, UnitType.Assault, 0, 0, 10_000)],
+    // Стена назначена целью явно — ровно то, о чём говорит название.
+    // Прежде она обстреливалась и без приказа, просто как ближайшая
+    // постройка, и проверка держалась на этом побочно. С правилом 0276
+    // чужая стена штурмовику в «Бою» не цель, а НАЗНАЧЕННАЯ остаётся ею:
+    // «стены не в счёт» — про то, чтобы не отвлекаться по дороге, а не
+    // про то, чтобы не слушать приказ.
+    const world = targeting(
+      arrange(
+        [structure(51, 1, StructureKind.Wall, 1, 0, wallHealth)],
+        [unit(61, 0, UnitType.Assault, 0, 0, 10_000)],
+      ),
+      51,
     );
 
     const after = step(world, []);
@@ -610,9 +645,11 @@ describe('ветеранские ранги за убийства', () => {
     const wallHealth = 100_000;
 
     const damageWith = (kills: number): number => {
-      const world = arrange(
-        [structure(50, 1, StructureKind.Wall, 1, 0, wallHealth)],
-        [{ ...unit(60, 0, UnitType.Assault, 0, 0, 500), kills }],
+      const world = breaking(
+        arrange(
+          [structure(50, 1, StructureKind.Wall, 1, 0, wallHealth)],
+          [{ ...unit(60, 0, UnitType.Assault, 0, 0, 500), kills }],
+        ),
       );
 
       let current = world;
