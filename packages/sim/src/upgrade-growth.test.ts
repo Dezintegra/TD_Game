@@ -83,9 +83,12 @@ describe('линейная модель роста цены', () => {
     expect(upgradeCosts(playerOf(world))[branch]).toBe(100 * 30 * 2);
   });
 
-  it('сложный процент остаётся прежним', () => {
-    // Умолчание не трогается вовсе: это проверка того, что новая модель
-    // не поселилась в ветках, которые её не просили.
+  it('сложный процент считается сложным процентом', () => {
+    // Модель называется прямо, а не берётся умолчанием: проверяется
+    // ПОВЕДЕНИЕ модели, и оно не должно зависеть от того, какую кривую
+    // замысел выбрал для экономики сегодня.
+    applyRuleTuning({ incomeCostPercent: 25, incomeCostModel: 'geometric' });
+
     const branch = incomeBranch();
     const world = afterLevels(richWorld(), branch, 4);
 
@@ -108,7 +111,7 @@ describe('линейная модель роста прибавки', () => {
   });
 
   it('сложный процент обгоняет прямую на том же числе уровней', () => {
-    applyRuleTuning({ incomeEffectPercent: 40 });
+    applyRuleTuning({ incomeEffectPercent: 40, incomeEffectModel: 'geometric' });
 
     const world = afterLevels(richWorld(), incomeBranch(), 5);
 
@@ -122,6 +125,7 @@ describe('модели независимы', () => {
     // сложным процентом, а цена уровня — прямой.
     applyRuleTuning({
       incomeEffectPercent: 20,
+      incomeEffectModel: 'geometric',
       incomeCostPercent: 10,
       incomeCostModel: 'linear',
     });

@@ -181,12 +181,13 @@ describe('кривая добычи энергии', () => {
   it('без настройки кривая ровно та, что задумана', () => {
     // Числа записаны прямо, а не взяты из самой ветки: проверка обязана
     // упасть, если задуманное однажды подменят умолчанием настройки.
+    // Живут они в `balance.ts`, здесь только сверяются.
     const branch = incomeBranch();
 
-    expect(branch.effectPercent).toBe(10);
-    expect(branch.costGrowthPercent).toBe(25);
-    expect(branch.costModel ?? 'geometric').toBe('geometric');
-    expect(branch.effectModel ?? 'geometric').toBe('geometric');
+    expect(branch.effectPercent).toBe(40);
+    expect(branch.effectModel).toBe('linear');
+    expect(branch.costGrowthPercent).toBe(10);
+    expect(branch.costModel).toBe('geometric');
     expect(ruleTuningIsNeutral()).toBe(true);
   });
 
