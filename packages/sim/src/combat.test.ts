@@ -780,11 +780,16 @@ describe('накрытие Теслы', () => {
     // Стена стоит в полуклетке от точки попадания — в ближнем радиусе,
     // где живые получают полный урон. Иначе стеновая линия оседала бы
     // веером, а не ломалась по одной.
+    // «Прорыв» назван явно: в «Бою» Тесла предпочитает постройки живым
+    // (правило 0278) и выбрала бы стену, а проверка здесь про накрытие,
+    // то есть про последствие попадания по ЮНИТУ.
     const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
     const after = step(
-      arrange(
-        [structure(50, 1, StructureKind.Wall, 3.5, 0, wallHealth)],
-        [unit(60, 0, UnitType.Tesla, 0, 0, 200), unit(70, 1, UnitType.Assault, 3, 0, 100)],
+      breaking(
+        arrange(
+          [structure(50, 1, StructureKind.Wall, 3.5, 0, wallHealth)],
+          [unit(60, 0, UnitType.Tesla, 0, 0, 200), unit(70, 1, UnitType.Assault, 3, 0, 100)],
+        ),
       ),
       [],
     );
@@ -825,15 +830,19 @@ describe('накрытие Теслы', () => {
     //
     // Следствие сознательное, и тест закрепляет его именно поэтому:
     // без него следующий примет это за недочёт и «починит».
+    // «Прорыв» — по той же причине, что и в проверке выше: предмет здесь
+    // накрытие, а не выбор цели.
     const wallHealth = STRUCTURE_STATS[StructureKind.Wall].health;
     const after = step(
-      arrange(
-        [structure(50, 1, StructureKind.Wall, 4, 0, wallHealth)],
-        [
-          unit(60, 0, UnitType.Tesla, 0, 0, 200),
-          unit(70, 1, UnitType.Assault, 3, 0, 100),
-          unit(71, 1, UnitType.Assault, 4.5, 0, 100),
-        ],
+      breaking(
+        arrange(
+          [structure(50, 1, StructureKind.Wall, 4, 0, wallHealth)],
+          [
+            unit(60, 0, UnitType.Tesla, 0, 0, 200),
+            unit(70, 1, UnitType.Assault, 3, 0, 100),
+            unit(71, 1, UnitType.Assault, 4.5, 0, 100),
+          ],
+        ),
       ),
       [],
     );

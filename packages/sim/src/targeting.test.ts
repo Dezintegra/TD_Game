@@ -583,11 +583,165 @@ describe('порядок выбирается по типу машины и ре
     expect(targetOrderOf(UnitType.Assault, AttackStance.Breakthrough)).toBe(TargetOrder.Default);
   });
 
-  it('прочие типы пока ходят общим порядком', () => {
-    // Снайпер и Тесла получат свои правила задачами 0277 и 0278.
-    for (const type of [UnitType.Sniper, UnitType.Tesla]) {
-      expect(targetOrderOf(type, AttackStance.Engage)).toBe(TargetOrder.Default);
+  it('снайпер и Тесла получают свои порядки только в «Бою»', () => {
+    expect(targetOrderOf(UnitType.Sniper, AttackStance.Engage)).toBe(TargetOrder.Living);
+    expect(targetOrderOf(UnitType.Tesla, AttackStance.Engage)).toBe(TargetOrder.Structures);
+  });
+
+  it('вне «Боя» общий порядок у всех типов без исключения', () => {
+    // Граница, стоящая отдельной проверкой: «Прорыв» — это приказ идти
+    // к цели, а не другой способ выбирать, по кому стрелять.
+    for (const type of [UnitType.Assault, UnitType.Sniper, UnitType.Tesla]) {
       expect(targetOrderOf(type, AttackStance.Breakthrough)).toBe(TargetOrder.Default);
     }
+  });
+});
+
+describe('снайпер в «Бою» предпочитает живых', () => {
+  const TOWER_ID = 50;
+  const WALL_ID = 51;
+  const FOE_UNIT = 60;
+
+  const living = { range: UNIT_RANGE, elevated: false, order: TargetOrder.Living } as const;
+
+  it('переключается с постройки на юнита, хотя постройка ближе', () => {
+    const world = arrange({
+      structures: [structure(TOWER_ID, FOE, StructureKind.TowerBasic, 1, 0)],
+      units: [unit(FOE_UNIT, FOE, 0, 2)],
+    });
+
+    expect(targetOf(world, living)?.kind).toBe(TargetKind.Unit);
+  });
+
+  it('генерала предпочитает прочим живым', () => {
+    // Цель механики названа в постановке: прикрытие Тесл, а командир —
+    // высший приоритет внутри живых.
+    const world = arrange({ units: [unit(FOE_UNIT, FOE, 1, 0)], foe: at(0, 2) });
+
+    expect(targetOf(world, living)?.kind).toBe(TargetKind.General);
+  });
+
+  it('живая цель перебивает назначенную игроком постройку', () => {
+    // Единственное место во всей игре, где автоматика сильнее прямого
+    // приказа. Решение владельца продукта: прикрытие Тесл важнее.
+    const world = arrange({
+      structures: [structure(TOWER_ID, FOE, StructureKind.TowerBasic, 1, 0)],
+      units: [unit(FOE_UNIT, FOE, 0, 2)],
+    });
+
+    const target = targetOf(world, {
+      ...living,
+      globalTarget: structureIndex(world, TOWER_ID),
+    });
+
+    expect(target?.kind).toBe(TargetKind.Unit);
+  });
+
+  it('без живых целей возвращается к постройкам', () => {
+    const world = arrange({
+      structures: [structure(TOWER_ID, FOE, StructureKind.TowerBasic, 1, 0)],
+    });
+
+    expect(targetOf(world, living)).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, TOWER_ID),
+    });
+  });
+
+  it('стены не в счёт и тогда, когда других построек нет', () => {
+    const world = arrange({ structures: [structure(WALL_ID, FOE, StructureKind.Wall, 1, 0)] });
+
+    expect(targetOf(world, living)).toBeUndefined();
+  });
+
+  it('но перегородившую путь стену ломает', () => {
+    const world = arrange({ structures: [structure(WALL_ID, FOE, StructureKind.Wall, 1, 0)] });
+    const wallIndex = structureIndex(world, WALL_ID);
+
+    expect(targetOf(world, { ...living, blockedBy: wallIndex })).toEqual({
+      kind: TargetKind.Structure,
+      index: wallIndex,
+    });
+  });
+});
+
+describe('Тесла в «Бою» предпочитает постройки', () => {
+  const TOWER_ID = 50;
+  const WALL_ID = 51;
+  const FOE_UNIT = 60;
+
+  /** Тесла бьёт постройки поверх стен, живых — нет. */
+  const siege = {
+    range: UNIT_STATS[UnitType.Tesla].range,
+    elevated: false,
+    indirect: true,
+    order: TargetOrder.Structures,
+  } as const;
+
+  it('появившаяся башня перебивает обстреливаемых юнитов', () => {
+    const world = arrange({
+      structures: [structure(TOWER_ID, FOE, StructureKind.TowerBasic, 0, 2)],
+      units: [unit(FOE_UNIT, FOE, 1, 0)],
+    });
+
+    expect(targetOf(world, siege)).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, TOWER_ID),
+    });
+  });
+
+  it('башню предпочитает стене, стоящей ближе', () => {
+    const world = arrange({
+      structures: [
+        structure(WALL_ID, FOE, StructureKind.Wall, 1, 0),
+        structure(TOWER_ID, FOE, StructureKind.TowerBasic, 0, 2),
+      ],
+    });
+
+    expect(targetOf(world, siege)).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, TOWER_ID),
+    });
+  });
+
+  it('стену выбирает, когда башен нет, и всё равно раньше живых', () => {
+    // Стены Тесле В СЧЁТ, в отличие от штурмовика и снайпера: ломать
+    // постройки — её работа.
+    const world = arrange({
+      structures: [structure(WALL_ID, FOE, StructureKind.Wall, 0, 2)],
+      units: [unit(FOE_UNIT, FOE, 1, 0)],
+    });
+
+    expect(targetOf(world, siege)).toEqual({
+      kind: TargetKind.Structure,
+      index: structureIndex(world, WALL_ID),
+    });
+  });
+
+  it('назначенную цель бьёт, не отвлекаясь ни на живых, ни на башню', () => {
+    // Прямо из постановки: «если есть юниты, но цель база и она
+    // в досягаемости, Тесла бьёт базу». База противника лежит в углу
+    // карты, вне радиуса Теслы, поэтому назначается стена — и она же
+    // отличает приказ от простого «постройки выше живых»: не будь приказ
+    // выше всего, Тесла выбрала бы башню как стреляющую.
+    const world = arrange({
+      structures: [
+        structure(WALL_ID, FOE, StructureKind.Wall, 0, 2),
+        structure(TOWER_ID, FOE, StructureKind.TowerBasic, 1, 0),
+      ],
+      units: [unit(FOE_UNIT, FOE, 2, 0)],
+    });
+    const wallIndex = structureIndex(world, WALL_ID);
+
+    expect(targetOf(world, { ...siege, globalTarget: wallIndex })).toEqual({
+      kind: TargetKind.Structure,
+      index: wallIndex,
+    });
+  });
+
+  it('живых бьёт, когда построек в радиусе нет вовсе', () => {
+    const world = arrange({ units: [unit(FOE_UNIT, FOE, 1, 0)] });
+
+    expect(targetOf(world, siege)?.kind).toBe(TargetKind.Unit);
   });
 });

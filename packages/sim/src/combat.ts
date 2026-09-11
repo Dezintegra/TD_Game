@@ -393,6 +393,31 @@ export const TargetOrder = {
    * они БЛИЖЕ. Стены в счёт не идут вовсе — кроме перегородившей путь.
    */
   Nearest: 1,
+  /**
+   * Снайпер в «Бою»: живые вперёд, и выше всех командир.
+   *
+   * Снайпер заведён прикрывать Теслы от живого противника, и ради этой
+   * работы он бросает даже назначенную игроком постройку: приказ здесь
+   * ниже живой цели. Решение принято владельцем продукта прямым вопросом,
+   * а не выведено из кода, — и оно единственное место, где автоматика
+   * перебивает прямой приказ.
+   *
+   * По постройкам снайпер стреляет, только когда живых целей нет вовсе;
+   * стены, как и у штурмовика, не в счёт.
+   */
+  Living: 2,
+  /**
+   * Тесла в «Бою»: постройки вперёд, и выше всех стреляющие.
+   *
+   * Осадная машина ценой в десять штурмовиков, и разменивать её работу
+   * на пехоту незачем. Стены здесь В СЧЁТ — ломать их её дело, — но ниже
+   * башен: пока башня жива, стена перед ней подождёт.
+   *
+   * Назначенная цель остаётся над всем, и это прямо из постановки:
+   * «если цель база и она в досягаемости, Тесла бьёт базу», сколько бы
+   * живых ни было рядом.
+   */
+  Structures: 3,
 } as const;
 
 export type TargetOrder = (typeof TargetOrder)[keyof typeof TargetOrder];
@@ -522,9 +547,51 @@ export const chooseTarget = (
     );
   }
 
-  if (globalTargetIndex >= 0 && structureInReach(globalTargetIndex)) {
-    return { kind: TargetKind.Structure, index: globalTargetIndex };
+  const assignedTarget = (): Target | undefined =>
+    globalTargetIndex >= 0 && structureInReach(globalTargetIndex)
+      ? { kind: TargetKind.Structure, index: globalTargetIndex }
+      : undefined;
+
+  if (order === TargetOrder.Living) {
+    // Преграда стоит выше живых намеренно, хотя всё правило — про живых.
+    // Иначе снайпер, упёршийся в запечатанный проход, не пробил бы его,
+    // пока в радиусе есть хоть кто-то живой, то есть в бою — никогда.
+    return (
+      blocking() ??
+      nearestGeneral(working, owner, origin, reach, elevation.living).target ??
+      nearestUnit(working, indices, owner, origin, range, reach, elevation.living).target ??
+      assignedTarget() ??
+      nearestStructure(working, indices, owner, origin, range, reach, elevation.structures, true)
+        .target ??
+      nearestStructure(
+        working,
+        indices,
+        owner,
+        origin,
+        range,
+        reach,
+        elevation.structures,
+        false,
+        false,
+      ).target
+    );
   }
+
+  if (order === TargetOrder.Structures) {
+    return (
+      assignedTarget() ??
+      blocking() ??
+      nearestStructure(working, indices, owner, origin, range, reach, elevation.structures, true)
+        .target ??
+      nearestStructure(working, indices, owner, origin, range, reach, elevation.structures, false)
+        .target ??
+      nearestGeneral(working, owner, origin, reach, elevation.living).target ??
+      nearestUnit(working, indices, owner, origin, range, reach, elevation.living).target
+    );
+  }
+
+  const assigned = assignedTarget();
+  if (assigned !== undefined) return assigned;
 
   const general = nearestGeneral(working, owner, origin, reach, elevation.living);
   if (general.target !== undefined) return general.target;
@@ -1216,7 +1283,13 @@ const aimFacing = (
 export const targetOrderOf = (unitType: UnitType, stance: AttackStance): TargetOrder => {
   if (stance !== AttackStance.Engage) return TargetOrder.Default;
 
-  return unitType === UnitType.Assault ? TargetOrder.Nearest : TargetOrder.Default;
+  return (
+    {
+      [UnitType.Assault]: TargetOrder.Nearest,
+      [UnitType.Sniper]: TargetOrder.Living,
+      [UnitType.Tesla]: TargetOrder.Structures,
+    }[unitType] ?? TargetOrder.Default
+  );
 };
 
 const fireUnit = (
