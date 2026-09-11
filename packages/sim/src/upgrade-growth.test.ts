@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   BASE_INCOME_PER_TICK,
   CommandKind,
+  MAX_UPGRADE_PPM,
   UpgradeStat,
   UpgradeTarget,
   applyRuleTuning,
@@ -130,5 +131,29 @@ describe('модели независимы', () => {
 
     expect(upgradeCosts(playerOf(world))[branch]).toBe(200 * 30);
     expect(playerStats(playerOf(world)).incomePerTick).toBe(61);
+  });
+});
+
+describe('потолок множителя', () => {
+  it('множитель не перерастает потолка', () => {
+    // Прямая с огромным шагом доводит до потолка за считанные уровни,
+    // тогда как задуманная кривая не дойдёт до него и за тысячи.
+    applyRuleTuning({ incomeEffectPercent: 40_000, incomeEffectModel: 'linear' });
+
+    const branch = incomeBranch();
+    const world = afterLevels(richWorld(), branch, 5);
+    const state = playerOf(world).upgrades[branch];
+
+    expect(state?.effectPpm).toBe(MAX_UPGRADE_PPM);
+  });
+
+  it('задуманная игра потолка не достигает', () => {
+    // Главное свойство потолка: он защищает арифметику, а не правит игру.
+    const branch = incomeBranch();
+    const world = afterLevels(richWorld(), branch, 30);
+    const state = playerOf(world).upgrades[branch];
+
+    expect(state?.effectPpm).toBeLessThan(MAX_UPGRADE_PPM);
+    expect(state?.costPpm).toBeLessThan(MAX_UPGRADE_PPM);
   });
 });
