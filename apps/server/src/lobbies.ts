@@ -2,7 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { LOBBY_CAPACITY, LOBBY_PASSWORD_MAX_LENGTH, LobbyError } from '@td/protocol';
 import { checkName, computerMindOf } from '@td/shared';
 import type { MatchSide } from '@td/shared';
-import type { LobbySummary, LobbyView, MatchView, PlayerView } from '@td/protocol';
+import type { ComputerProfile, LobbySummary, LobbyView, MatchView, PlayerView } from '@td/protocol';
 
 /**
  * Комнаты ожидания: где двое находят друг друга и договариваются начать.
@@ -158,7 +158,24 @@ interface LobbyRecord {
   match: MatchRecord | null;
   /** Замок, либо null у открытой комнаты. */
   readonly lock: Lock | null;
+  /** Позванный компьютер: манера и когда позвали. */
+  wanted: { readonly profile: string; readonly sinceMs: number } | null;
 }
+
+/**
+ * Сколько ждать компьютера, которого позвали.
+ *
+ * Служба узнаёт о приглашении из того же потока состояния, что видят
+ * игроки, поднимает дежурного и входит — на живой машине это доли
+ * секунды. Десять секунд — не бюджет ожидания, а срок, после которого
+ * ожидание признаётся несостоявшимся: службы нет, она не справилась
+ * или её дежурные кончились.
+ *
+ * Приглашение обязано сниматься само, а не висеть до конца комнаты:
+ * висящее «зовём…» не даёт игроку ни позвать другую манеру, ни понять,
+ * что звать некого.
+ */
+export const COMPUTER_INVITE_TIMEOUT_MS = 10_000;
 
 export interface LobbyStoreOptions {
   /**
@@ -185,6 +202,13 @@ export interface LobbyStoreOptions {
    * профиля, а не отдельным признаком.
    */
   readonly computerProfileOf?: ((playerId: string) => string | undefined) | undefined;
+  /**
+   * Какие манеры компьютера сейчас на предложении.
+   *
+   * Спрашивается, а не хранится: состав манер задаёт служба, она вправе
+   * уйти посреди партии, и список, снятый однажды, устарел бы молча.
+   */
+  readonly computerProfiles?: (() => readonly ComputerProfile[]) | undefined;
   /** Матч начался — самое время завести для него симуляцию. */
   readonly onMatchStart?: ((start: MatchStart) => void) | undefined;
   /**
@@ -210,6 +234,15 @@ export interface LobbyStore {
    * от чего — её обходит любой, кто умеет послать запрос руками.
    */
   join(playerId: string, name: string, lobbyId: string, password?: string): LobbyResult<LobbyView>;
+  /**
+   * Позвать компьютера названной манеры в свою комнату.
+   *
+   * Ничего не поднимает и никого не подставляет: помечает комнату
+   * приглашением. Служба компьютера видит пометку в том же списке
+   * комнат, что и игроки, и входит обычным гостем — тем же путём,
+   * что человек. Особого пути в матч у компьютера нет и не заводится.
+   */
+  inviteComputer(playerId: string, profile: string): LobbyResult<LobbyView>;
   /** Возвращает true, если состояние изменилось и его стоит разослать. */
   leave(playerId: string): boolean;
   setReady(playerId: string, ready: boolean): LobbyResult<LobbyView>;
@@ -363,6 +396,7 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
       connected: slot.lostAtMs === null,
       you: slot.id === playerId,
     })),
+    wanted: lobby.wanted?.profile ?? null,
   });
 
   const matchView = (lobby: LobbyRecord, playerId: string): MatchView | null => {
@@ -412,6 +446,7 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
         slots: [newSlot(playerId, checkedName.name)],
         match: null,
         lock: password === '' ? null : lockOf(password),
+        wanted: null,
       };
       lobbies.set(lobby.id, lobby);
 
@@ -440,10 +475,22 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
         return { ok: true, value: lobbyView(lobby, playerId) };
       }
 
+      // Позванный компьютер входит без пароля, и это не обход замка,
+      // а единственный способ вообще позвать его в закрытую комнату:
+      // пароля он не знает и знать не может — его придумал хозяин
+      // и держит при себе.
+      //
+      // Условий три, и каждое обязательно. Комната ЗВАЛА — иначе
+      // приглашения нет вовсе. Вошедший объявлен компьютером — а объявить
+      // себя им можно только зная общий секрет службы. Манера ТА САМАЯ,
+      // которую звали, — иначе на приглашение стратега пришёл бы рой.
+      const invited =
+        lobby.wanted !== null && options.computerProfileOf?.(playerId) === lobby.wanted.profile;
+
       // Пароль сверяется ДО проверки на заполненность. Порядок выбран
       // намеренно: иначе по разнице ответов «занято» и «пароль не тот»
       // посторонний узнавал бы, сколько человек в закрытой комнате.
-      if (lobby.lock !== null && !unlocks(lobby.lock, password)) {
+      if (!invited && lobby.lock !== null && !unlocks(lobby.lock, password)) {
         return { ok: false, error: LobbyError.WrongPassword };
       }
 
@@ -452,6 +499,35 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
       leaveAny(playerId);
       lobby.slots.push(newSlot(playerId, checkedName.name));
       resetReady(lobby);
+
+      // Место занято — звать больше некого. Снимается приглашение любым
+      // вошедшим, а не только позванным компьютером: пришёл человек —
+      // значит игрок передумал ждать машину, и вторая пометка «зовём»
+      // над полной комнатой была бы враньём.
+      lobby.wanted = null;
+
+      return { ok: true, value: lobbyView(lobby, playerId) };
+    },
+
+    inviteComputer(playerId, profile) {
+      const lobby = lobbyOf(playerId);
+      if (lobby === undefined) return { ok: false, error: LobbyError.NotInLobby };
+      if (lobby.match !== null) return { ok: false, error: LobbyError.AlreadyStarted };
+      if (lobby.slots.length >= LOBBY_CAPACITY) return { ok: false, error: LobbyError.Full };
+
+      // Манера сверяется с тем, что служба объявила. Иначе игрок звал бы
+      // соперника, которого некому прислать, и ждал бы до срока молча.
+      const offered = options.computerProfiles?.() ?? [];
+      if (!offered.some((entry) => entry.id === profile)) {
+        return { ok: false, error: LobbyError.NoComputer };
+      }
+
+      // Повторное приглашение той же манеры срок НЕ продлевает: иначе
+      // нажатие на кнопку раз в секунду откладывало бы отказ навсегда,
+      // и «компьютер не пришёл» игрок не увидел бы никогда.
+      if (lobby.wanted?.profile !== profile) {
+        lobby.wanted = { profile, sinceMs: options.now() };
+      }
 
       return { ok: true, value: lobbyView(lobby, playerId) };
     },
@@ -521,7 +597,9 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
     },
 
     sweep() {
-      const deadline = options.now() - graceMs;
+      const nowMs = options.now();
+      const deadline = nowMs - graceMs;
+      const inviteDeadline = nowMs - COMPUTER_INVITE_TIMEOUT_MS;
       let changed = false;
 
       for (const lobby of [...lobbies.values()]) {
@@ -531,6 +609,15 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
 
         for (const slot of expired) {
           removeFrom(lobby, slot.id);
+          changed = true;
+        }
+
+        // Позванный не пришёл: службы нет, она не справилась или её
+        // дежурные кончились. Пометка снимается, и игрок видит это —
+        // висящее «зовём…» не даёт ни позвать другую манеру, ни понять,
+        // что звать некого.
+        if (lobby.wanted !== null && lobby.wanted.sinceMs <= inviteDeadline) {
+          lobby.wanted = null;
           changed = true;
         }
       }
@@ -555,10 +642,14 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
           hostName: host?.name ?? '',
           players: lobby.slots.length,
           capacity: LOBBY_CAPACITY,
-          computer: host === undefined ? false : options.computerProfileOf?.(host.id) !== undefined,
+          // По ЛЮБОМУ месту, а не только по хозяину. Дежурных комнат
+          // компьютера больше нет: он приходит в чужую комнату гостем,
+          // и хозяином не бывает никогда.
+          computer: lobby.slots.some((slot) => options.computerProfileOf?.(slot.id) !== undefined),
           // Наружу уходит только признак. Ни соль, ни хеш, ни тем более
           // сам пароль в списке комнат не появляются: список видят все.
           locked: lobby.lock !== null,
+          wanted: lobby.wanted?.profile ?? null,
         });
       }
 
@@ -566,6 +657,7 @@ export const createLobbyStore = (options: LobbyStoreOptions): LobbyStore => {
         lobbies: summaries,
         lobby: own === undefined ? null : lobbyView(own, playerId),
         match: own === undefined ? null : matchView(own, playerId),
+        computerProfiles: options.computerProfiles?.() ?? [],
       };
     },
   };

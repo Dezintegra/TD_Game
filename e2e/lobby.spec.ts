@@ -39,7 +39,7 @@ const frames = async (page: Page): Promise<Record<string, string>> => {
     'profile-bar',
     'lobby-title',
     'lobby-create',
-    'practice-start',
+    'lobby-password',
     'lobby-panel',
   ]) {
     const box = await page.getByTestId(id).boundingBox();
@@ -525,18 +525,27 @@ test('готовность недоступна в одиночестве и с�
   }
 });
 
-test('компьютер держит комнату и играет как обычный участник', async ({ page }) => {
+test('компьютер приходит по приглашению и играет как обычный участник', async ({ page }) => {
+  const title = uniqueTitle();
   await identify(page, 'Аня');
 
-  // Комната компьютера — в общем списке, наравне с человеческими,
-  // и помечена как компьютерная: имени мало, «Компьютер» вполне может
-  // оказаться прозвищем человека.
-  const computerRow = page.getByTestId('lobby-row').filter({ hasText: 'Компьютер' });
-  await expect(computerRow.first()).toBeVisible({ timeout: 15_000 });
-  await expect(computerRow.first()).toHaveAttribute('data-computer', 'true');
+  // Дежурных комнат компьютера в списке НЕТ и быть не должно: он
+  // приходит только туда, куда его позвали. Обходной кнопки «играть
+  // с компьютером» тоже нет — вход в игру один.
+  await expect(page.getByTestId('practice-start')).toHaveCount(0);
+  await expect(page.getByTestId('lobby-row').filter({ hasText: 'Компьютер' })).toHaveCount(0);
 
-  // Одно нажатие: войти в дежурную комнату и подтвердить готовность.
-  await page.getByTestId('practice-start').click();
+  await createRoom(page, title);
+
+  // Выбор соперника живёт в комнате, а состав манер приходит с сервера.
+  const opponents = page.getByTestId('room-computer').getByRole('button');
+  await expect(opponents.first()).toBeEnabled({ timeout: 15_000 });
+  await opponents.first().click();
+
+  // Дежурный вошёл гостем, и комната помечена компьютерной: имени мало,
+  // «Компьютер» вполне может оказаться прозвищем человека.
+  await expect(page.getByTestId('room-slot')).toHaveCount(2, { timeout: 15_000 });
+  await page.getByTestId('room-ready').click();
 
   await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('match-opponent')).toHaveAttribute('data-computer', 'true');

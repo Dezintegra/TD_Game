@@ -39,30 +39,6 @@ export const LobbyList = () => {
   const profile = useSessionStore((state) => state.profile);
   const lobbies = useSessionStore((state) => state.view.lobbies);
   const error = useSessionStore((state) => state.error);
-  const joining = useSessionStore((state) => state.joiningComputer);
-  // Компьютер держит открытую комнату наравне с людьми: нет комнаты —
-  // нет и игры с ним, и сказать об этом надо прямо.
-  const computerAvailable = useSessionStore((state) =>
-    state.view.lobbies.some((lobby) => lobby.computer),
-  );
-  // Манеры собираются из дежурных комнат, а не из списка, зашитого
-  // в клиент. Состав манер задаётся при запуске сервера, и клиент,
-  // знающий их наперёд, соврёт при первой же смене состава.
-  //
-  // Манеру опознаёт НАЗВАНИЕ комнаты, а не имя дежурного. Служба держит
-  // несколько комнат разом и нумерует своих агентов — «Компьютер»,
-  // «Компьютер 2», «Компьютер 3», — поэтому по имени вышел бы выбор
-  // из девяти дежурных вместо трёх манер. Название у всех комнат одной
-  // службы одно.
-  //
-  // Строка, а не массив: zustand сравнивает по ссылке, и новый массив
-  // на каждый вызов означал бы перерисовку на каждое состояние лобби.
-  const mannerList = useSessionStore((state) =>
-    [...new Set(state.view.lobbies.filter((lobby) => lobby.computer).map((l) => l.title))]
-      .sort()
-      .join('\n'),
-  );
-  const manners = mannerList === '' ? [] : mannerList.split('\n');
 
   const [title, setTitle] = useState(() => defaultTitle(profile?.name ?? ''));
   const [password, setPassword] = useState('');
@@ -93,7 +69,7 @@ export const LobbyList = () => {
               />
             </div>
             <Button type="submit" data-testid="lobby-create" disabled={busy}>
-              Создать
+              Новая игра
             </Button>
           </div>
 
@@ -118,86 +94,24 @@ export const LobbyList = () => {
           </div>
         </form>
 
-        <div
+        {/* Кнопки «играть с компьютером» здесь больше нет, и это
+            не упрощение вёрстки, а решение владельца продукта: вход
+            в игру остаётся ОДИН. Соперника — живого или машину — игрок
+            выбирает уже в комнате, где видно, с кем он садится играть.
+            Прежняя кнопка вела в чужую дежурную комнату мимо этого
+            выбора, и ради неё круглые сутки висели девять пустых комнат
+            с девятью потоками состояния. */}
+        <p
+          data-testid="lobby-hint"
           style={{
-            marginTop: 'var(--td-space-3)',
-            paddingTop: 'var(--td-space-3)',
-            borderTop: '1px solid var(--td-border-subtle)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 'var(--td-space-3)',
+            margin: 'var(--td-space-3) 0 0',
+            color: 'var(--td-text-muted-3)',
+            fontSize: 'var(--td-text-sm)',
+            lineHeight: 1.6,
           }}
         >
-          <span style={{ color: 'var(--td-text-muted-3)', fontSize: 'var(--td-text-sm)' }}>
-            {computerAvailable
-              ? 'Соперника нет под рукой? Сыграйте против компьютера.'
-              : 'Компьютерный соперник сейчас недоступен: его служба не отвечает.'}
-          </span>
-          <Button
-            variant="ghost"
-            data-testid="practice-start"
-            // Кнопка, которая на нажатие не отвечает ничем, хуже
-            // отсутствующей: игрок решит, что сломана игра.
-            disabled={busy || joining || !computerAvailable}
-            onClick={() => {
-              void sessionActions.playAgainstComputer();
-            }}
-          >
-            {joining ? 'Входим…' : 'Играть с компьютером'}
-          </Button>
-        </div>
-
-        {/* Выбор манеры стоит РЯДОМ с кнопкой, а не вместо неё: кнопка
-            заведена для того, кто просто хочет сыграть, и удлинять самую
-            быструю дорогу решением, которое новичку принять нечем,
-            незачем. Выбор из одного — шум, поэтому при единственной
-            манере ряда нет вовсе. */}
-        {manners.length > 1 && (
-          <div style={{ marginTop: 'var(--td-space-3)' }}>
-            <span
-              style={{
-                display: 'block',
-                marginBottom: 'var(--td-space-2)',
-                color: 'var(--td-text-muted-3)',
-                fontSize: 'var(--td-text-sm)',
-              }}
-            >
-              или выберите соперника:
-            </span>
-            {/* Столбцом, а не рядом. Названия манер длинные — «Матч
-                с компьютером» и «Матч со стратегом», — и втроём в ширину
-                панели они не помещаются: ряд переносился на вторую
-                строку и выглядел сломанным. Столбец читается перечнем,
-                не ломается никогда и переживёт четвёртую манеру.
-                Ширина у кнопок своя, а не общая: одинаково широкие
-                кнопки под разными по длине названиями выглядели бы
-                таблицей, а это перечень. */}
-            <div
-              data-testid="opponent-manners"
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'flex-start',
-                gap: 'var(--td-space-2)',
-              }}
-            >
-              {manners.map((manner) => (
-                <Button
-                  key={manner}
-                  variant="ghost"
-                  data-testid={`manner-${manner}`}
-                  disabled={busy || joining}
-                  onClick={() => {
-                    void sessionActions.playAgainstComputer(manner);
-                  }}
-                >
-                  {manner}
-                </Button>
-              ))}
-            </div>
-          </div>
-        )}
+          Соперника выберете в комнате: можно дождаться живого, а можно позвать компьютер.
+        </p>
       </Panel>
 
       {error !== null && (

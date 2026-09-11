@@ -9,19 +9,26 @@ import type { OpenSocket, Participant, ParticipantMeasure } from './participant.
 /**
  * Служба компьютерных соперников.
  *
- * Устройство самое прямолинейное из возможных: компьютер держит в списке
- * открытую комнату наравне с людьми и ждёт, пока кто-нибудь войдёт.
- * Никакого особого пути в матч у него нет — ни заявки, ни подстановки
- * второго участника сервером. Значит, и в сервере нет ветки «а этот
- * участник ненастоящий», которая иначе разрослась бы до второго,
- * незаметно расходящегося с первым, устройства матча.
+ * Компьютер приходит ПО ПРИГЛАШЕНИЮ и никаких комнат не держит.
+ * Игрок заводит свою комнату и зовёт в неё соперника выбранной манеры;
+ * служба видит приглашение в том же списке комнат, что видят игроки,
+ * поднимает дежурного и входит гостем — тем же запросом `join`,
+ * которым входит человек.
  *
- * Дежурных несколько, потому что игрок не может состоять больше чем
- * в одной комнате: одна личность — одна комната. Как только в комнату
- * дежурного вошёл гость, служба поднимает следующего дежурного, не
- * дожидаясь старта матча. Это ради гонки: двое, нажавшие «играть
- * с компьютером» одновременно, иначе получили бы один отказ «комната
- * занята» на двоих.
+ * Особого пути в матч у компьютера по-прежнему нет — ни подстановки
+ * второго участника сервером, ни отдельной ветки «а этот участник
+ * ненастоящий». Меняется только то, КТО заводит комнату.
+ *
+ * **Почему не дежурные комнаты, как было раньше.** Дежурные висели
+ * в списке всегда: три службы по три дежурных, девять комнат и девять
+ * потоков состояния круглые сутки, даже когда в игру не заходил никто.
+ * Владелец продукта потребовал прямо: «пусть ничего не крутится, пока
+ * никто не играет». Здесь и не крутится — служба держит один поток
+ * на манеру и ждёт, ничего не тратя.
+ *
+ * Побочно исчезла и гонка, ради которой дежурных держали по нескольку:
+ * двое, зовущие компьютера одновременно, зовут его каждый в СВОЮ
+ * комнату, и делить им нечего.
  */
 
 export interface ComputerServiceOptions {
@@ -31,18 +38,9 @@ export interface ComputerServiceOptions {
   readonly openSocket: OpenSocket;
   /** Сколько матчей служба ведёт одновременно. */
   readonly maxMatches?: number;
-  /**
-   * Сколько свободных дежурных держать наготове.
-   *
-   * Один — минимум, при котором игра с компьютером вообще возможна,
-   * и он же источник гонок: двое, нажавшие одновременно, дерутся
-   * за единственную комнату, и одному достаётся отказ. Держать
-   * про запас дешевле, чем разбирать этот отказ на стороне клиента.
-   */
-  readonly idleTarget?: number;
-  /** Как зовут компьютер в списке комнат. */
+  /** Как зовут компьютер в составе комнаты. */
   readonly name?: string;
-  /** Как называется его комната. */
+  /** Как манера этой службы называется игроку в выборе соперника. */
   readonly title?: string;
   /**
    * Какой манерой играют все дежурные этой службы.
@@ -100,7 +98,7 @@ export interface ComputerService {
   profileOf(playerId: string): string | undefined;
   /** Сколько матчей ведётся сейчас. */
   readonly matchCount: number;
-  /** Сколько дежурных ждёт соперника. */
+  /** Сколько дежурных поднято и ещё не отыграло. */
   readonly idleCount: number;
   close(): void;
 }
@@ -108,17 +106,17 @@ export interface ComputerService {
 interface Agent {
   readonly id: string;
   readonly name: string;
-  /** Занята ли его комната гостем. */
-  crowded: boolean;
+  /** В какую комнату он позван. */
+  readonly lobbyId: string;
   /**
-   * Запрос на создание комнаты уже отправлен, ответа ещё нет.
+   * Запрос на вход уже отправлен, ответа ещё нет.
    *
-   * Состояние приходит целиком и не мгновенно, поэтому между отправкой
-   * запроса и приездом обновлённого состояния успевает прийти прежнее,
-   * где комнаты ещё нет. Без этого флага дежурный создавал бы вторую
-   * комнату, тут же выходя из первой.
+   * Состояние приходит целиком и не мгновенно: между отправкой запроса
+   * и приездом обновлённого состояния успевает прийти прежнее, где
+   * дежурного в комнате ещё нет. Без этого флага он слал бы второй
+   * запрос на вход туда, где уже сидит.
    */
-  creating: boolean;
+  joining: boolean;
   match: Participant | null;
   matchKey: string | null;
   stop: () => void;
@@ -134,9 +132,9 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
   // легко — брошенный матч держит своего дежурного до истечения отсрочки
   // на возврат, то есть полминуты после ухода игрока.
   const maxMatches = options.maxMatches ?? 32;
-  const idleTarget = Math.max(1, Math.min(options.idleTarget ?? 3, maxMatches));
   const name = options.name ?? DEFAULT_NAME;
   const title = options.title ?? DEFAULT_TITLE;
+  const profile = options.profile ?? DEFAULT_PROFILE_ID;
   // Пустой секрет считается отсутствующим: «задан, но пуст» и «не задан»
   // означают здесь одно и то же — сверять нечем.
   const secret = options.secret === undefined || options.secret === '' ? undefined : options.secret;
@@ -165,7 +163,7 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
     [...agents.values()].filter((agent) => agent.match !== null).length;
 
   const idleCount = (): number =>
-    [...agents.values()].filter((agent) => agent.match === null && !agent.crowded).length;
+    [...agents.values()].filter((agent) => agent.match === null).length;
 
   const retire = (agent: Agent): void => {
     agent.match?.stop();
@@ -196,7 +194,7 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
         ticket: match.ticket,
         seed: match.seed,
         side: match.side,
-        ...(options.profile === undefined ? {} : { profile: options.profile }),
+        profile,
         openSocket: options.openSocket,
         ...(options.log === undefined ? {} : { log: options.log }),
         ...(options.measure === undefined ? {} : { measure: options.measure }),
@@ -204,44 +202,60 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
           options.log?.(
             `Компьютер ${agent.name}: матч ${key} окончен, победитель ${String(outcome.winner)}`,
           );
-          // Отыграв, дежурный уходит: свободного места в комнате у него
-          // больше нет, а новых поднимет `refill`.
+          // Отыграв, дежурный уходит совсем: следующего поднимет
+          // следующее приглашение, а держать его без дела незачем.
           retire(agent);
-          refill();
         },
       });
 
-      refill();
       return;
     }
 
     const lobby = view.lobby;
     if (lobby === null) {
-      // Комнаты нет — значит, её ещё не создали или она распалась.
-      if (agent.creating) return;
+      // Дежурного в комнате нет. Либо он туда ещё не дошёл — тогда его
+      // ведёт `joining`, — либо комната распалась, пока он шёл, и делать
+      // ему больше нечего.
+      if (agent.joining) return;
 
-      agent.creating = true;
-      void api.create(agent.id, agent.name, title).finally(() => {
-        agent.creating = false;
-      });
+      options.log?.(`Компьютер ${agent.name}: комната ${agent.lobbyId} распалась`);
+      retire(agent);
       return;
-    }
-
-    const crowded = lobby.slots.length >= LOBBY_CAPACITY;
-    if (crowded !== agent.crowded) {
-      agent.crowded = crowded;
-      // Следующий дежурный поднимается по факту входа гостя, а не
-      // по старту матча: окно, в котором свободной комнаты нет вовсе,
-      // должно быть как можно короче.
-      if (crowded) refill();
     }
 
     // Готовность подтверждается, как только есть с кем играть, и заново
     // после каждого сброса: решать компьютеру нечего, но обходить общее
     // правило старта по обоюдной готовности он не должен.
+    const crowded = lobby.slots.length >= LOBBY_CAPACITY;
     const mine = lobby.slots.find((slot) => slot.you);
     if (crowded && mine !== undefined && !mine.ready) {
       void api.setReady(agent.id, true);
+    }
+  };
+
+  /**
+   * Что делать с приглашениями в общем списке комнат.
+   *
+   * Служба смотрит на тот же список, что и игроки, — своего канала
+   * у неё нет и заводить его незачем: приглашение не секрет, а сам
+   * список уже приходит потоком и уже обновляется сам.
+   */
+  const watch = (view: PlayerView): void => {
+    if (closed) return;
+
+    for (const room of view.lobbies) {
+      if (room.wanted !== profile) continue;
+      // В эту комнату уже идут или уже пришли. Состояние приходит
+      // целиком и не мгновенно, и без этой проверки на каждый кадр
+      // с непогасшим приглашением поднимался бы новый дежурный.
+      if ([...agents.values()].some((agent) => agent.lobbyId === room.id)) continue;
+      if (room.players >= LOBBY_CAPACITY) continue;
+      if (agents.size >= maxMatches) {
+        options.log?.(`Компьютер ${name}: мест нет, приглашение в ${room.id} пропущено`);
+        continue;
+      }
+
+      hire(room.id);
     }
   };
 
@@ -255,23 +269,33 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
    * ровно та беда, ради которой `issued` и заведён отдельно от `agents`.
    */
   const announce = async (): Promise<void> => {
-    if (closed || secret === undefined || issued.size === 0) return;
+    if (closed || secret === undefined) return;
 
+    // Личности и манера объявляются РАЗНЫМИ списками. Личности —
+    // все когда-либо выданные, а не только живые: отыгравший агент
+    // уходит, а его сторона в только что законченном матче обязана
+    // остаться помеченной компьютерной, иначе на экране итога соперник
+    // задним числом превратился бы в человека.
+    //
+    // Манера же объявляется ВСЕГДА, даже когда живых дежурных нет вовсе.
+    // Их и не бывает, пока никто не позвал, — а список манер нужен игроку
+    // ровно в этот момент, до приглашения.
     await api.declare(
       secret,
-      [...issued].map((id) => ({ id, profile: options.profile ?? DEFAULT_PROFILE_ID })),
+      [...issued].map((id) => ({ id, profile })),
+      [{ id: profile, title }],
     );
   };
 
-  const hire = (): void => {
+  const hire = (lobbyId: string): void => {
     const id = options.makeId(nextIndex);
     nextIndex += 1;
 
     const agent: Agent = {
       id,
       name: nextIndex === 1 ? name : `${name} ${String(nextIndex)}`,
-      crowded: false,
-      creating: false,
+      lobbyId,
+      joining: true,
       match: null,
       matchKey: null,
       stop: () => undefined,
@@ -280,67 +304,72 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
     agents.set(id, agent);
     issued.add(id);
     agent.stop = api.listen(id, (view) => react(agent, view));
-    options.log?.(`Компьютер ${agent.name} дежурит`);
+    options.log?.(`Компьютер ${agent.name} идёт в комнату ${lobbyId}`);
 
-    // Объявляемся сразу за наймом, а не только по таймеру: между
-    // созданием дежурного и первым обновлением проходят секунды,
-    // и всё это время его комната стояла бы непомеченной — то есть
-    // выглядела бы человеческой.
-    void announce();
+    // Объявляемся ПЕРЕД входом, а не после: сервер помечает комнату
+    // компьютерной по объявленным личностям, и войди дежурный раньше
+    // объявления — комната мелькнула бы в списке человеческой.
+    void announce()
+      .then(() => api.join(agent.id, agent.name, lobbyId))
+      .then((entered) => {
+        if (!entered) {
+          options.log?.(`Компьютер ${agent.name}: войти в ${lobbyId} не вышло`);
+          retire(agent);
+        }
+      })
+      .finally(() => {
+        agent.joining = false;
+      });
   };
 
   /**
-   * Держать ровно одного свободного дежурного, пока есть место.
-   *
-   * Предел считается по числу дежурных, а не по числу идущих матчей,
-   * и это не мелочь: агент, к которому уже вошёл гость, матча ещё
-   * не начал, но и свободным больше не является. Считай мы только матчи,
-   * служба нанимала бы нового дежурного на каждого вошедшего и уехала бы
-   * за предел ровно в тот момент, когда её об этом просят чаще всего.
-   */
-  const refill = (): void => {
-    if (closed) return;
-
-    while (idleCount() < idleTarget && agents.size < maxMatches) hire();
-  };
-
-  /**
-   * Служба начинается с рукопожатия, а не с найма.
+   * Служба начинается с рукопожатия.
    *
    * Пустое объявление — способ спросить «а меня вообще примут?», не
    * назвав ещё ни одной личности. Ответ решает, работать ли вообще.
    *
    * Почему это обязательно. Дежурный, чьё объявление сервер не принял,
-   * всё равно создал бы комнату — и она встала бы в списке
-   * **непомеченной**, то есть человеческой на вид. Игрок сел бы играть
-   * с компьютером, думая, что играет с человеком. Недоступная игра
-   * с компьютером — неприятность; игра, которая врёт о сопернике, —
-   * поломка обещания, на котором стоит вся спецификация
-   * `computer-player`.
+   * всё равно вошёл бы в комнату — и встал бы в ней **непомеченным**,
+   * то есть человеком на вид. Игрок сел бы играть с компьютером, думая,
+   * что играет с человеком. Недоступная игра с компьютером —
+   * неприятность; игра, которая врёт о сопернике, — поломка обещания,
+   * на котором стоит вся спецификация `computer-player`.
    *
-   * Поэтому при закрытой регистрации служба не поднимает никого,
-   * а список комнат остаётся пустым — и клиент показывает игроку
-   * причину, как того требует «Отсутствие компьютера видно,
-   * а не молчаливо».
+   * Поэтому при закрытой регистрации служба не смотрит на приглашения
+   * вовсе, манеру не объявляет — и в выборе соперника её нет. Клиент
+   * показывает игроку причину, как того требует «Отсутствие компьютера
+   * видно, а не молчаливо».
    */
+  let watcher: (() => void) | undefined;
+
   if (secret === undefined) {
     options.log?.(
-      'Секрет не задан: служба не объявляется и дежурных не поднимает. ' +
+      'Секрет не задан: служба не объявляется и приглашений не слушает. ' +
         'Игра с компьютером будет недоступна.',
     );
   } else {
-    void api.declare(secret, []).then((accepted) => {
+    void api.declare(secret, [], [{ id: profile, title }]).then((accepted) => {
       if (closed) return;
 
       if (!accepted) {
         options.log?.(
           'Сервер не принял объявление службы: регистрация закрыта или секрет не тот. ' +
-            'Дежурных не поднимаю — иначе их комнаты встали бы непомеченными.',
+            'Приглашений не слушаю — иначе дежурный встал бы в комнате непомеченным.',
         );
         return;
       }
 
-      refill();
+      // Один поток на всю службу, и он же — всё, что она тратит,
+      // пока её не позвали.
+      //
+      // Личность у наблюдателя своя и НЕ объявляется компьютерной:
+      // он ни в какую комнату не входит, а объявленная личность без
+      // комнаты только мешала бы счёту живых дежурных. Отдельный номер
+      // берётся из общего счётчика, чтобы не столкнуться с дежурным.
+      const watcherId = `${options.makeId(nextIndex)}-watch`;
+      nextIndex += 1;
+      watcher = api.listen(watcherId, watch);
+      options.log?.(`Компьютер ${name} ждёт приглашений манерой «${title}»`);
     });
   }
 
@@ -357,8 +386,7 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
 
   return {
     owns: (playerId) => issued.has(playerId),
-    profileOf: (playerId) =>
-      issued.has(playerId) ? (options.profile ?? DEFAULT_PROFILE_ID) : undefined,
+    profileOf: (playerId) => (issued.has(playerId) ? profile : undefined),
     get matchCount() {
       return matchCount();
     },
@@ -368,11 +396,16 @@ export const createComputerService = (options: ComputerServiceOptions): Computer
     close() {
       // Снимаем объявление ДО того, как отметились закрытыми: `announce`
       // и `withdraw` молчат после `closed`, и порядок здесь решает,
-      // исчезнут комнаты сразу или через минуту.
-      if (secret !== undefined && issued.size > 0) void api.withdraw(secret, [...issued]);
+      // исчезнет манера из выбора сразу или через минуту.
+      //
+      // Манера снимается всегда, а личности — если были: служба вправе
+      // уйти, не подняв ни одного дежурного, и это обычный случай,
+      // а не исключение.
+      if (secret !== undefined) void api.withdraw(secret, [...issued], [profile]);
 
       closed = true;
       if (heartbeat !== undefined) clearInterval(heartbeat);
+      watcher?.();
       for (const agent of [...agents.values()]) retire(agent);
     },
   };

@@ -101,7 +101,7 @@ describe('поток состояния', () => {
     const stream = await openStream('a');
 
     const view = await stream.until(() => true);
-    expect(view).toEqual({ lobbies: [], lobby: null, match: null });
+    expect(view).toEqual({ lobbies: [], lobby: null, match: null, computerProfiles: [] });
 
     await stream.close();
   });

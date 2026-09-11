@@ -38,6 +38,7 @@ export const lobbyErrorText: Record<ActionError, string> = {
   [LobbyError.BadTitle]: 'Название не подходит',
   [LobbyError.WrongPassword]: 'Пароль не подошёл',
   [LobbyError.BadPassword]: 'Пароль не подходит',
+  [LobbyError.NoComputer]: 'Компьютерный соперник сейчас недоступен',
   [UNREACHABLE]: 'Сервер не отвечает',
 };
 
@@ -68,6 +69,14 @@ export interface LobbyClient {
   ): Promise<ActionError | null>;
   leave(playerId: string): Promise<void>;
   setReady(playerId: string, ready: boolean): Promise<ActionError | null>;
+  /**
+   * Позвать компьютера названной манеры в свою комнату.
+   *
+   * Никого не подставляет и ничего не поднимает: сервер помечает комнату
+   * приглашением, а служба компьютера видит пометку в том же списке
+   * комнат, что и игроки, и входит обычным гостем.
+   */
+  inviteComputer(playerId: string, profile: string): Promise<ActionError | null>;
 }
 
 export interface LobbyClientHandlers {
@@ -155,5 +164,7 @@ export const createLobbyClient = (handlers: LobbyClientHandlers): LobbyClient =>
     },
 
     setReady: (playerId, ready) => post('/api/lobbies/ready', { playerId, ready }),
+
+    inviteComputer: (playerId, profile) => post('/api/lobbies/computer', { playerId, profile }),
   };
 };

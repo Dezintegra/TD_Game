@@ -60,6 +60,15 @@ export const LobbyError = {
   WrongPassword: 'wrong-password',
   /** Пароль не прошёл проверку при создании: пустой или слишком длинный. */
   BadPassword: 'bad-password',
+  /**
+   * Компьютерного соперника такой манеры сейчас нет.
+   *
+   * Служба не запущена, не объявилась или объявила другой набор манер.
+   * Причина отдельная от `NotFound`: та про комнату, а эта про соперника,
+   * и лечатся они разным — комнату игрок выберет другую, а с отсутствием
+   * службы ему делать нечего, и сказать об этом надо прямо.
+   */
+  NoComputer: 'no-computer',
 } as const;
 
 export type LobbyError = (typeof LobbyError)[keyof typeof LobbyError];
@@ -73,6 +82,21 @@ export interface LobbySlotView {
   readonly you: boolean;
 }
 
+/**
+ * Манера компьютерного соперника, доступная сейчас.
+ *
+ * Список приходит с сервера, а не зашит в клиент: состав манер задаёт
+ * служба компьютера при запуске, и клиент, знающий их наперёд, соврёт
+ * при первой же смене состава. Пустой список означает, что службы нет
+ * вовсе, — и это игроку тоже надо показать, а не промолчать.
+ */
+export interface ComputerProfile {
+  /** Как манера называется внутри: им же её и заказывают. */
+  readonly id: string;
+  /** Как она называется игроку. */
+  readonly title: string;
+}
+
 export interface LobbySummary {
   readonly id: string;
   readonly title: string;
@@ -80,13 +104,21 @@ export interface LobbySummary {
   readonly players: number;
   readonly capacity: number;
   /**
-   * Комнату держит компьютер.
+   * В комнате есть компьютер.
    *
    * Имени мало: игрок, увидевший в списке «Компьютер», вправе счесть это
    * прозвищем человека. Пометка — не украшение, а обязательство говорить,
    * с кем игрок садится играть.
    */
   readonly computer: boolean;
+  /**
+   * Хозяин комнаты позвал компьютера этой манерой, и тот ещё не пришёл.
+   *
+   * Признак виден всем, и это не утечка, а необходимость: службе
+   * компьютера неоткуда узнать о приглашении иначе. Она смотрит
+   * на тот же список комнат, что и игроки, и приходит на своё имя.
+   */
+  readonly wanted: string | null;
   /**
    * Комната под паролем.
    *
@@ -103,6 +135,14 @@ export interface LobbyView {
   readonly title: string;
   readonly slots: readonly LobbySlotView[];
   readonly capacity: number;
+  /**
+   * Позванная манера, пока компьютер не пришёл, иначе null.
+   *
+   * Нужна, чтобы хозяин видел «зовём», а не пустое место: между
+   * нажатием и приходом дежурного проходят доли секунды, но при
+   * незапущенной службе не проходит ничего и никогда.
+   */
+  readonly wanted: string | null;
 }
 
 export interface MatchView {
@@ -139,4 +179,12 @@ export interface PlayerView {
   readonly lobbies: readonly LobbySummary[];
   readonly lobby: LobbyView | null;
   readonly match: MatchView | null;
+  /**
+   * Какие манеры компьютера доступны прямо сейчас.
+   *
+   * Живёт в общем снимке, а не в отдельном запросе, по той же причине,
+   * что и всё остальное здесь: состав манер меняется вместе со службой,
+   * и опрошенный однажды список устареет молча.
+   */
+  readonly computerProfiles: readonly ComputerProfile[];
 }
