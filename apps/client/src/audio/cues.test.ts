@@ -5,17 +5,19 @@ import {
   CommandKind,
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
+  NUKE_DELAY_TICKS,
   StructureKind,
   UnitType,
   asPlayerId,
   asTickNumber,
+  nukeLaunchCost,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
-import { createWorld, step } from '@td/sim';
+import { cellIndex, cellX, cellY, createWorld, step } from '@td/sim';
 import type { WorldState } from '@td/sim';
 import { createCueFeed, cueLifetimeTicks } from './cues.js';
 import type { Cue } from './cues.js';
-import { SOUNDS, Sound } from './sounds.js';
+import { NUKE_FALL_TICKS, SOUNDS, Sound } from './sounds.js';
 
 /**
  * Проверка на настоящей симуляции, а не на выдуманных снимках мира.
@@ -206,6 +208,68 @@ describe('вывод событий из мира', () => {
 
     expect(heard.has(Sound.BoltUnit)).toBe(true);
     expect(heard.has(Sound.BoltTower)).toBe(true);
+  });
+
+  it('у ядерной ракеты три звука, и каждый в своём месте и в свой срок', () => {
+    // Пуск слышен у базы стрелявшего, свист — у цели и только к концу
+    // подлёта, удар — там же, где свист. Раньше звук был один: свист
+    // начинался с пуска и тянулся все три секунды.
+    const feed = createCueFeed();
+    let world = createWorld(909);
+
+    const ownBase = world.map.baseCells[0] ?? 0;
+    // Середина карты, а не чужая база: вокруг баз есть запретная зона,
+    // и удар по ней отклоняется (`RejectReason.NukeNearBase`).
+    const aim = cellIndex(Math.floor(MAP_WIDTH_CELLS / 2), Math.floor(MAP_HEIGHT_CELLS / 2));
+
+    // Войска не заказываются намеренно: здесь проверяется ракета,
+    // а не бой. Казна дотягивает до цены удара к десятой секунде.
+    const heard: { readonly sound: Sound; readonly cue: Cue; readonly tick: number }[] = [];
+    let launched = false;
+    let first = true;
+
+    for (let tick = 0; tick < 600; tick += 1) {
+      const commands: Command[] = [];
+      const player = world.players[0];
+      if (!launched && player !== undefined && player.energy >= nukeLaunchCost(0, 0)) {
+        commands.push({
+          kind: CommandKind.LaunchNuke,
+          player: PLAYER_ONE,
+          tick: world.tick,
+          cell: aim,
+        });
+        launched = true;
+      }
+
+      world = step(world, commands);
+      for (const cue of feed.accept(world, first)) {
+        heard.push({ sound: cue.sound, cue, tick: world.tick });
+      }
+      first = false;
+    }
+
+    const launch = heard.filter((entry) => entry.sound === Sound.NukeLaunch);
+    const fall = heard.filter((entry) => entry.sound === Sound.NukeFall);
+    const blast = heard.filter((entry) => entry.sound === Sound.NukeBlast);
+
+    expect(launch).toHaveLength(1);
+    expect(fall).toHaveLength(1);
+    expect(blast).toHaveLength(1);
+
+    const at = (entry: { readonly cue: Cue }): [number, number] => [
+      entry.cue.cellX,
+      entry.cue.cellY,
+    ];
+    expect(at(launch[0] as { cue: Cue })).toEqual([cellX(ownBase) + 0.5, cellY(ownBase) + 0.5]);
+    expect(at(fall[0] as { cue: Cue })).toEqual([cellX(aim) + 0.5, cellY(aim) + 0.5]);
+    expect(at(blast[0] as { cue: Cue })).toEqual(at(fall[0] as { cue: Cue }));
+
+    // Свист приходит к попаданию, а не к пуску: между ними ровно та часть
+    // окна, которую свист не занимает. Допуск в один тик — на то, что
+    // запись о ракете появляется шагом мира, а не мгновением команды.
+    const gap = (fall[0]?.tick ?? 0) - (launch[0]?.tick ?? 0);
+    expect(Math.abs(gap - (NUKE_DELAY_TICKS - NUKE_FALL_TICKS))).toBeLessThanOrEqual(1);
+    expect((blast[0]?.tick ?? 0) - (fall[0]?.tick ?? 0)).toBeGreaterThan(0);
   });
 
   it('память не растёт вместе с матчем', () => {
