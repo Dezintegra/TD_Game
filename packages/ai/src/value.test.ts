@@ -16,12 +16,14 @@ import {
   asPlayerId,
   asTickNumber,
   compoundPpm,
+  effectModelOf,
+  stepPpm,
   upgradeBranchIndex,
 } from '@td/shared';
-import type { PlayerId } from '@td/shared';
+import type { PlayerId, PlayerState } from '@td/shared';
 import { cellAt, cellCentre, cellIndex, createWorld, playerStats, upgradeCosts } from '@td/sim';
 import type { UnitState, WorldState } from '@td/sim';
-import { BASELINE_PROFILE } from './profile.js';
+import { BASELINE_PROFILE, horizonTicks } from './profile.js';
 import { generalDeathCost } from './posture.js';
 import type { PhaseProfile, Spending } from './profile.js';
 import {
@@ -74,6 +76,28 @@ const statsOf = (world: WorldState) => {
   const player = world.players[ME];
   if (player === undefined) throw new Error('нет игрока');
   return { player, stats: playerStats(player) };
+};
+
+/**
+ * Игрок с одним купленным уровнем ветки.
+ *
+ * Шагает тем же `stepPpm` с моделью ветки, каким шагает покупка в ядре:
+ * проверка обязана считать так же, как считает мир, иначе она сторожит
+ * собственную арифметику.
+ */
+const withUpgrade = (player: PlayerState, index: number): PlayerState => {
+  const branch = UPGRADE_BRANCHES[index];
+  const current = player.upgrades[index];
+  if (branch === undefined || current === undefined) throw new Error('нет такой ветки');
+
+  const upgrades = [...player.upgrades];
+  upgrades[index] = {
+    ...current,
+    level: current.level + 1,
+    effectPpm: stepPpm(current.effectPpm, branch.effectPercent, effectModelOf(branch)),
+  };
+
+  return { ...player, upgrades };
 };
 
 /** Фаза, где прокачка интересна только у штурмовика: без экономики. */
@@ -284,13 +308,101 @@ describe('ядерный удар считается в энергии, со с�
   });
 });
 
-describe('экономика в сравнении не участвует', () => {
-  it('фаза, где интересна одна экономика, сравнению не подлежит', () => {
-    expect(hasComparableUpgrade(phaseOf(0))).toBe(false);
+describe('экономика считается той же меркой', () => {
+  /** Фаза, где названа одна экономика. Первая фаза базового профиля. */
+  const ECONOMY_PHASE = phaseOf(0);
+
+  it('фаза, где названа одна экономика, сравнению подлежит', () => {
+    // Ровно то, что прежде запирало траты: несравнимая фаза делала
+    // прибавку прокачки непревосходимым порогом накопления.
+    expect(hasComparableUpgrade(ECONOMY_PHASE)).toBe(true);
   });
 
-  it('фаза с боевыми целями сравнению подлежит', () => {
-    expect(hasComparableUpgrade(phaseOf(1))).toBe(true);
+  it('фаза без единой названной цели сравнению не подлежит', () => {
+    // Проверка нужна и теперь: при пустом наборе цена вышла бы нулевой,
+    // а на неё делят.
+    expect(hasComparableUpgrade({ ...ECONOMY_PHASE, upgrades: {} })).toBe(false);
+  });
+
+  it('прибавка от экономики положительна и выражена в энергии', () => {
+    const world = withAssaults(0);
+    const { player, stats } = statsOf(world);
+
+    const { gain, price } = upgradeGain(
+      world,
+      ME,
+      stats,
+      ECONOMY_PHASE,
+      BASELINE_PROFILE,
+      upgradeCosts(player),
+    );
+
+    // Прибавка — это прирост дохода за тик, умноженный на горизонт
+    // планирования. Считается здесь тем же способом, что и в самом
+    // расчёте, но от другого конца: через характеристики после покупки.
+    const branch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.Income);
+    const after = playerStats(withUpgrade(player, branch));
+    const delta = after.incomePerTick - stats.incomePerTick;
+
+    expect(delta).toBeGreaterThan(0);
+    expect(gain).toBe(delta * horizonTicks(BASELINE_PROFILE));
+    expect(price).toBe(upgradeCosts(player)[branch]);
+  });
+
+  it('при пустом войске экономика обгоняет боевую прокачку', () => {
+    // Первая минута матча: умножать в войске нечего, а доход работает
+    // весь оставшийся матч. Прежде этого сравнения не существовало
+    // вовсе — экономика в него не входила.
+    const world = withAssaults(0);
+    const { player, stats } = statsOf(world);
+    const costs = upgradeCosts(player);
+
+    const both = upgradeGain(
+      world,
+      ME,
+      stats,
+      { ...ECONOMY_PHASE, upgrades: { [UpgradeTarget.Base]: 1, [UpgradeTarget.UnitAssault]: 1 } },
+      BASELINE_PROFILE,
+      costs,
+    );
+
+    expect(both.gain).toBeGreaterThan(0);
+    expect(both.price).toBe(costs[upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.Income)]);
+  });
+
+  it('ядерные ветки в сравнении не участвуют', () => {
+    // Они сидят на цели «база» рядом с добычей, но их прибавка
+    // не выражается ни доходом, ни уроном в тик.
+    const world = withAssaults(0);
+    const { player, stats } = statsOf(world);
+    const costs = upgradeCosts(player);
+
+    const { price } = upgradeGain(world, ME, stats, ECONOMY_PHASE, BASELINE_PROFILE, costs);
+
+    for (const stat of [UpgradeStat.NukeDamage, UpgradeStat.NukeRadius, UpgradeStat.NukeCooldown]) {
+      expect(price).not.toBe(costs[upgradeBranchIndex(UpgradeTarget.Base, stat)]);
+    }
+  });
+
+  it('прибавка от экономики растёт вместе с горизонтом планирования', () => {
+    // Свойство, ради которого горизонт и взят: уровень, купленный
+    // раньше, работает дольше.
+    const world = withAssaults(0);
+    const { player, stats } = statsOf(world);
+    const costs = upgradeCosts(player);
+
+    const gainAt = (horizonSeconds: number): number =>
+      upgradeGain(
+        world,
+        ME,
+        stats,
+        ECONOMY_PHASE,
+        { ...BASELINE_PROFILE, posture: { ...BASELINE_PROFILE.posture, horizonSeconds } },
+        costs,
+      ).gain;
+
+    // Вдвое дольше планируем — вдвое больше принесёт один и тот же уровень.
+    expect(gainAt(120)).toBe(gainAt(60) * 2);
   });
 });
 
