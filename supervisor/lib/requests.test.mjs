@@ -210,6 +210,61 @@ describe('части, рождённые дроблением', () => {
     });
     expect(validateTask(task, schema)).toEqual([]);
   });
+
+  it('часть заводится в очередь, а не в кандидаты', () => {
+    // До дробления задача доходит только из очереди, куда её перевёл
+    // человек: работа одобрена целиком, и спрашивать про каждую часть
+    // заново значит спрашивать про уже отвеченное. Пока исключения
+    // не было, четыре части задачи 0274 простояли в кандидатах
+    // с 07.09.2026 нетронутыми.
+    const { task } = taskFromRequest(request(), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(task).toMatchObject({ status: 'new', owner: null });
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('конвейерная часть идёт в обслуживание, а не в общую очередь', () => {
+    // Иначе починка самого конвейера бралась бы позже игровых задач,
+    // хотя очередь обслуживания на то и заведена, чтобы идти впереди.
+    const { task } = taskFromRequest(request({ area: 'pipeline' }), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(task).toMatchObject({ status: 'maintenance', area: 'pipeline' });
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('часть типа note обходит шлюз наравне с прочими', () => {
+    // Метка «декомпозирована» достаётся только feature — через анализ
+    // дробности ходит лишь он, — но заказанной работой часть остаётся
+    // при любом типе, и держать её в кандидатах не за что.
+    const { task } = taskFromRequest(request({ type: 'note' }), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(task).toMatchObject({ status: 'new', decomposed: false });
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('находка попутного этапа остаётся кандидатом', () => {
+    // Шлюз обходят части, а не всё, что подала сессия по дороге:
+    // дробность находки никто не смотрел и работу по ней не заказывал.
+    const { planned } = planRequests([request()], {
+      existingIds: [],
+      now: NOW,
+      sourceId: '0001-one',
+      sourceStage: 'implement',
+    });
+    expect(planned[0].status).toBe('candidate');
+  });
 });
 
 describe('блокирующая причина', () => {
