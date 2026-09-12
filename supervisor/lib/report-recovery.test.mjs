@@ -88,10 +88,12 @@ async function scenario(options) {
     }),
   );
   child.emit('close', 0);
+  phases.push('child close');
   await sleep(0);
   expect(first.actions(true)).toEqual([]);
   expect(first.store.entries()).toHaveLength(1);
   expect(first.recipient.state()).toMatchObject({ puts: 0, posts: 0 });
+  phases.push('paused report persisted');
   // Model a crash after the queue rename but before the live descriptor update.
   writeFileSync(stagesPath, staleStages);
   const next = restart();
@@ -132,6 +134,16 @@ async function scenario(options) {
     expect(again.supervisor.reports).toEqual([]);
     expect(again.recipient.state()).toEqual(snapshot);
     expect(again.actions().some((a) => a.kind === 'transfer-report')).toBe(false);
+    expect(
+      again
+        .actions()
+        .some(
+          (a) =>
+            ['start-stage', 'continue-stage'].includes(a.kind) &&
+            a.taskId === f.task.id &&
+            a.stage === 'implement',
+        ),
+    ).toBe(false);
     expect(launches).toBe(1);
   }
   return { f, next, restart, deliver, assertSettled, diagnostic };
@@ -248,7 +260,12 @@ describe('paused completion survives full supervisor and recipient restart', () 
         spentUsd: 7,
         attempts: { continuations: 0 },
       });
-      expect(final.recipient.state().comments[0].text).toContain('completed stage');
+      const comment = final.recipient.state().comments[0].text;
+      const receipt = comment.match(/\n<!-- report:[a-f0-9]{32}:0 -->$/)?.[0];
+      expect(receipt).toBeDefined();
+      expect(comment.slice(0, -receipt.length)).toBe(
+        '🤖 [agent] **implement → pr**\n\ncompleted stage\n\n**Артефакты:**\n\n- pr: 172\n',
+      );
       s.assertSettled(final, { puts: 1, posts: 1 });
     },
   );
