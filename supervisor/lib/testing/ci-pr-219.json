@@ -1,0 +1,211 @@
+{
+  "provenance": "Projected from the actual design observation of PR 219; repeated reads and run listings in tests are modeled.",
+  "pr": {
+    "headRefOid": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+    "mergeable": "MERGEABLE",
+    "number": 219,
+    "state": "OPEN",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-08T20:39:29Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229264668",
+        "name": "затронутые области",
+        "startedAt": "2026-09-08T20:39:22Z",
+        "status": "IN_PROGRESS",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-08T20:39:54Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229265010",
+        "name": "формат и линт",
+        "startedAt": "2026-09-08T20:39:22Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-08T20:39:30Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229324869",
+        "name": "типы",
+        "startedAt": "2026-09-08T20:39:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-08T20:40:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229322980",
+        "name": "быстрые тесты",
+        "startedAt": "2026-09-08T20:39:33Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-08T20:39:30Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229324452",
+        "name": "матчевые тесты",
+        "startedAt": "2026-09-08T20:39:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-08T20:39:30Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229324433",
+        "name": "сборка",
+        "startedAt": "2026-09-08T20:39:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-09-08T20:39:30Z",
+        "conclusion": "SKIPPED",
+        "detailsUrl": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229325088",
+        "name": "сквозные проверки",
+        "startedAt": "2026-09-08T20:39:30Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "url": "https://github.com/Dezintegra/TD_Game/pull/219"
+  },
+  "run": {
+    "id": 34276070514,
+    "run_attempt": 1,
+    "status": "completed",
+    "conclusion": "success",
+    "head_sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+    "event": "pull_request",
+    "workflow_id": 338118771,
+    "created_at": "2026-09-08T20:39:18Z",
+    "updated_at": "2026-09-08T20:40:07Z",
+    "repository": {
+      "id": 1339926620,
+      "full_name": "Dezintegra/TD_Game"
+    },
+    "pull_requests": [
+      {
+        "url": "https://api.github.com/repos/Dezintegra/TD_Game/pulls/219",
+        "id": 4478381882,
+        "number": 219,
+        "head": {
+          "ref": "worktree-0052-skill-progona-zapreschaet-razvedku-okruz",
+          "sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+          "repo": {
+            "id": 1339926620,
+            "url": "https://api.github.com/repos/Dezintegra/TD_Game",
+            "name": "TD_Game"
+          }
+        },
+        "base": {
+          "ref": "main",
+          "sha": "423f3a3a473caee679e51ba904ac964de35f1206",
+          "repo": {
+            "id": 1339926620,
+            "url": "https://api.github.com/repos/Dezintegra/TD_Game",
+            "name": "TD_Game"
+          }
+        }
+      }
+    ]
+  },
+  "jobs": {
+    "total_count": 7,
+    "jobs": [
+      {
+        "id": 102229264668,
+        "run_id": 34276070514,
+        "run_attempt": 1,
+        "head_sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+        "name": "затронутые области",
+        "status": "in_progress",
+        "conclusion": "success",
+        "started_at": "2026-09-08T20:39:22Z",
+        "completed_at": "2026-09-08T20:39:29Z",
+        "html_url": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229264668"
+      },
+      {
+        "id": 102229265010,
+        "run_id": 34276070514,
+        "run_attempt": 1,
+        "head_sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+        "name": "формат и линт",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-09-08T20:39:22Z",
+        "completed_at": "2026-09-08T20:39:54Z",
+        "html_url": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229265010"
+      },
+      {
+        "id": 102229322980,
+        "run_id": 34276070514,
+        "run_attempt": 1,
+        "head_sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+        "name": "быстрые тесты",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-09-08T20:39:33Z",
+        "completed_at": "2026-09-08T20:40:06Z",
+        "html_url": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229322980"
+      },
+      {
+        "id": 102229324433,
+        "run_id": 34276070514,
+        "run_attempt": 1,
+        "head_sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+        "name": "сборка",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-09-08T20:39:30Z",
+        "completed_at": "2026-09-08T20:39:30Z",
+        "html_url": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229324433"
+      },
+      {
+        "id": 102229324452,
+        "run_id": 34276070514,
+        "run_attempt": 1,
+        "head_sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+        "name": "матчевые тесты",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-09-08T20:39:30Z",
+        "completed_at": "2026-09-08T20:39:30Z",
+        "html_url": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229324452"
+      },
+      {
+        "id": 102229324869,
+        "run_id": 34276070514,
+        "run_attempt": 1,
+        "head_sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+        "name": "типы",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-09-08T20:39:30Z",
+        "completed_at": "2026-09-08T20:39:30Z",
+        "html_url": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229324869"
+      },
+      {
+        "id": 102229325088,
+        "run_id": 34276070514,
+        "run_attempt": 1,
+        "head_sha": "3ebe398ce704e377e5b6a16f4e30d3eef3f2553c",
+        "name": "сквозные проверки",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-09-08T20:39:30Z",
+        "completed_at": "2026-09-08T20:39:30Z",
+        "html_url": "https://github.com/Dezintegra/TD_Game/actions/runs/34276070514/job/102229325088"
+      }
+    ]
+  }
+}

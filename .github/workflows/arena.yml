@@ -32,6 +32,11 @@ on:
         description: Приложить сырые логи матчей (сотни мегабайт)
         type: boolean
         default: false
+      tuning_args:
+        description: Множители правил (например --base-hp 0.8)
+        type: string
+        required: false
+        default: ''
 
 jobs:
   arena:
@@ -67,15 +72,8 @@ jobs:
           PROFILES: ${{ inputs.profiles }}
           SEED: ${{ inputs.seed }}
           SECONDS_LIMIT: ${{ inputs.seconds }}
-        run: |
-          args=(run --matches "$MATCHES" --seed "$SEED")
-          if [ -n "$PROFILES" ]; then
-            args+=(--profiles "$PROFILES")
-          fi
-          if [ -n "$SECONDS_LIMIT" ]; then
-            args+=(--seconds "$SECONDS_LIMIT")
-          fi
-          node apps/arena/dist/main.js "${args[@]}"
+          TUNING_ARGS: ${{ inputs.tuning_args }}
+        run: node scripts/arena-workflow.mjs
 
       - name: Собрать базу из логов
         run: node apps/arena/dist/main.js ingest

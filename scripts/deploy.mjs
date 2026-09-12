@@ -17,6 +17,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deploySshHost, deploySshOptions } from './deploy-ssh.mjs';
+import { ensureDeployHost } from './ensure-deploy-host.mjs';
+import { deployPerfArgs } from './deploy-perf.mjs';
 
 // ── Ключи ────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -31,7 +34,12 @@ if (argv.includes('--help') || argv.includes('-h')) {
       '  --host <алиас>    куда (по умолчанию dezintegra или $TD_DEPLOY_HOST)',
       '  --dir <каталог>   каталог на сервере (по умолчанию td)',
       '  --no-cache        собрать образы с нуля, не доверяя кешу слоёв',
-      '  --no-perf         выложить без замера частоты кадров (осознанно!)',
+      '  --no-perf         не мерить кадры (замер уже сделан отдельно)',
+      '',
+      '  Просадка кадров выкладку не отменяет: она заводит задачу на разбор.',
+      '  Отменяет выкладку только несостоявшийся замер.',
+      '  --client-port N   порт клиента локального замера (также --client-port=N)',
+      '  --port N          порт сервера локального замера (также --port=N)',
       '',
       'Пример: pnpm run deploy -- --ref origin/main',
     ].join('\n'),
@@ -44,11 +52,15 @@ const flag = (name, fallback) => {
   return at !== -1 && argv[at + 1] ? argv[at + 1] : fallback;
 };
 
-const host = flag('--host', process.env.TD_DEPLOY_HOST ?? 'dezintegra');
+const host = deploySshHost(flag('--host', process.env.TD_DEPLOY_HOST ?? 'dezintegra'));
+const sshOptions = deploySshOptions();
 const remoteDir = flag('--dir', 'td');
 const dirty = argv.includes('--dirty');
 const noCache = argv.includes('--no-cache');
 const skipPerf = argv.includes('--no-perf');
+
+/** Код обёртки замера: числа получены, порог не взят. См. scripts/perf-run.mjs. */
+const PERF_THRESHOLD_MISSED = 2;
 let ref = flag('--ref', 'HEAD');
 
 // ── Мелкие помощники ─────────────────────────────────────────────────
@@ -71,6 +83,12 @@ const run = (cmd, args, opts = {}) => {
 };
 
 // ── Проверки до того, как что-то трогать ─────────────────────────────
+let perfArgs;
+try {
+  perfArgs = deployPerfArgs(argv);
+} catch (error) {
+  die(error.message);
+}
 let root;
 try {
   root = capture('git', ['rev-parse', '--show-toplevel']);
@@ -78,19 +96,15 @@ try {
   die('это не репозиторий git — запускать надо из дерева проекта');
 }
 
+// Машина прерываемая, и облако гасит её не позже чем через сутки. Раньше
+// сценарий на этом умирал, подсказав человеку команду подъёма; теперь
+// поднимает сам — подтверждения на это не спрашивают, потому что иначе
+// автономная выкладка упиралась бы в него каждый раз, когда облако
+// погасило машину.
 step(`Проверяю связь с сервером «${host}»`);
-const reach = spawnSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', host, 'true'], {
-  stdio: 'ignore',
-});
-if (reach.status !== 0) {
-  die(
-    `сервер «${host}» не отвечает.\n` +
-      `  Проверьте: ssh ${host}\n` +
-      `  Если машина прерываемая, облако могло её остановить:\n` +
-      `  yc compute instance start td`,
-  );
-}
-note('связь есть');
+const prepared = await ensureDeployHost({ host, log: note });
+if (!prepared.ok) die(`сервер «${host}» не готов: ${prepared.why}`);
+note(prepared.started ? 'машина поднята, связь есть' : 'связь есть');
 
 // Docker-файлы лежат в дереве, но в репозиторий их пока не закоммитили.
 // Поэтому они добавляются в архив отдельно, поверх выгрузки из git.
@@ -110,12 +124,27 @@ if (missing.length > 0) die(`в дереве нет файлов сборки: $
 //
 // Обёртка сама откажется мерить на занятой машине: цифра, снятая под
 // нагрузкой, говорит о нагрузке, а не о коде.
+// Просадка выкладку НЕ отменяет. Так решил владелец продукта, и решение
+// названо прямо: риск выпустить в продакшен что-то медленное менее важен,
+// чем то, что новые возможности не выезжают в продакшен вовсе. Отменяет
+// выкладку только несостоявшийся замер — когда померить попросту не вышло.
+//
+// Различить их даёт код возврата обёртки: 2 — замер состоялся, порог
+// не взят; 1 — замер не состоялся. Прежде код был один на оба случая,
+// и сценарий вынужденно считал всякий неуспех отказом.
+let perfDrop = false;
 if (skipPerf) {
   note('ВНИМАНИЕ: замер частоты кадров пропущен по ключу --no-perf');
 } else {
   step('Замеряю частоту кадров перед выкладкой');
-  run('pnpm', ['e2e:perf'], { cwd: root, shell: true });
-  note('отрисовка держит порог');
+  const measured = spawnSync('pnpm', perfArgs, { stdio: 'inherit', cwd: root, shell: true });
+  if (measured.error) die(`не удалось запустить замер: ${measured.error.message}`);
+  if (measured.status === 0) note('отрисовка держит порог');
+  else if (measured.status === PERF_THRESHOLD_MISSED) {
+    perfDrop = true;
+    note('ВНИМАНИЕ: отрисовка ниже порога. Выкладка продолжается — заведите задачу');
+    note('на разбор просадки, назвав в ней выкладываемую ревизию и числа замера.');
+  } else die(`замер не состоялся (код ${measured.status}) — выкладка отменена`);
 }
 
 // ── Что именно выкладываем ───────────────────────────────────────────
@@ -155,7 +184,7 @@ try {
   note('архив готов');
 
   step('Заливаю на сервер');
-  run('scp', ['-o', 'BatchMode=yes', '-q', tarball, `${host}:~/td-src.tar`]);
+  run('scp', [...sshOptions, '-q', tarball, `${host}:~/td-src.tar`]);
   note('залито');
 
   // ── Раскладка на сервере ───────────────────────────────────────────
@@ -196,7 +225,7 @@ try {
   ].join('\n');
 
   step('Собираю и поднимаю на сервере (это самая долгая часть)');
-  run('ssh', ['-o', 'BatchMode=yes', host, remoteScript]);
+  run('ssh', [...sshOptions, '--', host, remoteScript]);
 
   // ── Проверка ───────────────────────────────────────────────────────
   //
@@ -206,24 +235,24 @@ try {
   // у серверного .env: он там единственный источник правды.
   step('Проверяю, что игра отвечает');
   const domain = capture('ssh', [
-    '-o',
-    'BatchMode=yes',
+    ...sshOptions,
+    '--',
     host,
     `sh -c '. ~/${remoteDir}/.env && printf %s "$TD_DOMAIN"'`,
   ]);
   if (!domain) die(`в ~/${remoteDir}/.env на сервере не задан TD_DOMAIN`);
 
   const health = capture('ssh', [
-    '-o',
-    'BatchMode=yes',
+    ...sshOptions,
+    '--',
     host,
     `curl -fsS --retry 10 --retry-delay 2 --retry-all-errors https://${domain}/health`,
   ]);
   note(`сервер отвечает: ${health}`);
 
   const page = capture('ssh', [
-    '-o',
-    'BatchMode=yes',
+    ...sshOptions,
+    '--',
     host,
     `curl -s -o /dev/null -w '%{http_code}' https://${domain}/`,
   ]);
@@ -231,6 +260,14 @@ try {
   note('страница игры отдаётся, сертификат принят');
 
   console.log(`\n\u001b[32m✓\u001b[0m Готово: ${revision} играет на https://${domain}/\n`);
+  // Просадку называем последней строкой, а не только там, где померили:
+  // между замером и этим местом проходит вся выкладка, и предупреждение
+  // из середины вывода читатель уже не увидит.
+  if (perfDrop)
+    console.log(
+      `  Отрисовка на ${revision} ниже порога. Заведите задачу на разбор просадки:\n` +
+        '  назовите в ней эту ревизию и числа из pnpm e2e:perf -- --history.\n',
+    );
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

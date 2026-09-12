@@ -7,6 +7,8 @@ import type { Command, MatchSide, ThinRecord } from '@td/shared';
 import { checksum, createWorld, step } from '@td/sim';
 import { DEFAULT_PROFILE_ID, createOpponent, profileByName } from '@td/ai';
 import { replay } from './replay.js';
+import { readLogText } from './ingest.js';
+import { logPathFor } from './log.js';
 import type { LogRecord } from './records.js';
 
 /**
@@ -79,7 +81,7 @@ const played = (() => {
 })();
 
 const readLog = (path: string): LogRecord[] =>
-  readFileSync(path, 'utf8')
+  readLogText(path)
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as LogRecord);
@@ -226,7 +228,7 @@ describe('сверка ловит расхождение', () => {
     // и суммы сошлись.
     expect(message).not.toMatch(/разошлось с записью/u);
     // Разбор не пережил расхождения: подробного лога не осталось.
-    expect(existsSync(join(dir, 'other-mind-replay.jsonl'))).toBe(false);
+    expect(existsSync(logPathFor(dir, 'other-mind-replay'))).toBe(false);
   });
 
   it('незнакомый вид команды не пропускается молча', () => {

@@ -1,0 +1,573 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Dezintegra/TD_Game/manage/schema.json",
+  "title": "Задача бэклога",
+  "description": "Одна задача конвейера агентской разработки. Один файл на задачу: единый список стал бы вечной точкой конфликтов между машинами.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "id",
+    "type",
+    "title",
+    "description",
+    "status",
+    "priority",
+    "createdAt",
+    "statusChangedAt",
+    "owner",
+    "history",
+    "links",
+    "attempts"
+  ],
+  "properties": {
+    "reportReceipts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{32}$"
+      }
+    },
+    "delayAnalysis": {
+      "type": "object",
+      "description": "Сохранённый разбор задержки и критерии проверки исправлений."
+    },
+    "delayJournal": {
+      "type": "object",
+      "description": "Неопубликованный комментарий разбора с устойчивым ключом доставки."
+    },
+    "$schema": {
+      "type": "string",
+      "description": "Путь к этой схеме. Нужен, чтобы редактор подсказывал состав полей без внешнего каталога.",
+      "const": "../schema.json"
+    },
+    "id": {
+      "type": "string",
+      "description": "Устойчивый идентификатор вида <число>-<короткое-имя>. Он же имя ветки, дерева и журнала. После закрытия не переиспользуется.",
+      "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "closureReason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Причина прекращения исходной работы с доказательством или конкретными продолжениями; сохраняется до конца уборки."
+    },
+    "completionSummary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Самостоятельный итог всей задачи, подготовленный до завершения и сохраняемый для итогового комментария."
+    },
+    "closureRequestKey": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Отпечаток заявки из закрывающего отчёта: повтор использует ту же карточку продолжения."
+    },
+    "dependsOn": {
+      "type": "array",
+      "description": "Полные идентификаторы задач, которые должны перейти в completed перед запуском этой задачи. Отсутствие поля означает отсутствие зависимостей.",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+      }
+    },
+    "dependencyResults": {
+      "type": "array",
+      "description": "Ожидаемый результат для ребра dependsOn: закрытие карточки и вливание указанного PR.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["taskId", "kind", "pr"],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+          },
+          "kind": {
+            "const": "merged-pr"
+          },
+          "pr": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "type": {
+      "type": "string",
+      "description": "Тип задачи. От него зависит маршрут по состояниям.",
+      "enum": ["feature", "run", "note"]
+    },
+    "title": {
+      "type": "string",
+      "description": "Короткий заголовок в одну строку.",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "description": {
+      "type": "string",
+      "description": "Что и зачем нужно сделать. Пишется так, чтобы сессия поняла задачу без этого разговора.",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "description": "Текущее состояние. Переходы объявлены таблицей переходов плагина и проверяются программно.",
+      "enum": [
+        "candidate",
+        "maintenance",
+        "new",
+        "triage",
+        "design",
+        "audit",
+        "implement",
+        "benchmark",
+        "interpret",
+        "pr",
+        "review",
+        "revise",
+        "deploy",
+        "cleanup",
+        "completed",
+        "closed",
+        "postmortem",
+        "failed",
+        "awaiting-po",
+        "blocked",
+        "token-limit",
+        "decompose"
+      ]
+    },
+    "returnTo": {
+      "description": "Рабочее состояние, из которого задача ушла в разбор ошибки, в саму ошибку или в ожидание ответа. Возврат ведёт сюда. Сквозных состояний здесь нет намеренно: цепочка «рабочее — разбор — ошибка» наследует возврат, а не переписывает его собой.",
+      "type": ["string", "null"],
+      "enum": [
+        "triage",
+        "design",
+        "audit",
+        "implement",
+        "benchmark",
+        "interpret",
+        "pr",
+        "review",
+        "revise",
+        "deploy",
+        "cleanup",
+        null
+      ]
+    },
+    "priority": {
+      "type": "integer",
+      "description": "Меньшее значение берётся в работу раньше. При равенстве раньше берётся задача с более ранним createdAt.",
+      "minimum": 0,
+      "maximum": 999
+    },
+    "blocking": {
+      "type": "boolean",
+      "description": "Причина мешает конвейеру вести другие задачи. Проставляется разбором ошибки либо выводится из area; такая задача заводится первой в очереди, а не последней. Отсутствие поля равно false."
+    },
+    "area": {
+      "type": "string",
+      "description": "Зона причины. Единственное значение — pipeline: причина в самом конвейере (код супервизора, правила этапов, разрешения, настройка, схема записи, доска). Такая заявка минует шлюз кандидатов с любого этапа и встаёт в очередь первой. Отсутствие поля означает продуктовую работу.",
+      "enum": ["pipeline"]
+    },
+    "createdAt": {
+      "type": "string",
+      "description": "Когда задача заведена. Полная отметка времени со смещением часового пояса.",
+      "format": "date-time"
+    },
+    "statusChangedAt": {
+      "type": "string",
+      "description": "Когда состояние сменилось в последний раз. По ней считается время в состоянии и распознаётся застревание.",
+      "format": "date-time"
+    },
+    "owner": {
+      "description": "Имя рабочей станции, занявшей задачу. Записывается в главную ветку до начала работы: успешная отправка этой записи и есть захват.",
+      "type": ["string", "null"]
+    },
+    "history": {
+      "type": "array",
+      "description": "История смен состояния. Дозаписывается, не переписывается.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "from", "to"],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "Одна строка о причине перехода."
+          }
+        }
+      }
+    },
+    "links": {
+      "type": "object",
+      "description": "Ссылки на порождённые артефакты.",
+      "additionalProperties": false,
+      "required": ["change", "pr", "run", "related"],
+      "properties": {
+        "change": {
+          "description": "Имя изменения OpenSpec.",
+          "type": ["string", "null"]
+        },
+        "pr": {
+          "description": "Номер pull request.",
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "run": {
+          "description": "Идентификатор прогона: номер запуска в Actions либо имя местного замера.",
+          "type": ["string", "null"]
+        },
+        "related": {
+          "type": "array",
+          "description": "Идентификаторы связанных задач: породившей и порождённых.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "decomposed": {
+      "type": "boolean",
+      "description": "Дробление задачи уже проводили: этап анализа она пропускает. На доске живёт меткой, и метка — единственное хранилище признака: поле-двойник разошёлся бы с нею молча. Снимается ровно в одном случае — задача упёрлась в потолок стоимости и уходит на повторный анализ."
+    },
+    "spentUsd": {
+      "type": "number",
+      "description": "Сколько долларов истрачено на задачу за всю её жизнь. Лежит ВНЕ attempts намеренно: тот обнуляется удавшимся этапом, возвратом и входом в сквозное состояние, и предел спора умер ровно поэтому (задача 0216). Расход не гасит ничто, а упершись в потолок maxTaskCostUsd, задача уходит человеку — чаще всего чтобы её раздробили.",
+      "minimum": 0
+    },
+    "attempts": {
+      "type": "object",
+      "description": "Счётчики, по которым конвейер решает, не пора ли остановиться.",
+      "additionalProperties": false,
+      "required": ["continuations", "cycleFailures"],
+      "properties": {
+        "continuations": {
+          "type": "integer",
+          "description": "Сколько раз этап продолжали после уснувшей или умершей сессии.",
+          "minimum": 0
+        },
+        "cycleFailures": {
+          "type": "integer",
+          "description": "Сколько циклов подряд действие по задаче не удалось.",
+          "minimum": 0
+        },
+        "rejections": {
+          "type": "integer",
+          "description": "Сколько раз подряд проверяющий этап вернул работу. Гасится, едва проверка пройдена; упершись в предел, задача уходит человеку, а не крутит новый круг.",
+          "minimum": 0
+        },
+        "spawnFailures": {
+          "type": "integer",
+          "description": "Сколько раз подряд процесс этапа не удалось породить: нет команды, нет каталога, кончилось место. Считается отдельно от продолжений: продолжение платит за сессию, которая была и не справилась, а несостоявшийся запуск — за сессию, которой не было вовсе. Гасится удавшимся порождением.",
+          "minimum": 0
+        },
+        "apiErrors": {
+          "type": "integer",
+          "description": "Сколько раз подряд этап лёг на отказе сервера модели. Считается отдельно: за такой заход задаче возвращают потраченное продолжение, потому что работы не было ни на один ход. Гасится живым ответом этапа.",
+          "minimum": 0
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "description": "Заказ на прогон. Обязателен для задач типа run.",
+      "additionalProperties": false,
+      "required": ["kind", "expectation"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "Вид прогона. arena и bench-tick считаются на чужом железе, perf — только на своей машине при исключительном доступе.",
+          "enum": ["arena", "perf", "bench-tick"]
+        },
+        "params": {
+          "type": "object",
+          "description": "Параметры прогона: кого с кем мерить, сколько матчей, на какой ветке.",
+          "additionalProperties": true
+        },
+        "expectation": {
+          "type": "string",
+          "description": "Чего ждут от прогона. Без ожидаемого результата прогон нечем истолковать, поэтому поле обязательно.",
+          "minLength": 1
+        }
+      }
+    },
+    "question": {
+      "type": "object",
+      "description": "Заданный владельцу продукта вопрос. Заполняется, когда задача уходит в awaiting-po.",
+      "additionalProperties": false,
+      "required": ["askedAt", "summary"],
+      "properties": {
+        "askedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answeredAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "description": "Вердикт разбора ошибки и счёт автоматических возвратов. Появляется после первого разбора; отсутствие означает, что задачу не разбирали.",
+      "additionalProperties": false,
+      "required": ["causedBy", "fixedBy", "returns"],
+      "properties": {
+        "causedBy": {
+          "description": "Чья причина падения по последнему разбору: pipeline — в конвейере, task — в самой задаче, null — вердикта нет. Задачу с причиной в конвейере конвейер возвращает из ошибки сам.",
+          "type": ["string", "null"],
+          "enum": ["pipeline", "task", null]
+        },
+        "fixedBy": {
+          "type": "array",
+          "description": "Идентификаторы задач, после закрытия которых причина снята. Пустой перечень — вернуть сразу.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "returns": {
+          "type": "integer",
+          "description": "Сколько раз конвейер возвращал задачу из ошибки сам. Не обнуляется никогда: это предохранитель на всю жизнь задачи.",
+          "minimum": 0
+        }
+      }
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["ux", "mechanics", "balance", "infrastructure"]
+      }
+    },
+    "creationKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "analysisGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reanalysis": {
+      "type": "boolean"
+    },
+    "blockedContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "reasons", "priority", "from"],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "priority": {
+          "type": "number",
+          "minimum": 0
+        },
+        "from": {
+          "enum": [
+            "decompose",
+            "design",
+            "audit",
+            "implement",
+            "revise",
+            "triage",
+            "benchmark",
+            "interpret"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["taskId", "reason", "result"],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "result": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "tokenReanalysis": {
+      "type": "object",
+      "description": "Сохранённый контекст и результат раннего бюджетного анализа Codex."
+    },
+    "tokenHold": {
+      "type": "object",
+      "description": "Сохранённый этап и производная панель ожидания бюджета; не источник разрешения на расход."
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pr", "checkedAt", "state"],
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "enum": ["merged", "unconfirmed", "open", "closed"]
+        }
+      }
+    },
+    "splitInto": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]*)*$"
+      }
+    },
+    "dependencyRecheck": {
+      "type": "object",
+      "description": "Сохранённые рёбра и ожидаемые результаты закрытого предшественника для проверки перед продолжением."
+    },
+    "backlogReview": {
+      "type": "object",
+      "description": "Отпечатки карточек уже заказанного ограниченного анализа; неизменные факты повторно не оплачиваются."
+    },
+    "workKind": {
+      "enum": ["game", "service"]
+    },
+    "workReason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane", "selectedAt", "reason"],
+      "properties": {
+        "lane": {
+          "enum": ["game", "service"]
+        },
+        "selectedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pipelineIncident": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "evidence", "affectedStages", "check", "fixedBy", "openedAt"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "affectedStages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stage", "expectation"],
+          "properties": {
+            "stage": {
+              "type": "string"
+            },
+            "expectation": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "fixedBy": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "openedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "probeStartedAt": {
+          "type": ["string", "null"]
+        },
+        "verifiedAt": {
+          "type": ["string", "null"]
+        },
+        "verificationEvidence": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["run"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "awaiting-po"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["question", "returnTo"]
+      }
+    }
+  ]
+}

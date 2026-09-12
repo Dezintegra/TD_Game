@@ -1,0 +1,990 @@
+import { emptyScheduling, planLaunches, recordRecovery, schedulingProblem } from './scheduling.mjs';
+import { incidentPolicy, legacyIncident } from './pipeline-incidents.mjs';
+import { planBacklogReview } from './backlog-review.mjs';
+import { reportTaskIds } from './report-targets.mjs';
+import { reconciliationHeld } from './backlog-reconciliation.mjs';
+import { pendingDependencies } from './dependencies.mjs';
+import { delayDecision, reviewingDelay, DELAY_STATES } from './delay-analysis.mjs';
+import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
+import { planEdgeResolutions } from './resolve-dependents.mjs';
+import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
+import {
+  CROSSCUT,
+  NEEDS_SESSION,
+  NEEDS_WORKTREE,
+  QUEUE_STATES,
+  canTransition,
+  stateClass,
+} from '../config/transitions.mjs';
+import { missingForStage } from '../config/defaults.mjs';
+import { STAGE_COMMANDS, uncoveredForStage } from '../config/permissions.mjs';
+
+/**
+ * Сканер: что конвейеру делать прямо сейчас.
+ *
+ * Это чистый счёт от состояния мира к перечню действий. Ни файлов, ни сети,
+ * ни времени «сейчас» изнутри: всё приходит доводом. Причина не в чистоте
+ * ради чистоты — при цикле в пять минут сканер запускается 288 раз в сутки,
+ * и решение «есть ли работа» обязано стоить секунды и быть одинаковым
+ * при одинаковой картине. Рассуждение модели ни того, ни другого не даёт.
+ *
+ * Сканер называет ДЕЙСТВИЕ, но не способ его выполнить. «Начать этап» —
+ * это решение сканера; заводить ли под него дерево, порождать ли сессию
+ * и каким именно способом — дело оркестратора. Так механика запуска может
+ * смениться, не тронув здесь ни строки.
+ */
+
+/** Действия, которые сканер умеет назначать, от самого срочного к обычным. */
+export const ACTIONS = [
+  'reconcile-task',
+  'queue-backlog-review',
+  'flush-delay-journal',
+  'analyze-delay',
+  'observe-delay',
+  'unblock-task',
+  // Снятие ожидания у ждущих закрытую карточку. Стоит рядом с разблокировкой
+  // намеренно: обе разбирают застой, и обе дешёвые — ни сессии, ни дерева.
+  'resolve-dependents',
+  'settle-maintenance',
+  'open-incident',
+  'hold-token-budget',
+  'refresh-token-budget',
+  'resume-token-budget',
+  'push-tail', // дослать неотправленное — прежде всего прочего
+  'transfer-report', // перенести отчёт сессии в бэклог
+  'answer-question', // разобрать ответ владельца продукта
+  'return-task', // вернуть из ошибки задачу, упавшую по вине конвейера
+  'poll-external', // опросить проверки CI или прогон на чужом железе
+  'quarantine-card', // унести негодную карточку в ошибку с пометкой
+  'clear-card', // снять пометку с исправленной карточки
+  'cleanup', // убрать дерево и ветки завершённой задачи
+  // Записать в журнал задачи исход этапа, осиротевшего при смене супервизора.
+  // Стоит ПЕРЕД выдачей сессии намеренно: сперва в журнал ложится причина,
+  // почему прошлый заход ничего не дал, и только потом порождается новый —
+  // тогда запись успевает уехать в промпт продолжателя.
+  'note-orphan',
+  'note-api-error',
+  'decompose-again',
+  'analyze-token-budget',
+  'continue-stage', // подхватить этап за уснувшей сессией
+  'fail-stage', // сдаться: продолжения исчерпаны, нужен человек
+  'start-stage', // взять задачу в работу
+];
+
+/**
+ * Задачи, у которых совпал номер.
+ *
+ * Сам конвейер повторов не делает: `nextId` берёт наибольший занятый номер
+ * и прибавляет единицу. Повтор заводится людьми — двумя ветками, каждая
+ * из которых честно посчитала следующий свободный номер по своей копии
+ * бэклога. Так 27.08.2026 вышло по два 0022, 0023 и 0024.
+ *
+ * Работу это не ломает: идентификатор — вся строка целиком, и она уникальна;
+ * уникальны и ветка, и дерево, и журнал. Ломает оно понимание: и люди,
+ * и сессии ссылаются на задачи номером — «задача 0023 убирает свист», —
+ * а такая ссылка при повторе указывает на два файла разом.
+ *
+ * Поэтому здесь замечание, а не отказ: в работу задачи берутся, но повтор
+ * называется вслух каждый цикл, пока его не разведут.
+ */
+function duplicateNumbers(tasks) {
+  const byNumber = new Map();
+  for (const task of tasks) {
+    const number = String(task.id).slice(0, 4);
+    byNumber.set(number, [...(byNumber.get(number) ?? []), task.id]);
+  }
+
+  return [...byNumber.entries()]
+    .filter(([, ids]) => ids.length > 1)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([number, ids]) =>
+        `номер ${number} занят дважды: ${ids.sort().join(', ')}. ` +
+        'Ссылки по номеру теперь двусмысленны — разведите номера',
+    );
+}
+
+/** Раньше берётся меньший приоритет, при равенстве — более ранняя задача. */
+function byPriorityThenAge(a, b) {
+  if (Boolean(a.reanalysis) !== Boolean(b.reanalysis)) return a.reanalysis ? -1 : 1;
+  const pa = a.reanalysis ? (a.blockedContext?.priority ?? a.priority) : a.priority;
+  const pb = b.reanalysis ? (b.blockedContext?.priority ?? b.priority) : b.priority;
+  if (pa !== pb) return pa - pb;
+  return a.priority !== b.priority
+    ? a.priority - b.priority
+    : Date.parse(a.createdAt) - Date.parse(b.createdAt);
+}
+
+/**
+ * Куда задача идёт из очереди. Дальнейшие ветвления по исходу этапа
+ * разбирает не сканер, а перенос отчёта: только там известно, чем этап
+ * кончился.
+ */
+function firstStage(task) {
+  // Правка задача типа `feature` начинается анализом на дробность — кроме
+  // карточек, рождённых дроблением: для них этот ответ уже получен и записан
+  // меткой. Без исключения каждая часть разбитой задачи проходила бы разбор
+  // на дробность, которую для неё только что и проделали, — сессия за сессией
+  // на вопрос с известным ответом.
+  if (task.type === 'feature') return task.decomposed && !task.reanalysis ? 'design' : 'decompose';
+  return { run: 'benchmark', note: 'triage' }[task.type];
+}
+
+/**
+ * Посчитать, что конвейеру делать.
+ *
+ * @param {object} state
+ * @param {object[]} state.tasks     записи бэклога, прошедшие схему
+ * @param {object[]} state.invalid   записи, схему не прошедшие: `{ id, problems }`
+ * @param {object}   state.registry  местный реестр деревьев: `{ entries: [] }`
+ * @param {object[]} state.reports   отчёты этапов, ожидающие переноса
+ * @param {object[]} state.running   идущие этапы: `{ taskId, stage }`
+ * @param {object[]} state.orphans   исходы осиротевших этапов, ждущие записи
+ * @param {object[]} state.apiFailures этапы, легшие на отказе сервера модели
+ * @param {object}   state.tails     хвосты: `{ main, branches: { ветка: число } }`
+ * @param {object}   state.answers   ответы владельца продукта: `{ идЗадачи: true }`
+ * @param {object?}  state.permissions правила разрешений: `{ allow, deny }`; `null` — нечем проверять
+ * @param {object=}  state.stageCommands что предписано этапу; по умолчанию `STAGE_COMMANDS`
+ * @param {object}   state.config    настройка после слияния с умолчаниями
+ * @param {boolean}  state.paused    взведён ли рубильник человека
+ * @param {boolean}  state.apiPaused взведена ли пауза сервера модели
+ * @returns {{ actions: object[], notes: string[] }}
+ */
+export function scan(state) {
+  const {
+    tasks = [],
+    invalid = [],
+    marked = [],
+    registry = { entries: [] },
+    reports = [],
+    // Идущие этапы: по одной записи на живой дочерний процесс. Это и есть
+    // вся картина живости — ни снимка сессий, ни отметок активности, ни
+    // признака «идёт» больше нет. У процесса есть хозяин, и хозяин знает
+    // про него правду, а не догадывается по следам.
+    running = [],
+    // Исходы этапов, осиротевших при смене супервизора. Живость они уже
+    // не значат — сирота, попавший сюда, из `running` вышел, — и нужны ровно
+    // для одного: объяснить в журнале задачи, почему прошлый заход ничего
+    // не дал. Отчёта у него нет и не будет: он приходил стандартным выводом,
+    // а тот был трубой в умерший процесс.
+    orphans = [],
+    // Этапы, легшие на отказе сервера модели. Живость они не значат, зато
+    // требуют двух действий: вернуть задаче потраченное продолжение
+    // и объяснить в журнале, почему заход не дал ничего.
+    apiFailures = [],
+    tails = { main: 0, branches: {} },
+    answers = {},
+    config,
+    paused = false,
+    apiPaused = false,
+    // Часы приходят доводом, как и всё остальное: сканер их не берёт сам,
+    // иначе один и тот же снимок давал бы разные ответы.
+    now,
+  } = state;
+
+  const actions = [];
+  const notes = [];
+  const apiFailed = new Set(apiFailures.map((failure) => failure.taskId));
+  let scheduling = state.scheduling ?? emptyScheduling();
+  if (!scheduling.error && schedulingProblem(scheduling))
+    scheduling = { error: schedulingProblem(scheduling) };
+  if (!scheduling.error)
+    for (const task of [...tasks, ...(state.dependencyRecords ?? [])]) {
+      if (task.pipelineIncident?.verifiedAt)
+        scheduling = recordRecovery(scheduling, task.pipelineIncident.id);
+    }
+  let incident = incidentPolicy({ ...state, scheduling });
+  const legacy =
+    !incident.active &&
+    legacyIncident(
+      tasks.filter((task) => !task.owner || task.owner === state.machine),
+      now,
+      state.dependencyRecords ?? [],
+    );
+  if (legacy)
+    incident = incidentPolicy({
+      ...state,
+      scheduling,
+      tasks: tasks.map((task) =>
+        task.id === legacy.taskId ? { ...task, pipelineIncident: legacy.incident } : task,
+      ),
+    });
+
+  for (const bad of invalid) {
+    notes.push(
+      `задача ${bad.id} не прошла схему и в работу не берётся: ${bad.problems.join('; ')}`,
+    );
+  }
+
+  notes.push(...duplicateNumbers(tasks));
+
+  if (paused || state.reportStorageBlocked) {
+    notes.push('взведён рубильник паузы: конвейер не порождает работы');
+    return { actions, notes };
+  }
+
+  // Пауза сервера останавливает сканер тем же порядком — до всего прочего,
+  // и записи об отказах вместе с остальным.
+  //
+  // Это осознанно. Записи ждут, пока сервер ответит, и потерять их нельзя:
+  // очередь отказов живёт у супервизора и не расходуется под паузой, а сам
+  // возврат продолжения ничего не решает, пока сессий всё равно не выдают.
+  // Писать же на доску под лежачим сервером незачем: оборот под паузой
+  // обращений к ней не делает вовсе.
+  if (apiPaused) {
+    notes.push('сервер модели не отвечает: конвейер не порождает работы');
+    return { actions, notes };
+  }
+
+  const entryOf = (taskId) => registry.entries.find((item) => item.taskId === taskId);
+  notes.push(...incident.notes);
+  if (legacy) actions.push({ kind: 'open-incident', ...legacy });
+  // Перенос отчёта меняет весь пакет; до следующего снимка его участники
+  // не должны получать действия по старому состоянию доски.
+  const hasReport = (taskId) => reports.some((report) => reportTaskIds(report).includes(taskId));
+  const isRunning = (taskId, stage) =>
+    running.some(
+      (item) =>
+        (item.taskId === taskId || item.batch?.includes(taskId)) &&
+        (stage === undefined || item.stage === stage),
+    );
+
+  // 0. Негодные карточки. Уносятся в ошибку прежде всякой работы: пока
+  //    карточка стоит в очереди неотличимо от годных, её беда видна только
+  //    в журнале цикла — и повторяется там каждые пять минут, пока
+  //    кто-нибудь не заглянет. Проверено делом: 0054 и 0062 простояли сутки.
+  for (const bad of invalid) {
+    // Задачу под живым этапом не трогаем. Испорченное описание посреди
+    // имплементации — беда, но утащить задачу из-под работающей сессии
+    // хуже: этап останется без задачи, а его отчёт — без места приложения.
+    if (isRunning(bad.id)) {
+      notes.push(`карточка ${bad.id} негодна, но по ней идёт этап — унесём, когда закончится`);
+      continue;
+    }
+    // Уже в карантине: второй комментарий каждый цикл превратил бы карточку
+    // в ленту из 288 одинаковых записей в сутки.
+    if (bad.status === 'failed' && bad.flags?.includes('unparsed')) continue;
+
+    actions.push({
+      kind: 'quarantine-card',
+      taskId: bad.id,
+      problems: bad.problems,
+      // Куда возвращать исправленную. Карточка из чужой колонки состояния
+      // не имеет вовсе — ей возврат в очередь: ни в одном состоянии
+      // маршрута она не была.
+      returnTo: bad.status ?? 'new',
+    });
+  }
+
+  // Исправленная карточка лишается метки сама: краснота, которую никто
+  // не убирает, через неделю перестаёт читаться.
+  for (const id of marked) {
+    actions.push({ kind: 'clear-card', taskId: id });
+  }
+
+  // 1. Хвосты. Досылаются прежде прочего, но область блокировки узкая: хвост
+  //    главной ветки держит только записи в неё и заведение деревьев, хвост
+  //    ветки задачи — только действия по этой задаче.
+  const stuck = new Set();
+  if (tails.main > 0) {
+    actions.push({ kind: 'push-tail', scope: 'main', commits: tails.main });
+  }
+  for (const [branch, commits] of Object.entries(tails.branches ?? {})) {
+    if (commits <= 0) continue;
+    const entry = registry.entries.find((item) => item.branch === branch);
+    // Ветку дерева, где идёт этап, не трогаем: неизвестно, доделан ли
+    // атомарный коммит. Прежде это выяснялось по снимку сессий, теперь —
+    // прямым вопросом «есть ли живой процесс», на который есть точный ответ.
+    if (entry && isRunning(entry.taskId)) {
+      notes.push(`ветка ${branch} впереди удалённой, но на дереве идёт этап — не трогаем`);
+      continue;
+    }
+    actions.push({ kind: 'push-tail', scope: 'branch', branch, taskId: entry?.taskId, commits });
+    if (entry) stuck.add(entry.taskId);
+  }
+
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+
+  // 2. Отчёты сессий. Перенос — самое дешёвое, что двигает задачу вперёд.
+  for (const report of reports) {
+    if (!byId.has(report.taskId)) {
+      notes.push(`отчёт по задаче ${report.taskId}, которой нет в бэклоге`);
+      continue;
+    }
+    if (stuck.has(report.taskId)) continue;
+    actions.push({
+      kind: 'transfer-report',
+      taskId: report.taskId,
+      stage: report.stage,
+      outcome: report.outcome,
+      ...(report.reportId ? { reportId: report.reportId } : {}),
+    });
+  }
+
+  // 3. Ответ владельца продукта возвращает задачу в работу.
+  for (const task of tasks) {
+    if (task.status === 'awaiting-po' && answers[task.id]) {
+      actions.push({ kind: 'answer-question', taskId: task.id, returnTo: task.returnTo });
+    }
+  }
+
+  // 3б. Возврат из ошибки задачи, упавшей по вине конвейера. Вердикт дал
+  //     разбор; здесь только смотрят, закрыты ли починки. Это событие ДРУГИХ
+  //     задач, и увидеть его может лишь тот, кто каждый оборот читает всю
+  //     доску, — потому решает сканер, а не перенос отчёта разбора.
+  //
+  //     Прежде задачу из ошибки поднимал только человек. 02.09.2026 так стояли
+  //     пять задач с целыми ветками и pull request, чья причина лежала
+  //     в конвейере и была уже починена: решения в подъёме нет, одна задержка.
+  for (const task of tasks) {
+    if (task.status !== 'failed' || task.recovery?.causedBy !== 'pipeline') continue;
+    if (legacy?.taskId === task.id || !incident.allows(task, task.returnTo)) continue;
+    if (!task.returnTo) {
+      notes.push(`задача ${task.id}: причина в конвейере, но возвращать некуда — возврат пуст`);
+      continue;
+    }
+
+    // Та же проверка, что перед запуском: закрытый родитель может лишь
+    // передать работу частям, а исчезнувшая карточка не доказывает починку.
+    const pending = pendingDependencies(
+      { ...task, dependsOn: task.recovery.fixedBy ?? [], dependencyResults: [] },
+      tasks,
+      state.closedDependencyIds ?? [],
+      {
+        records: state.dependencyRecords ?? [],
+        invalid,
+      },
+    );
+    if (pending.length > 0) {
+      notes.push(`задача ${task.id} ждёт починок конвейера: ${pending.join(', ')}`);
+      continue;
+    }
+
+    actions.push({
+      kind: 'return-task',
+      taskId: task.id,
+      returnTo: task.returnTo,
+      fixedBy: [...(task.recovery.fixedBy ?? [])],
+    });
+  }
+
+  // 4. Ожидательные состояния опрашиваются: квоту они не занимают,
+  //    и опрос ничего не стоит машине.
+  for (const task of tasks) {
+    if (stuck.has(task.id)) continue;
+    if (task.status === 'pr') {
+      actions.push({ kind: 'poll-external', taskId: task.id, what: 'ci' });
+    } else if (task.status === 'benchmark' && stateClass(task) === 'waiting' && task.links?.run) {
+      actions.push({ kind: 'poll-external', taskId: task.id, what: 'run' });
+    }
+  }
+
+  // 4б. Исходы осиротевших этапов. Дешёвые: один комментарий на карточку,
+  //     полей задачи не трогают, квоты не занимают. Молчаливое исчезновение
+  //     запрещено — иначе задача теряет продолжение и не может объяснить,
+  //     на что (0074, 0030).
+  for (const orphan of orphans) {
+    if (!byId.has(orphan.taskId)) {
+      notes.push(`осиротевший этап по задаче ${orphan.taskId}, которой нет в бэклоге`);
+      continue;
+    }
+    actions.push({
+      kind: 'note-orphan',
+      taskId: orphan.taskId,
+      stage: orphan.stage,
+      outcome: orphan.outcome,
+    });
+  }
+
+  // 4в. Этапы, легшие на отказе сервера модели. Дешёвые: журнал и счётчики,
+  //     квоты не занимают.
+  for (const failure of apiFailures) {
+    if (!byId.has(failure.taskId)) {
+      notes.push(`отказ сервера по задаче ${failure.taskId}, которой нет в бэклоге`);
+      continue;
+    }
+    actions.push({
+      kind: 'note-api-error',
+      taskId: failure.taskId,
+      stage: failure.stage,
+      why: failure.why,
+    });
+  }
+
+  // 5. Уборка. Дешёвая, сессии не требует, квоту не занимает.
+  for (const task of tasks) {
+    if (task.status === 'cleanup' && !stuck.has(task.id)) {
+      actions.push({ kind: 'cleanup', taskId: task.id });
+    }
+  }
+
+  // Этап, чьи предписанные команды не проходят правил разрешений, не начинают.
+  // Причина та же, что у нехватки настройки: сессия проснулась бы, дошла
+  // до отказанной команды и встала. За 02–03.09.2026 так сгорело семь задач
+  // подряд, все на одном и том же `ssh … dezintegra "true"`, и каждая забрала
+  // с собой ещё и сессию разбора, устанавливавшего одно и то же.
+  //
+  // Перечень команд приходит доводом, как и правила: боевой объявлен `review`
+  // и `deploy`, а очередная задача уходит в `design`, `benchmark` или `triage`,
+  // и проверка раздела 7, написанная на боевом перечне, была бы вечнозелёной.
+  const stageCommands = state.stageCommands ?? STAGE_COMMANDS;
+  const permissions = state.permissions ?? null;
+  const uncoveredAt = (stage) =>
+    permissions ? uncoveredForStage(permissions, stage, stageCommands) : [];
+
+  // Запись начинается теми же словами, что и удержание упавшей задачи
+  // (раздел 3б): для читателя это одно и то же событие — конвейер чинят,
+  // и до починки работа не двигается. Различает их хвост строки.
+  const heldNote = (taskId, stage, uncovered) =>
+    `задача ${taskId} ждёт починок конвейера: команды этапа «${stage}» ` +
+    `не покрыты правилами разрешений — ${uncovered.join(', ')}`;
+
+  // Задачи, стоящие в этапе с непокрытыми командами. Считаются ДО занятости:
+  // удержанная задача не порождает процесса, а значит и места не занимает.
+  // Оставь её в счёте — и она держала бы единственное место НАВСЕГДА: сессии
+  // нет, этап не кончается, место не освобождается. Сегодня оно освобождается
+  // хотя бы через полчаса падением, то есть лечение вышло бы хуже болезни.
+  const held = new Map();
+  for (const task of tasks) {
+    if (isRunning(task.id) || hasReport(task.id)) continue;
+    const stage = QUEUE_STATES.includes(task.status) ? firstStage(task) : task.status;
+    if (
+      incident.sources.has(task.id) &&
+      stage === task.pipelineIncident?.check.stage &&
+      (task.pipelineIncident.probeStartedAt || scheduling.probes?.[task.pipelineIncident.id])
+    ) {
+      actions.push({
+        kind: 'fail-stage',
+        taskId: task.id,
+        stage,
+        reason: `инцидент ${task.pipelineIncident.id}: проверочная сессия закончилась без подтверждения; нужен новый диагноз`,
+      });
+      stuck.add(task.id);
+    }
+    if (!incident.allows(task, stage)) {
+      held.set(task.id, ['pipeline-incident']);
+      notes.push(`задача ${task.id}: ожидает устранения подтверждённого инцидента`);
+    }
+  }
+  // Проверяем до квот и пределов попыток: ожидание не является запуском.
+  for (const task of tasks) {
+    if (![...QUEUE_STATES, 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status))
+      continue;
+    if (isRunning(task.id) || hasReport(task.id)) continue;
+    // Диагностике нужны результаты блокеров, но ожидать их для самого разбора нельзя.
+    if (reviewingDelay(task)) continue;
+    const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? [], {
+      records: state.dependencyRecords ?? [],
+      invalid: state.invalid ?? [],
+      evidence: state.dependencyEvidence ?? {},
+      mainBranch: config.mainBranch,
+    });
+    if (pending.length === 0) {
+      // Непустого dependsOn здесь больше не требуется. Снятие ожидания
+      // у ждущих закрытую карточку оставляет перечень пустым, и прежнее
+      // условие удержало бы такую задачу в «Заблокированы» навсегда —
+      // ровно та беда, ради которой снятие и заводилось. Законность
+      // ожидания доказывает сохранённое основание, а не остаток рёбер.
+      if (task.status === 'blocked' && task.blockedContext?.reasons?.length) {
+        actions.push({
+          kind: 'unblock-task',
+          taskId: task.id,
+          closedDependencyIds: state.closedDependencyIds,
+          dependencyRecords: state.dependencyRecords,
+          invalid: state.invalid,
+          dependencyEvidence: state.dependencyEvidence,
+          mainBranch: config.mainBranch,
+        });
+      }
+      continue;
+    }
+    held.set(task.id, pending);
+    notes.push(`задача ${task.id} ждёт зависимостей: ${pending.join(', ')}`);
+  }
+  for (const task of tasks) {
+    if (!NEEDS_SESSION.includes(task.status)) continue;
+    // Живой этап удержание не касается: он уже идёт, и командам его сессии
+    // правила разрешений судья, а не сканер.
+    if (isRunning(task.id, task.status)) continue;
+    const uncovered = uncoveredAt(task.status);
+    if (uncovered.length === 0) continue;
+    held.set(task.id, uncovered);
+    notes.push(heldNote(task.id, task.status, uncovered));
+  }
+
+  // Кандидаты, чья объявленная область работы — конвейер, переезжают
+  // в «Обслуживание». Разбирается этим и то, что накопилось до введения
+  // очереди: на 10.09.2026 таких кандидатов было большинство, и предложения
+  // по игре тонули среди них.
+  //
+  // Переносится только объявленная область. Догадка по заголовку отвергнута:
+  // на глаз карточка про конвейер и карточка про игру неразличимы, а ошибка
+  // отнесения стоит владельцу продукта потерянного предложения.
+  for (const task of tasks) {
+    if (task.status !== 'candidate' || task.area !== 'pipeline') continue;
+    if (hasReport(task.id) || isRunning(task.id)) continue;
+    actions.push({ kind: 'settle-maintenance', taskId: task.id });
+  }
+
+  // Рёбра, ведущие в закрытые карточки, снимаются с обоснованием. Планируется
+  // по снимку доски: так разбирается и уже накопившийся затор, и переживается
+  // обрыв на середине — неснятое ребро попадёт в план следующего оборота.
+  for (const plan of planEdgeResolutions({
+    tasks,
+    records: state.dependencyRecords ?? [],
+  })) {
+    if (hasReport(plan.taskId) || isRunning(plan.taskId)) continue;
+    actions.push({ kind: 'resolve-dependents', ...plan });
+    notes.push(
+      `задача ${plan.taskId}: снимаем ожидание закрытых карточек — ` +
+        plan.edges.map((edge) => edge.dependencyId).join(', '),
+    );
+  }
+
+  // Нечитаемые правила не держат ничего: «не знаем, значит держим» остановило
+  // бы конвейер целиком из-за опечатки в пути. Но и промолчать нельзя —
+  // иначе проверка, которой не было, неотличима от пройденной. Говорится это
+  // лишь тогда, когда было что проверять: строка, звучащая каждые пять минут
+  // на исправном конвейере, перестаёт читаться.
+  const declared = (stage) => (stageCommands[stage] ?? []).length > 0;
+  if (!permissions && tasks.some((task) => declared(firstStage(task)) || declared(task.status))) {
+    notes.push(
+      'правила разрешений не прочитаны: покрытие команд этапов проверить нечем, ' +
+        'и ни одна задача по этой причине не удержана',
+    );
+  }
+
+  // Занятость машины считается по задачам, стоящим в этапах, которым нужна
+  // сессия. Не по живым процессам: задача, чей этап только что кончился без
+  // отчёта, машину всё ещё занимает — ей сейчас же выдадут продолжение.
+  //
+  // Прежде здесь считались три квоты — ресурсная, ревьюшная и «машина занята
+  // исключительным этапом», — и ожидательные этапы не занимали ни одной.
+  // Из-за этого сканер запускал прогоны арены пачками, а исполнитель был
+  // один: лишние вставали в этапе, сессии им не доставалось, и через полчаса
+  // конвейер объявлял их мёртвыми. За ночь 27–28.08.2026 так сгорело
+  // семнадцать задач — парами, в одну и ту же секунду.
+  //
+  // Плата за простоту названа честно: прогоны арены идут по очереди.
+  // Неполный реестр Codex удерживает именно ВЫДАЧУ следующей сессии ниже,
+  // однако раньше такая неподвижная задача всё равно съедала слот здесь.
+  // Получалась ловушка: две старые задачи без живых процессов удерживали
+  // всю машину навсегда. Живой процесс исключать нельзя даже при неизвестном
+  // расходе: он действительно работает, а живой deploy всё ещё требует тишины.
+  const tokenHeld = new Set();
+  for (const task of tasks) {
+    const waiting = task.status === 'token-limit';
+    if (!waiting && !QUEUE_STATES.includes(task.status) && !NEEDS_SESSION.includes(task.status))
+      continue;
+    if (task.delayJournal) continue;
+    if (task.status === 'deploy' && running.some((item) => item.stage === 'deploy')) continue;
+    if (isRunning(task.id) || hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id))
+      continue;
+    if (task.owner && task.owner !== state.machine) continue;
+    if (waiting) tokenHeld.add(task.id);
+    if (waiting && tokenHoldProblem(task)) {
+      notes.push(`задача ${task.id}: ${tokenHoldProblem(task)}`);
+      continue;
+    }
+    // Зависимости и разрешения не превращаются в бюджетное ожидание.
+    if (!waiting && held.has(task.id)) continue;
+    const resumeStatus = waiting ? task.tokenHold.resumeStatus : task.status;
+    const stage = QUEUE_STATES.includes(resumeStatus) ? firstStage(task) : resumeStatus;
+    const budget = tokenAdmission(task, stage, config, state.codexUsage ?? {});
+    if (!budget) {
+      if (waiting) actions.push({ kind: 'resume-token-budget', taskId: task.id, stage });
+      else {
+        const analysis = tokenReanalysisAdmission(task, stage, config, state.codexUsage ?? {});
+        if (analysis) {
+          tokenHeld.add(task.id);
+          notes.push(`задача ${task.id}: ${analysis.explanation}`);
+          actions.push({
+            kind: 'analyze-token-budget',
+            taskId: task.id,
+            stage,
+            from: task.status,
+            analysis,
+          });
+        }
+      }
+      continue;
+    }
+    tokenHeld.add(task.id);
+    notes.push(`задача ${task.id}: ${budget.explanation}`);
+    const common = { taskId: task.id, stage, budget };
+    if (!waiting)
+      actions.push({
+        kind: 'hold-token-budget',
+        ...common,
+        from: task.status,
+        resumeLabel: config.trello.lists[resumeStatus],
+        originLabel: config.trello.lists[task.status],
+      });
+    else if (
+      Object.entries(budget).some(
+        ([key, value]) => JSON.stringify(task.tokenHold[key]) !== JSON.stringify(value),
+      )
+    )
+      actions.push({ kind: 'refresh-token-budget', ...common });
+  }
+  if (state.reconciliationReady)
+    for (const task of tasks) {
+      if (
+        !incident.sources.has(task.id) &&
+        reconciliationHeld(task, state.now) &&
+        !isRunning(task.id) &&
+        !hasReport(task.id)
+      )
+        held.set(task.id, ['сверка PR']);
+    }
+
+  // 6. Этапы, которым нужна сессия, а живого процесса нет.
+  //
+  // Сюда попадают два случая, и мерить их одной меркой правильно: этап,
+  // который ещё не начинали (задача только что переехала в новое состояние),
+  // и этап, чей процесс кончился, не оставив отчёта. Обоим нужно одно и то
+  // же — процесс. Различает их только то, известен ли идентификатор прежней
+  // сессии: если известен, её возобновляют, а не начинают заново.
+  const waitingForSession = [];
+  // Опрос может сменить этап: продолжение и пределы решит следующий свежий оборот.
+  const polled = new Set(
+    actions.filter((action) => action.kind === 'poll-external').map((action) => action.taskId),
+  );
+  for (const task of tasks) {
+    if (polled.has(task.id)) continue;
+    // Отбор идёт по признаку «этапу нужна сессия», а не по цене этапа.
+    // Раньше здесь стоял перечень классов, и прогон на чужом железе в него
+    // не попадал: класс у него «ожидательный». Из-за этого умершая сессия
+    // прогона не подхватывалась никогда — задача стояла в этапе, слот был
+    // занят ею навсегда, и заметить это можно было только глазами.
+    // Проверено 27.08.2026: 0002 простояла так почти шесть часов.
+    if (!NEEDS_SESSION.includes(task.status)) continue;
+    if (stuck.has(task.id) || hasReport(task.id) || tokenHeld.has(task.id)) continue;
+
+    // Живой процесс на этом самом этапе — работа идёт, вмешиваться незачем.
+    if (isRunning(task.id, task.status)) continue;
+
+    // Выкладка идёт пакетом: одна сессия на все задачи `deploy`, и пока она
+    // идёт, остальные ждут её конца. Ждут не из тесноты, а потому что их
+    // предмет — тот же `origin/main` — уже выкладывается; отсюда и своя
+    // запись, а не «свободных мест нет».
+    if (task.status === 'deploy') {
+      const deploying = running.find((item) => item.stage === 'deploy');
+      if (deploying) {
+        notes.push(`задача ${task.id} ждёт: идёт пакетная выкладка ${deploying.taskId}`);
+        continue;
+      }
+    }
+
+    // Команды этапа не покрыты правилами: сессию не выдаём. Причина уже
+    // названа выше, при счёте удержанных. Проверка стоит ПЕРЕД разбором
+    // пределов нарочно: удержание не тратит продолжение и не уводит задачу
+    // в ошибку — сессии не было, тратить нечего, а ошибка потребовала бы
+    // разбора, той самой второй сессии, ради отмены которой всё затеяно.
+    if (held.has(task.id)) continue;
+
+    // Отказ сервера этого оборота: сессию не выдаём, и не из осторожности.
+    // Возврат продолжения и выдача сессии — две правки одной задачи, обе
+    // по одному снимку доски, и вторая затёрла бы первую (задача 0070).
+    // Продолжение ждёт один оборот и достаётся задаче с верным счётом.
+    if (apiFailed.has(task.id)) {
+      notes.push(`задача ${task.id} ждёт оборота: прошлый этап лёг на отказе сервера`);
+      continue;
+    }
+
+    // Запись реестра требуется только там, где есть дерево. У прогона
+    // и разбора его нет вовсе, и требовать запись значило бы никогда
+    // их не подхватывать.
+    if (NEEDS_WORKTREE.includes(task.status) && !entryOf(task.id)) continue;
+
+    // Исчерпанные пределы решаются ПРЕЖДЕ проверки мест: задачу, которую
+    // дальше вести нельзя, останавливают независимо от занятости машины.
+    // Иначе повторился бы случай 0022 (02.09.2026), где остановка ждала
+    // места, освободившегося за три минуты до неё.
+    if ((task.attempts?.continuations ?? 0) >= config.maxContinuations) {
+      notes.push(`задача ${task.id}: продолжения исчерпаны, нужен разбор человеком`);
+      actions.push({
+        kind: 'fail-stage',
+        taskId: task.id,
+        stage: task.status,
+        reason: 'этап не доводится до конца, продолжения исчерпаны',
+      });
+      continue;
+    }
+
+    // Потолок стоимости. Он стоит рядом с прочими пределами, но считает
+    // не попытки, а расход ресурсов, — и потому ловит беду, у которой своего счётчика
+    // нет вовсе. 04.09.2026 задача 0216 прошла двенадцать этапов и сожгла $76,
+    // не упершись ни в один предел: все три считают попытки, а она исправно
+    // проходила этап за этапом.
+    //
+    // Сквозные состояния потолку не подлежат. Задача, упёршаяся в него,
+    // обязана быть разобрана, а разбор — тоже сессия; проверять его тем же
+    // потолком значило бы запретить разбирать ровно те задачи, ради которых
+    // потолок и заведён.
+    const limit = config.provider === 'codex' ? null : config.maxTaskCostUsd;
+    const spent = Number.isFinite(task.spentUsd) ? task.spentUsd : 0;
+    // Само состояние анализа потолком не сторожится, иначе задача,
+    // отправленная в него потолком, не смогла бы пройти тот единственный
+    // этап, ради которого её туда и отправили. Исключение того же рода,
+    // что у сквозных состояний, и по той же причине.
+    const capped = !CROSSCUT.includes(task.status) && task.status !== 'decompose';
+    if (capped && limit != null && spent >= limit) {
+      // Числа в причине обязательны: по ним человек выбирает между двумя
+      // выходами — поднять потолок или раздробить задачу, — а «предел
+      // исчерпан» без величин не даёт выбрать ничего.
+      const why =
+        `истрачено $${spent.toFixed(2)} при потолке $${limit}: ` +
+        'задача разрослась, нужен повторный анализ на дробность';
+      notes.push(`задача ${task.id}: ${why}`);
+      // В анализ, а не в разбор ошибки. Задача не сломана — она разрослась,
+      // и лог последнего этапа про это не скажет ничего.
+      actions.push({ kind: 'decompose-again', taskId: task.id, stage: task.status, reason: why });
+      continue;
+    }
+
+    // Причина названа уровнем поломки, а не последствием. «Продолжения
+    // исчерпаны» здесь было бы прямой ложью: сессии не было ни одной,
+    // и разбор, поверив, пошёл бы читать её лог, которого нет.
+    const spawnFailures = task.attempts?.spawnFailures ?? 0;
+    if (spawnFailures >= config.maxSpawnFailures) {
+      const why =
+        `этап не порождается: запуск не состоялся ${spawnFailures} раз подряд, ` +
+        'причины — в журнале задачи';
+      notes.push(`задача ${task.id}: ${why}`);
+      actions.push({ kind: 'fail-stage', taskId: task.id, stage: task.status, reason: why });
+      continue;
+    }
+
+    waitingForSession.push(task);
+  }
+
+  // Свободные места и для продолжений, и для новых карточек считаются
+  // по живым процессам. Ожидание первой сессии само место не занимает.
+  //
+  // Просить сессию, когда мест нет, после решений об отказе уже безвредно —
+  // теснота ничего не тратит. Но сборка назначения тащит журнал задачи
+  // и опись доски на каждую такую попытку, а журнал цикла получал бы «этап
+  // не запустился» каждые пять минут на исправном конвейере. Строка, которая
+  // при исправной работе означает беду, обязана быть редкой, иначе её
+  // перестают читать.
+
+  // Задачи `deploy` сворачиваются в пакет: сессию получает одна — ведущая,
+  // старшая по приоритету и возрасту, — а перечень остальных едет с ней
+  // в назначении. Предмет у них один, выложенный `origin/main`, и пятнадцать
+  // сессий по цене выкладки дали бы ровно то, что даёт одна (04.09.2026,
+  // пятнадцать карточек в «Выкладке»). Перечень складывается ЗДЕСЬ, из уже
+  // отобранных задач: удержанная, исчерпавшая пределы или ждущая оборота
+  // в пакет не попадает — решение по ней принято выше, по общим правилам.
+  const deploying = waitingForSession.filter(
+    (task) => task.status === 'deploy' && !incident.probes.has(task.id),
+  );
+  deploying.sort(byPriorityThenAge);
+  // Каждый инцидент требует своего свидетельства: общий отчёт ведущей
+  // не должен передвинуть вторую проверку в уборку без её результата.
+  const batchOf = new Map(
+    waitingForSession
+      .filter((task) => task.status === 'deploy' && incident.probes.has(task.id))
+      .map((task) => [task.id, [task.id]]),
+  );
+  if (deploying.length > 0) {
+    // Пакет не отправляется, едва в нём появилась первая задача. Условий два,
+    // и достаточно любого: накопилось довольно карточек либо прошло довольно
+    // времени с прошлой выкладки.
+    //
+    // Прежде условие было одно — «есть хоть одна», — и каждая доведённая
+    // задача звала свою выкладку. Выкладка эксклюзивна: она занимает машину
+    // целиком, а на боевом сервере поднимает и перезапускает игру. Делать это
+    // по разу на карточку дорого и для машины, и для игроков.
+    //
+    // Срок нужен рядом с порогом затем, чтобы одинокая задача не ждала
+    // вечно: пять карточек могут не набраться неделю.
+    const since = Date.parse(state.lastDeployAt ?? '');
+    const elapsed = Number.isFinite(since) ? Date.parse(now) - since : null;
+    const waited = elapsed === null || elapsed >= config.deployBatchHours * 3600000;
+    const enough = deploying.length >= config.deployBatchSize;
+    if (!enough && !waited) {
+      const hours = elapsed === null ? '—' : (elapsed / 3600000).toFixed(1);
+      notes.push(
+        `пакет выкладки копится: ${deploying.length} из ${config.deployBatchSize}, ` +
+          `с прошлой выкладки прошло ${hours} ч из ${config.deployBatchHours}`,
+      );
+    } else {
+      const [lead, ...rest] = deploying;
+      batchOf.set(
+        lead.id,
+        deploying.map((task) => task.id),
+      );
+      notes.push(
+        enough
+          ? `пакет выкладки набран: ${deploying.length} задач, ведущая ${lead.id}`
+          : `срок выкладки вышел: ведущая ${lead.id}, в пакете ${deploying.length}`,
+      );
+      for (const other of rest) {
+        notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
+      }
+    }
+  }
+  const candidates = waitingForSession
+    .filter((task) => task.status !== 'deploy' || batchOf.has(task.id))
+    .map((task) => ({
+      task,
+      kind: 'continue-stage',
+      stage: task.status,
+      batch: batchOf.get(task.id),
+      unaccounted: unaccountedLaunchNote(task, task.status, config, state.codexUsage ?? {}),
+    }));
+  const unblocking = actions.some((action) => action.kind === 'unblock-task');
+  for (const task of tasks.filter((item) => QUEUE_STATES.includes(item.status))) {
+    if (
+      held.has(task.id) ||
+      tokenHeld.has(task.id) ||
+      hasReport(task.id) ||
+      unblocking ||
+      isRunning(task.id) ||
+      (task.owner && task.owner !== state.machine)
+    )
+      continue;
+    const stage = firstStage(task);
+    const verdict = canTransition(task, stage);
+    if (!verdict.ok) {
+      notes.push(`задача ${task.id}: ${verdict.reason}`);
+      continue;
+    }
+    const missing = missingForStage(config, stage, task);
+    if (missing.length) {
+      notes.push(`задача ${task.id} не берётся: в настройке нет ${missing.join(', ')}`);
+      continue;
+    }
+    const uncovered = uncoveredAt(stage);
+    if (uncovered.length) {
+      notes.push(heldNote(task.id, stage, uncovered));
+      continue;
+    }
+    candidates.push({ task, kind: 'start-stage', stage });
+  }
+  if (!state.draining && !legacy) {
+    const selected = planLaunches({
+      candidates,
+      running,
+      tasks,
+      config,
+      scheduling,
+      now,
+      compare: byPriorityThenAge,
+    });
+    actions.push(...selected.actions);
+    for (const action of selected.actions) {
+      if (incident.probes.has(action.taskId)) action.incidentProbe = true;
+    }
+    notes.push(...selected.notes);
+  } else if (candidates.length) notes.push('самообновление ждёт тишины: сессий не выдаём');
+
+  const delayed = new Map();
+  if (!state.draining)
+    for (const task of tasks) {
+      if (incident.sources.has(task.id)) continue;
+      if (incident.active && !incident.allows(task, task.status)) continue;
+      if (tokenHeld.has(task.id)) continue;
+      if (isRunning(task.id) || running.some((item) => item.batch?.includes(task.id))) continue;
+      if (task.owner && task.owner !== state.machine) continue;
+      if (task.delayJournal) {
+        delayed.set(task.id, { kind: 'flush-delay-journal', taskId: task.id });
+        continue;
+      }
+      if (hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id)) continue;
+      if (
+        task.dependencyRecheck &&
+        DELAY_STATES.includes(task.status) &&
+        (!task.delayAnalysis || task.delayAnalysis.phase === 'monitoring') &&
+        task.status !== 'postmortem'
+      ) {
+        delayed.set(task.id, {
+          kind: 'analyze-delay',
+          taskId: task.id,
+          mode: 'verify',
+          reason:
+            'Предшественник закрыт без результата. Проверить сохранённые dependencyRecheck и blockedContext: конкретное предусловие выполнено, снято с доказательством или требует живой замены.',
+        });
+        continue;
+      }
+      const action = delayDecision(task, {
+        now: state.now,
+        answered: Boolean(answers[task.id]),
+        tasks: [
+          ...tasks,
+          ...(state.dependencyRecords ?? []),
+          ...invalid.map((item) => ({ ...item, valid: false })),
+        ],
+      });
+      if (!action) continue;
+      if (
+        action.kind === 'observe-delay' &&
+        actions.some((item) => item.taskId === task.id && item.kind === 'unblock-task')
+      )
+        continue;
+      delayed.set(task.id, action);
+    }
+  // Не выдаём обычный этап и диагностику из одного устаревшего снимка.
+  for (let index = actions.length - 1; index >= 0; index -= 1) {
+    const action = actions[index];
+    if (delayed.has(action.taskId) || action.batch?.some((id) => delayed.has(id)))
+      actions.splice(index, 1);
+  }
+  actions.push(...delayed.values());
+  if (state.reconciliationReady && !state.draining) {
+    const held = new Set();
+    for (const task of tasks) {
+      if (
+        !reconciliationHeld(task, state.now) ||
+        incident.sources.has(task.id) ||
+        isRunning(task.id) ||
+        hasReport(task.id) ||
+        (task.owner && task.owner !== state.machine) ||
+        task.delayJournal
+      )
+        continue;
+      held.add(task.id);
+      const evidence = state.reconciliationEvidence?.[task.id];
+      if (evidence)
+        actions.push({
+          kind: 'reconcile-task',
+          taskId: task.id,
+          expectedStatus: task.status,
+          expectedSince: task.statusChangedAt,
+          pr: task.links.pr,
+          proof: evidence.proof,
+          mainBranch: config.mainBranch,
+        });
+    }
+    for (let i = actions.length - 1; i >= 0; i--) {
+      const action = actions[i];
+      if (
+        action.kind !== 'reconcile-task' &&
+        action.kind !== 'push-tail' &&
+        (held.has(action.taskId) || action.batch?.some((id) => held.has(id)))
+      )
+        actions.splice(i, 1);
+    }
+  }
+  if (state.reconciliationReady && !state.draining) {
+    const review = planBacklogReview({ tasks, running, reports, machine: state.machine });
+    if (review) actions.push(review);
+  }
+  actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
+  return {
+    actions: actions.filter(
+      // Досылка не меняет карточку и снимает условие, удерживающее перенос.
+      (action) =>
+        action.kind === 'transfer-report' ||
+        action.kind === 'push-tail' ||
+        (action.kind === 'flush-delay-journal' &&
+          !reports.some((report) => report.reportId && report.taskId === action.taskId)) ||
+        !hasReport(action.taskId),
+    ),
+    notes,
+  };
+}
+
+/** Есть ли вообще работа. Ради этого ответа сканер и запускается 288 раз в сутки. */
+export const hasWork = (result) => result.actions.length > 0;

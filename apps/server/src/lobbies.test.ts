@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { LobbyError } from '@td/protocol';
 import { computerMindOf } from '@td/shared';
-import { DISCONNECT_GRACE_MS, createLobbyStore } from './lobbies.js';
+import { COMPUTER_INVITE_TIMEOUT_MS, DISCONNECT_GRACE_MS, createLobbyStore } from './lobbies.js';
 import type { LobbyStore, MatchStart } from './lobbies.js';
 
 /**
@@ -122,6 +122,261 @@ describe('вход в комнату', () => {
 
     expect(store.join('a', 'Аня', id).ok).toBe(true);
     expect(store.view('a').lobby?.slots).toHaveLength(1);
+  });
+});
+
+describe('пароль комнаты', () => {
+  const lockedBy = (password: string): string => {
+    arrive('a');
+    store.create('a', 'Аня', 'Комната Ани', password);
+    return store.view('a').lobby?.id ?? '';
+  };
+
+  it('без пароля комната остаётся открытой', () => {
+    // Пустой пароль — это «поле не заполняли», а не «пароль пустой».
+    // Так вела себя игра до появления паролей, и так она обязана вести
+    // себя дальше для всех, кому пароль не нужен.
+    const id = lockedBy('');
+    arrive('b');
+
+    expect(store.view('b').lobbies[0]?.locked).toBe(false);
+    expect(store.join('b', 'Боря', id).ok).toBe(true);
+  });
+
+  it('в закрытую комнату без пароля не войти', () => {
+    const id = lockedBy('тайна');
+    arrive('b');
+
+    expect(store.join('b', 'Боря', id)).toEqual({
+      ok: false,
+      error: LobbyError.WrongPassword,
+    });
+    expect(store.join('b', 'Боря', id, 'не та')).toEqual({
+      ok: false,
+      error: LobbyError.WrongPassword,
+    });
+    // Ни одна неудачная попытка места не заняла.
+    expect(store.view('a').lobby?.slots).toHaveLength(1);
+  });
+
+  it('с верным паролем вход обычный', () => {
+    const id = lockedBy('тайна');
+    arrive('b');
+
+    expect(store.join('b', 'Боря', id, 'тайна').ok).toBe(true);
+    expect(store.view('a').lobby?.slots.map((slot) => slot.name)).toEqual(['Аня', 'Боря']);
+  });
+
+  it('пароль виден в списке признаком, а сам наружу не уходит', () => {
+    lockedBy('тайна');
+    arrive('b');
+
+    const summary = store.view('b').lobbies[0];
+    expect(summary?.locked).toBe(true);
+    // Ни пароля, ни хеша, ни соли: список комнат видят все, и любое
+    // из трёх там означало бы, что замка нет.
+    expect(JSON.stringify(store.view('b'))).not.toContain('тайна');
+    expect(JSON.stringify(store.view('a'))).not.toContain('тайна');
+  });
+
+  it('пароль сверяется раньше заполненности', () => {
+    // Иначе по разнице ответов «занято» и «пароль не тот» посторонний
+    // узнавал бы, сколько человек в закрытой комнате.
+    const id = lockedBy('тайна');
+    arrive('b');
+    arrive('c');
+    store.join('b', 'Боря', id, 'тайна');
+
+    expect(store.join('c', 'Вова', id)).toEqual({
+      ok: false,
+      error: LobbyError.WrongPassword,
+    });
+    expect(store.join('c', 'Вова', id, 'тайна')).toEqual({ ok: false, error: LobbyError.Full });
+  });
+
+  it('негодный пароль отклоняется при создании', () => {
+    arrive('a');
+    // Из одних пробелов: назначить такой можно только по ошибке,
+    // а войти по нему — только угадав число пробелов.
+    expect(store.create('a', 'Аня', 'Комната', '   ')).toEqual({
+      ok: false,
+      error: LobbyError.BadPassword,
+    });
+    expect(store.create('a', 'Аня', 'Комната', 'я'.repeat(65))).toEqual({
+      ok: false,
+      error: LobbyError.BadPassword,
+    });
+    expect(store.view('a').lobbies).toHaveLength(0);
+  });
+
+  it('пробелы внутри и по краям пароля значимы', () => {
+    // Пароль — не подпись, и срезание пробелов молча сделало бы вход
+    // невозможным для того, кто ввёл его в точности.
+    const id = lockedBy(' два слова ');
+    arrive('b');
+
+    expect(store.join('b', 'Боря', id, 'два слова')).toEqual({
+      ok: false,
+      error: LobbyError.WrongPassword,
+    });
+    expect(store.join('b', 'Боря', id, ' два слова ').ok).toBe(true);
+  });
+
+  it('у каждой комнаты своя соль', () => {
+    // Одинаковый пароль у двух комнат не должен давать одинакового
+    // хеша: иначе совпадение хешей выдавало бы совпадение паролей.
+    arrive('a');
+    arrive('b');
+    store.create('a', 'Аня', 'Комната Ани', 'тайна');
+    store.create('b', 'Боря', 'Комната Бори', 'тайна');
+
+    arrive('c');
+    const rooms = store.view('c').lobbies;
+    expect(rooms).toHaveLength(2);
+    expect(rooms.every((room) => room.locked)).toBe(true);
+
+    // Обе открываются своим паролем — то есть соль не сломала сверку.
+    const first = rooms[0]?.id ?? '';
+    expect(store.join('c', 'Вова', first, 'тайна').ok).toBe(true);
+  });
+});
+
+describe('приглашение компьютера', () => {
+  /** Хранилище, знающее одну манеру и одну компьютерную личность. */
+  const withComputer = (): LobbyStore =>
+    createLobbyStore({
+      now: () => clock,
+      randomSeed: () => 111,
+      randomTicket: () => `ticket-${String(ticketIndex++)}`,
+      computerProfiles: () => [{ id: 'рой', title: 'Матч с компьютером' }],
+      computerProfileOf: (playerId) => (playerId === 'бот' ? 'рой' : undefined),
+    });
+
+  it('помечает комнату, но никого не подставляет', () => {
+    // Ключевое свойство: особого пути в матч у компьютера нет. Комната
+    // помечается приглашением, а войти в неё он должен сам — тем же
+    // запросом, что и человек.
+    const store2 = withComputer();
+    store2.connect('a');
+    store2.create('a', 'Аня', 'Комната Ани');
+
+    expect(store2.inviteComputer('a', 'рой').ok).toBe(true);
+    expect(store2.view('a').lobby?.slots).toHaveLength(1);
+    expect(store2.view('a').lobby?.wanted).toBe('рой');
+    expect(store2.view('b').lobbies[0]?.wanted).toBe('рой');
+  });
+
+  it('незнакомая манера отклоняется, а не ждёт молча', () => {
+    const store2 = withComputer();
+    store2.connect('a');
+    store2.create('a', 'Аня', 'Комната Ани');
+
+    expect(store2.inviteComputer('a', 'стратег')).toEqual({
+      ok: false,
+      error: LobbyError.NoComputer,
+    });
+    expect(store2.view('a').lobby?.wanted).toBeNull();
+  });
+
+  it('без своей комнаты звать некуда', () => {
+    const store2 = withComputer();
+    store2.connect('a');
+
+    expect(store2.inviteComputer('a', 'рой')).toEqual({
+      ok: false,
+      error: LobbyError.NotInLobby,
+    });
+  });
+
+  it('в полную комнату не зовут', () => {
+    const store2 = withComputer();
+    store2.connect('a');
+    store2.connect('b');
+    store2.create('a', 'Аня', 'Комната Ани');
+    const id = store2.view('b').lobbies[0]?.id ?? '';
+    store2.join('b', 'Боря', id);
+
+    expect(store2.inviteComputer('a', 'рой')).toEqual({ ok: false, error: LobbyError.Full });
+  });
+
+  it('вошедший снимает приглашение', () => {
+    const store2 = withComputer();
+    store2.connect('a');
+    store2.connect('бот');
+    store2.create('a', 'Аня', 'Комната Ани');
+    store2.inviteComputer('a', 'рой');
+
+    const id = store2.view('бот').lobbies[0]?.id ?? '';
+    expect(store2.join('бот', 'Компьютер', id).ok).toBe(true);
+    expect(store2.view('a').lobby?.wanted).toBeNull();
+    expect(store2.view('a').lobby?.slots).toHaveLength(2);
+  });
+
+  it('позванный входит в закрытую комнату без пароля, а посторонний — нет', () => {
+    // Пароля компьютер не знает и знать не может: его придумал хозяин
+    // и держит при себе. Условий три, и все обязательны: комната звала,
+    // вошедший объявлен компьютером, манера та самая.
+    const store2 = withComputer();
+    store2.connect('a');
+    store2.connect('бот');
+    store2.connect('c');
+    store2.create('a', 'Аня', 'Комната Ани', 'тайна');
+    const id = store2.view('бот').lobbies[0]?.id ?? '';
+
+    // Пока не звали — даже компьютеру нужен пароль.
+    expect(store2.join('бот', 'Компьютер', id)).toEqual({
+      ok: false,
+      error: LobbyError.WrongPassword,
+    });
+
+    store2.inviteComputer('a', 'рой');
+
+    // Посторонний приглашением не пользуется.
+    expect(store2.join('c', 'Вова', id)).toEqual({
+      ok: false,
+      error: LobbyError.WrongPassword,
+    });
+    expect(store2.join('бот', 'Компьютер', id).ok).toBe(true);
+  });
+
+  it('позванный, но не пришедший, перестаёт ожидаться', () => {
+    // Службы нет или её дежурные кончились. Висящее «зовём…» не даёт
+    // игроку ни позвать другую манеру, ни понять, что звать некого.
+    const store2 = withComputer();
+    store2.connect('a');
+    store2.create('a', 'Аня', 'Комната Ани');
+    store2.inviteComputer('a', 'рой');
+
+    clock += COMPUTER_INVITE_TIMEOUT_MS + 1;
+    expect(store2.sweep()).toBe(true);
+    expect(store2.view('a').lobby?.wanted).toBeNull();
+  });
+
+  it('повторное приглашение той же манеры срока не продлевает', () => {
+    // Иначе нажатие раз в секунду откладывало бы отказ навсегда,
+    // и «компьютер не пришёл» игрок не увидел бы никогда.
+    const store2 = withComputer();
+    store2.connect('a');
+    store2.create('a', 'Аня', 'Комната Ани');
+    store2.inviteComputer('a', 'рой');
+
+    clock += COMPUTER_INVITE_TIMEOUT_MS - 1;
+    store2.inviteComputer('a', 'рой');
+    clock += 2;
+
+    expect(store2.sweep()).toBe(true);
+    expect(store2.view('a').lobby?.wanted).toBeNull();
+  });
+
+  it('состав манер приходит игроку вместе с состоянием', () => {
+    // Зашитый в клиент состав соврал бы при первой же смене службы.
+    const store2 = withComputer();
+    store2.connect('a');
+
+    expect(store2.view('a').computerProfiles).toEqual([{ id: 'рой', title: 'Матч с компьютером' }]);
+    // Без службы список пуст, и это тоже сведения: игроку показывают
+    // причину, а не пустое место.
+    expect(store.view('a').computerProfiles).toEqual([]);
   });
 });
 

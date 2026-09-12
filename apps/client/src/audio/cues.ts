@@ -1,16 +1,16 @@
 import {
   BLAST_LIFETIME_TICKS,
   BlastKind,
-  NUKE_DELAY_TICKS,
   SHOT_LIFETIME_TICKS,
   ShotWeapon,
+  StructureKind,
   TICKS_PER_SECOND,
   unitsToCells,
 } from '@td/shared';
 import { cellIndex, cellX, cellY } from '@td/sim';
 import type { WorldState } from '@td/sim';
 import { hashOf } from '../game/noise.js';
-import { Sound } from './sounds.js';
+import { NUKE_FALL_TICKS, Sound } from './sounds.js';
 
 /**
  * Что и где сейчас прозвучало.
@@ -79,6 +79,15 @@ const KEEP_TICKS = BLAST_LIFETIME_TICKS[BlastKind.Nuke] * 10;
 
 /** Как часто подметать. Каждый кадр незачем: обход множества не бесплатен. */
 const SWEEP_EVERY_TICKS = TICKS_PER_SECOND * 5;
+
+/**
+ * Примета, которой ключ свиста отличается от ключа пуска.
+ *
+ * У ракеты два звука и один идентификатор. Возьми оба ключом сам
+ * идентификатор — первый же сыгранный пуск запретил бы свист навсегда:
+ * множество сыгранного не знает, какой это был звук, оно знает ключ.
+ */
+const FALL_KEY_SALT = 0x0f411;
 
 const BLAST_SOUND: Readonly<Record<BlastKind, Sound>> = {
   [BlastKind.Unit]: Sound.BlastUnit,
@@ -177,10 +186,33 @@ export const createCueFeed = (): CueFeed => {
       }
 
       // Ядерная ракета — единственная запись с собственным
-      // идентификатором, и ключ у неё поэтому не хеш, а он сам.
-      // Свист начинается с появления записи и длится ровно до детонации.
+      // идентификатором, и ключ у неё поэтому не хеш, а он сам. Звуков
+      // у неё два, поэтому ключа тоже два: сам идентификатор у пуска
+      // и его же хеш с приметой у свиста. Один ключ на два звука
+      // означал бы, что второй не прозвучит никогда.
       for (const nuke of world.nukes) {
-        take(nuke.id, Sound.NukeFall, cellX(nuke.cell) + 0.5, cellY(nuke.cell) + 0.5);
+        // Пуск — в тот момент, когда запись появилась, и НЕ у цели,
+        // а у базы стрелявшего: пускают оттуда. Точки старта в мире
+        // не хранится вовсе (`NukeState` знает только цель), и другого
+        // способа узнать место нет.
+        const base = world.structures.find(
+          (structure) => structure.owner === nuke.owner && structure.kind === StructureKind.Base,
+        );
+        if (base !== undefined) {
+          take(nuke.id, Sound.NukeLaunch, cellX(base.cell) + 0.5, cellY(base.cell) + 0.5);
+        }
+
+        // Свист — у цели и ТОЛЬКО на последних тиках подлёта. Звучи он
+        // с пуска, он занял бы собой все три секунды и перестал бы быть
+        // предупреждением; о пуске сообщает свой звук у чужой базы.
+        //
+        // Сравнение по номеру тика, а не отсчёт от появления записи:
+        // номер тика умеет уменьшаться при откате предсказания, и всё,
+        // что здесь считается, обязано зависеть только от снимка.
+        if (tick >= nuke.detonateAtTick - NUKE_FALL_TICKS) {
+          const key = hashOf([nuke.id, FALL_KEY_SALT]);
+          take(key, Sound.NukeFall, cellX(nuke.cell) + 0.5, cellY(nuke.cell) + 0.5);
+        }
       }
 
       sweep(tick);
@@ -214,7 +246,11 @@ export const cueLifetimeTicks = (sound: Sound): number => {
     case Sound.NukeBlast:
       return BLAST_LIFETIME_TICKS[BlastKind.Nuke];
     case Sound.NukeFall:
-      return NUKE_DELAY_TICKS;
+      return NUKE_FALL_TICKS;
+    // Пуск живёт столько же, сколько свист: обе записи говорят об одной
+    // ракете, и переживать её ни одна не вправе.
+    case Sound.NukeLaunch:
+      return NUKE_FALL_TICKS;
     case Sound.Rotor:
       return 0;
   }

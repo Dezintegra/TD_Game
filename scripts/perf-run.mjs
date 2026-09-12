@@ -6,6 +6,7 @@
  *   pnpm e2e:perf -- --check-only   только сказать, свободна ли машина
  *   pnpm e2e:perf -- --force        мерить, не глядя на занятость
  *   pnpm e2e:perf -- --history      показать прошлые замеры
+ *   pnpm e2e:perf -- --client-port 5199 --port 3055   выбрать порты
  *
  * Зачем обёртка. Замер частоты кадров говорит о загрузке машины не меньше,
  * чем о коде: 22.08.2026 при пяти рабочих потоках выходило 45–51 кадра
@@ -23,6 +24,10 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
+import { releasePerfLock } from './perf-lock.mjs';
+import { preparePerfPackages } from './perf-prepare.mjs';
+import { parsePerfOptions, resolvePerfPorts } from './perf-options.mjs';
+import { perfServiceSpecs, startPerfServices } from './perf-services.mjs';
 import {
   BUSY_LIMIT,
   die,
@@ -39,13 +44,17 @@ import {
 } from './perf-common.mjs';
 
 // ── Ключи ────────────────────────────────────────────────────────────
-const argv = process.argv.slice(2);
-const own = new Set(['--check-only', '--force', '--history']);
-const checkOnly = argv.includes('--check-only');
-const force = argv.includes('--force');
-const passthrough = argv.filter((it) => !own.has(it));
+let options;
+let config;
+try {
+  options = parsePerfOptions(process.argv.slice(2));
+  if (!options.history) config = resolvePerfPorts(options.ports, process.env);
+} catch (error) {
+  die(error.message);
+}
+const { checkOnly, force, passthrough } = options;
 
-if (argv.includes('--history')) {
+if (options.history) {
   printHistory();
   process.exit(0);
 }
@@ -53,6 +62,16 @@ if (argv.includes('--history')) {
 // Сырой вывод замера — свой у каждого дерева: это промежуточный файл
 // одного прогона, и делить его не с кем.
 const measurementsPath = join(repoRoot, 'test-results', 'perf-measurements.jsonl');
+
+// Подготовка до замера занятости: компилятор не должен попадать в цифры прогона.
+if (!checkOnly) {
+  step('Готовлю внутренние пакеты для серверов замера');
+  try {
+    preparePerfPackages(repoRoot);
+  } catch (error) {
+    die(`не удалось подготовить замер: ${error.message}`);
+  }
+}
 
 // ── Проверка обстановки ──────────────────────────────────────────────
 step('Смотрю, свободна ли машина');
@@ -89,11 +108,11 @@ const portFree = (port) =>
  * второе — нельзя ни при каких обстоятельствах.
  */
 step('Смотрю, свободны ли порты');
-const clientPort = Number(process.env['CLIENT_PORT'] ?? 5173);
-const serverPort = Number(process.env['PORT'] ?? 3001);
+const { clientPort, serverPort, metricsPort } = config;
 const taken = [];
 if (!(await portFree(clientPort))) taken.push(`клиентский ${clientPort} (CLIENT_PORT)`);
 if (!(await portFree(serverPort))) taken.push(`серверный ${serverPort} (PORT)`);
+if (!(await portFree(metricsPort))) taken.push(`метрики ${metricsPort} (COMPUTER_METRICS_PORT)`);
 
 if (taken.length > 0) {
   die(
@@ -106,7 +125,7 @@ if (taken.length > 0) {
       '  «до и после» дважды измерило одну и ту же сборку.',
       '',
       '  Погасите чужой сервер либо возьмите свои порты:',
-      '      CLIENT_PORT=5199 PORT=3055 pnpm e2e:perf',
+      '      pnpm e2e:perf -- --client-port 5199 --port 3055',
     ].join('\n'),
   );
 }
@@ -127,9 +146,9 @@ writeFileSync(
 // заблокировал бы соседние деревья на четверть часа впустую.
 const release = () => {
   try {
-    rmSync(lockPath, { force: true });
-  } catch {
-    // Уже удалён — значит цель достигнута.
+    releasePerfLock(lockPath);
+  } catch (error) {
+    warn(`не удалось освободить замок: ${error.message}`);
   }
 };
 process.on('exit', release);
@@ -155,23 +174,38 @@ rmSync(measurementsPath, { force: true });
 // в конце.
 const sampling = startBusySampling();
 
-const status = await new Promise((resolve) => {
-  const child = spawn(
-    'pnpm',
-    ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
-    {
-      stdio: 'inherit',
-      shell: true,
-      cwd: repoRoot,
-      env: { ...process.env, PERF_OUT: measurementsPath },
-    },
-  );
+let services;
+let status;
+try {
+  if (process.platform === 'win32')
+    services = await startPerfServices(perfServiceSpecs(repoRoot, config.env));
+  status = await new Promise((resolve) => {
+    const child = spawn(
+      'pnpm',
+      ['exec', 'playwright', 'test', '--config', 'playwright.perf.config.ts', ...passthrough],
+      {
+        stdio: 'inherit',
+        shell: true,
+        cwd: repoRoot,
+        env: {
+          ...config.env,
+          PERF_OUT: measurementsPath,
+          ...(services ? { PERF_MANAGED_SERVICES: '1' } : {}),
+        },
+      },
+    );
 
-  // Не запустился вовсе — это не «замер провалился», но и не успех.
-  // Ниже такой прогон отсеется по отсутствию чисел.
-  child.on('error', () => resolve(1));
-  child.on('close', (code) => resolve(code ?? 1));
-});
+    // Не запустился вовсе — это не «замер провалился», но и не успех.
+    // Ниже такой прогон отсеется по отсутствию чисел.
+    child.on('error', () => resolve(1));
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+} catch (error) {
+  warn(`не удалось запустить замер: ${error.message}`);
+  status = 1;
+} finally {
+  await services?.stop();
+}
 
 const load = sampling.stop();
 
@@ -214,4 +248,21 @@ recordEntry({
   unit: ' к/с',
 });
 
-process.exit(status);
+/**
+ * Код возврата различает просадку и поломку.
+ *
+ * Прежде здесь стоял `process.exit(status)` — код самого Playwright, —
+ * и по нему нельзя было отличить «пятьдесят пять не набрали» от «браузер
+ * не нашёлся». Вызывающему оставалось считать всякий неуспех отказом,
+ * и потому выкладка падала на просадке, хотя решение владельца продукта
+ * прямо обратное: выкладывать и при просадке, заводя на неё задачу.
+ *
+ * Числа до этой строки уже получены и записаны в журнал — значит замер
+ * СОСТОЯЛСЯ, и его неуспех может означать только непройденный порог.
+ * Несостоявшийся замер сюда не доходит вовсе: он умирает выше, на проверке
+ * «ни одного числа», с кодом 1.
+ *
+ * 0 — порог взят. 2 — замер состоялся, порог не взят. 1 — померить не вышло.
+ */
+const THRESHOLD_MISSED = 2;
+process.exit(status === 0 ? 0 : THRESHOLD_MISSED);

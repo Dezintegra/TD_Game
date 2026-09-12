@@ -1,12 +1,12 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TICKS_PER_SECOND } from '@td/shared';
 import { DEFAULT_PROFILE_ID } from '@td/ai';
-import { createLogWriter } from './log.js';
+import { createLogWriter, logPathFor } from './log.js';
 import { runMatch } from './match.js';
-import { ingestFile, openDatabase } from './ingest.js';
+import { ingestFile, openDatabase, readLogText } from './ingest.js';
 import { reportBatch, reportMatch } from './report.js';
 import type { LogRecord } from './records.js';
 
@@ -29,7 +29,7 @@ const SEED = 777;
 const MATCH_ID = `test-${String(SEED)}`;
 
 const dir = mkdtempSync(join(tmpdir(), 'arena-test-'));
-const logPath = join(dir, 'match.jsonl');
+const logPath = logPathFor(dir, 'match');
 
 const log = createLogWriter(logPath);
 runMatch({
@@ -42,7 +42,7 @@ runMatch({
 });
 
 const linesOf = (path: string): LogRecord[] =>
-  readFileSync(path, 'utf8')
+  readLogText(path)
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as LogRecord);
@@ -100,7 +100,7 @@ describe('прогон матча', () => {
   });
 
   it('матч воспроизводится: тот же seed даёт тот же лог', () => {
-    const again = join(dir, 'again.jsonl');
+    const again = logPathFor(dir, 'again');
     const writer = createLogWriter(again);
 
     runMatch({
@@ -133,16 +133,23 @@ describe('сборка базы', () => {
     expect((db.prepare('select count(*) as n from match').get() as { n: number }).n).toBe(1);
   });
 
-  it('оборванная последняя строка не рушит сборку', () => {
-    // Прерванный прогон оставляет ровно такой файл: годные строки
-    // и обрубок в конце. Портится копия, а не общий лог.
-    const truncated = join(dir, 'truncated.jsonl');
-    copyFileSync(logPath, truncated);
-    appendFileSync(truncated, '{"t":"sample","tick":1,"pla');
+  it('прерванный прогон не рушит сборку', () => {
+    // Прерванный прогон оставляет ровно такой файл: сжатые порции,
+    // легшие на диск, и недописанная последняя. Портится копия,
+    // а не общий лог.
+    //
+    // Проверка та же по смыслу, что и дешёвая в `ingest.test.ts`,
+    // но на настоящем логе матча: там файл собран руками из трёх
+    // записей, здесь — из тысяч, накопленных за минуту игры.
+    const truncated = logPathFor(dir, 'truncated');
+    const whole = readFileSync(logPath);
+    writeFileSync(truncated, whole.subarray(0, whole.length - 64));
 
     const result = ingestFile(db, truncated);
 
-    expect(result.broken).toBe(1);
+    // Сколько именно записей уцелело от оборванной порции — дело
+    // случая, поэтому проверяется, что сборка прошла и не потеряла
+    // всё разом.
     expect(result.matches).toBe(1);
     expect(result.rows).toBeGreaterThan(0);
   });
