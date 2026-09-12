@@ -25,6 +25,12 @@ import {
 import { categoriesProblem } from './categories.mjs';
 import { closureReasonFor, closureRequestKey } from './closure.mjs';
 import { journalBody } from './journal.mjs';
+import { workKindProblem } from './scheduling.mjs';
+import {
+  incidentDeclarationProblem,
+  incidentFromReport,
+  verifyIncident,
+} from './pipeline-incidents.mjs';
 /** План собирается теми же правилами, но все записи становятся данными. */
 export async function prepareReportPlan(action, io, saved = null) {
   if (saved) return globalThis.structuredClone(saved);
@@ -135,6 +141,30 @@ export async function transferReport(action, io) {
   // заводилось прежнее правило.
   const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
 
+  // Проба обязана закончиться свидетельством даже при blocked: обычный
+  // маршрут вопроса владельцу иначе оставил бы общий инцидент без разбора.
+  const verificationTask =
+    task.pipelineIncident && !task.pipelineIncident.probeStartedAt
+      ? {
+          ...task,
+          pipelineIncident: {
+            ...task.pipelineIncident,
+            probeStartedAt: io.incidentProbeAt?.(task.pipelineIncident.id) ?? null,
+          },
+        }
+      : task;
+  const verification = verifyIncident(verificationTask, report, io.now);
+  if (verification?.problem) {
+    const stopped = await halt(addSpent(task, report.costUsd), verification.problem, io, {
+      what: report.summary,
+    });
+    if (stopped.result === 'done') {
+      io.forgetSession?.(task.id, report.stage);
+      io.removeReport(task.id, report.stage);
+    }
+    return stopped;
+  }
+
   if (task.delayAnalysis?.reportKey === delayKey(report) && !task.delayJournal) {
     if (['blocked', 'new'].includes(task.status)) {
       const released = await io.release?.(task);
@@ -161,6 +191,19 @@ export async function transferReport(action, io) {
   if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
   const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
   if (categoryProblem) return { result: 'failed', why: categoryProblem };
+  const incidentProblem = incidentDeclarationProblem(report.pipelineIncident, task, report);
+  if (incidentProblem) return { result: 'failed', why: incidentProblem };
+  const workProblem = workKindProblem(
+    report.workKind !== undefined || report.workReason !== undefined
+      ? {
+          type: task.type,
+          area: task.area,
+          workKind: report.workKind,
+          workReason: report.workReason,
+        }
+      : task,
+  );
+  if (workProblem) return { result: 'failed', why: workProblem };
   if (report.categories && report.requests) {
     if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };
     for (const request of report.requests) {
@@ -240,6 +283,11 @@ export async function transferReport(action, io) {
   // ровно против кругов, каждый из которых чем-то кончался.
   next = addSpent(next, report.costUsd);
   if (report.categories) next.categories = [...report.categories];
+  if (verification?.incident && !halted) next.pipelineIncident = verification.incident;
+  if (report.workKind !== undefined) {
+    next.workKind = report.workKind;
+    next.workReason = report.workReason;
+  }
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без
@@ -267,6 +315,11 @@ export async function transferReport(action, io) {
     // в проработку.
     decomposed: report.outcome === 'split',
   });
+  if (verification?.incident && !halted)
+    plan.notes = [
+      ...(plan.notes ?? []),
+      `Инцидент ${verification.incident.id} проверен: ${verification.incident.verificationEvidence}. Следующая новая карточка — игровая, если готова.`,
+    ];
   // Частичный план не доказывает завершение разделения: иначе потерянная
   // часть исчезнет из ожиданий всех потребителей закрытого родителя.
   if (verdict.status === 'closed' && plan.rejected.length > 0) {
@@ -292,6 +345,15 @@ export async function transferReport(action, io) {
       maxReturns: io.maxAutoReturns,
     });
     next = { ...next, recovery: judged.recovery };
+    const opened = incidentFromReport(task, report, judged.recovery.fixedBy, io.now);
+    if (opened.problem) return { result: 'failed', why: opened.problem };
+    if (opened.incident) {
+      next.pipelineIncident = opened.incident;
+      plan.notes = [
+        ...(plan.notes ?? []),
+        `Инцидент ${opened.incident.id}: ${opened.incident.evidence}. Исправления: ${opened.incident.fixedBy.join(', ')}. Проверка: ${opened.incident.check.expectation}`,
+      ];
+    }
     plan.notes = [...(plan.notes ?? []), ...judged.notes];
   }
 

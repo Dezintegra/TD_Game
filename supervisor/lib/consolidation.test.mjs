@@ -70,6 +70,11 @@ describe('поглощение без потери требований', () => 
       [[item], { ...context(), busy: () => true }],
       [[item], context([source, { ...target, dependsOn: [source.id] }])],
       [[item], context([{ ...source, links: { pr: 42 } }, target])],
+      [
+        [item],
+        context([{ ...source, status: 'failed', pipelineIncident: { id: 'active' } }, target]),
+      ],
+      [[item], context([source, { ...target, pipelineIncident: { id: 'active' } }])],
     ];
     for (const [items, ctx] of cases) {
       const p = planConsolidations(items, ctx);

@@ -106,7 +106,7 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
       value: { ...merged, state: 'OPEN' },
     });
     expect(workActions(result)).toEqual([
-      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+      expect.objectContaining({ kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' }),
     ]);
     expect(held).toEqual(before);
     expect(exec.mock.calls[0][2]).toMatchObject({ cwd: root, timeout: 10000, windowsHide: true });
@@ -121,7 +121,7 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
       value: null,
     });
     expect(workActions(result)).toEqual([
-      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+      expect.objectContaining({ kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' }),
     ]);
   });
   it('ожидающий deploy не занимает исключительность и не входит в пакет', async () => {
@@ -140,7 +140,7 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
     ]);
     const ready = await decision(mode, { tasks: [held, base(), task('0003-ready')], value: null });
     expect(workActions(ready.result)).toEqual([
-      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+      expect.objectContaining({ kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' }),
     ]);
   });
   it('сохраняет живой процесс и перенос отчёта, не читая GitHub', async () => {
@@ -169,11 +169,13 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
     const waiting = await decision(mode, { tasks: [dependent(), base({ status: 'deploy' })] });
     expect(waiting.result.actions.some((a) => a.taskId === '0001-next')).toBe(false);
     expect(waiting.exec).not.toHaveBeenCalled();
-    expect((await decision(mode)).result.actions).toContainEqual({
-      kind: 'start-stage',
-      taskId: '0001-next',
-      stage: 'decompose',
-    });
+    expect((await decision(mode)).result.actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'start-stage',
+        taskId: '0001-next',
+        stage: 'decompose',
+      }),
+    );
     const changed = await decision(mode, {
       tasks: [
         dependent({ dependencyResults: [{ taskId: '0002-base', kind: 'merged-pr', pr: 169 }] }),
@@ -231,11 +233,13 @@ describe('сборка от снимка Trello до допуска', () => {
     };
     const run = createCommandRunner(root, () => JSON.stringify(merged));
     const state = await buildDependencyState({ backlog, config, root, run });
-    expect(scan({ ...state, config }).actions).toContainEqual({
-      kind: 'start-stage',
-      taskId: '0001-next',
-      stage: 'decompose',
-    });
+    expect(scan({ ...state, config }).actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'start-stage',
+        taskId: '0001-next',
+        stage: 'decompose',
+      }),
+    );
     const duplicate = await buildDependencyState({
       backlog: {
         ...backlog,

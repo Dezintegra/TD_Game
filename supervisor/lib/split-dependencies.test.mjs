@@ -170,11 +170,13 @@ describe('ожидание частей закрытого предшестве�
     const ready = { id: '0009-ready', type: 'feature', status: 'new' };
     const result = decision(waiting, [parent, launch, ready]);
     expect(result.actions.filter((item) => item.taskId === consumer.id)).toEqual([]);
-    expect(result.actions).toContainEqual({
-      kind: 'start-stage',
-      taskId: ready.id,
-      stage: 'decompose',
-    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'start-stage',
+        taskId: ready.id,
+        stage: 'decompose',
+      }),
+    );
   });
 
   it('не прерывает живой этап после изменения зависимостей', () => {

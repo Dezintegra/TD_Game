@@ -44,6 +44,7 @@ import {
 } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
+import { createSchedulingStore } from '../lib/scheduling-store.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { openReportStore } from '../lib/report-store.mjs';
@@ -191,6 +192,7 @@ const runCommand = createCommandRunner(root);
 
 const runGit = (args) => runCommand(args, 'git');
 const { config, missing } = loadConfig();
+const schedulingStore = createSchedulingStore(root, config);
 const git = createGit(runGit, { remote: config.remote, mainBranch: config.mainBranch });
 
 /**
@@ -595,11 +597,18 @@ async function turn() {
   );
 
   const registry = readRegistry(root, config);
+  if (!schedulingStore.read().error) {
+    schedulingStore.reconcile(backlog.tasks, supervisor.stageStartedAt);
+    for (const task of [...backlog.tasks, ...(backlog.dependencyRecords ?? [])]) {
+      if (task.pipelineIncident?.verifiedAt) schedulingStore.recovered(task.pipelineIncident.id);
+    }
+  }
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const state = {
     machine,
+    scheduling: schedulingStore.read(),
     ...(await buildDependencyState({
       backlog,
       machine,
@@ -676,6 +685,9 @@ async function turn() {
           (item) => item.reportId !== ignoreReportId && reportTaskIds(item).includes(taskId),
         ),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
+      recordSchedulingLaunch: (task) => schedulingStore.launched(task, new Date().toISOString()),
+      schedulingBlocked: () => schedulingStore.read().error,
+      incidentProbeAt: (id) => schedulingStore.read().probes?.[id],
       reportStorageBlocked: () => supervisor.reportStorageBlocked,
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),

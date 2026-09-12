@@ -48,6 +48,12 @@ export function planConsolidations(items, { tasks, originId, stage, machine, bus
       continue;
     }
     if (
+      [source, target].some((task) => task.pipelineIncident && !task.pipelineIncident.verifiedAt)
+    ) {
+      reject('инцидент требует проверки исходного пути до поглощения карточки');
+      continue;
+    }
+    if (
       !SOURCE_STATES.includes(source.status) ||
       source.links?.pr ||
       source.splitInto?.length ||
@@ -177,7 +183,7 @@ export function planClassifications(
     }
     seen.add(task.id);
     const moved = applyTransition(
-      { ...task, area: 'pipeline' },
+      { ...task, area: 'pipeline', workKind: 'service', workReason: item.evidence },
       { status: 'maintenance', note: item.evidence, now },
     );
     if (!moved.task) {

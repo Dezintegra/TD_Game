@@ -22,6 +22,7 @@ import { transferReport } from './report-delivery.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { recoverClosureReason } from './closure.mjs';
+import { incidentPolicy } from './pipeline-incidents.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -63,6 +64,7 @@ async function startStage(action, io) {
   const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
   if (task.reanalysis) claimed.task.reanalysis = false;
+  if (action.scheduling && !task.scheduling) claimed.task.scheduling = action.scheduling;
 
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
@@ -85,7 +87,9 @@ async function startStage(action, io) {
       at: io.now,
       from: task.status,
       to: action.stage,
-      what: `Взята в работу машиной ${io.machine}.`,
+      what: [`Взята в работу машиной ${io.machine}.`, action.selectionReason]
+        .filter(Boolean)
+        .join(' '),
     },
     `chore(backlog): ${task.id} взята в работу (${action.stage})`,
   );
@@ -172,6 +176,7 @@ async function startStage(action, io) {
     return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
   }
 
+  io.recordSchedulingLaunch?.(claimed.task);
   return { result: 'done', status: action.stage };
 }
 
@@ -296,14 +301,21 @@ async function continueStage(action, io) {
   // Процесс родился. Удавшееся порождение гасит счёт несостоявшихся
   // запусков: оно доказывает, что машинерия запуска работает, и прежние
   // отказы к делу больше не относятся.
-  const started = { ...counted, attempts: { ...counted.attempts, spawnFailures: 0 } };
+  const started = {
+    ...counted,
+    attempts: { ...counted.attempts, spawnFailures: 0 },
+    ...(action.incidentProbe
+      ? { pipelineIncident: { ...counted.pipelineIncident, probeStartedAt: io.now } }
+      : {}),
+  };
+  io.recordSchedulingLaunch?.(started);
   const push = await io.saveTask(
     started,
     {
       at: io.now,
       from: task.status,
       to: task.status,
-      what: [`Этапу выдана сессия: ${action.reason}.`, action.unaccounted]
+      what: [`Этапу выдана сессия: ${action.reason}.`, action.selectionReason, action.unaccounted]
         .filter(Boolean)
         .join(' '),
     },
@@ -788,6 +800,22 @@ const HANDLERS = {
   cleanup: cleanupTask,
   'transfer-report': transferReport,
   'start-stage': startStage,
+  'open-incident': async (action, io) => {
+    const task = io.readTask(action.taskId);
+    if (!task || task.pipelineIncident)
+      return { result: 'skipped', why: 'инцидент уже учтён или задача недоступна' };
+    const saved = await io.saveTask(
+      { ...task, pipelineIncident: action.incident },
+      {
+        at: io.now,
+        from: task.status,
+        to: task.status,
+        what: `Подтверждён общий инцидент ${action.incident.id}: ${action.incident.evidence} Исправления: ${action.incident.fixedBy.join(', ')}. Проверка: ${action.incident.check.expectation}`,
+      },
+      `chore(backlog): ${task.id} общий инцидент конвейера`,
+    );
+    return saved.ok ? { result: 'done' } : { result: 'failed', why: saved.why ?? saved.outcome };
+  },
   'note-orphan': noteOrphan,
   'note-api-error': noteApiError,
   'decompose-again': decomposeAgain,
@@ -810,6 +838,10 @@ export async function execute(actions, io) {
   const results = [];
 
   for (const action of actions) {
+    if (['start-stage', 'continue-stage'].includes(action.kind) && io.schedulingBlocked?.()) {
+      results.push({ action, result: 'skipped', why: io.schedulingBlocked() });
+      continue;
+    }
     if (io.reportStorageBlocked?.()) {
       results.push({ action, result: 'failed', why: 'report storage blocks scheduling' });
       break;
@@ -822,6 +854,36 @@ export async function execute(actions, io) {
     ) {
       results.push({ action, result: 'skipped', why: 'pending report owns this task' });
       continue;
+    }
+    // Перенесённый выше отчёт мог открыть инцидент уже после снимка scan.
+    // Проверяем допуск до захвата и порождения, по обновлённому кешу доски.
+    if (['start-stage', 'continue-stage'].includes(action.kind) && io.allTaskIds) {
+      const tasks = io
+        .allTaskIds()
+        .map((id) => io.readTask(id))
+        .filter(Boolean);
+      const probes = Object.fromEntries(
+        tasks
+          .filter((task) => task.pipelineIncident)
+          .map((task) => [
+            task.pipelineIncident.id,
+            io.incidentProbeAt?.(task.pipelineIncident.id),
+          ]),
+      );
+      const policy = incidentPolicy({
+        tasks,
+        dependencyRecords: io.dependencyRecords?.() ?? [],
+        scheduling: { probes },
+      });
+      const task = io.readTask(action.taskId);
+      if (task && !policy.allows(task, action.stage)) {
+        results.push({
+          action,
+          result: 'skipped',
+          why: 'подтверждённый инцидент удерживает выдачу',
+        });
+        continue;
+      }
     }
     const handler = HANDLERS[action.kind];
     if (!handler) {

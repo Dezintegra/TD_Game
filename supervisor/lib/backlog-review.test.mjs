@@ -71,7 +71,15 @@ describe('самостоятельная сверка изменившейся �
     expect(planClassifications([item], ctx).operations[0].task).toMatchObject({
       status: 'maintenance',
       area: 'pipeline',
+      workKind: 'service',
+      workReason: item.evidence,
     });
+    expect(
+      planClassifications([item], {
+        ...ctx,
+        tasks: [{ ...source, workKind: 'game', workReason: 'Прежняя оценка' }],
+      }).operations[0].task.workKind,
+    ).toBe('service');
     expect(planClassifications([item], { ...ctx, busy: () => true }).operations).toEqual([]);
     expect(planClassifications([{ ...item, evidence: '' }], ctx).operations).toEqual([]);
   });
