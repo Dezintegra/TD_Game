@@ -1,4 +1,7 @@
 import { unblockTask } from './blockers.mjs';
+import { queueBacklogReview } from './backlog-review.mjs';
+import { reportTaskIds } from './report-targets.mjs';
+import { reconcileTask } from './backlog-reconciliation.mjs';
 import { resolveDependents } from './resolve-dependents.mjs';
 import { changeTokenHold } from './token-hold.mjs';
 import { analyzeTokenBudget } from './token-reanalysis.mjs';
@@ -202,7 +205,7 @@ function assignmentFor(action, io, task, branchHint) {
     // не вправе, а читать устаревшую копию с диска хуже, чем не читать.
     task,
     journal: io.readJournal(action.taskId),
-    board: io.boardDigest(),
+    board: io.boardDigest(task.id),
     delayDependencies: reviewingDelay(task)
       ? (task.dependsOn ?? []).map((id) => ({
           task: io.readTask(id) ??
@@ -628,8 +631,10 @@ async function failStage(action, io) {
 async function cleanupTask(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
+  if ((task.owner && task.owner !== io.machine) || io.tokenActionBlocked?.(task.id))
+    return { result: 'skipped', why: 'задача занята другой машиной, этапом или отчётом' };
 
-  const entry = io.registryEntry(action.taskId);
+  const entry = io.registryEntry(action.taskId) ?? io.recoverRegistry?.(action.taskId) ?? null;
   const verdict = mayCleanup({
     task,
     entry,
@@ -654,6 +659,9 @@ async function cleanupTask(action, io) {
     };
 
   if (verdict.verdict === 'proceed') {
+    const safety = io.cleanupSafety?.(task, entry);
+    if (safety && !safety.ok) return { result: 'skipped', why: safety.why };
+    io.upsertRegistry?.(entry);
     const swept = cleanup({ task, entry, io });
     if (!swept.finished) {
       // Недоделанная уборка — не беда: следующий цикл дочистит. Задача
@@ -738,6 +746,8 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'reconcile-task': reconcileTask,
+  'queue-backlog-review': queueBacklogReview,
   'hold-token-budget': changeTokenHold,
   'refresh-token-budget': changeTokenHold,
   'resume-token-budget': changeTokenHold,
@@ -808,11 +818,7 @@ export async function execute(actions, io) {
       action.kind !== 'transfer-report' &&
       // Хвост завершённого этапа должен уйти до переноса его отчёта.
       action.kind !== 'push-tail' &&
-      io.reportStore
-        ?.entries()
-        .some(
-          (entry) => entry.taskId === action.taskId || entry.report.batch?.includes(action.taskId),
-        )
+      io.reportStore?.entries().some((entry) => reportTaskIds(entry.report).includes(action.taskId))
     ) {
       results.push({ action, result: 'skipped', why: 'pending report owns this task' });
       continue;

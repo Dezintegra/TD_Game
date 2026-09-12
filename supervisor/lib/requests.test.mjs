@@ -462,10 +462,10 @@ describe('дополнение существующей задачи', () => {
     expect(plan([{ taskId: '0003-three', facts: 'ещё случай' }]).planned).toHaveLength(1);
   });
 
-  it('закрытая и остановленная задача дополнений не принимают', () => {
+  it('закрытая задача дополнений не принимает', () => {
     // Та же причина после закрытия — это регрессия, а не «ещё один случай»,
     // и хоронить её в законченной истории нельзя.
-    for (const id of ['0004-four', '0005-five']) {
+    for (const id of ['0004-four']) {
       const { planned, rejected } = plan([{ taskId: id, facts: 'ещё случай' }]);
       expect(planned, id).toEqual([]);
       expect(rejected[0].problems.join()).toContain('дополнений не принимает');

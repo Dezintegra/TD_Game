@@ -1,5 +1,8 @@
+import { planBacklogReview } from './backlog-review.mjs';
+import { reportTaskIds } from './report-targets.mjs';
+import { reconciliationHeld } from './backlog-reconciliation.mjs';
 import { pendingDependencies } from './dependencies.mjs';
-import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
+import { delayDecision, reviewingDelay, DELAY_STATES } from './delay-analysis.mjs';
 import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
 import { planEdgeResolutions } from './resolve-dependents.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
@@ -31,6 +34,8 @@ import { STAGE_COMMANDS, uncoveredForStage } from '../config/permissions.mjs';
 
 /** Действия, которые сканер умеет назначать, от самого срочного к обычным. */
 export const ACTIONS = [
+  'reconcile-task',
+  'queue-backlog-review',
   'flush-delay-journal',
   'analyze-delay',
   'observe-delay',
@@ -207,12 +212,7 @@ export function scan(state) {
   const entryOf = (taskId) => registry.entries.find((item) => item.taskId === taskId);
   // Перенос отчёта меняет весь пакет; до следующего снимка его участники
   // не должны получать действия по старому состоянию доски.
-  const hasReport = (taskId) =>
-    reports.some(
-      (report) =>
-        report.taskId === taskId ||
-        (report.stage === 'deploy' && Array.isArray(report.batch) && report.batch.includes(taskId)),
-    );
+  const hasReport = (taskId) => reports.some((report) => reportTaskIds(report).includes(taskId));
   const isRunning = (taskId, stage) =>
     running.some(
       (item) =>
@@ -482,7 +482,7 @@ export function scan(state) {
     tasks,
     records: state.dependencyRecords ?? [],
   })) {
-    if (hasReport(plan.taskId)) continue;
+    if (hasReport(plan.taskId) || isRunning(plan.taskId)) continue;
     actions.push({ kind: 'resolve-dependents', ...plan });
     notes.push(
       `задача ${plan.taskId}: снимаем ожидание закрытых карточек — ` +
@@ -576,6 +576,11 @@ export function scan(state) {
     )
       actions.push({ kind: 'refresh-token-budget', ...common });
   }
+  if (state.reconciliationReady)
+    for (const task of tasks) {
+      if (reconciliationHeld(task, state.now) && !isRunning(task.id) && !hasReport(task.id))
+        held.set(task.id, ['сверка PR']);
+    }
   const engaged = tasks.filter(
     (task) =>
       NEEDS_SESSION.includes(task.status) &&
@@ -912,6 +917,21 @@ export function scan(state) {
         continue;
       }
       if (hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id)) continue;
+      if (
+        task.dependencyRecheck &&
+        DELAY_STATES.includes(task.status) &&
+        (!task.delayAnalysis || task.delayAnalysis.phase === 'monitoring') &&
+        task.status !== 'postmortem'
+      ) {
+        delayed.set(task.id, {
+          kind: 'analyze-delay',
+          taskId: task.id,
+          mode: 'verify',
+          reason:
+            'Предшественник закрыт без результата. Проверить сохранённые dependencyRecheck и blockedContext: конкретное предусловие выполнено, снято с доказательством или требует живой замены.',
+        });
+        continue;
+      }
       const action = delayDecision(task, {
         now: state.now,
         answered: Boolean(answers[task.id]),
@@ -936,6 +956,44 @@ export function scan(state) {
       actions.splice(index, 1);
   }
   actions.push(...delayed.values());
+  if (state.reconciliationReady && !state.draining) {
+    const held = new Set();
+    for (const task of tasks) {
+      if (
+        !reconciliationHeld(task, state.now) ||
+        isRunning(task.id) ||
+        hasReport(task.id) ||
+        (task.owner && task.owner !== state.machine) ||
+        task.delayJournal
+      )
+        continue;
+      held.add(task.id);
+      const evidence = state.reconciliationEvidence?.[task.id];
+      if (evidence)
+        actions.push({
+          kind: 'reconcile-task',
+          taskId: task.id,
+          expectedStatus: task.status,
+          expectedSince: task.statusChangedAt,
+          pr: task.links.pr,
+          proof: evidence.proof,
+          mainBranch: config.mainBranch,
+        });
+    }
+    for (let i = actions.length - 1; i >= 0; i--) {
+      const action = actions[i];
+      if (
+        action.kind !== 'reconcile-task' &&
+        action.kind !== 'push-tail' &&
+        (held.has(action.taskId) || action.batch?.some((id) => held.has(id)))
+      )
+        actions.splice(i, 1);
+    }
+  }
+  if (state.reconciliationReady && !state.draining) {
+    const review = planBacklogReview({ tasks, running, reports, machine: state.machine });
+    if (review) actions.push(review);
+  }
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
   return {
     actions: actions.filter(

@@ -1,3 +1,4 @@
+import { reportTaskIds } from './report-targets.mjs';
 import { prepareReportPlan, transferReport as transferLegacyReport } from './report-plan.mjs';
 
 function replaceId(value, before, after) {
@@ -68,6 +69,13 @@ export async function transferReport(action, io) {
         entry = store.get(entry.reportId);
       }
       const args = operation.args;
+      if (
+        operation.kind === 'saveTask' &&
+        args[0].id !== entry.taskId &&
+        reportTaskIds(entry.report).includes(args[0].id) &&
+        io.tokenActionBlocked?.(args[0].id, entry.reportId)
+      )
+        throw new Error('участник отчёта занят; доставка отложена');
       let result;
       if (operation.kind === 'saveTask')
         result = await io.saveTask(args[0], args[1], args[2], args[3] ?? [], operation);
