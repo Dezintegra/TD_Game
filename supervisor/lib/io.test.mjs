@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { URLSearchParams } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -925,7 +925,7 @@ describe('заведение рабочего дерева', () => {
     return { io, calls };
   }
 
-  const addCall = (calls) => calls.find((args) => args[0] === 'worktree');
+  const addCall = (calls) => calls.find((args) => args[0] === 'worktree' && args[1] === 'add');
 
   // Путь склеивает `join`, и на Windows он выходит с обратными косыми.
   // Писать его в проверке буквально значило бы завести тест, зелёный
@@ -984,5 +984,68 @@ describe('заведение рабочего дерева', () => {
       ok: false,
       why: 'fatal: каталог занят',
     });
+  });
+});
+
+describe('повторное взятие рабочего дерева', () => {
+  const root = resolve('/repo');
+  const path = join('.claude/worktrees', '0001-one');
+  const absolute = resolve(root, path),
+    branch = 'worktree-0001-one';
+  function setup({ treeBranch = branch, treePath = absolute, live = true, error = false } = {}) {
+    const calls = [];
+    const run = (args) => {
+      calls.push(args);
+      if (args[0] === 'worktree' && args[1] === 'list')
+        return {
+          code: error ? 128 : 0,
+          stderr: error ? 'нет доступа' : '',
+          stdout:
+            'worktree ' +
+            root +
+            '\nbranch refs/heads/main\n\nworktree ' +
+            treePath +
+            '\n' +
+            (treeBranch ? 'branch refs/heads/' + treeBranch : 'detached') +
+            '\n',
+        };
+      if (args[0] === '-C')
+        return {
+          code: live ? 0 : 128,
+          stderr: '',
+          stdout: args[2] === 'rev-parse' ? absolute : branch,
+        };
+      throw new Error('Неожиданное изменение ресурсов: ' + args.join(' '));
+    };
+    const io = createIo({
+      root,
+      config: resolveConfig({ worktreeDir: '.claude/worktrees' }).config,
+      run,
+      now: '2026-09-12T00:00:00Z',
+      elapsed: () => 0,
+    });
+    return { result: io.addWorktree('0001-one', branch), calls };
+  }
+  it('принимает своё живое дерево без повторного создания', () => {
+    const { result, calls } = setup();
+    expect(result).toEqual({ ok: true, path });
+    expect(calls.some((args) => args[0] === 'worktree' && args[1] === 'add')).toBe(false);
+  });
+  it.each(['worktree-0002-other', null])(
+    'сохраняет дерево чужой или отсоединённой ветки %s',
+    (treeBranch) => {
+      const { result, calls } = setup({ treeBranch });
+      expect(result.ok).toBe(false);
+      expect(calls).toHaveLength(1);
+    },
+  );
+  it('не создаёт второе дерево уже выложенной ветки', () =>
+    expect(setup({ treePath: resolve(root, 'elsewhere') }).result.why).toContain('другому пути'));
+  it('не принимает устаревшую регистрацию за существующий каталог', () =>
+    expect(setup({ live: false }).result.ok).toBe(false));
+  it('не меняет ресурсы после ошибки описи', () => {
+    const { result, calls } = setup({ error: true });
+    expect(result).toEqual({ ok: false, why: 'нет доступа' });
+    expect(calls).toHaveLength(1);
   });
 });

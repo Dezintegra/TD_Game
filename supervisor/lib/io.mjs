@@ -1,3 +1,4 @@
+import { parseWorktrees } from './reconcile.mjs';
 import { inspectCleanup } from './cleanup-safety.mjs';
 import { readDeploymentImpact } from './deploy-impact.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -440,6 +441,34 @@ export function createIo({
 
     addWorktree(taskId, branch) {
       const path = join(config.worktreeDir, taskId);
+      const absolute = resolve(root, path);
+      const listing = run(['worktree', 'list', '--porcelain']);
+      if (listing.code !== 0)
+        return { ok: false, why: listing.stderr.trim() || 'опись деревьев недоступна' };
+      const trees = parseWorktrees(listing.stdout);
+      const atPath = trees.find((tree) => resolve(root, tree.path) === absolute);
+      if (atPath) {
+        if (atPath.branch !== branch)
+          return {
+            ok: false,
+            why: 'путь задачи занят веткой ' + (atPath.branch ?? 'detached HEAD'),
+          };
+        // Запись Git могла остаться после удаления каталога; проверяем само дерево.
+        const top = run(['-C', absolute, 'rev-parse', '--show-toplevel']);
+        const head = run(['-C', absolute, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
+        if (
+          top.code !== 0 ||
+          !top.stdout.trim() ||
+          resolve(top.stdout.trim()) !== absolute ||
+          head.code !== 0 ||
+          head.stdout.trim() !== branch
+        )
+          return { ok: false, why: 'существующее дерево не подтверждено по пути и ветке' };
+        return { ok: true, path };
+      }
+      const elsewhere = trees.find((tree) => tree.branch === branch);
+      if (elsewhere)
+        return { ok: false, why: 'ветка задачи уже выложена по другому пути: ' + elsewhere.path };
       const base = `${config.remote}/${config.mainBranch}`;
       const known = (ref) => run(['rev-parse', '--verify', '--quiet', ref]).code === 0;
       const existing =
