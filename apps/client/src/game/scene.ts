@@ -8,8 +8,19 @@ import type { Camera } from './camera.js';
 import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid, showGrid } from './terrain.js';
 import { createCloudLayer } from './clouds-render.js';
 import type { CloudColors, CloudLayer } from './clouds-render.js';
-import { clearRockLayer, countRockCells, mountRockDiagonal } from './relief-render.js';
-import { ARMOUR_SUPERSAMPLE, armourBakeDensity, rockBakeDensity } from './bake-density.js';
+import { bakeRockCell, prepareRockCell } from './relief-render.js';
+import type { BakedRockCell } from './relief-render.js';
+import { isRockCell } from './relief.js';
+import { diagonalCells } from './prism.js';
+import {
+  ARMOUR_SUPERSAMPLE,
+  armourBakeDensity,
+  rockBaseDensity,
+  rockTextureBytes,
+  ROCK_VIEW_MARGIN,
+} from './bake-density.js';
+import { RockBakeQueue } from './rock-bake-queue.js';
+import type { RockResource } from './rock-bake-queue.js';
 import type { TerrainColors } from './terrain.js';
 import { placeBase } from './base-structure.js';
 import type { BaseColors } from './base-structure.js';
@@ -107,6 +118,9 @@ export interface Scene {
    * и разбор кадров матча, которые всё это время копятся в сокете.
    */
   bakeTerrain(budgetMs: number): boolean;
+  /** Улучшение уже показанных клеток после обязательной работы кадра. */
+  adaptRocks(budgetMs: number): void;
+  readonly rockDensity: RockDensitySnapshot;
   /**
    * Запечь очередную иконку интерфейса.
    *
@@ -165,6 +179,34 @@ export interface Scene {
   readonly terrainRebuildCount: number;
   readonly viewportSize: { readonly width: number; readonly height: number };
 }
+
+export interface RockDensitySnapshot {
+  readonly remaining: number;
+  readonly completed: number;
+  readonly actualBytes: number;
+  readonly limitBytes: number;
+  readonly peakBytes: number;
+  readonly overruns: number;
+  readonly error: string | null;
+  readonly cells: readonly {
+    id: number;
+    base: number;
+    density: number;
+    target: number;
+    visible: boolean;
+    alive: boolean;
+  }[];
+}
+
+interface SceneRockResource extends RockResource {
+  readonly baked: BakedRockCell;
+}
+const rockResource = (baked: BakedRockCell, density: number): SceneRockResource => ({
+  baked,
+  density,
+  bytes: rockTextureBytes(baked, density),
+  destroy: () => baked.texture.destroy(true),
+});
 
 /**
  * В каком порядке печь диагонали территории.
@@ -931,19 +973,24 @@ export const createScene = (renderer: RendererHost): Scene => {
         readonly localPlayer: PlayerId;
         /** Диагонали в порядке запекания, а не по возрастанию номера. */
         readonly order: readonly number[];
-        /**
-         * Плотность запекания скал этой карты.
-         *
-         * Считается на карту, а не на сцену: она выведена из бюджета
-         * видеопамяти, а расход зависит от числа скальных клеток. Лежит
-         * в задании, чтобы смена карты посреди запекания не смешала
-         * клетки двух карт, запечённые с разной плотностью.
-         */
-        readonly rockDensity: number;
         at: number;
       }
     | undefined;
   let terrainRebuildCount = 0;
+  const rockSprites = new Set<Sprite>();
+  let rockQueue = new RockBakeQueue<SceneRockResource>(() => {
+    throw new Error('No rock map');
+  });
+  const clearTerrain = (): void => {
+    rockQueue.destroy();
+    for (const layer of terrainBands) {
+      for (const child of layer.removeChildren()) {
+        if (child instanceof Sprite && !rockSprites.has(child)) child.texture.destroy(true);
+        child.destroy();
+      }
+    }
+    rockSprites.clear();
+  };
   let following = true;
   let layout: MinimapLayout = minimapLayout(
     app.screen.width,
@@ -1042,6 +1089,22 @@ export const createScene = (renderer: RendererHost): Scene => {
     maxY: camera.y + app.screen.height / 2 / scale,
   });
 
+  const updateRockView = (): void => {
+    rockQueue.update({
+      width: app.screen.width,
+      height: app.screen.height,
+      resolution: app.renderer.resolution,
+      scale,
+      // Берём фактическое преобразование вместе с тряской; запас покрывает округление.
+      bounds: {
+        minX: (-worldContainer.x - shakeContainer.x) / scale - ROCK_VIEW_MARGIN,
+        maxX: (app.screen.width - worldContainer.x - shakeContainer.x) / scale + ROCK_VIEW_MARGIN,
+        minY: (-worldContainer.y - shakeContainer.y) / scale - ROCK_VIEW_MARGIN,
+        maxY: (app.screen.height - worldContainer.y - shakeContainer.y) / scale + ROCK_VIEW_MARGIN,
+      },
+    });
+  };
+
   /** Четыре угла экрана в координатах клеток. Нужны рамке на миникарте. */
   const viewCorners = (): readonly CellPoint[] => {
     const bounds = viewBounds();
@@ -1087,13 +1150,28 @@ export const createScene = (renderer: RendererHost): Scene => {
       //
       // Слои чистятся здесь, все разом: иначе на смене карты под новыми
       // скалами остались бы старые.
-      for (const layer of terrainBands) clearRockLayer(layer);
+      clearTerrain();
+      rockQueue = new RockBakeQueue<SceneRockResource>((cell, density) => {
+        const job = prepareRockCell(
+          app.renderer,
+          map,
+          cellX(cell.id),
+          cellY(cell.id),
+          { rock: terrainColors.rock, sky: terrainColors.rockSky },
+          density,
+        );
+        return {
+          advance: (deadline) => job.advance(deadline),
+          finish: () => rockResource(job.finish(), density),
+          destroy: () => job.destroy(),
+        };
+      });
+      updateRockView();
 
       baking = {
         map,
         localPlayer,
         order: bakeOrderOf(map, localPlayer, terrainBands.length),
-        rockDensity: rockBakeDensity(bakeDensity, countRockCells(map)),
         at: 0,
       };
     },
@@ -1113,18 +1191,46 @@ export const createScene = (renderer: RendererHost): Scene => {
         const diagonal = job.order[job.at] ?? 0;
         const layer = terrainBands[diagonal];
         if (layer !== undefined) {
-          mountRockDiagonal(
-            layer,
-            app.renderer,
-            job.map,
-            diagonal,
-            { rock: terrainColors.rock, sky: terrainColors.rockSky },
-            job.rockDensity,
-          );
+          for (const [x, y] of diagonalCells(MAP_WIDTH_CELLS, MAP_HEIGHT_CELLS, diagonal)) {
+            if (!isRockCell(job.map, x, y)) continue;
+            const density = rockBaseDensity(app.renderer.resolution);
+            const before = performance.now();
+            const baked = bakeRockCell(
+              app.renderer,
+              job.map,
+              x,
+              y,
+              { rock: terrainColors.rock, sky: terrainColors.rockSky },
+              density,
+            );
+            rockQueue.observeInitialBake(performance.now() - before);
+            const sprite = new Sprite(baked.texture);
+            sprite.position.set(baked.offsetX, baked.offsetY);
+            sprite.width = baked.width;
+            sprite.height = baked.height;
+            layer.addChild(sprite);
+            rockSprites.add(sprite);
+            rockQueue.add({
+              id: cellIndex(x, y),
+              width: baked.width,
+              height: baked.height,
+              bounds: {
+                minX: baked.offsetX,
+                minY: baked.offsetY,
+                maxX: baked.offsetX + baked.width,
+                maxY: baked.offsetY + baked.height,
+              },
+              base: rockResource(baked, density),
+              install(resource) {
+                sprite.texture = resource.baked.texture;
+                sprite.position.set(resource.baked.offsetX, resource.baked.offsetY);
+                sprite.width = resource.baked.width;
+                sprite.height = resource.baked.height;
+              },
+            });
+          }
 
-          // База ставится ПОСЛЕ скал своей диагонали: `mountRockDiagonal`
-          // чистит слой целиком, и база, положенная раньше, была бы
-          // уничтожена вместе со скалами. Порядок внутри диагонали
+          // База ставится ПОСЛЕ скал своей диагонали. Порядок внутри диагонали
           // безразличен — вокруг базы расчищена площадка, и скал на её
           // диагонали рядом нет.
           //
@@ -1160,6 +1266,34 @@ export const createScene = (renderer: RendererHost): Scene => {
     },
 
     bakeIcons: () => iconBaker.step(),
+
+    adaptRocks(budgetMs) {
+      updateRockView();
+      if (baking === undefined) rockQueue.step(budgetMs);
+    },
+
+    get rockDensity() {
+      return {
+        remaining: rockQueue.remaining,
+        completed: rockQueue.completed,
+        actualBytes: rockQueue.actualBytes,
+        limitBytes: rockQueue.limitBytes,
+        peakBytes: rockQueue.peakBytes,
+        overruns: rockQueue.overruns,
+        error: rockQueue.lastError,
+        cells: [...rockQueue.cells.values()].map((cell) => {
+          const shown = cell.detail ?? cell.base;
+          return {
+            id: cell.id,
+            base: cell.base.density,
+            density: shown.density,
+            target: rockQueue.target(cell),
+            visible: rockQueue.visible(cell),
+            alive: !shown.baked.texture.destroyed && !shown.baked.texture.source.destroyed,
+          };
+        }),
+      };
+    },
 
     render(world, localPlayer, intent) {
       clearEntityLayers();
@@ -1336,9 +1470,12 @@ export const createScene = (renderer: RendererHost): Scene => {
       // игрока на общий план: он видит то же, только шире или уже.
       applyScale();
       relayoutMinimap();
+      updateRockView();
     },
 
     destroy() {
+      baking = undefined;
+      clearTerrain();
       // Текстуры живут в видеопамяти, и сборщик мусора о ней не знает:
       // без уборки утечка копилась бы матч за матчем.
       arcs.destroy();

@@ -16,7 +16,7 @@ import type { GameMap, WorldState } from '@td/sim';
 import { createScene } from './scene.js';
 import type { RendererHost, Scene } from './scene.js';
 import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid } from './terrain.js';
-import { mountRockDiagonal } from './relief-render.js';
+import { bakeRockCell, countRockCells, disposeGrainTexture } from './relief-render.js';
 import type * as TerrainModule from './terrain.js';
 import type * as ReliefModule from './relief-render.js';
 import type * as MinimapModule from './minimap.js';
@@ -57,7 +57,39 @@ vi.mock('pixi.js', () => {
   class Graphics extends Container {
     clear(): void {}
   }
-  return { Container, Graphics, Sprite: Container, Application: class {} };
+  class Texture {
+    destroyed = false;
+    source = { destroyed: false, updateMipmaps: vi.fn() };
+    static from(): Texture {
+      return new Texture();
+    }
+    static create(): Texture {
+      return new Texture();
+    }
+    destroy(): void {
+      this.destroyed = true;
+      this.source.destroyed = true;
+    }
+  }
+  class Sprite extends Container {
+    constructor(public texture: Texture) {
+      super();
+    }
+  }
+  return {
+    Container,
+    Graphics,
+    Sprite,
+    Texture,
+    RenderTexture: Texture,
+    Mesh: class {
+      destroy(): void {}
+    },
+    Geometry: class {},
+    Shader: class {},
+    GlProgram: { from: vi.fn() },
+    Application: class {},
+  };
 });
 vi.mock('./terrain.js', async (importOriginal) => ({
   ...(await importOriginal<typeof TerrainModule>()),
@@ -71,10 +103,10 @@ vi.mock('./clouds-render.js', () => ({
     destroy: vi.fn(),
   }),
 }));
-vi.mock('./relief-render.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof ReliefModule>()),
-  mountRockDiagonal: vi.fn(),
-}));
+vi.mock('./relief-render.js', async (importOriginal) => {
+  const original = await importOriginal<typeof ReliefModule>();
+  return { ...original, bakeRockCell: vi.fn(original.bakeRockCell) };
+});
 vi.mock('./base-structure.js', () => ({ placeBase: vi.fn() }));
 vi.mock('./machine-sprites.js', () => ({ createMachineSprites: vi.fn() }));
 vi.mock('./structure-sprites.js', () => ({ createStructureSprites: vi.fn() }));
@@ -100,6 +132,7 @@ vi.mock('./minimap.js', async (importOriginal) => ({
 
 const LOCAL_PLAYER = asPlayerId(0);
 const scenes: Scene[] = [];
+const hosts = new WeakMap<Scene, RendererHost>();
 const INTENT: OverlayIntent = {
   building: false,
   touch: null,
@@ -121,17 +154,18 @@ const stableFrames = (
   intent: OverlayIntent = INTENT,
 ): void => {
   const baseline = scene.terrainRebuildCount;
-  const baked = vi.mocked(mountRockDiagonal).mock.calls.length;
+  const baked = vi.mocked(bakeRockCell).mock.calls.length;
   expect(baseline).toBe(1);
-  expect(baked).toBe(TERRAIN_DIAGONAL_COUNT);
+  expect(baked).toBe(countRockCells(world.map));
   for (let frame = 0; frame < 100; frame += 1) {
     stimulate(frame);
     scene.setMap(world.map, LOCAL_PLAYER);
     expect(scene.bakeTerrain(0)).toBe(false);
     scene.render(world, LOCAL_PLAYER, intent);
+    scene.adaptRocks(8);
     observe(frame);
     expect(scene.terrainRebuildCount).toBe(baseline);
-    expect(mountRockDiagonal).toHaveBeenCalledTimes(baked);
+    expect(bakeRockCell).toHaveBeenCalledTimes(baked);
   }
   expect(drawEntities).toHaveBeenCalledTimes(100);
 };
@@ -139,13 +173,24 @@ const stableFrames = (
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(drawEntities).mockReset();
-  vi.stubGlobal('document', { documentElement: {} });
+  vi.stubGlobal('document', {
+    documentElement: {},
+    createElement: () => ({
+      getContext: () => ({
+        createImageData: (w: number, h: number) => ({ data: new Uint8Array(w * h * 4) }),
+        putImageData: vi.fn(),
+      }),
+    }),
+  });
+  vi.spyOn(performance, 'now').mockReturnValue(0);
   vi.stubGlobal('getComputedStyle', () => ({ getPropertyValue: () => '' }));
 });
 afterEach(() => {
   try {
     for (const scene of scenes.splice(0)) scene.destroy();
   } finally {
+    disposeGrainTexture();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   }
 });
@@ -156,7 +201,8 @@ const makeScene = (): Scene => {
     app: {
       stage: new Container(),
       screen: { width: 800, height: 600 },
-      renderer: {},
+      renderer: { resolution: 1, render: vi.fn() },
+      resize: vi.fn(),
       ticker: { start: vi.fn(), stop: vi.fn() },
     },
     machines: {},
@@ -164,6 +210,7 @@ const makeScene = (): Scene => {
     density: 1,
   } as unknown as RendererHost;
   const scene = createScene(host);
+  hosts.set(scene, host);
   scenes.push(scene);
   return scene;
 };
@@ -174,18 +221,17 @@ const makeMap = (): GameMap => {
 };
 
 const finishBaking = (scene: Scene, map: GameMap): void => {
-  const before = vi.mocked(mountRockDiagonal).mock.calls.length;
+  const before = vi.mocked(bakeRockCell).mock.calls.length;
   let pending = true;
-  for (let attempt = 0; attempt <= TERRAIN_DIAGONAL_COUNT && pending; attempt += 1) {
+  for (let attempt = 0; attempt <= TERRAIN_DIAGONAL_COUNT && pending; attempt += 1)
     pending = scene.bakeTerrain(0);
-  }
   expect(pending).toBe(false);
-  const calls = vi.mocked(mountRockDiagonal).mock.calls.slice(before);
-  expect(calls).toHaveLength(TERRAIN_DIAGONAL_COUNT);
-  expect(new Set(calls.map((call) => call[3])).size).toBe(TERRAIN_DIAGONAL_COUNT);
-  for (const call of calls) expect(call[2]).toBe(map);
+  const calls = vi.mocked(bakeRockCell).mock.calls.slice(before);
+  expect(calls).toHaveLength(countRockCells(map));
+  expect(new Set(calls.map((call) => cellIndex(call[2], call[3]))).size).toBe(countRockCells(map));
+  for (const call of calls) expect(call[1]).toBe(map);
   expect(scene.bakeTerrain(0)).toBe(false);
-  expect(mountRockDiagonal).toHaveBeenCalledTimes(before + TERRAIN_DIAGONAL_COUNT);
+  scene.adaptRocks(0);
 };
 
 const builtScene = (): { scene: Scene; map: GameMap } => {
@@ -309,20 +355,68 @@ describe('инвалидация территории настоящей сце�
     expect(isPassable(map.cells[cell] as Terrain)).toBe(true);
     expect(isPassable(changed.cells[cell] as Terrain)).toBe(false);
     const baseline = scene.terrainRebuildCount;
-    const baked = vi.mocked(mountRockDiagonal).mock.calls.length;
+    const baked = vi.mocked(bakeRockCell).mock.calls.length;
     scene.setMap(changed, LOCAL_PLAYER);
     expect(scene.terrainRebuildCount).toBe(baseline + 1);
     finishBaking(scene, changed);
     const diagonal = vi
-      .mocked(mountRockDiagonal)
+      .mocked(bakeRockCell)
       .mock.calls.slice(baked)
-      .find((call) => call[3] === cellX(cell) + cellY(cell));
-    expect(diagonal?.[2]).toBe(changed);
-    expect(diagonal?.[2].cells[cell]).toBe(Terrain.Rock);
+      .find((call) => call[2] === cellX(cell) && call[3] === cellY(cell));
+    expect(diagonal?.[1]).toBe(changed);
+    expect(diagonal?.[1].cells[cell]).toBe(Terrain.Rock);
     scene.setMap(changed, LOCAL_PLAYER);
     expect(scene.bakeTerrain(0)).toBe(false);
     expect(scene.terrainRebuildCount).toBe(baseline + 1);
-    expect(mountRockDiagonal).toHaveBeenCalledTimes(baked + TERRAIN_DIAGONAL_COUNT);
+    expect(bakeRockCell).toHaveBeenCalledTimes(baked + countRockCells(changed));
     expect(isPassable(map.cells[cell] as Terrain)).toBe(true);
+  });
+});
+
+const settle = (scene: Scene): void => {
+  scene.adaptRocks(0);
+  for (let frame = 0; frame < 200 && scene.rockDensity.remaining > 0; frame += 1) {
+    scene.adaptRocks(8);
+    expect(scene.rockDensity.error).toBeNull();
+    expect(scene.rockDensity.cells.every((cell) => cell.alive)).toBe(true);
+    expect(scene.rockDensity.actualBytes).toBeLessThanOrEqual(scene.rockDensity.limitBytes);
+  }
+  expect(scene.rockDensity.remaining).toBe(0);
+};
+
+describe('подключение плотности к настоящей сцене', () => {
+  it('камера меняется немедленно, а повышение догоняет её позже', () => {
+    const { scene } = builtScene();
+    scene.centreOnCell(cellIndex(20, 20));
+    const before = scene.scale;
+    scene.zoomBy(4, 400, 300);
+    expect(scene.scale).toBeGreaterThan(before);
+    scene.adaptRocks(0);
+    expect(scene.rockDensity.remaining).toBeGreaterThan(0);
+    expect(scene.rockDensity.cells[0]!.density).toBe(1);
+    settle(scene);
+    expect(scene.rockDensity.cells[0]!.density).toBeGreaterThanOrEqual(scene.scale);
+    expect(scene.terrainRebuildCount).toBe(1);
+    expect(scene.bakeTerrain(0)).toBe(false);
+  });
+
+  it('resize сохраняет базу, смена resolution мигрирует её без исчезновения', () => {
+    const { scene } = builtScene();
+    const host = hosts.get(scene)!;
+    scene.centreOnCell(cellIndex(20, 20));
+    settle(scene);
+    const completed = scene.rockDensity.completed;
+    host.app.screen.width = 700;
+    scene.resize();
+    settle(scene);
+    expect(scene.rockDensity.completed).toBe(completed);
+    for (const resolution of [3, 1]) {
+      host.app.renderer.resolution = resolution;
+      scene.adaptRocks(0);
+      expect(scene.rockDensity.cells.every((cell) => cell.alive)).toBe(true);
+      settle(scene);
+      expect(scene.rockDensity.cells.every((cell) => cell.base === resolution)).toBe(true);
+      expect(scene.terrainRebuildCount).toBe(1);
+    }
   });
 });

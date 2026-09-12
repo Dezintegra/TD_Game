@@ -3,10 +3,7 @@ import { MAX_ZOOM } from './camera.js';
 import {
   ARMOUR_SUPERSAMPLE,
   MAX_ARMOUR_BAKE_DENSITY,
-  ROCK_BAKE_BUDGET_MB,
-  ROCK_CELL_AREA_PX,
   armourBakeDensity,
-  rockBakeDensity,
   rockBaseDensity,
   rockTargetDensity,
   rockTextureBytes,
@@ -80,10 +77,6 @@ describe('адаптивная плотность и память', () => {
   });
 });
 
-/** Во что обходится слой скал при такой плотности, в мегабайтах. */
-const rockLayerMb = (cells: number, density: number): number =>
-  (cells * ROCK_CELL_AREA_PX * density * density * 4 * (4 / 3)) / (1024 * 1024);
-
 describe('плотность запекания брони', () => {
   it('покрывает предельное приближение на обычном экране', () => {
     // Главное свойство: плотность равна наибольшему возможному масштабу
@@ -131,53 +124,5 @@ describe('кратность чернового буфера', () => {
     // «кратность / 2». Шаг обязан оставаться меньше точки черновика,
     // иначе пробы разъедутся и усреднять станет нечего.
     expect(ARMOUR_SUPERSAMPLE / 2).toBeLessThanOrEqual(1);
-  });
-});
-
-describe('плотность запекания скал', () => {
-  // Карта на двоих: сторона 38, около 13 процентов клеток скальные.
-  const smallMapCells = 220;
-  // Карта на четверых: сторона 58, площадь вдвое с третью больше.
-  const largeMapCells = 512;
-
-  it('укладывается в бюджет на карте для двоих', () => {
-    const density = rockBakeDensity(armourBakeDensity(1), smallMapCells);
-
-    expect(rockLayerMb(smallMapCells, density)).toBeLessThanOrEqual(ROCK_BAKE_BUDGET_MB);
-  });
-
-  it('снижает плотность на карте вдвое большей и остаётся в бюджете', () => {
-    const ceiling = armourBakeDensity(1);
-    const small = rockBakeDensity(ceiling, smallMapCells);
-    const large = rockBakeDensity(ceiling, largeMapCells);
-
-    expect(large).toBeLessThan(small);
-    expect(rockLayerMb(largeMapCells, large)).toBeLessThanOrEqual(ROCK_BAKE_BUDGET_MB);
-  });
-
-  it('остаётся ниже брони: полное покрытие зума скалам не по карману', () => {
-    // Не украшение, а суть решения: слой скал единственный, чья сумма
-    // растёт со стороной карты. При плотности брони он занял бы
-    // 150–200 МБ на карте для двоих.
-    const ceiling = armourBakeDensity(1);
-
-    expect(rockBakeDensity(ceiling, smallMapCells)).toBeLessThan(ceiling);
-  });
-
-  it('не поднимается выше потолка, когда бюджет позволяет больше', () => {
-    const ceiling = armourBakeDensity(1);
-
-    expect(rockBakeDensity(ceiling, 4)).toBe(ceiling);
-  });
-
-  it('не опускается ниже единицы даже на карте, не влезающей в бюджет', () => {
-    expect(rockBakeDensity(armourBakeDensity(1), 100_000)).toBe(1);
-  });
-
-  it('на карте без скал возвращает потолок, а не бесконечность', () => {
-    const ceiling = armourBakeDensity(1);
-
-    expect(rockBakeDensity(ceiling, 0)).toBe(ceiling);
-    expect(Number.isFinite(rockBakeDensity(ceiling, 0))).toBe(true);
   });
 });
