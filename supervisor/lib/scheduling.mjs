@@ -1,3 +1,5 @@
+import { stateClass } from '../config/transitions.mjs';
+
 const LANES = ['game', 'service'];
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 
@@ -78,4 +80,88 @@ export function schedulingFields(value) {
       .filter((key) => Object.hasOwn(value ?? {}, key))
       .map((key) => [key, value[key]]),
   );
+}
+
+/** Один выбор для продолжений и первых запусков, без чтения диска или доски. */
+export function planLaunches({ candidates, running, tasks, config, scheduling, now, compare }) {
+  const actions = [];
+  const notes = [];
+  if (scheduling?.error) return { actions, notes: [scheduling.error] };
+  const memory = scheduling ?? emptyScheduling();
+  const problem = schedulingProblem(memory);
+  if (problem) return { actions, notes: [problem] };
+  const liveTasks = running
+    .map((item) => tasks.find((task) => task.id === item.taskId))
+    .filter(Boolean);
+  if (liveTasks.some((task) => stateClass(task) === 'exclusive'))
+    return { actions, notes: ['идёт исключительный этап: новые сессии ждут тишины'] };
+  let free = Math.max(0, config.maxConcurrent - running.length);
+  let remaining = [...candidates].sort((a, b) => compare(a.task, b.task));
+  let gameRunning = liveTasks.some((task) => workLane(task) === 'game');
+  let lastLane = memory.lastLane;
+  let admitted = false;
+  const first = (item) =>
+    item.kind === 'start-stage' ||
+    (item.task.scheduling && !Object.hasOwn(memory.admissions, item.task.id));
+
+  while (free > 0 && remaining.length) {
+    const gameFirst = remaining.some((item) => first(item) && workLane(item.task) === 'game');
+    const serviceFirst = remaining.some((item) => first(item) && workLane(item.task) === 'service');
+    const next =
+      memory.next === 'game' && !gameFirst
+        ? 'service'
+        : memory.next === 'service' && !serviceFirst
+          ? 'game'
+          : memory.next;
+    const allowed = remaining.filter(
+      (item) => !first(item) || (!admitted && workLane(item.task) === next),
+    );
+    if (!allowed.length) break;
+    const protectGame =
+      config.maxConcurrent >= 2 &&
+      !gameRunning &&
+      allowed.some((item) => workLane(item.task) === 'game');
+    const preferred = protectGame ? 'game' : lastLane === 'game' ? 'service' : 'game';
+    const laneItems = allowed.filter((item) => workLane(item.task) === preferred);
+    const pool = laneItems.length ? laneItems : allowed;
+    // Продолжения заканчивают уже начатое. Новая игровая карточка при этом
+    // конкурирует со служебными продолжениями, а не ждёт их полного окончания.
+    const item = pool.find((entry) => !first(entry)) ?? pool[0];
+    const exclusive = stateClass({ ...item.task, status: item.stage }) === 'exclusive';
+    if (exclusive && (running.length || actions.length)) {
+      notes.push(
+        `задача ${item.task.id}: выбран исключительный этап, исполнитель занят, ждём тишины`,
+      );
+      break;
+    }
+    const lane = workLane(item.task);
+    const reason =
+      `${lane === 'game' ? 'игровая' : 'служебная'} работа; ` +
+      `${protectGame ? 'защищено место игры; ' : ''}следующий первый запуск: ${next}`;
+    actions.push({
+      kind: item.kind,
+      taskId: item.task.id,
+      stage: item.stage,
+      ...(item.kind === 'continue-stage'
+        ? { reason: 'этапу нужна сессия, живого процесса нет' }
+        : {}),
+      selectionReason: reason,
+      ...(item.batch ? { batch: item.batch } : {}),
+      ...(item.unaccounted ? { unaccounted: item.unaccounted } : {}),
+      ...(item.kind === 'start-stage'
+        ? { scheduling: item.task.scheduling ?? { lane, selectedAt: now, reason } }
+        : {}),
+    });
+    notes.push(`задача ${item.task.id}: ${reason}`);
+    if (first(item)) admitted = true;
+    if (lane === 'game') gameRunning = true;
+    lastLane = lane;
+    remaining = remaining.filter((entry) => entry !== item);
+    free -= 1;
+    if (exclusive) break;
+  }
+  if (free === 0)
+    for (const item of remaining)
+      notes.push(`задача ${item.task.id} ждёт: исполнитель занят, свободных мест нет`);
+  return { actions, notes };
 }

@@ -39,7 +39,19 @@ const entry = (taskId, over = {}) => ({
   ...over,
 });
 
-const run = (state) => scan({ config, ...state });
+// Здесь проверяются маршруты; полные метаданные выбора проверены в scheduling-scan.
+const run = (state) => {
+  const result = scan({ config, ...state });
+  return {
+    ...result,
+    actions: result.actions.map((action) => {
+      const route = { ...action };
+      delete route.scheduling;
+      delete route.selectionReason;
+      return route;
+    }),
+  };
+};
 const kinds = (result) => result.actions.map((action) => action.kind);
 
 describe('неподтверждённая доставка', () => {
@@ -246,7 +258,7 @@ describe('неполная настройка', () => {
       commands: { verify: 'x', perf: 'x' },
       worktreeDir: '.claude/worktrees',
     });
-    const result = scan({ now: NOW, config: noDeploy, tasks: [task({ decomposed: true })] });
+    const result = run({ now: NOW, config: noDeploy, tasks: [task({ decomposed: true })] });
     expect(result.actions).toContainEqual({
       kind: 'start-stage',
       taskId: '0001-one',
@@ -264,7 +276,7 @@ describe('неполная настройка', () => {
       type: 'run',
       run: { kind: 'arena', expectation: 'ровно' },
     });
-    const result = scan({ now: NOW, config: noPerf, tasks: [arena] });
+    const result = run({ now: NOW, config: noPerf, tasks: [arena] });
     expect(result.actions).toContainEqual({
       kind: 'start-stage',
       taskId: '0001-run',
@@ -775,21 +787,21 @@ describe('исполнитель один', () => {
   });
 });
 
-describe('преимущество прогонов', () => {
+describe('прогоны в общей очереди', () => {
   const arena = (id, over = {}) =>
     task({ id, type: 'run', run: { kind: 'arena', expectation: 'ничего не сдвинется' }, ...over });
 
-  it('прогон вытесняет проработку', () => {
+  it('самостоятельный прогон не вытесняет более приоритетную проработку', () => {
     const result = run({ tasks: [task({ id: '0002-two', priority: 10 }), arena('0001-run')] });
     expect(result.actions).toContainEqual({
       kind: 'start-stage',
-      taskId: '0001-run',
-      stage: 'benchmark',
+      taskId: '0002-two',
+      stage: 'decompose',
     });
     expect(result.actions).not.toContainEqual({
       kind: 'start-stage',
-      taskId: '0002-two',
-      stage: 'design',
+      taskId: '0001-run',
+      stage: 'benchmark',
     });
   });
 
@@ -854,14 +866,14 @@ describe('приоритеты', () => {
     expect(result.actions[0].taskId).toBe('0002-old');
   });
 
-  it('обслуживание берётся раньше обычной очереди, даже уступая в приоритете', () => {
+  it('колонка обслуживания не отменяет порядок внутри служебного направления', () => {
     const result = run({
       tasks: [
         task({ id: '0001-queued', status: 'new', priority: 1 }),
         task({ id: '0002-fix', status: 'maintenance', priority: 90 }),
       ],
     });
-    expect(result.actions[0]).toMatchObject({ kind: 'start-stage', taskId: '0002-fix' });
+    expect(result.actions[0]).toMatchObject({ kind: 'start-stage', taskId: '0001-queued' });
   });
 
   it('внутри обслуживания порядок прежний: положение, затем возраст', () => {
@@ -1232,7 +1244,7 @@ describe('этапы без живого процесса', () => {
       running: [{ taskId: '0002-run', stage: 'benchmark' }],
     });
     expect(kinds(result)).not.toContain('continue-stage');
-    expect(result.notes.join()).toContain('свободных мест нет');
+    expect(result.notes.join()).toContain('исключительный этап');
   });
 
   it('единственное свободное место достаётся задаче поважнее', () => {

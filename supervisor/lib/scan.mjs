@@ -1,3 +1,4 @@
+import { planLaunches } from './scheduling.mjs';
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
 import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
@@ -576,28 +577,6 @@ export function scan(state) {
     )
       actions.push({ kind: 'refresh-token-budget', ...common });
   }
-  const engaged = tasks.filter(
-    (task) =>
-      NEEDS_SESSION.includes(task.status) &&
-      !held.has(task.id) &&
-      !tokenHeld.has(task.id) &&
-      (!hasReport(task.id) || isRunning(task.id)),
-  );
-  let busy = engaged.length >= config.maxConcurrent;
-
-  // Исключительный этап — замер кадров и выкладка — требует тишины на машине
-  // целиком. При одном исполнителе это выходит само собой, но настройка
-  // допускает и больше, а замер на engagedй машине измеряет загрузку, а не код:
-  // проверено дважды, один раз цифра оказалась завышена вдесятеро.
-  //
-  // Удержанные сюда не попадают вместе с `engaged`, и это не оговорка:
-  // задача, которой не выдали сессию, машину не занимает и тишины не требует.
-  const exclusiveEngaged = engaged.some((task) => stateClass(task) === 'exclusive');
-  if (exclusiveEngaged && !busy) {
-    notes.push('идёт исключительный этап: новых задач не берём, машина должна молчать');
-    busy = true;
-  }
-
   // 6. Этапы, которым нужна сессия, а живого процесса нет.
   //
   // Сюда попадают два случая, и мерить их одной меркой правильно: этап,
@@ -730,7 +709,6 @@ export function scan(state) {
   // не запустился» каждые пять минут на исправном конвейере. Строка, которая
   // при исправной работе означает беду, обязана быть редкой, иначе её
   // перестают читать.
-  let free = Math.max(0, config.maxConcurrent - running.length);
 
   // Задачи `deploy` сворачиваются в пакет: сессию получает одна — ведущая,
   // старшая по приоритету и возрасту, — а перечень остальных едет с ней
@@ -780,126 +758,57 @@ export function scan(state) {
       }
     }
   }
-  let eligible = waitingForSession.filter(
-    (task) => task.status !== 'deploy' || batchOf.has(task.id),
-  );
-  const liveExclusive = running.some((item) => {
-    const task = tasks.find((candidate) => candidate.id === item.taskId);
-    return task && stateClass(task) === 'exclusive';
-  });
-  const readyExclusives = eligible
-    .filter((task) => stateClass(task) === 'exclusive')
-    .sort(byPriorityThenAge);
-  if (liveExclusive && free > 0) {
-    notes.push('идёт исключительный этап: продолжения других задач не выдаются');
-    eligible = [];
-  } else if (readyExclusives.length > 0) {
-    // Готовая выкладка/замер ждёт тишины: не подпитываем обычные продолжения
-    // и не выдаём два исключительных продолжения, даже если свободных мест
-    // несколько. Выбранный первым по обычному приоритету этап резервирует
-    // весь оборот, чтобы следующий цикл увидел его уже живым.
-    eligible = running.length === 0 ? readyExclusives.slice(0, 1) : [];
-  }
-
-  // Слив перед самообновлением: новый код супервизора уже на диске, и он
-  // перезапустится, как только не останется ни этапов, ни отчётов. Выдавать
-  // сессии сейчас значило бы никогда этого не дождаться: при двух местах
-  // и сотне задач в очереди тихий момент сам не наступает. Идущее
-  // доделывается, отчёты переносятся, опросы идут — не берётся только новое.
-  if (state.draining && eligible.length > 0) {
-    notes.push('самообновление ждёт тишины: сессий не выдаём, идущее доделываем');
-  }
-  for (const task of [...eligible].sort(byPriorityThenAge)) {
-    if (state.draining) continue;
-    if (free === 0) {
-      notes.push(`задача ${task.id} ждёт сессию: свободных мест нет`);
-      continue;
-    }
-    const unaccounted = unaccountedLaunchNote(task, task.status, config, state.codexUsage ?? {});
-    actions.push({
+  const candidates = waitingForSession
+    .filter((task) => task.status !== 'deploy' || batchOf.has(task.id))
+    .map((task) => ({
+      task,
       kind: 'continue-stage',
-      taskId: task.id,
       stage: task.status,
-      reason: 'этапу нужна сессия, живого процесса нет',
-      // Перечень пакета есть только у ведущей выкладки; прочим действиям
-      // поле не нужно, и его нет вовсе — отсутствие и есть «не пакет».
-      ...(batchOf.has(task.id) ? { batch: batchOf.get(task.id) } : {}),
-      // Заход без учёта расхода. Поле есть только тогда, когда учёт неполон,
-      // и уезжает в журнал задачи вместе с записью о выданной сессии — то есть
-      // один раз на состоявшееся порождение, а не каждый оборот.
-      ...(unaccounted ? { unaccounted } : {}),
-    });
-    free -= 1;
-  }
-
-  // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
-  // Сначала сохраняем разблокировку; обычную очередь выбираем по следующему снимку.
+      batch: batchOf.get(task.id),
+      unaccounted: unaccountedLaunchNote(task, task.status, config, state.codexUsage ?? {}),
+    }));
   const unblocking = actions.some((action) => action.kind === 'unblock-task');
-  // Очередей две, и порядок между ними задаётся здесь одной сортировкой,
-  // а не отдельным проходом: второй проход стал бы вторым местом, где
-  // решается очерёдность, и однажды они разошлись бы. Внутри каждой очереди
-  // порядок прежний — положение карточки, затем возраст.
-  const queue = tasks
-    .filter(
-      (task) =>
-        QUEUE_STATES.includes(task.status) &&
-        !held.has(task.id) &&
-        !tokenHeld.has(task.id) &&
-        !hasReport(task.id),
+  for (const task of tasks.filter((item) => QUEUE_STATES.includes(item.status))) {
+    if (
+      held.has(task.id) ||
+      tokenHeld.has(task.id) ||
+      hasReport(task.id) ||
+      unblocking ||
+      isRunning(task.id) ||
+      (task.owner && task.owner !== state.machine)
     )
-    .sort(
-      (a, b) =>
-        QUEUE_STATES.indexOf(a.status) - QUEUE_STATES.indexOf(b.status) || byPriorityThenAge(a, b),
-    );
-
-  // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
-  const runWaiting = queue.some((task) => task.type === 'run');
-  if (runWaiting) {
-    notes.push('в очереди есть прогон: новых задач в проработку и имплементацию не берём');
-  }
-
-  for (const task of queue) {
+      continue;
     const stage = firstStage(task);
     const verdict = canTransition(task, stage);
     if (!verdict.ok) {
       notes.push(`задача ${task.id}: ${verdict.reason}`);
       continue;
     }
-
-    // Этап, который нечем закончить, не начинают. Иначе сессия проснётся,
-    // дойдёт до последнего шага и встанет, оставив задачу в состоянии,
-    // из которого её будет доставать человек.
     const missing = missingForStage(config, stage, task);
-    if (missing.length > 0) {
+    if (missing.length) {
       notes.push(`задача ${task.id} не берётся: в настройке нет ${missing.join(', ')}`);
       continue;
     }
-
-    // Та же мерка, но по нехватке РАЗРЕШЕНИЙ, а не настройки. Задача остаётся
-    // в очереди: работа цела, и после починки она пойдёт с того же места.
     const uncovered = uncoveredAt(stage);
-    if (uncovered.length > 0) {
+    if (uncovered.length) {
       notes.push(heldNote(task.id, stage, uncovered));
       continue;
     }
-
-    if (state.draining) {
-      notes.push(`задача ${task.id} ждёт: самообновление сливает работу`);
-      continue;
-    }
-    if (unblocking) continue;
-    if (busy) {
-      notes.push(`задача ${task.id} ждёт: исполнитель занят`);
-      continue;
-    }
-    if (runWaiting && task.type !== 'run') continue;
-
-    // Записи о неучтённом заходе здесь нет намеренно: взятие в работу сессии
-    // не порождает — это делает `continue-stage` следующим оборотом, и там же
-    // запись ложится в журнал задачи.
-    actions.push({ kind: 'start-stage', taskId: task.id, stage });
-    busy = true;
+    candidates.push({ task, kind: 'start-stage', stage });
   }
+  if (!state.draining) {
+    const selected = planLaunches({
+      candidates,
+      running,
+      tasks,
+      config,
+      scheduling: state.scheduling,
+      now,
+      compare: byPriorityThenAge,
+    });
+    actions.push(...selected.actions);
+    notes.push(...selected.notes);
+  } else if (candidates.length) notes.push('самообновление ждёт тишины: сессий не выдаём');
 
   const delayed = new Map();
   if (!state.draining)

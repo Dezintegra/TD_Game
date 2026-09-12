@@ -83,7 +83,9 @@ async function startStage(action, io) {
       at: io.now,
       from: task.status,
       to: action.stage,
-      what: `Взята в работу машиной ${io.machine}.`,
+      what: [`Взята в работу машиной ${io.machine}.`, action.selectionReason]
+        .filter(Boolean)
+        .join(' '),
     },
     `chore(backlog): ${task.id} взята в работу (${action.stage})`,
   );
@@ -303,7 +305,7 @@ async function continueStage(action, io) {
       at: io.now,
       from: task.status,
       to: task.status,
-      what: [`Этапу выдана сессия: ${action.reason}.`, action.unaccounted]
+      what: [`Этапу выдана сессия: ${action.reason}.`, action.selectionReason, action.unaccounted]
         .filter(Boolean)
         .join(' '),
     },
