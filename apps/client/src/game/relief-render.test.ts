@@ -15,7 +15,11 @@ import {
 
 const backend = vi.hoisted(() => ({
   geometry: [] as unknown[],
-  meshes: [] as { destroy: ReturnType<typeof vi.fn> }[],
+  meshes: [] as {
+    destroy: ReturnType<typeof vi.fn>;
+    geometry: { destroy: ReturnType<typeof vi.fn> };
+    shader: { destroy: ReturnType<typeof vi.fn> };
+  }[],
   textures: [] as {
     destroy: ReturnType<typeof vi.fn>;
     source: { updateMipmaps: ReturnType<typeof vi.fn> };
@@ -52,7 +56,11 @@ vi.mock('pixi.js', () => {
   }
   class Mesh {
     destroy = vi.fn();
-    constructor() {
+    geometry: { destroy: ReturnType<typeof vi.fn> };
+    shader: { destroy: ReturnType<typeof vi.fn> };
+    constructor(options: { geometry: Mesh['geometry']; shader: Mesh['shader'] }) {
+      this.geometry = options.geometry;
+      this.shader = options.shader;
       backend.meshes.push(this);
     }
   }
@@ -63,11 +71,14 @@ vi.mock('pixi.js', () => {
     Texture,
     RenderTexture: Texture,
     Geometry: class {
+      destroy = vi.fn();
       constructor(options: unknown) {
         backend.geometry.push(options);
       }
     },
-    Shader: class {},
+    Shader: class {
+      destroy = vi.fn();
+    },
     GlProgram: { from: vi.fn() },
   };
 });
@@ -97,6 +108,16 @@ const canvas = (): void => {
 };
 
 describe('поклеточное запекание', () => {
+  it('освобождает GPU-буферы и шейдер клетки без уничтожения общей программы', () => {
+    canvas();
+    bake();
+    expect(backend.meshes).toHaveLength(2);
+    for (const mesh of backend.meshes) {
+      expect(mesh.destroy).toHaveBeenCalledWith();
+      expect(mesh.geometry.destroy).toHaveBeenCalledWith(true);
+      expect(mesh.shader.destroy).toHaveBeenCalledWith();
+    }
+  });
   it('порции сохраняют все массивы полного построения и освобождаются при отмене', () => {
     canvas();
     const full = buildCellMesh(map, 20, 20, colors);
@@ -148,7 +169,7 @@ describe('поклеточное запекание', () => {
     expect(result.texture.source.updateMipmaps).toHaveBeenCalledTimes(1);
     expect(result.width).toBeGreaterThan(0);
     expect(result.height).toBeGreaterThan(0);
-    for (const mesh of backend.meshes) expect(mesh.destroy).toHaveBeenCalledWith(true);
+    for (const mesh of backend.meshes) expect(mesh.geometry.destroy).toHaveBeenCalledWith(true);
     expect(result.texture.destroy).not.toHaveBeenCalled();
   });
 
@@ -163,7 +184,7 @@ describe('поклеточное запекание', () => {
         ),
       ),
     ).toThrow('render');
-    for (const mesh of backend.meshes) expect(mesh.destroy).toHaveBeenCalledWith(true);
+    for (const mesh of backend.meshes) expect(mesh.geometry.destroy).toHaveBeenCalledWith(true);
     expect(backend.textures[0]?.destroy).toHaveBeenCalledWith(true);
   });
 

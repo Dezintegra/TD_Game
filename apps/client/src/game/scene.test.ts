@@ -94,10 +94,20 @@ vi.mock('pixi.js', () => {
     Texture,
     RenderTexture: Texture,
     Mesh: class {
+      geometry: { destroy(): void };
+      shader: { destroy(): void };
+      constructor(options: { geometry: { destroy(): void }; shader: { destroy(): void } }) {
+        this.geometry = options.geometry;
+        this.shader = options.shader;
+      }
       destroy(): void {}
     },
-    Geometry: class {},
-    Shader: class {},
+    Geometry: class {
+      destroy(): void {}
+    },
+    Shader: class {
+      destroy(): void {}
+    },
     GlProgram: { from: vi.fn() },
     Application: class {},
   };

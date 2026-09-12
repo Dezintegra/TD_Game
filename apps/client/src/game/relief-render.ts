@@ -611,6 +611,16 @@ export const bakeRockCell = (
   return bakePreparedRockCell(renderer, cell, density);
 };
 
+const destroyRockMesh = (mesh: Mesh): void => {
+  const geometry = mesh.geometry;
+  const shader = mesh.shader;
+  mesh.destroy();
+  // Pixi Mesh.destroy только снимает ссылки. Буферы принадлежат этой клетке,
+  // а общая GlProgram и зерно должны пережить её замену.
+  geometry.destroy(true);
+  shader?.destroy();
+};
+
 /** При дробном DPR запас округляется вверх, а размеры показанного спрайта сохраняются. */
 export const bakePreparedRockCell = (
   renderer: Renderer,
@@ -638,8 +648,8 @@ export const bakePreparedRockCell = (
     texture?.destroy(true);
     throw error;
   } finally {
-    cell.mesh.destroy(true);
-    cell.mirror.destroy(true);
+    destroyRockMesh(cell.mesh);
+    destroyRockMesh(cell.mirror);
   }
 };
 
@@ -674,8 +684,10 @@ export const prepareRockCell = (
       if (dead) return;
       dead = true;
       portions.return(undefined as never);
-      cell?.mesh.destroy(true);
-      cell?.mirror.destroy(true);
+      if (cell !== undefined) {
+        destroyRockMesh(cell.mesh);
+        destroyRockMesh(cell.mirror);
+      }
       cell = undefined;
     },
   };
