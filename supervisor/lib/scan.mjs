@@ -765,9 +765,17 @@ export function scan(state) {
   // пятнадцать карточек в «Выкладке»). Перечень складывается ЗДЕСЬ, из уже
   // отобранных задач: удержанная, исчерпавшая пределы или ждущая оборота
   // в пакет не попадает — решение по ней принято выше, по общим правилам.
-  const deploying = waitingForSession.filter((task) => task.status === 'deploy');
+  const deploying = waitingForSession.filter(
+    (task) => task.status === 'deploy' && !incident.probes.has(task.id),
+  );
   deploying.sort(byPriorityThenAge);
-  const batchOf = new Map();
+  // Каждый инцидент требует своего свидетельства: общий отчёт ведущей
+  // не должен передвинуть вторую проверку в уборку без её результата.
+  const batchOf = new Map(
+    waitingForSession
+      .filter((task) => task.status === 'deploy' && incident.probes.has(task.id))
+      .map((task) => [task.id, [task.id]]),
+  );
   if (deploying.length > 0) {
     // Пакет не отправляется, едва в нём появилась первая задача. Условий два,
     // и достаточно любого: накопилось довольно карточек либо прошло довольно

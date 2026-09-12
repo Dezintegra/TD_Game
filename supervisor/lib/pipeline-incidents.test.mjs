@@ -67,6 +67,22 @@ const state = (tasks, over = {}) => ({
 const launches = (result) =>
   result.actions.filter((item) => ['start-stage', 'continue-stage'].includes(item.kind));
 
+it('не объединяет проверочные выкладки разных инцидентов одним отчётом', () => {
+  const tasks = ['0001-probe', '0003-probe'].map((id) => {
+    const task = source({ id, status: 'deploy', returnTo: 'deploy' });
+    task.pipelineIncident = {
+      ...task.pipelineIncident,
+      id,
+      affectedStages: ['deploy'],
+      check: { stage: 'deploy', expectation: 'Проверить сломанный путь выкладки' },
+    };
+    return task;
+  });
+  const result = launches(scan(state([...tasks, base('0002-fix', { status: 'completed' })])));
+  expect(result).toHaveLength(1);
+  expect(result[0]).toMatchObject({ incidentProbe: true, batch: [result[0].taskId] });
+});
+
 describe('подтверждение и сохранение инцидента', () => {
   it('ошибка отдельного кода и голословный инцидент не дают общего приоритета', () => {
     expect(
