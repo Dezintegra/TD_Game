@@ -145,7 +145,13 @@ export function planLaunches({ candidates, running, tasks, config, scheduling, n
     const pool = laneItems.length ? laneItems : allowed;
     // Продолжения заканчивают уже начатое. Новая игровая карточка при этом
     // конкурирует со служебными продолжениями, а не ждёт их полного окончания.
-    const item = pool.find((entry) => !first(entry)) ?? pool[0];
+    // Служебные продолжения не должны бесконечно откладывать служебный
+    // первый запуск, если именно его ход удерживает готовую новую игру.
+    const advanceGame =
+      !admitted && !gameRunning && gameFirst && next === 'service'
+        ? allowed.find((entry) => first(entry) && workLane(entry.task) === 'service')
+        : null;
+    const item = advanceGame ?? pool.find((entry) => !first(entry)) ?? pool[0];
     const exclusive = stateClass({ ...item.task, status: item.stage }) === 'exclusive';
     if (exclusive && (running.length || actions.length)) {
       notes.push(

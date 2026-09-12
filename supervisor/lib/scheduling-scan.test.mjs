@@ -80,6 +80,26 @@ describe('единый выбор игровой и служебной рабо�
       }),
     ]);
   });
+  it('служебные продолжения не замораживают ход новых карточек перед готовой игрой', () => {
+    const tasks = [
+      service('0001-old', { status: 'design' }),
+      service('0002-old', { status: 'audit' }),
+      service('0003-new'),
+      game('0004-new'),
+    ];
+    let memory = { ...emptyScheduling(), next: 'service' };
+    const selected = launches(run(tasks, { scheduling: memory }));
+    const first = selected.find((item) => item.kind === 'start-stage');
+    expect(first.taskId).toBe('0003-new');
+    memory = recordLaunch(memory, { ...tasks[2], scheduling: first.scheduling }, now);
+    const next = launches(
+      run(
+        tasks.filter((item) => item.id !== first.taskId),
+        { scheduling: memory },
+      ),
+    );
+    expect(next[0]).toMatchObject({ kind: 'start-stage', taskId: '0004-new' });
+  });
   it('недоступная игровая задача не простаивает место и сохраняет игровой следующий ход', () => {
     let memory = emptyScheduling();
     const tasks = [
