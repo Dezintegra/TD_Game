@@ -373,12 +373,21 @@ export const createOpponent = (
       const nukeTarget = nukeSearchDue
         ? findNukeTarget(world, me, profile, approach, stats)
         : undefined;
-      const struck = tryNuke(commands, world, me, player, stats, nukeTarget);
+      const struck = tryNuke(
+        commands,
+        world,
+        me,
+        player,
+        stats,
+        nukeTarget,
+        profile.nuke.minValueRatio,
+      );
 
       // Запас держится, когда цель есть, а удара не вышло, — то есть
       // когда единственное, чего не хватает, это энергия. Ударили —
       // копить больше не на что; цели нет — деньги свободны.
-      const nukeAwaited = !struck && nukeWorthIt(nukeTarget, stats.nuke.cost);
+      const nukeAwaited =
+        !struck && nukeWorthIt(nukeTarget, stats.nuke.cost, profile.nuke.minValueRatio);
 
       const enemy = world.players[otherPlayer(me)];
       const enemyStats = enemy === undefined ? stats : playerStats(enemy);
@@ -2016,11 +2025,17 @@ export const findNukeTarget = (
  * оружием ценой в пятьдесят машин уничтожалось шесть: переплата в восемь
  * раз, на которую уходила почти половина дохода за матч.
  *
- * Порог не хранится в профиле: он и есть цена удара. Поменяется цена
- * в балансе — порог пересчитается сам.
+ * Порог следует за ценой удара; профиль может явно разрешить убыток.
+ * Ошибочная настройка сохраняет прежнюю строгость у пуска и запаса.
  */
-export const nukeWorthIt = (target: NukeTarget | undefined, cost: number): target is NukeTarget =>
-  target !== undefined && target.net > cost;
+export const nukeWorthIt = (
+  target: NukeTarget | undefined,
+  cost: number,
+  minValueRatio = 1,
+): target is NukeTarget => {
+  const ratio = Number.isFinite(minValueRatio) && minValueRatio > 0 ? minValueRatio : 1;
+  return target !== undefined && target.net > cost * ratio;
+};
 
 /**
  * Решение бить.
@@ -2035,10 +2050,11 @@ const tryNuke = (
   player: PlayerState,
   myStats: PlayerStats,
   target: NukeTarget | undefined,
+  minValueRatio: number | undefined,
 ): boolean => {
   if (world.tick < player.nukeReadyAtTick) return false;
   if (player.energy < myStats.nuke.cost) return false;
-  if (!nukeWorthIt(target, myStats.nuke.cost)) return false;
+  if (!nukeWorthIt(target, myStats.nuke.cost, minValueRatio)) return false;
 
   commands.push(
     command({

@@ -341,6 +341,8 @@ export interface AiProfile {
   };
 
   readonly nuke: {
+    /** Порог чистой выгоды относительно цены пуска; положительное конечное число, иначе 1. */
+    readonly minValueRatio?: number;
     /** Шаг сетки при поиске места для удара, в клетках. */
     readonly scanStep: number;
     /**
@@ -1626,6 +1628,13 @@ export const STRATEGIST_PROFILE: AiProfile = deepFreeze({
   nuke: { ...BASELINE_PROFILE.nuke, invest: true },
 });
 
+/** Измерительный допуск убытка: отдельное имя сохраняет штатного Стратега контролем. */
+export const STRATEGIST_LOSS_HALF_PROFILE: AiProfile = deepFreeze({
+  ...STRATEGIST_PROFILE,
+  id: 'strategist-loss-half-2026-09',
+  nuke: { ...STRATEGIST_PROFILE.nuke, minValueRatio: 0.5 },
+});
+
 /**
  * Дальнобойный: снайперы и Теслы, а из прокачки — одна дальность.
  *
@@ -1754,6 +1763,7 @@ export const PROFILES: Readonly<Record<string, AiProfile>> = deepFreeze({
   [FLEXIBLE_SWARM_PROFILE.id]: FLEXIBLE_SWARM_PROFILE,
   [BULWARK_PROFILE.id]: BULWARK_PROFILE,
   [STRATEGIST_PROFILE.id]: STRATEGIST_PROFILE,
+  [STRATEGIST_LOSS_HALF_PROFILE.id]: STRATEGIST_LOSS_HALF_PROFILE,
   [LONG_RANGE_PROFILE.id]: LONG_RANGE_PROFILE,
 });
 
