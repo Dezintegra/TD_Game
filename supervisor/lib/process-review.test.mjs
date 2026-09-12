@@ -23,6 +23,20 @@ const task = (id, extra = {}) => ({
   ...extra,
 });
 describe('дыры, найденные отдельным ревью', () => {
+  it('очередь сначала входит в аналитический этап, а прежнее наблюдение не подменяет новую проверку', () => {
+    const base = { config, now, machine: 'station', registry: { entries: [] } };
+    const queued = task('0001-new', {
+      type: 'note',
+      dependencyRecheck: { edges: [], results: [] },
+    });
+    const first = scan({ ...base, tasks: [queued] }).actions;
+    expect(first.some((a) => a.kind === 'start-stage')).toBe(true);
+    expect(first.some((a) => a.kind === 'analyze-delay')).toBe(false);
+    const active = { ...queued, status: 'triage', delayAnalysis: { phase: 'monitoring' } };
+    expect(scan({ ...base, tasks: [active] }).actions).toContainEqual(
+      expect.objectContaining({ kind: 'analyze-delay', mode: 'verify' }),
+    );
+  });
   it('не запускает участников неприменённого поглощения', () => {
     const report = {
       taskId: '0001-analysis',

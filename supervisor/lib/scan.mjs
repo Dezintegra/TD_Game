@@ -2,7 +2,7 @@ import { planBacklogReview } from './backlog-review.mjs';
 import { reportTaskIds } from './report-targets.mjs';
 import { reconciliationHeld } from './backlog-reconciliation.mjs';
 import { pendingDependencies } from './dependencies.mjs';
-import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
+import { delayDecision, reviewingDelay, DELAY_STATES } from './delay-analysis.mjs';
 import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
 import { planEdgeResolutions } from './resolve-dependents.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
@@ -917,7 +917,12 @@ export function scan(state) {
         continue;
       }
       if (hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id)) continue;
-      if (task.dependencyRecheck && !task.delayAnalysis && task.status !== 'postmortem') {
+      if (
+        task.dependencyRecheck &&
+        DELAY_STATES.includes(task.status) &&
+        (!task.delayAnalysis || task.delayAnalysis.phase === 'monitoring') &&
+        task.status !== 'postmortem'
+      ) {
         delayed.set(task.id, {
           kind: 'analyze-delay',
           taskId: task.id,

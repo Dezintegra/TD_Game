@@ -118,6 +118,7 @@ export async function resolveDependents(action, io) {
   const next = { ...task };
   if (
     task.status === 'blocked' ||
+    fromFixedBy.size > 0 ||
     task.dependencyResults?.some((r) => fromDependsOn.has(r.taskId))
   ) {
     next.dependencyRecheck = {
