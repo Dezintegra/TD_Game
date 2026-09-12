@@ -565,6 +565,8 @@ export const startGame = async (renderer: RendererHost, options: GameOptions): P
       // и прокрутка карты обязана уводить источники в другое ухо.
       const centre = scene.viewCentre;
       audio.frame(world, { cellX: centre.x, cellY: centre.y }, replaying);
+      // Адаптация возобновляется при жестах, поэтому получает только остаток после догона и ввода.
+      scene.adaptRocks(Math.max(FRAME_WORK_BUDGET_MS - (performance.now() - bakeStartedAt), 0));
     },
 
     onFps: (fps) => hudActions.setFps(fps),

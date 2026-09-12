@@ -369,12 +369,12 @@ export interface ReliefColors {
   readonly sky: number;
 }
 
-export const buildCellMesh = (
+export function* buildCellMeshPortions(
   map: GameMap,
   cellX: number,
   cellY: number,
   colors: ReliefColors,
-): CellMesh => {
+): Generator<void, CellMesh> {
   const { rock, sky } = colors;
 
   // Нахлёст на соседа. Спрайты соседних клеток не стыкуются пиксель
@@ -469,6 +469,8 @@ export const buildCellMesh = (
       mirrorShade[index * 3 + 2] =
         (coverage / (1 + height * MIRROR_DEPTH_FADE)) * fieldFade(map, x, reflected);
     }
+    // Одна строка сохраняет порядок вычислений, но позволяет уступить остаток кадра сети.
+    yield;
   }
 
   const position = new Float32Array(count * 2);
@@ -562,6 +564,18 @@ export const buildCellMesh = (
     offsetX: minX,
     offsetY: minY,
   };
+}
+
+export const buildCellMesh = (
+  map: GameMap,
+  cellX: number,
+  cellY: number,
+  colors: ReliefColors,
+): CellMesh => {
+  const portions = buildCellMeshPortions(map, cellX, cellY, colors);
+  let next = portions.next();
+  while (!next.done) next = portions.next();
+  return next.value;
 };
 
 /**
@@ -574,6 +588,127 @@ export const buildCellMesh = (
 export const bakeCell = (renderer: Renderer, target: RenderTexture, cell: CellMesh): void => {
   renderer.render({ container: cell.mirror, target, clear: true });
   renderer.render({ container: cell.mesh, target, clear: false });
+};
+
+export interface BakedRockCell {
+  readonly texture: RenderTexture;
+  readonly width: number;
+  readonly height: number;
+  readonly offsetX: number;
+  readonly offsetY: number;
+}
+
+/** Владелец результата получает текстуру, но никогда не временную геометрию. */
+export const bakeRockCell = (
+  renderer: Renderer,
+  map: GameMap,
+  x: number,
+  y: number,
+  colors: ReliefColors,
+  density: number,
+): BakedRockCell => {
+  const cell = buildCellMesh(map, x, y, colors);
+  return bakePreparedRockCell(renderer, cell, density);
+};
+
+const destroyRockMesh = (mesh: CellMesh['mesh']): void => {
+  const geometry = mesh.geometry;
+  const shader = mesh.shader;
+  mesh.destroy();
+  // Pixi Mesh.destroy только снимает ссылки. Буферы принадлежат этой клетке,
+  // а общая GlProgram и зерно должны пережить её замену.
+  geometry.destroy(true);
+  shader?.destroy();
+};
+
+/** При дробном DPR запас округляется вверх, а размеры показанного спрайта сохраняются. */
+export const bakePreparedRockCell = (
+  renderer: Renderer,
+  cell: CellMesh,
+  density: number,
+): BakedRockCell => {
+  let texture: RenderTexture | undefined;
+  try {
+    texture = createBakedTexture(
+      Math.ceil(cell.width * density) / density,
+      Math.ceil(cell.height * density) / density,
+      density,
+      true,
+    );
+    bakeCell(renderer, texture, cell);
+    finishBakedTexture(texture);
+    return {
+      texture,
+      width: cell.width,
+      height: cell.height,
+      offsetX: cell.offsetX,
+      offsetY: cell.offsetY,
+    };
+  } catch (error) {
+    texture?.destroy(true);
+    throw error;
+  } finally {
+    destroyRockMesh(cell.mesh);
+    destroyRockMesh(cell.mirror);
+  }
+};
+
+export const prepareRockCell = (
+  renderer: Renderer,
+  map: GameMap,
+  x: number,
+  y: number,
+  colors: ReliefColors,
+  density: number,
+  now: () => number = () => performance.now(),
+): { advance(deadline: number): boolean; finish(): BakedRockCell; destroy(): void } => {
+  const portions = buildCellMeshPortions(map, x, y, colors);
+  let cell: CellMesh | undefined;
+  let dead = false;
+  return {
+    advance(deadline) {
+      while (!dead && !cell && now() < deadline) {
+        const next = portions.next();
+        if (next.done) cell = next.value;
+      }
+      return cell !== undefined;
+    },
+    finish() {
+      if (dead || !cell) throw new Error('Rock geometry is not ready');
+      const ready = cell;
+      cell = undefined;
+      dead = true;
+      return bakePreparedRockCell(renderer, ready, density);
+    },
+    destroy() {
+      if (dead) return;
+      dead = true;
+      portions.return(undefined as never);
+      if (cell !== undefined) {
+        destroyRockMesh(cell.mesh);
+        destroyRockMesh(cell.mirror);
+      }
+      cell = undefined;
+    },
+  };
+};
+
+/** База принадлежит записи клетки, подробность можно вытеснить независимо. */
+export interface RockCellSprite {
+  readonly sprite: Sprite;
+  base: BakedRockCell;
+  detail?: BakedRockCell | undefined;
+}
+
+export const replaceRockDetail = (cell: RockCellSprite, detail?: BakedRockCell): void => {
+  const previous = cell.detail;
+  const shown = detail ?? cell.base;
+  cell.sprite.texture = shown.texture;
+  cell.sprite.position.set(shown.offsetX, shown.offsetY);
+  cell.sprite.width = shown.width;
+  cell.sprite.height = shown.height;
+  cell.detail = detail;
+  if (previous !== detail) previous?.texture.destroy(true);
 };
 
 /**
@@ -638,17 +773,11 @@ export const mountRockDiagonal = (
   for (const [x, y] of diagonalCells(MAP_WIDTH_CELLS, MAP_HEIGHT_CELLS, diagonal)) {
     if (!isRockCell(map, x, y)) continue;
 
-    const cell = buildCellMesh(map, x, y, colors);
-    const texture = createBakedTexture(cell.width, cell.height, density, true);
-
-    bakeCell(renderer, texture, cell);
-    finishBakedTexture(texture);
-    // Сетки больше не нужны: всё, что они умели, лежит в текстуре.
-    cell.mesh.destroy(true);
-    cell.mirror.destroy(true);
-
-    const sprite = new Sprite(texture);
+    const cell = bakeRockCell(renderer, map, x, y, colors, density);
+    const sprite = new Sprite(cell.texture);
     sprite.position.set(cell.offsetX, cell.offsetY);
+    sprite.width = cell.width;
+    sprite.height = cell.height;
     layer.addChild(sprite);
   }
 };

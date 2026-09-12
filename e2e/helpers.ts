@@ -1,5 +1,15 @@
 import { expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import type { readRockDiagnostics } from '../apps/client/src/game/scene.js';
+
+export const rockDiagnostics = async (
+  page: Page,
+): Promise<ReturnType<typeof readRockDiagnostics>> =>
+  page.evaluate(async () => {
+    const path = '/src/game/scene.ts';
+    const module = await import(/* @vite-ignore */ path);
+    return module.readRockDiagnostics();
+  });
 
 /**
  * Общие шаги сквозных проверок.
@@ -115,10 +125,15 @@ export const diagnosticNumber = async (page: Page, name: string): Promise<number
  * просадку — а именно это от замера и требуется. Среднее здесь
  * не годится: оно провал размазывает, вместо того чтобы его отбросить.
  */
-export const medianFps = async (page: Page, samples = 6): Promise<number> => {
+export const medianFps = async (
+  page: Page,
+  samples = 6,
+  beforeSample?: (index: number) => Promise<void>,
+): Promise<number> => {
   const seen: number[] = [];
 
   for (let index = 0; index < samples; index += 1) {
+    await beforeSample?.(index);
     // Ровно окно счётчика: читать чаще — значит читать одно и то же
     // число по нескольку раз и выдавать повтор за наблюдение.
     await page.waitForTimeout(1000);
