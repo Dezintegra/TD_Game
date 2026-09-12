@@ -1849,7 +1849,7 @@ describe('согласованность ожидания 0216 с подгото
   const change = 'return-premature-tasks-to-the-queue';
   const read = (p) => readFileSync(new URL('../../' + p, import.meta.url), 'utf8');
   const has = (p) => existsSync(new URL('../../' + p, import.meta.url));
-  const source = () => {
+  const sourceFor = (change, requirement) => {
     const paths = [
       'openspec/specs/dev-pipeline-worker/spec.md',
       'openspec/changes/' + change + '/specs/dev-pipeline-worker/spec.md',
@@ -1860,10 +1860,11 @@ describe('согласованность ожидания 0216 с подгото
         .filter((n) => n.endsWith('-' + change))
         .map((n) => archive + '/' + n + '/specs/dev-pipeline-worker/spec.md'),
     );
-    const path = paths.find((p) => has(p) && read(p).includes(title));
+    const path = paths.find((p) => has(p) && read(p).includes(requirement));
     if (!path) throw new Error('Не найден действующий контракт ожидания 0216');
     return read(path);
   };
+  const source = () => sourceFor(change, title);
   const section = (text, scenario) => {
     const heading = scenario ? '#### Scenario: ' + scenario : title;
     const start = text.indexOf(heading);
@@ -1882,7 +1883,8 @@ describe('согласованность ожидания 0216 с подгото
       '',
       'После конфликта необязательного слияния SHALL выполняться отмена и проверка восстановления дерева',
     ],
-    ['', 'Конфликт обновления origin/main'],
+    ['', 'Конфликт обновления origin/main SHALL разрешаться по merge-conflict-resolution'],
+    ['', 'сам конфликт не является причиной failed'],
     ['', 'Существующие change и PR сохраняются и ожидание не запрещают'],
     ['', 'Отдельный premature вводиться MUST NOT'],
     ['Имплементации нечего править', 'подтянув свежую главную ветку'],
@@ -1942,6 +1944,28 @@ describe('согласованность ожидания 0216 с подгото
   ];
   const problems = (text) =>
     clauses.filter(([scenario, phrase]) => !section(text, scenario).includes(phrase));
+  it.each([
+    [
+      'distinguish-pr-preparation-from-branch-merge',
+      'исполнитель SHALL использовать действующий blocked с reason/result и проверяемой ссылкой при любом состоянии собственного PR',
+      'Сам конфликт причиной',
+    ],
+    [
+      'align-premature-with-permitted-preparation',
+      'Подтверждённое ожидание без доступной подготовки SHALL использовать blocked с reason/result и проверяемой ссылкой, сохраняя change/PR',
+      'сам конфликт не является основанием failed',
+    ],
+  ])('связанная дельта %s не возвращает старый исход', (name, expected, conflict) => {
+    const requirement = name.startsWith('distinguish-')
+      ? '### Requirement: Имплементация различает подготовку по плану и слияние соседней ветки'
+      : '### Requirement: Определение отсутствующего предмета согласовано с разрешённой подготовкой';
+    const text = sourceFor(name, requirement).replace(/\s+/g, ' ');
+    expect(text).toContain(expected);
+    expect(text).toContain(conflict);
+    expect(text).not.toMatch(
+      /SHALL предписывать .?premature|возвращает .?failed.? с доказательством и ожидаемой работой/,
+    );
+  });
   it('проверяет действующее требование и все ветви подготовки и ожидания', () =>
     expect(problems(source())).toEqual([]));
   it.each(clauses)('обнаруживает потерю условия %s: %s', (scenario, phrase) => {
