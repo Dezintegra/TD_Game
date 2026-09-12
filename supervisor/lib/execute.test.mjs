@@ -1804,12 +1804,33 @@ describe('уборка после потери записи реестра', () 
     },
   );
 
-  it('отсутствующее дерево не создаётся, пустая уборка закрывается', async () => {
+  it('отсутствие ресурсов без записи не выдаётся за доказанную уборку', async () => {
     const w = world({ present: false });
     expect(w.repair()).toEqual([]);
     await execute([sweep], w.io);
-    expect(w.io.tasks.get(id).status).toBe('completed');
-    expect(w.calls).toEqual([['pr', 50], 'completed']);
+    expect(w.io.tasks.get(id).status).toBe('postmortem');
+    expect(w.calls).toEqual([['pr', 50]]);
+  });
+
+  it.each([50, null])(
+    'потеря записи при оставшихся ветках не завершает задачу, PR %s',
+    async (pr) => {
+      const w = world({ pr });
+      w.resources.delete('tree');
+      await execute([sweep], w.io);
+      expect(w.io.journals.get(id)).toContain('запись реестра отсутствует');
+      expect(w.io.tasks.get(id).status).toBe('postmortem');
+      expect([...w.resources]).toEqual(['local', 'remote']);
+      expect(w.calls).toEqual([['pr', pr]]);
+    },
+  );
+
+  it('недоступный PR без записи оставляет уборку ждать', async () => {
+    const w = world({ state: 'unknown' });
+    await execute([sweep], w.io);
+    expect(w.io.tasks.get(id).status).toBe('cleanup');
+    expect(w.resources.size).toBe(3);
+    expect(w.calls).toEqual([['pr', 50]]);
   });
 
   it('починка не присваивает и не удаляет чужое дерево', () => {
@@ -1928,7 +1949,7 @@ describe('причина в конечном переходе', () => {
     },
   );
 
-  it('повтор уборки после удаления дерева сохраняет текст причины и итогового комментария', async () => {
+  it('потеря реестра после отказа сохранения не повторяет ложное закрытие', async () => {
     const io = fakeIo({
       tasks: [
         task({
@@ -1948,7 +1969,9 @@ describe('причина в конечном переходе', () => {
     io.registryEntry = () => null;
     await execute([action], io);
     expect(entries).toHaveLength(2);
-    expect(entries[1]).toEqual(entries[0]);
+    expect(entries[0].to).toBe('closed');
+    expect(entries[1].to).toBe('postmortem');
+    expect(JSON.stringify(entries[1])).toContain('запись реестра отсутствует');
   });
 
   it('снятый предмет сохраняется после отдельного цикла уборки', async () => {
