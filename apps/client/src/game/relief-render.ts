@@ -576,6 +576,61 @@ export const bakeCell = (renderer: Renderer, target: RenderTexture, cell: CellMe
   renderer.render({ container: cell.mesh, target, clear: false });
 };
 
+export interface BakedRockCell {
+  readonly texture: RenderTexture;
+  readonly width: number;
+  readonly height: number;
+  readonly offsetX: number;
+  readonly offsetY: number;
+}
+
+/** Владелец результата получает текстуру, но никогда не временную геометрию. */
+export const bakeRockCell = (
+  renderer: Renderer,
+  map: GameMap,
+  x: number,
+  y: number,
+  colors: ReliefColors,
+  density: number,
+): BakedRockCell => {
+  const cell = buildCellMesh(map, x, y, colors);
+  let texture: RenderTexture | undefined;
+  try {
+    texture = createBakedTexture(cell.width, cell.height, density, true);
+    bakeCell(renderer, texture, cell);
+    finishBakedTexture(texture);
+    return {
+      texture,
+      width: cell.width,
+      height: cell.height,
+      offsetX: cell.offsetX,
+      offsetY: cell.offsetY,
+    };
+  } catch (error) {
+    texture?.destroy(true);
+    throw error;
+  } finally {
+    cell.mesh.destroy(true);
+    cell.mirror.destroy(true);
+  }
+};
+
+/** База принадлежит записи клетки, подробность можно вытеснить независимо. */
+export interface RockCellSprite {
+  readonly sprite: Sprite;
+  base: BakedRockCell;
+  detail?: BakedRockCell | undefined;
+}
+
+export const replaceRockDetail = (cell: RockCellSprite, detail?: BakedRockCell): void => {
+  const previous = cell.detail;
+  const shown = detail ?? cell.base;
+  cell.sprite.texture = shown.texture;
+  cell.sprite.position.set(shown.offsetX, shown.offsetY);
+  cell.detail = detail;
+  if (previous !== detail) previous?.texture.destroy(true);
+};
+
 /**
  * Сколько на карте скальных клеток.
  *
@@ -638,16 +693,8 @@ export const mountRockDiagonal = (
   for (const [x, y] of diagonalCells(MAP_WIDTH_CELLS, MAP_HEIGHT_CELLS, diagonal)) {
     if (!isRockCell(map, x, y)) continue;
 
-    const cell = buildCellMesh(map, x, y, colors);
-    const texture = createBakedTexture(cell.width, cell.height, density, true);
-
-    bakeCell(renderer, texture, cell);
-    finishBakedTexture(texture);
-    // Сетки больше не нужны: всё, что они умели, лежит в текстуре.
-    cell.mesh.destroy(true);
-    cell.mirror.destroy(true);
-
-    const sprite = new Sprite(texture);
+    const cell = bakeRockCell(renderer, map, x, y, colors, density);
+    const sprite = new Sprite(cell.texture);
     sprite.position.set(cell.offsetX, cell.offsetY);
     layer.addChild(sprite);
   }
