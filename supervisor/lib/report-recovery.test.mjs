@@ -23,9 +23,11 @@ async function scenario(options) {
   writeFileSync(stagesPath, '{}');
   let launches = 0;
   let child;
+  const phases = [];
   function restart() {
+    phases.push('restart');
     const recipient = openRecipient(f.boardPath);
-    const store = openReportStore(f.queuePath);
+    const store = openReportStore(f.queuePath, { disk: f.disk });
     const supervisor = createSupervisor({
       config,
       root: f.root,
@@ -100,7 +102,27 @@ async function scenario(options) {
   expect(pending).toHaveLength(1);
   expect(pending[0].kind).toBe('transfer-report');
   const action = pending[0];
-  const deliver = async (opened) => (await execute([action], opened.io))[0];
+  const diagnostic = (opened, point, result) =>
+    JSON.stringify(
+      {
+        point,
+        phases,
+        result,
+        pending: opened.store.entries(),
+        calls: opened.recipient.calls,
+        effects: opened.recipient.state(),
+        launches,
+        disk: f.diskEvents,
+      },
+      null,
+      2,
+    );
+  const deliver = async (opened) => {
+    phases.push('execute transfer-report');
+    const result = (await execute([action], opened.io))[0];
+    phases.push(`delivery ${result.result}`);
+    return result;
+  };
   function assertSettled(opened, expected) {
     expect(opened.recipient.state()).toMatchObject(expected);
     expect(opened.store.entries()).toEqual([]);
@@ -112,7 +134,7 @@ async function scenario(options) {
     expect(again.actions().some((a) => a.kind === 'transfer-report')).toBe(false);
     expect(launches).toBe(1);
   }
-  return { f, next, restart, deliver, assertSettled };
+  return { f, next, restart, deliver, assertSettled, diagnostic };
 }
 
 describe('paused completion survives full supervisor and recipient restart', () => {
@@ -207,7 +229,17 @@ describe('paused completion survives full supervisor and recipient restart', () 
           throw new Error('lost ack');
         };
       const result = await s.deliver(s.next);
-      expect(result.result, result.why).toBe(point === 'none' ? 'done' : 'failed');
+      expect(result.result, s.diagnostic(s.next, point, result)).toBe(
+        point === 'none' ? 'done' : 'failed',
+      );
+      if (point === 'before-put') {
+        const context = JSON.parse(s.diagnostic(s.next, point, result));
+        expect(context.result.why).toContain('injected recipient failure');
+        expect(context.phases).toContain('execute transfer-report');
+        expect(context.pending[0].progress.length).toBeGreaterThan(0);
+        expect(context.calls.some((call) => call.method === 'PUT')).toBe(true);
+        expect(context.effects).toMatchObject({ puts: 0, posts: 0 });
+      }
       if (point !== 'none') expect(s.next.store.entries()).toHaveLength(1);
       const final = point === 'none' ? s.next : s.restart();
       if (point !== 'none') expect((await s.deliver(final)).result).toBe('done');

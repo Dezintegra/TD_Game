@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import * as fs from 'node:fs';
 import { join } from 'node:path';
 import { seedRecipient, openRecipient } from './report-recipient.mjs';
 import { openReportStore } from '../report-store.mjs';
@@ -18,6 +19,28 @@ export function deliveryFixture({
   const root = mkdtempSync(join(base, 'delivery-'));
   const boardPath = join(root, 'board.json');
   const queuePath = join(root, 'pending.json');
+  const diskEvents = [];
+  const disk = new Proxy(fs, {
+    get(target, key) {
+      const value = target[key];
+      if (typeof value !== 'function') return value;
+      return (...args) => {
+        const event = { operation: key, path: args[0] };
+        diskEvents.push(event);
+        try {
+          return value(...args);
+        } catch (error) {
+          event.error = {
+            message: error.message,
+            code: error.code,
+            syscall: error.syscall,
+            path: error.path,
+          };
+          throw error;
+        }
+      };
+    },
+  });
   const now = '2026-09-06T10:00:00Z';
   const task = {
     id: '0001-task',
@@ -74,6 +97,8 @@ export function deliveryFixture({
     root,
     boardPath,
     queuePath,
+    disk,
+    diskEvents,
     task,
     member,
     now,
