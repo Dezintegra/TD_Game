@@ -93,6 +93,34 @@ export function recordRecovery(state, id) {
   return { ...state, next: 'game', recoveries: [...state.recoveries, id] };
 }
 
+/** Дескриптор рождается раньше записи хода; восстановим этот разрыв после остановки. */
+export function reconcileLaunches(state, tasks, startedAt) {
+  const pending = [];
+  for (const task of tasks) {
+    const at = startedAt(task.id, task.status);
+    if (!Number.isFinite(Date.parse(at))) continue;
+    const admission =
+      task.scheduling &&
+      !Object.hasOwn(state.admissions, task.id) &&
+      Date.parse(at) >= Date.parse(task.scheduling.selectedAt);
+    const incident = task.pipelineIncident;
+    const probe =
+      incident &&
+      !incident.verifiedAt &&
+      !state.probes?.[incident.id] &&
+      task.status === incident.check.stage &&
+      Date.parse(at) >= Date.parse(incident.openedAt);
+    if (!admission && !probe) continue;
+    pending.push({
+      task: probe ? { ...task, pipelineIncident: { ...incident, probeStartedAt: at } } : task,
+      at,
+    });
+  }
+  return pending
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    .reduce((next, item) => recordLaunch(next, item.task, item.at), state);
+}
+
 export function schedulingFields(value) {
   return Object.fromEntries(
     ['area', 'workKind', 'workReason', 'scheduling', 'pipelineIncident']

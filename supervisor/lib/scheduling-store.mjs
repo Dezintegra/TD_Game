@@ -1,6 +1,12 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { emptyScheduling, recordLaunch, recordRecovery, schedulingProblem } from './scheduling.mjs';
+import {
+  emptyScheduling,
+  recordLaunch,
+  recordRecovery,
+  reconcileLaunches,
+  schedulingProblem,
+} from './scheduling.mjs';
 
 const pathOf = (root, config) => join(root, config.paths.local, 'scheduling.json');
 
@@ -43,5 +49,6 @@ export function createSchedulingStore(root, config) {
     read: () => (fault ? { error: fault } : readScheduling(root, config)),
     launched: (task, at) => update((state) => recordLaunch(state, task, at)),
     recovered: (id) => update((state) => recordRecovery(state, id)),
+    reconcile: (tasks, startedAt) => update((state) => reconcileLaunches(state, tasks, startedAt)),
   };
 }

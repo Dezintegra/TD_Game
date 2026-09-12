@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSchedulingStore } from './scheduling-store.mjs';
-import { emptyScheduling, recordLaunch, workLane, workKindProblem } from './scheduling.mjs';
+import {
+  emptyScheduling,
+  recordLaunch,
+  reconcileLaunches,
+  workLane,
+  workKindProblem,
+} from './scheduling.mjs';
 import { parseCard, metaOf, joinDescription } from './card.mjs';
 
 const at = '2026-09-12T20:00:00Z';
@@ -47,6 +53,28 @@ describe('направление по результату', () => {
 });
 
 describe('учёт фактического первого запуска', () => {
+  it('после остановки между порождением и записью восстанавливает ход и пробу из дескриптора', () => {
+    const source = {
+      ...game,
+      status: 'design',
+      pipelineIncident: {
+        id: 'incident',
+        openedAt: at,
+        check: { stage: 'design' },
+        verifiedAt: null,
+      },
+    };
+    const initial = emptyScheduling();
+    expect(reconcileLaunches(initial, [source], () => null)).toBe(initial);
+    expect(reconcileLaunches(initial, [source], () => '2026-09-11T20:00:00Z')).toBe(initial);
+    const restored = reconcileLaunches(initial, [source], () => at);
+    expect(restored).toMatchObject({
+      next: 'service',
+      admissions: { [game.id]: { lane: 'game', at } },
+      probes: { incident: at },
+    });
+    expect(reconcileLaunches(restored, [source], () => at)).toBe(restored);
+  });
   it('старый этап и продолжение не расходуют ход новых карточек', () => {
     const initial = emptyScheduling();
     expect(recordLaunch(initial, { ...game, scheduling: undefined }, at).next).toBe('game');

@@ -596,6 +596,8 @@ async function turn() {
   );
 
   const registry = readRegistry(root, config);
+  if (!schedulingStore.read().error)
+    schedulingStore.reconcile(backlog.tasks, supervisor.stageStartedAt);
   for (const task of [...backlog.tasks, ...(backlog.dependencyRecords ?? [])]) {
     if (task.pipelineIncident?.verifiedAt) schedulingStore.recovered(task.pipelineIncident.id);
   }
