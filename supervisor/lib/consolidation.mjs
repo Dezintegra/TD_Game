@@ -183,7 +183,7 @@ export function planClassifications(
     }
     seen.add(task.id);
     const moved = applyTransition(
-      { ...task, area: 'pipeline' },
+      { ...task, area: 'pipeline', workKind: 'service', workReason: item.evidence },
       { status: 'maintenance', note: item.evidence, now },
     );
     if (!moved.task) {
