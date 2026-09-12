@@ -341,6 +341,8 @@ export interface AiProfile {
   };
 
   readonly nuke: {
+    /** Порог чистой выгоды относительно цены пуска; положительное конечное число, иначе 1. */
+    readonly minValueRatio?: number;
     /** Шаг сетки при поиске места для удара, в клетках. */
     readonly scanStep: number;
     /**

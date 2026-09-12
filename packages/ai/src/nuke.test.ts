@@ -4,9 +4,12 @@ import {
   MAP_HEIGHT_CELLS,
   MAP_WIDTH_CELLS,
   NUKE_COOLDOWN_MAX_LEVEL,
+  NUKE_COST,
+  TICKS_PER_SECOND,
   UNIT_CAP,
   UNIT_STATS,
   UnitType,
+  StructureKind,
   UpgradeStat,
   UpgradeTarget,
   asEntityId,
@@ -17,11 +20,12 @@ import {
   upgradeBranchIndex,
 } from '@td/shared';
 import type { Command } from '@td/shared';
-import { cellCentre, cellIndex, createWorld } from '@td/sim';
+import { cellCentre, cellIndex, createWorld, step } from '@td/sim';
 import type { PlayerState, WorldState } from '@td/sim';
 import { playerStats } from '@td/sim';
 import { approachOf } from './approach.js';
-import { STRATEGIST_PROFILE } from './profile.js';
+import { STRATEGIST_PROFILE, phaseAt, reserveOf, savingLimit } from './profile.js';
+import type { AiProfile } from './profile.js';
 import { createOpponent, findNukeTarget, nukeWorthIt } from './opponent.js';
 
 /**
@@ -84,8 +88,12 @@ const withCrowd = (world: WorldState, count = 40): WorldState => {
  * Несколько сотен, а не один: противник думает раз в пятнадцать тиков,
  * и по одному тику не увидеть ни одной команды вовсе.
  */
-const commandsOver = (world: WorldState, ticks: number): readonly Command[] => {
-  const opponent = createOpponent(asPlayerId(ME), SEED, STRATEGIST_PROFILE);
+const commandsOver = (
+  world: WorldState,
+  ticks: number,
+  profile: AiProfile = STRATEGIST_PROFILE,
+): readonly Command[] => {
+  const opponent = createOpponent(asPlayerId(ME), SEED, profile);
   const seen: Command[] = [];
 
   let current = world;
@@ -99,6 +107,206 @@ const commandsOver = (world: WorldState, ticks: number): readonly Command[] => {
 
 const launches = (world: WorldState): number =>
   commandsOver(world, 300).filter((issued) => issued.kind === CommandKind.LaunchNuke).length;
+
+const ratioProfile = (minValueRatio: number): AiProfile => ({
+  ...STRATEGIST_PROFILE,
+  nuke: { ...STRATEGIST_PROFILE.nuke, minValueRatio },
+});
+
+const targetOf = (world: WorldState, profile = STRATEGIST_PROFILE) => {
+  const player = world.players[ME];
+  const approach = approachOf(world, asPlayerId(ME));
+  if (player === undefined || approach === undefined) throw new Error('мир без стороны');
+  return findNukeTarget(world, asPlayerId(ME), profile, approach, playerStats(player));
+};
+
+const statsOf = (world: WorldState) => {
+  const player = world.players[ME];
+  if (player === undefined) throw new Error('мир без стороны');
+  return playerStats(player);
+};
+
+const purchasesOf = (commands: readonly Command[]) =>
+  commands.filter(
+    (issued) =>
+      issued.kind === CommandKind.TrainUnit ||
+      issued.kind === CommandKind.Build ||
+      issued.kind === CommandKind.BuyUpgrade,
+  );
+
+describe('коэффициент порога ядерного удара', () => {
+  it.each([undefined, 1, 0.5, 2, 0, -1, NaN, Infinity, -Infinity])(
+    'строгая граница и нормализация %s',
+    (ratio) => {
+      const effective = ratio === 0.5 || ratio === 2 ? ratio : 1;
+      const threshold = 400 * effective;
+      for (const [net, expected] of [
+        [threshold - 1, false],
+        [threshold, false],
+        [threshold + 1, true],
+      ] as const) {
+        expect(nukeWorthIt({ cell: CROWD_CELL, net }, 400, ratio)).toBe(expected);
+      }
+      expect(nukeWorthIt(undefined, 400, ratio)).toBe(false);
+      expect(nukeWorthIt({ cell: CROWD_CELL, net: 0 }, 400, ratio)).toBe(false);
+      expect(nukeWorthIt({ cell: CROWD_CELL, net: -1 }, 400, ratio)).toBe(false);
+    },
+  );
+
+  // Двенадцать машин стоят между половиной и полной ценой пуска.
+  // Мир неподвижен: измеряется подключение настройки, а не исход матча.
+  const world = withCrowd(rich(createWorld(SEED)), 12);
+  const half = ratioProfile(0.5);
+  const late = patchPlayer({ ...world, tick: asTickNumber(301 * TICKS_PER_SECOND) }, ME, {
+    energy: BASE_UNIT_COST * 4,
+  });
+  const issued = (state: WorldState, profile = half) => commandsOver(state, 30, profile);
+  const strikes = (state: WorldState, profile = half) =>
+    issued(state, profile).filter((entry) => entry.kind === CommandKind.LaunchNuke);
+
+  it('цель между порогами включает пуск только при явном допуске убытка', () => {
+    const target = targetOf(world);
+    const cost = statsOf(world).nuke.cost;
+    expect(target?.net).toBeGreaterThan(cost * 0.5);
+    expect(target?.net).toBeLessThan(cost);
+    expect(strikes(world).length).toBeGreaterThan(0);
+    expect(strikes(world, ratioProfile(1))).toHaveLength(0);
+    expect(strikes(world, ratioProfile(2))).toHaveLength(0);
+  });
+
+  it('коэффициент не уменьшает необходимую энергию или списание', () => {
+    const cost = statsOf(world).nuke.cost;
+    expect(strikes(patchPlayer(world, ME, { energy: cost - 1 }))).toHaveLength(0);
+    const funded = patchPlayer(world, ME, { energy: cost });
+    const launch = strikes(funded)[0];
+    expect(launch).toBeDefined();
+    if (launch === undefined) throw new Error('нет контрольного пуска');
+    const atLaunch = { ...funded, tick: launch.tick };
+    const idle = step(atLaunch, []);
+    const fired = step(atLaunch, [launch]);
+    expect((idle.players[ME]?.energy ?? 0) - (fired.players[ME]?.energy ?? 0)).toBe(cost);
+  });
+
+  it('поздний Стратег удерживает запас при 0.5, при 1 строит башню', () => {
+    expect(purchasesOf(issued(late))).toHaveLength(0);
+    expect(issued(late, ratioProfile(1))).toContainEqual(
+      expect.objectContaining({ kind: CommandKind.Build, structure: StructureKind.TowerBasic }),
+    );
+  });
+
+  it('после исчезновения цели тот же противник освобождает запас до внедрения 0026', () => {
+    const opponent = createOpponent(asPlayerId(ME), SEED, half);
+    let current = late;
+    const before: Command[] = [];
+    for (let i = 0; i < 30; i += 1) {
+      before.push(...opponent.decide(current));
+      current = { ...current, tick: asTickNumber(current.tick + 1) };
+    }
+    expect(purchasesOf(before)).toHaveLength(0);
+    current = { ...current, units: [] };
+    const after: Command[] = [];
+    for (let i = 0; i < 30; i += 1) {
+      after.push(...opponent.decide(current));
+      current = { ...current, tick: asTickNumber(current.tick + 1) };
+    }
+    expect(purchasesOf(after).length).toBeGreaterThan(0);
+  });
+
+  it('invest, откат и фаза по-прежнему запрещают резерв', () => {
+    const noInvest = { ...half, nuke: { ...half.nuke, invest: false } };
+    expect(purchasesOf(issued(late, noInvest)).length).toBeGreaterThan(0);
+    const cooling = patchPlayer(late, ME, { nukeReadyAtTick: asTickNumber(late.tick + 1000) });
+    expect(purchasesOf(issued(cooling)).length).toBeGreaterThan(0);
+    expect(strikes(patchPlayer(world, ME, { nukeReadyAtTick: asTickNumber(1000) }))).toHaveLength(
+      0,
+    );
+    const early = { ...late, tick: asTickNumber(0) };
+    expect(purchasesOf(issued(early)).length).toBeGreaterThan(0);
+  });
+
+  it('сумма запаса и граница достижимости не получают скидку', () => {
+    const income = statsOf(late).incomePerTick;
+    const atLimit = {
+      ...half,
+      spending: { ...half.spending, savingHorizonSeconds: NUKE_COST / (income * TICKS_PER_SECOND) },
+    };
+    const belowLimit = {
+      ...atLimit,
+      spending: {
+        ...atLimit.spending,
+        savingHorizonSeconds: atLimit.spending.savingHorizonSeconds - 1,
+      },
+    };
+    const phase = phaseAt(half, late.tick);
+    expect(savingLimit(income, atLimit)).toBe(NUKE_COST);
+    expect(reserveOf(phase, income, atLimit, 0, false, true)).toBe(NUKE_COST);
+    expect(reserveOf(phase, income, belowLimit, 0, false, true)).toBe(0);
+    expect(purchasesOf(issued(late, atLimit))).toHaveLength(0);
+    expect(purchasesOf(issued(late, belowLimit)).length).toBeGreaterThan(0);
+  });
+
+  it('прокачка меняет порог и оплату, сохраняя базовый резерв', () => {
+    const branch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeDamage);
+    const upgraded = patchPlayer(world, ME, {
+      upgrades: (world.players[ME]?.upgrades ?? []).map((state, index) =>
+        index === branch ? { ...state, level: 10 } : state,
+      ),
+    });
+    const cost = statsOf(upgraded).nuke.cost;
+    expect(cost).toBeGreaterThan(NUKE_COST);
+    expect(strikes(upgraded)).toHaveLength(0);
+    const biggerCrowd = withCrowd(upgraded, 40);
+    expect(strikes(biggerCrowd).length).toBeGreaterThan(0);
+    expect(strikes(patchPlayer(biggerCrowd, ME, { energy: cost - 1 }))).toHaveLength(0);
+    const launch = strikes(patchPlayer(biggerCrowd, ME, { energy: cost }))[0];
+    if (launch === undefined) throw new Error('нет прокачанного пуска');
+    const ready = patchPlayer({ ...biggerCrowd, tick: launch.tick }, ME, { energy: cost });
+    expect(
+      (step(ready, []).players[ME]?.energy ?? 0) - (step(ready, [launch]).players[ME]?.energy ?? 0),
+    ).toBe(cost);
+    const phase = phaseAt(half, late.tick);
+    expect(reserveOf(phase, statsOf(upgraded).incomePerTick, half, 0, false, true)).toBe(NUKE_COST);
+    const poor = patchPlayer({ ...biggerCrowd, tick: late.tick }, ME, {
+      energy: NUKE_COST + BASE_UNIT_COST * 4,
+    });
+    expect(poor.players[ME]?.energy).toBeLessThan(cost);
+    expect(purchasesOf(issued(poor)).length).toBeGreaterThan(0);
+  });
+
+  it('свои потери вычитаются до применения коэффициента', () => {
+    const centre = cellCentre(CROWD_CELL);
+    const own = world.units.slice(0, 5).map((unit, index) => ({
+      ...unit,
+      id: asEntityId(900 + index),
+      owner: asPlayerId(ME),
+      position: centre,
+    }));
+    const mixed = { ...world, units: [...world.units, ...own] };
+    expect(targetOf(world)?.net).toBe(BASE_UNIT_COST * 12);
+    expect(targetOf(mixed)?.net).toBe(BASE_UNIT_COST * 7);
+    expect(strikes(mixed)).toHaveLength(0);
+    expect(strikes(world).length).toBeGreaterThan(0);
+  });
+
+  it('запретная зона сохраняется даже при подходящей по цене толпе', () => {
+    const base = world.structures.find(
+      (entry) => entry.kind === StructureKind.Base && entry.owner === FOE,
+    );
+    if (base === undefined) throw new Error('нет базы');
+    const blocked = {
+      ...world,
+      units: world.units.map((unit) => ({ ...unit, position: cellCentre(base.cell) })),
+    };
+    expect(strikes(blocked)).toHaveLength(0);
+    expect(strikes(world).length).toBeGreaterThan(0);
+  });
+
+  it('отсутствующая настройка и явная 1 дают одинаковые последовательности команд', () => {
+    for (const state of [world, late, withCrowd(world), { ...late, units: [] }]) {
+      expect(commandsOver(state, 60)).toEqual(commandsOver(state, 60, ratioProfile(1)));
+    }
+  });
+});
 
 describe('противник и откат ядерного удара', () => {
   const target = withCrowd(rich(createWorld(SEED)));
