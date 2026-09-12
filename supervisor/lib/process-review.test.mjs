@@ -65,6 +65,10 @@ describe('дыры, найденные отдельным ревью', () => {
   it('снятие закрытого предшественника сохраняет ожидаемый PR и требует проверки', async () => {
     let waiting = task('0001-wait', {
       status: 'blocked',
+      dependencyRecheck: {
+        edges: [],
+        results: [{ taskId: '0003-prior', kind: 'merged-pr', pr: 66 }],
+      },
       dependsOn: ['0002-old'],
       dependencyResults: [{ taskId: '0002-old', kind: 'merged-pr', pr: 77 }],
       blockedContext: {
@@ -93,7 +97,7 @@ describe('дыры, найденные отдельным ревью', () => {
         return { ok: true };
       },
     });
-    expect(waiting.dependencyRecheck.results[0].pr).toBe(77);
+    expect(waiting.dependencyRecheck.results.map((r) => r.pr)).toEqual([66, 77]);
     const actions = scan({
       config,
       now,

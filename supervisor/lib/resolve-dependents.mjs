@@ -121,8 +121,11 @@ export async function resolveDependents(action, io) {
     task.dependencyResults?.some((r) => fromDependsOn.has(r.taskId))
   ) {
     next.dependencyRecheck = {
-      edges,
-      results: (task.dependencyResults ?? []).filter((r) => fromDependsOn.has(r.taskId)),
+      edges: [...(task.dependencyRecheck?.edges ?? []), ...edges],
+      results: [
+        ...(task.dependencyRecheck?.results ?? []),
+        ...(task.dependencyResults ?? []).filter((r) => fromDependsOn.has(r.taskId)),
+      ],
     };
   }
 

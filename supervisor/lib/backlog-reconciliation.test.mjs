@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   collectReconciliation,
   needsReconciliation,
+  reconciliationHeld,
   reconcileTask,
 } from './backlog-reconciliation.mjs';
 import { scan } from './scan.mjs';
@@ -39,6 +40,14 @@ function ioFor(t, needed = false) {
   };
 }
 describe('сверка фактического результата', () => {
+  it('закрытый без вливания PR не становится вечным неизвестным ответом', async () => {
+    const io = ioFor(task());
+    await reconcileTask({ ...action, proof: { ...proof, state: 'CLOSED', mergedAt: null } }, io);
+    const saved = io.saveTask.mock.calls[0][0];
+    expect(saved.status).toBe('failed');
+    expect(saved.reconciliation.state).toBe('closed');
+    expect(reconciliationHeld(saved, now)).toBe(false);
+  });
   it.each([
     [false, 'cleanup'],
     [true, 'review'],

@@ -438,7 +438,7 @@
           "format": "date-time"
         },
         "state": {
-          "enum": ["merged", "unconfirmed", "open"]
+          "enum": ["merged", "unconfirmed", "open", "closed"]
         }
       }
     },

@@ -96,8 +96,8 @@ export async function reconcileTask(action, io) {
         ? 'merged'
         : action.proof?.number === task.links.pr &&
             action.proof?.baseRefName === action.mainBranch &&
-            action.proof?.state === 'OPEN'
-          ? 'open'
+            ['OPEN', 'CLOSED'].includes(action.proof?.state)
+          ? action.proof.state.toLowerCase()
           : 'unconfirmed',
     },
   };
