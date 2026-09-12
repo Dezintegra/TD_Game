@@ -22,8 +22,11 @@ const HISTORY_LIMIT = 100;
  * @param {object} change  `{ status, note, now }`
  * @returns {{ task: object|null, problems: string[] }}
  */
-export function applyTransition(task, { status, note, now, reconciliation = false }) {
-  const verdict = canTransition(task, status, { reconciliation });
+export function applyTransition(
+  task,
+  { status, note, now, reconciliation = false, consolidation = false },
+) {
+  const verdict = canTransition(task, status, { reconciliation, consolidation });
   if (!verdict.ok) {
     return { task: null, problems: [verdict.reason] };
   }

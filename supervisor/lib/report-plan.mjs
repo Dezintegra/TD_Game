@@ -1,3 +1,4 @@
+import { planConsolidations } from './consolidation.mjs';
 import { applyReport, haltOf } from './apply-report.mjs';
 import {
   addSpent,
@@ -376,6 +377,33 @@ export async function transferReport(action, io) {
     // чужой задачи ради ссылки — это переезд карточки в ту же колонку и лишняя
     // запись в её журнале, а сам источник и так назван в тексте дополнения.
     next = relate(next, item.taskId);
+  }
+
+  if (!halted && report.outcome === 'done') {
+    const consolidation = planConsolidations(report.consolidations, {
+      tasks: io
+        .allTaskIds()
+        .map((id) => io.readTask(id))
+        .filter(Boolean),
+      originId: task.id,
+      stage: action.stage,
+      machine: io.machine,
+      busy: io.tokenActionBlocked,
+      entryOf: io.registryEntry,
+      now: io.now,
+    });
+    plan.notes = [
+      ...(plan.notes ?? []),
+      ...consolidation.rejected.map((why) => 'поглощение отклонено: ' + why),
+    ];
+    for (const operation of consolidation.operations) {
+      const saved = await io.saveTask(
+        operation.task,
+        operation.journal,
+        'chore(backlog): consolidate ' + operation.task.id,
+      );
+      if (!saved.ok) return { result: 'failed', why: saved.outcome };
+    }
   }
 
   // Пакет выкладки разносится ДО записи ведущей и по той же причине, что

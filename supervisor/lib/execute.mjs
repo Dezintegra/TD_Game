@@ -203,7 +203,7 @@ function assignmentFor(action, io, task, branchHint) {
     // не вправе, а читать устаревшую копию с диска хуже, чем не читать.
     task,
     journal: io.readJournal(action.taskId),
-    board: io.boardDigest(),
+    board: io.boardDigest(task.id),
     delayDependencies: reviewingDelay(task)
       ? (task.dependsOn ?? []).map((id) => ({
           task: io.readTask(id) ??

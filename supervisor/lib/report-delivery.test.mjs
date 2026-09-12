@@ -261,3 +261,54 @@ describe('отметка о состоявшейся выкладке', () => {
     expect(marks).toEqual([]);
   });
 });
+
+describe('durable consolidation', () => {
+  it('retains requirements and closes source once after lost delivery acknowledgement', async () => {
+    const f = fixture({
+      stage: 'triage',
+      taskOverrides: { type: 'note' },
+      memberOverrides: {
+        status: 'candidate',
+        description: 'Distinct acceptance criterion',
+        links: {},
+      },
+      reportOverrides: {
+        links: {},
+        consolidations: [
+          {
+            sourceId: '0002-member',
+            targetId: '0003-target',
+            mode: 'absorb',
+            evidence: 'Same diagnosed defect',
+            coverage: 'Preserve the distinct acceptance criterion',
+          },
+        ],
+      },
+    });
+    const first = f.open();
+    await first.recipient.store.createTask({
+      ...f.member,
+      id: '0003-target',
+      description: 'Original target',
+      status: 'candidate',
+    });
+    const open = () => {
+      const r = f.open();
+      r.io.tokenActionBlocked = () => false;
+      r.io.registryEntry = () => null;
+      return r;
+    };
+    const delivery = open();
+    delivery.recipient.fail('PUT', 'cards', 'after');
+    expect((await deliver(f, delivery)).result).toBe('failed');
+    const resumed = open();
+    expect((await deliver(f, resumed)).result).toBe('done');
+    const target = resumed.recipient.store.readTask('0003-target');
+    expect(target.description.split('Distinct acceptance criterion')).toHaveLength(2);
+    expect(resumed.recipient.store.readTask('0002-member')).toMatchObject({
+      status: 'closed',
+      splitInto: ['0003-target'],
+    });
+    expect((await deliver(f, open())).result).toBe('skipped');
+  });
+});

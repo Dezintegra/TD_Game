@@ -491,7 +491,34 @@ export function createIo({
      * Сеть здесь не тревожится: снимок доски прочитан один раз в начале
      * цикла, и `readTask` берёт из него.
      */
-    boardDigest() {
+    boardDigest(currentId) {
+      const current = this.readTask(currentId);
+      const words = new Set(
+        String(current?.title ?? '')
+          .toLowerCase()
+          .match(/[а-яёa-z]{5,}/g) ?? [],
+      );
+      const candidates = this.allTaskIds()
+        .map((id) => this.readTask(id))
+        .filter(Boolean);
+      const score = (task) =>
+        (current?.links?.related?.includes(task.id) || task.links?.related?.includes(currentId)
+          ? 100
+          : 0) +
+        (current?.links?.change && current.links.change === task.links?.change ? 50 : 0) +
+        (
+          String(task.title)
+            .toLowerCase()
+            .match(/[а-яёa-z]{5,}/g) ?? []
+        ).filter((word) => words.has(word)).length;
+      const detailed = new Set(
+        candidates
+          .filter((t) => t.id !== currentId && score(t) > 0)
+          .sort((a, b) => score(b) - score(a))
+          .slice(0, 8)
+          .map((t) => t.id),
+      );
+      let room = 20000;
       const digest = [];
       for (const id of this.allTaskIds()) {
         const task = this.readTask(id);
@@ -499,6 +526,11 @@ export function createIo({
         digest.push({
           id: task.id,
           title: task.title,
+          ...(detailed.has(task.id) && String(task.description ?? '').length <= room
+            ? ((room -= String(task.description ?? '').length), { description: task.description })
+            : { descriptionOmitted: true }),
+          splitInto: task.splitInto ?? [],
+          closureReason: task.closureReason ?? null,
           type: task.type,
           categories: task.categories ?? [],
           dependsOn: task.dependsOn ?? [],

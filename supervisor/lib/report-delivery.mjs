@@ -68,6 +68,15 @@ export async function transferReport(action, io) {
         entry = store.get(entry.reportId);
       }
       const args = operation.args;
+      if (
+        operation.kind === 'saveTask' &&
+        args[0].id !== entry.taskId &&
+        entry.report.consolidations?.some((item) =>
+          [item.sourceId, item.targetId].includes(args[0].id),
+        ) &&
+        io.tokenActionBlocked?.(args[0].id)
+      )
+        throw new Error('участник поглощения занят; доставка отложена');
       let result;
       if (operation.kind === 'saveTask')
         result = await io.saveTask(args[0], args[1], args[2], args[3] ?? [], operation);

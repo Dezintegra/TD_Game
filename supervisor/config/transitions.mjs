@@ -281,7 +281,7 @@ export const NEEDS_SESSION = [
  * обычное дело, и вызывающему нужно записать причину в журнал, а не ловить
  * ошибку.
  */
-export function canTransition(task, to, { reconciliation = false } = {}) {
+export function canTransition(task, to, { reconciliation = false, consolidation = false } = {}) {
   const from = task.status;
 
   if (!STATES.includes(to)) {
@@ -299,6 +299,14 @@ export function canTransition(task, to, { reconciliation = false } = {}) {
     ['cleanup', 'review'].includes(to)
   )
     return { ok: true, reason: 'доказательная сверка влитого PR' };
+  if (
+    consolidation &&
+    to === 'closed' &&
+    !task.links?.pr &&
+    ['candidate', 'new', 'maintenance', 'failed', 'awaiting-po'].includes(from) &&
+    task.splitInto?.length
+  )
+    return { ok: true, reason: 'проверенное поглощение с сохранением требований' };
   if (from === 'token-limit')
     return {
       ok: TOKEN_RESUME_STATES.includes(to) && to === task.tokenHold?.resumeStatus,
