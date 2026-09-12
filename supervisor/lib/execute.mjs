@@ -60,6 +60,7 @@ async function startStage(action, io) {
   const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
   if (task.reanalysis) claimed.task.reanalysis = false;
+  if (action.scheduling && !task.scheduling) claimed.task.scheduling = action.scheduling;
 
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
@@ -169,6 +170,7 @@ async function startStage(action, io) {
     return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
   }
 
+  io.recordSchedulingLaunch?.(claimed.task);
   return { result: 'done', status: action.stage };
 }
 
@@ -294,6 +296,7 @@ async function continueStage(action, io) {
   // запусков: оно доказывает, что машинерия запуска работает, и прежние
   // отказы к делу больше не относятся.
   const started = { ...counted, attempts: { ...counted.attempts, spawnFailures: 0 } };
+  io.recordSchedulingLaunch?.(started);
   const push = await io.saveTask(
     started,
     {
@@ -800,6 +803,10 @@ export async function execute(actions, io) {
   const results = [];
 
   for (const action of actions) {
+    if (['start-stage', 'continue-stage'].includes(action.kind) && io.schedulingBlocked?.()) {
+      results.push({ action, result: 'skipped', why: io.schedulingBlocked() });
+      continue;
+    }
     if (io.reportStorageBlocked?.()) {
       results.push({ action, result: 'failed', why: 'report storage blocks scheduling' });
       break;

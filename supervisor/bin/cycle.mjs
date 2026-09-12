@@ -23,6 +23,7 @@ import { scan } from '../lib/scan.mjs';
 import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
 import { createTrelloBacklog } from '../lib/backlog-trello.mjs';
 import { sortCards } from '../lib/validate-card.mjs';
+import { readScheduling } from '../lib/scheduling-store.mjs';
 
 /**
  * Что конвейер собирается делать.
@@ -126,6 +127,7 @@ async function main() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const decision = scan({
+    scheduling: readScheduling(root, config),
     now: new Date().toISOString(),
     machine,
     ...(await buildDependencyState({ backlog, config, root, run: runCommand })),

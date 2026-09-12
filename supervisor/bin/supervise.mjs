@@ -43,6 +43,7 @@ import {
 } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { createIo } from '../lib/io.mjs';
+import { createSchedulingStore } from '../lib/scheduling-store.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { openReportStore } from '../lib/report-store.mjs';
@@ -190,6 +191,7 @@ const runCommand = createCommandRunner(root);
 
 const runGit = (args) => runCommand(args, 'git');
 const { config, missing } = loadConfig();
+const schedulingStore = createSchedulingStore(root, config);
 const git = createGit(runGit, { remote: config.remote, mainBranch: config.mainBranch });
 
 /**
@@ -599,6 +601,7 @@ async function turn() {
 
   const state = {
     machine,
+    scheduling: schedulingStore.read(),
     ...(await buildDependencyState({
       backlog,
       config,
@@ -672,6 +675,8 @@ async function turn() {
           .some((item) => item.taskId === taskId || item.batch?.includes(taskId)) ||
         supervisor.reports.some((item) => item.taskId === taskId || item.batch?.includes(taskId)),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
+      recordSchedulingLaunch: (task) => schedulingStore.launched(task, new Date().toISOString()),
+      schedulingBlocked: () => schedulingStore.read().error,
       reportStorageBlocked: () => supervisor.reportStorageBlocked,
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),

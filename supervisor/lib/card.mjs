@@ -1,4 +1,5 @@
 import { CATEGORIES, routingFields } from './categories.mjs';
+import { schedulingFields } from './scheduling.mjs';
 import { tokenPanel, withoutTokenPanel } from './token-hold.mjs';
 
 /**
@@ -173,6 +174,7 @@ export function parseCard(card, { stateByList, labelKeyById }) {
       ? { tokenReanalysis: meta.tokenReanalysis }
       : {}),
     ...routingFields(meta),
+    ...schedulingFields(meta),
     ...(labels.categories.length ? { categories: labels.categories } : {}),
     type: labels.types[0] ?? null,
     title: titleOf(card.name),
@@ -264,6 +266,7 @@ export function metaOf(task) {
     ...(Object.hasOwn(task, 'tokenHold') ? { tokenHold: task.tokenHold } : {}),
     ...(Object.hasOwn(task, 'tokenReanalysis') ? { tokenReanalysis: task.tokenReanalysis } : {}),
     ...routingFields(task),
+    ...schedulingFields(task),
     ...(Object.hasOwn(task, 'question') ? { question: task.question } : {}),
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
     ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),

@@ -24,7 +24,10 @@
     "reportReceipts": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[a-f0-9]{32}$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{32}$"
+      }
     },
     "delayAnalysis": {
       "type": "object",
@@ -420,6 +423,31 @@
     "tokenHold": {
       "type": "object",
       "description": "Сохранённый этап и производная панель ожидания бюджета; не источник разрешения на расход."
+    },
+    "workKind": {
+      "enum": ["game", "service"]
+    },
+    "workReason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane", "selectedAt", "reason"],
+      "properties": {
+        "lane": {
+          "enum": ["game", "service"]
+        },
+        "selectedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   },
   "allOf": [

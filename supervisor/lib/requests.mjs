@@ -1,6 +1,7 @@
 import { dependencyFormatProblem } from './dependencies.mjs';
 import { categoriesProblem } from './categories.mjs';
 import { runSourceProblem } from './run-source.mjs';
+import { workKindProblem } from './scheduling.mjs';
 /**
  * Заявки на новые задачи.
  *
@@ -97,6 +98,8 @@ export function taskFromRequest(
   { id, now, sourceId, mayQueue = false, pipelineByDefault = false, decomposed = false },
 ) {
   const problems = [];
+  const workProblem = workKindProblem(request ?? {});
+  if (workProblem) problems.push(workProblem);
 
   const categoryProblem = categoriesProblem(request?.categories);
   if (categoryProblem) problems.push(categoryProblem);
@@ -225,6 +228,10 @@ export function taskFromRequest(
   // отчёта разбора узнаёт, какие из заведённых задач — починки конвейера,
   // после закрытия которых упавшую задачу можно вернуть в работу.
   if (pipeline) task.area = 'pipeline';
+  if (request.workKind !== undefined) {
+    task.workKind = pipeline ? 'service' : request.workKind;
+    task.workReason = request.workReason;
+  }
 
   if (type === 'run') {
     task.run = {

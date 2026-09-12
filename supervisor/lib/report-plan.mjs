@@ -24,6 +24,7 @@ import {
 import { categoriesProblem } from './categories.mjs';
 import { closureReasonFor, closureRequestKey } from './closure.mjs';
 import { journalBody } from './journal.mjs';
+import { workKindProblem } from './scheduling.mjs';
 /** План собирается теми же правилами, но все записи становятся данными. */
 export async function prepareReportPlan(action, io, saved = null) {
   if (saved) return globalThis.structuredClone(saved);
@@ -160,6 +161,12 @@ export async function transferReport(action, io) {
   if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
   const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
   if (categoryProblem) return { result: 'failed', why: categoryProblem };
+  const workProblem = workKindProblem({
+    ...task,
+    workKind: report.workKind ?? task.workKind,
+    workReason: report.workReason ?? task.workReason,
+  });
+  if (workProblem) return { result: 'failed', why: workProblem };
   if (report.categories && report.requests) {
     if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };
     for (const request of report.requests) {
@@ -239,6 +246,10 @@ export async function transferReport(action, io) {
   // ровно против кругов, каждый из которых чем-то кончался.
   next = addSpent(next, report.costUsd);
   if (report.categories) next.categories = [...report.categories];
+  if (report.workKind !== undefined) {
+    next.workKind = report.workKind;
+    next.workReason = report.workReason;
+  }
 
   // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
   // По ним конвейер потом опрашивает проверки и доказывает влитость: без

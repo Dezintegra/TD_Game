@@ -58,6 +58,25 @@ it('повторно проверяет очередь до действий и�
 
 const NOW = '2026-08-26T12:00:00+03:00';
 
+it('учитывает новую карточку только после рождения процесса и сохраняет выбор для повтора', async () => {
+  const io = fakeIo();
+  const recorded = [];
+  io.recordSchedulingLaunch = (value) => recorded.push(value.id);
+  io.spawnStage = () => ({ ok: false, reason: 'not-born', why: 'нет процесса' });
+  const action = {
+    kind: 'start-stage',
+    taskId: '0001-one',
+    stage: 'decompose',
+    scheduling: { lane: 'game', selectedAt: NOW, reason: 'игровой ход' },
+  };
+  await execute([action], io);
+  expect(recorded).toEqual([]);
+  expect(io.readTask(action.taskId).scheduling).toEqual(action.scheduling);
+  io.spawnStage = () => ({ ok: true });
+  await execute([{ kind: 'continue-stage', taskId: action.taskId, stage: 'decompose' }], io);
+  expect(recorded).toEqual([action.taskId]);
+});
+
 const task = (over = {}) => ({
   id: '0001-one',
   type: 'feature',

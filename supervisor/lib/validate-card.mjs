@@ -1,5 +1,6 @@
 import { STATES } from '../config/transitions.mjs';
 import { routingProblem } from './categories.mjs';
+import { workKindProblem } from './scheduling.mjs';
 
 /**
  * Проверка карточки взамен схемы задачи.
@@ -33,6 +34,8 @@ const RUN_KINDS = ['arena', 'perf', 'bench-tick'];
  */
 export function checkCard({ task, card }) {
   const problems = [];
+  const workProblem = workKindProblem(task);
+  if (workProblem) problems.push(workProblem);
   if (
     Object.hasOwn(task, 'reportReceipts') &&
     (!Array.isArray(task.reportReceipts) ||
