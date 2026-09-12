@@ -440,7 +440,13 @@ export function createIo({
       actualPath ? relative(root, resolve(root, actualPath)) : join(config.worktreeDir, taskId),
 
     addWorktree(taskId, branch) {
-      const path = join(config.worktreeDir, taskId);
+      const entry = this.registryEntry(taskId);
+      if (
+        entry &&
+        (entry.branch !== branch || typeof entry.path !== 'string' || !entry.path.trim())
+      )
+        return { ok: false, why: 'реестр задачи не подтверждает её путь и ветку' };
+      const path = entry?.path ?? join(config.worktreeDir, taskId);
       const absolute = resolve(root, path);
       const listing = run(['worktree', 'list', '--porcelain']);
       if (listing.code !== 0)

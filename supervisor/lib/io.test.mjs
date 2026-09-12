@@ -992,7 +992,13 @@ describe('повторное взятие рабочего дерева', () => 
   const path = join('.claude/worktrees', '0001-one');
   const absolute = resolve(root, path),
     branch = 'worktree-0001-one';
-  function setup({ treeBranch = branch, treePath = absolute, live = true, error = false } = {}) {
+  function setup({
+    treeBranch = branch,
+    treePath = absolute,
+    live = true,
+    error = false,
+    registered = false,
+  } = {}) {
     const calls = [];
     const run = (args) => {
       calls.push(args);
@@ -1013,7 +1019,7 @@ describe('повторное взятие рабочего дерева', () => 
         return {
           code: live ? 0 : 128,
           stderr: '',
-          stdout: args[2] === 'rev-parse' ? absolute : branch,
+          stdout: args[2] === 'rev-parse' ? treePath : branch,
         };
       throw new Error('Неожиданное изменение ресурсов: ' + args.join(' '));
     };
@@ -1024,6 +1030,7 @@ describe('повторное взятие рабочего дерева', () => 
       now: '2026-09-12T00:00:00Z',
       elapsed: () => 0,
     });
+    if (registered) io.registryEntry = () => ({ taskId: '0001-one', branch, path: treePath });
     return { result: io.addWorktree('0001-one', branch), calls };
   }
   it('принимает своё живое дерево без повторного создания', () => {
@@ -1039,6 +1046,10 @@ describe('повторное взятие рабочего дерева', () => 
       expect(calls).toHaveLength(1);
     },
   );
+  it('повторно использует фактический путь, восстановленный сверкой в реестре', () => {
+    const treePath = resolve(root, 'adopted');
+    expect(setup({ treePath, registered: true }).result).toEqual({ ok: true, path: treePath });
+  });
   it('не создаёт второе дерево уже выложенной ветки', () =>
     expect(setup({ treePath: resolve(root, 'elsewhere') }).result.why).toContain('другому пути'));
   it('не принимает устаревшую регистрацию за существующий каталог', () =>
