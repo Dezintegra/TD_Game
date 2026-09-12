@@ -121,12 +121,12 @@ describe('баланс: соотношения из игрового замыс�
     expect(ticksToClose).toBe(sniperTower.cooldownTicks);
   });
 
-  it('Тесла прочна ровно как базовая башня', () => {
+  it('Тесла имеет половину прочности базовой башни', () => {
     // Число выведено из подвижности, а не подобрано: Тесла пересекает
     // карту один раз за матч, то есть по подвижности она сооружение.
     // Вернуть ей базовое здоровье значило бы снова сделать самый дорогой
     // юнит самым дешёвым по прочности за энергию.
-    expect(tesla.health).toBe(STRUCTURE_STATS[StructureKind.TowerBasic].health);
+    expect(tesla.health * 2).toBe(STRUCTURE_STATS[StructureKind.TowerBasic].health);
   });
 
   it('Тесла втрое медленнее штурмовика и вдесятеро дороже', () => {
@@ -279,11 +279,9 @@ describe('баланс: дальность генерала', () => {
     expect(ticksToTakeTower).toBeLessThan(ticksAlive(1));
   });
 
-  it('на паре башен генерал разменивается один к одному', () => {
-    // Первую снять успевает, вторую — уже нет: на неё нужно вдвое
-    // больше времени, чем ему осталось жить.
-    expect(ticksToTakeTower).toBeLessThan(ticksAlive(2));
-    expect(ticksToTakeTower * 2).toBeGreaterThan(ticksAlive(2));
+  it('на паре усиленных башен генерал погибает до снятия первой', () => {
+    // Владелец разрешил отсутствие размена без компенсации генералу.
+    expect(ticksToTakeTower).toBeGreaterThan(ticksAlive(2));
   });
 
   it('трёх башен генерал не переживает вовсе', () => {

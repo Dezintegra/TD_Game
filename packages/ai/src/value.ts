@@ -8,6 +8,7 @@
   UpgradeStat,
   UpgradeTarget,
   distanceSquared,
+  nukeStructureDamage,
   effectModelOf,
   stepPpm,
 } from '@td/shared';
@@ -319,8 +320,8 @@ export const nukeOutcome = (
    * удар с четвертью здоровья, принесла три четверти своей цены —
    * добить её теперь дёшево.
    */
-  const share = (health: number, maxHealth: number): number =>
-    Math.min(health, damage) / Math.max(1, maxHealth);
+  const share = (health: number, maxHealth: number, hit = damage): number =>
+    Math.min(health, hit) / Math.max(1, maxHealth);
 
   let gain = 0;
   let loss = 0;
@@ -360,11 +361,12 @@ export const nukeOutcome = (
       countDefence && baseline.attack > 0 && baseline.range > 0
         ? (baseline.attack / Math.max(1, baseline.cooldownTicks)) * horizon * ENERGY_PER_LIVE_DAMAGE
         : 0;
-    // Доля та же, что и у живых: стена в тысячу прочности от одного
-    // заряда теряет седьмую часть себя, и оценка обязана это видеть.
+    // Строение получает двойную мощность, как при взрыве в симуляции.
     // Без доли линия стен читалась бы как готовый размен, хотя взрыв
     // её едва царапает.
-    const worth = Math.max(baseline.cost, dealt) * share(structure.health, baseline.health);
+    const worth =
+      Math.max(baseline.cost, dealt) *
+      share(structure.health, baseline.health, nukeStructureDamage(damage));
 
     if (mine) loss += worth;
     else gain += worth;
