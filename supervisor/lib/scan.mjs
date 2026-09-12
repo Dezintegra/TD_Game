@@ -1,3 +1,4 @@
+import { needsReconciliation } from './backlog-reconciliation.mjs';
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
 import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
@@ -31,6 +32,7 @@ import { STAGE_COMMANDS, uncoveredForStage } from '../config/permissions.mjs';
 
 /** Действия, которые сканер умеет назначать, от самого срочного к обычным. */
 export const ACTIONS = [
+  'reconcile-task',
   'flush-delay-journal',
   'analyze-delay',
   'observe-delay',
@@ -936,6 +938,40 @@ export function scan(state) {
       actions.splice(index, 1);
   }
   actions.push(...delayed.values());
+  if (state.reconciliationReady && !state.draining) {
+    const held = new Set();
+    for (const task of tasks) {
+      if (
+        !needsReconciliation(task, state.now) ||
+        isRunning(task.id) ||
+        hasReport(task.id) ||
+        (task.owner && task.owner !== state.machine) ||
+        task.delayJournal
+      )
+        continue;
+      held.add(task.id);
+      const evidence = state.reconciliationEvidence?.[task.id];
+      if (evidence)
+        actions.push({
+          kind: 'reconcile-task',
+          taskId: task.id,
+          expectedStatus: task.status,
+          expectedSince: task.statusChangedAt,
+          pr: task.links.pr,
+          proof: evidence.proof,
+          mainBranch: config.mainBranch,
+        });
+    }
+    for (let i = actions.length - 1; i >= 0; i--) {
+      const action = actions[i];
+      if (
+        action.kind !== 'reconcile-task' &&
+        action.kind !== 'push-tail' &&
+        (held.has(action.taskId) || action.batch?.some((id) => held.has(id)))
+      )
+        actions.splice(i, 1);
+    }
+  }
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
   return {
     actions: actions.filter(

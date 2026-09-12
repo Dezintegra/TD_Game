@@ -1,4 +1,5 @@
 import { unblockTask } from './blockers.mjs';
+import { reconcileTask } from './backlog-reconciliation.mjs';
 import { resolveDependents } from './resolve-dependents.mjs';
 import { changeTokenHold } from './token-hold.mjs';
 import { analyzeTokenBudget } from './token-reanalysis.mjs';
@@ -738,6 +739,7 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'reconcile-task': reconcileTask,
   'hold-token-budget': changeTokenHold,
   'refresh-token-budget': changeTokenHold,
   'resume-token-budget': changeTokenHold,

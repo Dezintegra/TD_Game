@@ -570,6 +570,20 @@ export function createIo({
       return readDeploymentImpact({ run, root, number, mainBranch: config.mainBranch });
     },
 
+    reconciliationPr(number) {
+      const answer = run(
+        ['pr', 'view', String(number), '--json', 'number,state,mergedAt,baseRefName'],
+        'gh',
+        root,
+        { timeout: 10000 },
+      );
+      try {
+        return answer.code === 0 ? JSON.parse(answer.stdout) : null;
+      } catch {
+        return null;
+      }
+    },
+
     readPr(number) {
       if (!number) return { state: 'unknown' };
       const result = run(['pr', 'view', String(number), '--json', 'state'], 'gh');

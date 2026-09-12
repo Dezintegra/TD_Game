@@ -281,7 +281,7 @@ export const NEEDS_SESSION = [
  * обычное дело, и вызывающему нужно записать причину в журнал, а не ловить
  * ошибку.
  */
-export function canTransition(task, to) {
+export function canTransition(task, to, { reconciliation = false } = {}) {
   const from = task.status;
 
   if (!STATES.includes(to)) {
@@ -290,6 +290,15 @@ export function canTransition(task, to) {
   if (from === to) {
     return { ok: false, reason: 'задача уже в этом состоянии' };
   }
+  if (
+    reconciliation &&
+    task.type === 'feature' &&
+    ['failed', 'postmortem', 'awaiting-po', 'design', 'audit', 'implement', 'revise'].includes(
+      from,
+    ) &&
+    ['cleanup', 'review'].includes(to)
+  )
+    return { ok: true, reason: 'доказательная сверка влитого PR' };
   if (from === 'token-limit')
     return {
       ok: TOKEN_RESUME_STATES.includes(to) && to === task.tokenHold?.resumeStatus,

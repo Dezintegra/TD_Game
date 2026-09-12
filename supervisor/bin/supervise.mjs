@@ -601,6 +601,7 @@ async function turn() {
     machine,
     ...(await buildDependencyState({
       backlog,
+      machine,
       config,
       root,
       run: runCommand,

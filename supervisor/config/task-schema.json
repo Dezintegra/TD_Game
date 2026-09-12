@@ -24,7 +24,10 @@
     "reportReceipts": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[a-f0-9]{32}$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{32}$"
+      }
     },
     "delayAnalysis": {
       "type": "object",
@@ -420,6 +423,24 @@
     "tokenHold": {
       "type": "object",
       "description": "Сохранённый этап и производная панель ожидания бюджета; не источник разрешения на расход."
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pr", "checkedAt", "state"],
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "enum": ["merged", "unconfirmed"]
+        }
+      }
     }
   },
   "allOf": [
