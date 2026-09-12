@@ -13,7 +13,7 @@ import {
 } from '@td/shared';
 import { cellCentre, cellIndex, cellX, cellY, createWorld } from '@td/sim';
 import type { GameMap, WorldState } from '@td/sim';
-import { createScene } from './scene.js';
+import { createScene, readRockDiagnostics } from './scene.js';
 import type { RendererHost, Scene } from './scene.js';
 import { TERRAIN_DIAGONAL_COUNT, drawField, drawGrid } from './terrain.js';
 import { bakeRockCell, countRockCells, disposeGrainTexture } from './relief-render.js';
@@ -486,12 +486,14 @@ describe('подключение плотности к настоящей сце
     finishBaking(scene, next);
     settle(scene);
     scene.destroy();
+    expect(readRockDiagnostics()).toBeNull();
     expect(gpu.textures.every((texture) => texture.destroyed)).toBe(true);
     const again = makeScene();
     again.setMap(next, LOCAL_PLAYER);
     finishBaking(again, next);
     settle(again);
     expect(again.rockDensity.cells[0]!.alive).toBe(true);
+    expect(readRockDiagnostics()?.initialRemaining).toBe(0);
   });
   it('камера меняется немедленно, а повышение догоняет её позже', () => {
     const { scene } = builtScene();

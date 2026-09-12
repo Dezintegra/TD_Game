@@ -48,6 +48,7 @@ import {
   drawMinimapTerrain,
   minimapCellAt,
   minimapLayout,
+  projectToMinimap,
 } from './minimap.js';
 import type { MinimapColors, MinimapLayout } from './minimap.js';
 import { screenToWorld, worldToScreen } from './iso.js';
@@ -181,6 +182,7 @@ export interface Scene {
 }
 
 export interface RockDensitySnapshot {
+  readonly initialRemaining: number;
   readonly remaining: number;
   readonly completed: number;
   readonly actualBytes: number;
@@ -195,8 +197,23 @@ export interface RockDensitySnapshot {
     target: number;
     visible: boolean;
     alive: boolean;
+    physicalDensity: number;
+    minimap: { x: number; y: number };
   }[];
 }
+
+/** Внутреннее чтение для браузерных проверок: без HUD, сетевых сообщений и покадровой записи. */
+let diagnosticScene: Scene | undefined;
+export const readRockDiagnostics = () =>
+  diagnosticScene === undefined
+    ? null
+    : {
+        ...diagnosticScene.rockDensity,
+        terrainRebuildCount: diagnosticScene.terrainRebuildCount,
+        zoom: diagnosticScene.zoom,
+        scale: diagnosticScene.scale,
+        centre: diagnosticScene.viewCentre,
+      };
 
 interface SceneRockResource extends RockResource {
   readonly baked: BakedRockCell;
@@ -1119,7 +1136,7 @@ export const createScene = (renderer: RendererHost): Scene => {
   applyCamera();
   relayoutMinimap();
 
-  return {
+  const scene: Scene = {
     setMap(map, localPlayer) {
       // Перестраиваем только если карта действительно другая. Вызов на
       // каждом кадре с той же картой — обычное дело для игрового цикла,
@@ -1274,6 +1291,7 @@ export const createScene = (renderer: RendererHost): Scene => {
 
     get rockDensity() {
       return {
+        initialRemaining: baking === undefined ? 0 : baking.order.length - baking.at,
         remaining: rockQueue.remaining,
         completed: rockQueue.completed,
         actualBytes: rockQueue.actualBytes,
@@ -1289,7 +1307,12 @@ export const createScene = (renderer: RendererHost): Scene => {
             density: shown.density,
             target: rockQueue.target(cell),
             visible: rockQueue.visible(cell),
+            minimap: projectToMinimap(cellX(cell.id) + 0.5, cellY(cell.id) + 0.5, layout),
             alive: !shown.baked.texture.destroyed && !shown.baked.texture.source.destroyed,
+            physicalDensity: Math.min(
+              shown.baked.texture.source.pixelWidth / shown.baked.width,
+              shown.baked.texture.source.pixelHeight / shown.baked.height,
+            ),
           };
         }),
       };
@@ -1474,6 +1497,7 @@ export const createScene = (renderer: RendererHost): Scene => {
     },
 
     destroy() {
+      if (diagnosticScene === scene) diagnosticScene = undefined;
       baking = undefined;
       clearTerrain();
       // Текстуры живут в видеопамяти, и сборщик мусора о ней не знает:
@@ -1507,4 +1531,6 @@ export const createScene = (renderer: RendererHost): Scene => {
       return screenToWorld(camera.x, camera.y);
     },
   };
+  diagnosticScene = scene;
+  return scene;
 };

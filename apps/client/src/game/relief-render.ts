@@ -611,7 +611,7 @@ export const bakeRockCell = (
   return bakePreparedRockCell(renderer, cell, density);
 };
 
-const destroyRockMesh = (mesh: Mesh): void => {
+const destroyRockMesh = (mesh: CellMesh['mesh']): void => {
   const geometry = mesh.geometry;
   const shader = mesh.shader;
   mesh.destroy();
