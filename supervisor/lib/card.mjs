@@ -185,6 +185,8 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     statusChangedAt: meta?.statusChangedAt ?? createdAtOf(card.id),
     owner: meta?.owner ?? null,
     returnTo: meta?.returnTo ?? null,
+    ...(meta?.backlogReview ? { backlogReview: meta.backlogReview } : {}),
+    ...(meta?.dependencyRecheck ? { dependencyRecheck: meta.dependencyRecheck } : {}),
     ...(meta?.reconciliation ? { reconciliation: meta.reconciliation } : {}),
     ...(Object.hasOwn(meta ?? {}, 'question') ? { question: meta.question } : {}),
     links: { change: null, pr: null, run: null, related: [], ...(meta?.links ?? {}) },
@@ -268,6 +270,8 @@ export function metaOf(task) {
     ...(Object.hasOwn(task, 'question') ? { question: task.question } : {}),
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
     ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),
+    ...(task.backlogReview ? { backlogReview: task.backlogReview } : {}),
+    ...(task.dependencyRecheck ? { dependencyRecheck: task.dependencyRecheck } : {}),
     ...(task.reconciliation ? { reconciliation: task.reconciliation } : {}),
     ...(Object.hasOwn(task, 'closureReason') ? { closureReason: task.closureReason } : {}),
     ...(Object.hasOwn(task, 'completionSummary')

@@ -297,7 +297,7 @@ export async function unblockTask(action, io) {
       ? task.dependsOn
       : (task.blockedContext?.reasons ?? []).map((item) => item.taskId)
   ).join(', ');
-  if (task.delayAnalysis)
+  if (task.delayAnalysis || task.dependencyRecheck)
     return beginDelayAnalysis(
       {
         taskId: task.id,

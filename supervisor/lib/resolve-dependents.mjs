@@ -89,8 +89,8 @@ export function resolutionNote(edges) {
         `Ожидание снято: ${edge.dependencyId} (${edge.what}) закрыта.\n\n` +
         `**Почему закрыта ожидаемая задача:** ${edge.reason}\n\n` +
         '**Почему ожидание снято:** закрытая карточка результата уже не даст, ' +
-        'и дожидаться его больше не от кого. Работа продолжается без этого ' +
-        'предусловия; если оно всё же нужно, назовите взамен живую карточку.',
+        'и дожидаться его больше не от кого. Удаление ребра не доказывает результат: ' +
+        'для принятого blocked и явного результата требуется проверка предусловия или живая замена.',
     )
     .join('\n\n');
 }
@@ -116,6 +116,15 @@ export async function resolveDependents(action, io) {
   const fromDependsOn = idsOf('dependsOn');
   const fromFixedBy = idsOf('recovery.fixedBy');
   const next = { ...task };
+  if (
+    task.status === 'blocked' ||
+    task.dependencyResults?.some((r) => fromDependsOn.has(r.taskId))
+  ) {
+    next.dependencyRecheck = {
+      edges,
+      results: (task.dependencyResults ?? []).filter((r) => fromDependsOn.has(r.taskId)),
+    };
+  }
 
   if (fromDependsOn.size > 0) {
     next.dependsOn = (task.dependsOn ?? []).filter((id) => !fromDependsOn.has(id));

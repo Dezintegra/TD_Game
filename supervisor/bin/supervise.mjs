@@ -8,6 +8,7 @@ import { tokenAdmission } from '../lib/token-hold.mjs';
 import { tokenReanalysisAdmission } from '../lib/token-reanalysis.mjs';
 import { spawn } from 'node:child_process';
 import { createCommandRunner } from '../lib/command-runner.mjs';
+import { reportTaskIds } from '../lib/report-targets.mjs';
 import { buildDependencyState } from '../lib/dependency-state.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -665,13 +666,15 @@ async function turn() {
       tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
       tokenReanalysisAdmission: (task, stage) =>
         tokenReanalysisAdmission(task, stage, config, supervisor.codexUsage),
-      tokenActionBlocked: (taskId) =>
+      tokenActionBlocked: (taskId, ignoreReportId) =>
         (backlog.store?.readTask(taskId)?.status === 'deploy' &&
           supervisor.running().some((item) => item.stage === 'deploy')) ||
         supervisor
           .running()
           .some((item) => item.taskId === taskId || item.batch?.includes(taskId)) ||
-        supervisor.reports.some((item) => item.taskId === taskId || item.batch?.includes(taskId)),
+        supervisor.reports.some(
+          (item) => item.reportId !== ignoreReportId && reportTaskIds(item).includes(taskId),
+        ),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       reportStorageBlocked: () => supervisor.reportStorageBlocked,
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
@@ -702,9 +705,7 @@ async function turn() {
     // возвращаемое здесь выбрасывалось, провалившаяся `finish-claim`
     // молчала: в журнале каждый оборот стояло «доводим взятие до конца»,
     // и ни разу — «не довели». Так и вышли двое суток простоя 31.08.2026.
-    const pendingIds = new Set(
-      supervisor.reports.flatMap((report) => [report.taskId, ...(report.batch ?? [])]),
-    );
+    const pendingIds = new Set(supervisor.reports.flatMap(reportTaskIds));
     for (const item of repairWorld(
       repair.repairs.filter((repair) => !pendingIds.has(repair.taskId)),
       io,

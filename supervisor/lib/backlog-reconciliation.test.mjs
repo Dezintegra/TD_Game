@@ -48,7 +48,7 @@ describe('сверка фактического результата', () => {
     expect(io.saveTask.mock.calls[0][0]).toMatchObject({
       status,
       tokenBudget: { spent: 99 },
-      attempts: { continuations: 2 },
+      attempts: { continuations: 0 },
     });
   });
   it('не принимает чужую базу и недоступный GitHub за успех', async () => {
@@ -70,8 +70,11 @@ describe('сверка фактического результата', () => {
     }
     const io = ioFor(task());
     io.reconciliationPr = () => null;
-    expect((await reconcileTask(action, io)).result).toBe('skipped');
-    expect(io.saveTask).not.toHaveBeenCalled();
+    expect((await reconcileTask(action, io)).result).toBe('done');
+    const saved = io.saveTask.mock.calls[0][0];
+    expect(saved.status).toBe('failed');
+    expect(saved.reconciliation).toMatchObject({ state: 'unconfirmed', checkedAt: now });
+    expect(needsReconciliation(saved, now)).toBe(false);
   });
   it('ограничивает чтения двумя карточками и исключает живой пакет', async () => {
     const tasks = Array.from({ length: 5 }, (_, n) => task({ id: `000${n}-one` }));

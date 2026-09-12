@@ -142,3 +142,140 @@ export function planConsolidations(items, { tasks, originId, stage, machine, bus
     });
   return { operations, rejected };
 }
+
+/** Объявленная область исправляется аналитиком; категория infrastructure её не заменяет. */
+export function planClassifications(
+  items,
+  { tasks, originId, stage, machine, busy, now, reserved = [] },
+) {
+  const operations = [],
+    rejected = [];
+  if (items == null) return { operations, rejected };
+  if (
+    !Array.isArray(items) ||
+    items.length > 8 ||
+    !['decompose', 'design', 'triage', 'postmortem', 'interpret'].includes(stage)
+  )
+    return { operations, rejected: ['неверный пакет classifications'] };
+  const seen = new Set(reserved);
+  for (const item of items) {
+    const task = tasks.find((t) => t.id === item?.taskId);
+    if (
+      !task ||
+      task.id === originId ||
+      seen.has(task.id) ||
+      task.status !== 'candidate' ||
+      item.area !== 'pipeline' ||
+      typeof item.evidence !== 'string' ||
+      !item.evidence.trim() ||
+      (task.owner && task.owner !== machine) ||
+      typeof busy !== 'function' ||
+      busy(task.id)
+    ) {
+      rejected.push(`классификация ${item?.taskId ?? '?'} не подтверждена`);
+      continue;
+    }
+    seen.add(task.id);
+    const moved = applyTransition(
+      { ...task, area: 'pipeline' },
+      { status: 'maintenance', note: item.evidence, now },
+    );
+    if (!moved.task) {
+      rejected.push(moved.problems.join('; '));
+      continue;
+    }
+    operations.push({
+      task: moved.task,
+      journal: {
+        at: now,
+        from: 'candidate',
+        to: 'maintenance',
+        what: `Уточнена область конвейера: ${item.evidence}`,
+      },
+    });
+  }
+  return { operations, rejected };
+}
+
+/** Возврат остановленной одобренной работы требует доказательства и сохраняет общий предел возвратов. */
+export function planResumptions(
+  items,
+  { tasks, originId, stage, machine, busy, now, reserved = [], maxReturns = 2 },
+) {
+  const operations = [],
+    rejected = [];
+  if (items == null) return { operations, rejected };
+  if (!Array.isArray(items) || items.length > 5 || !['triage', 'postmortem'].includes(stage))
+    return { operations, rejected: ['неверный пакет resumptions'] };
+  const seen = new Set(reserved);
+  for (const item of items) {
+    const task = tasks.find((t) => t.id === item?.taskId);
+    const target = item?.stage;
+    if (
+      !task ||
+      task.id === originId ||
+      seen.has(task.id) ||
+      task.status !== 'failed' ||
+      task.tokenHold ||
+      task.flags?.includes('unparsed') ||
+      target !== task.returnTo ||
+      ![
+        'decompose',
+        'design',
+        'audit',
+        'implement',
+        'revise',
+        'pr',
+        'review',
+        'benchmark',
+        'interpret',
+        'triage',
+      ].includes(target) ||
+      typeof item.evidence !== 'string' ||
+      !item.evidence.trim() ||
+      typeof busy !== 'function' ||
+      busy(task.id) ||
+      (task.owner && task.owner !== machine) ||
+      (task.recovery?.returns ?? 0) >= maxReturns
+    ) {
+      rejected.push(`возврат ${item?.taskId ?? '?'} не подтверждён или исчерпан`);
+      continue;
+    }
+    const moved = applyTransition(task, {
+      status: target,
+      note: `Причина остановки устранена: ${item.evidence}`,
+      now,
+    });
+    if (!moved.task) {
+      rejected.push(moved.problems.join('; '));
+      continue;
+    }
+    seen.add(task.id);
+    operations.push({
+      task: {
+        ...moved.task,
+        owner: task.owner ?? machine,
+        attempts: {
+          continuations: 0,
+          cycleFailures: 0,
+          rejections: 0,
+          spawnFailures: 0,
+          apiErrors: 0,
+        },
+        recovery: {
+          ...task.recovery,
+          causedBy: null,
+          fixedBy: [],
+          returns: (task.recovery?.returns ?? 0) + 1,
+        },
+      },
+      journal: {
+        at: now,
+        from: 'failed',
+        to: target,
+        what: `Проверен возврат на сохранённый этап: ${item.evidence}`,
+      },
+    });
+  }
+  return { operations, rejected };
+}

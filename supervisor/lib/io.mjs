@@ -1,3 +1,4 @@
+import { inspectCleanup } from './cleanup-safety.mjs';
 import { readDeploymentImpact } from './deploy-impact.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -547,13 +548,9 @@ export function createIo({
     /**
      * Отчёты, ожидающие переноса в бэклог.
      *
-     * Лежат в памяти супервизора, а не файлами на диске. Каталог отчётов
-     * ушёл вместе со слотами: отчёт приходит выводом того самого процесса,
-     * который супервизор и породил, — то есть туда же, откуда пришёл вопрос.
-     *
-     * Прежде отчёт был файлом, и это тянуло за собой обход всех рабочих
-     * деревьев из реестра: сессия с деревом физически не могла положить
-     * файл в основное. Искать больше негде, и двойников не бывает.
+     * Источник истины — устойчивый reportStore; память используется только
+     * в совместимом режиме без хранилища. Отчёт живёт до подтверждения
+     * всех операций, включая изменения соседних карточек.
      */
     readReport: (id, stage, reportId) =>
       reportStore
@@ -743,6 +740,10 @@ export function createIo({
       if (remote.code !== 0) return null;
       const head = /^([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$/.exec(remote.stdout.trim());
       return head?.[2] === ref ? count(head[1]) : null;
+    },
+
+    cleanupSafety(task, entry) {
+      return inspectCleanup({ task, entry, root, config, run, exists: existsSync });
     },
 
     removeWorktree(path) {

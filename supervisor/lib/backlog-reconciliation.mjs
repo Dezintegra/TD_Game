@@ -1,5 +1,6 @@
+import { reportTaskIds } from './report-targets.mjs';
 import { mergeEvidenceProblem } from './dependencies.mjs';
-import { applyTransition } from './task-file.mjs';
+import { applyTransition, resetAttempts } from './task-file.mjs';
 
 export const RECONCILE_STATES = [
   'failed',
@@ -24,6 +25,16 @@ export function needsReconciliation(task, now) {
   );
 }
 
+export function reconciliationHeld(task, now) {
+  return (
+    needsReconciliation(task, now) ||
+    (task.type === 'feature' &&
+      RECONCILE_STATES.includes(task.status) &&
+      task.reconciliation?.pr === task.links?.pr &&
+      task.reconciliation?.state === 'unconfirmed')
+  );
+}
+
 /** Чтения ограничены; сохранённая отметка обеспечивает продвижение следующей пары. */
 export async function collectReconciliation({
   tasks,
@@ -41,7 +52,7 @@ export async function collectReconciliation({
       needsReconciliation(task, now) &&
       (!task.owner || task.owner === machine) &&
       !running.some((x) => x.taskId === task.id || x.batch?.includes(task.id)) &&
-      !reports.some((x) => x.taskId === task.id || x.batch?.includes(task.id)),
+      !reports.some((x) => reportTaskIds(x).includes(task.id)),
   );
   for (const task of eligible.slice(0, 2)) {
     try {
@@ -81,7 +92,13 @@ export async function reconcileTask(action, io) {
     reconciliation: {
       pr: task.links.pr,
       checkedAt: io.now,
-      state: problem ? 'unconfirmed' : 'merged',
+      state: !problem
+        ? 'merged'
+        : action.proof?.number === task.links.pr &&
+            action.proof?.baseRefName === action.mainBranch &&
+            action.proof?.state === 'OPEN'
+          ? 'open'
+          : 'unconfirmed',
     },
   };
   let why = problem ?? `PR #${task.links.pr} влит в ${action.mainBranch}`;
@@ -89,7 +106,17 @@ export async function reconcileTask(action, io) {
     // Номер PR проверяется повторно перед записью; снимок не даёт права игнорировать гонку.
     const fresh = io.reconciliationPr?.(task.links.pr);
     const freshProblem = mergeEvidenceProblem(fresh, task.links.pr, action.mainBranch);
-    if (freshProblem) return { result: 'skipped', why: freshProblem };
+    if (freshProblem) {
+      next.reconciliation.state = 'unconfirmed';
+      const saved = await io.saveTask(
+        next,
+        { at: io.now, from: task.status, to: task.status, what: `Сверка: ${freshProblem}` },
+        `chore(backlog): defer ${task.id}`,
+      );
+      return saved.ok
+        ? { result: 'done', status: task.status }
+        : { result: 'failed', why: saved.outcome };
+    }
     const impact = io.deploymentImpact?.(task.links.pr);
     const status = impact?.needed === false ? 'cleanup' : 'review';
     why +=
@@ -98,7 +125,7 @@ export async function reconcileTask(action, io) {
         : '; восстановить обязательства прогона и выпуска в review';
     const moved = applyTransition(next, { status, note: why, now: io.now, reconciliation: true });
     if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-    next = moved.task;
+    next = resetAttempts({ ...moved.task, owner: task.owner ?? io.machine });
     delete next.question;
     delete next.delayAnalysis;
     delete next.delayJournal;

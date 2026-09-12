@@ -1900,6 +1900,7 @@ describe('уборка после потери записи реестра', () 
       expect(w.calls).toEqual([
         'register',
         ['pr', 50],
+        'register',
         'tree',
         'local',
         'remote',

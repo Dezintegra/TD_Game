@@ -288,6 +288,7 @@ function taskDigest(task) {
     dependencyResults: task.dependencyResults ?? [],
     blockedContext: task.blockedContext ?? null,
     delayAnalysis: task.delayAnalysis ?? null,
+    dependencyRecheck: task.dependencyRecheck ?? null,
     tokenReanalysis: task.tokenReanalysis ?? null,
     analysisGeneration: task.analysisGeneration ?? 0,
     status: task.status,
@@ -303,6 +304,12 @@ function taskDigest(task) {
 }
 
 export const DELAY_ANALYSIS_CONTRACT = `## Сохранённый разбор задержки
+
+Если есть dependencyRecheck, закрытие предшественника ещё не доказывает
+результат. Проверь сохранённые edges/results и blockedContext: подтвердить
+выполнение или снятие требования можно только с specificEvidence и
+preventionEvidence; иначе нужен blocked с живой заменой. Историческое
+ожидание сохраняется в доказательствах, удаление ребра не является успехом.
 
 В postmortem при delayAnalysis.phase analyzing или verifying выполняй этот
 режим вместо обычного разбора падения. Возраст карточки не доказывает ошибку.

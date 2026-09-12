@@ -438,7 +438,7 @@
           "format": "date-time"
         },
         "state": {
-          "enum": ["merged", "unconfirmed"]
+          "enum": ["merged", "unconfirmed", "open"]
         }
       }
     },
@@ -450,6 +450,14 @@
         "type": "string",
         "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]*)*$"
       }
+    },
+    "dependencyRecheck": {
+      "type": "object",
+      "description": "Сохранённые рёбра и ожидаемые результаты закрытого предшественника для проверки перед продолжением."
+    },
+    "backlogReview": {
+      "type": "object",
+      "description": "Отпечатки карточек уже заказанного ограниченного анализа; неизменные факты повторно не оплачиваются."
     }
   },
   "allOf": [

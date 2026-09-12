@@ -422,6 +422,8 @@ export async function finishDelayAnalysis(task, report, io, { ownerAnswered = fa
     },
     report.costUsd,
   );
+  if (saved.phase === 'verifying' && diagnosis.resolution === 'resolved')
+    delete next.dependencyRecheck;
   next.delayAnalysis.facts = delayFacts(next);
   const written = await io.saveTask(
     next,
