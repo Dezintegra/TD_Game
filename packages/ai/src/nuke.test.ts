@@ -24,7 +24,17 @@ import { cellCentre, cellIndex, createWorld, step } from '@td/sim';
 import type { PlayerState, WorldState } from '@td/sim';
 import { playerStats } from '@td/sim';
 import { approachOf } from './approach.js';
-import { STRATEGIST_PROFILE, phaseAt, reserveOf, savingLimit } from './profile.js';
+import {
+  STRATEGIST_PROFILE,
+  STRATEGIST_LOSS_HALF_PROFILE,
+  DEFAULT_PROFILE_ID,
+  BASELINE_PROFILE,
+  PROFILES,
+  profileByName,
+  phaseAt,
+  reserveOf,
+  savingLimit,
+} from './profile.js';
 import type { AiProfile } from './profile.js';
 import { createOpponent, findNukeTarget, nukeWorthIt } from './opponent.js';
 
@@ -305,6 +315,48 @@ describe('коэффициент порога ядерного удара', () =
     for (const state of [world, late, withCrowd(world), { ...late, units: [] }]) {
       expect(commandsOver(state, 60)).toEqual(commandsOver(state, 60, ratioProfile(1)));
     }
+  });
+});
+
+describe('измерительный Стратег с половинным порогом', () => {
+  it('зарегистрирован под отдельным именем и отличается только id и коэффициентом', () => {
+    const probe = profileByName('strategist-loss-half-2026-09');
+    expect(probe).toBe(STRATEGIST_LOSS_HALF_PROFILE);
+    expect(PROFILES[probe.id]).toBe(probe);
+    expect(probe).toEqual({
+      ...STRATEGIST_PROFILE,
+      id: 'strategist-loss-half-2026-09',
+      nuke: { ...STRATEGIST_PROFILE.nuke, minValueRatio: 0.5 },
+    });
+    expect(probe.nuke).not.toBe(STRATEGIST_PROFILE.nuke);
+    expect(STRATEGIST_PROFILE.id).toBe('strategist-2026-08');
+    expect(STRATEGIST_PROFILE.nuke).not.toHaveProperty('minValueRatio');
+    expect(DEFAULT_PROFILE_ID).toBe(BASELINE_PROFILE.id);
+    for (const profile of Object.values(PROFILES)) {
+      if (profile === probe) continue;
+      expect(nukeWorthIt({ cell: CROWD_CELL, net: 400 }, 400, profile.nuke.minValueRatio)).toBe(
+        false,
+      );
+      expect(nukeWorthIt({ cell: CROWD_CELL, net: 401 }, 400, profile.nuke.minValueRatio)).toBe(
+        true,
+      );
+    }
+  });
+
+  it('заморожен вглубь и не позволяет менять контроль через общие части', () => {
+    const checkFrozen = (value: unknown): void => {
+      if (typeof value !== 'object' || value === null) return;
+      expect(Object.isFrozen(value)).toBe(true);
+      for (const inner of Object.values(value)) checkFrozen(inner);
+    };
+    checkFrozen(STRATEGIST_LOSS_HALF_PROFILE);
+    const before = structuredClone(STRATEGIST_PROFILE);
+    expect(Reflect.set(STRATEGIST_LOSS_HALF_PROFILE.nuke, 'minValueRatio', 0.25)).toBe(false);
+    expect(Reflect.set(STRATEGIST_LOSS_HALF_PROFILE.spending, 'savingHorizonSeconds', 0)).toBe(
+      false,
+    );
+    expect(STRATEGIST_PROFILE).toEqual(before);
+    expect(STRATEGIST_LOSS_HALF_PROFILE.nuke.minValueRatio).toBe(0.5);
   });
 });
 
