@@ -344,7 +344,7 @@ export function scan(state) {
     if (stuck.has(task.id)) continue;
     if (task.status === 'pr') {
       actions.push({ kind: 'poll-external', taskId: task.id, what: 'ci' });
-    } else if (task.status === 'benchmark' && stateClass(task) === 'waiting') {
+    } else if (task.status === 'benchmark' && stateClass(task) === 'waiting' && task.links?.run) {
       actions.push({ kind: 'poll-external', taskId: task.id, what: 'run' });
     }
   }
@@ -606,7 +606,12 @@ export function scan(state) {
   // же — процесс. Различает их только то, известен ли идентификатор прежней
   // сессии: если известен, её возобновляют, а не начинают заново.
   const waitingForSession = [];
+  // Опрос может сменить этап: продолжение и пределы решит следующий свежий оборот.
+  const polled = new Set(
+    actions.filter((action) => action.kind === 'poll-external').map((action) => action.taskId),
+  );
   for (const task of tasks) {
+    if (polled.has(task.id)) continue;
     // Отбор идёт по признаку «этапу нужна сессия», а не по цене этапа.
     // Раньше здесь стоял перечень классов, и прогон на чужом железе в него
     // не попадал: класс у него «ожидательный». Из-за этого умершая сессия
