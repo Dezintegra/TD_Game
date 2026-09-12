@@ -23,6 +23,12 @@ import type * as MinimapModule from './minimap.js';
 import { drawEntities } from './entities.js';
 import { worldToScreen } from './iso.js';
 import type { OverlayIntent } from './overlays.js';
+import { rockTextureBytes } from './bake-density.js';
+
+const gpu = vi.hoisted(() => ({
+  textures: [] as { destroyed: boolean; bytes: number }[],
+  allocated: () => {},
+}));
 
 // Граница графики сохраняет дерево и преобразования, но не требует WebGL.
 vi.mock('pixi.js', () => {
@@ -58,13 +64,18 @@ vi.mock('pixi.js', () => {
     clear(): void {}
   }
   class Texture {
+    bytes = 0;
     destroyed = false;
     source = { destroyed: false, updateMipmaps: vi.fn() };
     static from(): Texture {
       return new Texture();
     }
-    static create(): Texture {
-      return new Texture();
+    static create(options: { width: number; height: number; resolution: number }): Texture {
+      const texture = new Texture();
+      texture.bytes = rockTextureBytes(options, options.resolution);
+      gpu.textures.push(texture);
+      gpu.allocated();
+      return texture;
     }
     destroy(): void {
       this.destroyed = true;
@@ -171,6 +182,8 @@ const stableFrames = (
 };
 
 beforeEach(() => {
+  gpu.textures.length = 0;
+  gpu.allocated = () => {};
   vi.clearAllMocks();
   vi.mocked(drawEntities).mockReset();
   vi.stubGlobal('document', {
@@ -385,6 +398,91 @@ const settle = (scene: Scene): void => {
 };
 
 describe('подключение плотности к настоящей сцене', () => {
+  it('pan, миникарта и follow вытесняют детали, возврат восстанавливает их', () => {
+    const { scene } = builtScene();
+    scene.centreOnCell(cellIndex(20, 20));
+    scene.zoomBy(4, 400, 300);
+    settle(scene);
+    const base = gpu.textures[0]!;
+    expect(base.destroyed).toBe(false);
+    for (const leave of [
+      () => scene.panBy(10000, 0),
+      () => scene.centreOnCell(cellIndex(45, 45)),
+      () => {
+        scene.setFollowing(true);
+        scene.follow({ x: 45, y: 45 });
+      },
+    ]) {
+      leave();
+      settle(scene);
+      expect(scene.rockDensity.cells[0]!.visible).toBe(false);
+      expect(scene.rockDensity.cells[0]!.density).toBe(1);
+      expect(gpu.textures.filter((texture) => !texture.destroyed)).toEqual([base]);
+      scene.setFollowing(true);
+      scene.follow({ x: 20.5, y: 20.5 });
+      settle(scene);
+      expect(scene.rockDensity.cells[0]!.visible).toBe(true);
+      expect(scene.rockDensity.cells[0]!.density).toBeGreaterThan(1);
+      expect(base.destroyed).toBe(false);
+    }
+    expect(scene.terrainRebuildCount).toBe(1);
+    // Отрицательный контроль: пропуск адаптации сохраняет неправильную плотность.
+    scene.zoomBy(0.25, 400, 300);
+    scene.adaptRocks(0);
+    expect(scene.rockDensity.remaining).toBeGreaterThan(0);
+    settle(scene);
+  });
+
+  it('проверяет каждое выделение, повторный resolution, ошибку, новую карту и повторный матч', () => {
+    const scene = makeScene();
+    const map = makeMap();
+    for (const x of [21, 22, 23]) map.cells[cellIndex(x, 20)] = Terrain.Rock;
+    scene.setMap(map, LOCAL_PLAYER);
+    finishBaking(scene, map);
+    scene.centreOnCell(cellIndex(21, 20));
+    scene.zoomBy(4, 400, 300);
+    const host = hosts.get(scene)!;
+    let allocations = 0;
+    gpu.allocated = () => {
+      allocations += 1;
+      const actual = gpu.textures
+        .filter((texture) => !texture.destroyed)
+        .reduce((sum, texture) => sum + texture.bytes, 0);
+      expect(actual).toBeLessThanOrEqual(scene.rockDensity.limitBytes);
+    };
+    settle(scene);
+    for (const resolution of [3, 1, 3, 2, 1]) {
+      host.app.renderer.resolution = resolution;
+      scene.adaptRocks(8);
+      expect(scene.rockDensity.cells.every((cell) => cell.alive)).toBe(true);
+      // Следующая смена приходит посреди миграции, прежде остальных клеток.
+    }
+    vi.mocked(host.app.renderer.render).mockImplementationOnce(() => {
+      throw new Error('GPU test');
+    });
+    scene.adaptRocks(8);
+    expect(scene.rockDensity.error).toBe('Error: GPU test');
+    host.app.screen.width = 400;
+    scene.resize();
+    settle(scene);
+    expect(scene.rockDensity.cells.every((cell) => cell.base === 1)).toBe(true);
+    expect(allocations).toBeGreaterThan(5);
+    expect(scene.terrainRebuildCount).toBe(1);
+    gpu.allocated = () => {};
+    const prior = [...gpu.textures];
+    const next = makeMap();
+    scene.setMap(next, LOCAL_PLAYER);
+    expect(prior.every((texture) => texture.destroyed)).toBe(true);
+    finishBaking(scene, next);
+    settle(scene);
+    scene.destroy();
+    expect(gpu.textures.every((texture) => texture.destroyed)).toBe(true);
+    const again = makeScene();
+    again.setMap(next, LOCAL_PLAYER);
+    finishBaking(again, next);
+    settle(again);
+    expect(again.rockDensity.cells[0]!.alive).toBe(true);
+  });
   it('камера меняется немедленно, а повышение догоняет её позже', () => {
     const { scene } = builtScene();
     scene.centreOnCell(cellIndex(20, 20));

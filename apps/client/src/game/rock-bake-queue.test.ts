@@ -21,19 +21,26 @@ const fixture = (resolution = 1, count = 4) => {
   const resources: Resource[] = [];
   const shown = new Map<number, Resource>();
   const allocations: { bytes: number; limit: number }[] = [];
-  const controls = { fail: false, ready: true, finish: () => undefined as void, cost: 0 };
+  const controls = {
+    fail: false,
+    ready: true,
+    finish: () => undefined as void,
+    cost: 0,
+    leak: false,
+  };
   const resource = (density: number): Resource => {
     const bytes = rockTextureBytes(size, density);
     allocated += bytes;
     if (enforceLimit) {
       allocations.push({ bytes: allocated, limit: queue.limitBytes });
-      expect(allocated).toBeLessThanOrEqual(queue.limitBytes);
+      if (!controls.leak) expect(allocated).toBeLessThanOrEqual(queue.limitBytes);
     }
     const result: Resource = {
       density,
       bytes,
       alive: true,
       destroy: () => {
+        if (controls.leak) return;
         expect(result.alive).toBe(true);
         result.alive = false;
         allocated -= bytes;
@@ -116,6 +123,23 @@ const fixture = (resolution = 1, count = 4) => {
 };
 
 describe('очередь скальных текстур', () => {
+  it('отрицательный контроль освобождения обнаруживает накопление выше предела', () => {
+    const f = fixture();
+    f.controls.leak = true;
+    for (let cycle = 0; cycle < 20; cycle += 1) {
+      f.queue.update(view(1, 4));
+      for (let frame = 0; frame < 5; frame += 1) f.queue.step(8);
+      f.queue.update(view(1, 1));
+      f.queue.step(8);
+    }
+    expect(f.allocated).toBeGreaterThan(f.queue.limitBytes);
+    expect(f.allocations.some((allocation) => allocation.bytes > allocation.limit)).toBe(true);
+    expect(() => f.live()).toThrow();
+    f.controls.leak = false;
+    f.queue.destroy();
+    for (const resource of f.resources) if (resource.alive) resource.destroy();
+    expect(f.allocated).toBe(0);
+  });
   it('выброс выше 8 мс допускает одну пробу каждый четвёртый свободный кадр и выходит из окна', () => {
     const f = fixture(1, 12);
     f.queue.update({ ...view(), width: 1000, bounds: { minX: 0, minY: 0, maxX: 1000, maxY: 100 } });
