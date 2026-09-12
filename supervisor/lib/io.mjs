@@ -1,6 +1,7 @@
 import { readDeploymentImpact } from './deploy-impact.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { recoverOwnership } from './worktree-ownership.mjs';
 import { pushMain } from './push-discipline.mjs';
 import { removeWorktree } from './remove-worktree.mjs';
 import { journalAppendix } from './journal.mjs';
@@ -433,7 +434,8 @@ export function createIo({
      * с корнем — абсолютный после склейки указывал бы в никуда.
      * Проверено 02.09.2026: усыновлённое дерево 0088 дало `spawn ENOENT`.
      */
-    worktreePathFor: (taskId) => join(config.worktreeDir, taskId),
+    worktreePathFor: (taskId, actualPath) =>
+      actualPath ? relative(root, resolve(root, actualPath)) : join(config.worktreeDir, taskId),
 
     addWorktree(taskId, branch) {
       const path = join(config.worktreeDir, taskId);
@@ -450,6 +452,11 @@ export function createIo({
 
     upsertRegistry(entry) {
       ensure(local());
+      const ownershipPath = local('worktree-ownership.json');
+      const ownership = readJson(ownershipPath) ?? {};
+      ownership[entry.taskId] = { root: resolve(root), machine, entry };
+      // Резерв пишется раньше рабочего реестра: обрыв между записями восстановим.
+      writeFileSync(ownershipPath, asJson(ownership));
       const registry = readJson(registryPath()) ?? { entries: [] };
       const entries = registry.entries.filter((item) => item.taskId !== entry.taskId);
       writeFileSync(registryPath(), asJson({ entries: [...entries, entry] }));
@@ -457,6 +464,14 @@ export function createIo({
 
     registryEntry: (taskId) =>
       (readJson(registryPath())?.entries ?? []).find((item) => item.taskId === taskId) ?? null,
+
+    recoverRegistry(taskId) {
+      const record = readJson(local('worktree-ownership.json'))?.[taskId];
+      const entry = recoverOwnership(record, { task: this.readTask(taskId), root, machine });
+      if (!entry) return null;
+      this.upsertRegistry(entry);
+      return entry;
+    },
 
     dropRegistry(taskId) {
       const registry = readJson(registryPath());

@@ -630,7 +630,7 @@ async function cleanupTask(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
-  const entry = io.registryEntry(action.taskId);
+  const entry = io.registryEntry(action.taskId) ?? io.recoverRegistry?.(action.taskId) ?? null;
   const verdict = mayCleanup({
     task,
     entry,
