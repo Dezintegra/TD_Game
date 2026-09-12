@@ -67,6 +67,22 @@ const state = (tasks, over = {}) => ({
 const launches = (result) =>
   result.actions.filter((item) => ['start-stage', 'continue-stage'].includes(item.kind));
 
+it('сверка влитого PR не подменяет проверку восстановления источника инцидента', () => {
+  const task = source({ links: { pr: 42 } });
+  const result = scan(
+    state([task, base('0002-fix', { status: 'completed' })], {
+      reconciliationReady: true,
+      reconciliationEvidence: { [task.id]: { proof: { state: 'MERGED' } } },
+    }),
+  );
+  expect(result.actions).toContainEqual(
+    expect.objectContaining({ kind: 'return-task', taskId: task.id }),
+  );
+  expect(
+    result.actions.some((action) => action.kind === 'reconcile-task' && action.taskId === task.id),
+  ).toBe(false);
+});
+
 it('не объединяет проверочные выкладки разных инцидентов одним отчётом', () => {
   const tasks = ['0001-probe', '0003-probe'].map((id) => {
     const task = source({ id, status: 'deploy', returnTo: 'deploy' });

@@ -59,16 +59,10 @@ export const QUEUE_STATES = ['maintenance', 'new'];
 /**
  * Сквозные состояния: достижимы из любого рабочего и хранят состояние возврата.
  *
- * `postmortem` — разбор ошибки — объявлен сквозным, но НЕ объявлен ни в одном
- * маршруте, и это не упущение. Вход в сквозное состояние разрешается раньше,
- * чем читаются маршруты, поэтому попасть в разбор можно откуда угодно. А выход
- * ищется уже в маршрутах, где разбора нет; разрешённым остаётся один переход —
- * в `failed`, тоже сквозной.
- *
- * Отсюда правило «войти можно отовсюду, выйти только в ошибку» держится самой
- * таблицей, без единой отдельной проверки. Следствие: карточку из «Разбора
- * ошибки» нельзя перетащить обратно в работу — конвейер вернёт её. Так
- * и задумано: поднимают задачу из `failed`, куда она вот-вот попадёт.
+ * postmortem сохраняет этап возврата. Обычный неуспешный разбор ведёт в failed;
+ * проверенный диагноз может перейти в blocked/awaiting-po либо вернуть сохранённый
+ * этап через специальные проверки canTransition. Сверка влитого PR также имеет
+ * отдельное доказуемое разрешение; она не расширяет обычные маршруты.
  */
 export const CROSSCUT = ['postmortem', 'failed', 'awaiting-po'];
 
@@ -281,7 +275,7 @@ export const NEEDS_SESSION = [
  * обычное дело, и вызывающему нужно записать причину в журнал, а не ловить
  * ошибку.
  */
-export function canTransition(task, to) {
+export function canTransition(task, to, { reconciliation = false, consolidation = false } = {}) {
   const from = task.status;
 
   if (!STATES.includes(to)) {
@@ -290,6 +284,23 @@ export function canTransition(task, to) {
   if (from === to) {
     return { ok: false, reason: 'задача уже в этом состоянии' };
   }
+  if (
+    reconciliation &&
+    task.type === 'feature' &&
+    ['failed', 'postmortem', 'awaiting-po', 'design', 'audit', 'implement', 'revise'].includes(
+      from,
+    ) &&
+    ['cleanup', 'review'].includes(to)
+  )
+    return { ok: true, reason: 'доказательная сверка влитого PR' };
+  if (
+    consolidation &&
+    to === 'closed' &&
+    !task.links?.pr &&
+    ['candidate', 'new', 'maintenance', 'failed', 'awaiting-po'].includes(from) &&
+    task.splitInto?.length
+  )
+    return { ok: true, reason: 'проверенное поглощение с сохранением требований' };
   if (from === 'token-limit')
     return {
       ok: TOKEN_RESUME_STATES.includes(to) && to === task.tokenHold?.resumeStatus,
@@ -341,7 +352,7 @@ export function canTransition(task, to) {
   )
     return { ok: true, reason: 'обязательная предпосылка' };
   if (TERMINAL.includes(from) && to !== 'closed') {
-    // Из ошибки задачу поднимает человек, а не конвейер: причина требует разбора.
+    // Из ошибки возвращаются только на сохранённый этап; автономный возврат дополнительно проверяет причину и предел.
     if (from === 'failed' && to === task.returnTo) {
       return { ok: true, reason: 'возврат из ошибки в сохранённое состояние' };
     }

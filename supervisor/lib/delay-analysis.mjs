@@ -72,7 +72,7 @@ function waitOverdue(task, now) {
  * ушёл бы платить за каждую задачу, ждущую архивного предшественника.
  *
  * Ожидание закрытой карточки при этом разбирается и без такой мерки: ребро
- * снимается вместе с обоснованием, и задача выходит обычной разблокировкой.
+ * снимается вместе с обоснованием, и сохранённое обязательное условие проходит проверку перед разблокировкой.
  * Остальное ловит предел по сроку.
  */
 function acceptedWait(task, { now } = {}) {
@@ -227,7 +227,10 @@ export async function beginDelayAnalysis(action, io) {
   )
     return { result: 'skipped', why: 'состояние изменилось после снимка' };
   const old = task.delayAnalysis;
-  const initial = action.mode === 'initial' || !old;
+  const initial =
+    action.mode === 'initial' ||
+    !old ||
+    (task.dependencyRecheck && old.phase === 'monitoring' && task.status !== old.originStatus);
   const diagnosis = {
     ...(initial ? {} : old),
     episode: initial ? `${task.status}:${task.statusChangedAt ?? task.createdAt}` : old.episode,
@@ -422,6 +425,8 @@ export async function finishDelayAnalysis(task, report, io, { ownerAnswered = fa
     },
     report.costUsd,
   );
+  if (saved.phase === 'verifying' && diagnosis.resolution === 'resolved')
+    delete next.dependencyRecheck;
   next.delayAnalysis.facts = delayFacts(next);
   const written = await io.saveTask(
     next,

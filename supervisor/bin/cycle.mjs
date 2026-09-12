@@ -130,7 +130,7 @@ async function main() {
     scheduling: readScheduling(root, config),
     now: new Date().toISOString(),
     machine,
-    ...(await buildDependencyState({ backlog, config, root, run: runCommand })),
+    ...(await buildDependencyState({ backlog, config, root, machine, run: runCommand })),
     registry,
     codexUsage: readTokenLedger(root, config),
     // Смотрящий прогон обязан видеть ту же картину, что боевой цикл:

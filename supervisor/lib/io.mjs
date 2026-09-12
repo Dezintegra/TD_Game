@@ -1,6 +1,9 @@
+import { parseWorktrees } from './reconcile.mjs';
+import { inspectCleanup } from './cleanup-safety.mjs';
 import { readDeploymentImpact } from './deploy-impact.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { recoverOwnership } from './worktree-ownership.mjs';
 import { pushMain } from './push-discipline.mjs';
 import { removeWorktree } from './remove-worktree.mjs';
 import { journalAppendix } from './journal.mjs';
@@ -433,10 +436,45 @@ export function createIo({
      * с корнем — абсолютный после склейки указывал бы в никуда.
      * Проверено 02.09.2026: усыновлённое дерево 0088 дало `spawn ENOENT`.
      */
-    worktreePathFor: (taskId) => join(config.worktreeDir, taskId),
+    worktreePathFor: (taskId, actualPath) =>
+      actualPath ? relative(root, resolve(root, actualPath)) : join(config.worktreeDir, taskId),
 
     addWorktree(taskId, branch) {
-      const path = join(config.worktreeDir, taskId);
+      const entry = this.registryEntry(taskId);
+      if (
+        entry &&
+        (entry.branch !== branch || typeof entry.path !== 'string' || !entry.path.trim())
+      )
+        return { ok: false, why: 'реестр задачи не подтверждает её путь и ветку' };
+      const path = entry?.path ?? join(config.worktreeDir, taskId);
+      const absolute = resolve(root, path);
+      const listing = run(['worktree', 'list', '--porcelain']);
+      if (listing.code !== 0)
+        return { ok: false, why: listing.stderr.trim() || 'опись деревьев недоступна' };
+      const trees = parseWorktrees(listing.stdout);
+      const atPath = trees.find((tree) => resolve(root, tree.path) === absolute);
+      if (atPath) {
+        if (atPath.branch !== branch)
+          return {
+            ok: false,
+            why: 'путь задачи занят веткой ' + (atPath.branch ?? 'detached HEAD'),
+          };
+        // Запись Git могла остаться после удаления каталога; проверяем само дерево.
+        const top = run(['-C', absolute, 'rev-parse', '--show-toplevel']);
+        const head = run(['-C', absolute, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
+        if (
+          top.code !== 0 ||
+          !top.stdout.trim() ||
+          resolve(top.stdout.trim()) !== absolute ||
+          head.code !== 0 ||
+          head.stdout.trim() !== branch
+        )
+          return { ok: false, why: 'существующее дерево не подтверждено по пути и ветке' };
+        return { ok: true, path };
+      }
+      const elsewhere = trees.find((tree) => tree.branch === branch);
+      if (elsewhere)
+        return { ok: false, why: 'ветка задачи уже выложена по другому пути: ' + elsewhere.path };
       const base = `${config.remote}/${config.mainBranch}`;
       const known = (ref) => run(['rev-parse', '--verify', '--quiet', ref]).code === 0;
       const existing =
@@ -450,6 +488,11 @@ export function createIo({
 
     upsertRegistry(entry) {
       ensure(local());
+      const ownershipPath = local('worktree-ownership.json');
+      const ownership = readJson(ownershipPath) ?? {};
+      ownership[entry.taskId] = { root: resolve(root), machine, entry };
+      // Резерв пишется раньше рабочего реестра: обрыв между записями восстановим.
+      writeFileSync(ownershipPath, asJson(ownership));
       const registry = readJson(registryPath()) ?? { entries: [] };
       const entries = registry.entries.filter((item) => item.taskId !== entry.taskId);
       writeFileSync(registryPath(), asJson({ entries: [...entries, entry] }));
@@ -457,6 +500,14 @@ export function createIo({
 
     registryEntry: (taskId) =>
       (readJson(registryPath())?.entries ?? []).find((item) => item.taskId === taskId) ?? null,
+
+    recoverRegistry(taskId) {
+      const record = readJson(local('worktree-ownership.json'))?.[taskId];
+      const entry = recoverOwnership(record, { task: this.readTask(taskId), root, machine });
+      if (!entry) return null;
+      this.upsertRegistry(entry);
+      return entry;
+    },
 
     dropRegistry(taskId) {
       const registry = readJson(registryPath());
@@ -476,7 +527,34 @@ export function createIo({
      * Сеть здесь не тревожится: снимок доски прочитан один раз в начале
      * цикла, и `readTask` берёт из него.
      */
-    boardDigest() {
+    boardDigest(currentId) {
+      const current = this.readTask(currentId);
+      const words = new Set(
+        String(current?.title ?? '')
+          .toLowerCase()
+          .match(/[а-яёa-z]{5,}/g) ?? [],
+      );
+      const candidates = this.allTaskIds()
+        .map((id) => this.readTask(id))
+        .filter(Boolean);
+      const score = (task) =>
+        (current?.links?.related?.includes(task.id) || task.links?.related?.includes(currentId)
+          ? 100
+          : 0) +
+        (current?.links?.change && current.links.change === task.links?.change ? 50 : 0) +
+        (
+          String(task.title)
+            .toLowerCase()
+            .match(/[а-яёa-z]{5,}/g) ?? []
+        ).filter((word) => words.has(word)).length;
+      const detailed = new Set(
+        candidates
+          .filter((t) => t.id !== currentId && score(t) > 0)
+          .sort((a, b) => score(b) - score(a))
+          .slice(0, 8)
+          .map((t) => t.id),
+      );
+      let room = 20000;
       const digest = [];
       for (const id of this.allTaskIds()) {
         const task = this.readTask(id);
@@ -484,6 +562,11 @@ export function createIo({
         digest.push({
           id: task.id,
           title: task.title,
+          ...(detailed.has(task.id) && String(task.description ?? '').length <= room
+            ? ((room -= String(task.description ?? '').length), { description: task.description })
+            : { descriptionOmitted: true }),
+          splitInto: task.splitInto ?? [],
+          closureReason: task.closureReason ?? null,
           type: task.type,
           categories: task.categories ?? [],
           dependsOn: task.dependsOn ?? [],
@@ -500,13 +583,9 @@ export function createIo({
     /**
      * Отчёты, ожидающие переноса в бэклог.
      *
-     * Лежат в памяти супервизора, а не файлами на диске. Каталог отчётов
-     * ушёл вместе со слотами: отчёт приходит выводом того самого процесса,
-     * который супервизор и породил, — то есть туда же, откуда пришёл вопрос.
-     *
-     * Прежде отчёт был файлом, и это тянуло за собой обход всех рабочих
-     * деревьев из реестра: сессия с деревом физически не могла положить
-     * файл в основное. Искать больше негде, и двойников не бывает.
+     * Источник истины — устойчивый reportStore; память используется только
+     * в совместимом режиме без хранилища. Отчёт живёт до подтверждения
+     * всех операций, включая изменения соседних карточек.
      */
     readReport: (id, stage, reportId) =>
       reportStore
@@ -568,6 +647,20 @@ export function createIo({
     /** Состояние pull request. Им доказывается влитость — не хешами коммитов. */
     deploymentImpact(number) {
       return readDeploymentImpact({ run, root, number, mainBranch: config.mainBranch });
+    },
+
+    reconciliationPr(number) {
+      const answer = run(
+        ['pr', 'view', String(number), '--json', 'number,state,mergedAt,baseRefName'],
+        'gh',
+        root,
+        { timeout: 10000 },
+      );
+      try {
+        return answer.code === 0 ? JSON.parse(answer.stdout) : null;
+      } catch {
+        return null;
+      }
     },
 
     readPr(number) {
@@ -682,6 +775,10 @@ export function createIo({
       if (remote.code !== 0) return null;
       const head = /^([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$/.exec(remote.stdout.trim());
       return head?.[2] === ref ? count(head[1]) : null;
+    },
+
+    cleanupSafety(task, entry) {
+      return inspectCleanup({ task, entry, root, config, run, exists: existsSync });
     },
 
     removeWorktree(path) {

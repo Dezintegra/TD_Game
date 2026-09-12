@@ -36,7 +36,7 @@ function register(io, { taskId, branch, path }) {
   // из `git worktree list` он приходит абсолютным, а запуск этапа склеивает
   // путь с корнем. Хранилище без такого метода (подделки в тестах) оставляет
   // путь как есть.
-  const stored = io.worktreePathFor?.(taskId) ?? path;
+  const stored = io.worktreePathFor?.(taskId, path) ?? path;
 
   io.upsertRegistry({
     taskId,
