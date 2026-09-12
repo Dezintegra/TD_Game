@@ -127,8 +127,12 @@ describe('важность и наборы мест', () => {
     // Главная гарантия: место под удар свободно всегда, потому что
     // занять его больше нечем.
     const inNuke = SOUNDS.filter((sound) => POOL_OF[sound] === Pool.Nuke);
-    expect(inNuke.sort()).toEqual([Sound.NukeBlast, Sound.NukeFall].sort());
-    expect(POOL_LIMIT[Pool.Nuke]).toBe(inNuke.length);
+    expect(inNuke.sort()).toEqual([Sound.NukeBlast, Sound.NukeFall, Sound.NukeLaunch].sort());
+
+    // Мест вдвое больше, чем видов, и это не запас «на всякий случай»:
+    // сторон две, пустить ракету они вправе одновременно, а пуск
+    // и свист одной ракеты перекрываются по времени.
+    expect(POOL_LIMIT[Pool.Nuke]).toBe(inNuke.length * 2);
   });
 
   it('выстрелы и взрывы лежат в разных наборах', () => {

@@ -9,6 +9,8 @@ import { resolveConfig } from '../config/defaults.mjs';
 import { scan } from './scan.mjs';
 import { runCycle } from './cycle.mjs';
 
+// Аналитическая заметка не является запуском удержанной задачи.
+const workActions = (result) => result.actions.filter((a) => a.kind !== 'queue-backlog-review');
 const root = 'C:/pipeline';
 const { config } = resolveConfig({
   commands: { verify: 'x', deploy: 'x', perf: 'x' },
@@ -36,7 +38,7 @@ const dependent = (over = {}) =>
     dependencyResults: [{ taskId: '0002-base', kind: 'merged-pr', pr: 168 }],
     ...over,
   });
-const base = (over = {}) => task('0002-base', { status: 'closed', links: { pr: 168 }, ...over });
+const base = (over = {}) => task('0002-base', { status: 'completed', links: { pr: 168 }, ...over });
 const registry = {
   entries: [
     { taskId: '0001-next', branch: 'worktree-0001-next', path: '.claude/worktrees/0001-next' },
@@ -103,8 +105,8 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
       tasks: [held, base(), task('0003-ready')],
       value: { ...merged, state: 'OPEN' },
     });
-    expect(result.actions).toEqual([
-      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    expect(workActions(result)).toEqual([
+      expect.objectContaining({ kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' }),
     ]);
     expect(held).toEqual(before);
     expect(exec.mock.calls[0][2]).toMatchObject({ cwd: root, timeout: 10000, windowsHide: true });
@@ -118,8 +120,8 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
       tasks: [dependent({ type: 'run' }), base(), task('0003-ready')],
       value: null,
     });
-    expect(result.actions).toEqual([
-      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    expect(workActions(result)).toEqual([
+      expect.objectContaining({ kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' }),
     ]);
   });
   it('ожидающий deploy не занимает исключительность и не входит в пакет', async () => {
@@ -128,7 +130,7 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
       tasks: [held, base(), task('0003-ready', { status: 'deploy' })],
       value: null,
     });
-    expect(result.actions).toEqual([
+    expect(workActions(result)).toEqual([
       expect.objectContaining({
         kind: 'continue-stage',
         taskId: '0003-ready',
@@ -137,8 +139,8 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
       }),
     ]);
     const ready = await decision(mode, { tasks: [held, base(), task('0003-ready')], value: null });
-    expect(ready.result.actions).toEqual([
-      { kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' },
+    expect(workActions(ready.result)).toEqual([
+      expect.objectContaining({ kind: 'start-stage', taskId: '0003-ready', stage: 'decompose' }),
     ]);
   });
   it('сохраняет живой процесс и перенос отчёта, не читая GitHub', async () => {
@@ -148,7 +150,7 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
       running: [{ taskId: '0001-next', stage: 'implement' }],
       value: null,
     });
-    expect(running.result.actions).toEqual([]);
+    expect(workActions(running.result)).toEqual([]);
     expect(running.exec).not.toHaveBeenCalled();
     const reported = await decision(mode, {
       tasks,
@@ -167,11 +169,13 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
     const waiting = await decision(mode, { tasks: [dependent(), base({ status: 'deploy' })] });
     expect(waiting.result.actions.some((a) => a.taskId === '0001-next')).toBe(false);
     expect(waiting.exec).not.toHaveBeenCalled();
-    expect((await decision(mode)).result.actions).toContainEqual({
-      kind: 'start-stage',
-      taskId: '0001-next',
-      stage: 'decompose',
-    });
+    expect((await decision(mode)).result.actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'start-stage',
+        taskId: '0001-next',
+        stage: 'decompose',
+      }),
+    );
     const changed = await decision(mode, {
       tasks: [
         dependent({ dependencyResults: [{ taskId: '0002-base', kind: 'merged-pr', pr: 169 }] }),
@@ -179,14 +183,24 @@ describe.each(['cycle', 'supervise'])('снимок допуска %s', (mode) =
       ],
     });
     expect(changed.exec.mock.calls[0][1][2]).toBe('169');
-    expect(changed.result.actions).toEqual([]);
-    expect((await decision(mode, { value: null })).result.actions).toEqual([]);
+    expect(workActions(changed.result)).toEqual([]);
+    expect(workActions((await decision(mode, { value: null })).result)).toEqual([]);
+  });
+  it('назначает отдельную сверку без запуска удержанной задачи', async () => {
+    const { result } = await decision(mode, { value: null });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'queue-backlog-review',
+        fingerprints: { '0001-next': expect.any(String) },
+      }),
+    );
+    expect(workActions(result)).toEqual([]);
   });
   it('удерживает цикл даже через закрытого предшественника', async () => {
     const { result, exec } = await decision(mode, {
       tasks: [dependent(), base({ dependsOn: ['0001-next'] })],
     });
-    expect(result.actions).toEqual([]);
+    expect(workActions(result)).toEqual([]);
     expect(result.notes.join()).toContain('цикл зависимостей');
     expect(exec).not.toHaveBeenCalled();
   });
@@ -219,11 +233,13 @@ describe('сборка от снимка Trello до допуска', () => {
     };
     const run = createCommandRunner(root, () => JSON.stringify(merged));
     const state = await buildDependencyState({ backlog, config, root, run });
-    expect(scan({ ...state, config }).actions).toContainEqual({
-      kind: 'start-stage',
-      taskId: '0001-next',
-      stage: 'decompose',
-    });
+    expect(scan({ ...state, config }).actions).toContainEqual(
+      expect.objectContaining({
+        kind: 'start-stage',
+        taskId: '0001-next',
+        stage: 'decompose',
+      }),
+    );
     const duplicate = await buildDependencyState({
       backlog: {
         ...backlog,
@@ -233,7 +249,7 @@ describe('сборка от снимка Trello до допуска', () => {
       root,
       run,
     });
-    expect(scan({ ...duplicate, config }).actions).toEqual([]);
+    expect(workActions(scan({ ...duplicate, config }))).toEqual([]);
   });
   it('тайм-аут чтения не меняет режим прочих команд', async () => {
     const exec = vi.fn(() => {

@@ -202,6 +202,18 @@ describe('шаг симуляции: основы', () => {
 
     expect(world.players[0]?.targetStructure).toBe(enemyBase?.id);
   });
+
+  it('режимом атаки по умолчанию является «Бой»', () => {
+    // Умолчание проверяется у ОБОИХ игроков: режим — свойство игрока,
+    // и односторонний недосмотр дал бы матч, в котором одна сторона
+    // отвечает на огонь, а вторая идёт мимо.
+    const world = createWorld(SEED);
+
+    expect(world.players.map((player) => player.stance)).toEqual([
+      AttackStance.Engage,
+      AttackStance.Engage,
+    ]);
+  });
 });
 
 describe('экономика', () => {
@@ -1336,13 +1348,21 @@ describe('остановка юнита на противнике', () => {
   /**
    * Мир, где обе стороны дерутся, а не прорываются.
    *
-   * Режим по умолчанию — «Прорыв», и в нём остановки на встречном нет
-   * вовсе. Эти тесты проверяют именно «Бой», поэтому режим ставится явно:
-   * иначе они проверяли бы отсутствие правила, а не правило.
+   * Режим по умолчанию — «Бой», и обёртка эта нужна уже не для того, чтобы
+   * его включить, а чтобы тест не зависел от умолчания вовсе: проверяемый
+   * режим называется в тесте явно, и правка умолчания не превратит проверку
+   * правила в проверку его отсутствия. Ровно это и случилось при смене
+   * умолчания с «Прорыва»: соседние тесты молча поменяли предмет.
    */
   const engaging = (world: WorldState): WorldState => ({
     ...world,
     players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
+  });
+
+  /** Обе стороны прорываются. Называется явно по той же причине. */
+  const breaking = (world: WorldState): WorldState => ({
+    ...world,
+    players: world.players.map((player) => ({ ...player, stance: AttackStance.Breakthrough })),
   });
   it('в режиме «Бой» встречный противник останавливает', () => {
     const world = engaging(
@@ -1358,7 +1378,9 @@ describe('остановка юнита на противнике', () => {
   it('в режиме «Прорыв» встречный противник не останавливает', () => {
     // Главное свойство режима: волна идёт к цели, ведя огонь на ходу,
     // и не вязнет в первом же заслоне.
-    const world = withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
+    const world = breaking(
+      withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901),
+    );
 
     const after = run(world, 4);
     const mine = after.units.find((unit) => unit.id === asEntityId(900));
@@ -1420,15 +1442,26 @@ describe('огонь на ходу', () => {
   const unitOf = (world: WorldState, id: number) =>
     world.units.find((unit) => unit.id === asEntityId(id));
 
-  /** Мой юнит и чужой на дальности от него. Режим у обоих — «Прорыв». */
-  const facingEachOther = (): WorldState =>
-    withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
-
   /** Обе стороны в «Бою»: оба юнита сцепляются и стоят. */
   const bothEngage = (world: WorldState): WorldState => ({
     ...world,
     players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
   });
+
+  /** Обе стороны в «Прорыве»: оба идут, стреляя на ходу. */
+  const bothBreak = (world: WorldState): WorldState => ({
+    ...world,
+    players: world.players.map((player) => ({ ...player, stance: AttackStance.Breakthrough })),
+  });
+
+  /**
+   * Мой юнит и чужой на дальности от него, оба в «Прорыве».
+   *
+   * Режим ставится явно: умолчанием стал «Бой», в котором оба встанут,
+   * а весь раздел о том, что юнит стреляет НА ХОДУ.
+   */
+  const facingEachOther = (): WorldState =>
+    bothBreak(withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901));
 
   /**
    * В «Бою» только соперник: мой юнит идёт, чужой стои́т.
@@ -1498,7 +1531,9 @@ describe('огонь на ходу', () => {
     const AHEAD = cellIndex(21, 20);
     const ONCOMING = cellIndex(21, 22);
 
-    let world = withUnitAt(withUnitAt(openWorld(), 0, AHEAD, TOUGH, 900), 1, ONCOMING, TOUGH, 901);
+    let world = bothBreak(
+      withUnitAt(withUnitAt(openWorld(), 0, AHEAD, TOUGH, 900), 1, ONCOMING, TOUGH, 901),
+    );
     const apartAtStart = distanceSquared(cellCentre(AHEAD), cellCentre(ONCOMING));
 
     for (let tick = 0; tick < TWO_SHOTS; tick += 1) {
@@ -1588,7 +1623,12 @@ describe('остановка юнита на стреляющей построй
   });
 
   it('в режиме «Прорыв» башня не останавливает', () => {
-    const asIs = (world: WorldState): WorldState => world;
+    // Режим называется явно, а не оставляется умолчанию: умолчанием стал
+    // «Бой», и прежняя обёртка-пустышка проверяла бы обратное правило.
+    const asIs = (world: WorldState): WorldState => ({
+      ...world,
+      players: world.players.map((player) => ({ ...player, stance: AttackStance.Breakthrough })),
+    });
 
     expect(positionAfter(facing(towerAt(THEIRS, 1, 902), asIs), 4)).not.toEqual(cellCentre(MINE));
   });

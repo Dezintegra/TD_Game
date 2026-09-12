@@ -23,6 +23,7 @@ import { scan } from '../lib/scan.mjs';
 import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
 import { createTrelloBacklog } from '../lib/backlog-trello.mjs';
 import { sortCards } from '../lib/validate-card.mjs';
+import { readScheduling } from '../lib/scheduling-store.mjs';
 
 /**
  * Что конвейер собирается делать.
@@ -105,6 +106,7 @@ async function openBacklog(config) {
   return {
     ok: true,
     ...sortCards(store.parsedCards()),
+    ownerAnswers: store.ownerAnswers(),
     closedDependencyIds: store.closedDependencyIds(),
     dependencyRecords: store.dependencyRecords(),
   };
@@ -125,10 +127,15 @@ async function main() {
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
   const decision = scan({
-    ...(await buildDependencyState({ backlog, config, root, run: runCommand })),
+    scheduling: readScheduling(root, config),
+    now: new Date().toISOString(),
+    machine,
+    ...(await buildDependencyState({ backlog, config, root, machine, run: runCommand })),
     registry,
     codexUsage: readTokenLedger(root, config),
-    answers: readAnswers(root, config),
+    // Смотрящий прогон обязан видеть ту же картину, что боевой цикл:
+    // ответы берутся из того же снимка доски, а не из файла вопросов.
+    answers: backlog.ownerAnswers ?? readAnswers(root, config),
     // Правила разрешений — доводом, как и всё прочее: сканер сам диска
     // не трогает. Смотрящий прогон обязан видеть ту же картину, что боевой
     // цикл, иначе он показывал бы работу, которой цикл не сделает.

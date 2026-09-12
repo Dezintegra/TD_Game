@@ -1,9 +1,17 @@
+import { parseWorktrees } from './reconcile.mjs';
+import { inspectCleanup } from './cleanup-safety.mjs';
+import { readDeploymentImpact } from './deploy-impact.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { recoverOwnership } from './worktree-ownership.mjs';
 import { pushMain } from './push-discipline.mjs';
 import { removeWorktree } from './remove-worktree.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
+import { hasReceipt, withReceipt, partReceipt } from './report-receipts.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { nextId } from './requests.mjs';
+import { CI_PR_FIELDS, hasContradictoryCheck, confirmContradictoryCi } from './ci-confirmation.mjs';
 
 /**
  * Переходник к настоящему миру: файлы, git, деревья.
@@ -54,7 +62,17 @@ const readJson = (path) => {
  * @param {() => number} params.elapsed сколько секунд идёт цикл
  * @param {object[]} [params.reports] отчёты, ожидающие переноса
  */
-export function createIo({ root, config, git, now, machine, run, elapsed, reports = [] }) {
+export function createIo({
+  root,
+  config,
+  git,
+  now,
+  machine,
+  run,
+  elapsed,
+  reports = [],
+  reportStore = null,
+}) {
   const local = (...parts) => join(root, config.paths.local, ...parts);
   const ensure = (dir) => mkdirSync(dir, { recursive: true });
 
@@ -63,6 +81,7 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
   const registryPath = () => local('registry.json');
 
   return {
+    reportStore,
     now,
     machine,
     taskPath,
@@ -84,15 +103,38 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * @param {object} entry запись журнала об этом переходе
      * @param {string} message сообщение коммита — доске оно не нужно
      */
-    saveTask(task, entry, message, extraPaths = []) {
-      const appendix = journalAppendix(task, this.readJournal(task.id), entry);
+    saveTask(task, entry, message, extraPaths = [], operation) {
+      const current = operation?.key ? this.readTask(task.id) : null;
+      if (
+        operation?.key &&
+        !hasReceipt(current, operation.key) &&
+        !isDeepStrictEqual(current, operation.expected)
+      ) {
+        return { ok: false, outcome: 'conflict', why: `report delivery conflicts with ${task.id}` };
+      }
+      const journal = this.readJournal(task.id);
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      const appendix = journalAppendix(task, journal, entry);
       // Попутные пути — файл вопросов, например. Они обязаны уехать ТЕМ ЖЕ
       // коммитом: разъехавшись, задача в ожидании осталась бы без вопроса
       // либо вопрос без задачи.
       const paths = [taskPath(task.id), journalPath(task.id), ...extraPaths];
 
-      this.writeTask(task);
-      this.appendJournal(task.id, appendix);
+      if (!operation?.key || !hasReceipt(current, operation.key)) {
+        this.writeTask(operation?.key ? withReceipt(task, operation.key, current) : task);
+      }
+      if (!operation?.key || !journal.includes(suffix))
+        this.appendJournal(task.id, appendix + suffix);
+
+      if (operation?.key && run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome, paths };
+      }
 
       const push = this.commitAndPush(paths, message);
       // Неудача ДО коммита прибирается сразу: иначе один сорвавшийся `add`
@@ -114,18 +156,57 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * Сама задача не сохраняется вовсе: ни состояния, ни положения в очереди
      * дополнение не меняет. Поэтому и коммит здесь один, на файл журнала.
      */
-    amendTask(taskId, text, message) {
+    amendTask(taskId, text, message, _source, deliveryKey, operation) {
+      if (deliveryKey && typeof deliveryKey === 'object') operation = deliveryKey;
       const paths = [journalPath(taskId)];
-      this.appendJournal(taskId, text);
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      if (!operation?.key || !this.readJournal(taskId).includes(suffix))
+        this.appendJournal(taskId, text + suffix);
+      else if (run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome, paths };
+      }
       const push = this.commitAndPush(paths, message);
       if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
       return { ...push, paths };
     },
 
     /** Завести новую задачу: запись плюс отправка своим коммитом. */
-    createTask(task, message) {
+    reserveReportTask(task, operation, reservedIds = []) {
+      const ids = this.allTaskIds();
+      const existing = ids
+        .map((id) => this.readTask(id))
+        .find((item) => hasReceipt(item, operation.key));
+      if (existing) return { ok: true, task: { ...task, id: existing.id } };
+      const taken = [...ids, ...reservedIds];
+      return {
+        ok: true,
+        task: taken.some((id) => id.split('-')[0] === task.id.split('-')[0])
+          ? { ...task, id: nextId(taken, task.title) }
+          : task,
+      };
+    },
+
+    createTask(task, message, operation) {
       const paths = [taskPath(task.id)];
-      this.writeTask(task);
+      const current = operation?.key ? this.readTask(task.id) : null;
+      if (operation?.key && current && !hasReceipt(current, operation.key))
+        return { ok: false, outcome: 'conflict' };
+      if (!current) this.writeTask(operation?.key ? withReceipt(task, operation.key) : task);
+      else if (operation?.key && run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome, paths };
+      }
       const push = this.commitAndPush(paths, message);
       if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
       return { ...push, paths };
@@ -155,7 +236,10 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * застревала навсегда, а владелец продукта видел пустой файл и не знал,
      * что его ждут.
      */
-    askOwner(task, report) {
+    askOwner(task, report, operation) {
+      const previous = this.readQuestions();
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      if (operation?.key && previous.includes(suffix)) return this.finishReportQuestion();
       const block = renderQuestion({
         taskId: task.id,
         askedAt: now,
@@ -163,7 +247,8 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
         summary: report.summary,
         decisions: report.decisions ?? [],
       });
-      this.writeQuestions(appendQuestion(this.readQuestions(), block));
+      this.writeQuestions(appendQuestion(previous, block) + suffix);
+      if (operation?.key) return this.finishReportQuestion();
       return this.questionsPath();
     },
 
@@ -173,15 +258,35 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * Сама сессия файла вопросов не трогает: писатель у бэклога один. Она
      * кладёт ответ в отчёт, а сюда он попадает уже рукой оркестратора.
      */
-    recordAnswer(task, action, report) {
+    recordAnswer(task, action, report, operation) {
+      const previous = this.readQuestions();
+      const suffix = operation?.key ? partReceipt(operation.key, 0) : '';
+      if (operation?.key && previous.includes(suffix)) return this.finishReportQuestion();
       const answer = report?.decisions?.[0];
-      if (!answer) return null;
+      if (!answer) return operation?.key ? { ok: true } : null;
 
-      const filled = recordAnswerIn(this.readQuestions(), action.taskId, answer);
+      const filled = recordAnswerIn(previous, action.taskId, answer);
       if (!filled) return null;
 
-      this.writeQuestions(filled);
+      this.writeQuestions(filled + suffix);
+      if (operation?.key) return this.finishReportQuestion();
       return this.questionsPath();
+    },
+
+    finishReportQuestion() {
+      const paths = [this.questionsPath()];
+      if (run(['diff', '--quiet', 'HEAD', '--', ...paths]).code === 0) {
+        const pushed = pushMain({
+          git,
+          branch: config.mainBranch,
+          elapsed,
+          budgetSeconds: config.pushBudgetSeconds,
+        });
+        return { ok: pushed.outcome === 'pushed', outcome: pushed.outcome };
+      }
+      const push = this.commitAndPush(paths, 'chore(backlog): deliver report question');
+      if (NOTHING_COMMITTED.includes(push.outcome)) this.restorePaths(paths);
+      return push;
     },
 
     /**
@@ -331,10 +436,45 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * с корнем — абсолютный после склейки указывал бы в никуда.
      * Проверено 02.09.2026: усыновлённое дерево 0088 дало `spawn ENOENT`.
      */
-    worktreePathFor: (taskId) => join(config.worktreeDir, taskId),
+    worktreePathFor: (taskId, actualPath) =>
+      actualPath ? relative(root, resolve(root, actualPath)) : join(config.worktreeDir, taskId),
 
     addWorktree(taskId, branch) {
-      const path = join(config.worktreeDir, taskId);
+      const entry = this.registryEntry(taskId);
+      if (
+        entry &&
+        (entry.branch !== branch || typeof entry.path !== 'string' || !entry.path.trim())
+      )
+        return { ok: false, why: 'реестр задачи не подтверждает её путь и ветку' };
+      const path = entry?.path ?? join(config.worktreeDir, taskId);
+      const absolute = resolve(root, path);
+      const listing = run(['worktree', 'list', '--porcelain']);
+      if (listing.code !== 0)
+        return { ok: false, why: listing.stderr.trim() || 'опись деревьев недоступна' };
+      const trees = parseWorktrees(listing.stdout);
+      const atPath = trees.find((tree) => resolve(root, tree.path) === absolute);
+      if (atPath) {
+        if (atPath.branch !== branch)
+          return {
+            ok: false,
+            why: 'путь задачи занят веткой ' + (atPath.branch ?? 'detached HEAD'),
+          };
+        // Запись Git могла остаться после удаления каталога; проверяем само дерево.
+        const top = run(['-C', absolute, 'rev-parse', '--show-toplevel']);
+        const head = run(['-C', absolute, 'symbolic-ref', '--quiet', '--short', 'HEAD']);
+        if (
+          top.code !== 0 ||
+          !top.stdout.trim() ||
+          resolve(top.stdout.trim()) !== absolute ||
+          head.code !== 0 ||
+          head.stdout.trim() !== branch
+        )
+          return { ok: false, why: 'существующее дерево не подтверждено по пути и ветке' };
+        return { ok: true, path };
+      }
+      const elsewhere = trees.find((tree) => tree.branch === branch);
+      if (elsewhere)
+        return { ok: false, why: 'ветка задачи уже выложена по другому пути: ' + elsewhere.path };
       const base = `${config.remote}/${config.mainBranch}`;
       const known = (ref) => run(['rev-parse', '--verify', '--quiet', ref]).code === 0;
       const existing =
@@ -348,6 +488,11 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
 
     upsertRegistry(entry) {
       ensure(local());
+      const ownershipPath = local('worktree-ownership.json');
+      const ownership = readJson(ownershipPath) ?? {};
+      ownership[entry.taskId] = { root: resolve(root), machine, entry };
+      // Резерв пишется раньше рабочего реестра: обрыв между записями восстановим.
+      writeFileSync(ownershipPath, asJson(ownership));
       const registry = readJson(registryPath()) ?? { entries: [] };
       const entries = registry.entries.filter((item) => item.taskId !== entry.taskId);
       writeFileSync(registryPath(), asJson({ entries: [...entries, entry] }));
@@ -355,6 +500,14 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
 
     registryEntry: (taskId) =>
       (readJson(registryPath())?.entries ?? []).find((item) => item.taskId === taskId) ?? null,
+
+    recoverRegistry(taskId) {
+      const record = readJson(local('worktree-ownership.json'))?.[taskId];
+      const entry = recoverOwnership(record, { task: this.readTask(taskId), root, machine });
+      if (!entry) return null;
+      this.upsertRegistry(entry);
+      return entry;
+    },
 
     dropRegistry(taskId) {
       const registry = readJson(registryPath());
@@ -374,7 +527,34 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * Сеть здесь не тревожится: снимок доски прочитан один раз в начале
      * цикла, и `readTask` берёт из него.
      */
-    boardDigest() {
+    boardDigest(currentId) {
+      const current = this.readTask(currentId);
+      const words = new Set(
+        String(current?.title ?? '')
+          .toLowerCase()
+          .match(/[а-яёa-z]{5,}/g) ?? [],
+      );
+      const candidates = this.allTaskIds()
+        .map((id) => this.readTask(id))
+        .filter(Boolean);
+      const score = (task) =>
+        (current?.links?.related?.includes(task.id) || task.links?.related?.includes(currentId)
+          ? 100
+          : 0) +
+        (current?.links?.change && current.links.change === task.links?.change ? 50 : 0) +
+        (
+          String(task.title)
+            .toLowerCase()
+            .match(/[а-яёa-z]{5,}/g) ?? []
+        ).filter((word) => words.has(word)).length;
+      const detailed = new Set(
+        candidates
+          .filter((t) => t.id !== currentId && score(t) > 0)
+          .sort((a, b) => score(b) - score(a))
+          .slice(0, 8)
+          .map((t) => t.id),
+      );
+      let room = 20000;
       const digest = [];
       for (const id of this.allTaskIds()) {
         const task = this.readTask(id);
@@ -382,7 +562,14 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
         digest.push({
           id: task.id,
           title: task.title,
+          ...(detailed.has(task.id) && String(task.description ?? '').length <= room
+            ? ((room -= String(task.description ?? '').length), { description: task.description })
+            : { descriptionOmitted: true }),
+          splitInto: task.splitInto ?? [],
+          closureReason: task.closureReason ?? null,
           type: task.type,
+          categories: task.categories ?? [],
+          dependsOn: task.dependsOn ?? [],
           status: task.status,
           // Ссылки на артефакты нужны аудиту: он сопоставляет изменения
           // OpenSpec чужих задач со своим и так ловит пересечения. Без них
@@ -396,18 +583,27 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
     /**
      * Отчёты, ожидающие переноса в бэклог.
      *
-     * Лежат в памяти супервизора, а не файлами на диске. Каталог отчётов
-     * ушёл вместе со слотами: отчёт приходит выводом того самого процесса,
-     * который супервизор и породил, — то есть туда же, откуда пришёл вопрос.
-     *
-     * Прежде отчёт был файлом, и это тянуло за собой обход всех рабочих
-     * деревьев из реестра: сессия с деревом физически не могла положить
-     * файл в основное. Искать больше негде, и двойников не бывает.
+     * Источник истины — устойчивый reportStore; память используется только
+     * в совместимом режиме без хранилища. Отчёт живёт до подтверждения
+     * всех операций, включая изменения соседних карточек.
      */
-    readReport: (id, stage) =>
-      reports.find((report) => report.taskId === id && report.stage === stage) ?? null,
+    readReport: (id, stage, reportId) =>
+      reportStore
+        ? (reportStore
+            .entries()
+            .find((entry) =>
+              reportId ? entry.reportId === reportId : entry.taskId === id && entry.stage === stage,
+            )?.report ?? null)
+        : (reports.find((report) => report.taskId === id && report.stage === stage) ?? null),
 
-    removeReport(id, stage) {
+    removeReport(id, stage, reportId) {
+      if (reportStore) {
+        if (!reportId) throw new Error('durable report acknowledgement requires reportId');
+        const entry = reportStore.get(reportId);
+        if (entry && (entry.taskId !== id || entry.stage !== stage))
+          throw new Error('report identity mismatch');
+        return reportStore.acknowledge(reportId);
+      }
       const at = reports.findIndex((report) => report.taskId === id && report.stage === stage);
       if (at !== -1) reports.splice(at, 1);
     },
@@ -422,12 +618,19 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
     readExternal(task, what) {
       if (what === 'ci') {
         if (!task.links?.pr) return { state: 'pending', why: 'pull request ещё не открыт' };
-        const result = run(
-          ['pr', 'view', String(task.links.pr), '--json', 'statusCheckRollup'],
-          'gh',
-        );
+        const result = run(['pr', 'view', String(task.links.pr), '--json', CI_PR_FIELDS], 'gh');
         if (result.code !== 0) return { state: 'pending', why: 'состояние проверок недоступно' };
-        return summariseChecks(result.stdout);
+        const summary = summarisePullRequest(result.stdout);
+        let pr;
+        try {
+          pr = JSON.parse(result.stdout);
+        } catch {
+          return summary;
+        }
+        if (pr?.mergeable === 'MERGEABLE' && hasContradictoryCheck(pr)) {
+          return confirmContradictoryCi({ pr, number: task.links.pr, run });
+        }
+        return summary;
       }
 
       if (!task.links?.run) return { state: 'pending', why: 'прогон ещё не запущен' };
@@ -442,6 +645,24 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
     },
 
     /** Состояние pull request. Им доказывается влитость — не хешами коммитов. */
+    deploymentImpact(number) {
+      return readDeploymentImpact({ run, root, number, mainBranch: config.mainBranch });
+    },
+
+    reconciliationPr(number) {
+      const answer = run(
+        ['pr', 'view', String(number), '--json', 'number,state,mergedAt,baseRefName'],
+        'gh',
+        root,
+        { timeout: 10000 },
+      );
+      try {
+        return answer.code === 0 ? JSON.parse(answer.stdout) : null;
+      } catch {
+        return null;
+      }
+    },
+
     readPr(number) {
       if (!number) return { state: 'unknown' };
       const result = run(['pr', 'view', String(number), '--json', 'state'], 'gh');
@@ -469,16 +690,16 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
     },
 
     /**
-     * Улики о деле этапа: по ним отказ разрешений судят попутным или подрывающим.
+     * Улики о деле этапа: по ним проверяют след каждого успешного отчёта.
      *
-     * Спрашиваются ТОЛЬКО при непустом перечне отказов — а это редкий случай.
-     * При обычном отчёте не делается ни одного лишнего вызова git.
+     * Спрашиваются при done независимо от отказов. Прочие исходы не требуют
+     * следа и не вызывают этот сборщик.
      *
      * Свежести `origin/<ветка>` добывать не нужно, и это не упущение:
      * дополнительные рабочие деревья делят с основным один каталог `.git`,
      * поэтому отправка из дерева задачи обновляет удалённую ссылку в том же
      * репозитории, откуда читает супервизор. Отдельный `git fetch` стоил бы
-     * сети на каждом отказе и не добавил бы ни одного факта.
+     * сети на каждом успешном отчёте и не добавил бы ни одного факта.
      *
      * Этап доводом не приходит намеренно: набор улик один и тот же для всех
      * этапов — так он объявлен и в замысле, — а разбирает их по этапам тот,
@@ -527,18 +748,37 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
      * заперлась бы у всякой задачи, зашедшей в дерево после расхождения
      * с `main`.
      *
-     * Команда не отработала — `null`, а не ноль: неизвестность здесь толкуется
-     * в пользу сохранности, удаление необратимо.
+     * После частичной уборки локальная ветка может исчезнуть раньше папки.
+     * Тогда проверяем сервер: отсутствие обеих веток означает отсутствие
+     * работы в них; ошибки чтения по-прежнему дают `null`, а не ноль.
      */
     ownCommits(branch) {
-      const result = run([
-        'rev-list',
-        '--count',
-        '--no-merges',
-        `${config.remote}/${config.mainBranch}..${branch}`,
-      ]);
-      if (result.code !== 0) return null;
-      return Number.parseInt(result.stdout.trim(), 10) || 0;
+      const count = (ref) => {
+        const result = run([
+          'rev-list',
+          '--count',
+          '--no-merges',
+          `${config.remote}/${config.mainBranch}..${ref}`,
+        ]);
+        return result.code === 0 ? Number.parseInt(result.stdout.trim(), 10) || 0 : null;
+      };
+      const local = count(branch);
+      if (local !== null) return local;
+      const found = run(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]);
+      if (found.code !== 1) return null;
+
+      // Локальная ссылка origin/<ветка> может устареть. Код 2 ls-remote
+      // подтверждает отсутствие на сервере, любой иной отказ — неизвестность.
+      const ref = `refs/heads/${branch}`;
+      const remote = run(['ls-remote', '--exit-code', '--heads', config.remote, ref]);
+      if (remote.code === 2) return 0;
+      if (remote.code !== 0) return null;
+      const head = /^([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$/.exec(remote.stdout.trim());
+      return head?.[2] === ref ? count(head[1]) : null;
+    },
+
+    cleanupSafety(task, entry) {
+      return inspectCleanup({ task, entry, root, config, run, exists: existsSync });
     },
 
     removeWorktree(path) {
@@ -587,6 +827,34 @@ export function createIo({ root, config, git, now, machine, run, elapsed, report
 function knownRef(result) {
   if (result.code === 0) return true;
   return String(result.stderr ?? '').trim() === '' ? false : null;
+}
+
+/**
+ * Возможность слияния проверяется раньше CI: при конфликте GitHub вообще
+ * не запускает pull_request workflow. Пустой список проверок такого PR
+ * не пополнится от ожидания — сначала нужна доработка его ветки.
+ *
+ * mergeStateStatus для этого не годится: у черновика он бывает UNKNOWN
+ * одновременно с однозначным mergeable: CONFLICTING.
+ */
+export function summarisePullRequest(json) {
+  let pr;
+  try {
+    pr = JSON.parse(json);
+  } catch {
+    return { state: 'pending', why: 'ответ GitHub о pull request не разобрался' };
+  }
+  if (pr?.mergeable === 'CONFLICTING') return { state: 'conflict' };
+  if (pr?.mergeable === 'UNKNOWN') {
+    return { state: 'pending', why: 'GitHub ещё не определил возможность слияния pull request' };
+  }
+  if (pr?.mergeable !== 'MERGEABLE') {
+    return { state: 'pending', why: 'состояние слияния pull request недоступно' };
+  }
+  if (pr.statusCheckRollup != null && !Array.isArray(pr.statusCheckRollup)) {
+    return { state: 'pending', why: 'ответ GitHub о проверках не разобрался' };
+  }
+  return summariseChecks(json);
 }
 
 /**

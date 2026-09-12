@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { OUTCOMES } from '../lib/apply-report.mjs';
+import { TRACE } from '../lib/denials.mjs';
 import { STAGE_COMMANDS, uncoveredForStage } from './permissions.mjs';
 import {
   NEEDS_SESSION,
@@ -82,7 +83,7 @@ describe('маршруты', () => {
   });
 
   it('толкование закрывает прогон', () => {
-    expect(canTransition(task({ type: 'run', status: 'interpret' }), 'closed').ok).toBe(true);
+    expect(canTransition(task({ type: 'run', status: 'interpret' }), 'completed').ok).toBe(true);
   });
 
   it('доработка толкования не знает: её замер ведёт к проверкам', () => {
@@ -254,7 +255,9 @@ describe('цена состояния', () => {
  * на порчу ниже читались прежним образом.
  */
 const uncoveredMergeCommands = (permissions) =>
-  uncoveredForStage(permissions, 'review', STAGE_COMMANDS);
+  uncoveredForStage(permissions, 'review', {
+    review: STAGE_COMMANDS.review.filter((command) => command.startsWith('gh pr ')),
+  });
 
 /**
  * Этапы, чьи команды закрыты ОСОЗНАННО, — с причиной и с тем, чем закрытие
@@ -275,11 +278,9 @@ const DELIBERATELY_CLOSED = {};
  * зависит от того, чем этап занят.
  *
  * У `review` таких программ не объявлено, и это нарочно: его перечень —
- * осознанно короткая выборка из скилла (`gh pr checks` шага 2 в неё не входит),
- * а весь путь ревью покрыт одним приставочным правилом `gh pr:*`, при котором
- * выборка и полный перечень неразличимы. Перекраивать выборку здесь нельзя
- * и по второй причине: её заводит незаархивированное `undraft-before-merge`,
- * это его предмет.
+ * осознанно короткая выборка допуска CI и вливания. Общий вход review-ci
+ * требует отдельного разрешения и сторожится в review-ci-contract.test.mjs;
+ * остальные команды скилла не становятся частью выборки автоматически.
  */
 const GATED_PROGRAMS = {
   deploy: ['ssh', 'node scripts/deploy-remote.mjs', 'node scripts/deploy.mjs', 'pnpm e2e:perf'],
@@ -304,6 +305,171 @@ const skillPrefix = (command) => {
 const skillText = (stage) =>
   readFileSync(fileURLToPath(new URL(`../skills/${stage}.md`, import.meta.url)), 'utf8');
 
+// Проверяем исходный текст: форматтер принимает перенос, который сам ломает отступ.
+// Разбор ограничен абзацами прозы, чтобы незамкнутая кавычка не захватила соседний пример.
+const multilineCodeSpans = (text) => {
+  const found = [];
+  let paragraph = [];
+  let startLine = 0;
+  let fence = null;
+  let frontmatter = false;
+  const flush = () => {
+    const prose = paragraph.join('\n');
+    const runs = [...prose.matchAll(/`+/g)];
+    for (let i = 0; i < runs.length; i++) {
+      const opening = runs[i];
+      const slashes = prose.slice(0, opening.index).match(/\\+$/)?.[0].length ?? 0;
+      if (slashes % 2) continue;
+      const closing = runs.findIndex((run, j) => j > i && run[0] === opening[0]);
+      if (closing < 0) continue;
+      if (prose.slice(opening.index, runs[closing].index).includes('\n')) {
+        found.push(startLine + prose.slice(0, opening.index).split('\n').length - 1);
+      }
+      i = closing;
+    }
+    paragraph = [];
+  };
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    if (index === 0 && line === '---') {
+      frontmatter = true;
+      continue;
+    }
+    if (frontmatter) {
+      if (/^(---|\.\.\.)\s*$/.test(line)) frontmatter = false;
+      continue;
+    }
+    const marker = line.match(/^\s*(?:[-+*]\s+|[0-9]+[.)]\s+)?(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      if (
+        marker &&
+        marker[1][0] === fence[0] &&
+        marker[1].length >= fence.length &&
+        !marker[2].trim()
+      )
+        fence = null;
+      continue;
+    }
+    if (marker && !(marker[1][0] === '`' && marker[2].includes('`'))) {
+      flush();
+      fence = marker[1];
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+    if (!paragraph.length) startLine = index + 1;
+    paragraph.push(line);
+  }
+  flush();
+  return found;
+};
+
+const codeSpanRule = (text) =>
+  text.match(
+    /^- \*\*Вставку кода на другую строку не переносить\.\*\*[^\n]*(?:\n[ \t]+[^\n]+)*/m,
+  )?.[0] ?? '';
+
+const missingCodeSpanRule = (text) => {
+  const rule = codeSpanRule(text).replace(/\s+/g, ' ');
+  return [
+    'обратными кавычками',
+    'потерю отступа',
+    'форматировании',
+    'одной физической строке',
+    'ограждённый блок',
+    'с сохранением вложенности',
+  ].filter((mark) => !rule.includes(mark));
+};
+
+describe('однострочные вставки кода в скиллах', () => {
+  const files = readdirSync(new URL('../skills/', import.meta.url)).filter((name) =>
+    name.endsWith('.md'),
+  );
+
+  it('все Markdown-файлы каталога соблюдают правило и объясняют его', () => {
+    expect(files.length).toBeGreaterThan(0);
+    const guilty = files.flatMap((file) => {
+      const text = readFileSync(new URL(`../skills/${file}`, import.meta.url), 'utf8');
+      return [
+        ...multilineCodeSpans(text).map((line) => `${file}:${line}: перенос вставки кода`),
+        ...missingCodeSpanRule(text).map((mark) => `${file}: отсутствует правило: ${mark}`),
+      ];
+    });
+    expect(guilty).toEqual([]);
+  });
+
+  const broken = [
+    '`& "C:\\Program\nFiles\\GitHub CLI\\gh.exe" pr checks 12`',
+    '`Get-ChildItem … |\nRemove-Item …`',
+    '`## ADDED\n     Requirements`',
+    '`произвольная\n  команда`',
+    '``внутри ` кавычка\nи продолжение``',
+  ];
+  for (const [index, sample] of broken.entries()) {
+    for (const eol of ['\n', '\r\n']) {
+      it(`называет строку образца ${index + 1} при ${JSON.stringify(eol)}`, () => {
+        const text = `Введение\n\n- Пример ${sample}\n\nКонец`.replaceAll('\n', eol);
+        expect(multilineCodeSpans(text)).toEqual([3]);
+        expect(multilineCodeSpans(text.replaceAll(eol, ' '))).toEqual([]);
+      });
+    }
+  }
+
+  it('собирает все нарушения, включая таблицу и разные разделители', () => {
+    expect(multilineCodeSpans('- `a\nb` и ``c\nd``\n\n| `e\nf` |')).toEqual([1, 2, 5]);
+  });
+
+  it('принимает самостоятельные, длинные, экранированные и незамкнутые вставки', () => {
+    const samples = [
+      '`первая`\n`вторая`',
+      '`' + 'длинная команда '.repeat(30) + '`',
+      '\\`буквальная\nкавычка',
+      '`не замкнуто\n\n`соседняя вставка`',
+      '``одна ` внутри``',
+      '---\nname: "`a\nb`"\n---\n`обычная`',
+    ];
+    for (const sample of samples) expect(multilineCodeSpans(sample), sample).toEqual([]);
+    expect(multilineCodeSpans('\\\\`a\nb`')).toEqual([1]);
+  });
+
+  it('пропускает ограждения обоих видов, включая вложенные и более длинные', () => {
+    for (const marker of ['```', '~~~']) {
+      const other = marker[0] === '`' ? '~~~' : '```';
+      const text = [
+        '- Пункт',
+        '',
+        `  ${marker}text`,
+        '  `a',
+        other,
+        '  b`',
+        marker.slice(1),
+        `  ${marker}${marker[0]}`,
+        '',
+        '`после`',
+      ].join('\n');
+      expect(multilineCodeSpans(text)).toEqual([]);
+      expect(multilineCodeSpans(text + '\n\n`a\nb`')).toEqual([12]);
+    }
+  });
+
+  it('ловит порчу вставки и удаление правила в копии живого скилла', () => {
+    const text = skillText('implement');
+    const actual = '`tasks.md`';
+    // Выбираем существующую вставку, чтобы контроль не превратился в дописывание образца.
+    const at = text.indexOf(actual);
+    expect(at).toBeGreaterThanOrEqual(0);
+    const damaged =
+      text.slice(0, at) + actual.slice(0, -1) + '\n`' + text.slice(at + actual.length);
+    expect(multilineCodeSpans(text)).toEqual([]);
+    expect(multilineCodeSpans(damaged)).toEqual([text.slice(0, at).split('\n').length]);
+    expect(missingCodeSpanRule(text)).toEqual([]);
+    const rule = codeSpanRule(text);
+    expect(rule).not.toBe('');
+    expect(missingCodeSpanRule(text.replace(rule, ''))).toContain('потерю отступа');
+  });
+});
+
 /**
  * Семья формулировок ложного довода «составную команду не покрывает никакое
  * правило разрешений». Применяется к тексту, нормализованному по пробелам.
@@ -317,11 +483,188 @@ const FALSE_GROUND =
 /**
  * Однострочная формула следа из скилла — абзац после «След объявлен поимённо».
  *
- * Она живёт десятью копиями, по одной на скилл, и сверяется целым абзацем,
+ * Все копии берутся из NEEDS_SESSION и сверяются целым абзацем,
  * а не отдельным словом: слово `pull request` встречается в скиллах и вне
  * формулы, и поиск по всему тексту зеленел бы на разъехавшейся копии.
  */
-const traceFormula = (text) => text.match(/След объявлен поимённо:[\s\S]*?(?=\n\n)/)?.[0] ?? null;
+const traceFormula = (text) =>
+  text.replace(/\r\n/g, '\n').match(/След\s+объявлен\s+поимённо:[\s\S]*?(?=\n\s*\n|$)/)?.[0] ??
+  null;
+
+// Это перевод имён, а не второй перечень коммитящих этапов: типы и состав
+// определяет TRACE. Неизвестное имя ищется буквально и потому не пропускается.
+const traceStageNames = {
+  design: /проработк[а-яё]*/i,
+  revise: /доработк[а-яё]*/i,
+  implement: /имплементаци[а-яё]*/i,
+};
+
+function traceFormulaProblems(text, traces = TRACE) {
+  const raw = traceFormula(text);
+  if (!raw) return ['формулы следа нет вовсе'];
+  const formula = raw.replace(/\s+/g, ' ').toLowerCase();
+  const clauses = [...formula.matchAll(/([^:;.!?]+?)\s+[—–-]\s+([^;.!?]+)/g)];
+  const branch = formula.match(/для обеих половин[^.!?]+/)?.[0] ?? '';
+  const problems = [];
+  for (const [stage, kind] of Object.entries(traces)) {
+    if (kind !== 'commit' && kind !== 'commit-or-pr') continue;
+    const namesStage = (part) =>
+      traceStageNames[stage]?.test(part) ?? part.split(/[\s,]+/).includes(stage);
+    const clause = clauses.find(([, names]) => namesStage(names))?.[2] ?? '';
+    const checkCondition = (ok, why) => {
+      if (!ok) problems.push(`${stage}: ${why}`);
+    };
+    checkCondition(/свой коммит/.test(clause), 'собственный коммит не назван');
+    checkCondition(/не раньше начала этапа/.test(clause), 'свежесть коммита не названа');
+    checkCondition(
+      namesStage(branch) &&
+        /ветка задачи обязана быть у удалённого репозитория/.test(branch) &&
+        /не иметь неотправленных коммитов/.test(branch),
+      'удалённая ветка без хвоста не обязательна для обеих половин',
+    );
+    if (kind === 'commit-or-pr') {
+      checkCondition(
+        /либо впервые открытый pull request/.test(clause),
+        'альтернатива первого PR не названа',
+      );
+    } else {
+      checkCondition(!/pull request/.test(clause), 'PR не заменяет коммит этого этапа');
+    }
+  }
+  if (!/до начала этапа[^;.!?]*коммитную половину не закрывают/.test(formula)) {
+    problems.push('прежние коммиты не исключены');
+  }
+  if (!/ранее известный задаче pull request новым следом не считается/.test(formula)) {
+    problems.push('ранее известный PR не исключён');
+  }
+  return problems;
+}
+
+// Перечень сессий — вход проверки: новая копия без формулы должна дать
+// ошибку с именем файла, а не исчезнуть при предварительной фильтрации.
+const skillTraceProblems = (stages, readSkill, traces = TRACE) =>
+  stages.flatMap((stage) =>
+    traceFormulaProblems(readSkill(stage), traces).map((why) => `${stage}.md: ${why}`),
+  );
+
+describe('сторож свежести формулы следа', () => {
+  // Самостоятельный образец не читает скилл: порча живого файла не должна
+  // одновременно менять и проверяемый текст, и ожидаемую норму.
+  const correct = [
+    'След объявлен поимённо:',
+    'проработке и доработке — свой коммит, сделанный не раньше начала этапа;',
+    'имплементации — свой коммит, сделанный не раньше начала этапа, ЛИБО впервые открытый pull request.',
+    'Для обеих половин следа имплементации, как и для проработки и доработки,',
+    'ветка задачи обязана быть у удалённого репозитория и не иметь неотправленных коммитов.',
+    'Коммиты, лежавшие в ветке до начала этапа, коммитную половину не закрывают;',
+    'ранее известный задаче pull request новым следом не считается.',
+  ].join('\n');
+  const staleImplement = (text) =>
+    text.replace(
+      'имплементации — свой коммит, сделанный не раньше начала этапа',
+      'имплементации — свой коммит',
+    );
+
+  it.each([
+    correct,
+    correct.replaceAll(' ', '\n   ').replaceAll('\n', '\r\n'),
+    correct.replaceAll(',', '').replaceAll('—', '–'),
+  ])('принимает корректный текст, переносы и пунктуацию: %#', (text) => {
+    expect(traceFormulaProblems(text)).toEqual([]);
+  });
+
+  it.each([
+    ['свежесть только implement', staleImplement(correct), 'implement: свежесть'],
+    [
+      'первый PR',
+      correct.replace('ЛИБО впервые открытый pull request', ''),
+      'implement: альтернатива',
+    ],
+    [
+      'новизна PR',
+      correct.replace('ЛИБО впервые открытый', 'ЛИБО открытый'),
+      'implement: альтернатива',
+    ],
+    [
+      'альтернатива вместо обязательного PR',
+      correct.replace('ЛИБО впервые', 'И впервые'),
+      'implement: альтернатива',
+    ],
+    [
+      'удалённая ветка',
+      correct.replace('быть у удалённого репозитория', 'существовать'),
+      'implement: удалённая ветка',
+    ],
+    [
+      'хвост',
+      correct.replace('не иметь неотправленных коммитов', 'иметь коммиты'),
+      'implement: удалённая ветка',
+    ],
+    [
+      'обе половины',
+      correct.replace('Для обеих половин', 'Для коммитной половины'),
+      'implement: удалённая ветка',
+    ],
+    [
+      'свежесть design/revise',
+      correct.replace('не раньше начала этапа', 'сегодня'),
+      'design: свежесть',
+    ],
+    ['свой коммит', correct.replaceAll('свой коммит', 'коммит'), 'implement: собственный'],
+    [
+      'старые коммиты',
+      correct.replace('коммитную половину не закрывают', 'коммитную половину закрывают'),
+      'прежние коммиты',
+    ],
+    [
+      'известный PR',
+      correct.replace('новым следом не считается', 'новым следом считается'),
+      'ранее известный PR',
+    ],
+    [
+      'PR у design/revise',
+      correct.replace('начала этапа;', 'начала этапа ЛИБО впервые открытый pull request;'),
+      'design: PR не заменяет',
+    ],
+  ])('обнаруживает потерю условия: %s', (_name, text, problem) => {
+    expect(traceFormulaProblems(text)).toEqual(
+      expect.arrayContaining([expect.stringContaining(problem)]),
+    );
+  });
+
+  it('свежесть за пределами формулы не закрывает пропуск внутри', () => {
+    const text = `${staleImplement(correct)}\n\nимплементации — свой коммит, сделанный не раньше начала этапа`;
+    expect(traceFormulaProblems(text)).toContain('implement: свежесть коммита не названа');
+  });
+
+  it.each(['commit', 'commit-or-pr'])('новый тип %s требует правил для нового этапа', (kind) => {
+    const problems = traceFormulaProblems(correct, { ...TRACE, future: kind });
+    expect(problems).toContain('future: свежесть коммита не названа');
+    if (kind === 'commit-or-pr') {
+      expect(problems).toContain('future: альтернатива первого PR не названа');
+    }
+  });
+
+  it('полный обход называет порчу только decompose.md', () => {
+    const texts = Object.fromEntries(NEEDS_SESSION.map((stage) => [stage, correct]));
+    expect(skillTraceProblems(NEEDS_SESSION, (stage) => texts[stage])).toEqual([]);
+    expect(NEEDS_SESSION).toContain('decompose');
+    texts.decompose = staleImplement(correct);
+    expect(skillTraceProblems(NEEDS_SESSION, (stage) => texts[stage])).toEqual([
+      'decompose.md: implement: свежесть коммита не названа',
+    ]);
+  });
+
+  it.each(['без формулы', staleImplement(correct)])(
+    'новый скилл не выпадает из обхода: %#',
+    (text) => {
+      const stages = [...NEEDS_SESSION, 'future'];
+      const problems = skillTraceProblems(stages, (stage) => (stage === 'future' ? text : correct));
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toMatch(/^future\.md:/);
+    },
+  );
+});
 
 describe('этапы и скиллы', () => {
   it('всякому ресурсному состоянию положена сессия', () => {
@@ -598,6 +941,8 @@ describe('этапы и скиллы', () => {
         'PowerShell(node scripts/deploy-remote.mjs:*)',
         'Bash(node scripts/deploy.mjs:*)',
         'PowerShell(node scripts/deploy.mjs:*)',
+        'Bash(node scripts/ensure-deploy-host.mjs:*)',
+        'PowerShell(node scripts/ensure-deploy-host.mjs:*)',
         'Bash(pnpm e2e:perf:*)',
         'PowerShell(pnpm e2e:perf:*)',
       ],
@@ -613,6 +958,8 @@ describe('этапы и скиллы', () => {
         ...checks.flatMap((command) => [`Bash(${command})`, `PowerShell(${command})`]),
         'Bash(node scripts/deploy.mjs:*)',
         'PowerShell(node scripts/deploy.mjs:*)',
+        'Bash(node scripts/ensure-deploy-host.mjs:*)',
+        'PowerShell(node scripts/ensure-deploy-host.mjs:*)',
         'Bash(pnpm e2e:perf:*)',
         'PowerShell(pnpm e2e:perf:*)',
       ],
@@ -773,23 +1120,8 @@ describe('этапы и скиллы', () => {
     expect(silent).toEqual([]);
   });
 
-  it('все десять копий формулы следа называют pull request у имплементации', () => {
-    // След имплементации — коммит ЛИБО впервые открытый pull request:
-    // задача, вся правка которой внесена проработкой, законна, а открыть
-    // черновой PR ей всё равно обязательно. Копия, отставшая от этого,
-    // велит сессии отчитаться `failed` там, где приёмка приняла бы `done`,
-    // — то есть выбрасывает правильно сделанную работу.
-    const dir = fileURLToPath(new URL('../skills/', import.meta.url));
-    const guilty = [];
-    for (const stage of NEEDS_SESSION) {
-      const formula = traceFormula(readFileSync(`${dir}${stage}.md`, 'utf8'));
-      if (!formula) {
-        guilty.push(`${stage}.md: формулы следа нет вовсе`);
-      } else if (!formula.includes('pull request')) {
-        guilty.push(`${stage}.md: pull request не назван`);
-      }
-    }
-    expect(guilty).toEqual([]);
+  it('все копии формулы согласованы с типами следа и свежестью из TRACE', () => {
+    expect(skillTraceProblems(NEEDS_SESSION, skillText)).toEqual([]);
   });
 
   it('скилл проработки называет каждый исход отчёта и обязательное доказательство', () => {
@@ -842,20 +1174,63 @@ describe('этапы и скиллы', () => {
     expect(guilty).toEqual([]);
   });
 
-  it('проработка и аудит называют законную ошибку валидатора дословно', () => {
-    // Красный валидатор на бездельтовом изменении законен, и оба этапа
-    // обязаны узнавать этот случай по тексту ошибки, а не по пересказу.
-    // Проработка, не узнав его, полезет чинить красноту требованием
-    // ради проверки; аудит, не узнав, вернёт задачу замечанием — и оба
-    // сожгут заход на беду, которой нет.
-    //
-    // Сверяется дословная строка, а не «есть слово delta»: пересказ вроде
-    // «валидатор ругается на отсутствие дельт» сессия примет за описание
-    // ЛЮБОЙ ошибки про дельты и спишет на этот случай поломанную разметку.
-    const guilty = ['design', 'audit'].filter(
-      (stage) => !skillText(stage).includes('Change must have at least one delta'),
-    );
-    expect(guilty).toEqual([]);
+  // Проверяем саму норму между границами, а не случайную цитату в примере.
+  // Это сторож инструкций, не парсер CLI: смысловые случаи разобраны
+  // отдельно в verification.md изменения recognize-deltaless-diagnostics.
+  const deltalessStart = '**Исключение для отсутствия дельт.**';
+  const deltalessEnd = '**Конец исключения.**';
+  const deltalessClauses = [
+    'ровно одна ошибка.',
+    'сообщение ошибки должно начинаться с `Change must have at least one delta. No deltas found.`.',
+    'Дословного совпадения всего сообщения или всего вывода не требуй.',
+    'Продолжение `Ensure your change…`, подсказка `Tip: run…`, заголовок результата и раздел `Next steps` с рекомендациями допустимы как штатные пояснения CLI и сами по себе дополнительными ошибками не являются.',
+    'Другая или дополнительная ошибка исключением не покрывается, в том числе после `Next steps`: просматривай вывод до конца.',
+    'Цитата только в подсказке вместо начала сообщения ошибки не подходит.',
+    'каталог `specs/` отсутствует (даже пустой каталог исключает этот случай)',
+    'в `proposal.md` есть раздел `## Почему дельты нет`',
+    'обоснование проверено по существу по списку задач, основным требованиям и открытым дельтам: ни одно требование не меняет прочтения.',
+    'Отсутствующий или пустой раздел, непроверенное либо опровергнутое обоснование не допускают исключения.',
+    'Проработка обосновывает отсутствие дельты, аудит независимо сверяет обоснование; одного заголовка недостаточно.',
+  ];
+  const normalizeRule = (text) => text.replace(/\s+/g, ' ').trim();
+  function deltalessProblems(text) {
+    const normalized = normalizeRule(text);
+    const start = normalized.indexOf(deltalessStart);
+    const end = normalized.indexOf(deltalessEnd, start);
+    if (start < 0 || end < 0) return ['границы исключения'];
+    const rule = normalized.slice(start, end);
+    const missing = deltalessClauses.filter((clause) => !rule.includes(clause));
+    if (/любая другая строка вывода/i.test(rule)) missing.push('запрет штатных пояснений');
+    return missing;
+  }
+
+  describe.each(['design', 'audit'])('диагностика без дельт: %s', (stage) => {
+    it('сохраняет все условия исключения в самом правиле', () => {
+      expect(deltalessProblems(skillText(stage))).toEqual([]);
+    });
+
+    it.each(deltalessClauses)('обнаруживает удаление условия: %s', (clause) => {
+      const original = normalizeRule(skillText(stage));
+      expect(deltalessProblems(original)).toEqual([]);
+      const mutant = original.replace(clause, '');
+      expect(mutant).not.toBe(original);
+      // Копия исходной нормы за границей исключения не должна спасать мутацию.
+      expect(deltalessProblems(mutant + '\n' + original)).toContain(clause);
+    });
+
+    it('обнаруживает возврат запрета любой дополнительной строки', () => {
+      const original = skillText(stage);
+      expect(deltalessProblems(original)).toEqual([]);
+      const mutant = original.replace(
+        deltalessEnd,
+        'Любая другая строка вывода бедой быть не перестаёт. ' + deltalessEnd,
+      );
+      expect(deltalessProblems(mutant)).toContain('запрет штатных пояснений');
+    });
+
+    it.each([deltalessStart, deltalessEnd])('обнаруживает потерю границы %s', (mark) => {
+      expect(deltalessProblems(skillText(stage).replace(mark, ''))).toEqual(['границы исключения']);
+    });
   });
 
   it('этапы, освежающие базу, подтягивают свежую главную ветку', () => {
@@ -896,6 +1271,201 @@ describe('этапы и скиллы', () => {
       (stage) => !skillText(stage).includes('git -C <дерево> merge origin/main'),
     );
     expect(guilty.map((stage) => `${stage}.md: git -C <дерево> merge origin/main`)).toEqual([]);
+  });
+
+  describe('подготовка implement по открытому PR', () => {
+    // Проверяется инструкция, которую читает исполнитель, а не отдельная модель
+    // решений. Области разделены: слова из соседнего шага не спасают потерю нормы.
+    const heading = '**Подготовка по открытому PR.**';
+    const parts = (text) => {
+      const step =
+        text.match(
+          /^[0-9]+\. \*\*Подтяни в дерево свежую главную ветку[^\n]*\n[\s\S]*?(?=^[0-9]+\. |^## |$(?![\s\S]))/m,
+        )?.[0] ?? '';
+      const at = step.indexOf(heading);
+      return at < 0 ? [step, ''] : [step.slice(0, at), step.slice(at)];
+    };
+    const clauses = [
+      [0, 'область обновления', 'Исходов у обязательного слияния `origin/main` три'],
+      [
+        0,
+        'разрешение конфликта main',
+        'Разреши конфликт, сохранив действующее поведение `main` и результат задачи',
+      ],
+      [
+        0,
+        'основа main',
+        'В спорных случаях используй код `main` как основу и адаптируй реализацию задачи к нему',
+      ],
+      [
+        0,
+        'проверка интеграции',
+        'После разрешения проверь также автоматически объединённые участки',
+      ],
+      [
+        0,
+        'доказательная остановка',
+        'Количество конфликтов, сложность интеграции и первая неудачная попытка не являются основанием для `failed`',
+      ],
+      [
+        1,
+        'выбор по плану',
+        'согласованные `design.md` и `tasks.md`: способ подготовки выбирается по плану',
+      ],
+      [
+        1,
+        'порядок интеграции',
+        'Порядок вливания PR сам по себе не требует слияния соседней ветки и не становится предусловием запуска',
+      ],
+      [1, 'явные предусловия', 'Явные предусловия запуска из назначения и карточки сохраняются'],
+      [1, 'источник', 'используй указанные источник и ревизию'],
+      [
+        1,
+        'состав и повторная проверка',
+        'собственную правку в согласованном составе и повторную проверку после интеграции',
+      ],
+      [1, 'без пробного слияния', 'пробовать слияние всей ветки перед ним не требуется'],
+      [1, 'отмена дополнительного слияния', 'git -C <дерево> merge --abort'],
+      [1, 'результат отмены', 'Проверь код возврата отмены'],
+      [1, 'статус дерева', 'git -C <дерево> status --porcelain'],
+      [
+        1,
+        'восстановление',
+        'отсутствие незавершённого слияния и сохранность предшествовавших правок',
+      ],
+      [1, 'ошибка отмены', 'Ошибка отмены или невосстановленное дерево — `failed`'],
+      [1, 'без сброса', 'не сбрасывай дерево ради продолжения'],
+      [
+        1,
+        'доступность',
+        'После успешной отмены проверь доступность указанной планом отправленной версии и файла',
+      ],
+      [
+        1,
+        'условное продолжение',
+        'Если способ доступен и явного запрета запуска нет — продолжай по плану',
+      ],
+      [
+        1,
+        'конфликт не достаточен',
+        'Сам конфликт дополнительного слияния не является причиной `failed`',
+      ],
+      [
+        1,
+        'обязательное по плану слияние',
+        'Если план требует именно слияния без альтернативы, выборочное копирование его не заменяет',
+      ],
+      [
+        1,
+        'отчёт',
+        'В отчёте назови отменённую операцию, конфликтующие пути и результат проверки способа',
+      ],
+      [
+        1,
+        'неизвестные конфликты',
+        'Неизвестные конфликты вслепую не разрешай ни при каком слиянии',
+      ],
+      [
+        1,
+        'сохранность правок и плана',
+        'не затирай свои или чужие правки и не заменяй согласованный план самостоятельно',
+      ],
+      [1, 'приоритет', 'Отсутствие файла в main не доказывает отсутствие доступной подготовки.'],
+      [1, 'ошибка не доказательство', 'ошибка чтения не доказывает отсутствия предмета.'],
+      [
+        1,
+        'ожидание зависимости',
+        'Если предмет ещё должна принести другая задача и доступной подготовки нет,',
+      ],
+      [
+        1,
+        'маршрут blocked',
+        'сохрани и отправь свою работу, затем верни blocked по общему контракту:',
+      ],
+      [
+        1,
+        'доказательство ожидания',
+        'taskId либо requestKey, reason, result и, если требуется, dependencyResult.',
+      ],
+      [1, 'свой PR', 'Это действует и при собственном PR: начатая работа сохраняется.'],
+      [
+        1,
+        'единый механизм',
+        'premature не вводится; старый план 0216 подлежит согласованию с blocked.',
+      ],
+      [
+        1,
+        'без повторного захвата',
+        'Не возвращай свободную задачу в очередь до результата предусловия',
+      ],
+    ];
+    const problems = (text) => {
+      const sections = parts(text).map((part) => part.replace(/\s+/g, ' '));
+      return clauses
+        .filter(([section, , phrase]) => !sections[section].includes(phrase))
+        .map(([, name]) => `supervisor/skills/implement.md: ${name}`);
+    };
+    const replaceClause = (text, section, before, after) => {
+      const block = parts(text)[section];
+      const pattern = new RegExp(
+        before
+          .split(' ')
+          .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('\\s+'),
+      );
+      expect(block).toMatch(pattern);
+      // Сохраняем границы шага: падение должно указывать только испорченную норму.
+      return text.replace(block, block.replace(pattern, after));
+    };
+
+    it('сохраняет все условия в реальном шаге подготовки', () => {
+      expect(problems(skillText('implement'))).toEqual([]);
+    });
+
+    it.each(clauses)('ловит удаление условия %i: %s', (section, name, phrase) => {
+      const original = skillText('implement');
+      const sections = parts(original);
+      const mutant = replaceClause(original, section, phrase, '');
+      expect(problems(mutant + '\n' + sections[section])).toEqual([
+        `supervisor/skills/implement.md: ${name}`,
+      ]);
+    });
+
+    it.each(['удаление', 'перенос за шаг'])('ловит %s блока', (mode) => {
+      const original = skillText('implement');
+      const block = parts(original)[1];
+      expect(block).toContain(heading);
+      const mutant = original.replace(block, '') + (mode === 'перенос за шаг' ? block : '');
+      expect(problems(mutant)).toContain('supervisor/skills/implement.md: выбор по плану');
+    });
+
+    it.each([
+      [
+        'Если способ доступен и явного запрета запуска нет — продолжай по плану',
+        'После любого конфликта верни failed',
+        'условное продолжение',
+      ],
+      [
+        'Отсутствие файла в main не доказывает отсутствие доступной подготовки.',
+        'Любой файл вне main означает отсутствие предмета',
+        'приоритет',
+      ],
+      [
+        'сохрани и отправь свою работу, затем верни blocked по общему контракту:',
+        'Верни failed вместо ожидания',
+        'маршрут blocked',
+      ],
+      [
+        'Это действует и при собственном PR: начатая работа сохраняется.',
+        'При собственном PR закрывай задачу',
+        'свой PR',
+      ],
+    ])('ловит подмену: %s', (before, after, name) => {
+      const original = skillText('implement');
+      expect(problems(replaceClause(original, 1, before, after))).toEqual([
+        `supervisor/skills/implement.md: ${name}`,
+      ]);
+    });
   });
 
   it('выкладка проверяет закреплённый снимок без слияния исторической ветки', () => {
@@ -1119,6 +1689,9 @@ describe('этапы и скиллы', () => {
     ].join('\n');
     expect(traceFormula(previous)).not.toBeNull();
     expect(traceFormula(previous)).not.toContain('pull request');
+    expect(traceFormulaProblems(previous)).toContain(
+      'implement: альтернатива первого PR не названа',
+    );
   });
 
   it('скилл проработки называет форму команд, годную для списка задач', () => {
@@ -1268,6 +1841,143 @@ describe('этапы и скиллы', () => {
     expect(text.includes('недоделкой не считается'), 'review.md: недоделкой не считается').toBe(
       true,
     );
+  });
+});
+
+describe('согласованность ожидания 0216 с подготовкой 0254', () => {
+  const title = '### Requirement: Исполнитель сохраняет ожидание предмета через blocked';
+  const change = 'return-premature-tasks-to-the-queue';
+  const read = (p) => readFileSync(new URL('../../' + p, import.meta.url), 'utf8');
+  const has = (p) => existsSync(new URL('../../' + p, import.meta.url));
+  const sourceFor = (change, requirement) => {
+    const paths = [
+      'openspec/specs/dev-pipeline-worker/spec.md',
+      'openspec/changes/' + change + '/specs/dev-pipeline-worker/spec.md',
+    ];
+    const archive = 'openspec/changes/archive';
+    paths.push(
+      ...readdirSync(new URL('../../' + archive, import.meta.url))
+        .filter((n) => n.endsWith('-' + change))
+        .map((n) => archive + '/' + n + '/specs/dev-pipeline-worker/spec.md'),
+    );
+    const path = paths.find((p) => has(p) && read(p).includes(requirement));
+    if (!path) throw new Error('Не найден действующий контракт ожидания 0216');
+    return read(path);
+  };
+  const source = () => sourceFor(change, title);
+  const section = (text, scenario) => {
+    const heading = scenario ? '#### Scenario: ' + scenario : title;
+    const start = text.indexOf(heading);
+    if (start < 0) return '';
+    const rest = text.slice(start + heading.length);
+    const end = rest.search(/\n#{3,4} /);
+    return (end < 0 ? rest : rest.slice(0, end)).replace(/\s+/g, ' ');
+  };
+  const clauses = [
+    ['', 'При безопасном дереве, обновлённой main и соблюдении явных предусловий'],
+    [
+      '',
+      'доступная подготовка по согласованному плану SHALL исключать вывод об отсутствии предмета только по отсутствию файла в main',
+    ],
+    [
+      '',
+      'После конфликта необязательного слияния SHALL выполняться отмена и проверка восстановления дерева',
+    ],
+    ['', 'Конфликт обновления origin/main SHALL разрешаться по merge-conflict-resolution'],
+    ['', 'сам конфликт не является причиной failed'],
+    ['', 'Существующие change и PR сохраняются и ожидание не запрещают'],
+    ['', 'Отдельный premature вводиться MUST NOT'],
+    ['Имплементации нечего править', 'подтянув свежую главную ветку'],
+    ['Имплементации нечего править', 'доступной подготовки по плану нет'],
+    ['Имплементации нечего править', 'с исходом blocked'],
+    ['Имплементации нечего править', 'ожидание и доказательство в reason/result'],
+    ['Имплементации нечего править', 'taskId и ожидаемый результат'],
+    ['Имплементации нечего править', 'кода не пишет, собственный PR не открывает'],
+    ['Предмет лежит в чужой невлитой ветке', 'не создавая пустого изменения OpenSpec'],
+    ['Предмета нет, но pull request уже открыт', 'доступной подготовки по плану нет'],
+    [
+      'Предмета нет, но pull request уже открыт',
+      'возвращает blocked с причиной и ожидаемым результатом',
+    ],
+    [
+      'Предмета нет, но pull request уже открыт',
+      'без автоматического возврата в очередь и удаления начатой работы',
+    ],
+    ...[
+      'Доступная подготовка без собственного PR',
+      'Доступная подготовка с собственным PR',
+    ].flatMap((scenario) =>
+      [
+        'файл только в отправленной версии открытого соседнего PR',
+        'подготовка по плану доступна',
+        'дерево безопасно',
+        'main обновлена',
+        'явные предусловия соблюдены',
+        'SHALL продолжить подготовку по плану',
+      ].map((phrase) => [scenario, phrase]),
+    ),
+    ['Доступная подготовка без собственного PR', 'собственного PR нет'],
+    ['Доступная подготовка без собственного PR', 'без обязательной попытки слияния всей ветки'],
+    ['Доступная подготовка с собственным PR', 'собственный PR уже открыт'],
+    ['Доступная подготовка с собственным PR', 'собственный PR доступную работу не запрещает'],
+    ['Неподдерживаемый исход из старого плана', 'неподдерживаемый premature отправлять MUST NOT'],
+    [
+      'Техническая ошибка проверки подготовки',
+      'ошибка доступа к существующей ревизии, инструмента, отмены слияния',
+    ],
+    [
+      'Техническая ошибка проверки подготовки',
+      'конфликт требуемого планом слияния без альтернативы',
+    ],
+    ['Техническая ошибка проверки подготовки', 'технический failed независимо от собственного PR'],
+    [
+      'Техническая ошибка проверки подготовки',
+      'ошибка чтения доказательством отсутствия предмета быть MUST NOT',
+    ],
+    ['Заведённый план ожидает новую предпосылку', 'ожидание идёт через blocked'],
+    ['Предмет приехал к ожидающей задаче', 'до этого повторная рабочая сессия не запускается'],
+    ['Подозрение вместо проверки', 'зависимость выдумывать MUST NOT'],
+    [
+      'Предмет снят, а не отсутствует',
+      'существующие ограничения этого исхода не переносятся на blocked',
+    ],
+  ];
+  const problems = (text) =>
+    clauses.filter(([scenario, phrase]) => !section(text, scenario).includes(phrase));
+  it.each([
+    [
+      'distinguish-pr-preparation-from-branch-merge',
+      'исполнитель SHALL использовать действующий blocked с reason/result и проверяемой ссылкой при любом состоянии собственного PR',
+      'Сам конфликт причиной',
+    ],
+    [
+      'align-premature-with-permitted-preparation',
+      'Подтверждённое ожидание без доступной подготовки SHALL использовать blocked с reason/result и проверяемой ссылкой, сохраняя change/PR',
+      'сам конфликт не является основанием failed',
+    ],
+  ])('связанная дельта %s не возвращает старый исход', (name, expected, conflict) => {
+    const requirement = name.startsWith('distinguish-')
+      ? '### Requirement: Имплементация различает подготовку по плану и слияние соседней ветки'
+      : '### Requirement: Определение отсутствующего предмета согласовано с разрешённой подготовкой';
+    const text = sourceFor(name, requirement).replace(/\s+/g, ' ');
+    expect(text).toContain(expected);
+    expect(text).toContain(conflict);
+    expect(text).not.toMatch(
+      /SHALL предписывать .?premature|возвращает .?failed.? с доказательством и ожидаемой работой/,
+    );
+  });
+  it('проверяет действующее требование и все ветви подготовки и ожидания', () =>
+    expect(problems(source())).toEqual([]));
+  it.each(clauses)('обнаруживает потерю условия %s: %s', (scenario, phrase) => {
+    const original = source();
+    const heading = scenario ? '#### Scenario: ' + scenario : title;
+    const start = original.indexOf(heading);
+    const prefix = original.slice(0, start);
+    const rest = original.slice(start).replace(phrase, 'УТРАЧЕНО');
+    const damaged = prefix + rest + '\n### Requirement: Посторонний текст\n' + phrase;
+    expect(problems(damaged)).toContainEqual([scenario, phrase]);
+    for (const [other, value] of clauses)
+      if (other !== scenario) expect(section(damaged, other)).toContain(value);
   });
 });
 

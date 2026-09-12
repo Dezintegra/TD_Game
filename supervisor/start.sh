@@ -7,7 +7,9 @@
 #  out of the wrappers keeps their encoding a non-issue.
 #
 #  Usage:
-#    ./start.sh                run and watch
+#    ./start.sh                run in background and watch; safe to close
+#    ./start.sh --watch        watch only, never start or stop
+#    ./start.sh --foreground   run here; Ctrl+C stops the supervisor
 #    ./start.sh --shadow       dry run: decide and print, touch nothing
 #    ./start.sh --detached     run in background, log to .pipeline
 #    ./start.sh --stop         stop a running supervisor

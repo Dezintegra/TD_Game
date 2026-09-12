@@ -1,4 +1,6 @@
 import { canTransition } from '../config/transitions.mjs';
+import { blockerReportProblem } from './blockers.mjs';
+import { tokenReanalysisProblem } from './token-reanalysis.mjs';
 
 /**
  * Что означает исход этапа для состояния задачи.
@@ -20,7 +22,7 @@ import { canTransition } from '../config/transitions.mjs';
  * Проектировать такой задаче нечего, и прежде она уходила в сквозную «Ошибку»,
  * лгавшую о причине; теперь у неё есть честный конец — уборка и «Закрыто».
  */
-export const OUTCOMES = ['done', 'rejected', 'question', 'failed', 'moot', 'split'];
+export const OUTCOMES = ['done', 'rejected', 'question', 'failed', 'moot', 'split', 'blocked'];
 
 /**
  * Куда ведёт остановка задачи.
@@ -55,12 +57,14 @@ const halt = (task, why, problems = []) => ({
  * Разбор нарочно табличный: маршрут читается глазами целиком, а не
  * собирается из ветвлений по всему файлу.
  */
-function afterDone(task) {
+function afterDone(task, report) {
   switch (task.status) {
     case 'triage':
-      return 'closed';
+      return report.requests?.length ? 'closed' : 'completed';
     case 'decompose':
-      return 'design';
+      return task.tokenReanalysis?.phase === 'analyzing'
+        ? task.tokenReanalysis.originStatus
+        : 'design';
     case 'design':
       return 'audit';
     case 'audit':
@@ -74,7 +78,7 @@ function afterDone(task) {
       // лишь одна из проверок перед ревью, и толковать его будет ревьюер.
       return task.type === 'run' ? 'interpret' : 'pr';
     case 'interpret':
-      return 'closed';
+      return 'completed';
     // Доработка ведёт обратно в ожидание проверок, а не в ревью: правка
     // требует нового прогона CI, а ревью на непроверенном коде запрещено.
     case 'revise':
@@ -84,7 +88,7 @@ function afterDone(task) {
     case 'deploy':
       return 'cleanup';
     case 'cleanup':
-      return 'closed';
+      return task.links?.pr ? 'completed' : 'closed';
     // Удавшийся разбор ошибки ведёт задачу в саму ошибку — и это не сбой,
     // а его назначение. Разбор не спасает задачу, а объясняет, почему её
     // не удалось довести; поднимает её оттуда человек.
@@ -129,6 +133,20 @@ function afterRejected(task) {
 export function applyReport(task, report, limits = {}) {
   const problems = [];
 
+  if (
+    task.status === 'decompose' &&
+    report.outcome === 'done' &&
+    task.tokenReanalysis?.phase === 'analyzing'
+  ) {
+    const problem =
+      tokenReanalysisProblem(task) ||
+      (typeof report.summary !== 'string' || !report.summary.trim()
+        ? 'Не объяснена невозможность дробления.'
+        : null) ||
+      (report.requests?.length ? 'Неделимая задача не порождает части.' : null);
+    if (problem) return halt(task, problem, [problem]);
+  }
+
   if (!OUTCOMES.includes(report.outcome)) {
     problems.push(`неизвестный исход «${report.outcome}»`);
     return halt(task, problems.join('; '), problems);
@@ -141,8 +159,28 @@ export function applyReport(task, report, limits = {}) {
     return halt(task, problems.join('; '), problems);
   }
 
+  const closing =
+    ['moot', 'split'].includes(report.outcome) ||
+    (task.status === 'triage' && report.outcome === 'done' && report.requests?.length);
+  if (closing && (typeof report.summary !== 'string' || !report.summary.trim())) {
+    const why = 'причина закрытия не названа: поле summary пусто';
+    return halt(task, why, [why]);
+  }
+
   if (report.outcome === 'failed') {
     return halt(task, report.summary ?? 'этап завершился неуспешно', problems);
+  }
+
+  if (report.outcome === 'blocked') {
+    const problem = blockerReportProblem(task, report);
+    return problem
+      ? halt(task, problem, [problem])
+      : {
+          status: 'blocked',
+          returnTo: null,
+          note: report.summary,
+          problems: [],
+        };
   }
 
   if (report.outcome === 'question') {
@@ -160,8 +198,8 @@ export function applyReport(task, report, limits = {}) {
     //
     // Первый — этап. С имплементации, ревью или выкладки задачу этим ходом
     // не сбросить вовсе: там работа уже сделана.
-    if (task.status !== 'design') {
-      const why = `исход «moot» объявлен этапом «${task.status}», а он бывает только у проработки`;
+    if (task.status !== 'design' && task.status !== 'triage') {
+      const why = `исход «moot» объявлен этапом «${task.status}», а он бывает только у проработки и разбора заметки`;
       problems.push(why);
       return halt(task, why, problems);
     }
@@ -193,14 +231,15 @@ export function applyReport(task, report, limits = {}) {
     // Переход всё так же сверяется с таблицей: у задачи не типа `feature`
     // маршрута `design` → `cleanup` нет, и ход обязан упереться в неё,
     // а не обойти.
-    const verdict = canTransition(task, 'cleanup');
+    const target = task.status === 'triage' ? 'closed' : 'cleanup';
+    const verdict = canTransition(task, target);
     if (!verdict.ok) {
       problems.push(verdict.reason);
       return halt(task, verdict.reason, problems);
     }
 
     return {
-      status: 'cleanup',
+      status: target,
       returnTo: null,
       // Записка уезжает в журнал задачи: закрытие без названной причины
       // неотличимо на доске от брошенного.
@@ -274,7 +313,7 @@ export function applyReport(task, report, limits = {}) {
     }
   }
 
-  const target = report.outcome === 'done' ? afterDone(task) : afterRejected(task);
+  const target = report.outcome === 'done' ? afterDone(task, report) : afterRejected(task);
   if (!target) {
     problems.push(`из «${task.status}» исход «${report.outcome}» никуда не ведёт`);
     return halt(task, problems.join('; '), problems);
@@ -303,8 +342,16 @@ export function applyReport(task, report, limits = {}) {
  */
 export function applyExternal(task, external) {
   if (task.status === 'pr') {
+    if (external.state === 'conflict') {
+      const pr = task.links?.pr ? `pull request #${task.links.pr}` : 'pull request';
+      return {
+        status: 'revise',
+        returnTo: null,
+        note: `${pr} конфликтует с главной веткой; обновите ветку и устраните конфликты перед повторным CI`,
+      };
+    }
     if (external.state === 'pending')
-      return { status: 'pr', returnTo: null, note: 'проверки идут' };
+      return { status: 'pr', returnTo: null, note: external.why ?? 'проверки идут' };
     if (external.state === 'success') {
       return { status: 'review', returnTo: null, note: 'проверки зелёные' };
     }

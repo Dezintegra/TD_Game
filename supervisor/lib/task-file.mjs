@@ -22,8 +22,11 @@ const HISTORY_LIMIT = 100;
  * @param {object} change  `{ status, note, now }`
  * @returns {{ task: object|null, problems: string[] }}
  */
-export function applyTransition(task, { status, note, now }) {
-  const verdict = canTransition(task, status);
+export function applyTransition(
+  task,
+  { status, note, now, reconciliation = false, consolidation = false },
+) {
+  const verdict = canTransition(task, status, { reconciliation, consolidation });
   if (!verdict.ok) {
     return { task: null, problems: [verdict.reason] };
   }
@@ -36,11 +39,14 @@ export function applyTransition(task, { status, note, now }) {
   // Записав здесь покидаемое состояние, мы дали бы `returnTo: 'postmortem'`,
   // и человек, поднимая задачу из ошибки, вернул бы её в разбор, а не
   // в имплементацию. Поэтому из сквозного в сквозное возврат НАСЛЕДУЕТСЯ.
-  const returnTo = CROSSCUT.includes(status)
-    ? CROSSCUT.includes(task.status)
+  const returnTo =
+    status === 'token-limit' || task.status === 'token-limit'
       ? task.returnTo
-      : task.status
-    : null;
+      : CROSSCUT.includes(status)
+        ? CROSSCUT.includes(task.status)
+          ? task.returnTo
+          : task.status
+        : null;
 
   const history = [...(task.history ?? []), { at: now, from: task.status, to: status, note }].slice(
     -HISTORY_LIMIT,

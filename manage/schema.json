@@ -21,6 +21,19 @@
     "attempts"
   ],
   "properties": {
+    "reportReceipts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-f0-9]{32}$" }
+    },
+    "delayAnalysis": {
+      "type": "object",
+      "description": "Сохранённый разбор задержки, его фаза и проверяемые результаты исправлений."
+    },
+    "delayJournal": {
+      "type": "object",
+      "description": "Неопубликованный комментарий разбора с устойчивым ключом доставки."
+    },
     "$schema": {
       "type": "string",
       "description": "Путь к этой схеме. Нужен, чтобы редактор подсказывал состав полей без внешнего каталога.",
@@ -29,13 +42,26 @@
     "id": {
       "type": "string",
       "description": "Устойчивый идентификатор вида <число>-<короткое-имя>. Он же имя ветки, дерева и журнала. После закрытия не переиспользуется.",
-      "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+      "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$"
     },
     "dependsOn": {
       "type": "array",
-      "description": "Полные идентификаторы задач, которые должны перейти в closed перед запуском этой задачи. Отсутствие поля означает отсутствие зависимостей.",
+      "description": "Полные идентификаторы задач, которые должны перейти в completed перед запуском этой задачи. Отсутствие поля означает отсутствие зависимостей.",
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$"
+      }
+    },
+    "splitInto": {
+      "type": "array",
+      "description": "Части успешной декомпозиции: закрытие родителя не завершает зависимость до закрытия всех частей и их потомков.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$"
+      }
     },
     "dependencyResults": {
       "type": "array",
@@ -45,9 +71,17 @@
         "additionalProperties": false,
         "required": ["taskId", "kind", "pr"],
         "properties": {
-          "taskId": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$" },
-          "kind": { "const": "merged-pr" },
-          "pr": { "type": "integer", "minimum": 1 }
+          "taskId": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*-?$"
+          },
+          "kind": {
+            "const": "merged-pr"
+          },
+          "pr": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       }
     },
@@ -84,10 +118,14 @@
         "revise",
         "deploy",
         "cleanup",
+        "completed",
         "closed",
         "postmortem",
         "failed",
-        "awaiting-po"
+        "awaiting-po",
+        "blocked",
+        "token-limit",
+        "decompose"
       ]
     },
     "returnTo": {
@@ -145,10 +183,20 @@
         "additionalProperties": false,
         "required": ["at", "from", "to"],
         "properties": {
-          "at": { "type": "string", "format": "date-time" },
-          "from": { "type": "string" },
-          "to": { "type": "string" },
-          "note": { "type": "string", "description": "Одна строка о причине перехода." }
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "Одна строка о причине перехода."
+          }
         }
       }
     },
@@ -174,7 +222,9 @@
         "related": {
           "type": "array",
           "description": "Идентификаторы связанных задач: породившей и порождённых.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -249,9 +299,18 @@
       "additionalProperties": false,
       "required": ["askedAt", "summary"],
       "properties": {
-        "askedAt": { "type": "string", "format": "date-time" },
-        "summary": { "type": "string", "minLength": 1 },
-        "answeredAt": { "type": ["string", "null"], "format": "date-time" }
+        "askedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answeredAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
       }
     },
     "recovery": {
@@ -268,7 +327,9 @@
         "fixedBy": {
           "type": "array",
           "description": "Идентификаторы задач, после закрытия которых причина снята. Пустой перечень — вернуть сразу.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "returns": {
           "type": "integer",
@@ -276,16 +337,111 @@
           "minimum": 0
         }
       }
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["ux", "mechanics", "balance", "infrastructure"]
+      }
+    },
+    "creationKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "analysisGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reanalysis": {
+      "type": "boolean"
+    },
+    "blockedContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "reasons", "priority", "from"],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "priority": {
+          "type": "number",
+          "minimum": 0
+        },
+        "from": {
+          "enum": [
+            "decompose",
+            "design",
+            "audit",
+            "implement",
+            "revise",
+            "triage",
+            "benchmark",
+            "interpret"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["taskId", "reason", "result"],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "result": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "tokenReanalysis": {
+      "type": "object",
+      "description": "Сохранённый контекст и результат раннего бюджетного анализа Codex."
+    },
+    "tokenHold": {
+      "type": "object",
+      "description": "Сохранённый этап и производная панель ожидания бюджета; не источник разрешения на расход."
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "type": { "const": "run" } }, "required": ["type"] },
-      "then": { "required": ["run"] }
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["run"]
+      }
     },
     {
-      "if": { "properties": { "status": { "const": "awaiting-po" } }, "required": ["status"] },
-      "then": { "required": ["question", "returnTo"] }
+      "if": {
+        "properties": {
+          "status": {
+            "const": "awaiting-po"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["question", "returnTo"]
+      }
     }
   ]
 }

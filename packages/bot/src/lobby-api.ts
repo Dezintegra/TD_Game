@@ -38,8 +38,22 @@ export interface ComputerIdentity {
   readonly profile: string;
 }
 
+/** Манера на предложении: чем её заказывают и как она зовётся игроку. */
+export interface ComputerProfileOffer {
+  readonly id: string;
+  readonly title: string;
+}
+
 export interface LobbyApi {
   create(playerId: string, name: string, title: string): Promise<boolean>;
+  /**
+   * Войти в чужую комнату.
+   *
+   * Тот же запрос, которым входит человек, и это принципиально: особого
+   * пути в матч у компьютера нет, а значит нет и второго, незаметно
+   * расходящегося с первым, устройства матча.
+   */
+  join(playerId: string, name: string, lobbyId: string): Promise<boolean>;
   setReady(playerId: string, ready: boolean): Promise<boolean>;
   leave(playerId: string): Promise<boolean>;
   /**
@@ -55,15 +69,19 @@ export interface LobbyApi {
    * и не обновлённое вовремя перестаёт действовать. Иначе сервер вечно
    * считал бы компьютерными личности процесса, которого больше нет.
    */
-  declare(secret: string, identities: readonly ComputerIdentity[]): Promise<boolean>;
+  declare(
+    secret: string,
+    identities: readonly ComputerIdentity[],
+    offers?: readonly ComputerProfileOffer[],
+  ): Promise<boolean>;
   /**
    * Снять объявление: служба уходит по-хорошему.
    *
-   * Нужно затем, чтобы комнаты исчезали сразу, а не по истечении срока:
-   * игрок не должен минуту смотреть на комнату, в которую никто
-   * не войдёт.
+   * Нужно затем, чтобы манера исчезала из выбора сразу, а не по истечении
+   * срока: игрок не должен минуту звать соперника, которого некому
+   * прислать.
    */
-  withdraw(secret: string, ids: readonly string[]): Promise<boolean>;
+  withdraw(secret: string, ids: readonly string[], offers?: readonly string[]): Promise<boolean>;
   /**
    * Слушать состояние. Возвращает функцию остановки.
    *
@@ -134,13 +152,18 @@ export const parseEvents = (chunk: string): string[] => {
 export const createLobbyApi = (options: LobbyApiOptions): LobbyApi => ({
   create: (playerId, name, title) => post(options, '/api/lobbies', { playerId, name, title }),
 
+  join: (playerId, name, lobbyId) =>
+    post(options, `/api/lobbies/${encodeURIComponent(lobbyId)}/join`, { playerId, name }),
+
   setReady: (playerId, ready) => post(options, '/api/lobbies/ready', { playerId, ready }),
 
   leave: (playerId) => post(options, '/api/lobbies/leave', { playerId }),
 
-  declare: (secret, identities) => post(options, '/api/computer/declare', { secret, identities }),
+  declare: (secret, identities, offers = []) =>
+    post(options, '/api/computer/declare', { secret, identities, offers }),
 
-  withdraw: (secret, ids) => post(options, '/api/computer/withdraw', { secret, ids }),
+  withdraw: (secret, ids, offers = []) =>
+    post(options, '/api/computer/withdraw', { secret, ids, offers }),
 
   listen(playerId, onView) {
     const controller = new AbortController();

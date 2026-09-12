@@ -1,9 +1,52 @@
 import { describe, expect, it } from 'vitest';
+import { pendingDependencies } from './dependencies.mjs';
 import { execute } from './execute.mjs';
+import { scan } from './scan.mjs';
+import { createIo } from './io.mjs';
+import { resolveConfig } from '../config/defaults.mjs';
 import { reconcile } from './reconcile.mjs';
 import { repairWorld } from './repair.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
+import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
+import { incidentFromReport } from './pipeline-incidents.mjs';
+
+it('досылает журнал передвинутого участника по сохранённому плану до ведущей', async () => {
+  const f = deliveryFixture({ stage: 'deploy', batch: true });
+  try {
+    const first = f.open();
+    first.recipient.fail('POST', '/actions/comments');
+    expect((await execute([f.action], first.io))[0].result).toBe('failed');
+    expect(first.recipient.store.readTask(f.member.id).status).toBe('cleanup');
+    expect(first.recipient.store.readTask(f.task.id).status).toBe('deploy');
+    const second = f.open();
+    expect((await execute([f.action], second.io))[0].result).toBe('done');
+    expect(second.recipient.state()).toMatchObject({ puts: 2, posts: 2 });
+    expect(second.recipient.store.readTask(f.member.id).spentUsd).toBe(4);
+    expect(second.recipient.store.readTask(f.task.id).spentUsd).toBe(7);
+    expect(f.open().store.entries()).toEqual([]);
+    expect((await execute([f.action], f.open().io))[0].result).toBe('skipped');
+  } finally {
+    f.cleanup();
+  }
+});
+
+it('повторно проверяет очередь до действий из уже устаревшего снимка', async () => {
+  const f = deliveryFixture();
+  try {
+    const opened = f.open();
+    const actions = [{ kind: 'continue-stage', taskId: f.task.id, stage: 'implement' }];
+    const result = await execute(actions, opened.io);
+    expect(result[0]).toMatchObject({ result: 'skipped', why: 'pending report owns this task' });
+    expect(opened.recipient.state().puts).toBe(0);
+    opened.io.reportStorageBlocked = () => true;
+    expect((await execute([{ ...actions[0], taskId: 'other' }], opened.io))[0].result).toBe(
+      'failed',
+    );
+  } finally {
+    f.cleanup();
+  }
+});
 
 /**
  * Проверки исполнения решений.
@@ -15,6 +58,142 @@ import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from '
  */
 
 const NOW = '2026-08-26T12:00:00+03:00';
+
+it('сохраняет диагноз с конкретным исправлением при передаче отчёта', async () => {
+  const source = task({ status: 'postmortem', returnTo: 'design' });
+  const report = {
+    taskId: source.id,
+    stage: 'postmortem',
+    outcome: 'done',
+    causedBy: 'pipeline',
+    fixedBy: ['0002-fix'],
+    summary: 'Общий запуск сломан',
+    pipelineIncident: {
+      evidence: 'Два одинаковых отказа запуска подтверждены логами',
+      affectedStages: ['design'],
+      check: { stage: 'design', expectation: 'Исходный запуск завершает design без отказа' },
+    },
+  };
+  const game = task({ id: '0003-game', categories: ['ux'] });
+  const io = fakeIo({ tasks: [source, task({ id: '0002-fix' }), game], report });
+  expect(
+    (await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'postmortem' }], io))[0]
+      .result,
+  ).toBe('done');
+  expect(io.readTask(source.id)).toMatchObject({
+    status: 'failed',
+    pipelineIncident: { fixedBy: ['0002-fix'], probeStartedAt: null, verifiedAt: null },
+  });
+  expect(io.readJournal(source.id)).toContain('Два одинаковых отказа');
+  const stale = await execute([{ kind: 'start-stage', taskId: game.id, stage: 'design' }], io);
+  expect(stale[0]).toMatchObject({ result: 'skipped', why: expect.stringContaining('инцидент') });
+  expect(io.readTask(game.id)).toEqual(game);
+  expect(io.spawned).toEqual([]);
+  const fixed = { ...io.readTask('0002-fix'), status: 'completed' };
+  io.tasks.delete(fixed.id);
+  io.dependencyRecords = () => [fixed];
+  io.tasks.set(source.id, { ...io.readTask(source.id), status: 'design' });
+  const probe = await execute(
+    [{ kind: 'continue-stage', taskId: source.id, stage: 'design', incidentProbe: true }],
+    io,
+  );
+  expect(probe[0].result).toBe('done');
+  expect(io.spawned).toHaveLength(1);
+  expect(io.readTask(source.id).pipelineIncident.probeStartedAt).toBe(NOW);
+});
+
+it.each(['done', 'blocked'])(
+  'не снимает инцидент без доказательства при исходе %s',
+  async (outcome) => {
+    const source = task({ status: 'design' });
+    source.pipelineIncident = {
+      id: 'incident',
+      evidence: 'Общий отказ запуска',
+      fixedBy: ['0002-fix'],
+      openedAt: NOW,
+      affectedStages: ['design'],
+      check: { stage: 'design', expectation: 'Выполнить исходный этап' },
+      probeStartedAt: NOW,
+      verifiedAt: null,
+    };
+    const io = fakeIo({
+      tasks: [source],
+      report: {
+        taskId: source.id,
+        stage: 'design',
+        outcome,
+        summary: 'Без проверки',
+        costUsd: 2,
+      },
+    });
+    await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'design' }], io);
+    expect(io.readTask(source.id)).toMatchObject({
+      status: 'postmortem',
+      spentUsd: 2,
+      pipelineIncident: { verifiedAt: null },
+    });
+    expect(io.readJournal(source.id)).toContain('проверка восстановления не подтверждена');
+  },
+);
+
+it('принимает свидетельство пробы после перезапуска и сохраняет его в журнале', async () => {
+  const source = task({ status: 'design' });
+  source.pipelineIncident = incidentFromReport(
+    { ...source, returnTo: 'design' },
+    {
+      stage: 'postmortem',
+      outcome: 'done',
+      causedBy: 'pipeline',
+      pipelineIncident: {
+        evidence: 'Общий отказ запуска',
+        affectedStages: ['design'],
+        check: { stage: 'design', expectation: 'Проверить исходный этап' },
+      },
+    },
+    ['0002-fix'],
+    NOW,
+  ).incident;
+  const io = fakeIo({
+    tasks: [source],
+    report: {
+      taskId: source.id,
+      stage: 'design',
+      outcome: 'done',
+      summary: 'Проработано',
+      incidentVerification: {
+        incidentId: source.pipelineIncident.id,
+        passed: true,
+        evidence: 'Исходная команда завершилась, корректный отчёт получен',
+      },
+    },
+  });
+  io.incidentProbeAt = () => NOW;
+  await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'design' }], io);
+  expect(io.readTask(source.id)).toMatchObject({
+    status: 'audit',
+    pipelineIncident: { verifiedAt: NOW },
+  });
+  expect(io.readJournal(source.id)).toContain('Исходная команда завершилась');
+});
+
+it('учитывает новую карточку только после рождения процесса и сохраняет выбор для повтора', async () => {
+  const io = fakeIo();
+  const recorded = [];
+  io.recordSchedulingLaunch = (value) => recorded.push(value.id);
+  io.spawnStage = () => ({ ok: false, reason: 'not-born', why: 'нет процесса' });
+  const action = {
+    kind: 'start-stage',
+    taskId: '0001-one',
+    stage: 'decompose',
+    scheduling: { lane: 'game', selectedAt: NOW, reason: 'игровой ход' },
+  };
+  await execute([action], io);
+  expect(recorded).toEqual([]);
+  expect(io.readTask(action.taskId).scheduling).toEqual(action.scheduling);
+  io.spawnStage = () => ({ ok: true });
+  await execute([{ kind: 'continue-stage', taskId: action.taskId, stage: 'decompose' }], io);
+  expect(recorded).toEqual([action.taskId]);
+});
 
 const task = (over = {}) => ({
   id: '0001-one',
@@ -264,6 +443,64 @@ function fakeIo(over = {}) {
 }
 
 const startAction = { kind: 'start-stage', taskId: '0001-one', stage: 'design' };
+
+describe('сохранение частей декомпозиции', () => {
+  const action = { kind: 'transfer-report', taskId: '0001-one', stage: 'decompose' };
+  const parts = ['first', 'second'].map((title) => ({
+    type: 'feature',
+    title,
+    description: 'Часть',
+    area: 'pipeline',
+  }));
+  const make = (requests = parts) =>
+    fakeIo({
+      tasks: [task({ status: 'decompose', links: { related: ['0009-note'] } })],
+      report: {
+        taskId: '0001-one',
+        stage: 'decompose',
+        outcome: 'split',
+        summary: 'Две части',
+        requests,
+      },
+    });
+
+  it('родитель закрывается со списком созданных частей и продолжает удерживать потребителя', async () => {
+    const io = make();
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('done');
+    const parent = io.tasks.get('0001-one');
+    expect(parent.status).toBe('closed');
+    expect(parent.splitInto).toEqual(result.created);
+    expect(parent.splitInto).toHaveLength(2);
+    expect(parent.splitInto).not.toContain('0009-note');
+    const consumer = { id: '0041-field', dependsOn: [parent.id] };
+    expect(pendingDependencies(consumer, [...io.tasks.values()])).toHaveLength(2);
+    for (const id of parent.splitInto) io.tasks.get(id).status = 'completed';
+    expect(pendingDependencies(consumer, [...io.tasks.values()])).toEqual([]);
+  });
+
+  it('не закрывает родителя, если вторую часть не удалось создать', async () => {
+    const io = make();
+    const create = io.createTask.bind(io);
+    let count = 0;
+    io.createTask = (...args) =>
+      ++count === 2 ? { ok: false, outcome: 'offline' } : create(...args);
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('failed');
+    expect(io.tasks.get('0001-one').status).toBe('decompose');
+    expect(io.tasks.get('0001-one')).not.toHaveProperty('splitInto');
+    expect(io.steps).not.toContain('отчёт 0001-one:decompose убран');
+  });
+
+  it('не закрывает родителя и не создаёт части при негодной заявке', async () => {
+    const io = make([parts[0], { type: 'feature' }]);
+    const [result] = await execute([action], io);
+    expect(result.result).toBe('failed');
+    expect(result.why).toContain('передача работы не сохранена');
+    expect(io.tasks.size).toBe(1);
+    expect(io.tasks.get('0001-one').status).toBe('decompose');
+  });
+});
 
 describe('исход осиротевшего этапа', () => {
   const noteAction = { kind: 'note-orphan', taskId: '0001-one', stage: 'implement' };
@@ -780,7 +1017,9 @@ describe('жизненный цикл сессии после отчёта', () 
   ])(
     '%s после возврата и новой работы получает свежую задачу и журнал',
     async (checker, worker) => {
-      const { io, sessions, remember, transfer, launch } = world(checker);
+      const { io, sessions, remember, transfer, launch } = world(checker, {
+        evidence: { branchOnRemote: true, unpushed: 0, lastCommitAt: NOW },
+      });
       remember('0001-one', worker);
       await transfer(checker, 'rejected', { summary: 'нужна новая работа' });
       expect(io.tasks.get('0001-one').status).toBe(worker);
@@ -858,7 +1097,9 @@ describe('жизненный цикл сессии после отчёта', () 
   it.each(['createTask', 'amendTask'])(
     'ошибка %s сохраняет исходную сессию и очередь отчёта',
     async (method) => {
-      const { io, sessions, transfer } = world('design');
+      const { io, sessions, transfer } = world('design', {
+        evidence: { branchOnRemote: true, unpushed: 0, lastCommitAt: NOW },
+      });
       io.tasks.set('0002-two', task({ id: '0002-two' }));
       io[method] = () => ({ ok: false, outcome: 'write-failed' });
       const [result] = await transfer('design', 'done', {
@@ -965,11 +1206,11 @@ describe('отказанные действия при переносе отчё
     expect(io.journals.get('0001-one')).toContain('сопоставить отказ с делом нечем');
   });
 
-  it('без отказов улики не спрашиваются ни разу', async () => {
-    // Холостой ход не должен стоить ни одного лишнего вызова git.
+  it('done без отказов тоже собирает улики', async () => {
+    // Отсутствие отказов не доказывает, что этап оставил требуемый след.
     const io = fakeIo({ tasks: [task({ status: 'design' })] });
     await execute([transfer], io);
-    expect(io.steps).not.toContain('спрошены улики 0001-one');
+    expect(io.steps.filter((step) => step === 'спрошены улики 0001-one')).toHaveLength(1);
   });
 });
 
@@ -1341,8 +1582,155 @@ describe('сессия на идущий этап', () => {
   });
 });
 
+describe('исполнение оборота внешнего прогона', () => {
+  const { config } = resolveConfig({});
+  const poll = { kind: 'poll-external', taskId: '0001-one', what: 'run' };
+
+  it.each([
+    ['success', false, false],
+    ['pending', false, false],
+    ['offline', false, false],
+    ['failure', false, false],
+    ['success', true, true],
+    ['pending', true, true],
+  ])('%s, предел=%s, машина занята=%s', async (state, exhausted, busy) => {
+    const original = task({
+      type: 'run',
+      status: 'benchmark',
+      run: { kind: 'arena', expectation: 'измерить темп' },
+      links: { run: '123' },
+      attempts: { continuations: exhausted ? config.maxContinuations : 1, cycleFailures: 0 },
+    });
+    const other = task({ id: '0002-busy', status: 'design' });
+    const io = fakeIo({ tasks: busy ? [original, other] : [original] });
+    const calls = [];
+    io.readExternal = createIo({
+      root: '/repo',
+      config,
+      now: NOW,
+      run: (args, command) => {
+        calls.push({ args, command });
+        return state === 'offline'
+          ? { code: 1, stdout: '' }
+          : {
+              code: 0,
+              stdout: JSON.stringify({
+                status: state === 'pending' ? 'in_progress' : 'completed',
+                conclusion: state,
+              }),
+            };
+      },
+    }).readExternal;
+    const freshPlan = (occupied) =>
+      scan({
+        config,
+        tasks: [...io.tasks.values()],
+        running: occupied ? [{ taskId: other.id, stage: 'design' }] : [],
+      }).actions;
+    // timeout уже завершил процесс; сканер видит задачу без живой сессии.
+    const plan = scan({
+      config,
+      tasks: [...io.tasks.values()],
+      running: busy ? [{ taskId: other.id, stage: 'design' }] : [],
+      orphans: [{ taskId: original.id, stage: 'benchmark', outcome: 'timeout' }],
+    }).actions;
+    expect(plan.filter((action) => action.kind !== 'note-orphan')).toEqual([poll]);
+    await execute(plan, io);
+    expect(calls).toEqual([
+      { command: 'gh', args: ['run', 'view', '123', '--json', 'status,conclusion'] },
+    ]);
+    const saved = io.readTask(original.id);
+    expect(saved.status).toBe(
+      state === 'success' ? 'interpret' : state === 'failure' ? 'postmortem' : 'benchmark',
+    );
+    if (state === 'failure') {
+      expect(saved.returnTo).toBe('benchmark');
+      expect(saved.attempts).toEqual({
+        continuations: 0,
+        cycleFailures: 0,
+        rejections: 0,
+        spawnFailures: 0,
+        apiErrors: 0,
+      });
+    } else {
+      expect(saved.attempts).toEqual(original.attempts);
+    }
+    expect(io.spawned).toEqual([]);
+    expect(io.readJournal(original.id)).not.toContain('Этапу выдана сессия');
+
+    if (state === 'success') {
+      if (exhausted) {
+        for (const occupied of [true, false]) {
+          expect(freshPlan(occupied).filter((action) => action.taskId === original.id)).toEqual([
+            {
+              kind: 'fail-stage',
+              taskId: original.id,
+              stage: 'interpret',
+              reason: 'этап не доводится до конца, продолжения исчерпаны',
+            },
+          ]);
+        }
+      } else {
+        expect(freshPlan(false)).toContainEqual(
+          expect.objectContaining({
+            kind: 'continue-stage',
+            taskId: original.id,
+            stage: 'interpret',
+          }),
+        );
+      }
+    } else if (state !== 'failure') {
+      expect(freshPlan(busy).filter((action) => action.taskId === original.id)).toEqual([poll]);
+      expect(io.readJournal(original.id)).not.toContain('benchmark → interpret');
+    } else {
+      expect(io.readJournal(original.id)).toContain('прогон не удался');
+    }
+  });
+});
+
 describe('внешнее состояние', () => {
   const poll = { kind: 'poll-external', taskId: '0001-one', what: 'ci' };
+
+  it('пустой CI конфликтующего PR сохраняет доработку и её причину ровно один раз', async () => {
+    const original = task({ status: 'pr', owner: 'станция-1', links: { pr: 141, change: 'work' } });
+    const io = fakeIo({ tasks: [original] });
+    io.readExternal = createIo({
+      root: '/repo',
+      config: resolveConfig({}).config,
+      now: NOW,
+      run: () => ({
+        code: 0,
+        stdout: JSON.stringify({ mergeable: 'CONFLICTING', statusCheckRollup: [] }),
+      }),
+    }).readExternal;
+    const [result] = await execute([poll], io);
+    expect(result).toMatchObject({ result: 'done', status: 'revise' });
+    expect(io.tasks.get(original.id)).toMatchObject({
+      status: 'revise',
+      owner: original.owner,
+      links: original.links,
+      attempts: original.attempts,
+    });
+    const journal = io.journals.get(original.id);
+    expect(journal).toContain('#141');
+    expect(journal).toContain('конфликтует с главной веткой');
+    expect(journal).toContain('устраните конфликты');
+    const [replayed] = await execute([poll], io);
+    expect(replayed.result).toBe('skipped');
+    expect(io.journals.get(original.id)).toBe(journal);
+  });
+
+  it('ожидание без запуска CI сообщает причину, не пишет карточку и не расходует попытки', async () => {
+    const original = task({ status: 'pr' });
+    const io = fakeIo({
+      tasks: [original],
+      external: { state: 'pending', why: 'проверок ещё нет' },
+    });
+    const [result] = await execute([poll], io);
+    expect(result).toMatchObject({ result: 'skipped', why: 'проверок ещё нет' });
+    expect(io.tasks.get(original.id)).toEqual(original);
+    expect(io.steps).toEqual([]);
+  });
 
   it('зелёные проверки открывают ревью', async () => {
     const io = fakeIo({ tasks: [task({ status: 'pr' })], external: { state: 'success' } });
@@ -1369,6 +1757,44 @@ describe('внешнее состояние', () => {
 });
 
 describe('ответ владельца продукта', () => {
+  it('отчёт агента не повышает и не сбрасывает пользовательский лимит', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'design', userTokenLimit: { value: 35, actionId: 'human' } })],
+      report: {
+        taskId: '0001-one',
+        stage: 'design',
+        outcome: 'done',
+        userTokenLimit: { value: 999 },
+        codexMaxTaskTokens: null,
+      },
+    });
+    const [result] = await execute(
+      [{ kind: 'transfer-report', taskId: '0001-one', stage: 'design' }],
+      io,
+    );
+    expect(result.result).toBe('done');
+    expect(io.tasks.get('0001-one').userTokenLimit).toEqual({ value: 35, actionId: 'human' });
+    expect(io.tasks.get('0001-one').codexMaxTaskTokens).toBeUndefined();
+  });
+  it('команда возвращает на анализ с новым лимитом, без сброса расхода', async () => {
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'awaiting-po',
+          returnTo: 'decompose',
+          userTokenLimit: { value: 35000000, actionId: 'human' },
+          spentUsd: 9,
+        }),
+      ],
+    });
+    io.readAnswer = () => 'Лимит токенов: 35000000';
+    await execute([{ kind: 'answer-question', taskId: '0001-one' }], io);
+    expect(io.tasks.get('0001-one')).toMatchObject({
+      status: 'decompose',
+      spentUsd: 9,
+      userTokenLimit: { value: 35000000, actionId: 'human' },
+    });
+  });
   it('возвращает задачу туда, откуда она ушла', async () => {
     const io = fakeIo({ tasks: [task({ status: 'awaiting-po', returnTo: 'design' })] });
     const [result] = await execute([{ kind: 'answer-question', taskId: '0001-one' }], io);
@@ -1511,9 +1937,19 @@ describe('уборка после потери записи реестра', () 
     state = 'merged',
     ownCommits = 0,
   } = {}) {
-    const io = fakeIo({ tasks: [task({ status: 'cleanup', owner, links: { pr } })] });
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'cleanup',
+          owner,
+          links: { pr },
+          closureReason: 'Предмет снят: правило уже действует. Проверено: PR 49 влит.',
+        }),
+      ],
+    });
     const registry = new Map();
     const resources = new Set(present ? ['tree', 'local', 'remote'] : []);
+    const gitTrees = new Set(present ? ['tree'] : []);
     const failures = new Set();
     const calls = [];
     io.registryEntry = (taskId) => registry.get(taskId) ?? null;
@@ -1536,7 +1972,7 @@ describe('уборка после потери записи реестра', () 
     };
     io.ownCommits = (name) => {
       calls.push(['ownCommits', name]);
-      return ownCommits;
+      return resources.has('local') || resources.has('remote') ? ownCommits : 0;
     };
     for (const [method, resource, argument] of [
       ['removeWorktree', 'tree', path],
@@ -1547,6 +1983,8 @@ describe('уборка после потери записи реестра', () 
         expect(value).toBe(argument);
         expect(registry.has(id)).toBe(true);
         calls.push(resource);
+        // Git снимает регистрацию раньше, чем Windows даёт удалить файлы.
+        if (resource === 'tree') gitTrees.delete('tree');
         if (failures.has(resource)) return { ok: false, why: `занят ${resource}` };
         resources.delete(resource);
         return { ok: true };
@@ -1554,17 +1992,17 @@ describe('уборка после потери записи реестра', () 
     }
     const saveTask = io.saveTask.bind(io);
     io.saveTask = (...args) => {
-      if (args[0].status === 'closed') {
+      if (args[0].status === 'completed') {
         expect(resources.size).toBe(0);
         expect(registry.size).toBe(0);
-        calls.push('closed');
+        calls.push('completed');
       }
       return saveTask(...args);
     };
     const repair = () => {
       const result = reconcile({
         registry: { entries: [...registry.values()] },
-        worktrees: resources.has('tree') ? [{ branch, path: `C:/repo/${path}` }] : [],
+        worktrees: gitTrees.has('tree') ? [{ branch, path: `C:/repo/${path}` }] : [],
         tasks: [...io.tasks.values()],
         machine: io.machine,
       });
@@ -1595,27 +2033,49 @@ describe('уборка после потери записи реестра', () 
       adopt(w);
       expect(w.io.tasks.get(id).owner).toBe(owner);
       const [result] = await execute([sweep], w.io);
-      expect(result).toMatchObject({ result: 'done', status: 'closed' });
+      expect(result).toMatchObject({ result: 'done', status: 'completed' });
       expect(w.calls).toEqual([
         'register',
         ['pr', 50],
+        'register',
         'tree',
         'local',
         'remote',
         'drop',
-        'closed',
+        'completed',
       ]);
-      expect(w.io.tasks.get(id).status).toBe('closed');
+      expect(w.io.tasks.get(id).status).toBe('completed');
       expect(w.io.spawned).toEqual([]);
     },
   );
 
-  it('отсутствующее дерево не создаётся, пустая уборка закрывается', async () => {
+  it('отсутствие ресурсов без записи не выдаётся за доказанную уборку', async () => {
     const w = world({ present: false });
     expect(w.repair()).toEqual([]);
     await execute([sweep], w.io);
-    expect(w.io.tasks.get(id).status).toBe('closed');
-    expect(w.calls).toEqual([['pr', 50], 'closed']);
+    expect(w.io.tasks.get(id).status).toBe('postmortem');
+    expect(w.calls).toEqual([['pr', 50]]);
+  });
+
+  it.each([50, null])(
+    'потеря записи при оставшихся ветках не завершает задачу, PR %s',
+    async (pr) => {
+      const w = world({ pr });
+      w.resources.delete('tree');
+      await execute([sweep], w.io);
+      expect(w.io.journals.get(id)).toContain('запись реестра отсутствует');
+      expect(w.io.tasks.get(id).status).toBe('postmortem');
+      expect([...w.resources]).toEqual(['local', 'remote']);
+      expect(w.calls).toEqual([['pr', pr]]);
+    },
+  );
+
+  it('недоступный PR без записи оставляет уборку ждать', async () => {
+    const w = world({ state: 'unknown' });
+    await execute([sweep], w.io);
+    expect(w.io.tasks.get(id).status).toBe('cleanup');
+    expect(w.resources.size).toBe(3);
+    expect(w.calls).toEqual([['pr', 50]]);
   });
 
   it('починка не присваивает и не удаляет чужое дерево', () => {
@@ -1645,17 +2105,25 @@ describe('уборка после потери записи реестра', () 
     adopt(w);
     await execute([sweep], w.io);
     expect(w.calls).toContainEqual(['ownCommits', branch]);
-    expect(w.io.tasks.get(id).status).toBe(ownCommits === 0 ? 'closed' : 'postmortem');
+    const status = ownCommits === 0 ? 'closed' : ownCommits === null ? 'cleanup' : 'postmortem';
+    expect(w.io.tasks.get(id).status).toBe(status);
     expect(w.registry.has(id)).toBe(ownCommits !== 0);
     expect(w.resources.size).toBe(ownCommits === 0 ? 0 : 3);
     if (ownCommits !== 0)
       expect(w.calls).toEqual(['register', ['pr', null], ['ownCommits', branch]]);
   });
 
-  it.each(['tree', 'local', 'remote'])(
-    'отказ удаления %s сохраняет запись и cleanup',
-    async (resource) => {
-      const w = world();
+  it.each([
+    [50, 'tree'],
+    [50, 'local'],
+    [50, 'remote'],
+    [null, 'tree'],
+    [null, 'local'],
+    [null, 'remote'],
+  ])(
+    'PR %s: отказ удаления %s сохраняет запись до успешного повторного цикла',
+    async (pr, resource) => {
+      const w = world({ pr });
       adopt(w);
       const entry = w.registry.get(id);
       w.failures.add(resource);
@@ -1665,19 +2133,147 @@ describe('уборка после потери записи реестра', () 
       expect(w.registry.get(id)).toBe(entry);
       expect(w.io.tasks.get(id).status).toBe('cleanup');
       expect(w.resources).toEqual(new Set([resource]));
-      expect(w.calls).not.toContain('closed');
+      expect(w.calls).not.toContain('completed');
       expect(w.calls).not.toContain('drop');
-      if (resource === 'tree') {
-        w.failures.clear();
-        expect(w.repair()).toEqual([]);
-        const [retry] = await execute([sweep], w.io);
-        expect(retry).toMatchObject({ result: 'done', status: 'closed' });
-        expect(w.io.tasks.get(id).status).toBe('closed');
-        expect(w.registry.size).toBe(0);
-        expect(w.resources.size).toBe(0);
+      w.failures.clear();
+      expect(w.repair()).toEqual([]);
+      if (pr === null) {
+        const readCommits = w.io.ownCommits;
+        w.io.ownCommits = () => null;
+        const [unavailable] = await execute([sweep], w.io);
+        expect(unavailable.result).toBe('skipped');
+        expect(w.io.tasks.get(id).status).toBe('cleanup');
+        expect(w.registry.get(id)).toBe(entry);
+        expect(w.resources).toEqual(new Set([resource]));
+        w.io.ownCommits = readCommits;
       }
+      const [retry] = await execute([sweep], w.io);
+      const status = pr ? 'completed' : 'closed';
+      expect(retry).toMatchObject({ result: 'done', status });
+      expect(w.io.tasks.get(id).status).toBe(status);
+      expect(w.registry.size).toBe(0);
+      expect(w.resources.size).toBe(0);
     },
   );
+});
+
+describe('причина в конечном переходе', () => {
+  it.each(['creation', 'move'])(
+    'повтор после сбоя %s использует прежние части',
+    async (failure) => {
+      const report = {
+        stage: 'decompose',
+        outcome: 'split',
+        summary: 'Диагностика и учёт независимы.',
+        requests: [
+          { type: 'feature', title: 'Диагностика', description: 'Сохранить отчёт.' },
+          { type: 'feature', title: 'Учёт', description: 'Исправить расход.' },
+        ],
+      };
+      const io = fakeIo({ tasks: [task({ status: 'decompose' })], report });
+      const create = io.createTask.bind(io),
+        save = io.saveTask.bind(io);
+      let created = 0;
+      if (failure === 'creation')
+        io.createTask = (...args) =>
+          ++created === 2 ? { ok: false, outcome: 'offline' } : create(...args);
+      else io.saveTask = () => ({ ok: false, outcome: 'offline' });
+      const action = { kind: 'transfer-report', taskId: '0001-one', stage: 'decompose' };
+      const [first] = await execute([action], io);
+      expect(first.result).toBe('failed');
+      const ids = [...io.tasks.keys()].filter((id) => id !== '0001-one');
+      expect(ids).toHaveLength(failure === 'creation' ? 1 : 2);
+      // Новый цикл читает задачи заново: связи должны пережить перезапуск.
+      const retry = fakeIo({ tasks: JSON.parse(JSON.stringify([...io.tasks.values()])), report });
+      const [result] = await execute([action], retry);
+      expect(result.status).toBe('closed');
+      expect(retry.tasks.size).toBe(3);
+      for (const id of ids) expect(result.created).toContain(id);
+      expect(retry.tasks.get('0001-one').splitInto).toEqual(result.created);
+      io.saveTask = save;
+    },
+  );
+
+  it('потеря реестра после отказа сохранения не повторяет ложное закрытие', async () => {
+    const io = fakeIo({
+      tasks: [
+        task({
+          status: 'cleanup',
+          closureReason: 'Предмет снят: правило действует. Проверено: PR 166 влит.',
+        }),
+      ],
+      ownCommits: 0,
+    });
+    const entries = [];
+    io.saveTask = (_, entry) => {
+      entries.push(entry);
+      return { ok: false, outcome: 'offline' };
+    };
+    const action = { kind: 'cleanup', taskId: '0001-one' };
+    await execute([action], io);
+    io.registryEntry = () => null;
+    await execute([action], io);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].to).toBe('closed');
+    expect(entries[1].to).toBe('postmortem');
+    expect(JSON.stringify(entries[1])).toContain('запись реестра отсутствует');
+  });
+
+  it('снятый предмет сохраняется после отдельного цикла уборки', async () => {
+    const io = fakeIo({
+      tasks: [task({ status: 'design' })],
+      ownCommits: 0,
+      report: {
+        stage: 'design',
+        outcome: 'moot',
+        summary: 'Проверка Windows уже исправлена.',
+        evidence: 'PR 166 влит.',
+      },
+    });
+    await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'design' }], io);
+    const pending = io.tasks.get('0001-one');
+    expect(pending.status).toBe('cleanup');
+    io.journals.clear();
+    const [closed] = await execute([{ kind: 'cleanup', taskId: pending.id }], io);
+    expect(closed.status).toBe('closed');
+    expect(io.journals.get(pending.id)).toContain('**Причина закрытия**');
+    expect(io.journals.get(pending.id)).toContain('Проверка Windows уже исправлена.');
+    expect(io.journals.get(pending.id)).toContain('PR 166 влит.');
+  });
+
+  it('без причины уборка не удаляет ресурсы и не закрывает карточку', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'cleanup' })], ownCommits: 0 });
+    const [result] = await execute([{ kind: 'cleanup', taskId: '0001-one' }], io);
+    expect(result.result).toBe('failed');
+    expect(result.why).toContain('причина закрытия отсутствует');
+    expect(io.tasks.get('0001-one').status).toBe('cleanup');
+    expect(io.steps.some((step) => /удалено|удалена|снята/.test(step))).toBe(false);
+  });
+
+  it.each([
+    ['triage', 'note', 'done'],
+    ['decompose', 'feature', 'split'],
+  ])('%s называет созданные продолжения', async (stage, type, outcome) => {
+    const io = fakeIo({
+      tasks: [task({ status: stage, type })],
+      report: {
+        stage,
+        outcome,
+        summary: 'Две независимые правки: диагностика и учёт.',
+        requests: [
+          { type: 'feature', title: 'Диагностика', description: 'Сохранить отчёт.' },
+          { type: 'feature', title: 'Учёт', description: 'Исправить расход.' },
+        ],
+      },
+    });
+    io.taskLink = (id) => `[${id}](https://trello.com/c/card-${id})`;
+    const [result] = await execute([{ kind: 'transfer-report', taskId: '0001-one', stage }], io);
+    expect(result.status).toBe('closed');
+    const journal = io.journals.get('0001-one');
+    expect(journal).toContain('**Причина закрытия**');
+    expect(journal).toContain('Две независимые правки');
+    for (const id of result.created) expect(journal).toContain(io.taskLink(id));
+  });
 });
 
 describe('уборка', () => {
@@ -1689,7 +2285,7 @@ describe('уборка', () => {
     const io = fakeIo({ tasks: [inCleanup()], pr: { state: 'merged' } });
     const [result] = await execute([sweep], io);
     expect(result.result).toBe('done');
-    expect(io.tasks.get('0001-one').status).toBe('closed');
+    expect(io.tasks.get('0001-one').status).toBe('completed');
     expect(io.steps).toContain('запись реестра 0001-one снята');
   });
 
@@ -1708,7 +2304,11 @@ describe('уборка', () => {
     // то есть в ту самую «Ошибку», от которой ход и заводится.
     const io = fakeIo({
       tasks: [
-        task({ status: 'cleanup', links: { change: null, pr: null, run: null, related: [] } }),
+        task({
+          status: 'cleanup',
+          links: { change: null, pr: null, run: null, related: [] },
+          closureReason: 'Предмет снят: правило действует. Проверено: PR 49 влит.',
+        }),
       ],
       pr: { state: 'unknown' },
       ownCommits: 0,
@@ -1770,6 +2370,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           { type: 'feature', title: 'Починить цену Теслы', description: 'Цена мешает ремонту.' },
         ],
@@ -1794,6 +2395,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           {
             type: 'run',
@@ -1815,6 +2417,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           { type: 'feature', title: 'Первая', description: 'Раз.' },
           { type: 'feature', title: 'Вторая', description: 'Два.' },
@@ -1826,13 +2429,14 @@ describe('заявки на новые задачи', () => {
     expect(commits).toHaveLength(3); // состояние породившей плюс две задачи
   });
 
-  it('негодная заявка отклоняется, годная заводится', async () => {
+  it('негодная заявка не позволяет закрыть заметку с частичной передачей работы', async () => {
     const io = fakeIo({
       tasks: [note()],
       report: {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           { type: 'feature', title: 'Годная', description: 'Есть описание.' },
           { type: 'run', title: 'Прогон без ожидания', description: 'Есть.' },
@@ -1840,8 +2444,9 @@ describe('заявки на новые задачи', () => {
       },
     });
     const [result] = await execute([triage], io);
-    expect(result.created).toHaveLength(1);
-    expect(io.journals.get('0001-one')).toContain('заявка отклонена');
+    expect(result.result).toBe('failed');
+    expect(io.tasks.get('0001-one').status).toBe('triage');
+    expect(io.tasks.size).toBe(1);
   });
 
   it('задачи по заявкам заводятся РАНЬШЕ смены состояния породившей', async () => {
@@ -1856,6 +2461,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [{ type: 'feature', title: 'Порождённая', description: 'Есть описание.' }],
       },
     });
@@ -1874,6 +2480,7 @@ describe('заявки на новые задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [{ type: 'feature', title: 'Порождённая', description: 'Есть описание.' }],
       },
       push: () => ({ ok: false, outcome: 'dirty' }),
@@ -1975,6 +2582,7 @@ describe('дополнение существующей задачи', () => {
         taskId: '0001-one',
         stage: 'postmortem',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           {
             type: 'feature',
@@ -1996,6 +2604,7 @@ describe('дополнение существующей задачи', () => {
         taskId: '0001-one',
         stage: 'triage',
         outcome: 'done',
+        summary: 'Работа передана отдельным задачам.',
         requests: [
           {
             type: 'feature',
@@ -2209,4 +2818,75 @@ describe('пропавшая сеть', () => {
     expect(results.at(-1).why).toContain('сети нет');
     expect(results.filter((item) => item.result === 'done')).toEqual([]);
   });
+});
+
+it.each([
+  ['review', 'feature', 'deploy'],
+  ['interpret', 'run', 'completed'],
+  ['triage', 'note', 'completed'],
+])('сохраняет итог всей задачи из %s', async (stage, type, status) => {
+  const summary =
+    'Что сделано: исправлен расчёт. Как решено: единая формула. Проверки: тесты прошли.';
+  const io = fakeIo({
+    tasks: [task({ type, status: stage, links: { pr: 50 } })],
+    report: {
+      taskId: '0001-one',
+      stage,
+      outcome: 'done',
+      summary,
+      decisions: ['Убран двойной учёт.'],
+    },
+  });
+  const [result] = await execute([{ kind: 'transfer-report', taskId: '0001-one', stage }], io);
+  expect(result.status).toBe(status);
+  expect(io.tasks.get('0001-one').completionSummary).toContain(summary);
+  expect(io.tasks.get('0001-one').completionSummary).toContain('Убран двойной учёт.');
+  if (status === 'completed') expect(io.journals.get('0001-one')).toContain('**Итог задачи**');
+});
+
+it('уборка доставляет сохранённый итог реализации', async () => {
+  const summary = 'Исправлен расчёт через единую формулу, регрессия проверена тестом.';
+  const io = fakeIo({
+    tasks: [task({ status: 'cleanup', links: { pr: 50 }, completionSummary: summary })],
+    pr: { state: 'merged' },
+  });
+  await execute([{ kind: 'cleanup', taskId: '0001-one' }], io);
+  expect(io.journals.get('0001-one')).toContain(summary);
+  expect(io.journals.get('0001-one')).toContain('**Итог задачи**');
+  expect(io.journals.get('0001-one')).not.toContain('Убрано:');
+});
+
+it('возврат ревью на доработку удаляет старый итог', async () => {
+  const io = fakeIo({
+    tasks: [task({ status: 'review', completionSummary: 'Старое решение' })],
+    report: {
+      taskId: '0001-one',
+      stage: 'review',
+      outcome: 'rejected',
+      summary: 'Исправить дефект',
+    },
+  });
+  await execute([{ kind: 'transfer-report', taskId: '0001-one', stage: 'review' }], io);
+  expect(io.tasks.get('0001-one').status).toBe('revise');
+  expect(io.tasks.get('0001-one')).not.toHaveProperty('completionSummary');
+  expect(io.journals.get('0001-one')).not.toContain('**Итог задачи**');
+});
+
+it('сохраняет итог ревью при пропуске ненужной выкладки игры', async () => {
+  const io = fakeIo({
+    tasks: [task({ status: 'review', links: { pr: 50 } })],
+    report: {
+      taskId: '0001-one',
+      stage: 'review',
+      outcome: 'done',
+      summary: 'Добавлен итог задачи, проверены повторы доставки.',
+    },
+  });
+  io.deploymentImpact = () => ({ needed: false, reason: 'Изменён только конвейер.' });
+  const [result] = await execute(
+    [{ kind: 'transfer-report', taskId: '0001-one', stage: 'review' }],
+    io,
+  );
+  expect(result.status).toBe('cleanup');
+  expect(io.tasks.get('0001-one').completionSummary).toContain('проверены повторы доставки');
 });

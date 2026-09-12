@@ -257,14 +257,26 @@ export function taskTokenStatus(ledger, taskId) {
   const data = ledger.version === 2 ? ledger : migrateTokenLedger(ledger);
   const task = data.tasks[taskId];
   const reasons = new Set();
+  let blocked = false;
   if (ledger.writeErrors?.includes(taskId)) reasons.add('storage-error');
-  for (const session of Object.values(task?.sessions ?? {}))
+  if (ledger.writeErrors?.includes(taskId)) blocked = true;
+  for (const session of Object.values(task?.sessions ?? {})) {
     for (const value of session.reasons) reasons.add(value);
+    if (session.reasons.length && !acceptedTokenMinimum(session)) blocked = true;
+  }
   for (const launch of Object.values(task?.launches ?? {})) {
     for (const value of launch.reasons) reasons.add(value);
-    if (!launch.completed) reasons.add('unfinished-launch');
+    if (launch.reasons.length && !acceptedTokenMinimum(launch)) blocked = true;
+    if (!launch.completed) {
+      reasons.add('unfinished-launch');
+      blocked = true;
+    }
   }
-  return { complete: reasons.size === 0, reasons: [...reasons] };
+  return {
+    complete: reasons.size === 0,
+    reasons: [...reasons],
+    ...(reasons.size && !blocked ? { acceptedIncomplete: true } : {}),
+  };
 }
 
 // Сначала сохраняем копию целиком; неудачная запись не делает retry пустой операцией.
@@ -275,5 +287,97 @@ export function commitTokenLedger(ledger, update, save) {
   if (JSON.stringify(next) === JSON.stringify(ledger)) return false;
   save(next);
   Object.assign(ledger, next);
+  return true;
+}
+
+// Допуск по минимуму не утверждает полноту: исходные причины остаются для аудита и отката.
+const RECOVERABLE_USAGE_REASONS = new Set([
+  'missing-usage',
+  'stdout-unavailable',
+  'unreported-tail',
+  'незавершённый turn',
+]);
+export function acceptedTokenMinimum(target) {
+  const proof = target?.recovery;
+  return (
+    proof?.policy === 'interrupted-minimum-v1' &&
+    proof.complete === false &&
+    /^[a-f0-9]{64}$/.test(proof.digest ?? '') &&
+    normalizeTokenUsage(proof.snapshot) !== null &&
+    Array.isArray(proof.reasons) &&
+    JSON.stringify(proof.snapshot) ===
+      JSON.stringify(
+        target.snapshot ?? (target.observations ? launchTokenSnapshot(target) : null),
+      ) &&
+    target.reasons.length > 0 &&
+    target.reasons.every(
+      (value) => RECOVERABLE_USAGE_REASONS.has(value) && proof.reasons.includes(value),
+    )
+  );
+}
+
+export function tokenAccountingAllowed(status) {
+  return status.complete || status.acceptedIncomplete === true;
+}
+
+export function tokenAccountingNote(ledger, taskId) {
+  const status = taskTokenStatus(ledger, taskId);
+  return status.acceptedIncomplete
+    ? 'Учтён подтверждённый минимум ' +
+        taskTokens(ledger, taskId) +
+        ' токенов; неизвестный хвост прерванного запуска сохранён. Продолжение разрешено политикой восстановления в пределах прежнего учётного бюджета.'
+    : '';
+}
+
+/** Вызывается только для остановленной задачи; транзакцией владеет супервизор. */
+export function recoverTokenLaunch(ledger, taskId, launchId, evidence) {
+  const task = ledger.tasks[taskId];
+  const launch = task?.launches[launchId];
+  const session = task?.sessions[launch?.sessionId];
+  if (
+    !session ||
+    !launch.completed ||
+    launch.recovery ||
+    !launch.reasons.length ||
+    ![...session.reasons, ...launch.reasons].every((value) =>
+      RECOVERABLE_USAGE_REASONS.has(value),
+    ) ||
+    Object.values(task.launches).filter((item) => item.sessionId === launch.sessionId).length !==
+      1 ||
+    !evidence?.ok ||
+    evidence.source !== 'token_usage_record' ||
+    typeof evidence.complete !== 'boolean' ||
+    !/^[a-f0-9]{64}$/.test(evidence.digest ?? '')
+  )
+    return false;
+  const snapshot = normalizeTokenUsage(evidence.snapshot);
+  if (
+    !snapshot ||
+    snapshot.input_tokens + snapshot.output_tokens < session.knownTokens ||
+    ['input_tokens', 'output_tokens'].some(
+      (key) =>
+        snapshot[key] < (session.snapshot?.[key] ?? 0) ||
+        snapshot[key] < (launch.baseline?.[key] ?? 0),
+    )
+  )
+    return false;
+  const proof = {
+    policy: 'interrupted-minimum-v1',
+    complete: evidence.complete,
+    digest: evidence.digest,
+    turnId: evidence.turnId,
+    snapshot,
+    reasons: [...new Set([...session.reasons, ...launch.reasons])],
+  };
+  session.knownTokens = snapshot.input_tokens + snapshot.output_tokens;
+  session.snapshot = snapshot;
+  session.recovery = proof;
+  launch.recovery = globalThis.structuredClone(proof);
+  const ordinal = Math.max(0, ...Object.keys(launch.observations).map(Number)) + 1;
+  launch.observations[ordinal] = snapshot;
+  if (evidence.complete) {
+    session.reasons = [];
+    launch.reasons = [];
+  }
   return true;
 }

@@ -250,7 +250,9 @@ const EMPTY_MATCH: MatchSnapshot = {
   buildKind: null,
   aimingNuke: false,
   aimingTarget: false,
-  stance: AttackStance.Breakthrough,
+  // Умолчание ядра, а не своё: до первого снимка мира HUD обязан показывать
+  // тот режим, в котором войско действительно окажется.
+  stance: AttackStance.Engage,
 };
 
 /**

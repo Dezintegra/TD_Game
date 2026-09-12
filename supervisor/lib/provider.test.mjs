@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { stageCommand } from './stage-command.mjs';
@@ -8,6 +9,29 @@ import { beginTokenLaunch, taskTokens } from './token-budget.mjs';
 
 const home = fileURLToPath(new URL('..', import.meta.url));
 const config = resolveConfig({ provider: 'codex' }).config;
+
+it('Codex использует абсолютный источник benchmark как cwd и рабочее пространство', () => {
+  const path = resolve('external source tree');
+  const command = stageCommand({
+    root: '/repo',
+    home,
+    config,
+    prompt: 'источник',
+    assignment: {
+      stage: 'benchmark',
+      path,
+      benchmarkSource: { path, branch: null, head: 'a'.repeat(40) },
+    },
+  });
+  expect(command.cwd).toBe(path);
+  expect(command.args).toContain(
+    process.platform === 'win32'
+      ? 'default_permissions="td-pipeline"'
+      : 'sandbox_mode="workspace-write"',
+  );
+  if (process.platform === 'win32')
+    expect(command.args.join(' ')).toContain('extends=":workspace"');
+});
 const report = JSON.stringify({ stage: 'design', outcome: 'done', summary: 'готово' });
 const events = [
   { type: 'thread.started', thread_id: 'thread-1' },
@@ -117,6 +141,22 @@ describe('ответ Codex', () => {
     expect(readCodexAnswer(run(events.slice(0, -1))).outcome).toBe('failed');
     expect(readCodexAnswer(run(events, 1)).outcome).toBe('failed');
   });
+  it('возвращает failed с причиной обрыва процесса и исходной ошибкой', () => {
+    const answer = readCodexAnswer({ ...run(), error: new Error('read ECONNRESET') }, config);
+    expect(answer.outcome).toBe('failed');
+    expect(answer.why).toBe('процесс оборвался: read ECONNRESET');
+  });
+  it.each(['timeout', 'shutdown'])(
+    'сохраняет причину снятия %s при ошибке процесса',
+    (killedBy) => {
+      const answer = readCodexAnswer(
+        { ...run(), killedBy, error: new Error('read ECONNRESET') },
+        config,
+      );
+      expect(answer.outcome).toBe('timeout');
+      expect(answer.why).toBe(`этап снят: ${killedBy}`);
+    },
+  );
   it('после начала нового хода старый ответ уже не итог', () => {
     expect(readCodexAnswer(run([...events, { type: 'turn.started' }])).outcome).toBe('failed');
   });

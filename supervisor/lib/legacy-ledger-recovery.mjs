@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { normalizeTokenUsage, migrateTokenLedger } from './token-budget.mjs';
 
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
@@ -20,7 +21,10 @@ const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
  * Разобрать один JSONL сеанса. Имя файла намеренно не участвует в доверии:
  * перенос или копия не должны превращаться в доказательство принадлежности.
  */
-export function sessionEvidence(text, { sessionId, cwd, projectRoot = null, after = null }) {
+export function sessionEvidence(
+  text,
+  { sessionId, cwd, projectRoot = null, after = null, allowIncomplete = false },
+) {
   const fail = (reason) => ({ ok: false, reason });
   const lines = String(text).split(/\r?\n/).filter(Boolean);
   const events = [];
@@ -103,15 +107,23 @@ export function sessionEvidence(text, { sessionId, cwd, projectRoot = null, afte
     if (previous && !same(previous, item)) return fail('конфликтующий response_id');
     if (!previous) records.set(item.responseId, item);
   }
-  if (!turns.size || activeTurn || [...turns.values()].some((turn) => turn.state !== 'completed'))
-    return fail('незавершённый turn');
+  const incomplete = Boolean(activeTurn);
+  if (!turns.size || (incomplete && !allowIncomplete)) return fail('незавершённый turn');
+  const currentTurn = incomplete
+    ? {
+        turnId: activeTurn,
+        startedAt: turns.get(activeTurn).startedAt,
+        at: Date.parse(events.at(-1)?.timestamp),
+      }
+    : lastCompleted;
+  if (allowIncomplete && !Number.isFinite(Date.parse(after))) return fail('нет времени запуска');
   if (
     after != null &&
-    (!lastCompleted ||
-      !Number.isFinite(lastCompleted.at) ||
-      !Number.isFinite(lastCompleted.startedAt) ||
-      lastCompleted.startedAt < Date.parse(after) ||
-      lastCompleted.at < Date.parse(after))
+    (!currentTurn ||
+      !Number.isFinite(currentTurn.at) ||
+      !Number.isFinite(currentTurn.startedAt) ||
+      currentTurn.startedAt < Date.parse(after) ||
+      currentTurn.at < Date.parse(after))
   )
     return fail('stale completed turn');
 
@@ -135,14 +147,22 @@ export function sessionEvidence(text, { sessionId, cwd, projectRoot = null, afte
       previousInput = record.thread.input_tokens;
       previousOutput = record.thread.output_tokens;
     }
-    if (after != null && [...records.values()].at(-1).turnId !== lastCompleted.turnId)
+    if (after != null && [...records.values()].at(-1).turnId !== currentTurn.turnId)
       return fail('evidence не принадлежит текущему turn');
     return {
       ok: true,
       source: 'token_usage_record',
       snapshot: [...records.values()].at(-1).thread,
+      ...(allowIncomplete
+        ? {
+            complete: !incomplete,
+            digest: createHash('sha256').update(text).digest('hex'),
+            turnId: currentTurn.turnId,
+          }
+        : {}),
     };
   }
+  if (allowIncomplete) return fail('нет современных records для восстановления');
   if (!legacy.length) return fail('нет usage evidence');
   for (let index = 1; index < legacy.length; index += 1)
     if (

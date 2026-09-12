@@ -12,6 +12,7 @@ import {
   launchTokenUsage,
   launchTokenSnapshot,
   taskTokenStatus,
+  tokenAccountingAllowed,
 } from './token-budget.mjs';
 
 export function providerOf(config) {
@@ -191,12 +192,12 @@ export function readCodexAnswer(run, config = {}, context = {}) {
   answer.usageLedger = ledger;
   answer.usageReasons = [...new Set([...(session?.reasons ?? []), ...launch.reasons])];
   answer.usageStatus = taskTokenStatus(ledger, taskId);
-  answer.usageError = answer.usageStatus.complete
+  answer.usageError = tokenAccountingAllowed(answer.usageStatus)
     ? null
     : `Codex: полнота расхода задачи неизвестна (${answer.usageStatus.reasons.join(', ')})`;
   if (run.killedBy) return { ...answer, outcome: 'timeout', why: `этап снят: ${run.killedBy}` };
   if (run.error)
-    return { ...answer, outcome: 'failed', why: `запуск не состоялся: ${run.error.message}` };
+    return { ...answer, outcome: 'failed', why: `процесс оборвался: ${run.error.message}` };
   if (
     error &&
     !toolsUsed &&

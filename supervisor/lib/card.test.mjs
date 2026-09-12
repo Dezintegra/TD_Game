@@ -328,3 +328,14 @@ describe('метаданные зависимостей', () => {
     },
   );
 });
+
+it('итог сохраняется при сериализации карточки', () => {
+  const completionSummary =
+    'Что сделано: исправлен счёт. Как решено: единая формула. Проверено тестом.';
+  const parsed = parseCard(
+    card({ desc: joinDescription('Задача', { id: '0031-proba', completionSummary }) }),
+    { stateByList, labelKeyById },
+  );
+  expect(parsed.task.completionSummary).toBe(completionSummary);
+  expect(metaOf(parsed.task).completionSummary).toBe(completionSummary);
+});
