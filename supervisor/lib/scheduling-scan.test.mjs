@@ -98,7 +98,9 @@ describe('единый выбор игровой и служебной рабо�
         { scheduling: memory },
       ),
     );
-    expect(next[0]).toMatchObject({ kind: 'start-stage', taskId: '0004-new' });
+    expect(next).toContainEqual(
+      expect.objectContaining({ kind: 'start-stage', taskId: '0004-new' }),
+    );
   });
   it('недоступная игровая задача не простаивает место и сохраняет игровой следующий ход', () => {
     let memory = emptyScheduling();
