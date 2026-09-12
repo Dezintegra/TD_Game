@@ -1,4 +1,82 @@
 import { MAX_ZOOM } from './camera.js';
+import { screenToWorld } from './iso.js';
+
+export const rockBaseDensity = (resolution: number): number => Math.max(1, resolution);
+export const rockTargetDensity = (resolution: number, scale: number): number =>
+  rockBaseDensity(resolution) * 2 ** Math.ceil(Math.log2(Math.max(1, scale)));
+
+export interface RockTextureSize {
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Физические размеры округляются вверх; каждый mip учитывается целиком. */
+export const rockTextureBytes = ({ width, height }: RockTextureSize, density: number): number => {
+  let w = Math.ceil(width * density);
+  let h = Math.ceil(height * density);
+  if (w <= 0 || h <= 0) return 0;
+  let bytes = 0;
+  for (;;) {
+    bytes += w * h * 4;
+    if (w === 1 && h === 1) return bytes;
+    w = Math.max(1, Math.floor(w / 2));
+    h = Math.max(1, Math.floor(h / 2));
+  }
+};
+
+export interface RockMemoryLimit {
+  readonly base: number;
+  readonly detail: number;
+  readonly temporary: number;
+  readonly total: number;
+}
+
+/** Запас задан в координатах проекции, как и расширение фактического обзора. */
+export const ROCK_VIEW_MARGIN = 32;
+
+export const rockMemoryLimit = (
+  cells: readonly RockTextureSize[],
+  field: RockTextureSize,
+  resolution: number,
+): RockMemoryLimit => {
+  const d0 = rockBaseDensity(resolution);
+  const base = cells.reduce((sum, cell) => sum + rockTextureBytes(cell, d0), 0);
+  const width = Math.max(0, ...cells.map((cell) => cell.width));
+  const height = Math.max(0, ...cells.map((cell) => cell.height));
+  const largest = { width, height };
+  let detail = 0;
+  for (let level = 1; level <= Math.ceil(Math.log2(MAX_ZOOM)); level += 1) {
+    const lowerScale = 2 ** (level - 1);
+    const w = field.width / lowerScale + 2 * (width + ROCK_VIEW_MARGIN);
+    const h = field.height / lowerScale + 2 * (height + ROCK_VIEW_MARGIN);
+    const corners = [
+      screenToWorld(0, 0),
+      screenToWorld(w, 0),
+      screenToWorld(0, h),
+      screenToWorld(w, h),
+    ];
+    const spanX = Math.max(...corners.map((p) => p.x)) - Math.min(...corners.map((p) => p.x));
+    const spanY = Math.max(...corners.map((p) => p.y)) - Math.min(...corners.map((p) => p.y));
+    const count = Math.min(cells.length, (Math.ceil(spanX) + 2) * (Math.ceil(spanY) + 2));
+    detail = Math.max(detail, count * rockTextureBytes(largest, d0 * 2 ** level));
+  }
+  const temporary = cells.length === 0 ? 0 : rockTextureBytes(largest, d0 * MAX_ZOOM);
+  return { base, detail, temporary, total: base + detail + temporary };
+};
+
+export const rockResolutionBridge = (
+  cells: readonly (RockTextureSize & { readonly heldBytes: number })[],
+  resolution: number,
+  startBytes: number,
+): { base: number; temporary: number; total: number } => {
+  const costs = cells.map((cell) => rockTextureBytes(cell, rockBaseDensity(resolution)));
+  const base = cells.reduce((sum, cell, i) => sum + Math.max(cell.heldBytes, costs[i] ?? 0), 0);
+  const temporary = Math.max(0, ...costs);
+  return { base, temporary, total: Math.max(startBytes, base) + temporary };
+};
+
+export const rockResizeLimit = (startBytes: number, newLimit: number): number =>
+  Math.max(startBytes, newLimit);
 
 /**
  * Плотность запекания — во сколько раз запечённая текстура подробнее
