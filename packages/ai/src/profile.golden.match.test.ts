@@ -351,7 +351,9 @@ const AI: PlayerId = asPlayerId(1);
  * неподвижен, его база не разрушается, и её запас на поведение
  * не влияет.
  */
-const GOLDEN_CHECKSUM = 175466455;
+// Удвоение прочности башен и урона ракеты по строениям меняет сумму.
+// На базе 136611be все наблюдаемые величины этого сценария сохранились.
+const GOLDEN_CHECKSUM = 3111147551;
 
 interface Outcome {
   readonly checksum: number;

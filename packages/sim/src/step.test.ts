@@ -808,6 +808,136 @@ describe('ядерный удар', () => {
     ],
   });
 
+  it.each([0, 1])('взрыв по постройкам стороны %i: 2D и граница радиуса', (owner) => {
+    const world = richWorld();
+    const cases = [
+      { kind: StructureKind.TowerBasic, health: 400, dx: 0, expected: 100 },
+      { kind: StructureKind.TowerSniper, health: 300, dx: 1, expected: undefined },
+      { kind: StructureKind.Wall, health: 1000, dx: 4, expected: 700 },
+      { kind: StructureKind.TowerBasic, health: 400, dx: 5, expected: 400 },
+    ];
+    const structures = cases.map((entry, index) => ({
+      id: asEntityId(800 + index),
+      owner: asPlayerId(owner),
+      kind: entry.kind,
+      cell: CENTRE + entry.dx,
+      health: entry.health,
+      kills: 0,
+      readyAtTick: asTickNumber(999),
+      builtAtTick: asTickNumber(0),
+      demolishAtTick: asTickNumber(0),
+      facing: DIRECTION_SOUTH,
+    }));
+    const after = step(
+      armed({ ...world, structures: [...world.structures, ...structures] }, CENTRE),
+      [],
+    );
+    cases.forEach((entry, index) => {
+      expect(after.structures.find((s) => s.id === 800 + index)?.health).toBe(entry.expected);
+    });
+    expect(after.players[owner]?.energy).toBe(
+      (world.players[owner]?.energy ?? 0) + BASE_INCOME_PER_TICK,
+    );
+    expect(after.structures.every((s) => s.kills === 0)).toBe(true);
+  });
+
+  it.each([0, 1])('генерал стороны %i получает D, а не 2D', (owner) => {
+    const world = richWorld();
+    const generals = world.generals.map((g, index) =>
+      index === owner ? { ...g, position: cellCentre(CENTRE), readyAtTick: asTickNumber(999) } : g,
+    );
+    const after = step(armed({ ...world, generals }, CENTRE), []);
+    expect(after.generals[owner]?.health).toBe(50);
+    expect(after.generals[owner]?.alive).toBe(true);
+  });
+
+  it.each([StructureKind.TowerBasic, StructureKind.TowerSniper])(
+    'прокачанная башня %i получает ровно 2D без сброса ранга',
+    (kind) => {
+      const target =
+        kind === StructureKind.TowerBasic ? UpgradeTarget.TowerBasic : UpgradeTarget.TowerSniper;
+      const world = richWorld();
+      const tower: StructureState = {
+        id: asEntityId(800),
+        owner: asPlayerId(1),
+        kind,
+        cell: CENTRE,
+        health: STRUCTURE_STATS[kind].health,
+        kills: 3,
+        readyAtTick: asTickNumber(999),
+        builtAtTick: asTickNumber(0),
+        demolishAtTick: asTickNumber(0),
+      };
+      const upgraded = step({ ...world, structures: [...world.structures, tower] }, [
+        buy(1, upgradeBranchIndex(target, UpgradeStat.Health)),
+      ]);
+      const before = upgraded.structures.find((s) => s.id === 800)?.health ?? 0;
+      expect(before).toBeGreaterThan(STRUCTURE_STATS[kind].health);
+      const after = step(armed(upgraded, CENTRE, 151), []);
+      const survivor = after.structures.find((s) => s.id === 800);
+      expect(survivor?.health).toBe(before - 302);
+      expect(survivor?.kills).toBe(3);
+      expect(after.players[1]?.upgrades).toEqual(upgraded.players[1]?.upgrades);
+    },
+  );
+
+  it('покупка мощности в полёте не меняет D для живых и 2D для стены', () => {
+    const damageBranch = upgradeBranchIndex(UpgradeTarget.Base, UpgradeStat.NukeDamage);
+    const world = crowd(richWorld(), CENTRE, UnitType.Tesla, [1]);
+    const wall: StructureState = {
+      id: asEntityId(800),
+      owner: asPlayerId(1),
+      kind: StructureKind.Wall,
+      cell: CENTRE + 1,
+      health: 1000,
+      kills: 0,
+      readyAtTick: asTickNumber(0),
+      builtAtTick: asTickNumber(0),
+      demolishAtTick: asTickNumber(0),
+    };
+    const launched = step({ ...world, structures: [...world.structures, wall] }, [nuke(0, CENTRE)]);
+    const nuclear = launched.nukes[0];
+    if (!nuclear) throw new Error('пуск отклонён');
+    // Сокращаем только ожидание, чтобы живая мишень не покинула радиус.
+    const due = {
+      ...launched,
+      nukes: [{ ...nuclear, detonateAtTick: asTickNumber(launched.tick + 1) }],
+    };
+    const after = step(due, [buy(0, damageBranch)]);
+    expect(playerStats(after.players[0] as PlayerState).nuke.damage).toBeGreaterThan(
+      nuclear.damage,
+    );
+    expect(after.structures.find((s) => s.id === 800)?.health).toBe(700);
+    expect(after.units[0]?.health).toBe(50);
+  });
+
+  it.each([
+    { health: 450, kills: 3, built: 0, demolish: 0, expected: 148 },
+    { health: 200, kills: 0, built: 999, demolish: 0, expected: undefined },
+    { health: 200, kills: 0, built: 0, demolish: 999, expected: undefined },
+  ])('D=151 применяется к фактическому здоровью $health', (entry) => {
+    const world = richWorld();
+    const tower: StructureState = {
+      id: asEntityId(800),
+      owner: asPlayerId(1),
+      kind: StructureKind.TowerBasic,
+      cell: CENTRE,
+      health: entry.health,
+      kills: entry.kills,
+      readyAtTick: asTickNumber(999),
+      builtAtTick: asTickNumber(entry.built),
+      demolishAtTick: asTickNumber(entry.demolish),
+    };
+    const after = step(
+      armed({ ...world, structures: [...world.structures, tower] }, CENTRE, 151),
+      [],
+    );
+    const survivor = after.structures.find((s) => s.id === 800);
+    expect(survivor?.health).toBe(entry.expected);
+    if (survivor) expect(survivor.kills).toBe(entry.kills);
+    else expect(buildOccupancy(after.map, after.structures).structureAt[CENTRE]).toBe(-1);
+  });
+
   /** Машины заданного вида в самом эпицентре, по одной на каждого владельца. */
   const crowd = (world: WorldState, cell: number, type: UnitType, owners: number[]): WorldState => {
     const epicentre = cellCentre(cell);

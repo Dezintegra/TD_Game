@@ -41,6 +41,8 @@ afterEach(() => {
 describe('настройка правил', () => {
   it('без вызова оставляет правила задуманными', () => {
     expect(ruleTuningIsNeutral()).toBe(true);
+    expect(STRUCTURE_STATS[StructureKind.TowerBasic].health).toBe(400);
+    expect(STRUCTURE_STATS[StructureKind.TowerSniper].health).toBe(300);
     expect(BASE_INCOME_PER_TICK).toBe(10);
     expect(MAP_WIDTH_CELLS).toBe(38);
     expect(UNIT_STATS[UnitType.Assault].speed).toBe(67);
@@ -71,8 +73,8 @@ describe('настройка правил', () => {
 
     applyRuleTuning({ towerHealth: 2 });
 
-    expect(STRUCTURE_STATS[StructureKind.TowerBasic].health).toBe(400);
-    expect(STRUCTURE_STATS[StructureKind.TowerSniper].health).toBe(300);
+    expect(STRUCTURE_STATS[StructureKind.TowerBasic].health).toBe(800);
+    expect(STRUCTURE_STATS[StructureKind.TowerSniper].health).toBe(600);
 
     // Вот ради этих двух строк проверка и написана.
     expect(STRUCTURE_STATS[StructureKind.Wall].health).toBe(wall);

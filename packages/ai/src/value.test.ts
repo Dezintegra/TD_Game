@@ -24,7 +24,7 @@ import type { PlayerId, PlayerState } from '@td/shared';
 import { cellAt, cellCentre, cellIndex, createWorld, playerStats, upgradeCosts } from '@td/sim';
 import type { UnitState, WorldState } from '@td/sim';
 import { BASELINE_PROFILE, horizonTicks } from './profile.js';
-import { generalDeathCost } from './posture.js';
+import { ENERGY_PER_LIVE_DAMAGE, generalDeathCost } from './posture.js';
 import type { PhaseProfile, Spending } from './profile.js';
 import {
   hasComparableUpgrade,
@@ -273,9 +273,57 @@ describe('ядерный удар считается в энергии, со с�
     const tower = STRUCTURE_STATS[StructureKind.TowerBasic];
 
     expect(outcomeAt(withTower, cell).loss - outcomeAt(world, cell).loss).toBe(
-      (tower.cost * NUKE_DAMAGE) / tower.health,
+      (tower.cost * 300) / tower.health,
     );
   });
+
+  it.each([false, true])(
+    'свои и чужие строения: 2D, насыщение, countDefence=%s',
+    (countDefence) => {
+      for (const kind of [
+        StructureKind.Wall,
+        StructureKind.TowerBasic,
+        StructureKind.TowerSniper,
+      ]) {
+        for (const health of [100, STRUCTURE_STATS[kind].health]) {
+          const world = createWorld(SEED);
+          const cell = middle();
+          const stats = statsOf(world).stats;
+          const baseline = stats.structures[kind];
+          const structures = [ME, ENEMY].map((owner, index) => ({
+            id: asEntityId(700 + index),
+            owner,
+            kind,
+            cell: cell + index,
+            health,
+            kills: 0,
+            readyAtTick: asTickNumber(999),
+            builtAtTick: asTickNumber(0),
+            demolishAtTick: asTickNumber(0),
+          }));
+          const outcome = nukeOutcome(
+            { ...world, structures },
+            ME,
+            cellCentre(cell),
+            stats,
+            stats,
+            () => 0,
+            countDefence,
+            900,
+          );
+          const dealt =
+            countDefence && baseline.attack > 0
+              ? (baseline.attack / baseline.cooldownTicks) * 900 * ENERGY_PER_LIVE_DAMAGE
+              : 0;
+          const expected =
+            (Math.max(baseline.cost, dealt) * Math.min(health, 300)) / baseline.health;
+          expect(expected).toBeGreaterThan(0);
+          expect(outcome.gain).toBeCloseTo(expected);
+          expect(outcome.loss).toBeCloseTo(expected);
+        }
+      }
+    },
+  );
 
   it('свой генерал входит в потери по той же цене гибели, что и в оценке рубежей', () => {
     const world = createWorld(SEED);

@@ -10,6 +10,7 @@ import {
   asPlayerId,
   directionTowards,
   distanceSquared,
+  nukeStructureDamage,
 } from '@td/shared';
 import type { Command, PlayerId } from '@td/shared';
 import { applyCommand } from './apply.js';
@@ -450,7 +451,12 @@ const detonateNukes = (working: Working, stats: readonly PlayerStats[]): void =>
       if (!structure.alive || structure.kind === StructureKind.Base) return;
       if (distanceSquared(epicentre, cellCentre(structure.cell)) > reach) return;
 
-      damageEntity(working, stats, { kind: TargetKind.Structure, index }, nuke.damage);
+      damageEntity(
+        working,
+        stats,
+        { kind: TargetKind.Structure, index },
+        nukeStructureDamage(nuke.damage),
+      );
     });
 
     working.generals.forEach((general, index) => {
