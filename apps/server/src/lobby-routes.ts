@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { LobbyError, TICKET_BYTES } from '@td/protocol';
 import { createLobbyStore } from './lobbies.js';
-import type { PlayerView } from '@td/protocol';
+import type { ComputerProfile, PlayerView } from '@td/protocol';
 import type { LobbyResult, LobbyStore, MatchStart } from './lobbies.js';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
@@ -40,9 +40,19 @@ const statusOf = (error: LobbyError): number => {
   switch (error) {
     case LobbyError.BadName:
     case LobbyError.BadTitle:
+    case LobbyError.BadPassword:
       return 400;
+    // Не 401: тот код обещает заголовок `WWW-Authenticate` и разговор
+    // о способе входа, которого здесь нет. Пароль комнаты — не учётная
+    // запись, и правильный ответ на «пароль не тот» именно «нельзя».
+    case LobbyError.WrongPassword:
+      return 403;
     case LobbyError.NotFound:
       return 404;
+    // 503, а не 404: комната есть, запрос верен, а вот соперника прислать
+    // некому. Игроку тут чинить нечего, и код это говорит прямо.
+    case LobbyError.NoComputer:
+      return 503;
     // Заполненная комната, начавшийся матч, готовность в одиночестве —
     // это не «неверный запрос», а «состояние изменилось, пока вы решали».
     // Отсюда 409: клиенту следует перечитать состояние, а не чинить запрос.
@@ -86,6 +96,8 @@ export interface LobbyRoutesOptions {
    * только тот, кто запускал службу компьютера.
    */
   readonly computerProfileOf?: ((playerId: string) => string | undefined) | undefined;
+  /** Какие манеры компьютера сейчас на предложении. */
+  readonly computerProfiles?: (() => readonly ComputerProfile[]) | undefined;
 }
 
 export const registerLobbyRoutes = (
@@ -101,6 +113,7 @@ export const registerLobbyRoutes = (
       onMatchStart: options.onMatchStart,
       onMatchAbandon: options.onMatchAbandon,
       computerProfileOf: options.computerProfileOf,
+      computerProfiles: options.computerProfiles,
     });
 
   const allowOrigin = options.allowOrigin ?? '*';
@@ -195,11 +208,14 @@ export const registerLobbyRoutes = (
     });
   });
 
-  app.post<{ Body: { playerId?: string; name?: string; title?: string } }>(
+  // Пароль ходит телом POST, а не строкой запроса, и это не мелочь:
+  // строка запроса попадает в журналы сервера, в историю браузера
+  // и в заголовок `Referer` при переходе со страницы.
+  app.post<{ Body: { playerId?: string; name?: string; title?: string; password?: string } }>(
     '/api/lobbies',
     (request, reply) => {
-      const { playerId = '', name = '', title = '' } = request.body;
-      const created = store.create(playerId, name, title);
+      const { playerId = '', name = '', title = '', password = '' } = request.body;
+      const created = store.create(playerId, name, title, password);
       if (reply409(reply, created)) return;
 
       broadcast();
@@ -207,15 +223,30 @@ export const registerLobbyRoutes = (
     },
   );
 
-  app.post<{ Params: { id: string }; Body: { playerId?: string; name?: string } }>(
-    '/api/lobbies/:id/join',
+  app.post<{
+    Params: { id: string };
+    Body: { playerId?: string; name?: string; password?: string };
+  }>('/api/lobbies/:id/join', (request, reply) => {
+    const { playerId = '', name = '', password = '' } = request.body;
+    const joined = store.join(playerId, name, request.params.id, password);
+    if (reply409(reply, joined)) return;
+
+    broadcast();
+    void reply.send(joined);
+  });
+
+  // Позвать компьютера в СВОЮ комнату. Отдельного пути в матч у него
+  // от этого не появляется: помечается комната, а входит он обычным
+  // гостем — тем же запросом `join`, что и человек.
+  app.post<{ Body: { playerId?: string; profile?: string } }>(
+    '/api/lobbies/computer',
     (request, reply) => {
-      const { playerId = '', name = '' } = request.body;
-      const joined = store.join(playerId, name, request.params.id);
-      if (reply409(reply, joined)) return;
+      const { playerId = '', profile = '' } = request.body;
+      const invited = store.inviteComputer(playerId, profile);
+      if (reply409(reply, invited)) return;
 
       broadcast();
-      void reply.send(joined);
+      void reply.send(invited);
     },
   );
 

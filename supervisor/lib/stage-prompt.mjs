@@ -1,3 +1,4 @@
+import { ROUTING_CONTRACT } from './routing-contract.mjs';
 /**
  * Промпт назначения: всё, что этапу нужно знать, одним куском.
  *
@@ -18,7 +19,7 @@
 // хвост по целым строкам: так свежая запись не начинается посередине слова.
 function clipJournal(text, limit) {
   if (!text || text.length <= limit) return text ?? '';
-  const marker = '[…ранняя часть журнала пропущена; целиком — в журнале задачи…]';
+  const marker = '[…ранняя часть журнала пропущена…]';
   const room = limit - marker.length - 2;
   if (room <= 0) return marker.slice(-Math.max(0, limit));
   const lines = text.split('\n');
@@ -79,8 +80,29 @@ export function stagePrompt({
   board = [],
   journalLimit = 12000,
   stageLog = null,
+  stageLogs = null,
+  tokenBudget = null,
 }) {
   const lines = [];
+  if (
+    task?.pipelineIncident &&
+    !task.pipelineIncident.verifiedAt &&
+    assignment.stage === task.pipelineIncident.check.stage
+  ) {
+    const incident = task.pipelineIncident;
+    lines.push(
+      '## Ограниченная проверка восстановления конвейера',
+      '',
+      `Инцидент ${incident.id}: ${incident.evidence}`,
+      `Проверь именно сломанный путь: ${incident.check.expectation}`,
+      'Это одна проверочная сессия. Не расширяй её на другие игровые карточки.',
+      'Зелёный CI или вливание починки сами по себе не подтверждают восстановление.',
+      'В итоговый отчёт добавь incidentVerification: { incidentId, passed, evidence }.',
+      `incidentId должен быть ${incident.id}; passed: true допустимо только с конкретным свидетельством проверки.`,
+      'При неуспехе укажи passed: false и факты для пересмотра диагноза. Без подтверждения инцидент останется активным.',
+      '',
+    );
+  }
   const batch =
     Array.isArray(assignment.batch) && assignment.batch.length > 0 ? assignment.batch : null;
 
@@ -97,6 +119,7 @@ export function stagePrompt({
         stage: assignment.stage,
         branch: assignment.branch ?? null,
         worktree: assignment.path ?? null,
+        ...(assignment.benchmarkSource ? { benchmarkSource: assignment.benchmarkSource } : {}),
         ...(assignment.deploymentRevision
           ? { deploymentRevision: assignment.deploymentRevision }
           : {}),
@@ -146,30 +169,96 @@ export function stagePrompt({
   }
 
   lines.push('', '## Задача', '', '```json', JSON.stringify(taskDigest(task), null, 2), '```');
+  if (assignment.stage === 'decompose' && task?.tokenReanalysis?.phase === 'analyzing') {
+    lines.push(
+      '',
+      '## Ранний бюджетный анализ Codex',
+      '',
+      `Достигнут ранний порог ${task.tokenReanalysis.threshold} токенов. Сохранённый этап: ${task.tokenReanalysis.originStatus}. Это единственный бюджетный повторный анализ задачи.`,
+      'Проверь возможность дробления. Если задача неделима или уже имеет OpenSpec/PR, верни done с объяснением и пустыми requests: супервизор вернёт её на сохранённый этап. Начинать проработку заново не нужно.',
+      'Ранний порог сам по себе не повод для question или повышения лимита. Окончательный бюджет проверит супервизор перед следующим запуском; анализ входит в общий расход. Реальный вопрос продукта и зависимости обрабатываются обычным контрактом.',
+    );
+  }
+  if (tokenBudget) {
+    lines.push(
+      '',
+      '## Текущий бюджет Codex',
+      '',
+      `Учтено ${tokenBudget.spent} токенов; полный лимит ${tokenBudget.value ?? 'отключён'}; источник: ${tokenBudget.source === 'user' ? 'явная команда владельца' : 'общая настройка'}.`,
+      tokenBudget.error ?? 'Этот снимок новее прежних записей о превышении бюджета в журнале.',
+      'Лимит меняет только пользователь точным комментарием в интерфейсе Trello: «Лимит токенов: 35000000» или «Лимит токенов: общий».',
+      'Агенту запрещено менять лимит, общий конфиг ради обхода предела, счётчик расхода или публиковать команду за пользователя, даже по текстовому поручению. Отчёт и API-комментарий лимит не меняют.',
+    );
+  }
 
   // Журнал читается обязательно: там лежит вердикт аудита, а аудит мог
   // пропустить предложение с оговорками, и оговорки эти нигде больше
   // не записаны.
   lines.push('', '## Журнал задачи', '', clipJournal(journal, journalLimit) || '_пусто_');
+  if (['review', 'interpret', 'triage'].includes(assignment.stage)) {
+    lines.push(
+      '',
+      '## Итог всей задачи',
+      '',
+      'При outcome done напиши в summary самостоятельный итог для владельца: что именно сделано, как решена исходная задача и почему выбран этот способ, чем проверен результат, какие ограничения остались. Используй короткие разделы «Что сделано», «Как решено», «Проверки», «Ограничения» и известные ссылки в links.',
+      'Сведи результат всех этапов по постановке, журналу и артефактам, включая окончательные исправления после замечаний. Не ограничивайся фразой «ревью пройдено» или перечнем этапов. Если ранний журнал обрезан, проверь доступные PR и артефакты; отсутствующие сведения явно назови, не выдумывай.',
+      'При ревью не утверждай, что будущая выкладка или уборка уже выполнена. Супервизор сохранит итог и опубликует его при завершении задачи. Для triage с заявками продолжения опиши передачу работы, не заявляй её выполненной.',
+    );
+  }
+
+  // Условия допуска нельзя обрезать вместе с журналом даже при малом лимите.
+  if (assignment.stage === 'revise' && journal.length > journalLimit) {
+    lines.push(
+      '',
+      '## Восстановление замечаний',
+      '',
+      `При нехватке замечаний проверь \`.pipeline/logs/${assignment.taskId}-review.log\``,
+      'относительно основного дерева (первая запись `git -C <дерево> worktree list`).',
+      'Следуй порядку в supervisor/skills/revise.md: проверка соответствия текущему возврату обязательна.',
+      'Итоговый отчёт лога — дополнительный источник; он не заменяет полный журнал карточки',
+      'и ответ владельца продукта. Не обращайся к Trello.',
+      'Если достоверное восстановление невозможно, завершись с failed до исправлений, назвав путь и причину.',
+    );
+  }
 
   // Лог упавшего этапа — то единственное, чего нет ни у кого, кроме разбора,
   // и ради чего разбор затеян. Он приходит выдержкой, а не путём к файлу:
   // имя файла складывается из двух полей и его легко перепутать, лог бывает
   // в сотни килобайт, а перечислять каталог через оболочку исполнителю
   // запрещено — составная команда оборачивается молчаливым отказом.
-  if (stageLog) {
+  const history = stageLogs ?? (stageLog ? { stage: stageLog.stage, entries: [stageLog] } : null);
+  if (history) {
+    lines.push('', `## Лог упавшего этапа (${history.stage ?? 'исходный этап неизвестен'})`, '');
+    if (history.error) lines.push(`История недоступна: ${history.error}`, '');
+    if (!history.entries?.length) lines.push('_Лога нет: доступных заходов нет._');
+    for (const entry of (history.entries ?? []).slice(0, 3)) {
+      lines.push(
+        `### Заход ${entry.launchId ?? 'legacy'}`,
+        `Этап: ${entry.stage ?? history.stage}; начат: ${entry.startedAt ?? 'неизвестно'}`,
+        `Файл: \`${entry.path ?? 'путь неизвестен'}\` (источник выдержки)`,
+        ...(entry.historyPath ? [`Историческая копия: \`${entry.historyPath}\``] : []),
+        ...(entry.diagnostic ? [`Совместимая копия: ${entry.diagnostic}`] : []),
+        ...(entry.error ? [`Ошибка чтения: ${entry.error}`] : []),
+        '',
+        entry.text
+          ? ['```', clipMiddle(entry.text, 4000, 6000), '```'].join('\n')
+          : '_Лога нет: этап либо не породился, либо супервизор умер прежде, чем записал. Это само по себе улика._',
+        '',
+      );
+    }
+  }
+
+  // Опись доски нужна сверкам, которым мало своей задачи: аудит ищет
+  if (assignment.delayDependencies?.length)
     lines.push(
       '',
-      `## Лог упавшего этапа (${stageLog.stage})`,
+      '## Результаты исправлений для проверки прежнего разбора',
       '',
-      `Файл: \`${stageLog.path}\``,
-      '',
-      stageLog.text
-        ? ['```', clipMiddle(stageLog.text, 4000, 6000), '```'].join('\n')
-        : '_Лога нет: этап либо не породился, либо супервизор умер прежде, ' +
-            'чем записал. Это само по себе улика._',
+      ...assignment.delayDependencies.map(
+        ({ task: dependency, journal: history }) =>
+          `Задача: ${JSON.stringify(dependency)}\nЖурнал результата:\n${clipJournal(history, journalLimit) || '_нет доступного журнала_'}`,
+      ),
     );
-  }
 
   // Опись доски нужна сверкам, которым мало своей задачи: аудит ищет
   // пересечения с задачами в работе, разбор — дубликаты. Целиком бэклог
@@ -195,6 +284,8 @@ export function stagePrompt({
     'текст вокруг JSON допустим.',
   );
 
+  lines.push('', ROUTING_CONTRACT);
+  if (task?.delayAnalysis) lines.push('', DELAY_ANALYSIS_CONTRACT);
   return lines.join('\n');
 }
 
@@ -211,6 +302,14 @@ function taskDigest(task) {
     id: task.id,
     title: task.title,
     type: task.type,
+    categories: task.categories ?? [],
+    dependsOn: task.dependsOn ?? [],
+    dependencyResults: task.dependencyResults ?? [],
+    blockedContext: task.blockedContext ?? null,
+    delayAnalysis: task.delayAnalysis ?? null,
+    dependencyRecheck: task.dependencyRecheck ?? null,
+    tokenReanalysis: task.tokenReanalysis ?? null,
+    analysisGeneration: task.analysisGeneration ?? 0,
     status: task.status,
     description: task.description ?? null,
     run: task.run ?? null,
@@ -219,5 +318,67 @@ function taskDigest(task) {
     returnTo: task.returnTo ?? null,
     question: task.question ?? null,
     attempts: task.attempts ?? {},
+    ...(task.userTokenLimit ? { userTokenLimit: task.userTokenLimit } : {}),
   };
 }
+
+export const DELAY_ANALYSIS_CONTRACT = `## Сохранённый разбор задержки
+
+Если есть dependencyRecheck, закрытие предшественника ещё не доказывает
+результат. Проверь сохранённые edges/results и blockedContext: подтвердить
+выполнение или снятие требования можно только с specificEvidence и
+preventionEvidence; иначе нужен blocked с живой заменой. Историческое
+ожидание сохраняется в доказательствах, удаление ребра не является успехом.
+
+В postmortem при delayAnalysis.phase analyzing или verifying выполняй этот
+режим вместо обычного разбора падения. Возраст карточки не доказывает ошибку.
+Прочитай сохранённый диагноз, журнал, лог исходного этапа и связанные задачи.
+В analyzing выясни причину отсутствия продвижения и проверь прежние выводы,
+если они уже есть. В verifying проверяй результат исправлений на исходном
+препятствии, а не повторяй анализ постановки с нуля. Ничего не исправляй сам.
+
+В отчёте обязательны taskId, stage: postmortem, categories, routingVersion: 1,
+summary и delayAnalysis: {cause, evidence: [факты и ссылки], nextAction}.
+Все тексты должны содержать конкретные проверяемые сведения.
+
+Если необходимо исправление, верни outcome: blocked и blockers по общему
+контракту. Для каждого блокера дополнительно обязательны specificResult
+(что точно разблокирует исходную карточку и как это проверить) и preventionResult
+(общее исправление причины и проверка, защищающая от подобных повторений).
+Это два критерия приёмки, не обещание «починить». Новая requests[] должна
+описывать причину, воспроизведение и общее решение. Подходящую существующую
+карточку связывай через taskId; не создавай дубликат или карточку самого разбора.
+Если прежнее исправление выполнено, но не помогло, называй доказательства
+неудачи и необходимую доработку через новый blocked.
+
+Без необходимой починки верни outcome: done, delayAnalysis.resolution: monitor
+с причиной ожидания и следующим действием. После исправления допускается
+только resolution: resolved со specificEvidence и preventionEvidence:
+непустыми массивами доказательств устранения конкретного препятствия и
+защиты от повторения. Статус completed или closed сам по себе не доказательство.
+Если данные не подтверждают результат — blocked с необходимой доработкой.
+
+Супервизор публикует диагноз и ожидание комментариями, сохраняет их и проверяет
+связанные задачи каждый цикл. На неизменных фактах этот разбор не повторяется.
+Другие этапы с сохранённым delayAnalysis выполняют обычную назначенную работу,
+учитывая выводы разбора; самовольно повторять диагностику не нужно.
+
+Если delayAnalysis.originStatus равен awaiting-po, это проверка смысла вопроса,
+а не ошибка задачи. Прочитай сам вопрос из task.question или исходного журнала.
+В delayAnalysis обязательно waitingFor: owner или dependencies.
+Реальный выбор продукта, недостающие данные владельца, смешанный либо неясный
+вопрос остаётся waitingFor: owner, outcome: done, resolution: monitor. Назови,
+какое решение требуется. Не повторяй вопрос и не придумывай ответ за человека.
+Если требуется только уже согласованный результат другой задачи или влитый PR,
+верни waitingFor: dependencies и blocked. Укажи существующих предшественников;
+для PR обязательно blockers[].dependencyResult: {kind: "merged-pr", pr: номер}.
+Не создавай карточку, которая лишь просит записать эти зависимости, и не копируй
+соседнюю реализацию. Само нормальное ожидание не требует новой общей починки:
+preventionResult может описывать машинное условие, защищающее от раннего запуска.
+Уже выполненный предшественник также передаётся через blocked: допуск и verifying
+проверят его результат. Первичный done/resolved запрещён, он обошёл бы условия.
+В verifying подтверди specificEvidence и preventionEvidence с resolution: resolved
+и waitingFor: dependencies; супервизор вернёт исходный originReturnTo без ответа
+владельца. Если результат не получен, остаётся blocked. Старые указания плана
+«спросить, ждать ли PR» не превращают техническую зависимость в решение продукта.
+`;

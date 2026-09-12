@@ -29,17 +29,30 @@ export const identify = async (page: Page, name: string): Promise<void> => {
 /**
  * Представиться и начать матч против компьютера.
  *
- * Матч теперь идёт через сервер, как и всякий другой: клиент входит
- * в дежурную комнату компьютера и подтверждает готовность. Отсюда
- * и ожидание подольше — надо дождаться, пока служба компьютера поднимет
- * комнату, а сервер сведёт двоих и дождётся обоих подключений.
+ * Вход в игру ОДИН: игрок заводит свою комнату, зовёт в неё компьютер
+ * выбранной манеры и подтверждает готовность. Дежурных комнат больше
+ * нет, и обходной кнопки «играть с компьютером» — тоже.
+ *
+ * Отсюда и ожидания подольше: надо дождаться, пока служба увидит
+ * приглашение в общем списке комнат, поднимет дежурного и войдёт,
+ * а сервер сведёт двоих и дождётся обоих подключений.
  */
 export const bootGame = async (page: Page): Promise<void> => {
   await identify(page, 'Тестер');
 
-  const start = page.getByTestId('practice-start');
-  await expect(start).toBeEnabled({ timeout: 15_000 });
-  await start.click();
+  await page.getByTestId('lobby-title').fill(uniqueTitle());
+  await page.getByTestId('lobby-create').click();
+  await expect(page.getByTestId('room')).toBeVisible();
+
+  // Манеры приходят с сервера: пока служба не объявилась, кнопок нет
+  // вовсе. Берётся первая — какая именно, проверкам безразлично.
+  const opponents = page.getByTestId('room-computer').getByRole('button');
+  await expect(opponents.first()).toBeEnabled({ timeout: 15_000 });
+  await opponents.first().click();
+
+  // Дежурный вошёл — второе место занято, и готовность стала доступна.
+  await expect(page.getByTestId('room-slot')).toHaveCount(2, { timeout: 15_000 });
+  await page.getByTestId('room-ready').click();
 
   await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 15_000 });
   // Дожидаемся первого подтверждённого тика: до него мир стоит на нуле,

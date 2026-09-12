@@ -1,0 +1,56 @@
+name: Чувствительность проверок
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: mutation-canaries
+  cancel-in-progress: false
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Проверить чувствительность
+        id: canaries
+        run: node scripts/mutation/run.mjs
+      - name: Проверить наличие сводки
+        if: always()
+        env:
+          MUTATION_DIRECTORY: ${{ steps.canaries.outputs.directory }}
+        run: |
+          if [ -z "$MUTATION_DIRECTORY" ] || [ ! -f "$MUTATION_DIRECTORY/summary.json" ]; then
+            echo 'Ошибка: мутационный прогон не сохранил сводку. Смотрите логи и доступные артефакты.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Сообщить о переживших проверках
+        if: always() && github.ref == 'refs/heads/main' && steps.canaries.outputs.directory != ''
+        env:
+          MUTATION_DIRECTORY: ${{ steps.canaries.outputs.directory }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/mutation/issue.mjs
+      - name: Сохранить свидетельства
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .matchlog/mutation/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30

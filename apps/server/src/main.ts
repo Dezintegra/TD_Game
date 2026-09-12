@@ -284,10 +284,26 @@ export const buildServer = async (options: BuildOptions = {}) => {
     );
   }
 
-  app.post<{ Body: { secret?: unknown; identities?: unknown } }>(
+  /** Строки из непроверенного тела: всё, что не строка, отбрасывается. */
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+
+  /** Манеры на предложении из непроверенного тела. */
+  const offersOf = (value: unknown): { id: string; title: string }[] =>
+    Array.isArray(value)
+      ? value.filter(
+          (entry): entry is { id: string; title: string } =>
+            typeof entry === 'object' &&
+            entry !== null &&
+            typeof (entry as { id?: unknown }).id === 'string' &&
+            typeof (entry as { title?: unknown }).title === 'string',
+        )
+      : [];
+
+  app.post<{ Body: { secret?: unknown; identities?: unknown; offers?: unknown } }>(
     '/api/computer/declare',
     (request, reply) => {
-      const { secret, identities } = request.body;
+      const { secret, identities, offers } = request.body;
       const ok =
         typeof secret === 'string' &&
         Array.isArray(identities) &&
@@ -300,6 +316,7 @@ export const buildServer = async (options: BuildOptions = {}) => {
               typeof (entry as { id?: unknown }).id === 'string' &&
               typeof (entry as { profile?: unknown }).profile === 'string',
           ),
+          offersOf(offers),
         );
 
       // Причина отказа не объясняется: тому, кто подбирает секрет,
@@ -308,17 +325,14 @@ export const buildServer = async (options: BuildOptions = {}) => {
     },
   );
 
-  app.post<{ Body: { secret?: unknown; ids?: unknown } }>(
+  app.post<{ Body: { secret?: unknown; ids?: unknown; offers?: unknown } }>(
     '/api/computer/withdraw',
     (request, reply) => {
-      const { secret, ids } = request.body;
+      const { secret, ids, offers } = request.body;
       const ok =
         typeof secret === 'string' &&
         Array.isArray(ids) &&
-        computers.withdraw(
-          secret,
-          ids.filter((id): id is string => typeof id === 'string'),
-        );
+        computers.withdraw(secret, strings(ids), strings(offers));
 
       void reply.code(ok ? 204 : 403).send();
     },
@@ -357,6 +371,10 @@ export const buildServer = async (options: BuildOptions = {}) => {
     // процессе живёт служба, — и это единственное, что держало её
     // внутри сервера.
     computerProfileOf: (playerId) => computers.profileOf(playerId),
+    // Оттуда же и состав манер: его объявляет служба при запуске.
+    // Зашивать состав в клиент нельзя — при смене состава клиент соврал
+    // бы, а спрашивать раз в жизни мало: служба вправе уйти посреди дня.
+    computerProfiles: () => computers.profiles,
   });
 
   const handlers = createGameHandlers(transport, matches, log);

@@ -13,6 +13,16 @@ export const STATES = [
   // Кандидат стоит первым намеренно: колонки доски идут в этом порядке,
   // а входящая корзина должна быть слева от очереди, а не после «Закрыто».
   'candidate',
+  // Очередь починок самого конвейера. Стоит сразу за кандидатами и перед
+  // обычной очередью — в том же порядке, в каком берётся работа.
+  //
+  // Отдельная колонка, а не метка на кандидате: состояние на доске хранится
+  // колонкой и ничем иным, поле-двойник расходится молча. И отдельная очередь,
+  // а не общая: сорок пять кандидатов из шестидесяти девяти конвейер завёл
+  // себе сам, и в общей корзине предложения про игру тонули в них.
+  'maintenance',
+  'blocked',
+  'token-limit',
   'new',
   'triage',
   // Анализ на дробность стоит ПЕРЕД проработкой: колонки доски идут
@@ -28,6 +38,7 @@ export const STATES = [
   'revise',
   'deploy',
   'cleanup',
+  'completed',
   'closed',
   'postmortem',
   'failed',
@@ -35,23 +46,39 @@ export const STATES = [
 ];
 
 /** Состояния, из которых задача больше сама не двинется. */
-export const TERMINAL = ['closed', 'failed'];
+export const TERMINAL = ['completed', 'closed', 'failed'];
+
+/**
+ * Очереди, из которых берётся работа, — в порядке взятия.
+ *
+ * Порядок здесь и есть приоритет: обслуживание исчерпывается прежде обычной
+ * очереди. Кандидаты сюда не входят: они ждут человека, а не машину.
+ */
+export const QUEUE_STATES = ['maintenance', 'new'];
 
 /**
  * Сквозные состояния: достижимы из любого рабочего и хранят состояние возврата.
  *
- * `postmortem` — разбор ошибки — объявлен сквозным, но НЕ объявлен ни в одном
- * маршруте, и это не упущение. Вход в сквозное состояние разрешается раньше,
- * чем читаются маршруты, поэтому попасть в разбор можно откуда угодно. А выход
- * ищется уже в маршрутах, где разбора нет; разрешённым остаётся один переход —
- * в `failed`, тоже сквозной.
- *
- * Отсюда правило «войти можно отовсюду, выйти только в ошибку» держится самой
- * таблицей, без единой отдельной проверки. Следствие: карточку из «Разбора
- * ошибки» нельзя перетащить обратно в работу — конвейер вернёт её. Так
- * и задумано: поднимают задачу из `failed`, куда она вот-вот попадёт.
+ * postmortem сохраняет этап возврата. Обычный неуспешный разбор ведёт в failed;
+ * проверенный диагноз может перейти в blocked/awaiting-po либо вернуть сохранённый
+ * этап через специальные проверки canTransition. Сверка влитого PR также имеет
+ * отдельное доказуемое разрешение; она не расширяет обычные маршруты.
  */
 export const CROSSCUT = ['postmortem', 'failed', 'awaiting-po'];
+
+// Удержание бюджета не начинает новый этап и не сбрасывает его попытки.
+export const TOKEN_CAPPED_STAGES = [
+  'triage',
+  'design',
+  'audit',
+  'implement',
+  'benchmark',
+  'interpret',
+  'review',
+  'revise',
+  'deploy',
+];
+export const TOKEN_RESUME_STATES = ['new', 'decompose', ...TOKEN_CAPPED_STAGES];
 
 /**
  * Маршруты по типам задач.
@@ -69,11 +96,16 @@ export const ROUTES = {
     // Не объяви мы его, шлюз не просто не работал бы, а ОТМЕНЯЛ бы
     // одобрение: владелец тащит карточку в очередь, ближайший цикл
     // возвращает её в кандидаты.
-    candidate: ['new'],
+    candidate: ['new', 'maintenance'],
+    // Обслуживание — такая же очередь, как «Заведено», и идёт теми же
+    // маршрутами. Обратный ход в кандидаты объявлен намеренно: ошибку
+    // отнесения человек исправляет перетаскиванием, и конвейер такой
+    // перенос принимает, а не отменяет.
+    maintenance: ['decompose', 'design', 'candidate'],
     // Из очереди задача идёт в анализ на дробность, а с меткой о проведённом
     // дроблении — сразу в проработку. Объявлены оба маршрута: необъявленный
     // переход карточка не переживает.
-    new: ['decompose', 'design'],
+    new: ['decompose', 'design', 'maintenance'],
     // Анализ либо пропускает задачу дальше, либо закрывает её, разнеся работу
     // по новым карточкам. Уборка между ними не нужна: дерева этому этапу
     // не заводят, и сносить после него нечего.
@@ -91,12 +123,12 @@ export const ROUTES = {
     // Красный CI отправляет в доработку, зелёный — в ревью.
     pr: ['review', 'revise'],
     // Ревью с замечаниями отправляет в доработку, чистое — в выкладку.
-    review: ['deploy', 'revise'],
+    review: ['deploy', 'cleanup', 'revise'],
     // Доработка ведёт обратно в ожидание проверок, а НЕ сразу в ревью:
     // ревью на непроверенном коде запрещено, а правка требует нового прогона CI.
     revise: ['pr'],
     deploy: ['cleanup'],
-    cleanup: ['closed'],
+    cleanup: ['completed', 'closed'],
     // Закрытие застрявшей в «Ошибке» задачи. Переход объявлен, но выполняет
     // его человек мышью — как `candidate` → `new`, — а конвейер не выполняет
     // никогда: `afterDone` состояния `failed` не знает и отвечает `null`,
@@ -115,15 +147,16 @@ export const ROUTES = {
     // Счёт держится на командах, толкование счёта — на суждении, и мешать
     // их в одном отчёте значит прятать второе за первым.
     benchmark: ['interpret'],
-    interpret: ['closed'],
+    interpret: ['completed'],
     // Закрытие из «Ошибки» — см. пояснение у `feature`.
     failed: ['closed'],
   },
   note: {
     // Одобрение кандидата — см. пояснение у `feature`.
-    candidate: ['new'],
-    new: ['triage'],
-    triage: ['closed'],
+    candidate: ['new', 'maintenance'],
+    maintenance: ['triage', 'candidate'],
+    new: ['triage', 'maintenance'],
+    triage: ['completed', 'closed'],
     // Закрытие из «Ошибки» — см. пояснение у `feature`.
     failed: ['closed'],
   },
@@ -144,6 +177,11 @@ export const STATE_CLASS = {
   // Кандидат не занимает ничего и не движется сам: он ждёт человека,
   // а не машину. Для раскладки это та же очередь, что и `new`.
   candidate: 'queue',
+  // Обслуживание ничего не занимает и само не движется — та же очередь,
+  // что `new`, только берётся раньше.
+  maintenance: 'queue',
+  blocked: 'waiting',
+  'token-limit': 'waiting',
   new: 'queue',
   triage: 'resource',
   // Анализ читает карточку и доску, но читает сессией — значит занимает
@@ -165,6 +203,7 @@ export const STATE_CLASS = {
   'awaiting-po': 'waiting',
   deploy: 'exclusive',
   cleanup: 'housekeeping',
+  completed: 'terminal',
   closed: 'terminal',
   failed: 'terminal',
   // benchmark разбирается отдельно: цена зависит от вида прогона.
@@ -236,7 +275,7 @@ export const NEEDS_SESSION = [
  * обычное дело, и вызывающему нужно записать причину в журнал, а не ловить
  * ошибку.
  */
-export function canTransition(task, to) {
+export function canTransition(task, to, { reconciliation = false, consolidation = false } = {}) {
   const from = task.status;
 
   if (!STATES.includes(to)) {
@@ -245,8 +284,75 @@ export function canTransition(task, to) {
   if (from === to) {
     return { ok: false, reason: 'задача уже в этом состоянии' };
   }
+  if (
+    reconciliation &&
+    task.type === 'feature' &&
+    ['failed', 'postmortem', 'awaiting-po', 'design', 'audit', 'implement', 'revise'].includes(
+      from,
+    ) &&
+    ['cleanup', 'review'].includes(to)
+  )
+    return { ok: true, reason: 'доказательная сверка влитого PR' };
+  if (
+    consolidation &&
+    to === 'closed' &&
+    !task.links?.pr &&
+    ['candidate', 'new', 'maintenance', 'failed', 'awaiting-po'].includes(from) &&
+    task.splitInto?.length
+  )
+    return { ok: true, reason: 'проверенное поглощение с сохранением требований' };
+  if (from === 'token-limit')
+    return {
+      ok: TOKEN_RESUME_STATES.includes(to) && to === task.tokenHold?.resumeStatus,
+      reason: 'из ожидания бюджета возвращаются только на сохранённый этап',
+    };
+  if (to === 'token-limit')
+    return {
+      ok: [...TOKEN_RESUME_STATES, 'awaiting-po'].includes(from),
+      reason: 'бюджет удерживает обычный запуск с сохранением этапа',
+    };
+  if (
+    from === 'decompose' &&
+    task.tokenReanalysis?.phase === 'analyzing' &&
+    to === task.tokenReanalysis.originStatus &&
+    TOKEN_RESUME_STATES.includes(to)
+  )
+    return { ok: true, reason: 'неделимая задача продолжает этап до бюджетного анализа' };
+  if (
+    from === 'postmortem' &&
+    ['analyzing', 'verifying'].includes(task.delayAnalysis?.phase) &&
+    (to === 'blocked' ||
+      to === task.delayAnalysis.originStatus ||
+      (task.delayAnalysis.originStatus === 'awaiting-po' &&
+        task.delayAnalysis.phase === 'verifying' &&
+        task.delayAnalysis.diagnosis?.waitingFor === 'dependencies' &&
+        to === task.delayAnalysis.originReturnTo) ||
+      (to === 'new' &&
+        task.delayAnalysis.originStatus === 'blocked' &&
+        task.delayAnalysis.phase === 'verifying'))
+  )
+    return {
+      ok: true,
+      reason: 'сохранённый разбор задержки: ожидание исправления или проверенное продолжение',
+    };
+  if (from === 'blocked' && to === 'new')
+    return { ok: true, reason: 'предшественники выполнены, новый анализ' };
+  if (
+    to === 'blocked' &&
+    [
+      'decompose',
+      'design',
+      'audit',
+      'implement',
+      'revise',
+      'triage',
+      'benchmark',
+      'interpret',
+    ].includes(from)
+  )
+    return { ok: true, reason: 'обязательная предпосылка' };
   if (TERMINAL.includes(from) && to !== 'closed') {
-    // Из ошибки задачу поднимает человек, а не конвейер: причина требует разбора.
+    // Из ошибки возвращаются только на сохранённый этап; автономный возврат дополнительно проверяет причину и предел.
     if (from === 'failed' && to === task.returnTo) {
       return { ok: true, reason: 'возврат из ошибки в сохранённое состояние' };
     }

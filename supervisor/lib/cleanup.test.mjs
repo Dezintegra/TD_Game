@@ -114,12 +114,14 @@ describe('когда убирать нельзя', () => {
       unpushed: 0,
       ownCommits: null,
     });
-    expect(verdict.verdict).toBe('fail');
+    expect(verdict.verdict).toBe('wait');
     expect(verdict.why).toContain('узнать не удалось');
   });
 
-  it('дерева нет — убирать нечего', () => {
-    expect(mayCleanup({ task: task(), entry: null, pr: {}, unpushed: 0 }).verdict).toBe('skip');
+  it('без записи реестра влитый PR не доказывает уборку', () => {
+    expect(
+      mayCleanup({ task: task(), entry: null, pr: { state: 'merged' }, unpushed: 0 }).verdict,
+    ).toBe('fail');
   });
 });
 
@@ -160,4 +162,8 @@ describe('уборка', () => {
     expect(result.done).toContain('дерево удалено');
     expect(result.left.join()).toContain('удалённая ветка');
   });
+});
+
+it('без PR отсутствие записи тоже не разрешает закрытие', () => {
+  expect(mayCleanup({ task: noPr(), entry: null }).verdict).toBe('fail');
 });

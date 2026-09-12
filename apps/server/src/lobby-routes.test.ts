@@ -101,7 +101,7 @@ describe('поток состояния', () => {
     const stream = await openStream('a');
 
     const view = await stream.until(() => true);
-    expect(view).toEqual({ lobbies: [], lobby: null, match: null });
+    expect(view).toEqual({ lobbies: [], lobby: null, match: null, computerProfiles: [] });
 
     await stream.close();
   });
@@ -182,6 +182,56 @@ describe('действия', () => {
     await first.close();
     await second.close();
     await third.close();
+  });
+
+  it('пароль ходит телом, отказ по нему — это 403, а признак виден в списке', async () => {
+    // Проверяется именно транспорт: что пароль доезжает до хранилища
+    // из тела запроса, что отказ по нему отличим по коду, и что признак
+    // закрытости доходит до смотрящего на список. Сами правила пароля
+    // покрыты в `lobbies.test.ts` без сети.
+    const host = await openStream('a');
+    const guest = await openStream('b');
+
+    await post('/api/lobbies', {
+      playerId: 'a',
+      name: 'Аня',
+      title: 'Комната Ани',
+      password: 'тайна',
+    });
+
+    const own = await host.until((state) => state.lobby !== null);
+    const id = own.lobby?.id ?? '';
+
+    const seen = await guest.until((state) => state.lobbies.length === 1);
+    expect(seen.lobbies[0]?.locked).toBe(true);
+    // Пароль наружу не уходит ни в каком виде.
+    expect(JSON.stringify(seen)).not.toContain('тайна');
+
+    const refused = await post(`/api/lobbies/${id}/join`, { playerId: 'b', name: 'Боря' });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ error: 'wrong-password' });
+
+    const accepted = await post(`/api/lobbies/${id}/join`, {
+      playerId: 'b',
+      name: 'Боря',
+      password: 'тайна',
+    });
+    expect(accepted.status).toBe(200);
+
+    await host.close();
+    await guest.close();
+  });
+
+  it('негодный пароль при создании отклоняется как неверный запрос', async () => {
+    const response = await post('/api/lobbies', {
+      playerId: 'a',
+      name: 'Аня',
+      title: 'Комната',
+      password: '   ',
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'bad-password' });
   });
 
   it('обоюдная готовность начинает матч у обоих', async () => {

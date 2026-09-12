@@ -22,6 +22,84 @@ const request = (over = {}) => ({
   ...over,
 });
 
+// Замер кадров из этого перечня выбыл: отдельной задачей он больше
+// не заводится вовсе, и проверять его источник стало не на чем.
+// Приёмка источника остаётся у стоимости тика — она меряет счёт, а не
+// отрисовку, и живой машины не требует.
+describe.each(['bench-tick'])('приёмка источника %s', (kind) => {
+  const accept = (run) =>
+    taskFromRequest(request({ type: 'run', categories: ['infrastructure'], run }), {
+      id: '0089-perf',
+      now: NOW,
+      sourceId: '0041-visual',
+    });
+  it.each([{ branch: 'worktree-0041-visual' }, { worktree: '../another station tree' }])(
+    'сохраняет %j без проверки диска',
+    (source) => {
+      const run = { kind, params: { source, change: 'visual', seed: 42 }, expectation: '55 FPS' };
+      const { task, problems } = accept(run);
+      expect(problems).toEqual([]);
+      expect(task.run).toEqual(run);
+      expect(validateTask(task, schema)).toEqual([]);
+    },
+  );
+  it.each([
+    undefined,
+    {},
+    { branch: '' },
+    { worktree: 42 },
+    { branch: 'main', worktree: '.' },
+    { branch: 'main', extra: true },
+  ])('не создаёт задачу при %j', (source) => {
+    const { task, problems } = accept({
+      kind,
+      params: { source, change: 'visual' },
+      expectation: '55 FPS',
+    });
+    expect(task).toBeNull();
+    expect(problems.join(' ')).toContain('run.params.source');
+  });
+  it('независимо проверяет expectation', () => {
+    expect(accept({ kind, params: { source: { branch: 'main' } } }).problems).toContain(
+      'прогон заявлен без ожидаемого результата',
+    );
+    const { problems } = accept({ kind });
+    expect(problems).toContain('прогон заявлен без ожидаемого результата');
+    expect(problems.join(' ')).toContain('run.params.source');
+  });
+});
+
+describe('замер кадров отдельной задачей', () => {
+  it('не заводится вовсе: он делается только перед выкладкой', () => {
+    const { task, problems } = taskFromRequest(
+      request({
+        type: 'run',
+        categories: ['infrastructure'],
+        run: {
+          kind: 'perf',
+          params: { source: { branch: 'main' } },
+          expectation: '55 кадров',
+        },
+      }),
+      { id: '0089-perf', now: NOW, sourceId: '0041-visual' },
+    );
+    expect(task).toBeNull();
+    expect(problems.join(' ')).toContain('только перед выкладкой');
+  });
+
+  it('прочие виды прогона заводятся по-прежнему', () => {
+    const { task } = taskFromRequest(
+      request({
+        type: 'run',
+        categories: ['infrastructure'],
+        run: { kind: 'arena', params: {}, expectation: 'доля побед в вилке' },
+      }),
+      { id: '0090-arena', now: NOW, sourceId: '0041-visual' },
+    );
+    expect(task.run.kind).toBe('arena');
+  });
+});
+
 describe('идентификатор', () => {
   it('первый номер начинается с единицы', () => {
     expect(nextId([], 'Проба')).toMatch(/^0001-/);
@@ -132,6 +210,61 @@ describe('части, рождённые дроблением', () => {
     });
     expect(validateTask(task, schema)).toEqual([]);
   });
+
+  it('часть заводится в очередь, а не в кандидаты', () => {
+    // До дробления задача доходит только из очереди, куда её перевёл
+    // человек: работа одобрена целиком, и спрашивать про каждую часть
+    // заново значит спрашивать про уже отвеченное. Пока исключения
+    // не было, четыре части задачи 0274 простояли в кандидатах
+    // с 07.09.2026 нетронутыми.
+    const { task } = taskFromRequest(request(), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(task).toMatchObject({ status: 'new', owner: null });
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('конвейерная часть идёт в обслуживание, а не в общую очередь', () => {
+    // Иначе починка самого конвейера бралась бы позже игровых задач,
+    // хотя очередь обслуживания на то и заведена, чтобы идти впереди.
+    const { task } = taskFromRequest(request({ area: 'pipeline' }), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(task).toMatchObject({ status: 'maintenance', area: 'pipeline' });
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('часть типа note обходит шлюз наравне с прочими', () => {
+    // Метка «декомпозирована» достаётся только feature — через анализ
+    // дробности ходит лишь он, — но заказанной работой часть остаётся
+    // при любом типе, и держать её в кандидатах не за что.
+    const { task } = taskFromRequest(request({ type: 'note' }), {
+      id: '0005-part',
+      now: NOW,
+      sourceId: '0001-one',
+      decomposed: true,
+    });
+    expect(task).toMatchObject({ status: 'new', decomposed: false });
+    expect(validateTask(task, schema)).toEqual([]);
+  });
+
+  it('находка попутного этапа остаётся кандидатом', () => {
+    // Шлюз обходят части, а не всё, что подала сессия по дороге:
+    // дробность находки никто не смотрел и работу по ней не заказывал.
+    const { planned } = planRequests([request()], {
+      existingIds: [],
+      now: NOW,
+      sourceId: '0001-one',
+      sourceStage: 'implement',
+    });
+    expect(planned[0].status).toBe('candidate');
+  });
 });
 
 describe('блокирующая причина', () => {
@@ -225,34 +358,50 @@ describe('причина в конвейере', () => {
   const plan = (requests, sourceStage) =>
     planRequests(requests, { existingIds: [], now: NOW, sourceId: '0001-one', sourceStage });
 
-  it('заявка с любого этапа встаёт в очередь первой и проходит схему', () => {
+  it('область pipeline уводит находку в обслуживание, но обязательной не делает', () => {
     // 02.09.2026 починки разрешений pnpm и сгорающих продолжений простояли
     // в кандидатах часами: разборы честно не назвали их блокирующими,
     // а прочим этапам метить было нечем. Зона причины — другой вопрос,
     // чем срочность, и право на него есть у всех.
+    //
+    // Теперь такая находка идёт в «Обслуживание»: владельцу продукта решать
+    // про игру, а не про то, какое правило этапа понято двояко. Признаком
+    // остаётся объявленная область, а не догадка по заголовку. Обязательной
+    // находку это по-прежнему не делает — первое место в очереди даёт только
+    // признак blocking.
     for (const stage of ['implement', 'review', 'triage', 'postmortem', null]) {
       const { planned } = plan([pipeline], stage);
       expect(planned[0], `этап ${stage}`).toMatchObject({
-        status: 'new',
-        blocking: true,
+        status: 'maintenance',
         area: 'pipeline',
       });
+      expect(planned[0].blocking, `этап ${stage}`).toBeUndefined();
       expect(validateTask(planned[0], schema), `этап ${stage}`).toEqual([]);
     }
   });
 
-  it('прогон с причиной в конвейере тоже встаёт первым', () => {
+  it('находка про игру остаётся кандидатом и ждёт владельца продукта', () => {
+    const { planned } = plan([request({ title: 'Штурмовик бьёт не туда' })], 'implement');
+    expect(planned[0]).toMatchObject({ status: 'candidate' });
+    expect(planned[0].area).toBeUndefined();
+  });
+
+  it('прогон минует кандидатов без автоматического первого места', () => {
     const { planned } = plan(
       [
         request({
           type: 'run',
           area: 'pipeline',
-          run: { kind: 'bench-tick', expectation: 'стоимость тика не выросла' },
+          run: {
+            kind: 'bench-tick',
+            params: { source: { branch: 'main' } },
+            expectation: 'стоимость тика не выросла',
+          },
         }),
       ],
       'interpret',
     );
-    expect(planned[0]).toMatchObject({ status: 'new', blocking: true, area: 'pipeline' });
+    expect(planned[0]).toMatchObject({ status: 'new', area: 'pipeline' });
   });
 
   it('признак проходит только точным словом', () => {
@@ -313,10 +462,10 @@ describe('дополнение существующей задачи', () => {
     expect(plan([{ taskId: '0003-three', facts: 'ещё случай' }]).planned).toHaveLength(1);
   });
 
-  it('закрытая и остановленная задача дополнений не принимают', () => {
+  it('закрытая задача дополнений не принимает', () => {
     // Та же причина после закрытия — это регрессия, а не «ещё один случай»,
     // и хоронить её в законченной истории нельзя.
-    for (const id of ['0004-four', '0005-five']) {
+    for (const id of ['0004-four']) {
       const { planned, rejected } = plan([{ taskId: id, facts: 'ещё случай' }]);
       expect(planned, id).toEqual([]);
       expect(rejected[0].problems.join()).toContain('дополнений не принимает');

@@ -32,6 +32,8 @@ interface Outcome {
   /** На скольких тиках противник вообще отдавал команды. */
   readonly activeTicks: number;
   readonly totalCommands: number;
+  /** Уходил ли генерал со стартовой клетки хоть раз за матч. */
+  readonly generalLeftStart: boolean;
 }
 
 const playMatch = (seconds: number, seed = SEED): Outcome => {
@@ -40,6 +42,16 @@ const playMatch = (seconds: number, seed = SEED): Outcome => {
 
   let activeTicks = 0;
   let totalCommands = 0;
+
+  // Движение генерала наблюдается ПО ХОДУ матча, а не по его концу.
+  //
+  // Сравнение конечной позиции со стартовой отвечает на другой вопрос —
+  // «где генерал оказался к сто двадцатой секунде», — и ответ этот
+  // совпадает со стартовой клеткой всякий раз, когда генерал погиб
+  // и возродился на своей базе. Гибель у чужой базы — законный ход игры,
+  // а не остановка противника, и ловить её этой проверкой незачем.
+  const start = world.generals[AI_PLAYER]?.position;
+  let generalLeftStart = false;
 
   for (let tick = 0; tick < seconds * TICKS_PER_SECOND; tick += 1) {
     const commands = opponent.decide(world);
@@ -50,9 +62,14 @@ const playMatch = (seconds: number, seed = SEED): Outcome => {
     }
 
     world = step(world, commands);
+
+    const now = world.generals[AI_PLAYER]?.position;
+    if (now !== undefined && start !== undefined && (now.x !== start.x || now.y !== start.y)) {
+      generalLeftStart = true;
+    }
   }
 
-  return { world, activeTicks, totalCommands };
+  return { world, activeTicks, totalCommands, generalLeftStart };
 };
 
 const ownedBy = (world: WorldState, owner: PlayerId) => ({
@@ -81,12 +98,8 @@ describe('противник под управлением компьютера'
   });
 
   it('двигает генерала', () => {
-    const start = createWorld(SEED).generals[AI_PLAYER]?.position;
-    const now = outcome.world.generals[AI_PLAYER]?.position;
-
-    expect(start).toBeDefined();
-    expect(now).toBeDefined();
-    expect(now?.x !== start?.x || now?.y !== start?.y).toBe(true);
+    expect(createWorld(SEED).generals[AI_PLAYER]?.position).toBeDefined();
+    expect(outcome.generalLeftStart).toBe(true);
   });
 
   it('не уходит в минус по энергии', () => {

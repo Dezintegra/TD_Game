@@ -20,15 +20,20 @@
   UPGRADE_BRANCHES,
   UpgradeStat,
   UpgradeTarget,
+  MAX_UPGRADE_PPM,
   asEntityId,
   asTickNumber,
+  clampPpm,
+  costModelOf,
   directionTowards,
   distanceSquared,
+  effectModelOf,
   growPpm,
   isUpgradeMaxed,
   isValidDirection,
   isValidStance,
   nukeBaseExclusion,
+  stepPpm,
 } from '@td/shared';
 import type { Command, PlayerId, UnitType } from '@td/shared';
 import { killGeneral } from './combat.js';
@@ -445,8 +450,22 @@ const buyUpgrade = (working: Working, player: WorkingPlayer, branchIndex: number
   player.energy -= cost;
   player.upgrades[branchIndex] = {
     level: current.level + 1,
-    effectPpm: growPpm(current.effectPpm, branch.effectPercent),
-    costPpm: growPpm(current.costPpm, branch.costGrowthPercent),
+    // Шаг по объявленной моделью ветки: умножение при сложном проценте,
+    // прибавка при линейном. Модели независимы — цена может расти прямой
+    // при геометрической прибавке, и ради этого сочетания ручки и заведены.
+    //
+    // Потолок здесь не игровое правило, а защита арифметики: множитель
+    // растёт неограниченно, а произведение «база × множитель» обязано
+    // оставаться внутри точного диапазона целых. Обоснование числа —
+    // при `MAX_UPGRADE_PPM`. В задуманном балансе потолок недостижим.
+    effectPpm: clampPpm(
+      stepPpm(current.effectPpm, branch.effectPercent, effectModelOf(branch)),
+      MAX_UPGRADE_PPM,
+    ),
+    costPpm: clampPpm(
+      stepPpm(current.costPpm, branch.costGrowthPercent, costModelOf(branch)),
+      MAX_UPGRADE_PPM,
+    ),
   };
 
   // Улучшение типа поднимает цену покупки этого типа. У генерала

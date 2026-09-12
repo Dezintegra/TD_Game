@@ -1,23 +1,28 @@
-import { applyExternal, applyReport, haltOf } from './apply-report.mjs';
+import { unblockTask } from './blockers.mjs';
+import { queueBacklogReview } from './backlog-review.mjs';
+import { reportTaskIds } from './report-targets.mjs';
+import { reconcileTask } from './backlog-reconciliation.mjs';
+import { resolveDependents } from './resolve-dependents.mjs';
+import { changeTokenHold } from './token-hold.mjs';
+import { analyzeTokenBudget } from './token-reanalysis.mjs';
+import { beginDelayAnalysis, observeDelay, reviewingDelay } from './delay-analysis.mjs';
+import { applyExternal } from './apply-report.mjs';
 import {
-  addSpent,
   applyTransition,
   claimTask,
   countApiError,
   countContinuation,
-  countRejection,
   countSpawnFailure,
-  linkArtifact,
   refundContinuation,
-  relate,
   releaseClaim,
   resetAttempts,
 } from './task-file.mjs';
-import { judgeDenials } from './denials.mjs';
-import { pipelineCause, recoveryFrom } from './recovery.mjs';
-import { planAmendments, planRequests } from './requests.mjs';
+import { halt } from './report-plan.mjs';
+import { transferReport } from './report-delivery.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
+import { recoverClosureReason } from './closure.mjs';
+import { incidentPolicy } from './pipeline-incidents.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -51,375 +56,6 @@ export const RESULT = {
   raced: 'задачу занял кто-то другой',
 };
 
-/**
- * Улики о деле этапа: их спрашивают, только когда этапу в чём-то отказали.
- *
- * Отметка начала этапа живёт у супервизора, рядом с идентификатором сессии,
- * а прочее берётся из git. Складываются они здесь, потому что сам суд над
- * отказом — чистый счёт и ни о том, ни о другом не знает.
- */
-function evidenceFor(task, stage, io) {
-  return {
-    ...(io.stageEvidence?.(task) ?? {}),
-    stageStartedAt: io.stageStartedAt?.(task.id, stage) ?? null,
-  };
-}
-
-/** Перенести отчёт сессии в бэклог. */
-async function transferReport(action, io) {
-  const task = io.readTask(action.taskId);
-  const report = io.readReport(action.taskId, action.stage);
-  if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
-
-  // Отказанные действия судят ЗДЕСЬ, а не в супервизоре, и после разбора
-  // отчёта, а не до него. До разбора неизвестны ни исход, ни ссылки — то
-  // есть ровно то, чем след и проверяется; суд получался бы вслепую и
-  // потому не мог не быть грубым.
-  const denials = report.denials ?? [];
-  const trust =
-    denials.length > 0
-      ? judgeDenials({
-          denials,
-          report,
-          stage: action.stage,
-          evidence: evidenceFor(task, action.stage, io),
-        })
-      : { verdict: 'passing', why: null };
-
-  if (trust.verdict === 'undermining') {
-    // Отчёт при этом не пропадает. Основание записано ценой: 31.08.2026
-    // задача 0006 ушла в ошибку с полностью снятыми числами шестидесяти
-    // матчей, и числа эти остались лежать в логе, которого не прочитал никто.
-    const stopped = await halt(task, trust.why, io, {
-      what: report.summary,
-      decisions: report.decisions ?? [],
-      links: report.links ?? {},
-      denials,
-    });
-    // Отчёт снимается с очереди и здесь: иначе следующий цикл принёс бы его
-    // снова, а задача уже стоит в разборе.
-    if (stopped.result === 'done') {
-      // До удавшейся записи отметка начала нужна повторной приёмке.
-      io.forgetSession?.(action.taskId, action.stage);
-      io.removeReport(action.taskId, action.stage);
-    }
-    return stopped;
-  }
-
-  // «Сверять нечем» — не отсутствие следа, а поломка прибора либо этап,
-  // у которого проверяемого следа не бывает вовсе. Отчёт применяется,
-  // но молчать об этом нельзя: отметка и есть та заметность, ради которой
-  // заводилось прежнее правило.
-  const denialsNote = trust.verdict === 'unverifiable' ? trust.why : undefined;
-
-  const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
-  const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
-  if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-
-  // Остановленная задача счётчиков больше не считает: их обнулил сам переход
-  // в сквозное состояние, и наращивать возвраты поверх обнулённого значило бы
-  // приписать разбору спор, которого он не вёл.
-  const halted = verdict.status === 'postmortem' || verdict.status === 'failed';
-
-  // Дошедший до конца этап обнуляет счётчики: прошлые заминки больше не в счёт,
-  // иначе задача упрётся в предел там, где всё было хорошо.
-  //
-  // Возврат наращивает свой счёт — возвраты подряд, до предела спора, — а
-  // продолжения гасит так же, как успех: они считают сессии на этапе, с которого
-  // задача уходит. Счёт, притащенный с аудита, останавливал проработку, не дав
-  // ей ни одной сессии (02.09.2026: 0022, 0080, 0088; карточка 0081).
-  let next = halted
-    ? moved.task
-    : report.outcome === 'rejected'
-      ? countRejection(moved.task)
-      : resetAttempts(moved.task);
-
-  // Возврат отправляет задачу на этап, где сессия уже была, и возобновлять её
-  // нельзя: возобновлённая отвечает из своей памяти — «всё сделано» — и вершина
-  // между кругами не меняется вовсе. Забытая сессия начинается заново и читает
-  // свежее замечание журналом, как и всякий новый исполнитель.
-  if (report.outcome === 'rejected' && !halted) {
-    io.forgetSession?.(action.taskId, verdict.status);
-  }
-
-  // По той же причине забывается и прошлый разбор: задача, однажды
-  // разобранная и упавшая снова, возобновила бы ту сессию — и услышала бы
-  // от неё вывод о позапрошлом падении.
-  if (verdict.status === 'postmortem') io.forgetSession?.(action.taskId, 'postmortem');
-
-  // Расход прибавляется на ЛЮБОМ исходе отчёта, включая возврат и остановку:
-  // сессия стоила денег независимо от того, чем кончилась, а вся мера затеяна
-  // ровно против кругов, каждый из которых чем-то кончался.
-  next = addSpent(next, report.costUsd);
-
-  // Ссылки из отчёта переносятся В САМУ ЗАДАЧУ, а не только в журнал.
-  // По ним конвейер потом опрашивает проверки и доказывает влитость: без
-  // номера pull request задача висела бы в ожидании проверок вечно, потому
-  // что опрашивать было бы нечего. Дыра найдена сверкой скиллов с кодом.
-  for (const key of ['change', 'pr', 'run']) {
-    const value = report.links?.[key];
-    if (value != null && value !== '') next = linkArtifact(next, key, value);
-  }
-
-  // Заявки разбираются до записи: идентификаторы нужны, чтобы связать
-  // порождённые задачи с породившей одним коммитом, а не двумя.
-  const plan = planRequests(report.requests, {
-    existingIds: io.allTaskIds(),
-    now: io.now,
-    sourceId: task.id,
-    // Этап, с которого пришёл отчёт: по нему решается, слушать ли признак
-    // блокирующей заявки. Право заводить работу мимо шлюза кандидатов есть
-    // только у разбора ошибки.
-    sourceStage: task.status,
-    // Разбор, назвавший причину конвейерной, заводит конвейерные заявки.
-    pipelineCause: pipelineCause(report),
-    // Части, рождённые дроблением, анализ на дробность уже прошли — в лице
-    // задачи, которая их и породила, — и потому идут из очереди сразу
-    // в проработку.
-    decomposed: report.outcome === 'split',
-  });
-  for (const bad of plan.rejected) {
-    // Негодная заявка не отменяет остального: остальные заводятся, а эта
-    // остаётся в журнале с причиной, по которой её не приняли.
-    plan.notes = [...(plan.notes ?? []), `заявка отклонена: ${bad.problems.join('; ')}`];
-  }
-
-  // Вердикт удавшегося разбора едет в саму задачу: по нему сканер потом
-  // решает, возвращать ли её из ошибки и когда. Идентификаторы конвейерных
-  // починок известны уже здесь — до записи, — и разбору знать их не нужно.
-  if (task.status === 'postmortem' && verdict.status === 'failed' && report.outcome === 'done') {
-    const judged = recoveryFrom(report, {
-      task: next,
-      created: plan.planned.filter((born) => born.area === 'pipeline').map((born) => born.id),
-      known: io.allTaskIds(),
-      maxReturns: io.maxAutoReturns,
-    });
-    next = { ...next, recovery: judged.recovery };
-    plan.notes = [...(plan.notes ?? []), ...judged.notes];
-  }
-
-  // Дополнения разбираются здесь же и по тем же правилам: одна негодная
-  // запись не отменяет остальных, а причина отказа уезжает в журнал.
-  const facts = planAmendments(report.amendments, {
-    known: new Map(
-      io
-        .allTaskIds()
-        .map((id) => [id, io.readTask(id)])
-        .filter(([, item]) => item),
-    ),
-    sourceId: task.id,
-  });
-  for (const bad of facts.rejected) {
-    plan.notes = [...(plan.notes ?? []), `дополнение отклонено: ${bad.problems.join('; ')}`];
-  }
-
-  // Задачи по заявкам заводятся ПЕРЕД сменой состояния породившей, и порядок
-  // этот выстрадан. Пока было наоборот, неудача на заявках оставляла отчёт
-  // непринятым при уже применённом переходе — а повторить перенос было
-  // нельзя: отчёт говорил об этапе, из которого задача уже вышла, и второй
-  // заход отправил бы её в ошибку. Заявки при этом пропадали насовсем.
-  //
-  // Теперь неудача на заявках не оставляет следов: состояние не тронуто,
-  // отчёт цел, и следующий цикл начнёт заново. Каждая задача уезжает своим
-  // коммитом: правило «коммит на смысловую правку» не делает исключения
-  // для порождённых.
-  const created = [];
-  for (const born of plan.planned) {
-    const pushed = await io.createTask(
-      born,
-      `chore(backlog): ${born.id} заведена по разбору ${action.taskId}`,
-    );
-    if (!pushed.ok) return { result: 'failed', why: pushed.outcome, created };
-    created.push(born.id);
-    next = relate(next, born.id);
-  }
-
-  // Дополнения уезжают тем же порядком и по той же причине: до смены
-  // состояния, каждое своим коммитом. Неудача здесь не оставляет следов —
-  // состояние не тронуто, отчёт цел, следующий цикл начнёт заново.
-  const amended = [];
-  for (const item of facts.planned) {
-    const written = await io.amendTask(
-      item.taskId,
-      `**Дополнение по разбору ${task.id}**\n\n${item.facts}\n`,
-      `chore(backlog): ${item.taskId} дополнена фактурой из разбора ${task.id}`,
-      'agent',
-    );
-    if (!written.ok) return { result: 'failed', why: written.outcome, created, amended };
-    amended.push(item.taskId);
-    // Связь проставляется у источника. Обратной не делаем намеренно: правка
-    // чужой задачи ради ссылки — это переезд карточки в ту же колонку и лишняя
-    // запись в её журнале, а сам источник и так назван в тексте дополнения.
-    next = relate(next, item.taskId);
-  }
-
-  // Пакет выкладки разносится ДО записи ведущей и по той же причине, что
-  // заявки: неудача на середине не должна оставлять отчёт непринятым при
-  // уже сдвинутой ведущей. Задачи, уже переехавшие прошлым заходом,
-  // разноска узнаёт по состоянию и пропускает — перенос идемпотентен.
-  if (action.stage === 'deploy' && Array.isArray(report.batch)) {
-    const spread = await spreadBatch(task, report, io);
-    if (!spread.ok) return { result: 'failed', why: spread.why, created, amended };
-    for (const id of spread.moved) next = relate(next, id);
-    plan.notes = [...(plan.notes ?? []), ...spread.notes];
-  }
-
-  // Вопрос записывается ТЕМ ЖЕ действием, что и переход в ожидание.
-  // Схема задачи требует поля `question` при этом состоянии, а без записи
-  // вопроса у ожидания нет выхода вовсе.
-  const asks = verdict.status === 'awaiting-po';
-  if (asks) {
-    next = {
-      ...next,
-      question: { askedAt: io.now, summary: report.summary ?? verdict.note, answeredAt: null },
-    };
-  }
-
-  // Ответ, собранный спрашивающей сессией, уезжает туда же. Не записав его,
-  // конвейер оставил бы вопрос без ответа: следующая спрашивающая сессия
-  // задала бы тот же вопрос заново, а летопись говорила бы, что владелец
-  // продукта так и не ответил.
-  const answering = action.stage === 'awaiting-po';
-  if (answering && task.question) {
-    next = { ...next, question: { ...task.question, answeredAt: io.now } };
-  }
-
-  // Куда именно ложится вопрос — дело хранилища. Файловый бэклог пишет
-  // его в `manage/questions.md` и просит увезти файл тем же коммитом;
-  // доска пишет комментарий к карточке, и увозить ей нечего.
-  const asked = asks ? await io.askOwner(next, report) : null;
-  const answered = answering ? await io.recordAnswer(next, action, report) : null;
-
-  const push = await io.saveTask(
-    next,
-    {
-      at: io.now,
-      from: task.status,
-      to: verdict.status,
-      // Обычно запись журнала говорит словами сессии — её `summary`. Исходу
-      // `moot` этого мало: спецификация требует, чтобы запись назвала причину
-      // ВМЕСТЕ с доказательством, а сложены они в одну фразу только в записке
-      // разбора — «Предмет снят: … Проверено: …». Деться доказательству больше
-      // некуда: `task.history` доска не хранит вовсе, а отчёт после переноса
-      // снимается, и лог этапа в промпт следующих сессий не уезжает. Без этой
-      // строки закрытая задача осталась бы в журнале заявлением без улики —
-      // ровно тем, против чего написан третий предохранитель исхода.
-      what: report.outcome === 'moot' && !halted ? verdict.note : report.summary,
-      links: report.links ?? {},
-      decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
-      problem: halted ? verdict.note : undefined,
-      denials,
-      denialsNote,
-      // Здесь и только здесь запись говорит словами сессии: всё остальное,
-      // что конвейер пишет на доску, — его собственная механика.
-      source: 'agent',
-    },
-    `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
-    [asked, answered].filter(Boolean),
-  );
-  if (!push.ok) return { result: 'failed', why: push.outcome, created, amended };
-
-  // Перенесённый отчёт завершает заход при любом исходе. Память о нём
-  // не должна подменить чтение новой задачи при следующем возврате.
-  io.forgetSession?.(action.taskId, action.stage);
-
-  // Отчёт снимается с очереди только после удавшейся отправки: иначе
-  // при неудаче этап пришлось бы проходить заново, потеряв уже сделанное.
-  io.removeReport(action.taskId, action.stage);
-  return {
-    result: 'done',
-    status: verdict.status,
-    created,
-    amended,
-    rejected: [...plan.rejected, ...facts.rejected],
-  };
-}
-
-/**
- * Разнести отчёт пакетной выкладки по задачам пакета.
- *
- * Отчёт один — ведущей, — а задач в пакете много, и о них говорят два
- * перечня: `deployed` (код выложен → `cleanup`) и `skipped` (`{ taskId, why }`,
- * из пакета исключена → `failed` с причиной). Исход `outcome` относится
- * к ведущей и разбирается общим порядком; здесь двигаются только прочие.
- *
- * Отчёт властен ровно над своим пакетом — перечнем из назначения, который
- * супервизор вернул вместе с отчётом. Идентификатор не из пакета не двигает
- * ничего: сессия не откроет доску, и назвать чужую задачу может только
- * по ошибке. Задача пакета, не названная ни в одном перечне, остаётся
- * в `deploy` и попадёт в следующий пакет — молча увести её в уборку нельзя:
- * сессия могла пропустить её по делу, а не по забывчивости. Оба случая
- * ложатся записью в журнал ведущей.
- *
- * Каждая задача уезжает своим коммитом, и неудача любой из них возвращает
- * неудачу целиком: ведущая и отчёт остаются на месте, следующий оборот
- * начинает заново, а уже переехавших узнаёт по состоянию.
- */
-async function spreadBatch(lead, report, io) {
-  const batch = report.batch.filter((id) => id !== lead.id);
-  const deployed = new Set(Array.isArray(report.deployed) ? report.deployed : []);
-  const skipped = new Map(
-    (Array.isArray(report.skipped) ? report.skipped : [])
-      .filter((item) => item && typeof item.taskId === 'string')
-      .map((item) => [item.taskId, String(item.why ?? '').trim() || 'причина не названа']),
-  );
-
-  const notes = [];
-  for (const id of [...deployed, ...skipped.keys()]) {
-    if (id !== lead.id && !batch.includes(id)) {
-      notes.push(`Отчёт назвал задачу ${id}, которой в пакете не было: она не тронута.`);
-    }
-  }
-
-  const moved = [];
-  for (const id of batch) {
-    const member = io.readTask(id);
-    if (!member) {
-      notes.push(`Задача ${id} из пакета в бэклоге не найдена.`);
-      continue;
-    }
-    // Уже переехала прошлым заходом переноса — либо её увёл человек.
-    // И то и другое не наше дело: двигаем только стоящих в выкладке.
-    if (member.status !== 'deploy') continue;
-
-    const to = deployed.has(id) ? 'cleanup' : skipped.has(id) ? 'failed' : null;
-    if (!to) {
-      notes.push(`Задача ${id} из пакета отчётом не названа: остаётся в выкладке.`);
-      continue;
-    }
-
-    const problem = to === 'failed' ? skipped.get(id) : undefined;
-    const what =
-      to === 'cleanup'
-        ? `Выложена пакетом с ${lead.id}. ${report.summary ?? ''}`.trim()
-        : `Исключена из пакета выкладки ${lead.id}.`;
-    const shifted = applyTransition(member, { status: to, note: problem ?? what, now: io.now });
-    if (!shifted.task) return { ok: false, why: `${id}: ${shifted.problems.join('; ')}` };
-
-    // Дошедшая до уборки задача счётчиков не несёт, как и ведущая: прошлые
-    // заминки этапа больше не в счёт. Исключённой их обнулил сам переход
-    // в сквозное состояние.
-    const settled = to === 'cleanup' ? resetAttempts(shifted.task) : shifted.task;
-    const push = await io.saveTask(
-      settled,
-      {
-        at: io.now,
-        from: 'deploy',
-        to,
-        what,
-        problem,
-        links: report.links ?? {},
-        source: 'agent',
-      },
-      `chore(backlog): ${id} deploy → ${to} (пакет ${lead.id})`,
-    );
-    if (!push.ok) return { ok: false, why: `${id}: ${push.outcome}`, moved, notes };
-    moved.push(id);
-  }
-
-  return { ok: true, moved, notes };
-}
-
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
 async function startStage(action, io) {
   const task = io.readTask(action.taskId);
@@ -427,6 +63,8 @@ async function startStage(action, io) {
 
   const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
+  if (task.reanalysis) claimed.task.reanalysis = false;
+  if (action.scheduling && !task.scheduling) claimed.task.scheduling = action.scheduling;
 
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
@@ -449,7 +87,9 @@ async function startStage(action, io) {
       at: io.now,
       from: task.status,
       to: action.stage,
-      what: `Взята в работу машиной ${io.machine}.`,
+      what: [`Взята в работу машиной ${io.machine}.`, action.selectionReason]
+        .filter(Boolean)
+        .join(' '),
     },
     `chore(backlog): ${task.id} взята в работу (${action.stage})`,
   );
@@ -536,6 +176,7 @@ async function startStage(action, io) {
     return { result: 'failed', why: `этап не запустился: ${spawned.why}` };
   }
 
+  io.recordSchedulingLaunch?.(claimed.task);
   return { result: 'done', status: action.stage };
 }
 
@@ -569,7 +210,14 @@ function assignmentFor(action, io, task, branchHint) {
     // не вправе, а читать устаревшую копию с диска хуже, чем не читать.
     task,
     journal: io.readJournal(action.taskId),
-    board: io.boardDigest(),
+    board: io.boardDigest(task.id),
+    delayDependencies: reviewingDelay(task)
+      ? (task.dependsOn ?? []).map((id) => ({
+          task: io.readTask(id) ??
+            io.dependencyRecords?.().find((item) => item.id === id) ?? { id, missing: true },
+          journal: io.readJournal(id),
+        }))
+      : [],
     // Пакет выкладки: выписки задач, которые сессия выкладывает вместе
     // с ведущей. Перечень фиксируется здесь, в момент выдачи сессии, и это
     // единственный источник правды о составе пакета — доску сессия не откроет,
@@ -653,14 +301,23 @@ async function continueStage(action, io) {
   // Процесс родился. Удавшееся порождение гасит счёт несостоявшихся
   // запусков: оно доказывает, что машинерия запуска работает, и прежние
   // отказы к делу больше не относятся.
-  const started = { ...counted, attempts: { ...counted.attempts, spawnFailures: 0 } };
+  const started = {
+    ...counted,
+    attempts: { ...counted.attempts, spawnFailures: 0 },
+    ...(action.incidentProbe
+      ? { pipelineIncident: { ...counted.pipelineIncident, probeStartedAt: io.now } }
+      : {}),
+  };
+  io.recordSchedulingLaunch?.(started);
   const push = await io.saveTask(
     started,
     {
       at: io.now,
       from: task.status,
       to: task.status,
-      what: `Этапу выдана сессия: ${action.reason}.`,
+      what: [`Этапу выдана сессия: ${action.reason}.`, action.selectionReason, action.unaccounted]
+        .filter(Boolean)
+        .join(' '),
     },
     `chore(backlog): ${task.id} сессия на этап ${task.status}`,
   );
@@ -975,22 +632,6 @@ async function failStage(action, io) {
  * содержимое отброшенного отчёта и перечень отказанных действий. Терять
  * отчёт молча нельзя, и стоит это правило дороже, чем кажется.
  */
-async function halt(task, why, io, extra = {}) {
-  const status = haltOf(task);
-  const moved = applyTransition(task, { status, note: why, now: io.now });
-  if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-
-  if (status === 'postmortem') io.forgetSession?.(task.id, 'postmortem');
-
-  const push = await io.saveTask(
-    moved.task,
-    { at: io.now, from: task.status, to: status, problem: why, ...extra },
-    `chore(backlog): ${task.id} остановлена, ${
-      status === 'postmortem' ? 'нужен разбор' : 'разбор не довёл до причины'
-    }`,
-  );
-  return push.ok ? { result: 'done', status } : { result: 'failed', why: push.outcome };
-}
 
 /**
  * Прибрать за завершённой задачей.
@@ -1002,8 +643,10 @@ async function halt(task, why, io, extra = {}) {
 async function cleanupTask(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
+  if ((task.owner && task.owner !== io.machine) || io.tokenActionBlocked?.(task.id))
+    return { result: 'skipped', why: 'задача занята другой машиной, этапом или отчётом' };
 
-  const entry = io.registryEntry(action.taskId);
+  const entry = io.registryEntry(action.taskId) ?? io.recoverRegistry?.(action.taskId) ?? null;
   const verdict = mayCleanup({
     task,
     entry,
@@ -1018,7 +661,19 @@ async function cleanupTask(action, io) {
 
   if (verdict.verdict === 'fail') return halt(task, verdict.why, io);
 
+  const closureReason = task.links?.pr
+    ? null
+    : recoverClosureReason(task, io.readJournal?.(task.id));
+  if (!task.links?.pr && !closureReason)
+    return {
+      result: 'failed',
+      why: 'причина закрытия отсутствует: восстановите решение о снятии предмета до уборки',
+    };
+
   if (verdict.verdict === 'proceed') {
+    const safety = io.cleanupSafety?.(task, entry);
+    if (safety && !safety.ok) return { result: 'skipped', why: safety.why };
+    io.upsertRegistry?.(entry);
     const swept = cleanup({ task, entry, io });
     if (!swept.finished) {
       // Недоделанная уборка — не беда: следующий цикл дочистит. Задача
@@ -1027,14 +682,24 @@ async function cleanupTask(action, io) {
     }
   }
 
-  const moved = applyTransition(task, { status: 'closed', note: verdict.why, now: io.now });
+  const status = task.links?.pr ? 'completed' : 'closed';
+  const moved = applyTransition(task, { status, note: verdict.why, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
   const push = await io.saveTask(
-    moved.task,
-    { at: io.now, from: task.status, to: 'closed', what: `Убрано: ${verdict.why}.` },
-    `chore(backlog): ${task.id} закрыта`,
+    closureReason ? { ...moved.task, closureReason } : moved.task,
+    {
+      at: io.now,
+      from: task.status,
+      to: status,
+      ...(status === 'completed'
+        ? { completionSummary: task.completionSummary, links: task.links }
+        : {}),
+      what: closureReason ? 'Уборка ресурсов задачи завершена.' : `Убрано: ${verdict.why}.`,
+      ...(closureReason ? { closureReason } : {}),
+    },
+    `chore(backlog): ${task.id} ${status}`,
   );
-  return push.ok ? { result: 'done', status: 'closed' } : { result: 'failed', why: push.outcome };
+  return push.ok ? { result: 'done', status } : { result: 'failed', why: push.outcome };
 }
 
 /**
@@ -1093,15 +758,68 @@ async function clearCard(action, io) {
 }
 
 const HANDLERS = {
+  'reconcile-task': reconcileTask,
+  'queue-backlog-review': queueBacklogReview,
+  'hold-token-budget': changeTokenHold,
+  'refresh-token-budget': changeTokenHold,
+  'resume-token-budget': changeTokenHold,
+  'analyze-delay': beginDelayAnalysis,
+  'observe-delay': observeDelay,
+  'flush-delay-journal': async (action, io) => {
+    const task = io.readTask(action.taskId);
+    if (!task?.delayJournal || !io.flushDelayJournal) return { result: 'skipped' };
+    const saved = await io.flushDelayJournal(task);
+    return saved.ok ? { result: 'done' } : { result: 'failed', why: saved.why ?? saved.outcome };
+  },
+  'unblock-task': unblockTask,
+  'resolve-dependents': resolveDependents,
+  // Переезд кандидата про конвейер в «Обслуживание». Ни сессии, ни дерева:
+  // это смена колонки, и всё, что ей нужно, — объявленная область работы.
+  'settle-maintenance': async (action, io) => {
+    const task = io.readTask(action.taskId);
+    if (task?.status !== 'candidate' || task.area !== 'pipeline')
+      return { result: 'skipped', why: 'карточка уже не кандидат про конвейер' };
+    const note =
+      'Переезд в «Обслуживание»: объявленная область работы — конвейер. ' +
+      'Одобрения владельца продукта такая задача не ждёт; кандидатами остаются ' +
+      'предложения про игру.';
+    const moved = applyTransition(task, { status: 'maintenance', now: io.now, note });
+    if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+    const saved = await io.saveTask(
+      moved.task,
+      { at: io.now, from: 'candidate', to: 'maintenance', what: note, source: 'supervisor' },
+      `chore(backlog): ${task.id} candidate → maintenance`,
+    );
+    return saved.ok
+      ? { result: 'done', status: 'maintenance' }
+      : { result: 'failed', why: saved.why ?? saved.outcome };
+  },
   'push-tail': pushTail,
   'quarantine-card': quarantineCard,
   'clear-card': clearCard,
   cleanup: cleanupTask,
   'transfer-report': transferReport,
   'start-stage': startStage,
+  'open-incident': async (action, io) => {
+    const task = io.readTask(action.taskId);
+    if (!task || task.pipelineIncident)
+      return { result: 'skipped', why: 'инцидент уже учтён или задача недоступна' };
+    const saved = await io.saveTask(
+      { ...task, pipelineIncident: action.incident },
+      {
+        at: io.now,
+        from: task.status,
+        to: task.status,
+        what: `Подтверждён общий инцидент ${action.incident.id}: ${action.incident.evidence} Исправления: ${action.incident.fixedBy.join(', ')}. Проверка: ${action.incident.check.expectation}`,
+      },
+      `chore(backlog): ${task.id} общий инцидент конвейера`,
+    );
+    return saved.ok ? { result: 'done' } : { result: 'failed', why: saved.why ?? saved.outcome };
+  },
   'note-orphan': noteOrphan,
   'note-api-error': noteApiError,
   'decompose-again': decomposeAgain,
+  'analyze-token-budget': analyzeTokenBudget,
   'continue-stage': continueStage,
   'answer-question': answerQuestion,
   'return-task': returnTask,
@@ -1120,6 +838,53 @@ export async function execute(actions, io) {
   const results = [];
 
   for (const action of actions) {
+    if (['start-stage', 'continue-stage'].includes(action.kind) && io.schedulingBlocked?.()) {
+      results.push({ action, result: 'skipped', why: io.schedulingBlocked() });
+      continue;
+    }
+    if (io.reportStorageBlocked?.()) {
+      results.push({ action, result: 'failed', why: 'report storage blocks scheduling' });
+      break;
+    }
+    if (
+      action.kind !== 'transfer-report' &&
+      // Хвост завершённого этапа должен уйти до переноса его отчёта.
+      action.kind !== 'push-tail' &&
+      io.reportStore?.entries().some((entry) => reportTaskIds(entry.report).includes(action.taskId))
+    ) {
+      results.push({ action, result: 'skipped', why: 'pending report owns this task' });
+      continue;
+    }
+    // Перенесённый выше отчёт мог открыть инцидент уже после снимка scan.
+    // Проверяем допуск до захвата и порождения, по обновлённому кешу доски.
+    if (['start-stage', 'continue-stage'].includes(action.kind) && io.allTaskIds) {
+      const tasks = io
+        .allTaskIds()
+        .map((id) => io.readTask(id))
+        .filter(Boolean);
+      const probes = Object.fromEntries(
+        tasks
+          .filter((task) => task.pipelineIncident)
+          .map((task) => [
+            task.pipelineIncident.id,
+            io.incidentProbeAt?.(task.pipelineIncident.id),
+          ]),
+      );
+      const policy = incidentPolicy({
+        tasks,
+        dependencyRecords: io.dependencyRecords?.() ?? [],
+        scheduling: { probes },
+      });
+      const task = io.readTask(action.taskId);
+      if (task && !policy.allows(task, action.stage)) {
+        results.push({
+          action,
+          result: 'skipped',
+          why: 'подтверждённый инцидент удерживает выдачу',
+        });
+        continue;
+      }
+    }
     const handler = HANDLERS[action.kind];
     if (!handler) {
       results.push({

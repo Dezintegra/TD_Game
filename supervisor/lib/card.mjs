@@ -1,3 +1,7 @@
+import { CATEGORIES, routingFields } from './categories.mjs';
+import { schedulingFields } from './scheduling.mjs';
+import { tokenPanel, withoutTokenPanel } from './token-hold.mjs';
+
 /**
  * Превращение карточки Trello в задачу и обратно.
  *
@@ -42,7 +46,7 @@ export function splitDescription(desc = '') {
   const human = (desc.slice(0, open) + desc.slice(close + BLOCK_CLOSE.length)).trim();
 
   try {
-    return { human, meta: JSON.parse(inner) };
+    return { human: withoutTokenPanel(human), meta: JSON.parse(inner) };
   } catch {
     // Испорченный блок не притворяется пустым: потерять здесь владельца
     // задачи значило бы отдать её второй машине.
@@ -52,8 +56,13 @@ export function splitDescription(desc = '') {
 
 /** Собрать описание обратно: человеческий текст, ниже — машинный блок. */
 export function joinDescription(human, meta) {
-  const block = `${BLOCK_OPEN}\n${JSON.stringify(meta)}\n${BLOCK_CLOSE}`;
-  return human ? `${human.trim()}\n\n${block}` : block;
+  // Текст комментария внутри JSON может содержать конец HTML-комментария.
+  // Экранируем его в JSON, иначе чтение оборвёт весь машинный блок посередине.
+  const encoded = JSON.stringify(meta).replace(/-->/g, '--\\u003e');
+  const block = `${BLOCK_OPEN}\n${encoded}\n${BLOCK_CLOSE}`;
+  return [tokenPanel(meta?.tokenHold), withoutTokenPanel(human ?? ''), block]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 /**
@@ -123,6 +132,7 @@ export function withExpectation(human, task) {
 export const labelKeysOf = (task) =>
   [
     task?.type,
+    ...(task?.categories ?? []).map((key) => `category-${key}`),
     task?.type === 'run' ? (task.run?.kind ?? null) : null,
     // Без этой строки метка не уехала бы на заведённую дроблением карточку,
     // и она пошла бы на анализ дробности, который для неё только что провели.
@@ -157,6 +167,15 @@ export function parseCard(card, { stateByList, labelKeyById }) {
 
   const task = {
     id: meta?.id ?? null,
+    ...(Object.hasOwn(meta ?? {}, 'spentUsd') ? { spentUsd: meta.spentUsd } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'reportReceipts') ? { reportReceipts: meta.reportReceipts } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'tokenHold') ? { tokenHold: meta.tokenHold } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'tokenReanalysis')
+      ? { tokenReanalysis: meta.tokenReanalysis }
+      : {}),
+    ...routingFields(meta),
+    ...schedulingFields(meta),
+    ...(labels.categories.length ? { categories: labels.categories } : {}),
     type: labels.types[0] ?? null,
     title: titleOf(card.name),
     description: human,
@@ -168,6 +187,10 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     statusChangedAt: meta?.statusChangedAt ?? createdAtOf(card.id),
     owner: meta?.owner ?? null,
     returnTo: meta?.returnTo ?? null,
+    ...(meta?.backlogReview ? { backlogReview: meta.backlogReview } : {}),
+    ...(meta?.dependencyRecheck ? { dependencyRecheck: meta.dependencyRecheck } : {}),
+    ...(meta?.reconciliation ? { reconciliation: meta.reconciliation } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'question') ? { question: meta.question } : {}),
     links: { change: null, pr: null, run: null, related: [], ...(meta?.links ?? {}) },
     attempts: { continuations: 0, cycleFailures: 0, ...(meta?.attempts ?? {}) },
     // Дробление уже проводили — этап анализа задача пропускает. Признак
@@ -176,6 +199,14 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     // только колонкой, а тип — только меткой.
     decomposed: labels.flags.includes('decomposed'),
     ...(Object.hasOwn(meta ?? {}, 'dependsOn') ? { dependsOn: meta.dependsOn } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'splitInto') ? { splitInto: meta.splitInto } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'closureReason') ? { closureReason: meta.closureReason } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'completionSummary')
+      ? { completionSummary: meta.completionSummary }
+      : {}),
+    ...(Object.hasOwn(meta ?? {}, 'closureRequestKey')
+      ? { closureRequestKey: meta.closureRequestKey }
+      : {}),
     ...(Object.hasOwn(meta ?? {}, 'dependencyResults')
       ? { dependencyResults: meta.dependencyResults }
       : {}),
@@ -217,6 +248,7 @@ function labelKeys(idLabels, labelKeyById) {
 
   return {
     types: keys.filter((key) => ['feature', 'run', 'note'].includes(key)),
+    categories: CATEGORIES.filter((key) => keys.includes(`category-${key}`)),
     runKinds: keys.filter((key) => ['arena', 'perf', 'bench-tick'].includes(key)),
     flags: keys.filter((key) => ['unparsed', 'overdue', 'decomposed'].includes(key)),
   };
@@ -232,7 +264,25 @@ function labelKeys(idLabels, labelKeyById) {
 export function metaOf(task) {
   return {
     id: task.id,
+    ...(Object.hasOwn(task, 'spentUsd') ? { spentUsd: task.spentUsd } : {}),
+    ...(Object.hasOwn(task, 'reportReceipts') ? { reportReceipts: task.reportReceipts } : {}),
+    ...(Object.hasOwn(task, 'tokenHold') ? { tokenHold: task.tokenHold } : {}),
+    ...(Object.hasOwn(task, 'tokenReanalysis') ? { tokenReanalysis: task.tokenReanalysis } : {}),
+    ...routingFields(task),
+    ...schedulingFields(task),
+    ...(Object.hasOwn(task, 'question') ? { question: task.question } : {}),
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
+    ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),
+    ...(task.backlogReview ? { backlogReview: task.backlogReview } : {}),
+    ...(task.dependencyRecheck ? { dependencyRecheck: task.dependencyRecheck } : {}),
+    ...(task.reconciliation ? { reconciliation: task.reconciliation } : {}),
+    ...(Object.hasOwn(task, 'closureReason') ? { closureReason: task.closureReason } : {}),
+    ...(Object.hasOwn(task, 'completionSummary')
+      ? { completionSummary: task.completionSummary }
+      : {}),
+    ...(Object.hasOwn(task, 'closureRequestKey')
+      ? { closureRequestKey: task.closureRequestKey }
+      : {}),
     ...(Object.hasOwn(task, 'dependencyResults')
       ? { dependencyResults: task.dependencyResults }
       : {}),

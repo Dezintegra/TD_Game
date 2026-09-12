@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { clipMiddle, stagePrompt } from './stage-prompt.mjs';
+import { ROUTING_CONTRACT } from './routing-contract.mjs';
 
 /**
  * Проверки промпта назначения.
@@ -27,6 +28,142 @@ const assignment = {
   branch: 'worktree-0042-fix-tesla-price',
   path: '.claude/worktrees/0042-fix-tesla-price',
 };
+
+it('передаёт подтверждённый источник локального замера без сокращения SHA', () => {
+  const benchmarkSource = {
+    source: { worktree: '../source' },
+    path: '/source',
+    branch: null,
+    head: 'a'.repeat(40),
+  };
+  const text = stagePrompt({
+    task,
+    assignment: { ...assignment, stage: 'benchmark', path: benchmarkSource.path, benchmarkSource },
+  });
+  const payload = JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)[1]);
+  expect(payload.worktree).toBe(benchmarkSource.path);
+  expect(payload.benchmarkSource).toEqual(benchmarkSource);
+});
+
+describe('несколько выдержек', () => {
+  it('ограничивает три больших лога 30 000 знаками содержимого, оставляя края', () => {
+    const entries = [5, 4, 3, 2, 1].map((n) => ({
+      stage: 'implement',
+      launchId: `launch-${n}`,
+      startedAt: `start-${n}`,
+      path: `/logs/${n}.log`,
+      text: `HEAD-${n}` + String(n).repeat(20000) + `TAIL-${n}`,
+    }));
+    const prompt = stagePrompt({ assignment, task, stageLogs: { stage: 'implement', entries } });
+    const excerpt = prompt.slice(
+      prompt.indexOf('## Лог упавшего этапа'),
+      prompt.indexOf('## Отчёт'),
+    );
+    const blocks = [...excerpt.matchAll(/```\n([\s\S]*?)\n```/g)].map((match) => match[1]);
+    expect(blocks).toHaveLength(3);
+    let contentLength = 0;
+    blocks.forEach((block, index) => {
+      const n = 5 - index;
+      expect(block).toContain(`HEAD-${n}`);
+      expect(block).toContain(`TAIL-${n}`);
+      expect(block).toContain('пропущено 10012 знаков');
+      contentLength += block.replace(/\n\n\[…пропущено [^\n]+\]\n\n/, '').length;
+    });
+    expect(contentLength).toBe(30000);
+    expect(excerpt).not.toContain('HEAD-2');
+  });
+
+  it('содержит один текст на пару путей, а ошибку файла показывает рядом с остальными', () => {
+    const entries = [
+      {
+        path: '/logs/latest.log',
+        historyPath: '/logs/history.log',
+        text: 'UNIQUE-SECOND',
+        stage: 'implement',
+        launchId: 'second',
+      },
+      { path: '/logs/missing.log', error: 'ENOENT', stage: 'implement' },
+      {
+        path: '/logs/first.log',
+        text: 'UNIQUE-FIRST',
+        diagnostic: '/logs/latest.log: stale',
+        stage: 'implement',
+      },
+    ];
+    const prompt = stagePrompt({ assignment, task, stageLogs: { stage: 'implement', entries } });
+    expect(prompt.split('UNIQUE-SECOND')).toHaveLength(2);
+    expect(prompt).toContain('Историческая копия: `/logs/history.log`');
+    expect(prompt).toContain('Ошибка чтения: ENOENT');
+    expect(prompt).toContain('UNIQUE-FIRST');
+    expect(prompt).toContain('/logs/latest.log: stale');
+  });
+
+  it('явно называет отсутствие истории и неизвестный этап', () => {
+    const prompt = stagePrompt({
+      assignment,
+      task,
+      stageLogs: { stage: null, entries: [], error: 'unknown task or stage' },
+    });
+    expect(prompt).toContain('исходный этап неизвестен');
+    expect(prompt).toContain('Лога нет');
+  });
+});
+
+it('новый анализ 0032 получает основание ожидания и артефакты 0120', () => {
+  const predecessor = {
+    id: '0120-progon-areny-s-priborom-pomeh-yadernogo-',
+    status: 'completed',
+    links: { run: '0120-arena-result' },
+  };
+  const source = {
+    ...task,
+    id: '0032-yadernyy-udar-vredit-svoim-general-na-ch',
+    type: 'note',
+    status: 'new',
+    analysisGeneration: 1,
+    dependsOn: [predecessor.id],
+    links: { change: 'nuke-counts-own-losses', pr: 23 },
+    blockedContext: {
+      from: 'triage',
+      operation: 'accepted',
+      reasons: [
+        {
+          taskId: predecessor.id,
+          reason: 'Без измерения нельзя оценить потери',
+          result: 'Артефакты помех ядерного удара',
+        },
+      ],
+    },
+  };
+  const text = stagePrompt({
+    assignment: { ...assignment, taskId: source.id, stage: 'triage' },
+    task: source,
+    board: [predecessor],
+  });
+  expect(text).toContain(ROUTING_CONTRACT);
+  for (const value of [
+    source.links.change,
+    predecessor.id,
+    predecessor.links.run,
+    source.blockedContext.reasons[0].reason,
+    source.blockedContext.reasons[0].result,
+  ])
+    expect(text).toContain(value);
+});
+
+it('новый бюджет и запрет его изменения агентом не обрезаются старым журналом', () => {
+  const text = stagePrompt({
+    assignment,
+    task,
+    journal: 'старый предел 25 млн\n'.repeat(1000),
+    journalLimit: 200,
+    tokenBudget: { value: 35000000, spent: 26093350, source: 'user' },
+  });
+  expect(text).toContain('полный лимит 35000000');
+  expect(text).toContain('Учтено 26093350');
+  expect(text).toContain('Агенту запрещено менять лимит');
+  expect(text).toContain('Этот снимок новее');
+});
 
 describe('состав', () => {
   it('передаёт закреплённую ревизию снимка выкладки', () => {
@@ -175,6 +312,48 @@ describe('лог упавшего этапа', () => {
 });
 
 describe('журнал', () => {
+  it.each([120, 8])('оставляет полное пояснение revise вне лимита %i', (journalLimit) => {
+    const journal = `${'история\n'.repeat(100)}P1: блоккер\nвладелец: принято`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task: { ...task, status: 'revise' },
+      journal,
+      journalLimit,
+    });
+    const [clipped, explanation] = text
+      .split('## Журнал задачи\n\n')[1]
+      .split('\n\n## Восстановление замечаний\n\n');
+    expect(clipped.length).toBeLessThanOrEqual(journalLimit);
+    if (journalLimit === 120) {
+      expect(clipped).toContain('P1: блоккер\nвладелец: принято');
+    }
+    for (const part of [
+      `.pipeline/logs/${task.id}-review.log`,
+      'основного дерева',
+      'git -C <дерево> worktree list',
+      'supervisor/skills/revise.md',
+      'проверка соответствия текущему возврату обязательна',
+      'дополнительный источник',
+      'не заменяет полный журнал карточки',
+      'ответ владельца продукта',
+      'Не обращайся к Trello',
+      'failed до исправлений',
+      'путь и причину',
+    ])
+      expect(explanation).toContain(part);
+    // Тот же хвост у другого этапа: пояснение не отнимает место в журнале.
+    const other = stagePrompt({ assignment, task, journal, journalLimit });
+    expect(other).toContain(`## Журнал задачи\n\n${clipped}\n\n`);
+    expect(other).not.toContain('## Восстановление замечаний');
+    expect(other).not.toContain('целиком — в журнале задачи');
+  });
+
+  it.each(['', 'полный журнал'])('не добавляет пояснение к необрезанному revise: %j', (journal) => {
+    const text = stagePrompt({ assignment: { ...assignment, stage: 'revise' }, task, journal });
+    expect(text).not.toContain('## Восстановление замечаний');
+    expect(text).toContain(journal || '_пусто_');
+  });
+
   it('обрезается, и обрезка названа вслух: молчаливая обманывает', () => {
     const long = 'строка журнала\n'.repeat(2000);
     const text = stagePrompt({ assignment, task, journal: long, journalLimit: 100 });
@@ -201,3 +380,13 @@ describe('журнал', () => {
     expect(text).toContain('END-P1');
   });
 });
+
+it.each(['review', 'interpret', 'triage'])(
+  'этап %s получает требование итога всей задачи',
+  (stage) => {
+    const text = stagePrompt({ assignment: { ...assignment, stage }, task });
+    expect(text).toContain('## Итог всей задачи');
+    expect(text).toContain('окончательные исправления после замечаний');
+    expect(text).toContain('не выдумывай');
+  },
+);
