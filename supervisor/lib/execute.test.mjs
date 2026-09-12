@@ -74,7 +74,8 @@ it('сохраняет диагноз с конкретным исправлен
       check: { stage: 'design', expectation: 'Исходный запуск завершает design без отказа' },
     },
   };
-  const io = fakeIo({ tasks: [source, task({ id: '0002-fix' })], report });
+  const game = task({ id: '0003-game', categories: ['ux'] });
+  const io = fakeIo({ tasks: [source, task({ id: '0002-fix' }), game], report });
   expect(
     (await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'postmortem' }], io))[0]
       .result,
@@ -84,6 +85,21 @@ it('сохраняет диагноз с конкретным исправлен
     pipelineIncident: { fixedBy: ['0002-fix'], probeStartedAt: null, verifiedAt: null },
   });
   expect(io.readJournal(source.id)).toContain('Два одинаковых отказа');
+  const stale = await execute([{ kind: 'start-stage', taskId: game.id, stage: 'design' }], io);
+  expect(stale[0]).toMatchObject({ result: 'skipped', why: expect.stringContaining('инцидент') });
+  expect(io.readTask(game.id)).toEqual(game);
+  expect(io.spawned).toEqual([]);
+  const fixed = { ...io.readTask('0002-fix'), status: 'completed' };
+  io.tasks.delete(fixed.id);
+  io.dependencyRecords = () => [fixed];
+  io.tasks.set(source.id, { ...io.readTask(source.id), status: 'design' });
+  const probe = await execute(
+    [{ kind: 'continue-stage', taskId: source.id, stage: 'design', incidentProbe: true }],
+    io,
+  );
+  expect(probe[0].result).toBe('done');
+  expect(io.spawned).toHaveLength(1);
+  expect(io.readTask(source.id).pipelineIncident.probeStartedAt).toBe(NOW);
 });
 
 it.each(['done', 'blocked'])(

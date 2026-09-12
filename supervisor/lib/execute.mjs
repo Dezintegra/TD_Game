@@ -19,6 +19,7 @@ import { transferReport } from './report-delivery.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { recoverClosureReason } from './closure.mjs';
+import { incidentPolicy } from './pipeline-incidents.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -847,6 +848,36 @@ export async function execute(actions, io) {
     ) {
       results.push({ action, result: 'skipped', why: 'pending report owns this task' });
       continue;
+    }
+    // Перенесённый выше отчёт мог открыть инцидент уже после снимка scan.
+    // Проверяем допуск до захвата и порождения, по обновлённому кешу доски.
+    if (['start-stage', 'continue-stage'].includes(action.kind) && io.allTaskIds) {
+      const tasks = io
+        .allTaskIds()
+        .map((id) => io.readTask(id))
+        .filter(Boolean);
+      const probes = Object.fromEntries(
+        tasks
+          .filter((task) => task.pipelineIncident)
+          .map((task) => [
+            task.pipelineIncident.id,
+            io.incidentProbeAt?.(task.pipelineIncident.id),
+          ]),
+      );
+      const policy = incidentPolicy({
+        tasks,
+        dependencyRecords: io.dependencyRecords?.() ?? [],
+        scheduling: { probes },
+      });
+      const task = io.readTask(action.taskId);
+      if (task && !policy.allows(task, action.stage)) {
+        results.push({
+          action,
+          result: 'skipped',
+          why: 'подтверждённый инцидент удерживает выдачу',
+        });
+        continue;
+      }
     }
     const handler = HANDLERS[action.kind];
     if (!handler) {
