@@ -448,6 +448,63 @@
           "minLength": 1
         }
       }
+    },
+    "pipelineIncident": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "evidence", "affectedStages", "check", "fixedBy", "openedAt"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "affectedStages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stage", "expectation"],
+          "properties": {
+            "stage": {
+              "type": "string"
+            },
+            "expectation": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "fixedBy": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "openedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "probeStartedAt": {
+          "type": ["string", "null"]
+        },
+        "verifiedAt": {
+          "type": ["string", "null"]
+        },
+        "verificationEvidence": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   },
   "allOf": [

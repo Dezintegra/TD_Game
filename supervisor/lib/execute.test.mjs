@@ -9,6 +9,7 @@ import { repairWorld } from './repair.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
+import { incidentFromReport } from './pipeline-incidents.mjs';
 
 it('досылает журнал передвинутого участника по сохранённому плану до ведущей', async () => {
   const f = deliveryFixture({ stage: 'deploy', batch: true });
@@ -57,6 +58,107 @@ it('повторно проверяет очередь до действий и�
  */
 
 const NOW = '2026-08-26T12:00:00+03:00';
+
+it('сохраняет диагноз с конкретным исправлением при передаче отчёта', async () => {
+  const source = task({ status: 'postmortem', returnTo: 'design' });
+  const report = {
+    taskId: source.id,
+    stage: 'postmortem',
+    outcome: 'done',
+    causedBy: 'pipeline',
+    fixedBy: ['0002-fix'],
+    summary: 'Общий запуск сломан',
+    pipelineIncident: {
+      evidence: 'Два одинаковых отказа запуска подтверждены логами',
+      affectedStages: ['design'],
+      check: { stage: 'design', expectation: 'Исходный запуск завершает design без отказа' },
+    },
+  };
+  const io = fakeIo({ tasks: [source, task({ id: '0002-fix' })], report });
+  expect(
+    (await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'postmortem' }], io))[0]
+      .result,
+  ).toBe('done');
+  expect(io.readTask(source.id)).toMatchObject({
+    status: 'failed',
+    pipelineIncident: { fixedBy: ['0002-fix'], probeStartedAt: null, verifiedAt: null },
+  });
+  expect(io.readJournal(source.id)).toContain('Два одинаковых отказа');
+});
+
+it.each(['done', 'blocked'])(
+  'не снимает инцидент без доказательства при исходе %s',
+  async (outcome) => {
+    const source = task({ status: 'design' });
+    source.pipelineIncident = {
+      id: 'incident',
+      evidence: 'Общий отказ запуска',
+      fixedBy: ['0002-fix'],
+      openedAt: NOW,
+      affectedStages: ['design'],
+      check: { stage: 'design', expectation: 'Выполнить исходный этап' },
+      probeStartedAt: NOW,
+      verifiedAt: null,
+    };
+    const io = fakeIo({
+      tasks: [source],
+      report: {
+        taskId: source.id,
+        stage: 'design',
+        outcome,
+        summary: 'Без проверки',
+        costUsd: 2,
+      },
+    });
+    await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'design' }], io);
+    expect(io.readTask(source.id)).toMatchObject({
+      status: 'postmortem',
+      spentUsd: 2,
+      pipelineIncident: { verifiedAt: null },
+    });
+    expect(io.readJournal(source.id)).toContain('проверка восстановления не подтверждена');
+  },
+);
+
+it('принимает свидетельство пробы после перезапуска и сохраняет его в журнале', async () => {
+  const source = task({ status: 'design' });
+  source.pipelineIncident = incidentFromReport(
+    { ...source, returnTo: 'design' },
+    {
+      stage: 'postmortem',
+      outcome: 'done',
+      causedBy: 'pipeline',
+      pipelineIncident: {
+        evidence: 'Общий отказ запуска',
+        affectedStages: ['design'],
+        check: { stage: 'design', expectation: 'Проверить исходный этап' },
+      },
+    },
+    ['0002-fix'],
+    NOW,
+  ).incident;
+  const io = fakeIo({
+    tasks: [source],
+    report: {
+      taskId: source.id,
+      stage: 'design',
+      outcome: 'done',
+      summary: 'Проработано',
+      incidentVerification: {
+        incidentId: source.pipelineIncident.id,
+        passed: true,
+        evidence: 'Исходная команда завершилась, корректный отчёт получен',
+      },
+    },
+  });
+  io.incidentProbeAt = () => NOW;
+  await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'design' }], io);
+  expect(io.readTask(source.id)).toMatchObject({
+    status: 'audit',
+    pipelineIncident: { verifiedAt: NOW },
+  });
+  expect(io.readJournal(source.id)).toContain('Исходная команда завершилась');
+});
 
 it('учитывает новую карточку только после рождения процесса и сохраняет выбор для повтора', async () => {
   const io = fakeIo();

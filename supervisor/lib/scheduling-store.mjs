@@ -25,6 +25,7 @@ export function createSchedulingStore(root, config) {
       const current = readScheduling(root, config);
       if (current.error) throw new Error(current.error);
       const next = transform(current);
+      if (next === current) return current;
       const path = pathOf(root, config);
       mkdirSync(dirname(path), { recursive: true });
       // Единственный писатель — владелец замка супервизора. Переименование

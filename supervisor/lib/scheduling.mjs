@@ -28,10 +28,23 @@ export function workKindProblem(task) {
 }
 
 export function emptyScheduling() {
-  return { version: 1, next: 'game', lastLane: 'service', admissions: {}, recoveries: [] };
+  return {
+    version: 1,
+    next: 'game',
+    lastLane: 'service',
+    admissions: {},
+    recoveries: [],
+    probes: {},
+  };
 }
 
 export function schedulingProblem(value) {
+  if (
+    value?.probes !== undefined &&
+    (!object(value.probes) ||
+      Object.values(value.probes).some((at) => !Number.isFinite(Date.parse(at))))
+  )
+    return 'неверные отметки проверок инцидента scheduling.json';
   if (
     !object(value) ||
     value.version !== 1 ||
@@ -55,6 +68,12 @@ export function recordLaunch(state, task, at) {
   if (problem) throw new Error(problem);
   const next = globalThis.structuredClone(state);
   next.lastLane = workLane(task);
+  if (task.pipelineIncident?.probeStartedAt && !task.pipelineIncident.verifiedAt) {
+    next.probes = {
+      ...(next.probes ?? {}),
+      [task.pipelineIncident.id]: task.pipelineIncident.probeStartedAt,
+    };
+  }
   if (task.scheduling && !Object.hasOwn(next.admissions, task.id)) {
     const lane = task.scheduling.lane;
     if (!LANES.includes(lane)) throw new Error('неверное направление первого запуска');
@@ -76,7 +95,7 @@ export function recordRecovery(state, id) {
 
 export function schedulingFields(value) {
   return Object.fromEntries(
-    ['area', 'blocking', 'workKind', 'workReason', 'scheduling', 'pipelineIncident']
+    ['area', 'workKind', 'workReason', 'scheduling', 'pipelineIncident']
       .filter((key) => Object.hasOwn(value ?? {}, key))
       .map((key) => [key, value[key]]),
   );

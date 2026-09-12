@@ -297,7 +297,13 @@ async function continueStage(action, io) {
   // Процесс родился. Удавшееся порождение гасит счёт несостоявшихся
   // запусков: оно доказывает, что машинерия запуска работает, и прежние
   // отказы к делу больше не относятся.
-  const started = { ...counted, attempts: { ...counted.attempts, spawnFailures: 0 } };
+  const started = {
+    ...counted,
+    attempts: { ...counted.attempts, spawnFailures: 0 },
+    ...(action.incidentProbe
+      ? { pipelineIncident: { ...counted.pipelineIncident, probeStartedAt: io.now } }
+      : {}),
+  };
   io.recordSchedulingLaunch?.(started);
   const push = await io.saveTask(
     started,
@@ -783,6 +789,22 @@ const HANDLERS = {
   cleanup: cleanupTask,
   'transfer-report': transferReport,
   'start-stage': startStage,
+  'open-incident': async (action, io) => {
+    const task = io.readTask(action.taskId);
+    if (!task || task.pipelineIncident)
+      return { result: 'skipped', why: 'инцидент уже учтён или задача недоступна' };
+    const saved = await io.saveTask(
+      { ...task, pipelineIncident: action.incident },
+      {
+        at: io.now,
+        from: task.status,
+        to: task.status,
+        what: `Подтверждён общий инцидент ${action.incident.id}: ${action.incident.evidence} Исправления: ${action.incident.fixedBy.join(', ')}. Проверка: ${action.incident.check.expectation}`,
+      },
+      `chore(backlog): ${task.id} общий инцидент конвейера`,
+    );
+    return saved.ok ? { result: 'done' } : { result: 'failed', why: saved.why ?? saved.outcome };
+  },
   'note-orphan': noteOrphan,
   'note-api-error': noteApiError,
   'decompose-again': decomposeAgain,

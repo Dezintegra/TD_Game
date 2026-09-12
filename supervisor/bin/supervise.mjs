@@ -596,6 +596,9 @@ async function turn() {
   );
 
   const registry = readRegistry(root, config);
+  for (const task of [...backlog.tasks, ...(backlog.dependencyRecords ?? [])]) {
+    if (task.pipelineIncident?.verifiedAt) schedulingStore.recovered(task.pipelineIncident.id);
+  }
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
@@ -677,6 +680,7 @@ async function turn() {
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       recordSchedulingLaunch: (task) => schedulingStore.launched(task, new Date().toISOString()),
       schedulingBlocked: () => schedulingStore.read().error,
+      incidentProbeAt: (id) => schedulingStore.read().probes?.[id],
       reportStorageBlocked: () => supervisor.reportStorageBlocked,
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),

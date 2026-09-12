@@ -1,6 +1,7 @@
 import { STATES } from '../config/transitions.mjs';
 import { routingProblem } from './categories.mjs';
 import { workKindProblem } from './scheduling.mjs';
+import { incidentStateProblem } from './pipeline-incidents.mjs';
 
 /**
  * Проверка карточки взамен схемы задачи.
@@ -36,6 +37,8 @@ export function checkCard({ task, card }) {
   const problems = [];
   const workProblem = workKindProblem(task);
   if (workProblem) problems.push(workProblem);
+  const incidentProblem = incidentStateProblem(task.pipelineIncident);
+  if (incidentProblem) problems.push(incidentProblem);
   if (
     Object.hasOwn(task, 'reportReceipts') &&
     (!Array.isArray(task.reportReceipts) ||

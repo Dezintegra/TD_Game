@@ -84,6 +84,25 @@ export function stagePrompt({
   tokenBudget = null,
 }) {
   const lines = [];
+  if (
+    task?.pipelineIncident &&
+    !task.pipelineIncident.verifiedAt &&
+    assignment.stage === task.pipelineIncident.check.stage
+  ) {
+    const incident = task.pipelineIncident;
+    lines.push(
+      '## Ограниченная проверка восстановления конвейера',
+      '',
+      `Инцидент ${incident.id}: ${incident.evidence}`,
+      `Проверь именно сломанный путь: ${incident.check.expectation}`,
+      'Это одна проверочная сессия. Не расширяй её на другие игровые карточки.',
+      'Зелёный CI или вливание починки сами по себе не подтверждают восстановление.',
+      'В итоговый отчёт добавь incidentVerification: { incidentId, passed, evidence }.',
+      `incidentId должен быть ${incident.id}; passed: true допустимо только с конкретным свидетельством проверки.`,
+      'При неуспехе укажи passed: false и факты для пересмотра диагноза. Без подтверждения инцидент останется активным.',
+      '',
+    );
+  }
   const batch =
     Array.isArray(assignment.batch) && assignment.batch.length > 0 ? assignment.batch : null;
 

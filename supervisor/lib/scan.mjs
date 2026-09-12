@@ -1,4 +1,5 @@
-import { planLaunches } from './scheduling.mjs';
+import { emptyScheduling, planLaunches, recordRecovery, schedulingProblem } from './scheduling.mjs';
+import { incidentPolicy, legacyIncident } from './pipeline-incidents.mjs';
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
 import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
@@ -40,6 +41,7 @@ export const ACTIONS = [
   // намеренно: обе разбирают застой, и обе дешёвые — ни сессии, ни дерева.
   'resolve-dependents',
   'settle-maintenance',
+  'open-incident',
   'hold-token-budget',
   'refresh-token-budget',
   'resume-token-budget',
@@ -178,6 +180,30 @@ export function scan(state) {
   const actions = [];
   const notes = [];
   const apiFailed = new Set(apiFailures.map((failure) => failure.taskId));
+  let scheduling = state.scheduling ?? emptyScheduling();
+  if (!scheduling.error && schedulingProblem(scheduling))
+    scheduling = { error: schedulingProblem(scheduling) };
+  if (!scheduling.error)
+    for (const task of [...tasks, ...(state.dependencyRecords ?? [])]) {
+      if (task.pipelineIncident?.verifiedAt)
+        scheduling = recordRecovery(scheduling, task.pipelineIncident.id);
+    }
+  let incident = incidentPolicy({ ...state, scheduling });
+  const legacy =
+    !incident.active &&
+    legacyIncident(
+      tasks.filter((task) => !task.owner || task.owner === state.machine),
+      now,
+      state.dependencyRecords ?? [],
+    );
+  if (legacy)
+    incident = incidentPolicy({
+      ...state,
+      scheduling,
+      tasks: tasks.map((task) =>
+        task.id === legacy.taskId ? { ...task, pipelineIncident: legacy.incident } : task,
+      ),
+    });
 
   for (const bad of invalid) {
     notes.push(
@@ -206,6 +232,8 @@ export function scan(state) {
   }
 
   const entryOf = (taskId) => registry.entries.find((item) => item.taskId === taskId);
+  notes.push(...incident.notes);
+  if (legacy) actions.push({ kind: 'open-incident', ...legacy });
   // Перенос отчёта меняет весь пакет; до следующего снимка его участники
   // не должны получать действия по старому состоянию доски.
   const hasReport = (taskId) =>
@@ -310,6 +338,7 @@ export function scan(state) {
   //     в конвейере и была уже починена: решения в подъёме нет, одна задержка.
   for (const task of tasks) {
     if (task.status !== 'failed' || task.recovery?.causedBy !== 'pipeline') continue;
+    if (legacy?.taskId === task.id || !incident.allows(task, task.returnTo)) continue;
     if (!task.returnTo) {
       notes.push(`задача ${task.id}: причина в конвейере, но возвращать некуда — возврат пуст`);
       continue;
@@ -416,6 +445,27 @@ export function scan(state) {
   // нет, этап не кончается, место не освобождается. Сегодня оно освобождается
   // хотя бы через полчаса падением, то есть лечение вышло бы хуже болезни.
   const held = new Map();
+  for (const task of tasks) {
+    if (isRunning(task.id) || hasReport(task.id)) continue;
+    const stage = QUEUE_STATES.includes(task.status) ? firstStage(task) : task.status;
+    if (
+      incident.sources.has(task.id) &&
+      stage === task.pipelineIncident?.check.stage &&
+      (task.pipelineIncident.probeStartedAt || scheduling.probes?.[task.pipelineIncident.id])
+    ) {
+      actions.push({
+        kind: 'fail-stage',
+        taskId: task.id,
+        stage,
+        reason: `инцидент ${task.pipelineIncident.id}: проверочная сессия закончилась без подтверждения; нужен новый диагноз`,
+      });
+      stuck.add(task.id);
+    }
+    if (!incident.allows(task, stage)) {
+      held.set(task.id, ['pipeline-incident']);
+      notes.push(`задача ${task.id}: ожидает устранения подтверждённого инцидента`);
+    }
+  }
   // Проверяем до квот и пределов попыток: ожидание не является запуском.
   for (const task of tasks) {
     if (![...QUEUE_STATES, 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status))
@@ -796,23 +846,27 @@ export function scan(state) {
     }
     candidates.push({ task, kind: 'start-stage', stage });
   }
-  if (!state.draining) {
+  if (!state.draining && !legacy) {
     const selected = planLaunches({
       candidates,
       running,
       tasks,
       config,
-      scheduling: state.scheduling,
+      scheduling,
       now,
       compare: byPriorityThenAge,
     });
     actions.push(...selected.actions);
+    for (const action of selected.actions) {
+      if (incident.probes.has(action.taskId)) action.incidentProbe = true;
+    }
     notes.push(...selected.notes);
   } else if (candidates.length) notes.push('самообновление ждёт тишины: сессий не выдаём');
 
   const delayed = new Map();
   if (!state.draining)
     for (const task of tasks) {
+      if (incident.active && !incident.allows(task, task.status)) continue;
       if (tokenHeld.has(task.id)) continue;
       if (isRunning(task.id) || running.some((item) => item.batch?.includes(task.id))) continue;
       if (task.owner && task.owner !== state.machine) continue;
