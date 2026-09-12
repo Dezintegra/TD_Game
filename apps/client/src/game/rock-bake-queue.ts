@@ -50,6 +50,11 @@ export class RockBakeQueue<T extends RockResource> {
   private ordinaryLimit = 0;
   private transitionLimit = 0;
   private reserved = 0;
+  private readonly samples = new Map<number, number[]>();
+  private initialEstimate = 1;
+  private probeFrames = 0;
+  overruns = 0;
+  probes = 0;
   completed = 0;
   failures = 0;
   lastError: string | null = null;
@@ -59,6 +64,14 @@ export class RockBakeQueue<T extends RockResource> {
     private readonly prepare: (cell: RockBakeEntry<T>, density: number) => RockBakeJob<T>,
     private readonly now: () => number = () => performance.now(),
   ) {}
+
+  observeInitialBake(milliseconds: number): void {
+    this.initialEstimate = Math.max(this.initialEstimate, milliseconds * 1.25);
+  }
+  estimate(density: number): number {
+    const samples = this.samples.get(density);
+    return samples?.length ? Math.max(...samples) * 1.25 : this.initialEstimate;
+  }
 
   get actualBytes(): number {
     let bytes = this.reserved;
@@ -139,6 +152,7 @@ export class RockBakeQueue<T extends RockResource> {
   private cancel(): void {
     const pending = this.pending;
     this.pending = undefined;
+    this.probeFrames = 0;
     pending?.job.destroy();
   }
   private evict(cell: RockBakeEntry<T>): void {
@@ -205,9 +219,17 @@ export class RockBakeQueue<T extends RockResource> {
         if (cell.detail && cell.detail.density !== this.target(cell)) this.evict(cell);
       }
       if (this.actualBytes + bytes > limit || this.now() >= deadline) return;
+      const remaining = deadline - this.now();
+      if (remaining < this.estimate(work.density)) {
+        // Выброс не превращается в пожизненную остановку: одна проба на четыре свободных кадра.
+        if (remaining < 6 || ++this.probeFrames < 4) return;
+        this.probes += 1;
+      }
+      this.probeFrames = 0;
       this.reserved = bytes;
       this.peakBytes = Math.max(this.peakBytes, this.actualBytes);
       let result: T | undefined;
+      const started = this.now();
       try {
         result = work.job.finish();
         if (!this.current(work) || this.pending !== work) return;
@@ -223,6 +245,12 @@ export class RockBakeQueue<T extends RockResource> {
         this.completed += 1;
         this.lastError = null;
       } finally {
+        const elapsed = this.now() - started;
+        const samples = this.samples.get(work.density) ?? [];
+        samples.push(elapsed);
+        if (samples.length > 8) samples.shift();
+        this.samples.set(work.density, samples);
+        if (this.now() > deadline) this.overruns += 1;
         result?.destroy();
         this.reserved = 0;
         if (this.pending === work) this.cancel();

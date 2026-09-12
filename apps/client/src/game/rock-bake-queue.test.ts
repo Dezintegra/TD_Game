@@ -116,6 +116,49 @@ const fixture = (resolution = 1, count = 4) => {
 };
 
 describe('очередь скальных текстур', () => {
+  it('выброс выше 8 мс допускает одну пробу каждый четвёртый свободный кадр и выходит из окна', () => {
+    const f = fixture(1, 12);
+    f.queue.update({ ...view(), width: 1000, bounds: { minX: 0, minY: 0, maxX: 1000, maxY: 100 } });
+    f.controls.cost = 12;
+    f.queue.step(8);
+    expect(f.queue.completed).toBe(1);
+    expect(f.queue.overruns).toBe(1);
+    expect(f.queue.estimate(4)).toBe(15);
+    f.controls.cost = 1;
+    for (let i = 0; i < 10; i += 1) {
+      f.queue.step(0);
+      f.queue.step(5);
+    }
+    expect(f.queue.completed).toBe(1);
+    for (let probe = 0; probe < 8; probe += 1) {
+      const completed = f.queue.completed;
+      for (let frame = 0; frame < 3; frame += 1) {
+        f.queue.step(6);
+        expect(f.queue.completed).toBe(completed);
+      }
+      f.queue.step(6);
+      expect(f.queue.completed).toBe(completed + 1);
+      f.live();
+    }
+    expect(f.queue.probes).toBe(8);
+    expect(f.queue.estimate(4)).toBe(1.25);
+    f.drain();
+    expect(f.queue.completed).toBe(12);
+  });
+
+  it('начальная оценка учитывается, неполная геометрия не выделяет текстуру', () => {
+    const f = fixture();
+    f.queue.observeInitialBake(10);
+    f.controls.ready = false;
+    for (let i = 0; i < 10; i += 1) f.queue.step(8);
+    expect(f.resources).toHaveLength(4);
+    f.controls.ready = true;
+    for (let i = 0; i < 3; i += 1) f.queue.step(6);
+    expect(f.resources).toHaveLength(4);
+    f.queue.step(6);
+    expect(f.resources).toHaveLength(5);
+  });
+
   it('объединяет серию pan/zoom и не начинает работу при нулевом бюджете', () => {
     const f = fixture();
     for (let i = 0; i < 100; i += 1) f.queue.update(view(1, i % 2 ? 2 : 4, i % 2 ? 120 : 0));

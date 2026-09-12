@@ -8,9 +8,13 @@ import {
   disposeGrainTexture,
   mountRockDiagonal,
   replaceRockDetail,
+  buildCellMesh,
+  buildCellMeshPortions,
+  prepareRockCell,
 } from './relief-render.js';
 
 const backend = vi.hoisted(() => ({
+  geometry: [] as unknown[],
   meshes: [] as { destroy: ReturnType<typeof vi.fn> }[],
   textures: [] as {
     destroy: ReturnType<typeof vi.fn>;
@@ -58,7 +62,11 @@ vi.mock('pixi.js', () => {
     Mesh,
     Texture,
     RenderTexture: Texture,
-    Geometry: class {},
+    Geometry: class {
+      constructor(options: unknown) {
+        backend.geometry.push(options);
+      }
+    },
     Shader: class {},
     GlProgram: { from: vi.fn() },
   };
@@ -72,6 +80,7 @@ const bake = (r = renderer()) => bakeRockCell(r, map, 20, 20, colors, 2);
 afterEach(() => {
   disposeGrainTexture();
   backend.meshes.length = 0;
+  backend.geometry.length = 0;
   backend.textures.length = 0;
   vi.unstubAllGlobals();
 });
@@ -88,6 +97,47 @@ const canvas = (): void => {
 };
 
 describe('поклеточное запекание', () => {
+  it('порции сохраняют все массивы полного построения и освобождаются при отмене', () => {
+    canvas();
+    const full = buildCellMesh(map, 20, 20, colors);
+    const geometries = backend.geometry.slice();
+    const portions = buildCellMeshPortions(map, 20, 20, colors);
+    let next = portions.next();
+    let count = 1;
+    while (!next.done) {
+      next = portions.next();
+      count += 1;
+    }
+    expect(count).toBeGreaterThan(24);
+    expect(backend.geometry.slice(2)).toEqual(geometries);
+    expect(next.value.width).toBe(full.width);
+    expect(next.value.height).toBe(full.height);
+    expect(next.value.offsetX).toBe(full.offsetX);
+    expect(next.value.offsetY).toBe(full.offsetY);
+    let clock = 0;
+    const job = prepareRockCell(renderer(), map, 20, 20, colors, 4, () => clock++);
+    expect(job.advance(2)).toBe(false);
+    expect(() => job.finish()).toThrow('not ready');
+    job.destroy();
+    expect(job.advance(100)).toBe(false);
+    expect(backend.textures).toHaveLength(0);
+    full.mesh.destroy(true);
+    full.mirror.destroy(true);
+    next.value.mesh.destroy(true);
+    next.value.mirror.destroy(true);
+  });
+
+  it('готовая порционная работа запекается один раз и уничтожает временные сетки', () => {
+    canvas();
+    const job = prepareRockCell(renderer(), map, 20, 20, colors, 3, () => 0);
+    expect(job.advance(8)).toBe(true);
+    expect(backend.textures).toHaveLength(0);
+    const result = job.finish();
+    job.destroy();
+    for (const mesh of backend.meshes) expect(mesh.destroy).toHaveBeenCalledTimes(1);
+    expect(result.texture.source.updateMipmaps).toHaveBeenCalledTimes(1);
+  });
+
   it('печёт отражение перед телом, строит mip один раз и освобождает сетки', () => {
     canvas();
     const render = vi.fn();
