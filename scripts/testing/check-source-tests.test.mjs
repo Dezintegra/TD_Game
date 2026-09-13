@@ -9,7 +9,23 @@ import {
   runControls,
   runMatrix,
   sourceMatrix,
+  sourcePnpm,
 } from './check-source-tests.mjs';
+
+it('resolves the extensionless pnpm executable used by Linux action-setup', () => {
+  const root = fixture();
+  writeFileSync(resolve(root, 'pnpm'), 'launcher');
+  const target = resolve(root, 'actual/pnpm.cjs');
+  mkdirSync(resolve(root, 'actual'));
+  writeFileSync(target, 'cli');
+  const resolveExecutable = vi.fn(() => target);
+  const finder = vi.fn((env) => {
+    if (!env.npm_execpath) throw new Error('No cjs in PATH');
+    return env.npm_execpath;
+  });
+  expect(sourcePnpm({ PATH: root }, resolveExecutable, finder)).toBe(target);
+  expect(resolveExecutable).toHaveBeenCalledWith(resolve(root, 'pnpm'));
+});
 
 function fixture() {
   mkdirSync(resolve(repoRoot, '.matchlog'), { recursive: true });

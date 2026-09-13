@@ -6,7 +6,7 @@ import {
   realpathSync,
   writeFileSync,
 } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { delimiter, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   checkInstallSnapshot,
@@ -27,6 +27,21 @@ export const sourceMatrix = [
   { environment: 'jsdom', files: [simGolden] },
   { environment: 'node', files: [aiGolden] },
 ];
+
+export function sourcePnpm(env = process.env, realpath = realpathSync, finder = findPnpm) {
+  try {
+    return finder(env);
+  } catch (original) {
+    // pnpm/action-setup на Linux кладёт в PATH ссылку bin/pnpm, не pnpm.cjs.
+    // Передаём её проверенный target существующему помощнику без изменения его контракта.
+    for (const directory of (env.PATH ?? env.Path ?? '').split(delimiter)) {
+      if (!directory || !existsSync(resolve(directory, 'pnpm'))) continue;
+      const cli = realpath(resolve(directory, 'pnpm'));
+      if (/pnpm\.(?:c?js)$/.test(cli)) return finder({ ...env, npm_execpath: cli });
+    }
+    throw original;
+  }
+}
 
 export function assertNoDist(root) {
   for (const pkg of ['shared', 'sim', 'ai'])
@@ -100,7 +115,7 @@ export function installedControlCopy(
   root,
   revision,
   directory,
-  { run = checkedProcess, pnpmCli = findPnpm() } = {},
+  { run = checkedProcess, pnpmCli = sourcePnpm() } = {},
 ) {
   const snapshot = resolve(directory, 'controls');
   mkdirSync(snapshot);
@@ -154,9 +169,10 @@ export function checkSourceTests(
       throw new Error('Expected clean checkout');
     report.revision = git('rev-parse', 'HEAD');
     report.git = git('--version');
+    const pnpmCli = sourcePnpm();
     let target = root;
     if (mode === '--fresh') {
-      report.install = snapshotCheck({ cwd: root });
+      report.install = snapshotCheck({ cwd: root, pnpmCli });
       if (!report.install.ok)
         throw new Error(`Fresh installation failed: ${JSON.stringify(report.install)}`);
       target = realpathSync(report.install.snapshot);
@@ -166,7 +182,7 @@ export function checkSourceTests(
     report.vitest = JSON.parse(
       readFileSync(resolve(target, 'node_modules/vitest/package.json')),
     ).version;
-    report.pnpm = run(process.execPath, [findPnpm(), '--version'], { cwd: root }).stdout.trim();
+    report.pnpm = run(process.execPath, [pnpmCli, '--version'], { cwd: root }).stdout.trim();
     matrix(target, report);
     // В detached checkout контроля upstream нет; контрольная копия берётся из SHA.
     const controlRoot = mode === '--fresh' ? target : copy(root, report.revision, directory);
