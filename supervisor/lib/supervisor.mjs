@@ -1066,10 +1066,17 @@ export function createSupervisor({
       answer.usageError = !tokenAccountingAllowed(status)
         ? `Codex: полнота расхода задачи неизвестна (${reasons.join(', ')})`
         : null;
-      if (storageError) answer.usageError = `${answer.usageError}; ${storageError}`;
-      if (answer.usageError && child.tokenLimit != null && answer.outcome === 'done') {
-        answer.outcome = 'failed';
-        answer.why = answer.usageError;
+      // Неполная история допустима, но неудачная запись текущего результата
+      // нарушает долговечность учёта независимо от включённого лимита.
+      const writeError =
+        storageError ??
+        (usageWriteErrors.has(child.taskId) ? 'не удалось сохранить расход Codex' : null);
+      if (writeError) {
+        answer.usageError = [answer.usageError, writeError].filter(Boolean).join('; ');
+        if (answer.outcome === 'done') {
+          answer.outcome = 'failed';
+          answer.why = writeError;
+        }
       }
       answer.tokenBudget = `учтено ${taskTokens(codexUsage, child.taskId)} / ${child.tokenLimit ?? 'без лимита'} токенов задачи (${child.tokenLimitSource === 'user' ? 'лимит владельца' : 'общий лимит'} при запуске); расход текущего запуска ${answer.usage ? 'известен' : 'неизвестен'}${answer.usageError ? `; ${answer.usageError}` : tokenAccountingNote(codexUsage, child.taskId) ? '; ' + tokenAccountingNote(codexUsage, child.taskId) : '; учёт задачи полный'}`;
       log(answer.tokenBudget);

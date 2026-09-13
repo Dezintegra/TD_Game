@@ -112,7 +112,7 @@ export function codexDenial(event) {
   };
 }
 
-export function readCodexAnswer(run, config = {}, context = {}) {
+export function readCodexAnswer(run, _config = {}, context = {}) {
   const { taskId = 'answer', launchId = 'answer' } = context;
   const ledger = migrateTokenLedger(context.ledger ?? {});
   beginTokenLaunch(ledger, taskId, launchId, context.sessionId ?? null);
@@ -213,15 +213,9 @@ export function readCodexAnswer(run, config = {}, context = {}) {
       why: error ?? `Codex не завершил ход (код ${run.code})`,
     };
   }
-  // Только завершение протокола разрешает сохранить текст; учёт решает его допуск отдельно.
+  // Допуск уже разрешил работу при неполном учёте: тот же unknown не отменяет
+  // завершённый ответ. Причины остаются в usageError и долговечном ledger.
   answer.result = message;
-  if (config.codexMaxTaskTokens != null && answer.usageError) {
-    return {
-      ...answer,
-      outcome: 'failed',
-      why: answer.usageError,
-    };
-  }
   return { ...answer, outcome: 'done', why: null };
 }
 
