@@ -126,6 +126,8 @@ it('imports fresh shared and sim exports in a separately installed fixture', () 
   const base = resolve(repoRoot, '.matchlog');
   mkdirSync(base, { recursive: true });
   const root = mkdtempSync(resolve(base, 'source-fixture-'));
+  // Собственная граница workspace не даёт pnpm переустановить родительский граф.
+  writeFileSync(resolve(root, 'pnpm-workspace.yaml'), 'packages: []\n');
   for (const path of [
     'scripts/testing/source-aliases.mjs',
     'scripts/testing/source-runner.mjs',
