@@ -1048,7 +1048,7 @@ async function loop() {
       enabled: config.selfUpdate !== false,
       dryRun: flags.includes('--dry-run'),
       running: supervisor.busy(),
-      pending: supervisor.reports.length + Number(supervisor.reportStorageBlocked),
+      ...supervisor.reportRestartState,
     });
     if (update.verdict !== 'off' || turns === 1) note(update.notes);
     draining = update.verdict === 'wait';

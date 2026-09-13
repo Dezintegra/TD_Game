@@ -1,5 +1,9 @@
 import { reportTaskIds } from './report-targets.mjs';
-import { prepareReportPlan, transferReport as transferLegacyReport } from './report-plan.mjs';
+import {
+  prepareReportPlan,
+  ReportValidationError,
+  transferReport as transferLegacyReport,
+} from './report-plan.mjs';
 
 function replaceId(value, before, after) {
   if (value === before) return after;
@@ -30,6 +34,11 @@ export async function transferReport(action, io, context = {}) {
   if (!entry) return { result: 'skipped', why: 'report already acknowledged' };
   if (entry.taskId !== action.taskId || entry.stage !== action.stage)
     return { result: 'failed', why: 'report identity mismatch' };
+  if (entry.rejection)
+    return {
+      result: 'skipped',
+      why: `report ${entry.reportId} rejected: ${entry.rejection.why}; требуется исправление и явный retry`,
+    };
   try {
     if (!entry.plan) {
       const task = io.readTask(entry.taskId);
@@ -117,6 +126,20 @@ export async function transferReport(action, io, context = {}) {
       io.markDeployed?.(io.now);
     return entry.plan.result;
   } catch (error) {
+    if (error instanceof ReportValidationError && !entry.plan && !entry.progress.length) {
+      try {
+        store.reject(entry.reportId, { why: error.message, at: io.now });
+        return {
+          result: 'failed',
+          why: `report ${entry.reportId} rejected: ${error.message}; требуется исправление и явный retry`,
+        };
+      } catch (storageError) {
+        return {
+          result: 'failed',
+          why: `pending report ${entry.reportId}: отказ не сохранён: ${storageError.message}; ${error.message}`,
+        };
+      }
+    }
     return { result: 'failed', why: `pending report ${entry.reportId}: ${error.message}` };
   }
 }

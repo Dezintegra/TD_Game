@@ -6,16 +6,22 @@ const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const date = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const CHECK_STAGES = NEEDS_SESSION.filter((stage) => stage !== 'postmortem');
 
+function evidenceText(value) {
+  if (text(value)) return value;
+  if (Array.isArray(value) && value.length && value.every(text)) return value.join('\n');
+  return null;
+}
+
 export function incidentDeclarationProblem(value, task, report) {
   if (value === undefined) return null;
   if (report.stage !== 'postmortem' || report.outcome !== 'done' || report.causedBy !== 'pipeline')
     return 'pipelineIncident принимается только из успешного разбора общей поломки конвейера';
   if (
     !value ||
-    !text(value.evidence) ||
+    !evidenceText(value.evidence) ||
     !Array.isArray(value.affectedStages) ||
     !value.affectedStages.length ||
-    value.affectedStages.some((stage) => !CHECK_STAGES.includes(stage)) ||
+    value.affectedStages.some((stage) => !NEEDS_SESSION.includes(stage)) ||
     new Set(value.affectedStages).size !== value.affectedStages.length ||
     !value.check ||
     !CHECK_STAGES.includes(value.check.stage) ||
@@ -39,7 +45,7 @@ export function incidentStateProblem(value) {
     value.fixedBy.some((id) => !text(id)) ||
     !Array.isArray(value.affectedStages) ||
     !value.affectedStages.length ||
-    value.affectedStages.some((stage) => !CHECK_STAGES.includes(stage)) ||
+    value.affectedStages.some((stage) => !NEEDS_SESSION.includes(stage)) ||
     !value.check ||
     !CHECK_STAGES.includes(value.check.stage) ||
     !text(value.check.expectation) ||
@@ -59,7 +65,7 @@ export function incidentFromReport(task, report, fixedBy, now) {
   if (!declaration) return { incident: task.pipelineIncident };
   if (!fixedBy.length) return { problem: 'общему инциденту нужны конкретные карточки исправлений' };
   const data = {
-    evidence: declaration.evidence,
+    evidence: evidenceText(declaration.evidence),
     affectedStages: [...declaration.affectedStages].sort(),
     check: { ...declaration.check },
     fixedBy: [...new Set(fixedBy)].sort(),

@@ -31,6 +31,11 @@ import {
   incidentFromReport,
   verifyIncident,
 } from './pipeline-incidents.mjs';
+
+export class ReportValidationError extends Error {}
+
+const invalidReport = (why) => ({ result: 'failed', code: 'invalid-report', why });
+
 /** План собирается теми же правилами, но все записи становятся данными. */
 export async function prepareReportPlan(action, io, saved = null) {
   if (saved) return globalThis.structuredClone(saved);
@@ -100,8 +105,10 @@ export async function prepareReportPlan(action, io, saved = null) {
   });
   // Отбраковка неполного разбора тоже завершает доставку: её диагностику
   // и расход сохраняем, хотя исход обработчика остаётся failed.
-  if (result.result !== 'done' && !finalized)
-    throw new Error(result.why ?? 'cannot prepare report plan');
+  if (result.result !== 'done' && !finalized) {
+    const Failure = result.code === 'invalid-report' ? ReportValidationError : Error;
+    throw new Failure(result.why ?? 'cannot prepare report plan');
+  }
   return { version: 1, reportId: action.reportId, operations, cleanup, result };
 }
 
@@ -154,7 +161,7 @@ export async function transferReport(action, io, context = {}) {
 
   const hasUpdates = Object.hasOwn(report, 'dependencyUpdates');
   if (hasUpdates && !Array.isArray(report.dependencyUpdates))
-    return { result: 'failed', why: 'dependencyUpdates: ожидается массив' };
+    return invalidReport('dependencyUpdates: ожидается массив');
   const updates = report.dependencyUpdates ?? [];
   let transferred = null;
   if (
@@ -305,9 +312,9 @@ export async function transferReport(action, io, context = {}) {
       beforeWrite: () => applyDependencyUpdates(task, updates, io, context),
     });
   const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
-  if (categoryProblem) return { result: 'failed', why: categoryProblem };
+  if (categoryProblem) return invalidReport(categoryProblem);
   const incidentProblem = incidentDeclarationProblem(report.pipelineIncident, task, report);
-  if (incidentProblem) return { result: 'failed', why: incidentProblem };
+  if (incidentProblem) return invalidReport(incidentProblem);
   const workProblem = workKindProblem(
     report.workKind !== undefined || report.workReason !== undefined
       ? {
@@ -318,12 +325,15 @@ export async function transferReport(action, io, context = {}) {
         }
       : task,
   );
-  if (workProblem) return { result: 'failed', why: workProblem };
+  if (workProblem)
+    return report.workKind !== undefined || report.workReason !== undefined
+      ? invalidReport(workProblem)
+      : { result: 'failed', why: workProblem };
   if (report.categories && report.requests) {
-    if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };
+    if (!Array.isArray(report.requests)) return invalidReport('requests не массив');
     for (const request of report.requests) {
       const problem = categoriesProblem(request?.categories, true);
-      if (problem) return { result: 'failed', why: problem };
+      if (problem) return invalidReport(problem);
     }
   }
 

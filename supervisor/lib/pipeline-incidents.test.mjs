@@ -100,6 +100,63 @@ it('не объединяет проверочные выкладки разны
 });
 
 describe('подтверждение и сохранение инцидента', () => {
+  it('сохраняет все свидетельства и этап разбора без смены идентичности диагноза', () => {
+    const report = globalThis.structuredClone(diagnosis);
+    report.pipelineIncident.evidence = ['Инструмент не запускается.', 'Разбор воспроизводит сбой.'];
+    report.pipelineIncident.affectedStages.push('postmortem');
+    const task = source();
+    const first = incidentFromReport(task, report, ['0002-fix'], now).incident;
+    expect(first.evidence).toBe(report.pipelineIncident.evidence.join('\n'));
+    expect(first.affectedStages).toContain('postmortem');
+    first.probeStartedAt = now;
+    expect(
+      incidentFromReport(
+        { ...task, pipelineIncident: first },
+        {
+          ...report,
+          pipelineIncident: { ...report.pipelineIncident, evidence: first.evidence },
+        },
+        ['0002-fix'],
+        now,
+      ).incident,
+    ).toEqual(first);
+    const copied = parseCard(
+      {
+        id: '6a981dc012e0a4bfb4d3c087',
+        name: 'Источник',
+        desc: joinDescription('Текст', metaOf({ ...task, pipelineIncident: first })),
+        idLabels: ['f'],
+        idList: 'x',
+      },
+      { stateByList: new Map([['x', 'failed']]), labelKeyById: new Map([['f', 'feature']]) },
+    );
+    expect(copied.task.pipelineIncident).toEqual(first);
+    expect(
+      incidentDeclarationProblem(
+        {
+          ...report.pipelineIncident,
+          check: {
+            stage: 'postmortem',
+            expectation: 'Нельзя проверять разбором',
+          },
+        },
+        { ...task, returnTo: 'postmortem' },
+        report,
+      ),
+    ).toBeTruthy();
+  });
+  it.each([[], [''], ['факт', 1], ['факт', null], {}, 42])(
+    'не угадывает свидетельства из повреждённого значения %j',
+    (evidence) => {
+      expect(
+        incidentDeclarationProblem(
+          { ...diagnosis.pipelineIncident, evidence },
+          source(),
+          diagnosis,
+        ),
+      ).toContain('свидетельство');
+    },
+  );
   it('ошибка отдельного кода и голословный инцидент не дают общего приоритета', () => {
     expect(
       incidentDeclarationProblem(diagnosis.pipelineIncident, source(), {
