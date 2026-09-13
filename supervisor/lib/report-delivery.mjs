@@ -23,8 +23,8 @@ function renameRequest(entry, index, id) {
 }
 
 /** Намерение переживает сбой; квитанция получателя решает судьбу повтора. */
-export async function transferReport(action, io) {
-  if (!io.reportStore || !action.reportId) return transferLegacyReport(action, io);
+export async function transferReport(action, io, context = {}) {
+  if (!io.reportStore || !action.reportId) return transferLegacyReport(action, io, context);
   const store = io.reportStore;
   let entry = store.get(action.reportId);
   if (!entry) return { result: 'skipped', why: 'report already acknowledged' };
@@ -46,8 +46,18 @@ export async function transferReport(action, io) {
     }
     if (entry.plan.version !== 1 || entry.plan.reportId !== entry.reportId)
       throw new Error('unsupported report delivery plan');
+    // Даже подтверждённые ранее адресаты перечитываются при каждом повторе:
+    // сохранённый план не доказывает свежесть зависимостей или свободу захвата.
+    for (const operation of entry.plan.operations) {
+      if (operation.kind !== 'appendTaskDependencies') continue;
+      const [update, dependencies] = operation.args;
+      const result = await io.appendTaskDependencies(update, { ...dependencies, ...context });
+      if (!result?.ok)
+        throw new Error(result?.why ?? result?.outcome ?? 'unconfirmed dependencies');
+    }
     for (let index = 0; index < entry.plan.operations.length; index += 1) {
       let operation = entry.plan.operations[index];
+      if (operation.kind === 'appendTaskDependencies') continue;
       if (entry.progress.includes(operation.key)) continue;
       const intent = `intent:${operation.key}`;
       if (!entry.progress.includes(intent)) {

@@ -671,6 +671,7 @@ async function turn() {
         reportStore: supervisor.reportStore,
       }),
       ...(backlog.store ?? {}),
+      dependencyEvidence: state.dependencyEvidence ?? {},
       tokenAccountingNote: (taskId) => tokenAccountingNote(supervisor.codexUsage, taskId),
       tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
       tokenReanalysisAdmission: (task, stage) =>

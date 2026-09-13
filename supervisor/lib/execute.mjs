@@ -57,15 +57,12 @@ export const RESULT = {
 };
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
-async function startStage(action, io) {
-  const task = io.readTask(action.taskId);
+async function startStage(action, io, context) {
+  let task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
-  const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
+  let claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
-  if (task.reanalysis) claimed.task.reanalysis = false;
-  if (action.scheduling && !task.scheduling) claimed.task.scheduling = action.scheduling;
-
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
   // на доске, ни рабочего дерева, — и убирать ей нечего.
@@ -77,9 +74,45 @@ async function startStage(action, io) {
   // владельца, которая либо проходит, либо отбивается.
   const held = io.acquire ? await io.acquire(claimed.task) : { ok: true };
   if (!held.ok) {
+    if (io.requiresFreshStart) context.invalidate(task.id);
     if (held.outcome === 'taken') return { result: 'raced', why: held.why };
     return { result: 'failed', why: held.why ?? held.outcome };
   }
+
+  if (io.requiresFreshStart) {
+    let fresh;
+    try {
+      fresh = io.readStartTask
+        ? await io.readStartTask(task, { evidence: io.dependencyEvidence ?? {} })
+        : { ok: false, why: 'Trello IO не поддерживает свежее чтение старта' };
+    } catch (error) {
+      fresh = { ok: false, why: error.message };
+    }
+    if (fresh.ok) {
+      task = fresh.task;
+      claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
+      if (!claimed.task) fresh = { ok: false, why: claimed.problems.join('; ') };
+    }
+    if (!fresh.ok) {
+      context.invalidate(task.id);
+      if (held.newClaim) {
+        try {
+          const released = await io.release(task);
+          if (!released?.ok)
+            return {
+              result: 'failed',
+              why: `${fresh.why}; освобождение захвата: ${released?.why ?? 'не подтверждено'}`,
+            };
+        } catch (error) {
+          return { result: 'failed', why: `${fresh.why}; освобождение захвата: ${error.message}` };
+        }
+      }
+      return { result: 'skipped', why: fresh.why };
+    }
+  }
+
+  if (task.reanalysis) claimed.task.reanalysis = false;
+  if (action.scheduling && !task.scheduling) claimed.task.scheduling = action.scheduling;
 
   const push = await io.saveTask(
     claimed.task,
@@ -836,8 +869,18 @@ const HANDLERS = {
  */
 export async function execute(actions, io) {
   const results = [];
+  const invalidated = new Set();
+  const context = { invalidate: (id) => invalidated.add(id) };
 
   for (const action of actions) {
+    if (invalidated.has(action.taskId)) {
+      results.push({
+        action,
+        result: 'skipped',
+        why: 'данные адресата требуют нового сканирования',
+      });
+      continue;
+    }
     if (['start-stage', 'continue-stage'].includes(action.kind) && io.schedulingBlocked?.()) {
       results.push({ action, result: 'skipped', why: io.schedulingBlocked() });
       continue;
@@ -895,7 +938,7 @@ export async function execute(actions, io) {
       continue;
     }
 
-    const outcome = await handler(action, io);
+    const outcome = await handler(action, io, context);
     results.push({ action, ...outcome });
 
     if (outcome.result === 'failed' && String(outcome.why ?? '').includes('offline')) {

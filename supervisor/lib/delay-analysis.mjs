@@ -378,7 +378,12 @@ export async function rejectDelayReport(task, report, problem, io) {
   return { result: 'failed', why: problem };
 }
 
-export async function finishDelayAnalysis(task, report, io, { ownerAnswered = false } = {}) {
+export async function finishDelayAnalysis(
+  task,
+  report,
+  io,
+  { beforeWrite, ownerAnswered = false } = {},
+) {
   const saved = task.delayAnalysis;
   const wasBlocked = saved.originStatus === 'blocked' && saved.phase === 'verifying';
   const resumeQuestion = reviewingQuestion(task) && saved.phase === 'verifying' && !ownerAnswered;
@@ -401,6 +406,8 @@ export async function finishDelayAnalysis(task, report, io, { ownerAnswered = fa
           note: diagnosis.nextAction,
         });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+  const dependencies = await beforeWrite?.();
+  if (dependencies?.result) return dependencies;
   let next = addSpent(
     {
       ...moved.task,
@@ -434,6 +441,7 @@ export async function finishDelayAnalysis(task, report, io, { ownerAnswered = fa
       from: 'postmortem',
       source: 'agent',
       at: io.now,
+      decisions: dependencies?.notes ?? [],
     }),
     `chore(backlog): record delay diagnosis ${task.id}`,
   );
