@@ -5,7 +5,7 @@ import { resolveConfig } from '../config/defaults.mjs';
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
 /** Независимые снимки поверх одного подставного сервера ловят гонки между станциями. */
-export function dependencyFixture() {
+export function dependencyFixture({ userTokenLimits = {} } = {}) {
   const { config } = resolveConfig({ trello: { board: 'b' } });
   const calls = [];
   const comments = [];
@@ -67,6 +67,7 @@ export function dependencyFixture() {
       config,
       machine,
       snapshot: {
+        userTokenLimits,
         cards: clone(cards),
         comments: [],
         lists: Object.entries(config.trello.lists).map(([key, name]) => ({

@@ -1,14 +1,37 @@
 import { TOKEN_CAPPED_STAGES, TOKEN_RESUME_STATES } from '../config/transitions.mjs';
-import { taskTokens, taskTokenStatus } from './token-budget.mjs';
+import { taskTokens, taskTokenStatus, tokenAccountingAllowed } from './token-budget.mjs';
 import { effectiveTokenLimit } from './user-token-limit.mjs';
 import { applyTransition } from './task-file.mjs';
 
-/** Один допуск для сканера и последней проверки перед порождением процесса. */
-export function tokenAdmission(task, stage, config, ledger = {}) {
+/** Считается ли расход этого этапа вовсе. */
+function cappedStage(task, stage, config) {
   const capped =
     TOKEN_CAPPED_STAGES.includes(stage) ||
     (stage === 'decompose' && task.tokenReanalysis?.phase === 'analyzing');
-  if (config.provider !== 'codex' || !capped) return null;
+  return config.provider === 'codex' && capped;
+}
+
+/**
+ * Один допуск для сканера и последней проверки перед порождением процесса.
+ *
+ * Причин удержания ровно две: истраченный бюджет и негодная команда лимита.
+ * Обе — утверждения о ДЕНЬГАХ, и обе лечатся решением владельца продукта.
+ *
+ * Неизвестный расход причиной больше не является, и это осознанная перемена.
+ * Прежде он удерживал запуск наравне с перерасходом, а колонка называлась
+ * «Лимит токенов» — из-за чего и человек, и документация лечили его повышением
+ * лимита. Лечение не работает вовсе: допуск проверяет полноту учёта отдельно
+ * от суммы, и новая сумма оставляет карточку на месте. 08–09.09.2026 две такие
+ * карточки удержали тридцать две задачи, а сообщение о неизвестном расходе
+ * повторилось в журнале цикла 916 раз, не попав ни на одну карточку.
+ *
+ * Незнание расхода — поломка учёта, а не решение о деньгах. Чинится она
+ * починкой, и ждать её, остановив работу, незачем: владелец продукта выбрал
+ * риск перерасхода против простоя прямо. Чтобы риск был виден, неучтённый
+ * заход называет себя в журнале задачи — см. `unaccountedLaunchNote`.
+ */
+export function tokenAdmission(task, stage, config, ledger = {}) {
+  if (!cappedStage(task, stage, config)) return null;
   const budget = effectiveTokenLimit(task, config);
   const spent = taskTokens(ledger, task.id);
   const accounting = taskTokenStatus(ledger, task.id);
@@ -16,9 +39,7 @@ export function tokenAdmission(task, stage, config, ledger = {}) {
     ? 'invalid-limit'
     : budget.value != null && spent >= budget.value
       ? 'exhausted'
-      : budget.value != null && !accounting.complete
-        ? 'unknown-usage'
-        : null;
+      : null;
   if (!reason) return null;
   return {
     spent,
@@ -26,13 +47,31 @@ export function tokenAdmission(task, stage, config, ledger = {}) {
     source: budget.source,
     reason,
     accountingComplete: accounting.complete,
+    ...(accounting.acceptedIncomplete ? { acceptedIncomplete: true } : {}),
     accountingReasons: accounting.reasons,
-    explanation:
-      budget.error ??
-      (reason === 'exhausted'
-        ? `Израсходовано ${spent} токенов при бюджете ${budget.value}.`
-        : `Расход Codex неизвестен (${accounting.reasons.join(', ')}); запуск удержан.`),
+    explanation: budget.error ?? `Израсходовано ${spent} токенов при бюджете ${budget.value}.`,
   };
+}
+
+/**
+ * Запись о заходе, расход которого посчитать не удалось.
+ *
+ * Возвращает строку ровно тогда, когда этап считается по бюджету, а учёт
+ * неполон. Пишется она в журнал задачи один раз на состоявшееся порождение
+ * процесса — не каждый оборот. Разница существенная: именно повтор каждый
+ * оборот и утопил прежнее сообщение в журнале цикла.
+ *
+ * Действия владельца продукта запись не требует и поднять лимит не предлагает:
+ * лимит тут ни при чём.
+ */
+export function unaccountedLaunchNote(task, stage, config, ledger = {}) {
+  if (!cappedStage(task, stage, config)) return null;
+  const accounting = taskTokenStatus(ledger, task.id);
+  if (tokenAccountingAllowed(accounting)) return null;
+  return (
+    `Расход Codex по этому заходу посчитать не удалось (${accounting.reasons.join(', ')}); ` +
+    'запуск состоялся. Действий владельца не требуется: удержания по незнанию расхода нет.'
+  );
 }
 
 export function tokenHoldProblem(task) {
@@ -119,7 +158,12 @@ export async function changeTokenHold(action, io) {
       from: task.status,
       to: next.task.status,
       what: resume
-        ? 'Бюджет разрешает продолжение; сохранённый этап и счётчики восстановлены.'
+        ? [
+            'Бюджет разрешает продолжение; сохранённый этап и счётчики восстановлены.',
+            io.tokenAccountingNote?.(task.id),
+          ]
+            .filter(Boolean)
+            .join(' ')
         : tokenPanel(next.task.tokenHold),
       source: 'supervisor',
       ...(resume ? { restorePriority: task.tokenHold.originPriority } : {}),
@@ -157,9 +201,10 @@ export function tokenPanel(hold) {
     '',
     'Для продолжения владелец пишет новый комментарий в интерфейсе этой карточки: **Лимит токенов: <полный бюджет>**. Укажите целое число больше расхода; это полный лимит, а не добавка. После достаточного повышения карточка вернётся на сохранённый этап автоматически.',
   ];
-  if (hold.accountingComplete === false)
-    lines.push(
-      'Сначала необходимо восстановить учёт расхода; повышение лимита само по себе неизвестный расход не разрешает.',
-    );
+  // Прежде здесь стояла приписка «сначала восстановите учёт»: неизвестный
+  // расход тогда удерживал карточку сам по себе, и повышение лимита её
+  // не выпускало. Теперь удерживает только посчитанный перерасход, поэтому
+  // приписка стала бы неправдой — повышение лимита выпускает карточку
+  // независимо от полноты учёта. Неполнота остаётся видна строкой расхода.
   return [...lines, PANEL_CLOSE].join('\n');
 }

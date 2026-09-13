@@ -3,12 +3,52 @@ import { pendingDependencies } from './dependencies.mjs';
 import { execute } from './execute.mjs';
 import { dependencyFixture } from './dependency-updates-fixture.mjs';
 import { joinDescription, splitDescription } from './card.mjs';
+import { scan } from './scan.mjs';
 import { createIo } from './io.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { reconcile } from './reconcile.mjs';
 import { repairWorld } from './repair.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
+import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
+import { incidentFromReport } from './pipeline-incidents.mjs';
+
+it('досылает журнал передвинутого участника по сохранённому плану до ведущей', async () => {
+  const f = deliveryFixture({ stage: 'deploy', batch: true });
+  try {
+    const first = f.open();
+    first.recipient.fail('POST', '/actions/comments');
+    expect((await execute([f.action], first.io))[0].result).toBe('failed');
+    expect(first.recipient.store.readTask(f.member.id).status).toBe('cleanup');
+    expect(first.recipient.store.readTask(f.task.id).status).toBe('deploy');
+    const second = f.open();
+    expect((await execute([f.action], second.io))[0].result).toBe('done');
+    expect(second.recipient.state()).toMatchObject({ puts: 2, posts: 2 });
+    expect(second.recipient.store.readTask(f.member.id).spentUsd).toBe(4);
+    expect(second.recipient.store.readTask(f.task.id).spentUsd).toBe(7);
+    expect(f.open().store.entries()).toEqual([]);
+    expect((await execute([f.action], f.open().io))[0].result).toBe('skipped');
+  } finally {
+    f.cleanup();
+  }
+});
+
+it('повторно проверяет очередь до действий из уже устаревшего снимка', async () => {
+  const f = deliveryFixture();
+  try {
+    const opened = f.open();
+    const actions = [{ kind: 'continue-stage', taskId: f.task.id, stage: 'implement' }];
+    const result = await execute(actions, opened.io);
+    expect(result[0]).toMatchObject({ result: 'skipped', why: 'pending report owns this task' });
+    expect(opened.recipient.state().puts).toBe(0);
+    opened.io.reportStorageBlocked = () => true;
+    expect((await execute([{ ...actions[0], taskId: 'other' }], opened.io))[0].result).toBe(
+      'failed',
+    );
+  } finally {
+    f.cleanup();
+  }
+});
 
 /**
  * Проверки исполнения решений.
@@ -24,6 +64,13 @@ const NOW = '2026-08-26T12:00:00+03:00';
 describe('свежесть Trello-start между станциями', () => {
   const action = { kind: 'start-stage', taskId: '0003-consumer', stage: 'design' };
   const compose = (store) => ({ ...fakeIo(), ...store, machine: 'B' });
+  it('сохраняет подтверждённый лимит владельца при свежем старте', async () => {
+    const limit = { actionId: 'owner-command', at: NOW, value: 50000000 };
+    const f = dependencyFixture({ userTokenLimits: { 'card-target': limit } });
+    const io = compose(f.store('B'));
+    expect((await execute([action], io))[0].result).toBe('done');
+    expect(io.readTask(action.taskId).userTokenLimit).toEqual(limit);
+  });
   it('станция B не стирает подтверждённое дополнение A старым снимком', async () => {
     const f = dependencyFixture();
     const a = f.store('A');
@@ -163,6 +210,142 @@ describe('свежесть Trello-start между станциями', () => {
     ]);
     expect(io.spawned).toEqual([]);
   });
+});
+
+it('сохраняет диагноз с конкретным исправлением при передаче отчёта', async () => {
+  const source = task({ status: 'postmortem', returnTo: 'design' });
+  const report = {
+    taskId: source.id,
+    stage: 'postmortem',
+    outcome: 'done',
+    causedBy: 'pipeline',
+    fixedBy: ['0002-fix'],
+    summary: 'Общий запуск сломан',
+    pipelineIncident: {
+      evidence: 'Два одинаковых отказа запуска подтверждены логами',
+      affectedStages: ['design'],
+      check: { stage: 'design', expectation: 'Исходный запуск завершает design без отказа' },
+    },
+  };
+  const game = task({ id: '0003-game', categories: ['ux'] });
+  const io = fakeIo({ tasks: [source, task({ id: '0002-fix' }), game], report });
+  expect(
+    (await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'postmortem' }], io))[0]
+      .result,
+  ).toBe('done');
+  expect(io.readTask(source.id)).toMatchObject({
+    status: 'failed',
+    pipelineIncident: { fixedBy: ['0002-fix'], probeStartedAt: null, verifiedAt: null },
+  });
+  expect(io.readJournal(source.id)).toContain('Два одинаковых отказа');
+  const stale = await execute([{ kind: 'start-stage', taskId: game.id, stage: 'design' }], io);
+  expect(stale[0]).toMatchObject({ result: 'skipped', why: expect.stringContaining('инцидент') });
+  expect(io.readTask(game.id)).toEqual(game);
+  expect(io.spawned).toEqual([]);
+  const fixed = { ...io.readTask('0002-fix'), status: 'completed' };
+  io.tasks.delete(fixed.id);
+  io.dependencyRecords = () => [fixed];
+  io.tasks.set(source.id, { ...io.readTask(source.id), status: 'design' });
+  const probe = await execute(
+    [{ kind: 'continue-stage', taskId: source.id, stage: 'design', incidentProbe: true }],
+    io,
+  );
+  expect(probe[0].result).toBe('done');
+  expect(io.spawned).toHaveLength(1);
+  expect(io.readTask(source.id).pipelineIncident.probeStartedAt).toBe(NOW);
+});
+
+it.each(['done', 'blocked'])(
+  'не снимает инцидент без доказательства при исходе %s',
+  async (outcome) => {
+    const source = task({ status: 'design' });
+    source.pipelineIncident = {
+      id: 'incident',
+      evidence: 'Общий отказ запуска',
+      fixedBy: ['0002-fix'],
+      openedAt: NOW,
+      affectedStages: ['design'],
+      check: { stage: 'design', expectation: 'Выполнить исходный этап' },
+      probeStartedAt: NOW,
+      verifiedAt: null,
+    };
+    const io = fakeIo({
+      tasks: [source],
+      report: {
+        taskId: source.id,
+        stage: 'design',
+        outcome,
+        summary: 'Без проверки',
+        costUsd: 2,
+      },
+    });
+    await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'design' }], io);
+    expect(io.readTask(source.id)).toMatchObject({
+      status: 'postmortem',
+      spentUsd: 2,
+      pipelineIncident: { verifiedAt: null },
+    });
+    expect(io.readJournal(source.id)).toContain('проверка восстановления не подтверждена');
+  },
+);
+
+it('принимает свидетельство пробы после перезапуска и сохраняет его в журнале', async () => {
+  const source = task({ status: 'design' });
+  source.pipelineIncident = incidentFromReport(
+    { ...source, returnTo: 'design' },
+    {
+      stage: 'postmortem',
+      outcome: 'done',
+      causedBy: 'pipeline',
+      pipelineIncident: {
+        evidence: 'Общий отказ запуска',
+        affectedStages: ['design'],
+        check: { stage: 'design', expectation: 'Проверить исходный этап' },
+      },
+    },
+    ['0002-fix'],
+    NOW,
+  ).incident;
+  const io = fakeIo({
+    tasks: [source],
+    report: {
+      taskId: source.id,
+      stage: 'design',
+      outcome: 'done',
+      summary: 'Проработано',
+      incidentVerification: {
+        incidentId: source.pipelineIncident.id,
+        passed: true,
+        evidence: 'Исходная команда завершилась, корректный отчёт получен',
+      },
+    },
+  });
+  io.incidentProbeAt = () => NOW;
+  await execute([{ kind: 'transfer-report', taskId: source.id, stage: 'design' }], io);
+  expect(io.readTask(source.id)).toMatchObject({
+    status: 'audit',
+    pipelineIncident: { verifiedAt: NOW },
+  });
+  expect(io.readJournal(source.id)).toContain('Исходная команда завершилась');
+});
+
+it('учитывает новую карточку только после рождения процесса и сохраняет выбор для повтора', async () => {
+  const io = fakeIo();
+  const recorded = [];
+  io.recordSchedulingLaunch = (value) => recorded.push(value.id);
+  io.spawnStage = () => ({ ok: false, reason: 'not-born', why: 'нет процесса' });
+  const action = {
+    kind: 'start-stage',
+    taskId: '0001-one',
+    stage: 'decompose',
+    scheduling: { lane: 'game', selectedAt: NOW, reason: 'игровой ход' },
+  };
+  await execute([action], io);
+  expect(recorded).toEqual([]);
+  expect(io.readTask(action.taskId).scheduling).toEqual(action.scheduling);
+  io.spawnStage = () => ({ ok: true });
+  await execute([{ kind: 'continue-stage', taskId: action.taskId, stage: 'decompose' }], io);
+  expect(recorded).toEqual([action.taskId]);
 });
 
 const task = (over = {}) => ({
@@ -1479,7 +1662,9 @@ describe('жизненный цикл сессии после отчёта', () 
   ])(
     '%s после возврата и новой работы получает свежую задачу и журнал',
     async (checker, worker) => {
-      const { io, sessions, remember, transfer, launch } = world(checker);
+      const { io, sessions, remember, transfer, launch } = world(checker, {
+        evidence: { branchOnRemote: true, unpushed: 0, lastCommitAt: NOW },
+      });
       remember('0001-one', worker);
       await transfer(checker, 'rejected', { summary: 'нужна новая работа' });
       expect(io.tasks.get('0001-one').status).toBe(worker);
@@ -1557,7 +1742,9 @@ describe('жизненный цикл сессии после отчёта', () 
   it.each(['createTask', 'amendTask'])(
     'ошибка %s сохраняет исходную сессию и очередь отчёта',
     async (method) => {
-      const { io, sessions, transfer } = world('design');
+      const { io, sessions, transfer } = world('design', {
+        evidence: { branchOnRemote: true, unpushed: 0, lastCommitAt: NOW },
+      });
       io.tasks.set('0002-two', task({ id: '0002-two' }));
       io[method] = () => ({ ok: false, outcome: 'write-failed' });
       const [result] = await transfer('design', 'done', {
@@ -1664,11 +1851,11 @@ describe('отказанные действия при переносе отчё
     expect(io.journals.get('0001-one')).toContain('сопоставить отказ с делом нечем');
   });
 
-  it('без отказов улики не спрашиваются ни разу', async () => {
-    // Холостой ход не должен стоить ни одного лишнего вызова git.
+  it('done без отказов тоже собирает улики', async () => {
+    // Отсутствие отказов не доказывает, что этап оставил требуемый след.
     const io = fakeIo({ tasks: [task({ status: 'design' })] });
     await execute([transfer], io);
-    expect(io.steps).not.toContain('спрошены улики 0001-one');
+    expect(io.steps.filter((step) => step === 'спрошены улики 0001-one')).toHaveLength(1);
   });
 });
 
@@ -2040,6 +2227,112 @@ describe('сессия на идущий этап', () => {
   });
 });
 
+describe('исполнение оборота внешнего прогона', () => {
+  const { config } = resolveConfig({});
+  const poll = { kind: 'poll-external', taskId: '0001-one', what: 'run' };
+
+  it.each([
+    ['success', false, false],
+    ['pending', false, false],
+    ['offline', false, false],
+    ['failure', false, false],
+    ['success', true, true],
+    ['pending', true, true],
+  ])('%s, предел=%s, машина занята=%s', async (state, exhausted, busy) => {
+    const original = task({
+      type: 'run',
+      status: 'benchmark',
+      run: { kind: 'arena', expectation: 'измерить темп' },
+      links: { run: '123' },
+      attempts: { continuations: exhausted ? config.maxContinuations : 1, cycleFailures: 0 },
+    });
+    const other = task({ id: '0002-busy', status: 'design' });
+    const io = fakeIo({ tasks: busy ? [original, other] : [original] });
+    const calls = [];
+    io.readExternal = createIo({
+      root: '/repo',
+      config,
+      now: NOW,
+      run: (args, command) => {
+        calls.push({ args, command });
+        return state === 'offline'
+          ? { code: 1, stdout: '' }
+          : {
+              code: 0,
+              stdout: JSON.stringify({
+                status: state === 'pending' ? 'in_progress' : 'completed',
+                conclusion: state,
+              }),
+            };
+      },
+    }).readExternal;
+    const freshPlan = (occupied) =>
+      scan({
+        config,
+        tasks: [...io.tasks.values()],
+        running: occupied ? [{ taskId: other.id, stage: 'design' }] : [],
+      }).actions;
+    // timeout уже завершил процесс; сканер видит задачу без живой сессии.
+    const plan = scan({
+      config,
+      tasks: [...io.tasks.values()],
+      running: busy ? [{ taskId: other.id, stage: 'design' }] : [],
+      orphans: [{ taskId: original.id, stage: 'benchmark', outcome: 'timeout' }],
+    }).actions;
+    expect(plan.filter((action) => action.kind !== 'note-orphan')).toEqual([poll]);
+    await execute(plan, io);
+    expect(calls).toEqual([
+      { command: 'gh', args: ['run', 'view', '123', '--json', 'status,conclusion'] },
+    ]);
+    const saved = io.readTask(original.id);
+    expect(saved.status).toBe(
+      state === 'success' ? 'interpret' : state === 'failure' ? 'postmortem' : 'benchmark',
+    );
+    if (state === 'failure') {
+      expect(saved.returnTo).toBe('benchmark');
+      expect(saved.attempts).toEqual({
+        continuations: 0,
+        cycleFailures: 0,
+        rejections: 0,
+        spawnFailures: 0,
+        apiErrors: 0,
+      });
+    } else {
+      expect(saved.attempts).toEqual(original.attempts);
+    }
+    expect(io.spawned).toEqual([]);
+    expect(io.readJournal(original.id)).not.toContain('Этапу выдана сессия');
+
+    if (state === 'success') {
+      if (exhausted) {
+        for (const occupied of [true, false]) {
+          expect(freshPlan(occupied).filter((action) => action.taskId === original.id)).toEqual([
+            {
+              kind: 'fail-stage',
+              taskId: original.id,
+              stage: 'interpret',
+              reason: 'этап не доводится до конца, продолжения исчерпаны',
+            },
+          ]);
+        }
+      } else {
+        expect(freshPlan(false)).toContainEqual(
+          expect.objectContaining({
+            kind: 'continue-stage',
+            taskId: original.id,
+            stage: 'interpret',
+          }),
+        );
+      }
+    } else if (state !== 'failure') {
+      expect(freshPlan(busy).filter((action) => action.taskId === original.id)).toEqual([poll]);
+      expect(io.readJournal(original.id)).not.toContain('benchmark → interpret');
+    } else {
+      expect(io.readJournal(original.id)).toContain('прогон не удался');
+    }
+  });
+});
+
 describe('внешнее состояние', () => {
   const poll = { kind: 'poll-external', taskId: '0001-one', what: 'ci' };
 
@@ -2389,6 +2682,7 @@ describe('уборка после потери записи реестра', () 
       expect(w.calls).toEqual([
         'register',
         ['pr', 50],
+        'register',
         'tree',
         'local',
         'remote',
@@ -2400,12 +2694,33 @@ describe('уборка после потери записи реестра', () 
     },
   );
 
-  it('отсутствующее дерево не создаётся, пустая уборка закрывается', async () => {
+  it('отсутствие ресурсов без записи не выдаётся за доказанную уборку', async () => {
     const w = world({ present: false });
     expect(w.repair()).toEqual([]);
     await execute([sweep], w.io);
-    expect(w.io.tasks.get(id).status).toBe('completed');
-    expect(w.calls).toEqual([['pr', 50], 'completed']);
+    expect(w.io.tasks.get(id).status).toBe('postmortem');
+    expect(w.calls).toEqual([['pr', 50]]);
+  });
+
+  it.each([50, null])(
+    'потеря записи при оставшихся ветках не завершает задачу, PR %s',
+    async (pr) => {
+      const w = world({ pr });
+      w.resources.delete('tree');
+      await execute([sweep], w.io);
+      expect(w.io.journals.get(id)).toContain('запись реестра отсутствует');
+      expect(w.io.tasks.get(id).status).toBe('postmortem');
+      expect([...w.resources]).toEqual(['local', 'remote']);
+      expect(w.calls).toEqual([['pr', pr]]);
+    },
+  );
+
+  it('недоступный PR без записи оставляет уборку ждать', async () => {
+    const w = world({ state: 'unknown' });
+    await execute([sweep], w.io);
+    expect(w.io.tasks.get(id).status).toBe('cleanup');
+    expect(w.resources.size).toBe(3);
+    expect(w.calls).toEqual([['pr', 50]]);
   });
 
   it('починка не присваивает и не удаляет чужое дерево', () => {
@@ -2524,7 +2839,7 @@ describe('причина в конечном переходе', () => {
     },
   );
 
-  it('повтор уборки после удаления дерева сохраняет текст причины и итогового комментария', async () => {
+  it('потеря реестра после отказа сохранения не повторяет ложное закрытие', async () => {
     const io = fakeIo({
       tasks: [
         task({
@@ -2544,7 +2859,9 @@ describe('причина в конечном переходе', () => {
     io.registryEntry = () => null;
     await execute([action], io);
     expect(entries).toHaveLength(2);
-    expect(entries[1]).toEqual(entries[0]);
+    expect(entries[0].to).toBe('closed');
+    expect(entries[1].to).toBe('postmortem');
+    expect(JSON.stringify(entries[1])).toContain('запись реестра отсутствует');
   });
 
   it('снятый предмет сохраняется после отдельного цикла уборки', async () => {

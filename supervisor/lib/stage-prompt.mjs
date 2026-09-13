@@ -80,9 +80,29 @@ export function stagePrompt({
   board = [],
   journalLimit = 12000,
   stageLog = null,
+  stageLogs = null,
   tokenBudget = null,
 }) {
   const lines = [];
+  if (
+    task?.pipelineIncident &&
+    !task.pipelineIncident.verifiedAt &&
+    assignment.stage === task.pipelineIncident.check.stage
+  ) {
+    const incident = task.pipelineIncident;
+    lines.push(
+      '## Ограниченная проверка восстановления конвейера',
+      '',
+      `Инцидент ${incident.id}: ${incident.evidence}`,
+      `Проверь именно сломанный путь: ${incident.check.expectation}`,
+      'Это одна проверочная сессия. Не расширяй её на другие игровые карточки.',
+      'Зелёный CI или вливание починки сами по себе не подтверждают восстановление.',
+      'В итоговый отчёт добавь incidentVerification: { incidentId, passed, evidence }.',
+      `incidentId должен быть ${incident.id}; passed: true допустимо только с конкретным свидетельством проверки.`,
+      'При неуспехе укажи passed: false и факты для пересмотра диагноза. Без подтверждения инцидент останется активным.',
+      '',
+    );
+  }
   const batch =
     Array.isArray(assignment.batch) && assignment.batch.length > 0 ? assignment.batch : null;
 
@@ -99,6 +119,7 @@ export function stagePrompt({
         stage: assignment.stage,
         branch: assignment.branch ?? null,
         worktree: assignment.path ?? null,
+        ...(assignment.benchmarkSource ? { benchmarkSource: assignment.benchmarkSource } : {}),
         ...(assignment.deploymentRevision
           ? { deploymentRevision: assignment.deploymentRevision }
           : {}),
@@ -205,18 +226,26 @@ export function stagePrompt({
   // имя файла складывается из двух полей и его легко перепутать, лог бывает
   // в сотни килобайт, а перечислять каталог через оболочку исполнителю
   // запрещено — составная команда оборачивается молчаливым отказом.
-  if (stageLog) {
-    lines.push(
-      '',
-      `## Лог упавшего этапа (${stageLog.stage})`,
-      '',
-      `Файл: \`${stageLog.path}\``,
-      '',
-      stageLog.text
-        ? ['```', clipMiddle(stageLog.text, 4000, 6000), '```'].join('\n')
-        : '_Лога нет: этап либо не породился, либо супервизор умер прежде, ' +
-            'чем записал. Это само по себе улика._',
-    );
+  const history = stageLogs ?? (stageLog ? { stage: stageLog.stage, entries: [stageLog] } : null);
+  if (history) {
+    lines.push('', `## Лог упавшего этапа (${history.stage ?? 'исходный этап неизвестен'})`, '');
+    if (history.error) lines.push(`История недоступна: ${history.error}`, '');
+    if (!history.entries?.length) lines.push('_Лога нет: доступных заходов нет._');
+    for (const entry of (history.entries ?? []).slice(0, 3)) {
+      lines.push(
+        `### Заход ${entry.launchId ?? 'legacy'}`,
+        `Этап: ${entry.stage ?? history.stage}; начат: ${entry.startedAt ?? 'неизвестно'}`,
+        `Файл: \`${entry.path ?? 'путь неизвестен'}\` (источник выдержки)`,
+        ...(entry.historyPath ? [`Историческая копия: \`${entry.historyPath}\``] : []),
+        ...(entry.diagnostic ? [`Совместимая копия: ${entry.diagnostic}`] : []),
+        ...(entry.error ? [`Ошибка чтения: ${entry.error}`] : []),
+        '',
+        entry.text
+          ? ['```', clipMiddle(entry.text, 4000, 6000), '```'].join('\n')
+          : '_Лога нет: этап либо не породился, либо супервизор умер прежде, чем записал. Это само по себе улика._',
+        '',
+      );
+    }
   }
 
   // Опись доски нужна сверкам, которым мало своей задачи: аудит ищет
@@ -278,6 +307,7 @@ function taskDigest(task) {
     dependencyResults: task.dependencyResults ?? [],
     blockedContext: task.blockedContext ?? null,
     delayAnalysis: task.delayAnalysis ?? null,
+    dependencyRecheck: task.dependencyRecheck ?? null,
     tokenReanalysis: task.tokenReanalysis ?? null,
     analysisGeneration: task.analysisGeneration ?? 0,
     status: task.status,
@@ -293,6 +323,12 @@ function taskDigest(task) {
 }
 
 export const DELAY_ANALYSIS_CONTRACT = `## Сохранённый разбор задержки
+
+Если есть dependencyRecheck, закрытие предшественника ещё не доказывает
+результат. Проверь сохранённые edges/results и blockedContext: подтвердить
+выполнение или снятие требования можно только с specificEvidence и
+preventionEvidence; иначе нужен blocked с живой заменой. Историческое
+ожидание сохраняется в доказательствах, удаление ребра не является успехом.
 
 В postmortem при delayAnalysis.phase analyzing или verifying выполняй этот
 режим вместо обычного разбора падения. Возраст карточки не доказывает ошибку.

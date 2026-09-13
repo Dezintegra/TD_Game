@@ -4,7 +4,13 @@ import { canTransition } from '../config/transitions.mjs';
 import { metaOf, parseCard, joinDescription } from './card.mjs';
 import { scan } from './scan.mjs';
 import { execute } from './execute.mjs';
-import { delayDecision, delayReportProblem, DELAY_STATES, WAIT_FROM } from './delay-analysis.mjs';
+import {
+  delayDecision,
+  delayFacts,
+  delayReportProblem,
+  DELAY_STATES,
+  WAIT_FROM,
+} from './delay-analysis.mjs';
 import { BLOCKABLE, unblockTask } from './blockers.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
 
@@ -361,6 +367,50 @@ describe('порог задержки', () => {
       'flush-delay-journal',
     );
   });
+
+  it('принятое ожидание освобождено от разбора не навсегда, а до предела', () => {
+    const blocked = task({
+      status: 'blocked',
+      statusChangedAt: since,
+      dependsOn: ['0002-run'],
+      blockedContext: {
+        operation: 'accepted',
+        from: 'triage',
+        reasons: [{ taskId: '0002-run', reason: 'Нужно', result: 'Артефакт' }],
+      },
+    });
+    // Шесть часов и почти сутки: ожидание законно, платить за разбор незачем.
+    expect(delayDecision(blocked, { now })).toBeNull();
+    expect(delayDecision(blocked, { now: '2026-09-08T05:59:00Z' })).toBeNull();
+    // Сутки прошли — ожидание само не кончится, и оно получает разбор.
+    // Прежде правило освобождало его «спустя пять часов, сутки и сто циклов»,
+    // и 09.09.2026 тридцать шесть карточек простояли без единой строки
+    // в собственном журнале.
+    expect(delayDecision(blocked, { now: '2026-09-08T07:00:00Z' })?.kind).toBe('analyze-delay');
+  });
+
+  it('сохранённое наблюдение тоже упирается в предел', () => {
+    const base = task({ status: 'blocked', statusChangedAt: since, dependsOn: ['0002-run'] });
+    const waiting = {
+      ...base,
+      delayAnalysis: {
+        episode: 'ep',
+        originStatus: 'blocked',
+        originSince: since,
+        phase: 'waiting',
+        // Факты берём настоящие: разошедшиеся факты сами по себе назначают
+        // пересмотр, и проверка про предел утонула бы в нём.
+        facts: delayFacts(base),
+        dependencies: [],
+      },
+    };
+    // Внутри предела наблюдение молчит либо обновляет снимок, но платного
+    // разбора не назначает.
+    expect(delayDecision(waiting, { now })?.kind).not.toBe('analyze-delay');
+    // За пределом эпизод перестаёт считаться прежним, и разбор назначается.
+    expect(delayDecision(waiting, { now: '2026-09-08T07:00:00Z' })?.kind).toBe('analyze-delay');
+  });
+
   it.each(DELAY_STATES)('обнаруживает рабочий статус %s', (status) => {
     expect(delayDecision(task({ status }), { now })?.kind).toBe('analyze-delay');
   });

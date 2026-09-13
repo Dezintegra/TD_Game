@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AttackStance,
   BLAST_LIFETIME_TICKS,
   BlastKind,
   DIRECTION_SOUTH,
@@ -81,6 +82,8 @@ interface Arrangement {
   /** Генерал нулевого игрока: куда его поставить и с каким здоровьем. */
   readonly general?: { readonly dx: number; readonly dy: number; readonly health: number };
   readonly nukeAtTick?: number;
+  /** Режим атаки обеих сторон. Умолчание мира — «Бой». */
+  readonly stance?: AttackStance;
 }
 
 /**
@@ -111,6 +114,10 @@ const arrange = (setup: Arrangement): WorldState => {
     map: { cells: new Uint8Array(MAP_CELL_COUNT), baseCells: world.map.baseCells },
     structures: [...world.structures, ...(setup.structures ?? [])],
     units: [...(setup.units ?? [])],
+    players:
+      setup.stance === undefined
+        ? world.players
+        : world.players.map((player) => ({ ...player, stance: setup.stance as AttackStance })),
     generals,
     nukes:
       setup.nukeAtTick === undefined
@@ -152,9 +159,12 @@ describe('запись о взрыве', () => {
   });
 
   it('остаётся от погибшей постройки', () => {
+    // «Прорыв» назван явно: в «Бою» чужая стена штурмовику не цель
+    // (правило 0276), а проверка здесь про след взрыва, а не про выбор.
     const world = arrange({
       structures: [structure(51, 1, StructureKind.Wall, 0, 0, 1)],
       units: [unit(61, 0, 1, 0, 10_000)],
+      stance: AttackStance.Breakthrough,
     });
 
     const after = step(world, []);

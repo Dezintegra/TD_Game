@@ -12,7 +12,12 @@ import type { ActionError } from './lobby-client.js';
  * единицы раз в минуту и живёт, пока матча нет. Сложи их вместе —
  * и перерисовка HUD начала бы зависеть от списка комнат.
  */
-const EMPTY_VIEW: PlayerView = { lobbies: [], lobby: null, match: null };
+const EMPTY_VIEW: PlayerView = {
+  lobbies: [],
+  lobby: null,
+  match: null,
+  computerProfiles: [],
+};
 
 export interface SessionState {
   readonly profile: Profile | null;
@@ -20,14 +25,11 @@ export interface SessionState {
   readonly connected: boolean;
   readonly view: PlayerView;
   /**
-   * Идёт ли переход в матч с компьютером.
+   * Компьютера уже позвали, и запрос ещё не вернулся.
    *
-   * Прежде здесь лежал seed тренировочного матча: тот матч шёл целиком
-   * в браузере, и клиенту достаточно было выдумать себе карту. Теперь
-   * матч с компьютером ничем не отличается от матча с человеком — он
-   * идёт через сервер, через комнату и через готовность, — и от прежнего
-   * поля осталось лишь «мы сейчас в процессе входа», чтобы кнопка
-   * не отвечала молчанием.
+   * Существует ради отклика в том же кадре: кнопка обязана погаснуть
+   * немедленно, а не через оборот пакета. Дальше ожидание видно уже
+   * по самому состоянию комнаты (`lobby.wanted`), и это поле снимается.
    */
   readonly joiningComputer: boolean;
   readonly error: ActionError | null;

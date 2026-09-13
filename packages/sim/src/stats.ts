@@ -307,6 +307,17 @@ const nukeBaseline = (player: PlayerState): NukeBaseline => {
   };
 };
 
+/**
+ * Доход при заданном множителе экономики.
+ *
+ * Вынесено в имя не ради красоты. Потребителей у формулы двое: сами
+ * характеристики игрока и оценка выгоды у противника, которой нужен доход
+ * ПОСЛЕ ещё не купленного уровня. Повтори её на второй стороне — и она
+ * разойдётся с этой на первой же правке модели роста.
+ */
+export const incomeWithEffect = (effectPpm: number): number =>
+  applyPpm(BASE_INCOME_PER_TICK, effectPpm);
+
 export const playerStats = (player: PlayerState): PlayerStats => ({
   units: {
     [UnitType.Assault]: unitBaseline(player, UnitType.Assault),
@@ -320,10 +331,7 @@ export const playerStats = (player: PlayerState): PlayerStats => ({
     [StructureKind.TowerSniper]: structureBaseline(player, StructureKind.TowerSniper),
   },
   general: generalBaseline(player),
-  incomePerTick: applyPpm(
-    BASE_INCOME_PER_TICK,
-    effectPpm(player, UpgradeTarget.Base, UpgradeStat.Income),
-  ),
+  incomePerTick: incomeWithEffect(effectPpm(player, UpgradeTarget.Base, UpgradeStat.Income)),
   nuke: nukeBaseline(player),
 });
 

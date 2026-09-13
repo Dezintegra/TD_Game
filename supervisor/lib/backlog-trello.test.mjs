@@ -458,6 +458,79 @@ describe('чтение задач', () => {
 });
 
 describe('сохранение задачи', () => {
+  it('второе чтение и запись видят переход и поля первого PUT в том же снимке', async () => {
+    const source = card({ idList: 'list-benchmark' });
+    const trello = fakeTrello();
+    const store = backlog({ cards: [source] }, trello);
+    const initial = store.readTask('0031-proba');
+    const first = { ...initial, status: 'interpret', links: { ...initial.links, run: '123' } };
+    expect(
+      (
+        await store.saveTask(first, {
+          from: 'benchmark',
+          to: 'interpret',
+          what: 'Прогон закончен.',
+        })
+      ).ok,
+    ).toBe(true);
+    const intermediate = store.readTask(initial.id);
+    expect(intermediate).toMatchObject({ status: 'interpret', links: { run: '123' } });
+    const firstPut = trello.calls.find((call) => call.method === 'PUT');
+    expect(source).toMatchObject({ desc: firstPut.body.desc, idList: 'list-interpret' });
+
+    expect(
+      (
+        await store.saveTask(
+          { ...intermediate, spentUsd: 7 },
+          {
+            from: intermediate.status,
+            to: intermediate.status,
+            what: 'Расход учтён.',
+          },
+        )
+      ).ok,
+    ).toBe(true);
+    const puts = trello.calls.filter((call) => call.method === 'PUT');
+    expect(puts).toHaveLength(2);
+    expect(puts[1].body).toMatchObject({ idList: 'list-interpret' });
+    expect(puts[1].body.desc).toContain('"run":"123"');
+    expect(puts[1].body.desc).toContain('"spentUsd":7');
+    expect(source).toMatchObject({ desc: puts[1].body.desc, idList: 'list-interpret' });
+    expect(store.readTask(initial.id)).toMatchObject({
+      status: 'interpret',
+      links: { run: '123' },
+      spentUsd: 7,
+    });
+    expect(backlog({ cards: [source] }).readTask(initial.id)).toMatchObject({
+      status: 'interpret',
+      links: { run: '123' },
+      spentUsd: 7,
+    });
+  });
+
+  it('отказ PUT не публикует неподтверждённый переход в памяти', async () => {
+    const source = card({ idList: 'list-benchmark' });
+    const before = { ...source };
+    const trello = fakeTrello({ 'cards/card-1': { ok: false, kind: 'offline', why: 'сеть' } });
+    const store = backlog({ cards: [source] }, trello);
+    const initial = store.readTask('0031-proba');
+    expect(
+      (
+        await store.saveTask(
+          { ...initial, status: 'interpret', spentUsd: 7 },
+          {
+            from: 'benchmark',
+            to: 'interpret',
+            what: 'Прогон закончен.',
+          },
+        )
+      ).ok,
+    ).toBe(false);
+    expect(trello.calls.filter((call) => call.method === 'PUT')).toHaveLength(1);
+    expect(store.readTask(initial.id)).toEqual(initial);
+    expect(source).toEqual(before);
+  });
+
   const task = (over = {}) => ({
     id: '0031-proba',
     type: 'feature',
@@ -890,6 +963,55 @@ describe('ответ владельца продукта', () => {
       ],
     });
     expect(store.readAnswer('0031-proba')).toBeNull();
+  });
+
+  it('карта ответов собирается по всем ждущим карточкам разом', () => {
+    const store = backlog({
+      cards: [
+        card({
+          idList: 'list-awaiting-po',
+          meta: { statusChangedAt: '2026-08-27T12:00:00.000Z', returnTo: 'design' },
+        }),
+        card({
+          id: 'card-2',
+          name: '0032-vtoraya · Вторая проба',
+          desc: joinDescription(
+            'Что нужно сделать.',
+            meta({
+              id: '0032-vtoraya',
+              statusChangedAt: '2026-08-27T12:00:00.000Z',
+              returnTo: 'implement',
+            }),
+          ),
+          idList: 'list-awaiting-po',
+        }),
+      ],
+      comments: [
+        { id: 'c1', cardId: 'card-1', date: '2026-08-27T13:00:00.000Z', text: 'Берите второй.' },
+        {
+          id: 'c2',
+          cardId: 'card-2',
+          date: '2026-08-27T13:30:00.000Z',
+          text: 'Оставить как есть.',
+        },
+      ],
+    });
+    expect(store.ownerAnswers()).toEqual({
+      '0031-proba': 'Берите второй.',
+      '0032-vtoraya': 'Оставить как есть.',
+    });
+  });
+
+  it('карта не берёт комментарии под карточками, которые ответа не ждут', () => {
+    const store = backlog({
+      cards: [
+        card({ idList: 'list-implement', meta: { statusChangedAt: '2026-08-27T12:00:00.000Z' } }),
+      ],
+      comments: [
+        { id: 'c1', cardId: 'card-1', date: '2026-08-27T13:00:00.000Z', text: 'заметка на полях' },
+      ],
+    });
+    expect(store.ownerAnswers()).toEqual({});
   });
 });
 

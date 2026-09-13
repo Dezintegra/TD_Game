@@ -101,11 +101,15 @@ export const uncoveredCommands = (permissions, commands) => {
  */
 export const STAGE_COMMANDS = {
   /**
-   * Команды, которыми этап ревью доводит изменение до `main`. Список короткий
-   * нарочно: сторожить надо тот путь, отказ на котором обнаружится только там,
-   * где рядом нет человека, — посреди вливания.
+   * Выборка допуска CI и вливания. Общий вход CI требует своего разрешения;
+   * остальные команды этапа этим перечнем не объявляются проверенными.
    */
-  review: ['gh pr view 1 --json state,isDraft', 'gh pr ready 1', 'gh pr merge 1 --merge'],
+  review: [
+    'gh pr view 1 --json state,isDraft',
+    'node supervisor/bin/review-ci.mjs --pr 1 --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'gh pr ready 1',
+    'gh pr merge 1 --merge --match-head-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  ],
 
   /** Все удалённые проверки, замеры и выкладка из deploy.md. */
   deploy: [
@@ -116,6 +120,7 @@ export const STAGE_COMMANDS = {
     'pnpm e2e:perf -- --check-only',
     'pnpm e2e:perf',
     'pnpm e2e:perf -- --history',
+    'node scripts/ensure-deploy-host.mjs',
     'node scripts/deploy.mjs --ref <хеш> --no-perf',
   ],
 };
