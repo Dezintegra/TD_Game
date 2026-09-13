@@ -12,6 +12,11 @@ Before applying a failed report or charging another continuation for an unsucces
 - **WHEN** the normalized session result is a structural api-error
 - **THEN** it SHALL use the existing API-error path before in-stage tool classification, without requiring tool diagnostics or creating an infrastructure retry entitlement
 
+#### Scenario: Helper fails before a control command is created
+- **WHEN** commands previously succeeded but a supervisor-selected execution or read control receives a structured pre-creation failure bound to that invocation and its verified stage context
+- **THEN** the required capability is confirmed unavailable even without a child PID or permission denial
+- **AND** error text alone, a missing invocation result or a successful probe in an unverified different context MUST NOT establish that verdict
+
 #### Scenario: Ordinary test failure or unconfirmed complaint
 - **WHEN** a test fails or an agent reports EPERM but the required control operations succeed
 - **THEN** the original result follows ordinary handling without infrastructure pause, refund or retry entitlement
@@ -36,6 +41,10 @@ The supervisor SHALL durably retain a confirmed stop in the report delivery stor
 #### Scenario: Git cannot inspect the branch
 - **WHEN** commands cannot report HEAD or remote ancestry during an outage
 - **THEN** Git state is retained as unknown with available earlier revision evidence, and no cleanup or successful-delivery assumption follows
+
+#### Scenario: Retained result has no parsed report
+- **WHEN** an unsuccessful completed launch is persisted with a null report and a trusted assigned batch
+- **THEN** recovery and scheduling SHALL protect its source and every assigned member using envelope identity without passing null to ordinary report admission or treating the batch as empty
 
 #### Scenario: Confirmed failed retains addressed instructions without delivering them
 - **WHEN** a failed report containing dependencyUpdates is independently classified as a confirmed infrastructure stop
@@ -86,6 +95,11 @@ After manual pause removal the supervisor SHALL require fresh successful diagnos
 - **WHEN** a launch completes with a structural api-error, even if a tool diagnosis could also fail
 - **THEN** only the existing API-error handler SHALL own its launch-specific refund after confirmed charging; no infrastructure settlement or second refund SHALL be created for that launch
 - **AND** an availability observation or successful API probe SHALL neither refund that launch nor consume an unrelated infrastructure retry entitlement
+
+#### Scenario: Existing incident admission remains closed
+- **WHEN** tools recover and an infrastructure retry entitlement exists but the existing pipeline incident policy does not admit that task and stage
+- **THEN** no replacement starts, the entitlement is retained, and incident identity and previously issued probe accounting remain unchanged
+- **AND** healthy tool diagnostics MUST NOT verify the incident or grant a second incident probe
 
 ### Requirement: Deploy outage recovery preserves the assigned batch
 
