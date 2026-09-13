@@ -15,6 +15,45 @@ afterEach(() => {
 const deliver = async (f, opened) => (await execute([f.action], opened.io))[0];
 
 describe('durable report execution', () => {
+  it.each([
+    ['audit', ['audit', 'postmortem']],
+    ['implement', ['implement', 'revise']],
+  ])(
+    'доставляет сохранённый разбор %s со списком фактов ровно один раз',
+    async (stage, affectedStages) => {
+      const f = fixture({
+        stage: 'postmortem',
+        taskOverrides: { returnTo: stage },
+        memberOverrides: { status: 'new', area: 'pipeline' },
+        reportOverrides: {
+          causedBy: 'pipeline',
+          fixedBy: ['0002-member'],
+          pipelineIncident: {
+            evidence: ['Сломан исходный этап.', 'Повтор подтвердил общую причину.'],
+            affectedStages,
+            check: { stage, expectation: 'Исходный инструмент выполняется.' },
+          },
+        },
+      });
+      const reopened = f.open();
+      expect((await deliver(f, reopened)).result).toBe('done');
+      const saved = f.open().recipient.store.readTask(f.task.id);
+      expect(saved).toMatchObject({
+        status: 'failed',
+        spentUsd: 7,
+        pipelineIncident: {
+          evidence: f.report.pipelineIncident.evidence.join('\n'),
+          affectedStages: [...affectedStages].sort(),
+          fixedBy: ['0002-member'],
+          check: { stage },
+        },
+      });
+      const state = f.open().recipient.state();
+      expect((await deliver(f, f.open())).result).toBe('skipped');
+      expect(f.open().recipient.state()).toEqual(state);
+      expect(f.open().store.entries()).toEqual([]);
+    },
+  );
   it.each(['response', 'progress'])(
     'keeps same-slug request identities after collision and lost %s',
     async (point) => {
