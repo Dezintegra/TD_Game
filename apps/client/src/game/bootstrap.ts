@@ -1031,7 +1031,9 @@ const snapshot = (world: WorldState, playerId: PlayerId, state: ControlState): M
       buildKind: state.buildKind,
       aimingNuke: state.aimingNuke,
       aimingTarget: state.aimingTarget,
-      stance: AttackStance.Breakthrough,
+      // То же умолчание, что в ядре: запасное состояние показывается, пока
+      // игрока в мире ещё нет, и врать про режим ему незачем.
+      stance: AttackStance.Engage,
     };
   }
 

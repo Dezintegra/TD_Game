@@ -8,7 +8,9 @@ rem  the very first line. Every Russian message therefore lives in
 rem  bin\launch.mjs, which Node always reads as UTF-8.
 rem
 rem  Usage:
-rem    start.cmd                  run and watch
+rem    start.cmd                  run in background and watch; safe to close
+rem    start.cmd --watch          watch only, never start or stop
+rem    start.cmd --foreground     run here; Ctrl+C stops the supervisor
 rem    start.cmd --shadow         dry run: decide and print, touch nothing
 rem    start.cmd --detached       run in background, log to .pipeline
 rem    start.cmd --stop           stop a running supervisor

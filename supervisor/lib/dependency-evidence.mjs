@@ -21,7 +21,7 @@ export async function collectDependencyEvidence({
 }) {
   const numbers = new Set();
   for (const task of tasks) {
-    if (task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (!['new', 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status)) continue;
     if (
       running.some((item) => item.taskId === task.id) ||
       reports.some(

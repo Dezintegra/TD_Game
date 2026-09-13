@@ -161,17 +161,18 @@ describe('чтение картины мира', () => {
     const doFetch = async (url) => {
       calls.push(url);
       const path = new URL(url).pathname;
+      if (path.endsWith('/members/me')) return answer(200, JSON.stringify({ id: 'owner' }));
       const key = ['lists', 'labels', 'cards', 'actions'].find((name) => path.endsWith(name));
       return answer(200, JSON.stringify(bodies[key] ?? []));
     };
     return { doFetch, calls };
   }
 
-  it('обходится четырьмя запросами, а не запросом на карточку', async () => {
+  it('обходится пятью запросами при одной странице, а не запросом на карточку', async () => {
     const { doFetch, calls } = board();
     const result = await readBoard(client(doFetch), 'b');
     expect(result.ok).toBe(true);
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
   });
 
   it('читает колонки вместе с закрытыми: их имена по-прежнему заняты', async () => {
@@ -179,6 +180,57 @@ describe('чтение картины мира', () => {
     await readBoard(client(doFetch), 'b');
     const lists = calls.find((url) => url.includes('/lists'));
     expect(new URL(lists).searchParams.get('filter')).toBe('all');
+  });
+
+  it('восстанавливает лимит за пределами первой тысячи комментариев', async () => {
+    const recent = Array.from({ length: 1000 }, (_, i) => ({
+      id: `r${i}`,
+      data: { text: '🤖 журнал' },
+    }));
+    const old = {
+      id: 'old',
+      date: '2026-09-01T00:00:00Z',
+      idMemberCreator: 'owner',
+      appCreator: null,
+      data: { card: { id: 'card1' }, text: 'Лимит токенов: 35000000' },
+    };
+    const calls = [];
+    const trello = {
+      get: async (path, query) => {
+        calls.push({ path, query });
+        return {
+          ok: true,
+          data:
+            path === 'members/me'
+              ? { id: 'owner' }
+              : path.endsWith('/actions')
+                ? query.before
+                  ? [old]
+                  : recent
+                : [],
+        };
+      },
+    };
+    const result = await readBoard(trello, 'b');
+    expect(result.userTokenLimits.card1).toMatchObject({ value: 35000000, actionId: 'old' });
+    expect(result.comments).toHaveLength(1000);
+    expect(calls.at(-1).query.before).toBe('r999');
+    expect((await readBoard(trello, 'b')).userTokenLimits).toEqual(result.userTokenLimits);
+  });
+
+  it('не подставляет общий предел при ошибке старой страницы', async () => {
+    const trello = {
+      get: async (path, query) => {
+        if (path === 'members/me') return { ok: true, data: { id: 'owner' } };
+        if (!path.endsWith('/actions')) return { ok: true, data: [] };
+        if (query.before) return { ok: false, kind: 'offline', why: 'обрыв' };
+        return {
+          ok: true,
+          data: Array.from({ length: 1000 }, (_, i) => ({ id: `a${i}`, data: {} })),
+        };
+      },
+    };
+    expect(await readBoard(trello, 'b')).toMatchObject({ ok: false, what: 'история лимитов' });
   });
 
   it('читает карточки вместе с архивными: их номера по-прежнему заняты', async () => {

@@ -55,6 +55,13 @@ export function checkEnvironment({
   ) {
     fatal = 'Codex: codexMaxTaskTokens должен быть положительным целым числом или null.';
   }
+  if (
+    provider === 'codex' &&
+    config.codexTaskReanalysisTokens != null &&
+    (!Number.isSafeInteger(config.codexTaskReanalysisTokens) ||
+      config.codexTaskReanalysisTokens <= 0)
+  )
+    fatal = 'Codex: codexTaskReanalysisTokens должен быть положительным целым числом или null.';
   if (provider === 'codex') {
     rows.push([
       'разрешения Codex',

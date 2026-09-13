@@ -9,7 +9,7 @@ const dependent = (over = {}) => ({
   dependencyResults: [{ taskId: '0002-base', kind: 'merged-pr', pr: 168 }],
   ...over,
 });
-const base = (over = {}) => ({ id: '0002-base', status: 'closed', links: { pr: 168 }, ...over });
+const base = (over = {}) => ({ id: '0002-base', status: 'completed', links: { pr: 168 }, ...over });
 const merged = (over = {}) => ({
   number: 168,
   state: 'MERGED',
@@ -100,7 +100,7 @@ describe('доказательство результата', () => {
     { running: [{ taskId: '0001-next', stage: 'implement' }] },
     { reports: [{ taskId: '0001-next', stage: 'implement' }] },
     { reports: [{ taskId: '0009-deploy', stage: 'deploy', batch: ['0001-next'] }] },
-    { tasks: [dependent({ status: 'closed' }), base()] },
+    { tasks: [dependent({ status: 'completed' }), base()] },
     { tasks: [dependent({ dependsOn: ['0001-next'] }), base()] },
   ])('не читает GitHub при непригодном для проверки условии %j', async (over) => {
     const run = runner();

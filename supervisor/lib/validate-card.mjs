@@ -1,4 +1,7 @@
 import { STATES } from '../config/transitions.mjs';
+import { routingProblem } from './categories.mjs';
+import { workKindProblem } from './scheduling.mjs';
+import { incidentStateProblem } from './pipeline-incidents.mjs';
 
 /**
  * Проверка карточки взамен схемы задачи.
@@ -32,6 +35,19 @@ const RUN_KINDS = ['arena', 'perf', 'bench-tick'];
  */
 export function checkCard({ task, card }) {
   const problems = [];
+  const workProblem = workKindProblem(task);
+  if (workProblem) problems.push(workProblem);
+  const incidentProblem = incidentStateProblem(task.pipelineIncident);
+  if (incidentProblem) problems.push(incidentProblem);
+  if (
+    Object.hasOwn(task, 'reportReceipts') &&
+    (!Array.isArray(task.reportReceipts) ||
+      task.reportReceipts.some((key) => typeof key !== 'string' || !/^[a-f0-9]{32}$/.test(key)))
+  ) {
+    problems.push('неверные квитанции переноса reportReceipts');
+  }
+  const routing = routingProblem(task);
+  if (routing) problems.push(routing);
 
   if (card.metaBroken) {
     problems.push(

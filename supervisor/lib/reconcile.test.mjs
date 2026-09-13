@@ -80,6 +80,16 @@ describe('потеря записи перед уборкой', () => {
     expect(run({ tasks: [task('0001-one', { status: 'cleanup' })] }).repairs).toEqual([]);
   });
 
+  it('отсутствие регистрации Git не снимает запись незавершённой уборки', () => {
+    expect(
+      run({
+        tasks: [task('0001-one', { status: 'cleanup' })],
+        registry: { entries: [entry('0001-one')] },
+        worktrees: [],
+      }).repairs,
+    ).toEqual([]);
+  });
+
   it('чужое дерево уборки остаётся находкой', () => {
     expect(
       kinds(

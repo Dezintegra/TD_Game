@@ -7,6 +7,7 @@ import {
   refreshLock,
   shouldPause,
 } from './lock.mjs';
+import { readFileSync } from 'node:fs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from './cycle.mjs';
 
@@ -153,6 +154,16 @@ describe('самозащита от бесконечных неудач', () => 
 describe('согласованность сроков', () => {
   it('умолчания согласованы', () => {
     expect(budgetsAgree(config).ok).toBe(true);
+  });
+
+  it('настройка TD_Game согласована после применения умолчаний', () => {
+    // Смена интервала проекта не должна оставлять несовместимый бюджет из умолчаний.
+    const project = JSON.parse(
+      readFileSync(new URL('../pipeline.config.json', import.meta.url), 'utf8'),
+    );
+    const { config: resolved } = resolveConfig(project);
+    const verdict = budgetsAgree(resolved);
+    expect(verdict.ok, verdict.why).toBe(true);
   });
 
   it('бюджет отправки длиннее цикла не годится', () => {

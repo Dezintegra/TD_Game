@@ -185,3 +185,14 @@ describe('вложенные записи', () => {
     expect(validateTask(task, schema).join()).toContain('поле «links.pr»');
   });
 });
+
+it('схема конвейера принимает итог и отклоняет нестроковый итог', () => {
+  const pipelineSchema = loadSchema(
+    fileURLToPath(new URL('supervisor/config/task-schema.json', repoRoot)),
+  );
+  const value = { ...example('feature'), completionSummary: 'Исправлена формула, тесты прошли.' };
+  expect(validateTask(value, pipelineSchema)).toEqual([]);
+  expect(validateTask({ ...value, completionSummary: 123 }, pipelineSchema).length).toBeGreaterThan(
+    0,
+  );
+});

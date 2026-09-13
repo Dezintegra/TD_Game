@@ -166,14 +166,29 @@ describe('этап не уложился в срок', () => {
   });
 });
 
-describe('запуск не состоялся', () => {
-  it('это отказ настройки, а не упавший этап', async () => {
+describe('процесс оборвался', () => {
+  it('возвращает failed с причиной обрыва и исходной ошибкой', async () => {
     const { child, handle } = harness();
-    child.emit('error', new Error('spawn claude ENOENT'));
+    expect(handle.pid).toBe(4242);
+    child.emit('error', new Error('read ECONNRESET'));
 
     const answer = readAnswer(await handle.finished);
     expect(answer.outcome).toBe('failed');
-    expect(answer.why).toContain('ENOENT');
+    expect(answer.why).toBe('процесс оборвался: read ECONNRESET');
+  });
+
+  it.each([
+    ['timeout', 'этап снят по истечении срока'],
+    ['shutdown', 'этап снят при остановке супервизора'],
+  ])('сохраняет причину снятия %s при ошибке процесса', async (killedBy, why) => {
+    const { child, handle, fire } = harness();
+    if (killedBy === 'timeout') fire();
+    else handle.kill();
+    child.emit('error', new Error('read ECONNRESET'));
+
+    const answer = readAnswer(await handle.finished);
+    expect(answer.outcome).toBe('timeout');
+    expect(answer.why).toBe(why);
   });
 });
 

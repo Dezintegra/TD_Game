@@ -56,12 +56,12 @@ export function resultPredecessor(id, tasks, records = [], invalid = []) {
   ].filter((item) => item.id === id);
   if (matches.length !== 1)
     return {
-      problem: matches.length ? 'неоднозначный идентификатор' : 'нет подтверждения закрытия',
+      problem: matches.length ? 'неоднозначный идентификатор' : 'нет подтверждения выполнения',
     };
   const predecessor = matches[0];
   if (predecessor.valid === false || dependencyFormatProblem(predecessor))
     return { problem: 'негодный предшественник' };
-  if (predecessor.status !== 'closed') return { problem: `не закрыт (${predecessor.status})` };
+  if (!isCompletionNode(predecessor)) return { problem: `не выполнен (${predecessor.status})` };
   return { predecessor };
 }
 
@@ -149,7 +149,7 @@ export function pendingCompletion(
     if (!current) {
       // Старые файловые хранилища передают только доказанные закрытые ID.
       // Если полная архивная карточка есть, этот список её не подменяет.
-      if (!archivedClosed.includes(step.id)) waitFor('нет подтверждения закрытия');
+      if (!archivedClosed.includes(step.id)) waitFor('нет подтверждения выполнения');
       continue;
     }
     const problem = dependencyFormatProblem(current);
@@ -157,8 +157,8 @@ export function pendingCompletion(
       waitFor(problem);
       continue;
     }
-    if (current.status !== 'closed') {
-      waitFor(current.status ?? 'нет подтверждения закрытия');
+    if (!isCompletionNode(current)) {
+      waitFor(current.status ?? 'нет подтверждения выполнения');
       continue;
     }
     visiting.add(step.id);
@@ -170,7 +170,7 @@ export function pendingCompletion(
   return pending;
 }
 
-/** Исчезновение карточки не доказывает завершение; принимаем только явное closed. */
+/** Исчезновение карточки не доказывает завершение; проверяем выполнение и все части декомпозиции. */
 export function pendingDependencies(
   task,
   tasks,
@@ -195,4 +195,9 @@ export function pendingDependencies(
     }
     return pending;
   });
+}
+
+/** Закрытый родитель лишь передаёт доказательство своим частям. */
+function isCompletionNode(task) {
+  return task.status === 'completed' || (task.status === 'closed' && task.splitInto?.length > 0);
 }

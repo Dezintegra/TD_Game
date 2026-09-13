@@ -21,6 +21,22 @@
     "attempts"
   ],
   "properties": {
+    "reportReceipts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{32}$"
+      }
+    },
+    "delayAnalysis": {
+      "type": "object",
+      "description": "Сохранённый разбор задержки и критерии проверки исправлений."
+    },
+    "delayJournal": {
+      "type": "object",
+      "description": "Неопубликованный комментарий разбора с устойчивым ключом доставки."
+    },
     "$schema": {
       "type": "string",
       "description": "Путь к этой схеме. Нужен, чтобы редактор подсказывал состав полей без внешнего каталога.",
@@ -31,11 +47,29 @@
       "description": "Устойчивый идентификатор вида <число>-<короткое-имя>. Он же имя ветки, дерева и журнала. После закрытия не переиспользуется.",
       "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
     },
+    "closureReason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Причина прекращения исходной работы с доказательством или конкретными продолжениями; сохраняется до конца уборки."
+    },
+    "completionSummary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Самостоятельный итог всей задачи, подготовленный до завершения и сохраняемый для итогового комментария."
+    },
+    "closureRequestKey": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Отпечаток заявки из закрывающего отчёта: повтор использует ту же карточку продолжения."
+    },
     "dependsOn": {
       "type": "array",
-      "description": "Полные идентификаторы задач, которые должны перейти в closed перед запуском этой задачи. Отсутствие поля означает отсутствие зависимостей.",
+      "description": "Полные идентификаторы задач, которые должны перейти в completed перед запуском этой задачи. Отсутствие поля означает отсутствие зависимостей.",
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+      }
     },
     "dependencyResults": {
       "type": "array",
@@ -45,9 +79,17 @@
         "additionalProperties": false,
         "required": ["taskId", "kind", "pr"],
         "properties": {
-          "taskId": { "type": "string", "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$" },
-          "kind": { "const": "merged-pr" },
-          "pr": { "type": "integer", "minimum": 1 }
+          "taskId": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+          },
+          "kind": {
+            "const": "merged-pr"
+          },
+          "pr": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       }
     },
@@ -72,6 +114,7 @@
       "description": "Текущее состояние. Переходы объявлены таблицей переходов плагина и проверяются программно.",
       "enum": [
         "candidate",
+        "maintenance",
         "new",
         "triage",
         "design",
@@ -84,10 +127,14 @@
         "revise",
         "deploy",
         "cleanup",
+        "completed",
         "closed",
         "postmortem",
         "failed",
-        "awaiting-po"
+        "awaiting-po",
+        "blocked",
+        "token-limit",
+        "decompose"
       ]
     },
     "returnTo": {
@@ -145,10 +192,20 @@
         "additionalProperties": false,
         "required": ["at", "from", "to"],
         "properties": {
-          "at": { "type": "string", "format": "date-time" },
-          "from": { "type": "string" },
-          "to": { "type": "string" },
-          "note": { "type": "string", "description": "Одна строка о причине перехода." }
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "Одна строка о причине перехода."
+          }
         }
       }
     },
@@ -174,7 +231,9 @@
         "related": {
           "type": "array",
           "description": "Идентификаторы связанных задач: породившей и порождённых.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -249,9 +308,18 @@
       "additionalProperties": false,
       "required": ["askedAt", "summary"],
       "properties": {
-        "askedAt": { "type": "string", "format": "date-time" },
-        "summary": { "type": "string", "minLength": 1 },
-        "answeredAt": { "type": ["string", "null"], "format": "date-time" }
+        "askedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answeredAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
       }
     },
     "recovery": {
@@ -268,7 +336,9 @@
         "fixedBy": {
           "type": "array",
           "description": "Идентификаторы задач, после закрытия которых причина снята. Пустой перечень — вернуть сразу.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "returns": {
           "type": "integer",
@@ -276,16 +346,228 @@
           "minimum": 0
         }
       }
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["ux", "mechanics", "balance", "infrastructure"]
+      }
+    },
+    "creationKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "analysisGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reanalysis": {
+      "type": "boolean"
+    },
+    "blockedContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "reasons", "priority", "from"],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "priority": {
+          "type": "number",
+          "minimum": 0
+        },
+        "from": {
+          "enum": [
+            "decompose",
+            "design",
+            "audit",
+            "implement",
+            "revise",
+            "triage",
+            "benchmark",
+            "interpret"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["taskId", "reason", "result"],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]+)*$"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "result": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "tokenReanalysis": {
+      "type": "object",
+      "description": "Сохранённый контекст и результат раннего бюджетного анализа Codex."
+    },
+    "tokenHold": {
+      "type": "object",
+      "description": "Сохранённый этап и производная панель ожидания бюджета; не источник разрешения на расход."
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pr", "checkedAt", "state"],
+      "properties": {
+        "pr": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "enum": ["merged", "unconfirmed", "open", "closed"]
+        }
+      }
+    },
+    "splitInto": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[a-z0-9]+(-[a-z0-9]*)*$"
+      }
+    },
+    "dependencyRecheck": {
+      "type": "object",
+      "description": "Сохранённые рёбра и ожидаемые результаты закрытого предшественника для проверки перед продолжением."
+    },
+    "backlogReview": {
+      "type": "object",
+      "description": "Отпечатки карточек уже заказанного ограниченного анализа; неизменные факты повторно не оплачиваются."
+    },
+    "workKind": {
+      "enum": ["game", "service"]
+    },
+    "workReason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane", "selectedAt", "reason"],
+      "properties": {
+        "lane": {
+          "enum": ["game", "service"]
+        },
+        "selectedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pipelineIncident": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "evidence", "affectedStages", "check", "fixedBy", "openedAt"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "affectedStages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stage", "expectation"],
+          "properties": {
+            "stage": {
+              "type": "string"
+            },
+            "expectation": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "fixedBy": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "openedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "probeStartedAt": {
+          "type": ["string", "null"]
+        },
+        "verifiedAt": {
+          "type": ["string", "null"]
+        },
+        "verificationEvidence": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "type": { "const": "run" } }, "required": ["type"] },
-      "then": { "required": ["run"] }
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run"
+          }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["run"]
+      }
     },
     {
-      "if": { "properties": { "status": { "const": "awaiting-po" } }, "required": ["status"] },
-      "then": { "required": ["question", "returnTo"] }
+      "if": {
+        "properties": {
+          "status": {
+            "const": "awaiting-po"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["question", "returnTo"]
+      }
     }
   ]
 }

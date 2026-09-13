@@ -1,4 +1,5 @@
-import { FRAME_WORK_BUDGET_MS, checkName } from '@td/shared';
+import { FRAME_WORK_BUDGET_MS, NAME_MAX_LENGTH, checkName } from '@td/shared';
+import { LOBBY_CAPACITY } from '@td/protocol';
 import type { NameError } from '@td/shared';
 import { startGame } from '../game/bootstrap.js';
 import type { Game } from '../game/bootstrap.js';
@@ -251,18 +252,42 @@ const rewarmInMenu = (): void => {
 };
 
 /**
- * Манера, выбранная игроком в последний раз, — чтобы «Новый матч» вёл
- * к тому же сопернику.
+ * Манера, которую игрок позвал в последний раз, — чтобы «Новый матч»
+ * вёл к тому же сопернику.
  *
  * Живёт здесь, а не в store: это память контроллера о действии игрока,
  * а не состояние, которое кто-то рисует. Из снимка матча её не достать —
- * там лежит имя дежурного («Компьютер-стратег 2»), а манера
- * опознаётся названием комнаты.
+ * там лежит имя дежурного («Компьютер-стратег 2»), а не манера.
  *
- * `undefined` означает «любая», и это верно для того, кто нажал общую
- * кнопку: переигрывать он хотел с кем угодно.
+ * `undefined` означает, что компьютера не звали вовсе: соперник был
+ * живой, и переигрывать с ним без его согласия нельзя.
  */
-let lastManner: string | undefined;
+let lastProfile: string | undefined;
+
+/**
+ * Название комнаты по умолчанию.
+ *
+ * Тот же вид, что предлагает форма создания (`LobbyList`), и та же
+ * причина двоеточия: родительный падеж требует склонения, а склонение
+ * русских имён в общем виде не делается. Повторено здесь, а не вынесено
+ * в общий модуль, потому что вынесенное потянуло бы за собой предел
+ * длины и запасной путь при переполнении — ради одной строки на две
+ * точки вызова.
+ */
+const defaultRoomTitle = (name: string): string => {
+  const full = `Комната: ${name}`;
+  return full.length <= NAME_MAX_LENGTH ? full : name;
+};
+
+/**
+ * Сколько «Начать заново» ждёт позванного дежурного.
+ *
+ * Ровно столько же, сколько держится приглашение на сервере
+ * (`COMPUTER_INVITE_TIMEOUT_MS`). Ждать дольше нечего: там оно уже снято,
+ * и дежурный не придёт. Ждать меньше — значит бросить ожидание раньше,
+ * чем сервер перестанет его обслуживать.
+ */
+const COMPUTER_WAIT_MS = 10_000;
 
 /**
  * Ключ идущего матча и счётчик поколений.
@@ -315,13 +340,12 @@ const syncMatch = (state: SessionState): void => {
       // «Начать заново» осмысленно только против компьютера: уйти с общей
       // карты в общем матче нельзя, а начать новый матч с тем же соперником
       // без его согласия — тем более.
-      // Манера передаётся, чтобы «начать заново» вело к тому же сопернику,
-      // с которым игрок только что играл. Без неё матч начинался бы
-      // с кем придётся, и кнопка «Новый матч» тихо меняла бы противника
-      // посреди знакомства с ним.
-      onRestart: desired.computer
-        ? () => void sessionActions.playAgainstComputer(lastManner)
-        : undefined,
+      //
+      // Зовётся та же манера, которую игрок звал в прошлый раз: без неё
+      // кнопка «Новый матч» тихо меняла бы противника посреди знакомства
+      // с ним. Комната при этом заводится НОВАЯ — прежняя ушла вместе
+      // с матчем.
+      onRestart: desired.computer ? () => void sessionActions.restartWithComputer() : undefined,
       onRejected: (code) => {
         console.warn(`Сервер отклонил соединение, код ${String(code)}`);
       },
@@ -395,20 +419,21 @@ export const sessionActions = {
     store.getState().setProfile(null);
   },
 
-  async createLobby(title: string): Promise<ActionError | null> {
+  /** Пустой пароль означает открытую комнату — как было до паролей. */
+  async createLobby(title: string, password = ''): Promise<ActionError | null> {
     const { profile, setError } = store.getState();
     if (profile === null) return null;
 
-    const error = await lobby.create(profile.id, profile.name, title);
+    const error = await lobby.create(profile.id, profile.name, title, password);
     setError(error);
     return error;
   },
 
-  async joinLobby(lobbyId: string): Promise<ActionError | null> {
+  async joinLobby(lobbyId: string, password = ''): Promise<ActionError | null> {
     const { profile, setError } = store.getState();
     if (profile === null) return null;
 
-    const error = await lobby.join(profile.id, profile.name, lobbyId);
+    const error = await lobby.join(profile.id, profile.name, lobbyId, password);
     setError(error);
     return error;
   },
@@ -444,100 +469,102 @@ export const sessionActions = {
   },
 
   /**
-   * Играть с компьютером.
+   * Позвать компьютера в свою комнату.
    *
-   * Никакого особого пути в матч у компьютера нет: он держит открытую
-   * комнату наравне с людьми, и «играть с компьютером» — это войти
-   * в неё и подтвердить готовность. Одно нажатие вместо трёх, но дорога
-   * та же самая, и потому она одна на всю игру, а не две расходящиеся.
+   * Никакого особого пути в матч у компьютера по-прежнему нет: сервер
+   * помечает комнату приглашением, служба видит пометку в общем списке
+   * комнат и входит обычным гостем — тем же запросом, что и человек.
+   * Дорога в матч одна на всю игру, а не две расходящиеся.
    *
-   * Повторная попытка нужна из-за гонки: двое, нажавшие одновременно,
-   * иначе получили бы один отказ «комната занята» на двоих. Служба
-   * компьютера открывает следующую комнату сразу по входу гостя,
-   * поэтому вторая попытка почти всегда удаётся.
-   *
-   * `manner` — НАЗВАНИЕ дежурной комнаты («Матч со стратегом»), а не имя
-   * дежурного и не идентификатор профиля.
-   *
-   * Имя дежурного не годится, и это выяснилось живой проверкой: служба
-   * держит несколько комнат разом, а её агентов зовёт «Компьютер»,
-   * «Компьютер 2», «Компьютер 3» (`service.ts`). Имя опознаёт агента,
-   * а не манеру, и выбор из трёх манер превратился в выбор из девяти
-   * дежурных. Название комнаты у всех комнат одной службы одно и то же —
-   * оно и есть манера.
-   *
-   * Идентификатор профиля не годится по другой причине: его нельзя
-   * показывать игроку, а значит, пришлось бы завести в клиенте второй
-   * словарь «идентификатор → человеческое название».
-   *
-   * Без названия годится любая манера, и это умолчание: кнопка «Играть
-   * с компьютером» заведена для того, кто просто хочет сыграть,
-   * а не выбирать соперника.
+   * `profile` — идентификатор манеры из `view.computerProfiles`, а не
+   * название комнаты, как было при дежурных. Название теперь приходит
+   * рядом с идентификатором, и второй словарь в клиенте не нужен.
    */
-  async playAgainstComputer(manner?: string): Promise<ActionError | null> {
+  async inviteComputer(profile: string): Promise<ActionError | null> {
     const state = store.getState();
-    const { profile } = state;
-    if (profile === null) return null;
+    if (state.profile === null) return null;
 
+    // Кнопка гаснет немедленно, до ответа сервера: отклик в том же кадре
+    // не перестаёт быть требованием за пределами матча. Дальше ожидание
+    // видно уже по самой комнате, и это поле снимается.
     state.setJoiningComputer(true);
     state.setError(null);
-    lastManner = manner;
+    lastProfile = profile;
 
     try {
-      const tried = new Set<string>();
-
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        // Из всех дежурных комнат берётся первая, в которую мы ещё
-        // не стучались. Служба держит их несколько именно ради этого:
-        // двое, нажавшие одновременно, расходятся по разным, а не
-        // дерутся за единственную.
-        //
-        // Названа манера — перебор сужается до её комнат. Молчаливо
-        // подсунуть другую нельзя: игрок, выбравший стратега, ждёт
-        // стратега, и «зато сыграл» тут не оправдание.
-        const room = store
-          .getState()
-          .view.lobbies.find(
-            (lobby) =>
-              lobby.computer &&
-              !tried.has(lobby.id) &&
-              (manner === undefined || lobby.title === manner),
-          );
-
-        if (room === undefined) {
-          // Дежурной комнаты нет: служба компьютера не запущена, её
-          // места заняты или мы уже перебрали все. Молчаливая кнопка
-          // хуже отсутствующей, поэтому отказ доезжает до игрока.
-          //
-          // Прежде чем сдаться, ждём обновления списка: следующая
-          // дежурная комната уже открыта, но её состояние ещё летит.
-          if (attempt < 3) {
-            await new Promise((resolve) => setTimeout(resolve, 300));
-            continue;
-          }
-
-          const error = 'not-found' as ActionError;
-          store.getState().setError(error);
-          return error;
-        }
-
-        tried.add(room.id);
-
-        // Выход из прежней комнаты не нужен: сервер выводит из неё сам
-        // при входе в другую.
-        const joinError = await lobby.join(profile.id, profile.name, room.id);
-        if (joinError === null) {
-          await this.toggleReady(true);
-          return null;
-        }
-      }
-
-      const error = 'full' as ActionError;
+      const error = await lobby.inviteComputer(state.profile.id, profile);
       store.getState().setError(error);
       return error;
     } finally {
       store.getState().setJoiningComputer(false);
     }
+  },
+
+  /**
+   * Начать заново с тем же соперником.
+   *
+   * Заводит НОВУЮ комнату и зовёт в неё ту же манеру: прежняя комната
+   * ушла вместе с матчем, а звать соперника можно только в свою.
+   *
+   * Готовность подтверждается САМА, как только дежурный вошёл. Второго
+   * согласия тут спрашивать не за что: игрок уже нажал «Начать заново»,
+   * и это оно и есть. В обычной комнате правило обратное — там готовность
+   * жмёт человек, потому что согласие дают на конкретного соперника,
+   * а его до входа не знают.
+   */
+  async restartWithComputer(): Promise<void> {
+    const { profile } = store.getState();
+    if (profile === null || lastProfile === undefined) return;
+
+    const created = await this.createLobby(defaultRoomTitle(profile.name), '');
+    if (created !== null) return;
+
+    const invited = await this.inviteComputer(lastProfile);
+    if (invited !== null) return;
+
+    // Ждём событием, а не опросом: состояние комнат приходит потоком,
+    // и подписка на него уже есть. Срок — тот же, что у приглашения
+    // на сервере: дольше ждать нечего, там оно уже снято.
+    await new Promise<void>((resolve) => {
+      /**
+       * Подписка и таймер лежат в общем держателе, потому что ссылаются
+       * друг на друга: снимая ожидание, надо погасить оба, а какое
+       * из двух сработало — неизвестно.
+       */
+      const waiting: { stop?: () => void; timer?: ReturnType<typeof setTimeout> } = {};
+
+      // Сработать может и подписка, и срок; гасят они одно и то же,
+      // поэтому снятие идемпотентно.
+      let settled = false;
+
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+
+        if (waiting.timer !== undefined) clearTimeout(waiting.timer);
+        waiting.stop?.();
+        resolve();
+      };
+
+      waiting.timer = setTimeout(finish, COMPUTER_WAIT_MS);
+      waiting.stop = store.subscribe((state) => {
+        const room = state.view.lobby;
+        // Комната пропала — игрок ушёл сам или её снесло. Ждать нечего.
+        if (room === null) {
+          finish();
+          return;
+        }
+
+        if (room.slots.length < LOBBY_CAPACITY) return;
+
+        // Ожидание снимается ДО подтверждения готовности, а не после.
+        // `toggleReady` меняет состояние немедленно, до ответа сервера,
+        // и живая подписка сработала бы на нашем же действии — то есть
+        // позвала бы сама себя.
+        finish();
+        void sessionActions.toggleReady(true);
+      });
+    });
   },
 
   /**

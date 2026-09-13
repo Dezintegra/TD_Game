@@ -1,0 +1,65 @@
+# Восстановление причин закрытия 07.09.2026
+
+По поручению владельца добавлены и повторным чтением проверены пояснения ко всем 59 карточкам, находившимся в колонке «Закрыто». Для 58 карточек основанием служит исторический отчёт; для 0039 — ответ владельца «это выполненная задача». В пояснениях 67 адресных ссылок на продолжение/связанную работу. Названия, описания и колонки сверены до и после и сохранены. Прежние комментарии не изменялись.
+
+| Карточка | Сохранённый комментарий |
+| --- | --- |
+| [0209-osvezhenie-bazy-u-vykladki-ne-sterezhets](https://trello.com/c/VDr5yWCO) | [Причина закрытия](https://trello.com/c/VDr5yWCO#comment-6a9ef4e31cf6af3d88d0ae5b) |
+| [0234-ispravit-obrabotku-umensheniya-codex-usa](https://trello.com/c/Olvf0ecv) | [Причина закрытия](https://trello.com/c/Olvf0ecv#comment-6a9ef4e4900430851e703c94) |
+| [0211-v-guard-the-deploy-refresh-obyazannost-p](https://trello.com/c/36p0iX5A) | [Причина закрытия](https://trello.com/c/36p0iX5A#comment-6a9ef4e67ea9aa32f5be4d58) |
+| [0217-v-tasks-md-izmeneniya-narrow-the-soft-st](https://trello.com/c/nTa25uso) | [Причина закрытия](https://trello.com/c/nTa25uso#comment-6a9ef4e8d0813edbe08e0275) |
+| [0213-myagkaya-merka-storozha-ssylok-pechataet](https://trello.com/c/V9vQJJFc) | [Причина закрытия](https://trello.com/c/V9vQJJFc#comment-6a9ef4e9b2e370f6dee8f7c1) |
+| [0203-kommentariy-nad-needs-worktree-utverzhda](https://trello.com/c/Ly2WgrIL) | [Причина закрытия](https://trello.com/c/Ly2WgrIL#comment-6a9ef4ebf097fe171c8e7e73) |
+| [0231-ispravit-proverku-modeli-gotovnosti-code](https://trello.com/c/xAclApC2) | [Причина закрытия](https://trello.com/c/xAclApC2#comment-6a9ef4edc0589676e7fde958) |
+| [0223-otchet-audita-0216-zapisan-perehodom-aud](https://trello.com/c/C4Rp1901) | [Причина закрытия](https://trello.com/c/C4Rp1901#comment-6a9ef4ef90c924a341a43c6e) |
+| [0212-guard-the-deploy-refresh-i-guard-step-re](https://trello.com/c/GID0Z4fr) | [Причина закрытия](https://trello.com/c/GID0Z4fr#comment-6a9ef4f0ae5ce418d872fb6a) |
+| [0200-zadacha-0172-poteryala-predmet-git-merge](https://trello.com/c/PGGubgbK) | [Причина закрытия](https://trello.com/c/PGGubgbK#comment-6a9ef4f3fb4011bd93dd3660) |
+| [0204-needs-worktree-ne-soderzhit-cleanup-vopr](https://trello.com/c/Q2q8n6Tm) | [Причина закрытия](https://trello.com/c/Q2q8n6Tm#comment-6a9ef4f53ec13beafcefc8e8) |
+| [0198-storozh-setevyh-putey-rezhet-telo-kommit](https://trello.com/c/JjcQMSkm) | [Причина закрытия](https://trello.com/c/JjcQMSkm#comment-6a9ef4f7d29a656cef6b76dd) |
+| [0203-shlyuz-vozvrata-samovolno-peretaschennoy](https://trello.com/c/u90tGHJT) | [Причина закрытия](https://trello.com/c/u90tGHJT#comment-6a9ef4f86b5b4443efcbe426) |
+| [0189-vetka-zadachi-0175-pull-request-132-otst](https://trello.com/c/lpm5E2fu) | [Причина закрытия](https://trello.com/c/lpm5E2fu#comment-6a9ef4fa468ecc29f323dbd6) |
+| [0237-razobrat-nestabilnoe-padenie-testa-dosta](https://trello.com/c/kQq7NkFu) | [Причина закрытия](https://trello.com/c/kQq7NkFu#comment-6a9ef4fba34ac47db00572e8) |
+| [0197-uborka-vremennogo-fayla-s-telom-pull-req](https://trello.com/c/auTiSe3A) | [Причина закрытия](https://trello.com/c/auTiSe3A#comment-6a9ef4fdd35efcb627e736f6) |
+| [0188-razbor-razresheniy-schitaet-sostavnoy-ko](https://trello.com/c/YJJleVpS) | [Причина закрытия](https://trello.com/c/YJJleVpS#comment-6a9ef50014304deffcc44c73) |
+| [0246-zakrepit-zavisimost-zapuska-0243-ot-vliv](https://trello.com/c/5OQKsB75) | [Причина закрытия](https://trello.com/c/5OQKsB75#comment-6a9ef501e749b84b789b4cca) |
+| [0245-zakrepit-predusloviya-pr-172-i-177-pered](https://trello.com/c/Gxl2ZjqH) | [Причина закрытия](https://trello.com/c/Gxl2ZjqH#comment-6a9ef5039a2015793fd2a50e) |
+| [0127-nerabotosposobnaya-mashina-vzvodit-pauzu](https://trello.com/c/hsBGEZGV) | [Причина закрытия](https://trello.com/c/hsBGEZGV#comment-6a9ef5046c6265e173251e1d) |
+| [0240-zakrepit-preduslovie-pr-172-pered-povtor](https://trello.com/c/IWl01zwE) | [Причина закрытия](https://trello.com/c/IWl01zwE#comment-6a9ef5064d3a640afcfd185e) |
+| [0196-pravilo-razresheniy-na-chtenie-doski-sre](https://trello.com/c/FQjxc1gn) | [Причина закрытия](https://trello.com/c/FQjxc1gn#comment-6a9ef507931ccfea5eeeb964) |
+| [0185-v-stage-settings-json-pravilo-git-switch](https://trello.com/c/O1ir3DoX) | [Причина закрытия](https://trello.com/c/O1ir3DoX#comment-6a9ef50937e6a2b8295b99a2) |
+| [0191-shag-dozhdatsya-zelenogo-ci-v-tasks-md-n](https://trello.com/c/14W89Op4) | [Причина закрытия](https://trello.com/c/14W89Op4#comment-6a9ef50a20b57d9d033e2693) |
+| [0184-prettier-sryvaet-otstup-u-vstavki-koda-p](https://trello.com/c/A6rLucqW) | [Причина закрытия](https://trello.com/c/A6rLucqW#comment-6a9ef50c96410c89d8c78998) |
+| [0183-proverka-v-kommite-rovno-odin-fayl-v-tas](https://trello.com/c/cKXXREJc) | [Причина закрытия](https://trello.com/c/cKXXREJc#comment-6a9ef50e85253e2b3b57e204) |
+| [0180-git-merge-origin-main-pokryt-pravilom-gi](https://trello.com/c/nE6B1ERe) | [Причина закрытия](https://trello.com/c/nE6B1ERe#comment-6a9ef50fb680c1f7dc3a59ea) |
+| [0249-zakrepit-preduslovie-zapuska-0181-na-vli](https://trello.com/c/9xegNQIm) | [Причина закрытия](https://trello.com/c/9xegNQIm#comment-6a9ef511fd69f32633bcce84) |
+| [0159-posle-vlivaniya-one-shell-for-stages-ube](https://trello.com/c/UzsKaUrP) | [Причина закрытия](https://trello.com/c/UzsKaUrP#comment-6a9ef513fc15b638e702db37) |
+| [0179-skill-audita-citiruet-oshibku-bezdeltovo](https://trello.com/c/iBKitJnL) | [Причина закрытия](https://trello.com/c/iBKitJnL#comment-6a9ef514bb4ab3fa78941e7a) |
+| [0158-pri-arhivacii-hold-uncovered-stages-i-on](https://trello.com/c/Y8Dnu6iX) | [Причина закрытия](https://trello.com/c/Y8Dnu6iX#comment-6a9ef5162f3d70779e53daa1) |
+| [0172-razreshit-konveyeru-git-merge-origin-mai](https://trello.com/c/mYQK2ytn) | [Причина закрытия](https://trello.com/c/mYQK2ytn#comment-6a9ef517a75678fbf8e55e58) |
+| [0155-v-git-bash-na-stancii-net-ni-pnpm-ni-sh-](https://trello.com/c/GUFpONPj) | [Причина закрытия](https://trello.com/c/GUFpONPj#comment-6a9ef5196ea9453d194e4de5) |
+| [0163-formnote-v-stage-settings-json-obyasnyae](https://trello.com/c/a7xWHVV6) | [Причина закрытия](https://trello.com/c/a7xWHVV6#comment-6a9ef51b7f7837a9efeaf15c) |
+| [0157-v-delte-hold-uncovered-stages-scenariy-p](https://trello.com/c/3Qmm4LGI) | [Причина закрытия](https://trello.com/c/3Qmm4LGI#comment-6a9ef51c1b851476245a06f4) |
+| [0168-ubrat-iz-shaga-9-skilla-vykladki-push-lo](https://trello.com/c/7mcnZ3nI) | [Причина закрытия](https://trello.com/c/7mcnZ3nI#comment-6a9ef51e277bb4fedbd404ce) |
+| [0151-sled-implementacii-ne-razlichaet-sdelann](https://trello.com/c/0tDprwED) | [Причина закрытия](https://trello.com/c/0tDprwED#comment-6a9ef51facd06da058178164) |
+| [0167-ubrat-iz-shaga-9-skilla-vykladki-push-lo](https://trello.com/c/uj8XtZIe) | [Причина закрытия](https://trello.com/c/uj8XtZIe#comment-6a9ef5229fa5b467c14c1d44) |
+| [0152-shag-9-skilla-vykladki-predpisyvaet-push](https://trello.com/c/TgKq1MTR) | [Причина закрытия](https://trello.com/c/TgKq1MTR#comment-6a9ef52378676577ebdac449) |
+| [0150-pravilo-na-ssh-v-zadache-0117-obyazano-p](https://trello.com/c/Eo7HUR0s) | [Причина закрытия](https://trello.com/c/Eo7HUR0s#comment-6a9ef525c35ea297fb60b501) |
+| [0258-utochnit-kommentariy-o-sobytii-error-v-s](https://trello.com/c/Xef9JRhj) | [Причина закрытия](https://trello.com/c/Xef9JRhj#comment-6a9ef5274d2a04b1fd7ad848) |
+| [0025-find-a-real-nuke-fall-recording](https://trello.com/c/HObB8K7B) | [Причина закрытия](https://trello.com/c/HObB8K7B#comment-6a9ef5291628451bc082ed2d) |
+| [0257-proveryat-vozmozhnost-zavershit-podgotov](https://trello.com/c/lHd1sR9L) | [Причина закрытия](https://trello.com/c/lHd1sR9L#comment-6a9ef52ad52b19b753c3554a) |
+| [0150-soobschenie-run-stage-mjs-228-zovet-neso](https://trello.com/c/SmuqlwXX) | [Причина закрытия](https://trello.com/c/SmuqlwXX#comment-6a9ef52cac7c862b3cc261d6) |
+| [0148-pri-arhivacii-svesti-opredelenie-otveta-](https://trello.com/c/DYYhgXFM) | [Причина закрытия](https://trello.com/c/DYYhgXFM#comment-6a9ef52edb0f7ef0540f7bb7) |
+| [0142-storozh-pokrytiya-komand-vlivaniya-sched](https://trello.com/c/TJnnVWRH) | [Причина закрытия](https://trello.com/c/TJnnVWRH#comment-6a9ef530958f45f89790b158) |
+| [0141-gh-repo-view-ne-pokryt-pravilami-razresh](https://trello.com/c/MGlFyqaH) | [Причина закрытия](https://trello.com/c/MGlFyqaH#comment-6a9ef5310c43d3182081c8fc) |
+| [0140-scenariy-proverki-ostayutsya-v-sile-posl](https://trello.com/c/oYQaRlA1) | [Причина закрытия](https://trello.com/c/oYQaRlA1#comment-6a9ef5325c719b4784561c25) |
+| [0139-skill-implementacii-velit-pisat-otchet-f](https://trello.com/c/lWeAiCZL) | [Причина закрытия](https://trello.com/c/lWeAiCZL#comment-6a9ef5343ce7b8331f2453a9) |
+| [0138-podskazka-puskatelya-posle-zapuska-nazyv](https://trello.com/c/EuKKiPmB) | [Причина закрытия](https://trello.com/c/EuKKiPmB#comment-6a9ef536a6f77de2b8b6f214) |
+| [0137-v-delte-undraft-before-merge-pole-merged](https://trello.com/c/pWTdfvH1) | [Причина закрытия](https://trello.com/c/pWTdfvH1#comment-6a9ef538bc22c9c71187d360) |
+| [0144-pri-arhivacii-supervise-the-pipeline-pri](https://trello.com/c/KiO0RDOv) | [Причина закрытия](https://trello.com/c/KiO0RDOv#comment-6a9ef539bfc402696f287cdc) |
+| [0133-posle-vlivaniya-permit-the-pipeline-scri](https://trello.com/c/yiP2WY8N) | [Причина закрытия](https://trello.com/c/yiP2WY8N#comment-6a9ef53b1677a6397c537392) |
+| [0132-delty-permit-the-pipeline-scripts-i-perm](https://trello.com/c/0Mu5Ck8v) | [Причина закрытия](https://trello.com/c/0Mu5Ck8v#comment-6a9ef53c8e0a121ed421e546) |
+| [0131-poyasnenie-pro-snyatie-poddereva-otorvan](https://trello.com/c/piRfTjJx) | [Причина закрытия](https://trello.com/c/piRfTjJx#comment-6a9ef53d89c7092df6e506a6) |
+| [0019-behaviour-claims-need-a-control](https://trello.com/c/lS9cdcci) | [Причина закрытия](https://trello.com/c/lS9cdcci#comment-6a9ef53f5076f27a3ef5862a) |
+| [0020-scenario-declares-its-ending](https://trello.com/c/IUaiG5Bq) | [Причина закрытия](https://trello.com/c/IUaiG5Bq#comment-6a9ef541d6c83ac1376e1a02) |
+| [0274-izmenenie-mehanik-celepolaganiya](https://trello.com/c/d5xNg8j2) | [Причина закрытия](https://trello.com/c/d5xNg8j2#comment-6a9ef542f9ba093c807b47c2) |
+| [0039-chetkie-tekstury-pod-zum-ubrat-mylo-pri-](https://trello.com/c/JWXFRzug) | [Причина закрытия](https://trello.com/c/JWXFRzug#comment-6a9ef544d649b9ec4502fcf3) |
