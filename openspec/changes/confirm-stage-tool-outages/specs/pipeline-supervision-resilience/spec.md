@@ -84,6 +84,7 @@ After manual pause removal the supervisor SHALL require fresh successful diagnos
 #### Scenario: Availability closes between claim and spawn
 - **WHEN** an infrastructure retry is durably claimed and the API launch gate closes before process creation
 - **THEN** the final synchronous spawn gate SHALL return availability-held without creating a process or charging continuation, spawn-failure or cycle-failure counters
+- **AND** availability-held SHALL be a structured reason distinct from busy and not-born, with its reason recorded in the cycle log and no announcement of an issued session; existing busy and not-born handling SHALL retain their counter and task-journal semantics
 - **AND** the entitlement SHALL remain available across restart, with the claim reconciled to retry-ready when non-creation is proven; after both tool recovery and launch admission it SHALL permit exactly one replacement, including a deploy replacement whose remote effects were verified
 
 #### Scenario: Completion precedes charge persistence
