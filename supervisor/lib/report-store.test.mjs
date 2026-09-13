@@ -25,6 +25,53 @@ const report = {
 };
 
 describe('durable report queue', () => {
+  it('proves the complete persisted envelope, including rejection and progress', () => {
+    const path = fixture();
+    const store = openReportStore(path);
+    expect(store.verifySaved()).toEqual({ ok: true, count: 0 });
+    const entry = store.accept(report);
+    store.reject(entry.reportId, { why: 'invalid incident', at: '2026-09-13T10:00:00Z' });
+    expect(store.verifySaved()).toEqual({ ok: true, count: 1 });
+    const saved = fs.readFileSync(path, 'utf8');
+    for (const mutation of [
+      (value) => {
+        value.reports[0].report.costUsd = 999;
+      },
+      (value) => {
+        value.reports[0].rejection.why = 'changed';
+      },
+      (value) => {
+        value.reports = [];
+      },
+    ]) {
+      const value = JSON.parse(saved);
+      mutation(value);
+      fs.writeFileSync(path, JSON.stringify(value));
+      expect(store.verifySaved()).toMatchObject({ ok: false, count: 0 });
+    }
+    fs.writeFileSync(path, 'broken');
+    expect(store.verifySaved()).toMatchObject({ ok: false, count: 0 });
+    fs.unlinkSync(path);
+    expect(store.verifySaved()).toMatchObject({ ok: false, count: 0 });
+    fs.writeFileSync(path, saved);
+    expect(store.verifySaved()).toEqual({ ok: true, count: 1 });
+    let unreadable = false;
+    const reader = openReportStore(path, {
+      disk: {
+        ...fs,
+        readFileSync: (...args) => {
+          if (unreadable) throw new Error('EACCES');
+          return fs.readFileSync(...args);
+        },
+      },
+    });
+    unreadable = true;
+    expect(reader.verifySaved()).toMatchObject({
+      ok: false,
+      count: 0,
+      why: expect.stringContaining('EACCES'),
+    });
+  });
   it('retains the rejected original across restart and explicit retry', () => {
     const path = fixture();
     const store = openReportStore(path);

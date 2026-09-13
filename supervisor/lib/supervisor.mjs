@@ -187,6 +187,19 @@ export function createSupervisor({
     get reportStorageBlocked() {
       return pendingAcceptances.size > 0;
     },
+    get reportRestartState() {
+      const saved = reportStore
+        ? (reportStore.verifySaved?.() ?? {
+            ok: false,
+            why: 'проверка сохранности очереди недоступна',
+          })
+        : { ok: true, count: 0 };
+      return {
+        pending: reportViews().length + pendingAcceptances.size,
+        durablePending: saved.ok ? saved.count : 0,
+        pendingProblem: saved.ok ? null : saved.why,
+      };
+    },
     orphanOutcomes,
     apiFailures,
     initialize: adoptOrphans,

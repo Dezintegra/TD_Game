@@ -87,6 +87,21 @@ export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
   return {
     entries: () => structuredClone(reports),
     get: (id) => structuredClone(reports.find((entry) => entry.reportId === id) ?? null),
+    verifySaved() {
+      try {
+        const saved = validate(JSON.parse(disk.readFileSync(path, 'utf8')));
+        if (JSON.stringify(saved) !== JSON.stringify(reports))
+          return { ok: false, count: 0, why: 'очередь на диске отличается от принятой в памяти' };
+        return { ok: true, count: saved.length };
+      } catch (error) {
+        if (error.code === 'ENOENT' && reports.length === 0) return { ok: true, count: 0 };
+        return {
+          ok: false,
+          count: 0,
+          why: `сохранность очереди не подтверждена: ${error.message}`,
+        };
+      }
+    },
     accept(report, launch = {}) {
       const context = { ...launch, taskId: report.taskId, stage: report.stage };
       const existing = reports.find((entry) => sameReportLaunch(entry, context));

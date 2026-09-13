@@ -771,6 +771,7 @@ describe('устойчивая очередь завершений', () => {
       h.supervisor.spawnStage(assignment());
       await h.answer(envelope());
       expect(h.supervisor.reportStorageBlocked).toBe(true);
+      expect(h.supervisor.reportRestartState).toMatchObject({ pending: 1, durablePending: 0 });
       expect(h.saved.at(-1)['0001-one:design'].live).toBeTruthy();
       expect(h.supervisor.spawnStage(assignment({ taskId: '0002-other' }))).toMatchObject({
         ok: false,
@@ -780,6 +781,11 @@ describe('устойчивая очередь завершений', () => {
       broken = false;
       h.supervisor.sweep();
       expect(h.supervisor.reportStorageBlocked).toBe(false);
+      expect(h.supervisor.reportRestartState).toEqual({
+        pending: 1,
+        durablePending: 1,
+        pendingProblem: null,
+      });
       expect(h.saved.at(-1)['0001-one:design'].live).toBeUndefined();
       expect(f.open().store.entries()).toHaveLength(1);
     } finally {
