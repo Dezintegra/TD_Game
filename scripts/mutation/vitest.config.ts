@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
+import { sourceAliases } from '../testing/source-aliases.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const descriptor = JSON.parse(process.env.TD_MUTATION_DESCRIPTOR || '{}');
@@ -9,11 +10,10 @@ const requireVitest = createRequire(createRequire(import.meta.url).resolve('vite
 
 export default defineConfig({
   resolve: {
-    alias: {
-      '@td/shared': resolve(root, 'packages/shared/src/index.ts'),
-      '@td/sim': resolve(root, 'packages/sim/src/index.ts'),
-      '@vitest/runner': requireVitest.resolve('@vitest/runner'),
-    },
+    alias: [
+      ...sourceAliases(),
+      { find: '@vitest/runner', replacement: requireVitest.resolve('@vitest/runner') },
+    ],
   },
   test: {
     root: resolve(root, 'packages/sim'),
