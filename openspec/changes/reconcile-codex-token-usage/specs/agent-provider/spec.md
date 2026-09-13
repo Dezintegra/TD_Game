@@ -45,7 +45,7 @@ The supervisor SHALL interpret the supported Codex CLI cumulative thread snapsho
 
 #### Scenario: Incomplete budget below the limit
 - **WHEN** a task has unknown consumption below the known limit and token enforcement is enabled
-- **THEN** no ordinary stage is launched on an assumed remaining budget, the reason is exposed and no launch attempt is spent
+- **THEN** incompleteness alone blocks neither the launch nor a successfully completed report; the reason and known lower bound remain recorded, and known exhaustion still blocks the next ordinary launch
 
 #### Scenario: Disabled token limit
 - **WHEN** enforcement is disabled for a task with incomplete consumption
