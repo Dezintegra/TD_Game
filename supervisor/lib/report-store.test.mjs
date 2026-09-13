@@ -25,6 +25,26 @@ const report = {
 };
 
 describe('durable report queue', () => {
+  it('retains the rejected original across restart and explicit retry', () => {
+    const path = fixture();
+    const store = openReportStore(path);
+    const first = store.accept(report, { launchId: 'one' });
+    store.reject(first.reportId, { why: 'invalid incident', at: '2026-09-13T10:00:00Z' });
+    const reopened = openReportStore(path);
+    expect(reopened.get(first.reportId)).toMatchObject({
+      ...first,
+      rejection: { kind: 'invalid-report', why: 'invalid incident' },
+    });
+    reopened.retry(first.reportId);
+    expect(openReportStore(path).get(first.reportId)).toEqual({ ...first, rejection: null });
+    reopened.update(first.reportId, { plan: { operations: [] } });
+    expect(() =>
+      reopened.reject(first.reportId, {
+        why: 'no parking after planning',
+        at: '2026-09-13T10:00:00Z',
+      }),
+    ).toThrow('planned report');
+  });
   it('restores payload, plan and progress and acknowledges exactly one launch', () => {
     const path = fixture();
     const store = openReportStore(path);
@@ -75,6 +95,12 @@ describe('durable report queue', () => {
       const store = openReportStore(path, { disk });
       expect(() => store.accept(report, { launchId: 'two' })).toThrow('injected disk failure');
       expect(() => store.acknowledge(first.reportId)).toThrow('injected disk failure');
+      expect(() =>
+        store.reject(first.reportId, {
+          why: 'invalid incident',
+          at: '2026-09-13T10:00:00Z',
+        }),
+      ).toThrow('injected disk failure');
       expect(store.entries()).toEqual([first]);
       expect(openReportStore(path).entries()).toEqual([first]);
     },

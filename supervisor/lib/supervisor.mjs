@@ -99,6 +99,7 @@ export function createSupervisor({
           launchId: entry.launchId,
           startedAt: entry.startedAt,
           machine: entry.machine,
+          rejection: entry.rejection ?? null,
         }))
       : reports;
   /**

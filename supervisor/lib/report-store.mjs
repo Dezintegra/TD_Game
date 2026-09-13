@@ -3,6 +3,19 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const { structuredClone } = globalThis;
+const text = (value) => typeof value === 'string' && value.trim().length > 0;
+
+function validRejection(entry) {
+  if (entry.rejection === undefined || entry.rejection === null) return true;
+  return (
+    entry.plan == null &&
+    entry.progress?.length === 0 &&
+    entry.rejection.kind === 'invalid-report' &&
+    text(entry.rejection.why) &&
+    text(entry.rejection.at) &&
+    Number.isFinite(Date.parse(entry.rejection.at))
+  );
+}
 
 export const REPORT_STORE_VERSION = 1;
 
@@ -20,6 +33,7 @@ function validate(value) {
       typeof entry.report !== 'object' ||
       Array.isArray(entry.report) ||
       !Array.isArray(entry.progress) ||
+      !validRejection(entry) ||
       ids.has(entry.reportId)
     )
       throw new Error('invalid report envelope');
@@ -103,6 +117,24 @@ export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
               }
             : entry,
         ),
+      );
+    },
+    reject(id, { why, at }) {
+      const entry = reports.find((item) => item.reportId === id);
+      if (!entry) throw new Error(`unknown report ${id}`);
+      // После первой записи ошибка может означать потерянное подтверждение.
+      if (entry.plan != null || entry.progress.length)
+        throw new Error('cannot reject a planned report');
+      commit(
+        reports.map((item) =>
+          item.reportId === id ? { ...item, rejection: { kind: 'invalid-report', why, at } } : item,
+        ),
+      );
+    },
+    retry(id) {
+      if (!reports.some((entry) => entry.reportId === id)) throw new Error(`unknown report ${id}`);
+      commit(
+        reports.map((entry) => (entry.reportId === id ? { ...entry, rejection: null } : entry)),
       );
     },
     acknowledge(id) {

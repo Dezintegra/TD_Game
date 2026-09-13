@@ -307,6 +307,12 @@ export function scan(state) {
 
   // 2. Отчёты сессий. Перенос — самое дешёвое, что двигает задачу вперёд.
   for (const report of reports) {
+    if (report.rejection) {
+      notes.push(
+        `отчёт ${report.reportId} задачи ${report.taskId} отклонён: ${report.rejection.why}; участники удержаны, требуется исправление и явный retry`,
+      );
+      continue;
+    }
     if (!byId.has(report.taskId)) {
       notes.push(`отчёт по задаче ${report.taskId}, которой нет в бэклоге`);
       continue;
