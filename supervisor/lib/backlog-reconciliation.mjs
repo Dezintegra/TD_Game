@@ -11,6 +11,7 @@ export const RECONCILE_STATES = [
   'audit',
   'implement',
   'revise',
+  'review',
 ];
 const INTERVAL = 15 * 60 * 1000;
 
@@ -140,12 +141,14 @@ export async function reconcileTask(action, io) {
       status === 'cleanup'
         ? '; служебный diff: осталась уборка'
         : '; восстановить обязательства прогона и выпуска в review';
-    const moved = applyTransition(next, { status, note: why, now: io.now, reconciliation: true });
-    if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
-    next = resetAttempts({ ...moved.task, owner: task.owner ?? io.machine });
-    delete next.question;
-    delete next.delayAnalysis;
-    delete next.delayJournal;
+    if (status !== task.status) {
+      const moved = applyTransition(next, { status, note: why, now: io.now, reconciliation: true });
+      if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+      next = resetAttempts({ ...moved.task, owner: task.owner ?? io.machine });
+      delete next.question;
+      delete next.delayAnalysis;
+      delete next.delayJournal;
+    }
   }
   const saved = await io.saveTask(
     next,

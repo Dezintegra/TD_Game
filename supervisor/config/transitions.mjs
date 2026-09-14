@@ -287,9 +287,16 @@ export function canTransition(task, to, { reconciliation = false, consolidation 
   if (
     reconciliation &&
     task.type === 'feature' &&
-    ['failed', 'postmortem', 'awaiting-po', 'design', 'audit', 'implement', 'revise'].includes(
-      from,
-    ) &&
+    [
+      'failed',
+      'postmortem',
+      'awaiting-po',
+      'design',
+      'audit',
+      'implement',
+      'revise',
+      'review',
+    ].includes(from) &&
     ['cleanup', 'review'].includes(to)
   )
     return { ok: true, reason: 'доказательная сверка влитого PR' };
