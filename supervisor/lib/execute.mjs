@@ -943,8 +943,25 @@ export async function execute(actions, io) {
       continue;
     }
 
-    const outcome = await handler(action, io, context);
-    results.push({ action, ...outcome });
+    let launched = 0;
+    const before = io.spawnCount?.();
+    const actionIo = { ...io };
+    actionIo.spawnStage = (assignment) => {
+      const result = io.spawnStage(assignment);
+      if (result.ok && result.pid) launched++;
+      return result;
+    };
+    let outcome;
+    try {
+      outcome = await handler(action, actionIo, context);
+    } catch (error) {
+      outcome = { result: 'failed', why: error.message };
+    }
+    // The runtime counter also observes a born process whose subsequent persistence threw.
+    const after = io.spawnCount?.();
+    if (Number.isSafeInteger(before) && Number.isSafeInteger(after) && after >= before)
+      launched = after - before;
+    results.push({ action, ...outcome, ...(launched ? { launched } : {}) });
 
     if (outcome.result === 'failed' && String(outcome.why ?? '').includes('offline')) {
       results.push({ action: null, result: 'skipped', why: 'записи невозможны: сети нет' });

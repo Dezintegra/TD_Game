@@ -84,6 +84,7 @@ export function createSupervisor({
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
+  let launchCount = 0;
   codexUsage = migrateTokenLedger(codexUsage);
   const usageWriteErrors = new Set();
   const pendingUsageCancellations = new Map();
@@ -147,6 +148,9 @@ export function createSupervisor({
   if (initialize) adoptOrphans();
 
   return {
+    get launchCount() {
+      return launchCount;
+    },
     get codexUsage() {
       return {
         ...codexUsage,
@@ -502,6 +506,8 @@ export function createSupervisor({
         if (provider === 'codex') cancelUsageLaunch(child);
         return { ok: false, reason: 'not-born', why: 'процесс не родился: номера у него нет' };
       }
+
+      launchCount++;
 
       // Отметка начала ставится один раз и переживает продолжения: она
       // отвечает на вопрос «этот ли заход сделал коммит», а продолжатель
