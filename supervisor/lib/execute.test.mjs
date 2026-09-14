@@ -255,6 +255,34 @@ it('сохраняет диагноз с конкретным исправлен
   expect(io.readTask(source.id).pipelineIncident.probeStartedAt).toBe(NOW);
 });
 
+it('свежий инцидент удерживает участника пакета, но допускает независимый этап', async () => {
+  const source = task({ status: 'failed', returnTo: 'deploy' });
+  source.pipelineIncident = {
+    id: 'incident',
+    evidence: 'Выкладка сломана',
+    openedAt: NOW,
+    affectedStages: ['deploy'],
+    fixedBy: ['0002-fix'],
+    check: { stage: 'deploy', expectation: 'Исходная выкладка проходит' },
+  };
+  const fix = task({ id: '0002-fix', status: 'deploy' });
+  const other = task({ id: '0003-other', status: 'deploy' });
+  const independent = task({ id: '0004-free', status: 'audit' });
+  const io = fakeIo({ tasks: [source, fix, other, independent] });
+  const results = await execute(
+    [
+      { kind: 'continue-stage', taskId: fix.id, stage: 'deploy', batch: [fix.id, other.id] },
+      { kind: 'continue-stage', taskId: independent.id, stage: 'audit' },
+    ],
+    io,
+  );
+  expect(results.map((r) => r.result)).toEqual(['skipped', 'done']);
+  expect(results[0].why).toContain('инцидент');
+  expect(io.spawned).toHaveLength(1);
+  expect(io.spawned[0].taskId).toBe(independent.id);
+  expect(io.readTask(other.id)).toEqual(other);
+});
+
 it.each(['done', 'blocked'])(
   'не снимает инцидент без доказательства при исходе %s',
   async (outcome) => {

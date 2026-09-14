@@ -469,7 +469,7 @@ export function scan(state) {
     }
     if (!incident.allows(task, stage)) {
       held.set(task.id, ['pipeline-incident']);
-      notes.push(`задача ${task.id}: ожидает устранения подтверждённого инцидента`);
+      notes.push(`задача ${task.id}: этап ${stage} ожидает устранения подтверждённого инцидента`);
     }
   }
   // Проверяем до квот и пределов попыток: ожидание не является запуском.
@@ -878,6 +878,7 @@ export function scan(state) {
       scheduling,
       now,
       compare: byPriorityThenAge,
+      isRecovery: incident.isRecovery,
     });
     actions.push(...selected.actions);
     for (const action of selected.actions) {

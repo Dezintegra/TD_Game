@@ -155,8 +155,8 @@ describe('сверка фактического результата', () => {
       machine: 'test',
       tasks: [
         incidentSource([repair.id]),
-        task({ id: '0002-old' }),
-        task({ id: '0003-old' }),
+        task({ id: '0002-old', status: 'audit' }),
+        task({ id: '0003-old', status: 'audit' }),
         repair,
       ],
       registry: { entries: [{ taskId: repair.id, path: 'tree', branch: 'worktree-repair' }] },
