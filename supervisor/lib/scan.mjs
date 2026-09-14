@@ -1,5 +1,10 @@
 import { emptyScheduling, planLaunches, recordRecovery, schedulingProblem } from './scheduling.mjs';
-import { incidentPolicy, legacyIncident } from './pipeline-incidents.mjs';
+import {
+  incidentPolicy,
+  legacyIncident,
+  incidentRecoveryHeld,
+  incidentRecoveryActionHeld,
+} from './pipeline-incidents.mjs';
 import { planBacklogReview } from './backlog-review.mjs';
 import { reportTaskIds } from './report-targets.mjs';
 import { isToolHeld } from './tool-report-hold.mjs';
@@ -193,7 +198,7 @@ export function scan(state) {
     scheduling = { error: schedulingProblem(scheduling) };
   if (!scheduling.error)
     for (const task of [...tasks, ...(state.dependencyRecords ?? [])]) {
-      if (task.pipelineIncident?.verifiedAt)
+      if (task.pipelineIncident?.verifiedAt && !incidentRecoveryHeld(task.id, state))
         scheduling = recordRecovery(scheduling, task.pipelineIncident.id);
     }
   let incident = incidentPolicy({ ...state, scheduling });
@@ -1043,17 +1048,19 @@ export function scan(state) {
   }
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
   return {
-    actions: actions.filter(
-      // Досылка не меняет карточку и снимает условие, удерживающее перенос.
-      (action) =>
-        action.kind === 'transfer-report' ||
-        action.kind === 'settle-tool-report' ||
-        action.kind === 'retry-tool-stage' ||
-        action.kind === 'push-tail' ||
-        (action.kind === 'flush-delay-journal' &&
-          !reports.some((report) => report.reportId && report.taskId === action.taskId)) ||
-        !hasReport(action.taskId),
-    ),
+    actions: actions
+      .filter((action) => !incidentRecoveryActionHeld(action, state))
+      .filter(
+        // Досылка не меняет карточку и снимает условие, удерживающее перенос.
+        (action) =>
+          action.kind === 'transfer-report' ||
+          action.kind === 'settle-tool-report' ||
+          action.kind === 'retry-tool-stage' ||
+          action.kind === 'push-tail' ||
+          (action.kind === 'flush-delay-journal' &&
+            !reports.some((report) => report.reportId && report.taskId === action.taskId)) ||
+          !hasReport(action.taskId),
+      ),
     notes,
   };
 }

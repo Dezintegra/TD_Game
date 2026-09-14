@@ -9,10 +9,117 @@ import { pushMain } from './push-discipline.mjs';
 import { removeWorktree } from './remove-worktree.mjs';
 import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
-import { hasReceipt, withReceipt, partReceipt } from './report-receipts.mjs';
+import { hasReceipt, withReceipt, partReceipt, readReceiptComments } from './report-receipts.mjs';
+import { parseCard } from './card.mjs';
+import {
+  INCIDENT_REPORT_RECOVERIES,
+  incidentRecoveryKey,
+} from '../config/incident-report-recoveries.mjs';
+import { confirmIncidentRecovery, isIncidentRecoveryEntry } from './incident-report-recovery.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { nextId } from './requests.mjs';
 import { CI_PR_FIELDS, hasContradictoryCheck, confirmContradictoryCi } from './ci-confirmation.mjs';
+
+/** Чтение получателя общее для настоящего scan, execute и обслуживания под замком. */
+export function createIncidentRecoveryIo({
+  store,
+  trello,
+  snapshot,
+  config,
+  reportStore,
+  ownsLock,
+  run,
+  baseIo,
+}) {
+  const stateByList = new Map(
+    (snapshot?.lists ?? []).flatMap((list) =>
+      Object.entries(config.trello.lists)
+        .filter(([, name]) => name === list.name)
+        .map(([state]) => [list.id, state]),
+    ),
+  );
+  const labelKeyById = new Map(
+    (snapshot?.labels ?? []).flatMap((label) =>
+      Object.entries(config.trello.labels)
+        .filter(([, value]) => value.name === label.name)
+        .map(([key]) => [label.id, key]),
+    ),
+  );
+  async function readIncidentRecoverySnapshot(taskId) {
+    if (!trello || !store?.parsedCards)
+      return { ok: false, why: 'полное чтение получателя недоступно' };
+    const cards = store.parsedCards().filter((item) => item.task.id === taskId);
+    if (cards.length !== 1) return { ok: false, why: 'нет единственного адресата восстановления' };
+    const raw = await trello.get(`cards/${cards[0].card.id}`, {
+      fields: 'id,name,desc,idList,idLabels,idMembers,pos,closed',
+    });
+    if (!raw.ok) return { ok: false, why: raw.why ?? raw.kind };
+    const parsed = parseCard(raw.data, { stateByList, labelKeyById });
+    if (parsed.task?.id !== taskId || raw.data.closed || !Array.isArray(raw.data.idMembers))
+      return { ok: false, why: 'личность, архивность или захват адресата не подтверждены' };
+    const comments = await readReceiptComments(trello, raw.data.id);
+    if (!comments.ok) return { ok: false, why: comments.why ?? comments.kind };
+    return {
+      ok: true,
+      task: parsed.task,
+      members: raw.data.idMembers,
+      comments: comments.comments,
+    };
+  }
+  return {
+    readIncidentRecoverySnapshot,
+    ownsSupervisorLock: () => ownsLock?.() === true,
+    recoveryCommentConfig: config.trello,
+    async readIncidentRecoveries() {
+      const confirmations = {};
+      for (const item of INCIDENT_REPORT_RECOVERIES) {
+        const key = incidentRecoveryKey(item);
+        try {
+          const snapshot = await readIncidentRecoverySnapshot(item.taskId);
+          confirmations[item.taskId] = snapshot.ok
+            ? confirmIncidentRecovery(item, snapshot.task, snapshot.comments)
+            : { key, complete: false, why: snapshot.why };
+          const entries =
+            reportStore?.entries().filter((entry) => entry.taskId === item.taskId) ?? [];
+          if (entries.length === 1 && isIncidentRecoveryEntry(entries[0], item)) {
+            confirmations[item.taskId].pendingReportId = entries[0].reportId;
+            // Пока очередь не подтверждена целиком, даже последний комментарий не снимает удержание.
+            confirmations[item.taskId].complete = false;
+            confirmations[item.taskId].why =
+              'исправляющий конверт ещё ожидает подтверждения доставки';
+          }
+        } catch (error) {
+          confirmations[item.taskId] = { key, complete: false, why: error.message };
+        }
+      }
+      return confirmations;
+    },
+    incidentRecoveryGitEvidence(item, original) {
+      if (!run || !baseIo) return { ok: false, why: 'проверка Git недоступна' };
+      const branch = `worktree-${item.taskId}`;
+      const remote = `${config.remote}/${branch}`;
+      if (run(['fetch', config.remote]).code !== 0)
+        return { ok: false, why: 'не удалось обновить удалённые ссылки' };
+      const evidence = baseIo.stageEvidence(original.task);
+      for (const sha of item.commits) {
+        if (run(['merge-base', '--is-ancestor', sha, remote]).code !== 0)
+          return { ok: false, why: `коммит ${sha} не подтверждён в ${remote}` };
+        const dated = run(['show', '-s', '--format=%cI', sha]);
+        if (
+          dated.code !== 0 ||
+          !(Date.parse(dated.stdout.trim()) >= Date.parse(original.startedAt))
+        )
+          return { ok: false, why: `дата собственного коммита ${sha} не подтверждена` };
+      }
+      if (run(['show', `${remote}:openspec/changes/${item.change}/proposal.md`]).code !== 0)
+        return {
+          ok: false,
+          why: 'исходное изменение отсутствует в отправленной ветке либо недоступно',
+        };
+      return { ...evidence, ok: evidence.branchOnRemote === true && evidence.unpushed === 0 };
+    },
+  };
+}
 
 /**
  * Переходник к настоящему миру: файлы, git, деревья.

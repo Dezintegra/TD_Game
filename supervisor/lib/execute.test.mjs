@@ -12,6 +12,26 @@ import { journalAppendix } from './journal.mjs';
 import { appendQuestion, recordAnswer as recordAnswerIn, renderQuestion } from './questions.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import { incidentFromReport } from './pipeline-incidents.mjs';
+import { INCIDENT_REPORT_RECOVERIES } from '../config/incident-report-recoveries.mjs';
+
+it('удержание 0199 охватывает адресата amendments и dependencyUpdates чужого отчёта', async () => {
+  for (const field of ['amendments', 'dependencyUpdates']) {
+    const f = deliveryFixture({
+      reportOverrides: { [field]: [{ taskId: INCIDENT_REPORT_RECOVERIES[0].taskId }] },
+    });
+    try {
+      const opened = f.open();
+      expect((await execute([f.action], opened.io))[0]).toMatchObject({
+        result: 'skipped',
+        why: expect.stringContaining('адресное восстановление'),
+      });
+      expect(opened.recipient.state()).toMatchObject({ puts: 0, posts: 0 });
+      expect(opened.store.entries()).toHaveLength(1);
+    } finally {
+      f.cleanup();
+    }
+  }
+});
 
 it('досылает журнал передвинутого участника по сохранённому плану до ведущей', async () => {
   const f = deliveryFixture({ stage: 'deploy', batch: true });

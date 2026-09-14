@@ -24,6 +24,8 @@ import { createTrello, missingAccess, readBoard } from '../lib/trello.mjs';
 import { createTrelloBacklog } from '../lib/backlog-trello.mjs';
 import { sortCards } from '../lib/validate-card.mjs';
 import { readScheduling } from '../lib/scheduling-store.mjs';
+import { createIncidentRecoveryIo } from '../lib/io.mjs';
+import { openReportStore } from '../lib/report-store.mjs';
 
 /**
  * Что конвейер собирается делать.
@@ -105,6 +107,9 @@ async function openBacklog(config) {
   const store = createTrelloBacklog({ trello, config, snapshot: board, machine: hostname() });
   return {
     ok: true,
+    store,
+    trello,
+    snapshot: board,
     ...sortCards(store.parsedCards()),
     ownerAnswers: store.ownerAnswers(),
     closedDependencyIds: store.closedDependencyIds(),
@@ -126,7 +131,20 @@ async function main() {
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
   const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
 
+  let incidentRecoveries = {};
+  try {
+    incidentRecoveries = await createIncidentRecoveryIo({
+      store: backlog.store,
+      trello: backlog.trello,
+      snapshot: backlog.snapshot,
+      config,
+      reportStore: openReportStore(join(root, config.paths.local, 'pending-reports.json')),
+    }).readIncidentRecoveries();
+  } catch (error) {
+    backlog.notes.push(`адресное восстановление удержано: ${error.message}`);
+  }
   const decision = scan({
+    incidentRecoveries,
     scheduling: readScheduling(root, config),
     now: new Date().toISOString(),
     machine,

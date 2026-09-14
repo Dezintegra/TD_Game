@@ -1,6 +1,8 @@
 import { reportTaskIds } from './report-targets.mjs';
 import { isToolHeld } from './tool-report-hold.mjs';
 import { prepareToolSettlement, validToolSettlement } from './tool-settlement.mjs';
+import { INCIDENT_REPORT_RECOVERIES } from '../config/incident-report-recoveries.mjs';
+import { isIncidentRecoveryEntry, confirmIncidentRecovery } from './incident-report-recovery.mjs';
 import {
   prepareReportPlan,
   ReportValidationError,
@@ -54,6 +56,22 @@ async function deliverReport(action, io, context, infrastructure) {
       why: `report ${entry.reportId} rejected: ${entry.rejection.why}; требуется исправление и явный retry`,
     };
   try {
+    const recovery = entry.plan?.incidentRecovery;
+    const recoveryItem =
+      recovery && INCIDENT_REPORT_RECOVERIES.find((item) => item.taskId === entry.taskId);
+    if (recovery) {
+      if (
+        !recoveryItem ||
+        !isIncidentRecoveryEntry(entry, recoveryItem) ||
+        !(await io.ownsSupervisorLock?.())
+      )
+        throw new Error('invalid or unowned incident recovery delivery');
+      const snapshot = await io.readIncidentRecoverySnapshot(entry.taskId);
+      if (!snapshot.ok || snapshot.members?.length || snapshot.task.owner)
+        throw new Error(snapshot.why ?? 'incident recovery source is claimed');
+      if (io.tokenActionBlocked?.(entry.taskId, entry.reportId))
+        throw new Error('incident recovery source has competing work');
+    }
     if (!entry.plan) {
       const task = io.readTask(entry.taskId);
       if (
@@ -129,6 +147,14 @@ async function deliverReport(action, io, context, infrastructure) {
       entry = store.get(entry.reportId);
     }
     for (const args of entry.plan.cleanup) await io.forgetSession?.(...args);
+    if (recovery) {
+      const snapshot = await io.readIncidentRecoverySnapshot(entry.taskId);
+      if (
+        !snapshot.ok ||
+        !confirmIncidentRecovery(recoveryItem, snapshot.task, snapshot.comments).complete
+      )
+        throw new Error(snapshot.why ?? 'incident recovery effects are not confirmed');
+    }
     if (infrastructure) {
       // The full payload, including unexecuted dependencyUpdates, remains recoverable.
       store.archive(entry.reportId);

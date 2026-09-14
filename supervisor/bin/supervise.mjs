@@ -47,7 +47,8 @@ import {
 } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
 import { isDirectory, unavailableWorkspaces } from '../lib/workspace-state.mjs';
-import { createIo } from '../lib/io.mjs';
+import { createIo, createIncidentRecoveryIo } from '../lib/io.mjs';
+import { incidentRecoveryHeld } from '../lib/pipeline-incidents.mjs';
 import { createSchedulingStore } from '../lib/scheduling-store.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
@@ -407,6 +408,8 @@ async function openBacklog({ mayWrite }) {
     invalid,
     marked,
     store,
+    trello,
+    snapshot: board,
     // Ответы владельца снимаются здесь же, из того же снимка доски:
     // сканер получает карту готовой, как и команды лимита токенов.
     ownerAnswers: store.ownerAnswers(),
@@ -674,10 +677,23 @@ async function turn() {
   );
 
   const registry = readRegistry(root, config);
+  const recoveryIo = createIncidentRecoveryIo({
+    store: backlog.store,
+    trello: backlog.trello,
+    snapshot: backlog.snapshot,
+    config,
+    reportStore: supervisor.reportStore,
+    ownsLock: () => readLock()?.pid === process.pid,
+  });
+  const incidentRecoveries = await recoveryIo.readIncidentRecoveries();
   if (!schedulingStore.read().error) {
     schedulingStore.reconcile(backlog.tasks, supervisor.stageStartedAt);
     for (const task of [...backlog.tasks, ...(backlog.dependencyRecords ?? [])]) {
-      if (task.pipelineIncident?.verifiedAt) schedulingStore.recovered(task.pipelineIncident.id);
+      if (
+        task.pipelineIncident?.verifiedAt &&
+        !incidentRecoveryHeld(task.id, { incidentRecoveries })
+      )
+        schedulingStore.recovered(task.pipelineIncident.id);
     }
   }
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
@@ -692,6 +708,7 @@ async function turn() {
   });
 
   const state = {
+    incidentRecoveries,
     machine,
     unavailableWorkspaces: unavailableWorkspaces({
       tasks: backlog.tasks,
@@ -764,6 +781,7 @@ async function turn() {
         reportStore: supervisor.reportStore,
       }),
       ...(backlog.store ?? {}),
+      ...recoveryIo,
       dependencyEvidence: state.dependencyEvidence ?? {},
       tokenAccountingNote: (taskId) => tokenAccountingNote(supervisor.codexUsage, taskId),
       tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
@@ -837,7 +855,11 @@ async function turn() {
       ...supervisor.running().flatMap((item) => [item.taskId, ...(item.batch ?? [])]),
     ]);
     repaired = repairWorld(
-      repair.repairs.filter((repair) => !pendingIds.has(repair.taskId)),
+      repair.repairs.filter(
+        (repair) =>
+          !pendingIds.has(repair.taskId) &&
+          !incidentRecoveryHeld(repair.taskId, { incidentRecoveries }),
+      ),
       io,
     );
     for (const item of repaired) {
