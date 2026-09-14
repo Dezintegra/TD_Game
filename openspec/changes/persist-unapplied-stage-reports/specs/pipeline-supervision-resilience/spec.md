@@ -15,6 +15,13 @@ The supervisor SHALL persist each accepted stage report with a supervisor-owned 
 
 ### Requirement: Pending reports are restored before recovery and scheduling
 
+Diagnostic envelopes SHALL use the same store before releasing live, with immutable raw
+result, nullable unaccepted report, trusted task and batch, launch context and independent
+evidence. Diagnosing and infrastructure-held SHALL prevent ordinary delivery, tail pushes
+and competing task effects. A malformed report SHALL NOT become accepted through retention;
+healthy/inconclusive shall archive it before releasing diagnostic retention. Version 1
+ordinary plans, progress and rejections SHALL retain ordinary delivery without reclassification.
+
 After acquiring its startup and supervisor locks, the supervisor SHALL restore the durable report queue before orphan recovery and planning. Pending reports SHALL exclude their task and assigned batch members from new sessions, continuations and competing mutations until delivery is settled, including after a partial board write. They MUST NOT reserve live-process concurrency slots for unrelated work. Invalid or unreadable persisted state MUST NOT be silently replaced by an empty queue.
 
 #### Scenario: Stale live descriptor accompanies a saved report
@@ -73,6 +80,22 @@ Before its first external mutation, report delivery SHALL persist a stable plan 
 - **THEN** it is retained with a conflict diagnostic and does not overwrite the newer state
 
 ### Requirement: Report acknowledgement follows complete delivery
+
+For infrastructure disposition, completion SHALL mean confirmation of its own settlement
+operations and preservation of the full diagnostic payload, not delivery of instructions from
+the failed report. After full healthy recovery, settlement SHALL preserve the source stage,
+account for actual cost and refund only a receipt-confirmed continuation for the same launch
+once. Pending charge confirmation SHALL prevent settlement. Retry-ready SHALL remain durable
+without launching a process; active acknowledgement SHALL wait for a safe handoff and archive.
+The sole exception to pending exclusion SHALL be the matching replacement claim after
+healthy recovery and confirmed settlement. Its new launchId SHALL be persisted before
+spawn. Uncertain birth SHALL retain the claim until recovery confirms it; confirmed birth
+SHALL consume the entitlement once. The full archive SHALL precede active acknowledgement.
+
+#### Scenario: Infrastructure refund response was lost
+- **WHEN** the recipient saved a launch-specific refund but its response or a journal part was lost
+- **THEN** retry confirms the same receipt and completes missing journal parts without another
+  refund, cost increment, dependency addition or ordinary failed transition
 
 The supervisor SHALL remove a persisted report only after all planned effects have been confirmed and completed-session cleanup has succeeded. This rule SHALL include reports routed to halt by acceptance checks. A failure of local acknowledgement SHALL retain retryable state; repeating acknowledgement MUST NOT repeat board effects.
 

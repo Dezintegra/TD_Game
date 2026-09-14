@@ -2,6 +2,11 @@
 
 ### Requirement: Stage reports can address dependency additions
 
+Acceptance and execution of addressed instructions SHALL apply only to ordinary disposition.
+Diagnosing and infrastructure-held SHALL retain the complete payload without validating,
+claiming or writing recipients. Healthy/inconclusive for an otherwise accepted failed report
+SHALL restore ordinary delivery, including all existing trust and recipient checks.
+
 The supervisor SHALL accept optional `dependencyUpdates` in an otherwise accepted stage report as an array of objects containing exactly `taskId`, `dependsOn`, `dependencyResults`, and a nonempty string `reason`. Each object SHALL address one existing, uniquely identified, valid, nonarchived task other than the report source. `closed` targets SHALL be rejected; `failed` SHALL remain an eligible target without changing its state. The supervisor SHALL validate addition metadata and the merged candidate using `dependencyFormatProblem` from `dependencies.mjs`, reject dependency cycles using its existing cycle validator, and reject conflicting results for the same predecessor. Missing or empty `dependencyUpdates` SHALL preserve existing report behavior and add no storage calls. Executors MUST NOT write cards directly; their reason SHALL identify the assigned work or recorded decision authorizing the addition, not invent a product dependency.
 
 #### Scenario: Valid addressed instruction
@@ -63,6 +68,14 @@ Every normal Trello task start SHALL reread authoritative target data after acqu
 - **AND** only a newly acquired claim is released, with any release failure explicitly reported
 
 ### Requirement: Dependency writes require independent confirmation
+
+These delivery and acknowledgement conditions SHALL govern ordinary disposition. A diagnostic
+envelope SHALL remain outside addressed delivery and preserve dependencyUpdates across restart
+without recipient effects; diagnostic retention SHALL NOT assert that those instructions were delivered.
+Infrastructure settlement and its acknowledgement SHALL confirm only their own source effects
+and archived complete payload. They SHALL NOT plan, claim, write or confirm addressed recipients;
+the journal SHALL identify retained dependencyUpdates as unexecuted. Existing partially delivered
+ordinary plans SHALL remain ordinary and complete independent recipient confirmation.
 
 Successful transfer SHALL require independent storage rereading and validation of the saved target ID, complete requested additions, previously existing dependencies and results, and preserved unrelated data. A successful write response or the in-memory snapshot MUST NOT count as confirmation. Read failure, write failure, malformed confirmation, missing additions, lost prior data or failure to release an owned temporary claim SHALL prevent success. Target operations SHALL finish before persisting the report source transition or removing its pending report. Failure SHALL return an explicit unsuccessful transfer with target and reason, preserving the source stage and report for retry. Multiple targets need not be globally atomic: already confirmed additions SHALL survive a later failure, and replay SHALL revalidate current data without duplicate dependencies or weaker conditions.
 

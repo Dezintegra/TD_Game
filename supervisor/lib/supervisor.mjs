@@ -14,7 +14,7 @@ import {
   tokenAccountingNote,
 } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
-import { CROSSCUT } from '../config/transitions.mjs';
+import { CROSSCUT, isExclusive } from '../config/transitions.mjs';
 import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
 import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
 import { providerOf, readCodexAnswer, codexDenial } from './provider.mjs';
@@ -27,6 +27,18 @@ import { sameReportLaunch } from './report-store.mjs';
 import { effectiveTokenLimit } from './user-token-limit.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import { tokenAdmission } from './token-hold.mjs';
+import { toolContext } from './tool-diagnostics.mjs';
+import {
+  createToolReportHold,
+  retainedReportView,
+  needsToolDiagnosis,
+} from './tool-report-hold.mjs';
+import { launchCharge, confirmLaunchCharge } from './tool-work-evidence.mjs';
+import { matchingRetryClaim } from './tool-retry.mjs';
+import { sameToolContext } from './stage-tool-health.mjs';
+import { deployRetryEvidence } from './tool-deploy-recovery.mjs';
+
+const { structuredClone } = globalThis;
 
 /**
  * Хозяйство идущих этапов.
@@ -68,6 +80,12 @@ export function createSupervisor({
   saveStages = () => {},
   stages = {},
   reportStore = null,
+  diagnoseTools = null,
+  pauseTools = () => {},
+  captureToolContext = toolContext,
+  inspectToolWork = () => ({ state: 'unknown', reason: 'not-inspected' }),
+  isToolPaused = () => true,
+  mayLaunch = () => ({ allowed: true }),
   codexUsage = {},
   saveCodexUsage = () => {},
   onPolicyBlocked = () => {},
@@ -92,17 +110,77 @@ export function createSupervisor({
   /** Отчёты, дождавшиеся переноса в бэклог. Их читает `io`. */
   const reports = [];
   const pendingAcceptances = new Map();
-  const reportViews = () =>
-    reportStore
-      ? reportStore.entries().map((entry) => ({
-          ...entry.report,
-          reportId: entry.reportId,
-          launchId: entry.launchId,
-          startedAt: entry.startedAt,
-          machine: entry.machine,
-          rejection: entry.rejection ?? null,
-        }))
-      : reports;
+  let chargeStoreError = null;
+  const toolHold =
+    reportStore && diagnoseTools
+      ? createToolReportHold({
+          store: reportStore,
+          diagnose: async (entry) => {
+            let git;
+            try {
+              git = await inspectToolWork(entry);
+            } catch (error) {
+              git = { state: 'unknown', reason: error.message };
+            }
+            reportStore.update(entry.reportId, { git });
+            const evidence = await diagnoseTools(entry, {
+              onStart: (launchId) => {
+                if (providerOf(config) !== 'codex') return;
+                const admission = tokenAdmission(
+                  entry.assignment.task,
+                  entry.stage,
+                  config,
+                  codexUsage,
+                );
+                if (admission) throw new Error('token admission holds diagnostic launch');
+                persistUsage(entry.taskId, (next) =>
+                  beginTokenLaunch(next, entry.taskId, launchId),
+                );
+              },
+              onResult: (launchId, run) => {
+                if (providerOf(config) !== 'codex') return;
+                const answer = readCodexAnswer(run, config, {
+                  ledger: codexUsage,
+                  taskId: entry.taskId,
+                  launchId,
+                });
+                persistUsage(entry.taskId, (next) => {
+                  next.tasks[entry.taskId] = answer.usageLedger.tasks[entry.taskId];
+                });
+              },
+            });
+            return {
+              ...evidence,
+              costUsd:
+                providerOf(config) === 'claude'
+                  ? (evidence.runs ?? []).reduce((sum, run) => sum + (readAnswer(run).cost ?? 0), 0)
+                  : 0,
+            };
+          },
+          pause: pauseTools,
+          isPaused: isToolPaused,
+          mayRecover: () => mayLaunch().allowed,
+          archive: (entry) => reportStore.archive(entry.reportId),
+          log,
+        })
+      : null;
+  const reportViews = () => {
+    if (!reportStore) return reports;
+    const views = reportStore.entries().map(retainedReportView);
+    for (const [at, value] of Object.entries(known)) {
+      if (value.charge?.state !== 'pending') continue;
+      const taskId = at.slice(0, at.lastIndexOf(':'));
+      if (views.some((view) => view.taskId === taskId)) continue;
+      views.push({
+        taskId,
+        stage: at.slice(at.lastIndexOf(':') + 1),
+        batch: value.charge.batch ?? [],
+        disposition: 'charge-pending',
+        launchId: value.charge.launchId,
+      });
+    }
+    return views;
+  };
   /**
    * Исходы осиротевших этапов, дождавшиеся записи в журнал задачи.
    *
@@ -131,6 +209,28 @@ export function createSupervisor({
   const known = Object.fromEntries(
     Object.entries(stages).map(([at, value]) => [at, remembered(value)]),
   );
+  for (const entry of reportStore?.entries() ?? []) {
+    if (
+      entry.disposition !== 'retry-claimed' ||
+      entry.retry?.spawnState !== 'born' ||
+      !entry.retry.live
+    )
+      continue;
+    const at = `${entry.taskId}:${entry.stage}`;
+    if (
+      known[at]?.live &&
+      ![entry.launchId, entry.retry.newLaunchId].includes(known[at].live.launchId)
+    )
+      continue;
+    if (known[at]?.charge?.launchId === entry.retry.newLaunchId) continue;
+    known[at] = {
+      ...known[at],
+      sessionId: entry.retry.sessionId,
+      charge: { ...launchCharge(entry.retry.newLaunchId), born: true },
+      live: entry.retry.live,
+    };
+    saveStages(known);
+  }
   /**
    * Осиротевшие этапы: `taskId` → `{ taskId, stage, at, live }`.
    *
@@ -150,6 +250,42 @@ export function createSupervisor({
   return {
     get launchCount() {
       return launchCount;
+    },
+    mayLaunch,
+    inspectRetryLaunch(entry) {
+      if (entry.retry?.spawnState === 'prepared') return { state: 'absent' };
+      const at = key(entry.taskId, entry.stage);
+      const child = children.get(entry.taskId);
+      if (known[at]?.charge?.launchId === entry.retry?.newLaunchId && known[at].charge.born) {
+        saveStages(known);
+        return { state: 'born' };
+      }
+      if (child?.launchId === entry.retry?.newLaunchId && child.handle?.pid)
+        return { state: 'unknown' };
+      return { state: 'unknown' };
+    },
+    launchCharge(taskId, stage) {
+      return structuredClone(known[key(taskId, stage)]?.charge ?? null);
+    },
+    confirmLaunchCharge(taskId, stage, receipt) {
+      const at = key(taskId, stage);
+      const charge = known[at]?.charge;
+      if (!charge) return;
+      const confirmed = confirmLaunchCharge(charge, receipt);
+      saveStages({ ...known, [at]: { ...known[at], charge: confirmed } });
+      known[at] = { ...known[at], charge: confirmed };
+      for (const entry of reportStore?.entries() ?? [])
+        if (entry.launchId === charge.launchId && entry.disposition !== 'ordinary')
+          reportStore.update(entry.reportId, { charge: confirmed });
+    },
+    pendingLaunchCharges() {
+      return Object.entries(known)
+        .filter(([, value]) => value.charge?.state === 'pending' && value.charge.born)
+        .map(([at, value]) => ({
+          taskId: at.slice(0, at.lastIndexOf(':')),
+          stage: at.slice(at.lastIndexOf(':') + 1),
+          charge: structuredClone(value.charge),
+        }));
     },
     get codexUsage() {
       return {
@@ -183,13 +319,13 @@ export function createSupervisor({
         ...(reportStore ? reportStore.entries() : reports),
         ...[...pendingAcceptances.values()].map(({ report, launch }) => ({
           ...launch,
-          taskId: report.taskId,
-          stage: report.stage,
+          taskId: report?.taskId ?? launch.taskId,
+          stage: report?.stage ?? launch.stage,
         })),
       ];
     },
     get reportStorageBlocked() {
-      return pendingAcceptances.size > 0;
+      return pendingAcceptances.size > 0 || Boolean(toolHold?.blocked) || Boolean(chargeStoreError);
     },
     get reportRestartState() {
       const saved = reportStore
@@ -314,11 +450,22 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
+      const retryEntry = assignment.infrastructureRetry
+        ? reportStore?.get(assignment.infrastructureRetry.reportId)
+        : null;
+      if (
+        assignment.infrastructureRetry &&
+        (!matchingRetryClaim(retryEntry, assignment) ||
+          retryEntry.retry.spawnState !== 'prepared' ||
+          (assignment.stage === 'deploy' && !deployRetryEvidence(retryEntry)))
+      )
+        return { ok: false, reason: 'availability-held', why: 'replacement claim is not admitted' };
       if (
         pendingAcceptances.size ||
         reportViews().some(
           (report) =>
-            report.taskId === assignment.taskId || report.batch?.includes(assignment.taskId),
+            (!retryEntry || report.reportId !== retryEntry.reportId) &&
+            (report.taskId === assignment.taskId || report.batch?.includes(assignment.taskId)),
         )
       ) {
         return { ok: false, reason: 'busy', why: 'ожидается сохранение или перенос отчёта' };
@@ -346,6 +493,8 @@ export function createSupervisor({
       if (children.size >= config.maxConcurrent) {
         return { ok: false, reason: 'busy', why: 'все места заняты' };
       }
+      const admission = launchAvailability(assignment);
+      if (admission) return admission;
 
       // Идентификатор выдаётся заранее, а не берётся из ответа: тогда
       // возобновлять есть что даже после падения супервизора.
@@ -359,6 +508,7 @@ export function createSupervisor({
           : null) ?? (provider === 'claude' ? randomUUID() : null);
       let command;
       let tokenLimit;
+      let context = null;
       try {
         assignment = prepareAssignment(assignment, previous);
         tokenLimit = effectiveTokenLimit(assignment.task, config);
@@ -388,6 +538,7 @@ export function createSupervisor({
           known[at] = { ...known[at], deployment: assignment.deployment };
           saveStages(known);
         }
+        assignment = { ...assignment, launchId: assignment.launchId ?? randomUUID() };
         command = stageCommand({
           assignment: { ...assignment, sessionId },
           prompt: stagePrompt({
@@ -426,6 +577,21 @@ export function createSupervisor({
           root,
           home,
         });
+        if (toolHold)
+          context = captureToolContext(
+            command,
+            provider,
+            provider === 'codex'
+              ? codexGitEnvironment(getCodexEnvironment(), root, command.cwd)
+              : undefined,
+          );
+        if (retryEntry && !sameToolContext(context, retryEntry.retry.recovery.context))
+          return {
+            ok: false,
+            reason: 'availability-held',
+            retryRecheck: true,
+            why: 'replacement context changed',
+          };
       } catch (error) {
         return { ok: false, reason: 'not-born', why: error.message };
       }
@@ -434,13 +600,15 @@ export function createSupervisor({
       // в него ходы и последнее действие, а пульс их оттуда читает.
       const timeoutMs = stageTimeoutMs(assignment.stage, config);
       const child = {
+        assignment,
+        context,
         tokenLimit: tokenLimit.value,
         tokenLimitSource: tokenLimit.source,
         taskId: assignment.taskId,
         stage: assignment.stage,
         path: assignment.path,
         sessionId,
-        launchId: randomUUID(),
+        launchId: assignment.launchId,
         usageOrdinal: 0,
         startedAt: now(),
         startedMs: nowMs(),
@@ -470,6 +638,31 @@ export function createSupervisor({
             (next) => beginTokenLaunch(next, child.taskId, child.launchId, sessionId),
             saveCodexUsage,
           );
+        // Persist the exact operation before the process can finish. Pending is not proof
+        // of a counter change; the recipient's independently read receipt confirms it.
+        const at = key(child.taskId, child.stage);
+        const charge = {
+          ...(assignment.charge ?? launchCharge(child.launchId)),
+          batch: child.batch ?? [],
+        };
+        if (charge.state === 'pending') {
+          saveStages({ ...known, [at]: { ...known[at], charge } });
+          known[at] = { ...known[at], charge };
+        }
+        if (retryEntry)
+          reportStore.update(retryEntry.reportId, {
+            retry: { ...retryEntry.retry, spawnState: 'spawning' },
+          });
+        const lastAdmission = launchAvailability(assignment);
+        if (lastAdmission) {
+          if (retryEntry)
+            reportStore.update(retryEntry.reportId, {
+              retry: { ...retryEntry.retry, spawnState: 'prepared' },
+            });
+          if (provider === 'codex') cancelUsageLaunch(child);
+          cancelUnbornCharge(child);
+          return lastAdmission;
+        }
         child.handle = spawnStageProcess({
           command:
             providerOf(config) === 'codex'
@@ -487,6 +680,7 @@ export function createSupervisor({
       } catch (error) {
         if (provider === 'codex' && codexUsage.tasks[child.taskId]?.launches[child.launchId])
           cancelUsageLaunch(child);
+        cancelUnbornCharge(child);
         return { ok: false, reason: 'not-born', why: error.message };
       }
       const handle = child.handle;
@@ -504,16 +698,33 @@ export function createSupervisor({
       // с ответом «сессии с таким идентификатором нет».
       if (!handle?.pid) {
         if (provider === 'codex') cancelUsageLaunch(child);
+        cancelUnbornCharge(child);
         return { ok: false, reason: 'not-born', why: 'процесс не родился: номера у него нет' };
       }
 
       launchCount++;
+      children.set(assignment.taskId, child);
+      handle.finished.then((run) => {
+        try {
+          finish(child, run);
+        } catch (error) {
+          children.delete(child.taskId);
+          stopPulse();
+          log(`разбор исхода ${child.taskId}:${child.stage} упал: ${error.message}`);
+          say.line(TAG.error, `${child.taskId} разбор исхода упал: ${error.message}`);
+        }
+      });
 
       // Отметка начала ставится один раз и переживает продолжения: она
       // отвечает на вопрос «этот ли заход сделал коммит», а продолжатель
       // приходит к чужим с его точки зрения коммитам.
       const at = key(assignment.taskId, assignment.stage);
       known[at] = {
+        charge: {
+          ...(assignment.charge ?? launchCharge(child.launchId)),
+          batch: child.batch ?? [],
+          born: true,
+        },
         sessionId,
         provider,
         ...(assignment.deployment ? { deployment: assignment.deployment } : {}),
@@ -526,9 +737,17 @@ export function createSupervisor({
           ...(child.launchId ? { launchId: child.launchId } : {}),
         },
       };
+      if (retryEntry)
+        reportStore.update(retryEntry.reportId, {
+          retry: {
+            ...retryEntry.retry,
+            spawnState: 'born',
+            sessionId,
+            live: known[at].live,
+          },
+        });
       saveStages(known);
 
-      children.set(assignment.taskId, child);
       startPulse();
 
       log(
@@ -550,17 +769,7 @@ export function createSupervisor({
 
       // Разбор исхода не должен уронить супервизор: он ведёт все задачи,
       // и падение на одном отчёте остановило бы конвейер целиком.
-      handle.finished.then((run) => {
-        try {
-          finish(child, run);
-        } catch (error) {
-          children.delete(child.taskId);
-          stopPulse();
-          log(`разбор исхода ${child.taskId}:${child.stage} упал: ${error.message}`);
-          say.line(TAG.error, `${child.taskId} разбор исхода упал: ${error.message}`);
-        }
-      });
-      return { ok: true, sessionId, pid: handle.pid };
+      return { ok: true, sessionId, pid: handle.pid, launchId: child.launchId };
     },
 
     /**
@@ -1117,7 +1326,8 @@ export function createSupervisor({
     // он не бросает, защиты не требует.
     const parsed = parseReport(answer.result);
     const accepted = answer.outcome === 'done' && parsed.report?.stage === child.stage;
-    if (reportStore && accepted) {
+    const diagnosing = Boolean(toolHold && needsToolDiagnosis(answer, parsed, child.stage));
+    if (reportStore && (accepted || diagnosing)) {
       pendingAcceptances.set(key(child.taskId, child.stage), {
         report: {
           ...parsed.report,
@@ -1126,7 +1336,37 @@ export function createSupervisor({
           costUsd: answer.cost ?? 0,
           ...(child.batch ? { batch: child.batch } : {}),
         },
-        launch: { launchId: child.launchId, startedAt: child.startedAt, machine },
+        ...(diagnosing
+          ? {
+              result: {
+                report: accepted
+                  ? {
+                      ...parsed.report,
+                      taskId: child.taskId,
+                      denials: answer.denials,
+                      costUsd: answer.cost ?? 0,
+                      ...(child.batch ? { batch: child.batch } : {}),
+                    }
+                  : null,
+                parsedReport: parsed.report,
+                accepted,
+                run,
+                answer,
+                parseError: parsed.why,
+              },
+            }
+          : {}),
+        launch: {
+          launchId: child.launchId,
+          startedAt: child.startedAt,
+          machine,
+          taskId: child.taskId,
+          stage: child.stage,
+          assignment: child.assignment,
+          context: child.context,
+          batch: child.batch ?? [],
+          charge: known[key(child.taskId, child.stage)]?.charge,
+        },
         sessionId: answer.sessionId,
       });
       retryAcceptedReports();
@@ -1182,7 +1422,7 @@ export function createSupervisor({
     // разделив их, мы получили бы миг, в котором на диске лежит дескриптор
     // мёртвого процесса.
     const at = key(child.taskId, child.stage);
-    if (known[at] && !(reportStore && accepted)) {
+    if (known[at] && !(reportStore && (accepted || diagnosing))) {
       const kept = { ...known[at] };
       delete kept.live;
       known[at] = answer.sessionId ? { ...kept, sessionId: answer.sessionId } : kept;
@@ -1277,9 +1517,25 @@ export function createSupervisor({
   }
 
   function retryAcceptedReports() {
+    try {
+      for (const entry of reportStore?.entries() ?? []) {
+        const charge = known[key(entry.taskId, entry.stage)]?.charge;
+        if (
+          entry.disposition !== 'ordinary' &&
+          charge?.launchId === entry.launchId &&
+          charge.state === 'confirmed' &&
+          entry.charge?.state === 'pending'
+        )
+          reportStore.update(entry.reportId, { charge });
+      }
+      chargeStoreError = null;
+    } catch (error) {
+      chargeStoreError = error;
+    }
     for (const [at, pending] of pendingAcceptances) {
       try {
-        reportStore.accept(pending.report, pending.launch);
+        if (pending.result) reportStore.retain(pending.result, pending.launch);
+        else reportStore.accept(pending.report, pending.launch);
         if (known[at]) {
           const kept = { ...known[at] };
           delete kept.live;
@@ -1292,6 +1548,37 @@ export function createSupervisor({
         log(`не сохранён отчёт ${at}; планирование остановлено: ${error.message}`);
       }
     }
+    toolHold?.restore();
+  }
+
+  function cancelUnbornCharge(child) {
+    const at = key(child.taskId, child.stage);
+    if (known[at]?.charge?.launchId !== child.launchId) return;
+    const next = {
+      ...known[at],
+      charge: { ...known[at].charge, state: 'not-required', born: false },
+    };
+    saveStages({ ...known, [at]: next });
+    known[at] = next;
+  }
+
+  function launchAvailability(assignment) {
+    const allowed = mayLaunch(assignment);
+    if (!allowed?.allowed)
+      return {
+        ok: false,
+        reason: 'availability-held',
+        why: allowed?.why ?? 'availability is closed',
+      };
+    const active = [...children.values(), ...orphans.values()];
+    if (
+      active.length >= config.maxConcurrent ||
+      (active.length &&
+        (isExclusive(assignment.task ?? { status: assignment.stage }) ||
+          active.some((item) => isExclusive(item.assignment?.task ?? { status: item.stage }))))
+    )
+      return { ok: false, reason: 'busy', why: 'места заняты или требуется исключительный запуск' };
+    return null;
   }
 }
 
@@ -1315,6 +1602,7 @@ function remembered(value) {
     ...(value?.provider ? { provider: value.provider } : {}),
     ...(value?.deployment ? { deployment: value.deployment } : {}),
     ...(value?.usageRecoveryBlocked ? { usageRecoveryBlocked: true } : {}),
+    ...(value?.charge ? { charge: value.charge } : {}),
   };
   return value?.live ? { ...kept, live: value.live } : kept;
 }

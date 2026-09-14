@@ -158,6 +158,8 @@ export async function transferReport(action, io, context = {}) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
+  if (report.disposition && report.disposition !== 'ordinary')
+    return { result: 'skipped', why: 'tool diagnostic hold' };
 
   const hasUpdates = Object.hasOwn(report, 'dependencyUpdates');
   if (hasUpdates && !Array.isArray(report.dependencyUpdates))
