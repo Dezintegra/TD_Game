@@ -88,7 +88,47 @@ Git предупреждал о Permission denied при чтении польз
 команды завершались успешно. Отказов политики на команды и обходов не было.
 Полные игровые наборы, сборки и арена не запускались.
 
-## Передача 0013
+## Доработка после красного CI, 14 сентября 2026
+
+Run 34778720113, job 103781680309, head `3087ca0e`, checkout
+`3bf55b92befcd1f1fe6bba6effbb4359ae268b95`: режим `--installed` остановился
+до матрицы с `Prerequisites: installed pnpm CLI not found`. В логе указан
+PNPM_HOME `/home/runner/setup-pnpm/node_modules/.bin`. Установка action-setup
+использует pnpm и добавляет этот каталог в PATH; обычный shell-shim в нём
+не превращается через realpath в pnpm.cjs. Прежний тест моделировал только ссылку.
+
+Коммит `3d019daec99e3088b1ee4f1d8b316ae1adfead5f` добавил поиск соседнего
+`pnpm/bin/pnpm.cjs` с сохранением существующего помощника и поддержки ссылок.
+Новый тест создаёт обычный shell-shim и запускает найденный CLI реальным Node;
+отдельный контроль отвергает shim без установленного пакета. Успешны 17 тестов
+checker, ESLint, Prettier и OpenSpec strict (status 4/4).
+
+На этом чистом отправленном SHA выполнено:
+
+```powershell
+node scripts/testing/check-source-tests.mjs --installed
+```
+
+Windows, Node v24.3.0, pnpm 10.12.4, Vitest 2.1.9. Результат
+`.matchlog/source-check-hKptxn/result.json`: `ok: true`. Пять запусков в
+назначенном дереве дали 233 успешных исполнения: crowd/step — 11/98 в каждом
+из node/jsdom, golden sim — по 5, golden ai — 5. Состав точный, failed/skipped
+равны нулю. Каталоги отчётов соответственно `source-test-XcKBjG`,
+`source-test-Kd0EvS`, `source-test-eOP12A`, `source-test-uS9PBu`,
+`source-test-xhLTIp` в собственном `.matchlog`.
+
+Созданная из этого SHA копия `.matchlog/source-check-hKptxn/controls` получила
+собственную установку. Оба маркера TD_SOURCE_CONTROL_SHARED/SIM обнаружены;
+байты восстановлены, повторные crowd (11) и golden ai (5) успешны.
+`noDistBefore`, `noDistAfter`, `controlsNoDist` равны true. Проверка подтвердила
+неизменность HEAD и чистоту исходного дерева. Это локальная проверка режима
+CI на Windows; результат нового Linux CI не ожидался и здесь не утверждается.
+
+Main обновлена слиянием `adc9cc06` без конфликтов. Игровые файлы и эталоны
+не менялись. Отказов политики не было; предупреждение Git о недоступном
+пользовательском ignore не мешало командам и не обходилось.
+
+## Передача 0013 после доработки
 
 Черновой PR ремонта — 272. Памятка `docs/narrow-source-tests.md` даёт команды
 и замену временной подготовки всех трёх пунктов increase-unit-spacing.
