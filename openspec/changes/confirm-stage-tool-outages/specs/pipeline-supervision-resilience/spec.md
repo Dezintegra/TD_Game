@@ -43,8 +43,18 @@ The supervisor SHALL durably retain a confirmed stop in the report delivery stor
 - **THEN** Git state is retained as unknown with available earlier revision evidence, and no cleanup or successful-delivery assumption follows
 
 #### Scenario: Retained result has no parsed report
-- **WHEN** an unsuccessful completed launch is persisted with a null report and a trusted assigned batch
+- **WHEN** an unsuccessful completed launch returns malformed JSON or empty text and is diagnostically persisted with a null report and a trusted assigned batch
 - **THEN** recovery and scheduling SHALL protect its source and every assigned member using envelope identity without passing null to ordinary report admission or treating the batch as empty
+- **AND** diagnostic retention SHALL be distinct from accepted-report admission and SHALL preserve the original output reference, rejection reason and usage diagnostics; it MUST NOT apply the malformed or empty report as an accepted result
+
+#### Scenario: Invalid report diagnostics do not confirm an outage
+- **WHEN** a malformed or empty report has been diagnostically retained and control operations yield healthy or inconclusive
+- **THEN** the supervisor SHALL preserve the original diagnostic material before releasing the temporary envelope and follow ordinary unsuccessful-launch handling without an infrastructure pause, refund or retry entitlement
+- **AND** it MUST NOT promote the invalid report to an accepted ordinary report or execute its report effects
+
+#### Scenario: Diagnostics do not repair report trust
+- **WHEN** a result names a different stage or fails existing report-trust checks, even if independent diagnostics confirm an outage
+- **THEN** retention MUST NOT replace the reported stage with the assigned stage to admit that report or bypass the existing trust and application restrictions
 
 #### Scenario: Confirmed failed retains addressed instructions without delivering them
 - **WHEN** a failed report containing dependencyUpdates is independently classified as a confirmed infrastructure stop
