@@ -206,6 +206,20 @@ export async function transferReport(action, io, context = {}) {
     return { result: 'done', status: task.status };
   }
 
+  // Ошибка формата не доказывает повторение поломки и не должна терять отчёт.
+  const verificationTask =
+    task.pipelineIncident && !task.pipelineIncident.probeStartedAt
+      ? {
+          ...task,
+          pipelineIncident: {
+            ...task.pipelineIncident,
+            probeStartedAt: io.incidentProbeAt?.(task.pipelineIncident.id) ?? null,
+          },
+        }
+      : task;
+  const verification = verifyIncident(verificationTask, report, io.now);
+  if (verification?.kind === 'invalid-report') return invalidReport(verification.problem);
+
   // След и отказанные действия судят ЗДЕСЬ, а не в супервизоре, и после разбора
   // отчёта, а не до него. До разбора неизвестны ни исход, ни ссылки — то
   // есть ровно то, чем след и проверяется; суд получался бы вслепую и
@@ -247,17 +261,6 @@ export async function transferReport(action, io, context = {}) {
 
   // Проба обязана закончиться свидетельством даже при blocked: обычный
   // маршрут вопроса владельцу иначе оставил бы общий инцидент без разбора.
-  const verificationTask =
-    task.pipelineIncident && !task.pipelineIncident.probeStartedAt
-      ? {
-          ...task,
-          pipelineIncident: {
-            ...task.pipelineIncident,
-            probeStartedAt: io.incidentProbeAt?.(task.pipelineIncident.id) ?? null,
-          },
-        }
-      : task;
-  const verification = verifyIncident(verificationTask, report, io.now);
   if (verification?.problem) {
     const stopped = await halt(addSpent(task, report.costUsd), verification.problem, io, {
       what: report.summary,

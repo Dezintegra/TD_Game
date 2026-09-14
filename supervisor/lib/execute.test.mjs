@@ -283,7 +283,7 @@ it('свежий инцидент удерживает участника пак
   expect(io.readTask(other.id)).toEqual(other);
 });
 
-it.each(['done', 'blocked'])(
+it.each(['failed', 'question', 'blocked'])(
   'не снимает инцидент без доказательства при исходе %s',
   async (outcome) => {
     const source = task({ status: 'design' });
@@ -317,7 +317,10 @@ it.each(['done', 'blocked'])(
   },
 );
 
-it('принимает свидетельство пробы после перезапуска и сохраняет его в журнале', async () => {
+it.each([
+  'Исходная команда завершилась',
+  ['Исходная команда завершилась', ' След проверен\nцеликом ', 'Исходная команда завершилась'],
+])('принимает свидетельство %j после перезапуска и сохраняет его в журнале', async (evidence) => {
   const source = task({ status: 'design' });
   source.pipelineIncident = incidentFromReport(
     { ...source, returnTo: 'design' },
@@ -344,7 +347,7 @@ it('принимает свидетельство пробы после пере
       incidentVerification: {
         incidentId: source.pipelineIncident.id,
         passed: true,
-        evidence: 'Исходная команда завершилась, корректный отчёт получен',
+        evidence,
       },
     },
   });
@@ -355,6 +358,9 @@ it('принимает свидетельство пробы после пере
     pipelineIncident: { verifiedAt: NOW },
   });
   expect(io.readJournal(source.id)).toContain('Исходная команда завершилась');
+  const lines = Array.isArray(evidence) ? evidence : [evidence];
+  expect(io.readTask(source.id).pipelineIncident.verificationEvidence).toBe(lines.join('\n'));
+  for (const line of lines) expect(io.readJournal(source.id)).toContain(line);
 });
 
 it('учитывает новую карточку только после рождения процесса и сохраняет выбор для повтора', async () => {

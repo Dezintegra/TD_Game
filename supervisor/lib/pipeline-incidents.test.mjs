@@ -64,6 +64,89 @@ const state = (tasks, over = {}) => ({
   registry: { entries: tasks.map((item) => ({ taskId: item.id, path: 'isolated-tree' })) },
   ...over,
 });
+
+describe('строгий формат результата пробы', () => {
+  const probe = () => {
+    const task = source({ status: 'design' });
+    task.pipelineIncident.probeStartedAt = now;
+    return task;
+  };
+  const report = (task, evidence) => ({
+    stage: 'design',
+    outcome: 'done',
+    incidentVerification: {
+      incidentId: task.pipelineIncident.id,
+      passed: true,
+      evidence,
+    },
+  });
+  it.each(['  выполнено\nпроверено  ', [' первый ', 'второй\nтретий', ' первый ']])(
+    'сохраняет %j дословно и переживает metadata',
+    (evidence) => {
+      const task = probe();
+      const payload = report(task, evidence);
+      const before = globalThis.structuredClone(payload);
+      const result = verifyIncident(task, payload, now);
+      const normalized = Array.isArray(evidence) ? evidence.join('\n') : evidence;
+      expect(result.incident.verificationEvidence).toBe(normalized);
+      expect(payload).toEqual(before);
+      expect(
+        metaOf({ ...task, pipelineIncident: result.incident }).pipelineIncident
+          .verificationEvidence,
+      ).toBe(normalized);
+    },
+  );
+  it.each([
+    undefined,
+    null,
+    '',
+    ' \n ',
+    [],
+    42,
+    {},
+    [''],
+    ['ok', null],
+    ['ok', 'ok', 3],
+    [' ', 'ok'],
+    ['ok', ' ', 'ok'],
+    ['ok', ''],
+  ])('отклоняет %j с точным полем', (evidence) => {
+    const task = probe();
+    const result = verifyIncident(task, report(task, evidence), now);
+    const index = Array.isArray(evidence)
+      ? evidence.findIndex((v) => typeof v !== 'string' || !v.trim())
+      : -1;
+    expect(result.kind).toBe('invalid-report');
+    expect(result.problem).toContain(
+      `incidentVerification.evidence${index < 0 ? '' : `[${index}]`}:`,
+    );
+    expect(task.pipelineIncident.verifiedAt).toBeNull();
+  });
+  it.each([
+    ['incidentId', 'wrong'],
+    ['passed', 'true'],
+    ['passed', null],
+  ])('проверяет %s', (field, value) => {
+    const task = probe();
+    const payload = report(task, 'факт');
+    payload.incidentVerification[field] = value;
+    expect(verifyIncident(task, payload, now)).toMatchObject({
+      kind: 'invalid-report',
+      problem: expect.stringContaining(`incidentVerification.${field}:`),
+    });
+  });
+  it('не выдумывает начало и отличает отрицательную пробу', () => {
+    const task = probe();
+    const payload = report(task, 'факт');
+    payload.incidentVerification.passed = false;
+    expect(verifyIncident(task, payload, now).kind).toBe('probe-failed');
+    task.pipelineIncident.probeStartedAt = null;
+    expect(verifyIncident(task, payload, now)).toMatchObject({
+      kind: 'invalid-report',
+      problem: expect.stringContaining('pipelineIncident.probeStartedAt'),
+    });
+  });
+});
 const launches = (result) =>
   result.actions.filter((item) => ['start-stage', 'continue-stage'].includes(item.kind));
 

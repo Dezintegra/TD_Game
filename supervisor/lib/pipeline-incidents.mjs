@@ -83,18 +83,40 @@ export function verifyIncident(task, report, now) {
   const incident = task.pipelineIncident;
   if (!incident || incident.verifiedAt || report.stage !== incident.check.stage) return null;
   const result = report.incidentVerification;
-  if (
-    report.outcome !== 'done' ||
-    !incident.probeStartedAt ||
-    !result ||
-    result.incidentId !== incident.id ||
-    result.passed !== true ||
-    !text(result.evidence)
-  )
-    return {
-      problem: `инцидент ${incident.id}: проверка восстановления не подтверждена; нужен пересмотр диагноза`,
-    };
-  return { incident: { ...incident, verifiedAt: now, verificationEvidence: result.evidence } };
+  const failure = (kind, field, why) => ({
+    kind,
+    problem: `инцидент ${incident.id}: проверка восстановления не подтверждена; ${field}: ${why}`,
+  });
+  if (report.outcome !== 'done')
+    return failure('probe-failed', 'outcome', `${report.outcome}; нужен пересмотр диагноза`);
+  if (!result || typeof result !== 'object' || Array.isArray(result))
+    return failure('invalid-report', 'incidentVerification', 'ожидается объект');
+  if (result.incidentId !== incident.id)
+    return failure('invalid-report', 'incidentVerification.incidentId', `ожидается ${incident.id}`);
+  if (typeof result.passed !== 'boolean')
+    return failure('invalid-report', 'incidentVerification.passed', 'ожидается boolean');
+  const evidence = evidenceText(result.evidence);
+  if (evidence === null) {
+    const index = Array.isArray(result.evidence) ? result.evidence.findIndex((v) => !text(v)) : -1;
+    return failure(
+      'invalid-report',
+      `incidentVerification.evidence${index < 0 ? '' : `[${index}]`}`,
+      'ожидается непустая строка либо непустой массив непустых строк',
+    );
+  }
+  if (!date(incident.probeStartedAt))
+    return failure(
+      'invalid-report',
+      'pipelineIncident.probeStartedAt',
+      'начало пробы не подтверждено',
+    );
+  if (!result.passed)
+    return failure(
+      'probe-failed',
+      'incidentVerification.passed',
+      'false; нужен пересмотр диагноза',
+    );
+  return { incident: { ...incident, verifiedAt: now, verificationEvidence: evidence } };
 }
 
 /** Подтверждённые общие исправления старых разборов требуют одной общей пробы. */

@@ -29,6 +29,26 @@ const assignment = {
   path: '.claude/worktrees/0042-fix-tesla-price',
 };
 
+it('объясняет оба формата evidence в общем контракте и назначении пробы', () => {
+  const prompt = stagePrompt({
+    assignment,
+    task: {
+      ...task,
+      pipelineIncident: {
+        id: 'incident',
+        evidence: 'Сбой',
+        check: { stage: 'implement', expectation: 'Проверить' },
+      },
+    },
+  });
+  for (const text of [ROUTING_CONTRACT, prompt]) {
+    expect(text).toContain('boolean');
+    expect(text).toContain('непустой массив непустых строк');
+    expect(text).toContain('["Команда выполнена", "Результат проверен"]');
+    expect(text).toContain('LF');
+  }
+});
+
 it('передаёт подтверждённый источник локального замера без сокращения SHA', () => {
   const benchmarkSource = {
     source: { worktree: '../source' },
