@@ -126,6 +126,34 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:match
 
+  source-tests:
+    name: узкие тесты без dist
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.game != 'false') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/testing/check-source-tests.mjs --installed
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-test-evidence
+          path: |
+            .matchlog/source-check-*/result.json
+            .matchlog/source-test-*/result.json
+            .matchlog/source-test-*/vitest.json
+            .matchlog/source-check-*/controls/.matchlog/source-test-*/result.json
+            .matchlog/source-check-*/controls/.matchlog/source-test-*/vitest.json
+          include-hidden-files: true
+          retention-days: 7
+
   build:
     name: сборка
     needs: changes

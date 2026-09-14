@@ -142,8 +142,9 @@ git worktree add .claude/worktrees/<имя> -b <ветка> origin/main
 **Любая сборка, прогон тестов и запуск игры делаются только в своём
 дереве.** Три вещи, без которых новое дерево не заработает:
 
-- **`node_modules` не общие.** Начинать с `pnpm install --frozen-lockfile`,
-  иначе не запустится ничего.
+- **`node_modules` не общие.** Начинать с `pnpm install --frozen-lockfile --prefer-offline`,
+  иначе не запустится ничего. Установка не создаёт dist внутренних пакетов;
+  узкие shared/sim/ai-тесты запускайте из исходников по правилу 6 ниже.
 - **Порты берутся из среды**, чтобы не драться с соседним деревом:
   `CLIENT_PORT` у клиента, `PORT` у сервера, а `VITE_API_URL`
   и `VITE_WS_URL` сообщают клиенту адрес именно своего сервера.
@@ -247,8 +248,24 @@ pull request черновик, `gh pr merge` отбивается ответом
 ```bash
 npx eslint <свой файл>
 npx prettier --check <свои файлы>
-npx vitest run <свой файл теста>
+npx vitest run --root scripts <свой файл.test.mjs относительно scripts>
 ```
+
+Для shared/sim/ai после установки используйте поддерживаемый запуск из корня
+назначенного дерева, без предварительной сборки dist:
+
+```powershell
+node scripts/test-source.mjs --environment node packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+node scripts/test-source.mjs --environment jsdom packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+```
+
+Успех требует точного состава исполненных файлов и хотя бы одного выполненного
+теста в каждом. Для supervisor обязателен `pnpm test:pipeline`; прямой Vitest
+допустим с явным `--root supervisor` для адресной диагностики. Для других пакетов
+указывайте их собственный корень и предусмотренную пакетную подготовку.
+Отдельные golden sim/ai разрешены, когда названы планом; полный матчевый набор
+остаётся CI. Команды эталонов, приёмка без dist и передача остановленной 0013 —
+в [docs/narrow-source-tests.md](docs/narrow-source-tests.md).
 
 **Задача не сделана, пока GitHub не сказал «зелено».** Не «у меня прошло»,
 не «я не вижу, что могло сломаться» — зелёные проверки или ничего.

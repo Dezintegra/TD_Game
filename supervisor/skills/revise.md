@@ -242,6 +242,17 @@ description: Правит код по замечаниям ревью или ч�
    расхождения, которые ты разрешила сама. Назови их по файлам в отчёте;
    одно появление коммита слияния без объяснения исправлений этого не доказывает.
 
+   После обновления базы подготовь зависимости перед локальными проверками:
+
+   ```powershell
+   pnpm install --frozen-lockfile --prefer-offline
+   ```
+
+   Установка обязательна при отсутствии node_modules, даже если lockfile
+   не менялся; после изменения lockfile повтори её. Чужой node_modules
+   не подключай. Установка не создаёт dist: shared/sim/ai проверяются
+   через поддерживаемый runner из `docs/narrow-source-tests.md`.
+
 7. **Красный CI разбирай по логу, а не по догадке.** Имя упавшей задачи
    из журнала — это только адрес; причина в логе:
 
@@ -383,7 +394,7 @@ description: Правит код по замечаниям ревью или ч�
    git -C <дерево> fetch origin
    git -C <дерево> rebase origin/main
    # разобрать конфликты, продолжить rebase
-   pnpm install --frozen-lockfile --prefer-offline   # если сдвинулся lockfile
+   pnpm install --frozen-lockfile --prefer-offline   # если сдвинулся lockfile или отсутствует node_modules
    git -C <дерево> push --force-with-lease origin <своя ветка>
    ```
 
@@ -405,8 +416,23 @@ description: Правит код по замечаниям ревью или ч�
     ```bash
     npx eslint <свой файл>
     npx prettier --check <свои файлы>
-    npx vitest run <свой файл теста>
+    npx vitest run --root scripts <свой файл.test.mjs относительно scripts>
     ```
+
+    Для shared/sim/ai используй исходники своего дерева без сборки dist:
+
+    ```powershell
+    node scripts/test-source.mjs --environment node packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+    node scripts/test-source.mjs --environment jsdom packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+    ```
+
+    Подставь конкретные файлы доработки, проверь фактически исполненные пути
+    и ненулевые счётчики каждого файла. jsdom поддерживается для sim.
+    Отдельные golden sim/ai, названные планом, запускай по
+    `docs/narrow-source-tests.md`; полный матчевый набор запрещён.
+    Для других пакетов прямой Vitest требует явного пакетного корня и
+    предусмотренной подготовки. Временную конфигурацию не заводи;
+    до доставки settings используй переходник импорта из памятки.
 
     **Правку в `supervisor/` проверяют `pnpm test:pipeline`, а не узким
     прогоном по своему файлу.** Сторожа конвейера лежат в чужих файлах:
