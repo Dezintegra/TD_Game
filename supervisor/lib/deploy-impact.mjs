@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { Buffer } from 'node:buffer';
 
 // Неизвестный путь требует обычной выкладки. Метка задачи не является доказательством.
 const serviceDirectories = [

@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { Buffer } from 'node:buffer';
 import {
   classifyDeployment,
   readDeploymentImpact,
