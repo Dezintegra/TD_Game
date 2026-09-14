@@ -277,6 +277,22 @@ description: Заводит изменение OpenSpec под задачу бэ
 - как решение живёт с запретами ядра: ни `Math.random`, ни `Date.now`,
   ни чисел с плавающей точкой в состоянии мира.
 
+  Планируя проверки shared/sim/ai, учитывай отсутствие dist после установки.
+  Назови `pnpm install --frozen-lockfile --prefer-offline`, затем конкретные
+  файлы через поддерживаемый маршрут из `docs/narrow-source-tests.md`:
+
+  ```powershell
+  node scripts/test-source.mjs --environment node packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+  node scripts/test-source.mjs --environment jsdom packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+  ```
+
+  Для sim указывай node/jsdom; для shared и ai — node. Если правила требуют
+  golden, назови каждый файл отдельно командами памятки и сохрани обновление
+  эталонов тем же коммитом. Полный verify и полный матчевый набор не включай.
+  Не планируй временную конфигурацию игровой задачи. Для scripts прямой
+  Vitest требует `--root scripts`, для supervisor — `pnpm test:pipeline`;
+  прочим пакетам нужны явный корень и их предусмотренная подготовка.
+
 11. **Напиши `tasks.md`** — шаги реализации. Каждый шаг станет отдельным
     коммитом, поэтому каждый обязан собираться и проверяться **сам по
     себе**, без «следующего шага, который всё починит». Ещё:

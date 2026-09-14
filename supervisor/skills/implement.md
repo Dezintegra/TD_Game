@@ -204,6 +204,10 @@ OpenSpec.
    лежат там абсолютными ссылками на `packages/` того дерева, и ты молча
    проверял бы чужой код вместо своей ветки.
 
+   Установка не создаёт dist. Для shared/sim/ai используй поддерживаемый
+   `node scripts/test-source.mjs` по примерам ниже и памятке
+   `docs/narrow-source-tests.md`; временную конфигурацию с алиасами не заводи.
+
 5. **Открой черновой pull request сразу после первого коммита.** Не в конце
    работы — именно после первого. Тело запиши отдельным файлом внутри
    назначенного дерева, например `.matchlog/<taskId>-pr-body.md`, и передай
@@ -301,8 +305,23 @@ OpenSpec.
       ```bash
       npx eslint <свой файл>
       npx prettier --check <свои файлы>
-      npx vitest run <свой файл теста>
+      npx vitest run --root scripts <свой файл.test.mjs относительно scripts>
       ```
+
+      Для shared/sim/ai из корня своего дерева:
+
+      ```powershell
+      node scripts/test-source.mjs --environment node packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+      node scripts/test-source.mjs --environment jsdom packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+      ```
+
+      Подставь конкретные файлы своей правки; jsdom поддерживается для sim.
+      Проверь фактические пути и ненулевые выполненные тесты каждого файла.
+      Отдельные golden sim/ai запускай, когда они названы планом, командами
+      `docs/narrow-source-tests.md`; полный матчевый набор запрещён.
+      Для других пакетов прямой Vitest требует явного пакетного корня и
+      предусмотренной подготовки. До доставки settings используй только
+      переходник импорта из памятки, сохраняющий тот же runner.
 
       **Правку в `supervisor/` проверяют `pnpm test:pipeline`, а не узким
       прогоном по своему файлу.** Сторожа конвейера лежат в чужих файлах:
