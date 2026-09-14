@@ -7,6 +7,7 @@ import { codexExecutionArgs, codexInvocation, readCodexAnswer } from './provider
 import { startStage } from './run-stage.mjs';
 import { codexGitEnvironment } from './codex-environment.mjs';
 import { modelForStage } from './stage-model.mjs';
+import { toolControls, powerShellControl, TOOL_DIAGNOSTIC_TIMEOUT_MS } from './tool-controls.mjs';
 
 /** Проверяем инструмент, а не обещание модели: текст «готов» ничего не доказывает. */
 export async function checkCodexReadiness({
@@ -54,12 +55,21 @@ export async function checkCodexReadiness({
     if (run.code !== 0 || run.killedBy || run.stdout?.trim() !== 'td-workspace-ready')
       return { ok: false, why: 'Windows sandbox основного рабочего каталога не готов', run };
   }
-  const push = `git -C ${JSON.stringify(root)} push --dry-run ${remote} HEAD:refs/heads/codex/readiness`;
   const cwd = mkdtempSync(join(tmpdir(), 'td-codex-ready-'));
   const script = join(cwd, 'codex-node-probe.mjs');
   try {
     writeFileSync(script, readFileSync(new URL('./codex-node-probe.mjs', import.meta.url)));
-    const node = `node ${JSON.stringify(script)}`;
+    const controls = toolControls({
+      stage: 'deploy',
+      cwd: root,
+      remote,
+      host,
+      childScript: script,
+      sshScript: remoteScript,
+      id: '',
+    });
+    const push = powerShellControl(controls.find((control) => control.id === 'push'));
+    const node = powerShellControl(controls.find((control) => control.id === 'child'));
     const args = [
       'exec',
       '--ignore-user-config',
@@ -79,7 +89,8 @@ export async function checkCodexReadiness({
       env: codexGitEnvironment(env, root, cwd),
       stdin: `Проверка среды. Выполни пятью отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree; gh api user --jq .login; ${push}; ${ssh}; ${node}. Dry-run проверяет отправку Git без записи удалённых refs; SSH проверяет только соединение с сервером выкладки; Node проверяет запуск дочерних процессов для pnpm и сборки. Не печатай окружение, git config, токены и другие секреты. Ничего не изменяй. При ошибке или отказе остановись, не пробуй альтернативы, не меняй настройки и права доступа. Верни результат команды.`,
     };
-    const run = await start({ command, timeoutMs: 120_000, spawn, killTree }).finished;
+    const run = await start({ command, timeoutMs: TOOL_DIAGNOSTIC_TIMEOUT_MS, spawn, killTree })
+      .finished;
     const answer = readCodexAnswer(run, config);
     const commands = String(run.stdout ?? '')
       .split('\n')
