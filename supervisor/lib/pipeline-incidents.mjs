@@ -53,7 +53,7 @@ export function incidentStateProblem(value) {
     (value.probeStartedAt != null && !date(value.probeStartedAt)) ||
     (value.verifiedAt != null && (!date(value.verifiedAt) || !text(value.verificationEvidence)))
   )
-    return 'неполный pipelineIncident: выдача удержана до восстановления данных инцидента';
+    return 'неполный pipelineIncident: источник изолирован до восстановления данных инцидента';
   return null;
 }
 
@@ -149,29 +149,45 @@ export function legacyIncident(tasks, now, records = []) {
   return null;
 }
 
-/** Разрешены только источник диагноза, исправления и их необходимые зависимости/части. */
+/** Ремонт имеет приоритет, а независимые этапы не разделяют его остановку. */
 export function incidentPolicy(state) {
   const records = [...(state.tasks ?? []), ...(state.dependencyRecords ?? [])];
   const invalid = state.invalid ?? [];
-  const broken = records.find((task) => incidentStateProblem(task.pipelineIncident));
-  const badCard = invalid.find((item) =>
-    item.problems?.some((problem) => problem.includes('pipelineIncident')),
+  const broken = new Map(
+    [
+      ...records.filter(
+        (task) =>
+          incidentStateProblem(task.pipelineIncident) ||
+          (task.valid === false && task.pipelineIncident),
+      ),
+      ...invalid.filter(
+        (item) =>
+          item.pipelineIncident ||
+          item.problems?.some((problem) => problem.includes('pipelineIncident')),
+      ),
+    ].map((task) => [task.id, task]),
   );
-  if (broken || badCard)
-    return {
-      active: true,
-      allows: () => false,
-      probes: new Set(),
-      sources: new Set(),
-      notes: [`инцидент ${broken?.id ?? badCard.id}: повреждены данные, выдача удержана`],
-    };
   const incidents = records.filter(
-    (task) => task.pipelineIncident && !task.pipelineIncident.verifiedAt,
+    (task) => !broken.has(task.id) && task.pipelineIncident && !task.pipelineIncident.verifiedAt,
   );
   const fixes = new Set();
-  const sources = new Set(incidents.map((task) => task.id));
+  const sources = new Set([...incidents.map((task) => task.id), ...broken.keys()]);
+  const stagesOf = (task) =>
+    Array.isArray(task.pipelineIncident?.affectedStages)
+      ? task.pipelineIncident.affectedStages.filter((stage) => NEEDS_SESSION.includes(stage))
+      : [];
+  const affectedStages = new Set([...incidents, ...broken.values()].flatMap(stagesOf));
   const probes = new Set();
   const notes = [];
+  for (const task of broken.values()) {
+    const stages = stagesOf(task);
+    notes.push(
+      `инцидент ${task.id}: повреждены данные, источник изолирован; ` +
+        (stages.length
+          ? `удержаны этапы ${stages.join(', ')}`
+          : 'область неизвестна, общая остановка не подтверждена'),
+    );
+  }
   const byId = new Map(records.map((task) => [task.id, task]));
   const visit = (id) => {
     if (fixes.has(id) || sources.has(id)) return;
@@ -191,7 +207,7 @@ export function incidentPolicy(state) {
     );
     if (!pending.length && !probed) probes.add(source.id);
     notes.push(
-      `инцидент ${incident.id}: ${incident.evidence} Исправления: ${incident.fixedBy.join(', ')}; ` +
+      `инцидент ${incident.id}: ${incident.evidence} Затронутые этапы: ${incident.affectedStages.join(', ')}. Исправления: ${incident.fixedBy.join(', ')}; ` +
         (pending.length
           ? `ожидаем ${pending.join(', ')}`
           : probed
@@ -199,16 +215,20 @@ export function incidentPolicy(state) {
             : `разрешена одна проба ${source.id}:${incident.check.stage}: ${incident.check.expectation}`),
     );
   }
-  return {
-    active: incidents.length > 0,
-    sources,
-    probes,
-    notes,
-    allows: (task, stage) =>
-      !incidents.length ||
-      fixes.has(task.id) ||
+  const isRecovery = (task, stage) =>
+    !broken.has(task.id) &&
+    (fixes.has(task.id) ||
       (sources.has(task.id) &&
         (stage === 'postmortem' ||
-          (probes.has(task.id) && stage === task.pipelineIncident.check.stage))),
+          (probes.has(task.id) && stage === task.pipelineIncident?.check.stage))));
+  return {
+    active: incidents.length > 0 || broken.size > 0,
+    sources,
+    probes,
+    affectedStages,
+    notes,
+    isRecovery,
+    allows: (task, stage) =>
+      isRecovery(task, stage) || (!sources.has(task.id) && !affectedStages.has(stage)),
   };
 }

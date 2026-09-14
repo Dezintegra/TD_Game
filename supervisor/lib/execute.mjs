@@ -960,8 +960,8 @@ export async function execute(actions, io) {
         dependencyRecords: io.dependencyRecords?.() ?? [],
         scheduling: { probes },
       });
-      const task = io.readTask(action.taskId);
-      if (task && !policy.allows(task, action.stage)) {
+      const participants = [action.taskId, ...(action.batch ?? [])].map((id) => io.readTask(id));
+      if (participants.some((task) => task && !policy.allows(task, action.stage))) {
         results.push({
           action,
           result: 'skipped',

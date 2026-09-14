@@ -67,8 +67,7 @@ export async function collectReconciliation({
   // Непроверенный хвост должен продвигаться, даже когда начало доски снова устарело.
   eligible.sort(
     (a, b) =>
-      Number(incident.active && incident.allows(b, b.status)) -
-        Number(incident.active && incident.allows(a, a.status)) ||
+      Number(incident.isRecovery(b, b.status)) - Number(incident.isRecovery(a, a.status)) ||
       checkedAt(a) - checkedAt(b) ||
       0,
   );
