@@ -3,6 +3,7 @@ import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
 import { diagnoseStageTools } from '../lib/tool-diagnostics.mjs';
 import { gitWorkEvidence } from '../lib/tool-work-evidence.mjs';
+import { deploymentReadCommand, deploymentEvidence } from '../../scripts/deploy-evidence.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
 import { createAssignmentPreparer } from '../lib/benchmark-source.mjs';
 import { readTokenLedger, writeTokenLedger, tokenAccountingNote } from '../lib/token-budget.mjs';
@@ -762,6 +763,22 @@ async function turn() {
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
       mayLaunch: (...args) => supervisor.mayLaunch(...args),
       inspectRetryLaunch: (...args) => supervisor.inspectRetryLaunch(...args),
+      inspectToolDeployment: (entry) =>
+        deploymentEvidence(
+          runCommand(
+            [
+              resolve(home, '../scripts/deploy-remote.mjs'),
+              '--host',
+              entry.assignment.deployment.host,
+              '--',
+              deploymentReadCommand,
+            ],
+            'node',
+            root,
+            { timeout: 45000 },
+          ),
+          entry.assignment.deploymentRevision,
+        ),
       confirmLaunchCharge: (...args) => supervisor.confirmLaunchCharge(...args),
       launchCharge: (...args) => supervisor.launchCharge(...args),
       recordSchedulingLaunch: (task) => schedulingStore.launched(task, new Date().toISOString()),

@@ -317,12 +317,13 @@ export function scan(state) {
   // 2. Отчёты сессий. Перенос — самое дешёвое, что двигает задачу вперёд.
   for (const report of reports) {
     if (isToolHeld(report)) {
-      if (report.retryClaimed && report.stage !== 'deploy')
+      if (report.retryClaimed)
         actions.push({
           kind: 'retry-tool-stage',
           taskId: report.taskId,
           stage: report.stage,
           reportId: report.reportId,
+          batch: report.batch,
         });
       if (report.settlementReady && byId.has(report.taskId))
         actions.push({
@@ -476,9 +477,15 @@ export function scan(state) {
   // Оставь её в счёте — и она держала бы единственное место НАВСЕГДА: сессии
   // нет, этап не кончается, место не освобождается. Сегодня оно освобождается
   // хотя бы через полчаса падением, то есть лечение вышло бы хуже болезни.
+  const retries = new Map(
+    reports.filter((report) => report.retryReady).map((report) => [report.taskId, report]),
+  );
+  const retryParticipants = new Set(
+    [...retries.values()].flatMap((report) => [report.taskId, ...(report.batch ?? [])]),
+  );
   const held = new Map();
   for (const task of tasks) {
-    if (isRunning(task.id) || hasReport(task.id)) continue;
+    if (isRunning(task.id) || (hasReport(task.id) && !retryParticipants.has(task.id))) continue;
     const stage = QUEUE_STATES.includes(task.status) ? firstStage(task) : task.status;
     if (
       incident.sources.has(task.id) &&
@@ -502,7 +509,7 @@ export function scan(state) {
   for (const task of tasks) {
     if (![...QUEUE_STATES, 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status))
       continue;
-    if (isRunning(task.id) || hasReport(task.id)) continue;
+    if (isRunning(task.id) || (hasReport(task.id) && !retryParticipants.has(task.id))) continue;
     // Диагностике нужны результаты блокеров, но ожидать их для самого разбора нельзя.
     if (reviewingDelay(task)) continue;
     const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? [], {
@@ -678,11 +685,6 @@ export function scan(state) {
   // же — процесс. Различает их только то, известен ли идентификатор прежней
   // сессии: если известен, её возобновляют, а не начинают заново.
   const waitingForSession = [];
-  const retries = new Map(
-    reports
-      .filter((report) => report.retryReady && report.stage !== 'deploy')
-      .map((report) => [report.taskId, report]),
-  );
   // Опрос может сменить этап: продолжение и пределы решит следующий свежий оборот.
   const polled = new Set(
     actions.filter((action) => action.kind === 'poll-external').map((action) => action.taskId),
@@ -724,6 +726,19 @@ export function scan(state) {
     // в ошибку — сессии не было, тратить нечего, а ошибка потребовала бы
     // разбора, той самой второй сессии, ради отмены которой всё затеяно.
     if (held.has(task.id)) continue;
+    if (
+      retries
+        .get(task.id)
+        ?.batch?.some(
+          (id) =>
+            held.has(id) ||
+            tokenHeld.has(id) ||
+            !byId.has(id) ||
+            byId.get(id).status !== task.status ||
+            (byId.get(id).owner && byId.get(id).owner !== state.machine),
+        )
+    )
+      continue;
 
     // Отказ сервера этого оборота: сессию не выдаём, и не из осторожности.
     // Возврат продолжения и выдача сессии — две правки одной задачи, обе
@@ -819,7 +834,10 @@ export function scan(state) {
   // отобранных задач: удержанная, исчерпавшая пределы или ждущая оборота
   // в пакет не попадает — решение по ней принято выше, по общим правилам.
   const deploying = waitingForSession.filter(
-    (task) => task.status === 'deploy' && !incident.probes.has(task.id),
+    (task) =>
+      task.status === 'deploy' &&
+      !incident.probes.has(task.id) &&
+      !reports.some((report) => isToolHeld(report) && report.stage === 'deploy'),
   );
   deploying.sort(byPriorityThenAge);
   // Каждый инцидент требует своего свидетельства: общий отчёт ведущей
@@ -867,6 +885,7 @@ export function scan(state) {
       }
     }
   }
+  for (const [id, report] of retries) if (report.stage === 'deploy') batchOf.set(id, report.batch);
   const candidates = waitingForSession
     .filter((task) => task.status !== 'deploy' || batchOf.has(task.id))
     .map((task) => ({

@@ -36,6 +36,7 @@ import {
 import { launchCharge, confirmLaunchCharge } from './tool-work-evidence.mjs';
 import { matchingRetryClaim } from './tool-retry.mjs';
 import { sameToolContext } from './stage-tool-health.mjs';
+import { deployRetryEvidence } from './tool-deploy-recovery.mjs';
 
 const { structuredClone } = globalThis;
 
@@ -452,7 +453,7 @@ export function createSupervisor({
         assignment.infrastructureRetry &&
         (!matchingRetryClaim(retryEntry, assignment) ||
           retryEntry.retry.spawnState !== 'prepared' ||
-          assignment.stage === 'deploy')
+          (assignment.stage === 'deploy' && !deployRetryEvidence(retryEntry)))
       )
         return { ok: false, reason: 'availability-held', why: 'replacement claim is not admitted' };
       if (

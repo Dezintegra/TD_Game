@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { countSpawnFailure } from './task-file.mjs';
 import { launchCharge } from './tool-work-evidence.mjs';
+import { deployRetryAssignment, deployRetryEvidence } from './tool-deploy-recovery.mjs';
+import { hasReceipt } from './report-receipts.mjs';
+import { validToolSettlement } from './tool-settlement.mjs';
 
 export function matchingRetryClaim(entry, assignment) {
   const claim = assignment.infrastructureRetry;
@@ -45,8 +48,6 @@ export async function retryToolStage(action, io) {
   let entry = store?.get(action.reportId);
   if (!entry || entry.taskId !== action.taskId || entry.stage !== action.stage)
     return { result: 'skipped', why: 'retry envelope does not match' };
-  if (entry.stage === 'deploy')
-    return { result: 'skipped', why: 'deploy effects are not verified' };
   try {
     if (entry.disposition === 'settled') return await handoff(store, entry);
     if (entry.disposition === 'retry-claimed') {
@@ -68,11 +69,26 @@ export async function retryToolStage(action, io) {
       entry.retry.recovery?.verdict !== 'healthy'
     )
       return { result: 'skipped', why: 'retry is not ready' };
+    if (entry.stage === 'deploy') {
+      if (!deployRetryAssignment(entry))
+        return { result: 'skipped', why: 'original deploy assignment is unknown' };
+      const remote = (await io.inspectToolDeployment?.(entry)) ?? { state: 'unknown' };
+      store.update(entry.reportId, { retry: { ...entry.retry, remote } });
+      entry = store.get(entry.reportId);
+      if (!deployRetryEvidence(entry))
+        return { result: 'skipped', why: 'deploy effects are not verified' };
+    }
     const gate = io.mayLaunch?.(entry.assignment);
     if (gate && !gate.allowed) return { result: 'skipped', why: gate.why ?? 'availability-held' };
     let task = io.readTask(entry.taskId);
     if (!task || task.status !== entry.stage || (task.owner && task.owner !== io.machine))
       return { result: 'skipped', why: 'retry source ownership changed' };
+    if (
+      !validToolSettlement(entry) ||
+      !hasReceipt(task, entry.plan.operations[0].key) ||
+      task.statusChangedAt !== entry.plan.operations[0].args[0].statusChangedAt
+    )
+      return { result: 'skipped', why: 'retry settlement no longer matches source' };
     if (io.tokenAdmission?.(task, entry.stage) || io.tokenReanalysisAdmission?.(task, entry.stage))
       return { result: 'skipped', why: 'token admission holds replacement' };
     if (io.requiresFreshStart) {
@@ -83,7 +99,26 @@ export async function retryToolStage(action, io) {
       if (!fresh.ok) return { result: 'skipped', why: fresh.why };
       task = fresh.task;
     }
-    const registry = io.registryEntry(entry.taskId);
+    if (entry.stage === 'deploy')
+      for (const id of entry.batch.filter((id) => id !== entry.taskId)) {
+        const member = io.readTask(id);
+        if (
+          !member ||
+          member.status !== 'deploy' ||
+          (member.owner && member.owner !== io.machine) ||
+          io.tokenAdmission?.(member, 'deploy') ||
+          io.tokenReanalysisAdmission?.(member, 'deploy')
+        )
+          return { result: 'skipped', why: 'original deploy member is held' };
+        if (io.requiresFreshStart) {
+          const acquired = await io.acquire(member);
+          if (!acquired.ok)
+            return { result: 'skipped', why: acquired.why ?? 'deploy member ownership changed' };
+          const fresh = await io.readStartTask(member, { evidence: io.dependencyEvidence ?? {} });
+          if (!fresh.ok) return { result: 'skipped', why: fresh.why };
+        }
+      }
+    const registry = entry.stage === 'deploy' ? entry.assignment : io.registryEntry(entry.taskId);
     if (
       entry.assignment.path &&
       (registry?.path !== entry.assignment.path || registry.branch !== entry.assignment.branch)
@@ -107,6 +142,7 @@ export async function retryToolStage(action, io) {
         diagnosis: entry.evidence,
         recovery: entry.retry.recovery,
         git: entry.git,
+        remote: entry.retry.remote,
       },
     };
     store.update(entry.reportId, {

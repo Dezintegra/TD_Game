@@ -84,6 +84,11 @@ export function stagePrompt({
   tokenBudget = null,
 }) {
   const lines = [];
+  if (assignment.toolRecovery?.remote?.published)
+    lines.push(
+      'Публикация сохранённой deploymentRevision уже подтверждена контрольным чтением контейнеров и health. Не запускай deploy повторно; заверши только оставшиеся проверки и отчёт исходного пакета.',
+      '',
+    );
   if (assignment.toolRecovery)
     lines.push(
       '## Сохранённая работа после восстановления инструментов',

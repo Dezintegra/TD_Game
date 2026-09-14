@@ -5,20 +5,49 @@ import { retryToolStage } from './tool-retry.mjs';
 import { retainedReportView } from './tool-report-hold.mjs';
 import { scan } from './scan.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
+import {
+  deploymentEvidence,
+  deploymentMarkerCommand,
+  deploymentReadCommand,
+} from '../../scripts/deploy-evidence.mjs';
 
 async function ready(options = {}) {
   const f = deliveryFixture({ outcome: 'failed', ...options });
   const first = f.open();
   first.store.acknowledge(f.entry.reportId);
+  const deployment = {
+    path: '.pipeline/deploy-checkouts/saved',
+    revision: 'a'.repeat(40),
+    host: 'test-host',
+    directory: 'td',
+  };
+  const batch = f.task.status === 'deploy' ? [f.task, f.member] : [];
   const entry = first.store.retain(
-    { report: f.report, parsedReport: f.report, answer: { cost: 0 } },
+    {
+      report: options.noReport ? null : f.report,
+      parsedReport: options.noReport ? null : f.report,
+      answer: { cost: 0 },
+    },
     {
       taskId: f.task.id,
       stage: f.task.status,
       launchId: 'old',
       startedAt: f.now,
-      assignment: { taskId: f.task.id, stage: f.task.status, task: f.task },
-      batch: [],
+      assignment: {
+        taskId: f.task.id,
+        stage: f.task.status,
+        task: f.task,
+        batch,
+        ...(batch.length
+          ? {
+              deployment,
+              deploymentRevision: deployment.revision,
+              path: deployment.path,
+              branch: null,
+            }
+          : {}),
+      },
+      batch: batch.map((task) => task.id),
       charge: { launchId: 'old', state: 'not-required' },
     },
   );
@@ -33,11 +62,100 @@ async function ready(options = {}) {
     stage: f.task.status,
     reportId: entry.reportId,
   };
-  expect((await settleToolReport(action, first.io)).result).toBe('done');
+  const settled = await settleToolReport(action, first.io);
+  expect(settled, JSON.stringify(settled)).toMatchObject({ result: 'done' });
   return { ...f, entry, action: { ...action, kind: 'retry-tool-stage' } };
 }
 
 describe('durable replacement entitlement', () => {
+  it.each([false, true])(
+    'preserves original deploy and verified publication, null report %s',
+    async (noReport) => {
+      const f = await ready({ stage: 'deploy', batch: true, noReport });
+      try {
+        const opened = f.open();
+        const original = opened.store.entries()[0];
+        const remote = {
+          state: 'known',
+          published: true,
+          revision: original.assignment.deploymentRevision,
+        };
+        const spawnStage = vi.fn((assignment) => {
+          expect(assignment.batch).toEqual([f.task, f.member]);
+          expect(assignment.deployment).toEqual(original.assignment.deployment);
+          expect(assignment.toolRecovery.remote).toEqual(remote);
+          expect(assignment.sessionId).toBe(noReport ? 'old-session' : null);
+          return { ok: true };
+        });
+        const { config } = resolveConfig({ commands: { verify: 'x', deploy: 'x', perf: 'x' } });
+        const registry = {
+          entries: [f.task, f.member].map((task) => ({
+            taskId: task.id,
+            path: 'task-tree',
+            branch: 'branch',
+          })),
+        };
+        const selected = scan({
+          config,
+          now: f.now,
+          tasks: [
+            f.task,
+            f.member,
+            { ...f.task, id: '0003-new', priority: 1, statusChangedAt: f.now },
+          ],
+          registry,
+          reports: opened.store.entries().map(retainedReportView),
+        }).actions;
+        expect(selected).toEqual([
+          expect.objectContaining({
+            kind: 'retry-tool-stage',
+            taskId: f.task.id,
+            batch: [f.task.id, f.member.id],
+          }),
+        ]);
+        const result = await retryToolStage(f.action, {
+          ...opened.io,
+          spawnStage,
+          inspectToolDeployment: async () => remote,
+          inspectRetryLaunch: () => ({ state: 'born' }),
+          lastSession: () => 'old-session',
+        });
+        expect(result, JSON.stringify(result)).toMatchObject({ result: 'done' });
+        expect(spawnStage).toHaveBeenCalledOnce();
+        expect(f.open().store.entries()).toEqual([]);
+      } finally {
+        f.cleanup();
+      }
+    },
+  );
+  it('requires matching running containers and health, never just a reported SHA', () => {
+    const revision = 'a'.repeat(40),
+      server = 'b'.repeat(64),
+      web = 'c'.repeat(64);
+    const lines = [
+      'TD_DEPLOY_EVIDENCE_V1',
+      revision,
+      server,
+      web,
+      server,
+      web,
+      '{"status":"ok"}',
+      'TD_DEPLOY_EVIDENCE_END',
+    ];
+    expect(deploymentEvidence({ code: 0, stdout: lines.join('\n') }, revision).state).toBe('known');
+    for (const index of [0, 1, 2, 3, 4, 5, 6, 7]) {
+      const wrong = [...lines];
+      wrong[index] = 'wrong';
+      expect(deploymentEvidence({ code: 0, stdout: wrong.join('\n') }, revision).state).toBe(
+        'unknown',
+      );
+    }
+    expect(deploymentEvidence({ code: 1, stdout: lines.join('\n') }, revision).state).toBe(
+      'unknown',
+    );
+    expect(deploymentMarkerCommand(revision)).toContain('docker compose ps -q --status running');
+    expect(deploymentReadCommand).not.toMatch(/compose (up|restart)|\bmv\b|\brm\b/);
+  });
   it.each(['busy', 'availability-held', 'not-born'])(
     'preserves entitlement after %s',
     async (reason) => {
