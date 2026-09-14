@@ -130,7 +130,16 @@ export function schedulingFields(value) {
 }
 
 /** Один выбор для продолжений и первых запусков, без чтения диска или доски. */
-export function planLaunches({ candidates, running, tasks, config, scheduling, now, compare }) {
+export function planLaunches({
+  candidates,
+  running,
+  tasks,
+  config,
+  scheduling,
+  now,
+  compare,
+  isRecovery = () => false,
+}) {
   const actions = [];
   const notes = [];
   if (scheduling?.error) return { actions, notes: [scheduling.error] };
@@ -160,23 +169,27 @@ export function planLaunches({ candidates, running, tasks, config, scheduling, n
         : memory.next === 'service' && !serviceFirst
           ? 'game'
           : memory.next;
-    const allowed = remaining.filter(
-      (item) => !first(item) || (!admitted && workLane(item.task) === next),
+    const recovery = remaining.filter(
+      (item) => isRecovery(item.task, item.stage) && (!first(item) || !admitted),
     );
+    const allowed = recovery.length
+      ? recovery
+      : remaining.filter((item) => !first(item) || (!admitted && workLane(item.task) === next));
     if (!allowed.length) break;
     const protectGame =
+      !recovery.length &&
       config.maxConcurrent >= 2 &&
       !gameRunning &&
       allowed.some((item) => workLane(item.task) === 'game');
     const preferred = protectGame ? 'game' : lastLane === 'game' ? 'service' : 'game';
     const laneItems = allowed.filter((item) => workLane(item.task) === preferred);
-    const pool = laneItems.length ? laneItems : allowed;
+    const pool = !recovery.length && laneItems.length ? laneItems : allowed;
     // Продолжения заканчивают уже начатое. Новая игровая карточка при этом
     // конкурирует со служебными продолжениями, а не ждёт их полного окончания.
     // Служебные продолжения не должны бесконечно откладывать служебный
     // первый запуск, если именно его ход удерживает готовую новую игру.
     const advanceGame =
-      !admitted && !gameRunning && gameFirst && next === 'service'
+      !recovery.length && !admitted && !gameRunning && gameFirst && next === 'service'
         ? allowed.find((entry) => first(entry) && workLane(entry.task) === 'service')
         : null;
     const item = advanceGame ?? pool.find((entry) => !first(entry)) ?? pool[0];
@@ -189,6 +202,7 @@ export function planLaunches({ candidates, running, tasks, config, scheduling, n
     }
     const lane = workLane(item.task);
     const reason =
+      (recovery.length ? 'приоритет восстановления инцидента; ' : '') +
       `${lane === 'game' ? 'игровая' : 'служебная'} работа; ` +
       `${protectGame ? 'защищено место игры; ' : ''}следующий первый запуск: ${next}`;
     actions.push({
