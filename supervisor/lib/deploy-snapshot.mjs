@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { deploySshHost } from '../../scripts/deploy-ssh.mjs';
 
 function git(cwd, ...args) {
   return execFileSync('git', ['-C', cwd, ...args], {
@@ -20,7 +21,9 @@ function within(parent, child) {
 export function prepareDeploySnapshot(root, config, assignment, previous = null) {
   if (assignment.stage !== 'deploy') return assignment;
   const base = resolve(root, '.pipeline/deploy-checkouts');
-  let snapshot = previous?.deployment;
+  let snapshot = assignment.infrastructureRetry ? assignment.deployment : previous?.deployment;
+  if (assignment.infrastructureRetry && !snapshot)
+    throw new Error('исходный снимок повтора deploy неизвестен');
   if (!snapshot && (assignment.continuation || assignment.sessionId)) {
     throw new Error(
       'продолжение deploy без сохранённого снимка: требуется разбор прежней выкладки',
@@ -47,7 +50,7 @@ export function prepareDeploySnapshot(root, config, assignment, previous = null)
     mkdirSync(base, { recursive: true });
     const path = mkdtempSync(join(base, 'deploy-'));
     git(root, 'worktree', 'add', '--detach', path, revision);
-    snapshot = { path: relative(root, path), revision };
+    snapshot = { path: relative(root, path), revision, host: deploySshHost(), directory: 'td' };
   }
   const path = resolve(root, snapshot.path);
   if (
