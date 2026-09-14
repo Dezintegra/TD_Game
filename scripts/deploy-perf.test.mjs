@@ -17,7 +17,11 @@ beforeEach(() => {
   mocks.spawn.mockReturnValue({ status: 0 });
   mocks.temp.mockReturnValue('/mock-work');
   mocks.capture.mockImplementation((cmd, args) => {
-    if (cmd === 'git') return args.includes('--show-toplevel') ? '/mock-root' : 'revision';
+    if (cmd === 'git') {
+      if (args.includes('--show-toplevel')) return '/mock-root';
+      if (args[0] === 'rev-parse' && !args.includes('--short')) return 'a'.repeat(40);
+      return 'revision';
+    }
     if (args.at(-1).includes('TD_DOMAIN')) return 'example.test';
     if (args.at(-1).includes('http_code')) return '200';
     return 'ok';
