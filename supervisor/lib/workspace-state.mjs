@@ -24,7 +24,8 @@ export function unavailableWorkspaces({
       .flatMap((task) => {
         const entry = registry.entries?.find((item) => item.taskId === task.id);
         const available =
-          entry?.path &&
+          typeof entry?.path === 'string' &&
+          entry.path.trim() &&
           entry.branch === `worktree-${task.id}` &&
           directory(resolve(root, entry.path)) &&
           worktrees.some(
@@ -40,7 +41,11 @@ export function unavailableWorkspaces({
 }
 
 export function checkWorkspace({ root, entry, run, directory = isDirectory }) {
-  if (!entry?.path || !directory(resolve(root, entry.path)))
+  if (
+    typeof entry?.path !== 'string' ||
+    !entry.path.trim() ||
+    !directory(resolve(root, entry.path))
+  )
     return { ok: false, why: 'рабочий каталог отсутствует' };
   const cwd = resolve(root, entry.path);
   const top = run(['-C', cwd, 'rev-parse', '--show-toplevel']);

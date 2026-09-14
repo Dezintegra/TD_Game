@@ -113,6 +113,10 @@ export function reconcile({
   for (const tree of ours) {
     const taskId = taskIdOf(tree);
     const entry = entries.find((entry) => entry.taskId === taskId);
+    if (entry && (typeof entry.path !== 'string' || !entry.path.trim())) {
+      notes.push(`задача ${taskId}: путь реестра повреждён, владение сохранено`);
+      continue;
+    }
     if (
       entry &&
       (resolve(root, entry.path) === resolve(root, tree.path) ||
@@ -176,7 +180,11 @@ export function reconcile({
     const hasTree = ours.some((tree) => taskIdOf(tree) === task.id);
     const entry = entries.find((entry) => entry.taskId === task.id);
     if (hasTree) continue;
-    if (entry && (entry.branch !== branchFor(task.id) || !entry.path)) continue;
+    if (
+      entry &&
+      (entry.branch !== branchFor(task.id) || typeof entry.path !== 'string' || !entry.path.trim())
+    )
+      continue;
     // Сначала узнаём судьбу PR. Служебный merge уйдёт в cleanup без воссоздания дерева.
     if (
       task.links?.pr &&

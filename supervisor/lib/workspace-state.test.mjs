@@ -14,6 +14,21 @@ const task = {
 const entry = { taskId: task.id, path: 'old', branch: `worktree-${task.id}` };
 const root = resolve('fixture');
 describe('проверка существования и принадлежности дерева', () => {
+  it.each([null, 42, ''])('повреждённый путь %s не роняет сверку остальных задач', (path) => {
+    const registry = { entries: [{ ...entry, path }] };
+    expect(
+      unavailableWorkspaces({ tasks: [task], registry, worktrees: [entry], root }),
+    ).toHaveProperty(task.id);
+    expect(
+      reconcile({
+        tasks: [task],
+        registry,
+        worktrees: [entry],
+        root,
+        machine: 'test',
+      }).notes.join(),
+    ).toContain('повреждён');
+  });
   it('призрачная регистрация Git не делает каталог пригодным', () => {
     const state = {
       tasks: [task],
