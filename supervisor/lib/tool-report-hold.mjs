@@ -17,6 +17,11 @@ export function retainedReportView(entry) {
     reportId: entry.reportId,
     launchId: entry.launchId,
     disposition: entry.disposition,
+    settlementReady:
+      entry.disposition === 'infrastructure-held' &&
+      entry.evidence?.verdict === 'confirmed' &&
+      entry.retry?.recovery?.verdict === 'healthy' &&
+      ['not-required', 'confirmed'].includes(entry.charge?.state),
   };
 }
 

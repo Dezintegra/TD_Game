@@ -72,6 +72,10 @@ Every normal Trello task start SHALL reread authoritative target data after acqu
 These delivery and acknowledgement conditions SHALL govern ordinary disposition. A diagnostic
 envelope SHALL remain outside addressed delivery and preserve dependencyUpdates across restart
 without recipient effects; diagnostic retention SHALL NOT assert that those instructions were delivered.
+Infrastructure settlement and its acknowledgement SHALL confirm only their own source effects
+and archived complete payload. They SHALL NOT plan, claim, write or confirm addressed recipients;
+the journal SHALL identify retained dependencyUpdates as unexecuted. Existing partially delivered
+ordinary plans SHALL remain ordinary and complete independent recipient confirmation.
 
 Successful transfer SHALL require independent storage rereading and validation of the saved target ID, complete requested additions, previously existing dependencies and results, and preserved unrelated data. A successful write response or the in-memory snapshot MUST NOT count as confirmation. Read failure, write failure, malformed confirmation, missing additions, lost prior data or failure to release an owned temporary claim SHALL prevent success. Target operations SHALL finish before persisting the report source transition or removing its pending report. Failure SHALL return an explicit unsuccessful transfer with target and reason, preserving the source stage and report for retry. Multiple targets need not be globally atomic: already confirmed additions SHALL survive a later failure, and replay SHALL revalidate current data without duplicate dependencies or weaker conditions.
 

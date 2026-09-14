@@ -81,6 +81,18 @@ Before its first external mutation, report delivery SHALL persist a stable plan 
 
 ### Requirement: Report acknowledgement follows complete delivery
 
+For infrastructure disposition, completion SHALL mean confirmation of its own settlement
+operations and preservation of the full diagnostic payload, not delivery of instructions from
+the failed report. After full healthy recovery, settlement SHALL preserve the source stage,
+account for actual cost and refund only a receipt-confirmed continuation for the same launch
+once. Pending charge confirmation SHALL prevent settlement. Retry-ready SHALL remain durable
+without launching a process; active acknowledgement SHALL wait for a safe handoff and archive.
+
+#### Scenario: Infrastructure refund response was lost
+- **WHEN** the recipient saved a launch-specific refund but its response or a journal part was lost
+- **THEN** retry confirms the same receipt and completes missing journal parts without another
+  refund, cost increment, dependency addition or ordinary failed transition
+
 The supervisor SHALL remove a persisted report only after all planned effects have been confirmed and completed-session cleanup has succeeded. This rule SHALL include reports routed to halt by acceptance checks. A failure of local acknowledgement SHALL retain retryable state; repeating acknowledgement MUST NOT repeat board effects.
 
 #### Scenario: Crash after delivery before queue removal

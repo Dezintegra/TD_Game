@@ -18,7 +18,7 @@ import {
   resetAttempts,
 } from './task-file.mjs';
 import { halt } from './report-plan.mjs';
-import { transferReport } from './report-delivery.mjs';
+import { transferReport, settleToolReport } from './report-delivery.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { recoverClosureReason } from './closure.mjs';
@@ -852,6 +852,7 @@ const HANDLERS = {
   'clear-card': clearCard,
   cleanup: cleanupTask,
   'transfer-report': transferReport,
+  'settle-tool-report': settleToolReport,
   'start-stage': startStage,
   'open-incident': async (action, io) => {
     const task = io.readTask(action.taskId);
@@ -915,6 +916,12 @@ export async function execute(actions, io) {
         .some(
           (entry) =>
             isToolHeld(entry) &&
+            !(
+              action.kind === 'settle-tool-report' &&
+              action.reportId === entry.reportId &&
+              action.taskId === entry.taskId &&
+              action.stage === entry.stage
+            ) &&
             [action.taskId, ...(action.batch ?? [])].some((id) =>
               reportTaskIds(retainedReportView(entry)).includes(id),
             ),
@@ -925,6 +932,7 @@ export async function execute(actions, io) {
     }
     if (
       action.kind !== 'transfer-report' &&
+      action.kind !== 'settle-tool-report' &&
       // Хвост завершённого этапа должен уйти до переноса его отчёта.
       action.kind !== 'push-tail' &&
       io.reportStore?.entries().some((entry) => reportTaskIds(entry.report).includes(action.taskId))

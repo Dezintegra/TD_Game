@@ -53,6 +53,7 @@ export const ACTIONS = [
   'resume-token-budget',
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
+  'settle-tool-report', // подтвердить эффекты инфраструктурного удержания
   'answer-question', // разобрать ответ владельца продукта
   'return-task', // вернуть из ошибки задачу, упавшую по вине конвейера
   'poll-external', // опросить проверки CI или прогон на чужом железе
@@ -314,7 +315,16 @@ export function scan(state) {
 
   // 2. Отчёты сессий. Перенос — самое дешёвое, что двигает задачу вперёд.
   for (const report of reports) {
-    if (isToolHeld(report)) continue;
+    if (isToolHeld(report)) {
+      if (report.settlementReady && byId.has(report.taskId))
+        actions.push({
+          kind: 'settle-tool-report',
+          taskId: report.taskId,
+          stage: report.stage,
+          reportId: report.reportId,
+        });
+      continue;
+    }
     if (report.rejection) {
       notes.push(
         `отчёт ${report.reportId} задачи ${report.taskId} отклонён: ${report.rejection.why}; участники удержаны, требуется исправление и явный retry`,
@@ -991,6 +1001,7 @@ export function scan(state) {
       // Досылка не меняет карточку и снимает условие, удерживающее перенос.
       (action) =>
         action.kind === 'transfer-report' ||
+        action.kind === 'settle-tool-report' ||
         action.kind === 'push-tail' ||
         (action.kind === 'flush-delay-journal' &&
           !reports.some((report) => report.reportId && report.taskId === action.taskId)) ||
