@@ -1,4 +1,5 @@
 import { reportTaskIds } from './report-targets.mjs';
+import { incidentPolicy } from './pipeline-incidents.mjs';
 import { mergeEvidenceProblem } from './dependencies.mjs';
 import { applyTransition, resetAttempts } from './task-file.mjs';
 
@@ -40,6 +41,8 @@ export async function collectReconciliation({
   tasks,
   running = [],
   reports = [],
+  dependencyRecords = [],
+  invalid = [],
   root,
   run,
   config,
@@ -47,12 +50,27 @@ export async function collectReconciliation({
   now,
 }) {
   const result = {};
+  const incident = incidentPolicy({ tasks, dependencyRecords, invalid });
   const eligible = tasks.filter(
     (task) =>
       needsReconciliation(task, now) &&
+      !incident.sources.has(task.id) &&
+      !task.delayJournal &&
       (!task.owner || task.owner === machine) &&
       !running.some((x) => x.taskId === task.id || x.batch?.includes(task.id)) &&
       !reports.some((x) => reportTaskIds(x).includes(task.id)),
+  );
+  const checkedAt = (task) => {
+    const time = Date.parse(task.reconciliation?.checkedAt);
+    return task.reconciliation?.pr === task.links.pr && Number.isFinite(time) ? time : -Infinity;
+  };
+  // Непроверенный хвост должен продвигаться, даже когда начало доски снова устарело.
+  eligible.sort(
+    (a, b) =>
+      Number(incident.active && incident.allows(b, b.status)) -
+        Number(incident.active && incident.allows(a, a.status)) ||
+      checkedAt(a) - checkedAt(b) ||
+      0,
   );
   for (const task of eligible.slice(0, 2)) {
     try {
