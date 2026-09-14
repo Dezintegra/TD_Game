@@ -68,6 +68,32 @@ async function ready(options = {}) {
 }
 
 describe('durable replacement entitlement', () => {
+  it('confirms additional recovery cost once and requires fresh admission', async () => {
+    const f = await ready();
+    try {
+      const first = f.open(),
+        entry = first.store.entries()[0];
+      first.store.update(entry.reportId, {
+        retry: { ...entry.retry, recoveryCostUsd: 2, recoveryHistory: [{}, {}] },
+      });
+      first.recipient.fail('PUT', 'cards/', 'after');
+      const spawnStage = vi.fn();
+      expect(
+        (await retryToolStage(f.action, { ...first.io, registryEntry: () => null, spawnStage }))
+          .result,
+      ).toBe('failed');
+      const next = f.open();
+      expect(
+        (await retryToolStage(f.action, { ...next.io, registryEntry: () => null, spawnStage }))
+          .result,
+      ).toBe('skipped');
+      expect(spawnStage).not.toHaveBeenCalled();
+      expect(f.open().io.readTask(f.task.id).spentUsd).toBe(6);
+      expect(f.open().recipient.state()).toMatchObject({ puts: 2, posts: 2 });
+    } finally {
+      f.cleanup();
+    }
+  });
   it.each([false, true])(
     'preserves original deploy and verified publication, null report %s',
     async (noReport) => {

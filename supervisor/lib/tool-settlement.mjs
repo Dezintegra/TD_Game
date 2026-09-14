@@ -58,6 +58,7 @@ export function prepareToolSettlement(entry, task, now) {
   return {
     version: 1,
     kind: 'infrastructure',
+    recoveryCostUsd: entry.retry.recoveryCostUsd ?? 0,
     reportId: entry.reportId,
     operations: [
       {

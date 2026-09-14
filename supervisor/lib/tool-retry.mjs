@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { countSpawnFailure } from './task-file.mjs';
+import { addSpent, countSpawnFailure } from './task-file.mjs';
 import { launchCharge } from './tool-work-evidence.mjs';
 import { deployRetryAssignment, deployRetryEvidence } from './tool-deploy-recovery.mjs';
 import { hasReceipt } from './report-receipts.mjs';
@@ -124,6 +124,39 @@ export async function retryToolStage(action, io) {
       (registry?.path !== entry.assignment.path || registry.branch !== entry.assignment.branch)
     )
       return { result: 'skipped', why: 'retry workspace changed' };
+    const accounted = entry.retry.accountedRecoveryCostUsd ?? entry.plan.recoveryCostUsd ?? 0;
+    const total = entry.retry.recoveryCostUsd ?? 0;
+    if (entry.retry.costPlan || total > accounted) {
+      if (!entry.retry.costPlan) {
+        const costPlan = {
+          total,
+          args: [
+            addSpent(task, total - accounted),
+            {
+              at: io.now,
+              from: task.status,
+              to: task.status,
+              what: `Повторная диагностика инструментов ${entry.reportId}: $${total - accounted}.`,
+            },
+            'chore(pipeline): account repeated tool recovery',
+          ],
+          operation: {
+            key: `${entry.reportId}:recovery-cost:${entry.retry.recoveryHistory?.length ?? total}`,
+            expected: task,
+          },
+        };
+        store.update(entry.reportId, { retry: { ...entry.retry, costPlan } });
+        entry = store.get(entry.reportId);
+      }
+      const { costPlan } = entry.retry;
+      const saved = await io.saveTask(...costPlan.args, [], costPlan.operation);
+      if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };
+      store.update(entry.reportId, {
+        retry: { ...entry.retry, costPlan: null, accountedRecoveryCostUsd: costPlan.total },
+      });
+      // Rescan budgets and the refreshed physical card before claiming a launch.
+      return { result: 'skipped', why: 'recovery cost confirmed; fresh admission required' };
+    }
     const newLaunchId = randomUUID();
     const submitted = Boolean(entry.originalResult.parsedReport ?? entry.report);
     const sessionId = submitted ? null : (io.lastSession?.(entry.taskId, entry.stage) ?? null);
