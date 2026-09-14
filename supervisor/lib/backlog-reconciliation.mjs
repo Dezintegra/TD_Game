@@ -12,6 +12,7 @@ export const RECONCILE_STATES = [
   'implement',
   'revise',
   'review',
+  'token-limit',
 ];
 const INTERVAL = 15 * 60 * 1000;
 
@@ -136,11 +137,20 @@ export async function reconcileTask(action, io) {
         : { result: 'failed', why: saved.outcome };
     }
     const impact = io.deploymentImpact?.(task.links.pr);
-    const status = impact?.needed === false ? 'cleanup' : 'review';
+    const status =
+      impact?.needed === false
+        ? 'cleanup'
+        : task.status === 'token-limit'
+          ? 'token-limit'
+          : 'review';
     why +=
       status === 'cleanup'
         ? '; служебный diff: осталась уборка'
-        : '; восстановить обязательства прогона и выпуска в review';
+        : status === 'token-limit'
+          ? '; игровые обязательства остаются под ограничением бюджета'
+          : '; восстановить обязательства прогона и выпуска в review';
+    if (task.status === 'token-limit' && status === 'cleanup')
+      why += `; новых запусков нет, расход ${task.tokenHold?.spent ?? 'неизвестен'} и лимит ${task.tokenHold?.limit ?? 'неизвестен'} не изменены`;
     if (status !== task.status) {
       const moved = applyTransition(next, { status, note: why, now: io.now, reconciliation: true });
       if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
@@ -148,6 +158,7 @@ export async function reconcileTask(action, io) {
       delete next.question;
       delete next.delayAnalysis;
       delete next.delayJournal;
+      if (status === 'cleanup') delete next.tokenHold;
     }
   }
   const saved = await io.saveTask(

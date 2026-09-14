@@ -21,6 +21,12 @@ The supervisor MUST include review in bounded merged-PR reconciliation. It MUST 
 - **THEN** the supervisor validates an existing checkout or restores only a proven existing branch
 - **AND** without such evidence it reports the local workspace problem without consuming a model continuation
 
+#### Scenario: Budget hold outlives a service merge
+
+- **WHEN** a card is in token-limit and fresh evidence proves its PR is merged and service-only
+- **THEN** the supervisor SHALL permit only administrative cleanup without creating a model process or changing usage and limits
+- **AND** an open, unknown or game-affecting PR SHALL retain its budget hold
+
 ### Requirement: Cycle status reports actual process creation
 
 The supervisor MUST distinguish planned actions, completed service actions, skipped actions, failures and actually spawned processes. A process that was created before a later persistence failure MUST still be counted. Reusing a recorded launch without creating a process MUST NOT increment the count. Local action and repair exceptions MUST NOT prevent independent actions from being considered.

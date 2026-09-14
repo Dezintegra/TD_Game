@@ -284,6 +284,11 @@ export function canTransition(task, to, { reconciliation = false, consolidation 
   if (from === to) {
     return { ok: false, reason: 'задача уже в этом состоянии' };
   }
+  if (reconciliation && task.type === 'feature' && from === 'token-limit' && to === 'cleanup')
+    return {
+      ok: true,
+      reason: 'влитая служебная работа требует только уборки, без запуска модели',
+    };
   if (
     reconciliation &&
     task.type === 'feature' &&

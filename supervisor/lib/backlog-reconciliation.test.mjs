@@ -57,6 +57,23 @@ function ioFor(t, needed = false) {
   };
 }
 describe('сверка фактического результата', () => {
+  it.each([false, true, undefined])(
+    'бюджет не удерживает только доказанную служебную уборку: %s',
+    async (needed) => {
+      const current = task({
+        status: 'token-limit',
+        tokenHold: { spent: 26795899, limit: 25000000, resumeStatus: 'implement' },
+      });
+      const io = ioFor(current);
+      io.deploymentImpact = () => (needed === undefined ? undefined : { needed });
+      expect(needsReconciliation(current, now)).toBe(true);
+      await reconcileTask({ ...action, expectedStatus: 'token-limit' }, io);
+      const saved = io.saveTask.mock.calls[0][0];
+      expect(saved.status).toBe(needed === false ? 'cleanup' : 'token-limit');
+      expect(saved.tokenBudget).toEqual(current.tokenBudget);
+      if (needed !== false) expect(saved.tokenHold).toEqual(current.tokenHold);
+    },
+  );
   it.each([false, true])(
     'сверяет review без сброса оставшихся игровых обязательств %s',
     async (needed) => {

@@ -5,6 +5,8 @@ import { Buffer } from 'node:buffer';
 const serviceDirectories = [
   'supervisor/',
   'plugins/pipeline/',
+  'scripts/testing/',
+  'scripts/mutation/',
   'manage/',
   'docs/',
   'openspec/',
@@ -18,7 +20,11 @@ export function servicePath(path) {
     !path.includes('\\') &&
     !path.split('/').some((part) => part === '..' || part === '.' || part === '') &&
     (serviceDirectories.some((dir) => path.startsWith(dir)) ||
-      path === 'scripts/supervisor-scripts.test.mjs' ||
+      [
+        'scripts/supervisor-scripts.test.mjs',
+        'scripts/test-source.mjs',
+        '.github/workflows/ci.yml',
+      ].includes(path) ||
       /^[^/]+\.md$/i.test(path))
   );
 }
