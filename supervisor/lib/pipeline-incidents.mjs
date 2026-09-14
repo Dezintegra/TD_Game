@@ -1,6 +1,42 @@
 import { createHash } from 'node:crypto';
 import { NEEDS_SESSION } from '../config/transitions.mjs';
 import { pendingDependencies } from './dependencies.mjs';
+import {
+  INCIDENT_REPORT_RECOVERIES,
+  incidentRecoveryKey,
+} from '../config/incident-report-recoveries.mjs';
+import { reportTaskIds } from './report-targets.mjs';
+
+export function incidentRecoveryHeld(taskId, state = {}) {
+  const item = INCIDENT_REPORT_RECOVERIES.find((item) => item.taskId === taskId);
+  if (!item) return false;
+  const confirmation = state.incidentRecoveries?.[taskId];
+  return confirmation?.key !== incidentRecoveryKey(item) || confirmation.complete !== true;
+}
+
+/** Даже устаревший пакет не вправе изменить удержанный источник. */
+export function incidentRecoveryActionHeld(action, state = {}) {
+  const report = state.reports?.find((entry) => entry.reportId === action.reportId);
+  const payload = report?.report ?? report;
+  const ids = new Set([
+    action.taskId,
+    ...(action.batch ?? []),
+    ...(report ? reportTaskIds(report.report ?? report) : []),
+    ...[payload?.amendments, payload?.dependencyUpdates].flatMap((items) =>
+      Array.isArray(items) ? items.map((item) => item?.taskId) : [],
+    ),
+  ]);
+  return [...ids].some(
+    (id) =>
+      incidentRecoveryHeld(id, state) &&
+      !(
+        action.kind === 'transfer-report' &&
+        action.taskId === id &&
+        action.reportId &&
+        state.incidentRecoveries?.[id]?.pendingReportId === action.reportId
+      ),
+  );
+}
 
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const date = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -83,18 +119,40 @@ export function verifyIncident(task, report, now) {
   const incident = task.pipelineIncident;
   if (!incident || incident.verifiedAt || report.stage !== incident.check.stage) return null;
   const result = report.incidentVerification;
-  if (
-    report.outcome !== 'done' ||
-    !incident.probeStartedAt ||
-    !result ||
-    result.incidentId !== incident.id ||
-    result.passed !== true ||
-    !text(result.evidence)
-  )
-    return {
-      problem: `инцидент ${incident.id}: проверка восстановления не подтверждена; нужен пересмотр диагноза`,
-    };
-  return { incident: { ...incident, verifiedAt: now, verificationEvidence: result.evidence } };
+  const failure = (kind, field, why) => ({
+    kind,
+    problem: `инцидент ${incident.id}: проверка восстановления не подтверждена; ${field}: ${why}`,
+  });
+  if (report.outcome !== 'done')
+    return failure('probe-failed', 'outcome', `${report.outcome}; нужен пересмотр диагноза`);
+  if (!result || typeof result !== 'object' || Array.isArray(result))
+    return failure('invalid-report', 'incidentVerification', 'ожидается объект');
+  if (result.incidentId !== incident.id)
+    return failure('invalid-report', 'incidentVerification.incidentId', `ожидается ${incident.id}`);
+  if (typeof result.passed !== 'boolean')
+    return failure('invalid-report', 'incidentVerification.passed', 'ожидается boolean');
+  const evidence = evidenceText(result.evidence);
+  if (evidence === null) {
+    const index = Array.isArray(result.evidence) ? result.evidence.findIndex((v) => !text(v)) : -1;
+    return failure(
+      'invalid-report',
+      `incidentVerification.evidence${index < 0 ? '' : `[${index}]`}`,
+      'ожидается непустая строка либо непустой массив непустых строк',
+    );
+  }
+  if (!date(incident.probeStartedAt))
+    return failure(
+      'invalid-report',
+      'pipelineIncident.probeStartedAt',
+      'начало пробы не подтверждено',
+    );
+  if (!result.passed)
+    return failure(
+      'probe-failed',
+      'incidentVerification.passed',
+      'false; нужен пересмотр диагноза',
+    );
+  return { incident: { ...incident, verifiedAt: now, verificationEvidence: evidence } };
 }
 
 /** Подтверждённые общие исправления старых разборов требуют одной общей пробы. */
@@ -152,6 +210,7 @@ export function legacyIncident(tasks, now, records = []) {
 /** Ремонт имеет приоритет, а независимые этапы не разделяют его остановку. */
 export function incidentPolicy(state) {
   const records = [...(state.tasks ?? []), ...(state.dependencyRecords ?? [])];
+  const held = records.filter((task) => incidentRecoveryHeld(task.id, state));
   const invalid = state.invalid ?? [];
   const broken = new Map(
     [
@@ -168,10 +227,17 @@ export function incidentPolicy(state) {
     ].map((task) => [task.id, task]),
   );
   const incidents = records.filter(
-    (task) => !broken.has(task.id) && task.pipelineIncident && !task.pipelineIncident.verifiedAt,
+    (task) =>
+      !broken.has(task.id) &&
+      task.pipelineIncident &&
+      (!task.pipelineIncident.verifiedAt || incidentRecoveryHeld(task.id, state)),
   );
   const fixes = new Set();
-  const sources = new Set([...incidents.map((task) => task.id), ...broken.keys()]);
+  const sources = new Set([
+    ...incidents.map((task) => task.id),
+    ...broken.keys(),
+    ...held.map((task) => task.id),
+  ]);
   const stagesOf = (task) =>
     Array.isArray(task.pipelineIncident?.affectedStages)
       ? task.pipelineIncident.affectedStages.filter((stage) => NEEDS_SESSION.includes(stage))
@@ -179,6 +245,10 @@ export function incidentPolicy(state) {
   const affectedStages = new Set([...incidents, ...broken.values()].flatMap(stagesOf));
   const probes = new Set();
   const notes = [];
+  for (const task of held)
+    notes.push(
+      `инцидент ${task.id}: адресное восстановление удерживает источник; ${state.incidentRecoveries?.[task.id]?.why ?? 'полная исправляющая доставка не подтверждена'}`,
+    );
   for (const task of broken.values()) {
     const stages = stagesOf(task);
     notes.push(
@@ -205,24 +275,28 @@ export function incidentPolicy(state) {
       state.closedDependencyIds ?? [],
       { records: state.dependencyRecords ?? [], invalid },
     );
-    if (!pending.length && !probed) probes.add(source.id);
+    if (!pending.length && !probed && !incidentRecoveryHeld(source.id, state))
+      probes.add(source.id);
     notes.push(
       `инцидент ${incident.id}: ${incident.evidence} Затронутые этапы: ${incident.affectedStages.join(', ')}. Исправления: ${incident.fixedBy.join(', ')}; ` +
-        (pending.length
-          ? `ожидаем ${pending.join(', ')}`
-          : probed
-            ? 'проба уже выдана; ожидаем свидетельство или новый диагноз'
-            : `разрешена одна проба ${source.id}:${incident.check.stage}: ${incident.check.expectation}`),
+        (incidentRecoveryHeld(source.id, state)
+          ? 'источник удержан до полной адресной доставки исходного отчёта'
+          : pending.length
+            ? `ожидаем ${pending.join(', ')}`
+            : probed
+              ? 'проба уже выдана; ожидаем свидетельство или новый диагноз'
+              : `разрешена одна проба ${source.id}:${incident.check.stage}: ${incident.check.expectation}`),
     );
   }
   const isRecovery = (task, stage) =>
+    !incidentRecoveryHeld(task.id, state) &&
     !broken.has(task.id) &&
     (fixes.has(task.id) ||
       (sources.has(task.id) &&
         (stage === 'postmortem' ||
           (probes.has(task.id) && stage === task.pipelineIncident?.check.stage))));
   return {
-    active: incidents.length > 0 || broken.size > 0,
+    active: incidents.length > 0 || broken.size > 0 || held.length > 0,
     sources,
     probes,
     affectedStages,

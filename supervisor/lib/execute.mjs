@@ -23,7 +23,7 @@ import { retryToolStage } from './tool-retry.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { recoverClosureReason } from './closure.mjs';
-import { incidentPolicy } from './pipeline-incidents.mjs';
+import { incidentPolicy, incidentRecoveryActionHeld } from './pipeline-incidents.mjs';
 import { randomUUID } from 'node:crypto';
 import { launchCharge } from './tool-work-evidence.mjs';
 import { isToolHeld, retainedReportView } from './tool-report-hold.mjs';
@@ -901,6 +901,20 @@ export async function execute(actions, io) {
   const context = { invalidate: (id) => invalidated.add(id) };
 
   for (const action of actions) {
+    const incidentRecoveries = io.readIncidentRecoveries ? await io.readIncidentRecoveries() : {};
+    if (
+      incidentRecoveryActionHeld(action, {
+        incidentRecoveries,
+        reports: io.reportStore?.entries() ?? [],
+      })
+    ) {
+      results.push({
+        action,
+        result: 'skipped',
+        why: 'адресное восстановление инцидента удерживает источник',
+      });
+      continue;
+    }
     if (invalidated.has(action.taskId)) {
       results.push({
         action,
@@ -971,6 +985,7 @@ export async function execute(actions, io) {
       );
       const policy = incidentPolicy({
         tasks,
+        incidentRecoveries,
         dependencyRecords: io.dependencyRecords?.() ?? [],
         scheduling: { probes },
       });

@@ -14,6 +14,84 @@ afterEach(() => {
 });
 const deliver = async (f, opened) => (await execute([f.action], opened.io))[0];
 
+describe('доставка свидетельств пробы', () => {
+  const incident = {
+    id: 'probe',
+    evidence: 'Сбой запуска',
+    fixedBy: ['0002-member'],
+    openedAt: '2026-09-05T00:00:00Z',
+    affectedStages: ['design'],
+    check: { stage: 'design', expectation: 'Команда и отчёт работают' },
+    probeStartedAt: '2026-09-06T10:00:00Z',
+    verifiedAt: null,
+  };
+  const setup = (evidence, overrides = {}) =>
+    fixture({
+      stage: 'design',
+      taskOverrides: { pipelineIncident: incident },
+      reportOverrides: {
+        incidentVerification: { incidentId: 'probe', passed: true, evidence },
+        ...overrides,
+      },
+    });
+  it.each([undefined, null, '', ' ', [], ['ok', false]])(
+    'оставляет негодное %j без записей и расхода',
+    async (evidence) => {
+      const f = setup(evidence);
+      const opened = f.open();
+      const before = opened.recipient.state();
+      expect((await deliver(f, opened)).why).toContain('incidentVerification.evidence');
+      const reopened = f.open();
+      expect(reopened.store.get(f.entry.reportId)).toMatchObject({
+        plan: null,
+        progress: [],
+        rejection: { kind: 'invalid-report' },
+      });
+      expect(reopened.store.get(f.entry.reportId).report).toEqual(f.entry.report);
+      expect(reopened.recipient.state()).toEqual(before);
+      expect(f.forgotten).toEqual([]);
+      expect((await deliver(f, reopened)).result).toBe('skipped');
+    },
+  );
+  it.each([
+    '  команда выполнена  ',
+    ['  команда выполнена  ', 'след\nпроверен', '  команда выполнена  '],
+  ])('досылает %j после явного retry и потерянного ответа', async (evidence) => {
+    const f = setup(evidence);
+    const first = f.open();
+    // Имитируем сохранённый отказ прежнего приёмника, не изменяя исходный отчёт.
+    first.store.reject(f.entry.reportId, { why: 'старый приёмник требовал строку', at: f.now });
+    expect((await deliver(f, first)).result).toBe('skipped');
+    first.store.retry(f.entry.reportId);
+    first.recipient.fail('POST', '/actions/comments', 'after');
+    expect((await deliver(f, first)).result).toBe('failed');
+    const second = f.open();
+    expect((await deliver(f, second)).result).toBe('done');
+    const saved = f.open().recipient.store.readTask(f.task.id);
+    const normalized = Array.isArray(evidence) ? evidence.join('\n') : evidence;
+    expect(saved).toMatchObject({
+      status: 'audit',
+      spentUsd: 7,
+      pipelineIncident: { verificationEvidence: normalized, verifiedAt: f.now },
+    });
+    const state = f.open().recipient.state();
+    expect(JSON.stringify(state)).toContain('команда выполнена');
+    expect(state).toMatchObject({ puts: 1, posts: 1 });
+    expect((await deliver(f, f.open())).result).toBe('skipped');
+    expect(f.open().recipient.state()).toEqual(state);
+  });
+  it('успешное evidence не заменяет отправленный след', async () => {
+    const f = setup(['факт']);
+    const opened = f.open();
+    opened.io.stageEvidence = () => ({ branchOnRemote: true, unpushed: 1 });
+    expect((await deliver(f, opened)).result).toBe('done');
+    expect(f.open().recipient.store.readTask(f.task.id)).toMatchObject({
+      status: 'postmortem',
+      pipelineIncident: { verifiedAt: null },
+    });
+  });
+});
+
 describe('durable report execution', () => {
   it('persists a validation rejection before any recipient write and only retries explicitly', async () => {
     const f = fixture({ reportOverrides: { dependencyUpdates: 'invalid' } });

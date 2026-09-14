@@ -2,9 +2,84 @@ import { join, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { URLSearchParams } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { createIo, summariseChecks, summarisePullRequest } from './io.mjs';
+import {
+  createIo,
+  createIncidentRecoveryIo,
+  summariseChecks,
+  summarisePullRequest,
+} from './io.mjs';
+import { INCIDENT_REPORT_RECOVERIES } from '../config/incident-report-recoveries.mjs';
+import { receiptConfig } from './testing/report-recipient.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
+
+describe('свежие свидетельства адресного восстановления', () => {
+  const item = INCIDENT_REPORT_RECOVERIES[0];
+  it('отказывает при недоступном получателе или части его журнала', async () => {
+    const f = deliveryFixture({ taskOverrides: { id: item.taskId } });
+    try {
+      const opened = f.open();
+      const helper = createIncidentRecoveryIo({
+        store: opened.recipient.store,
+        trello: opened.recipient.trello,
+        snapshot: opened.recipient.state(),
+        config: receiptConfig,
+        reportStore: opened.store,
+      });
+      expect(helper.ownsSupervisorLock()).toBe(false);
+      opened.recipient.fail('GET', '/actions');
+      expect((await helper.readIncidentRecoveries())[item.taskId]).toMatchObject({
+        complete: false,
+        why: expect.stringContaining('failure'),
+      });
+      opened.recipient.fail('GET', 'cards/');
+      expect((await helper.readIncidentRecoverySnapshot(item.taskId)).ok).toBe(false);
+      expect(opened.recipient.state()).toMatchObject({ puts: 0, posts: 0 });
+    } finally {
+      f.cleanup();
+    }
+  });
+  it('проверяет оба отправленных SHA, даты, отсутствие хвоста и исходное изменение', () => {
+    const { config } = resolveConfig({});
+    const calls = [];
+    let bad = null;
+    const run = (args) => {
+      calls.push(args);
+      return { code: args.includes(bad) ? 1 : 0, stdout: '2026-09-14T12:15:00Z' };
+    };
+    const original = { startedAt: '2026-09-14T12:04:00Z', task: { id: item.taskId } };
+    const baseIo = {
+      stageEvidence: () => ({
+        branchOnRemote: true,
+        unpushed: 0,
+        lastCommitAt: '2026-09-14T12:15:00Z',
+      }),
+    };
+    const helper = createIncidentRecoveryIo({ config, run, baseIo });
+    expect(helper.incidentRecoveryGitEvidence(item, original).ok).toBe(true);
+    for (const sha of item.commits)
+      expect(calls).toContainEqual([
+        'merge-base',
+        '--is-ancestor',
+        sha,
+        `${config.remote}/worktree-${item.taskId}`,
+      ]);
+    expect(calls).toContainEqual([
+      'show',
+      `${config.remote}/worktree-${item.taskId}:openspec/changes/${item.change}/proposal.md`,
+    ]);
+    bad = item.commits[1];
+    expect(helper.incidentRecoveryGitEvidence(item, original)).toMatchObject({
+      ok: false,
+      why: expect.stringContaining(bad),
+    });
+    bad = 'fetch';
+    expect(helper.incidentRecoveryGitEvidence(item, original).ok).toBe(false);
+    bad = null;
+    baseIo.stageEvidence = () => ({ branchOnRemote: true, unpushed: 1 });
+    expect(helper.incidentRecoveryGitEvidence(item, original).ok).toBe(false);
+  });
+});
 
 it('читает и подтверждает ту же устойчивую очередь по reportId', () => {
   const f = deliveryFixture();

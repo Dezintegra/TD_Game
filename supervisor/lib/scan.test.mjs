@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { hasWork, scan } from './scan.mjs';
 import { migrateTokenLedger, beginTokenLaunch } from './token-budget.mjs';
+import { INCIDENT_REPORT_RECOVERIES } from '../config/incident-report-recoveries.mjs';
 // resolveConfig уже импортирован выше — здесь он нужен и проверкам настройки.
 
 /**
@@ -53,6 +54,41 @@ const run = (state) => {
   };
 };
 const kinds = (result) => result.actions.map((action) => action.kind);
+
+it('completed ремонта не запускает design 0199 и не задерживает независимый audit', () => {
+  const recovery = INCIDENT_REPORT_RECOVERIES[0];
+  const source = task({
+    id: recovery.taskId,
+    status: 'failed',
+    returnTo: 'design',
+    pipelineIncident: {
+      id: 'receiver-incident',
+      openedAt: NOW,
+      evidence: 'evidence отвергнут приёмником',
+      affectedStages: ['design'],
+      check: { stage: 'design', expectation: 'Принять исходный отчёт' },
+      fixedBy: [recovery.repairTaskId],
+      probeStartedAt: null,
+      verifiedAt: null,
+    },
+  });
+  const independent = task({ id: '0003-independent', status: 'audit' });
+  for (const status of ['implement', 'completed']) {
+    const result = run({
+      tasks: [source, independent, task({ id: recovery.repairTaskId, status })],
+      registry: {
+        entries: [entry(source.id), entry(independent.id), entry(recovery.repairTaskId)],
+      },
+      config: { ...config, maxConcurrent: 2 },
+      stageCommands: {},
+      now: NOW,
+    });
+    expect(result.actions.some((action) => action.taskId === source.id)).toBe(false);
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'continue-stage', taskId: independent.id, stage: 'audit' }),
+    );
+  }
+});
 
 describe('неподтверждённая доставка', () => {
   it('отсутствующий каталог не забирает квоту независимой задачи', () => {
