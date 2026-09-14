@@ -32,12 +32,14 @@ export function sourcePnpm(env = process.env, realpath = realpathSync, finder = 
   try {
     return finder(env);
   } catch (original) {
-    // pnpm/action-setup на Linux кладёт в PATH ссылку bin/pnpm, не pnpm.cjs.
-    // Передаём её проверенный target существующему помощнику без изменения его контракта.
+    // pnpm/action-setup добавляет node_modules/.bin: pnpm там бывает shell-shim,
+    // а не ссылкой. Его нельзя передавать Node; CLI лежит в соседнем пакете pnpm.
     for (const directory of (env.PATH ?? env.Path ?? '').split(delimiter)) {
       if (!directory || !existsSync(resolve(directory, 'pnpm'))) continue;
       const cli = realpath(resolve(directory, 'pnpm'));
       if (/pnpm\.(?:c?js)$/.test(cli)) return finder({ ...env, npm_execpath: cli });
+      const sibling = resolve(directory, '../pnpm/bin/pnpm.cjs');
+      if (existsSync(sibling)) return finder({ ...env, npm_execpath: sibling });
     }
     throw original;
   }

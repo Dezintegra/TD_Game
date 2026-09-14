@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { checkedProcess, findPnpm } from '../../supervisor/lib/install-snapshot-check.mjs';
 import { repoRoot } from './source-aliases.mjs';
 import {
   assertNoDist,
@@ -11,6 +12,35 @@ import {
   sourceMatrix,
   sourcePnpm,
 } from './check-source-tests.mjs';
+
+it('runs the sibling CLI when action-setup exposes a regular shell shim', () => {
+  const root = fixture();
+  const bin = resolve(root, 'setup-pnpm/node_modules/.bin');
+  const cli = resolve(root, 'setup-pnpm/node_modules/pnpm/bin/pnpm.cjs');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(resolve(cli, '..'), { recursive: true });
+  writeFileSync(resolve(bin, 'pnpm'), '#!/bin/sh\nexit 99\n');
+  writeFileSync(cli, "console.log('fixture-pnpm-cli');\n");
+  // Локальный глобальный pnpm не должен скрывать отсутствие CLI в CI PATH.
+  const finder = (env) => {
+    if (!env.npm_execpath) throw new Error('No cjs in PATH');
+    return findPnpm(env);
+  };
+  const found = sourcePnpm({ PATH: bin }, undefined, finder);
+  expect(found).toBe(cli);
+  expect(checkedProcess(process.execPath, [found, '--version']).stdout.trim()).toBe(
+    'fixture-pnpm-cli',
+  );
+});
+
+it('rejects a shell shim without an installed sibling CLI', () => {
+  const root = fixture();
+  writeFileSync(resolve(root, 'pnpm'), '#!/bin/sh\nexit 99\n');
+  const finder = () => {
+    throw new Error('No installed CLI');
+  };
+  expect(() => sourcePnpm({ PATH: root }, undefined, finder)).toThrow('No installed CLI');
+});
 
 it('resolves the extensionless pnpm executable used by Linux action-setup', () => {
   const root = fixture();
