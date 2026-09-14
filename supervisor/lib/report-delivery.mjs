@@ -1,4 +1,5 @@
 import { reportTaskIds } from './report-targets.mjs';
+import { isToolHeld } from './tool-report-hold.mjs';
 import {
   prepareReportPlan,
   ReportValidationError,
@@ -32,6 +33,7 @@ export async function transferReport(action, io, context = {}) {
   const store = io.reportStore;
   let entry = store.get(action.reportId);
   if (!entry) return { result: 'skipped', why: 'report already acknowledged' };
+  if (isToolHeld(entry)) return { result: 'skipped', why: 'tool diagnostic hold' };
   if (entry.taskId !== action.taskId || entry.stage !== action.stage)
     return { result: 'failed', why: 'report identity mismatch' };
   if (entry.rejection)

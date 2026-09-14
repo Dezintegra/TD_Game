@@ -15,6 +15,13 @@ The supervisor SHALL persist each accepted stage report with a supervisor-owned 
 
 ### Requirement: Pending reports are restored before recovery and scheduling
 
+Diagnostic envelopes SHALL use the same store before releasing live, with immutable raw
+result, nullable unaccepted report, trusted task and batch, launch context and independent
+evidence. Diagnosing and infrastructure-held SHALL prevent ordinary delivery, tail pushes
+and competing task effects. A malformed report SHALL NOT become accepted through retention;
+healthy/inconclusive shall archive it before releasing diagnostic retention. Version 1
+ordinary plans, progress and rejections SHALL retain ordinary delivery without reclassification.
+
 After acquiring its startup and supervisor locks, the supervisor SHALL restore the durable report queue before orphan recovery and planning. Pending reports SHALL exclude their task and assigned batch members from new sessions, continuations and competing mutations until delivery is settled, including after a partial board write. They MUST NOT reserve live-process concurrency slots for unrelated work. Invalid or unreadable persisted state MUST NOT be silently replaced by an empty queue.
 
 #### Scenario: Stale live descriptor accompanies a saved report

@@ -2,6 +2,7 @@ import { emptyScheduling, planLaunches, recordRecovery, schedulingProblem } from
 import { incidentPolicy, legacyIncident } from './pipeline-incidents.mjs';
 import { planBacklogReview } from './backlog-review.mjs';
 import { reportTaskIds } from './report-targets.mjs';
+import { isToolHeld } from './tool-report-hold.mjs';
 import { reconciliationHeld } from './backlog-reconciliation.mjs';
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay, DELAY_STATES } from './delay-analysis.mjs';
@@ -295,7 +296,13 @@ export function scan(state) {
     // Ветку дерева, где идёт этап, не трогаем: неизвестно, доделан ли
     // атомарный коммит. Прежде это выяснялось по снимку сессий, теперь —
     // прямым вопросом «есть ли живой процесс», на который есть точный ответ.
-    if (entry && isRunning(entry.taskId)) {
+    if (
+      entry &&
+      (isRunning(entry.taskId) ||
+        reports.some(
+          (report) => isToolHeld(report) && reportTaskIds(report).includes(entry.taskId),
+        ))
+    ) {
       notes.push(`ветка ${branch} впереди удалённой, но на дереве идёт этап — не трогаем`);
       continue;
     }
@@ -307,6 +314,7 @@ export function scan(state) {
 
   // 2. Отчёты сессий. Перенос — самое дешёвое, что двигает задачу вперёд.
   for (const report of reports) {
+    if (isToolHeld(report)) continue;
     if (report.rejection) {
       notes.push(
         `отчёт ${report.reportId} задачи ${report.taskId} отклонён: ${report.rejection.why}; участники удержаны, требуется исправление и явный retry`,

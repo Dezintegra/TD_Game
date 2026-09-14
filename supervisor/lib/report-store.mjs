@@ -104,6 +104,23 @@ export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
   return {
     entries: () => structuredClone(reports),
     get: (id) => structuredClone(reports.find((entry) => entry.reportId === id) ?? null),
+    archive(id) {
+      const entry = reports.find((item) => item.reportId === id);
+      if (!entry) throw new Error(`unknown report ${id}`);
+      const target = `${path}.diagnostics/${encodeURIComponent(id)}.json`;
+      disk.mkdirSync(dirname(target), { recursive: true });
+      const data = JSON.stringify(entry);
+      const fd = disk.openSync(`${target}.tmp`, 'w');
+      try {
+        disk.writeFileSync(fd, data, 'utf8');
+        disk.fsyncSync(fd);
+      } finally {
+        disk.closeSync(fd);
+      }
+      disk.renameSync(`${target}.tmp`, target);
+      if (disk.readFileSync(target, 'utf8') !== data)
+        throw new Error('diagnostic archive readback failed');
+    },
     verifySaved() {
       try {
         const saved = validate(JSON.parse(disk.readFileSync(path, 'utf8')));

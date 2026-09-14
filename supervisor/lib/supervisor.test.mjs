@@ -98,6 +98,9 @@ function harness(over = {}) {
     },
     stages: over.stages ?? {},
     reportStore: over.reportStore,
+    diagnoseTools: over.diagnoseTools,
+    pauseTools: over.pauseTools,
+    captureToolContext: over.captureToolContext,
     codexUsage: over.codexUsage ?? {},
     readCodexEvidence: over.readCodexEvidence,
     saveCodexUsage: over.saveCodexUsage,
@@ -709,6 +712,95 @@ describe('история логов в назначении разбора', () 
 });
 
 describe('устойчивая очередь завершений', () => {
+  it('finish сохраняет pending списание, поздняя квитанция подтверждает тот же launch', async () => {
+    const f = deliveryFixture({ stage: 'design' });
+    try {
+      const store = f.open().store;
+      store.acknowledge(f.entry.reportId);
+      const h = harness({
+        reportStore: store,
+        captureToolContext: () => ({ provider: 'claude' }),
+        diagnoseTools: async () => ({ verdict: 'confirmed' }),
+        pauseTools: () => {},
+      });
+      const charge = {
+        launchId: 'pending-launch',
+        key: 'continuation:pending-launch',
+        state: 'pending',
+        args: [],
+        operation: { key: 'continuation:pending-launch' },
+      };
+      h.supervisor.spawnStage(assignment({ launchId: charge.launchId, charge }));
+      await h.answer(envelope({ result: JSON.stringify({ ...report, outcome: 'failed' }) }));
+      const entry = store.entries()[0];
+      expect(entry.charge).toMatchObject({ ...charge, born: true });
+      expect(entry.disposition).toBe('infrastructure-held');
+      const restarted = harness({ reportStore: f.open().store, stages: h.saved.at(-1) });
+      expect(restarted.supervisor.pendingLaunchCharges()[0].charge.launchId).toBe(charge.launchId);
+      restarted.supervisor.confirmLaunchCharge(report.taskId, report.stage, {
+        launchId: 'other',
+        key: charge.key,
+        confirmed: true,
+      });
+      expect(f.open().store.entries()[0].charge.state).toBe('pending');
+      restarted.supervisor.confirmLaunchCharge(report.taskId, report.stage, {
+        launchId: charge.launchId,
+        key: charge.key,
+        confirmed: true,
+      });
+      expect(f.open().store.entries()[0].charge.state).toBe('confirmed');
+      expect(restarted.supervisor.pendingLaunchCharges()).toEqual([]);
+    } finally {
+      f.cleanup();
+    }
+  });
+  it.each(['failed', 'invalid', 'empty'])('сохраняет diagnosing до release: %s', async (kind) => {
+    const f = deliveryFixture({ stage: 'design' });
+    try {
+      const store = f.open().store;
+      store.acknowledge(f.entry.reportId);
+      let resolveProbe;
+      const pauses = [];
+      const h = harness({
+        reportStore: store,
+        captureToolContext: () => ({ provider: 'claude' }),
+        diagnoseTools: () =>
+          new Promise((resolve) => {
+            resolveProbe = resolve;
+          }),
+        pauseTools: (entry) => pauses.push(entry.reportId),
+        saveStages: (stages) => {
+          if (stages['0001-one:design'] && !stages['0001-one:design'].live)
+            expect(store.entries()[0].disposition).toBe('diagnosing');
+        },
+      });
+      h.supervisor.spawnStage(assignment({ batch: [{ id: '0002-member' }] }));
+      const payload = {
+        ...report,
+        outcome: 'failed',
+        dependencyUpdates: [{ taskId: '0003-foreign' }],
+      };
+      await h.answer(
+        envelope({
+          result: kind === 'failed' ? JSON.stringify(payload) : kind === 'invalid' ? '{broken' : '',
+        }),
+      );
+      expect(h.supervisor.running()).toEqual([]);
+      expect(h.supervisor.reports[0]).toMatchObject({
+        disposition: 'diagnosing',
+        batch: ['0002-member'],
+      });
+      expect(h.supervisor.reports[0].dependencyUpdates).toBeUndefined();
+      expect(store.entries()[0].originalResult.run).toBeTruthy();
+      resolveProbe({ verdict: 'confirmed', checks: [{ status: 'failed' }] });
+      await sleep(0);
+      expect(f.open().store.entries()[0].disposition).toBe('infrastructure-held');
+      expect(pauses).toHaveLength(1);
+      expect(h.supervisor.reports[0].batch).toEqual(['0002-member']);
+    } finally {
+      f.cleanup();
+    }
+  });
   it('сопоставляет старый дескриптор по полной тройке времени, станции и этапа', () => {
     const f = deliveryFixture({ stage: 'design' });
     try {

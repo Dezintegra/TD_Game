@@ -2102,6 +2102,37 @@ describe('сессия на идущий этап', () => {
     expect(io.tasks.get('0001-one').attempts.continuations).toBe(1);
     expect(io.steps).toContain('запущен этап 0001-one:implement');
   });
+  it('не подтверждает списание до независимого ответа хранилища', async () => {
+    const io = fakeIo({ tasks: [task({ status: 'implement' })] });
+    let release;
+    let operation;
+    const receipts = [];
+    io.saveTask = (...args) => {
+      operation = args[4];
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    };
+    io.confirmLaunchCharge = (...args) => receipts.push(args);
+    const execution = execute([carryOn], io);
+    expect(io.spawned).toHaveLength(1);
+    expect(io.spawned[0].charge.state).toBe('pending');
+    expect(operation.key).toBe(io.spawned[0].charge.key);
+    expect(receipts).toEqual([]);
+    release({ ok: true });
+    await execution;
+    expect(receipts).toEqual([
+      [
+        '0001-one',
+        'implement',
+        {
+          launchId: io.spawned[0].launchId,
+          key: operation.key,
+          confirmed: true,
+        },
+      ],
+    ]);
+  });
 
   it('назначение видит израсходованные попытки, а не прежнее их число', async () => {
     const io = fakeIo({ tasks: [task({ status: 'implement' })] });

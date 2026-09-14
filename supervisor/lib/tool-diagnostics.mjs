@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +34,7 @@ export function toolContext(command, provider, env) {
   return {
     provider,
     cwd: resolve(command.cwd),
-    environmentId: hash(Object.entries(env ?? {}).sort()),
+    environmentId: hash(Object.entries(env ?? process.env).sort()),
     permissionsId: hash(permissions),
   };
 }
@@ -125,6 +125,8 @@ export async function diagnoseStageTools({
   start = startStage,
   now = Date.now,
   buildCommand = stageCommand,
+  onStart = () => {},
+  onResult = () => {},
 }) {
   const provider = config.provider ?? 'claude';
   const command = buildCommand({
@@ -154,10 +156,18 @@ export async function diagnoseStageTools({
   const deadline = now() + TOOL_DIAGNOSTIC_TIMEOUT_MS;
   const facts = [];
   const runs = [];
+  let accountingError = null;
   for (const control of controls) {
     const timeoutMs = deadline - now();
     if (timeoutMs <= 0) break;
     const startedAt = now();
+    const launchId = randomUUID();
+    try {
+      await onStart(launchId);
+    } catch (error) {
+      accountingError = error.message;
+      break;
+    }
     const run = await start({
       command: {
         ...command,
@@ -170,7 +180,13 @@ export async function diagnoseStageTools({
     }).finished;
     const finishedAt = now();
     // Сырой ответ сохраняет в том числе фактический расход диагностической сессии.
-    runs.push({ ...run, startedAt, finishedAt });
+    runs.push({ ...run, launchId, startedAt, finishedAt });
+    try {
+      await onResult(launchId, run);
+    } catch (error) {
+      accountingError = error.message;
+      break;
+    }
     facts.push(...controlFacts({ ...run, startedAt, finishedAt }, control, context, provider));
     if (classifyToolControls({ context, controls, facts }).verdict === 'confirmed') break;
   }
@@ -180,5 +196,9 @@ export async function diagnoseStageTools({
     runs.some((run) => run.code !== 0 || run.killedBy || run.error)
   )
     result.verdict = 'inconclusive';
-  return { ...result, runs };
+  return {
+    ...result,
+    ...(accountingError ? { verdict: 'inconclusive', accountingError } : {}),
+    runs,
+  };
 }
