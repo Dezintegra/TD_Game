@@ -181,6 +181,8 @@ async function startStage(action, io, context) {
     });
   }
 
+  if (NEEDS_WORKTREE.includes(action.stage) && io.workspaceStatus?.(task.id)?.ok === false)
+    return { result: 'failed', why: 'рабочий каталог не подтверждён после подготовки' };
   const spawned = io.spawnStage(assignmentFor(action, io, claimed.task, branch));
 
   // Захват и запись «Взята в работу» остаются на месте при любом отказе:
@@ -233,7 +235,7 @@ function assignmentFor(action, io, task, branchHint) {
     taskId: task.id,
     stage: action.stage,
     branch: entry?.branch ?? branchHint ?? `worktree-${task.id}`,
-    path: entry?.path ?? null,
+    path: entry?.path && io.directoryExists?.(entry.path) !== false ? entry.path : null,
     continuation: Boolean(sessionId),
     sessionId,
     reason: action.reason ?? null,
@@ -287,7 +289,10 @@ async function continueStage(action, io) {
   //
   // Отказ здесь ничего не теряет: дерево заводит сверка, и следующий же
   // оборот выдаст сессию как ни в чём не бывало.
-  if (NEEDS_WORKTREE.includes(task.status) && !io.registryEntry(action.taskId)?.path) {
+  if (
+    NEEDS_WORKTREE.includes(task.status) &&
+    (!io.registryEntry(action.taskId)?.path || io.workspaceStatus?.(task.id)?.ok === false)
+  ) {
     return { result: 'failed', why: `дерева у задачи нет: этапу «${task.status}» работать негде` };
   }
 

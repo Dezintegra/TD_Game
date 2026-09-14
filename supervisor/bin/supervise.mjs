@@ -43,6 +43,7 @@ import {
   readTasks,
 } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
+import { isDirectory, unavailableWorkspaces } from '../lib/workspace-state.mjs';
 import { createIo } from '../lib/io.mjs';
 import { createSchedulingStore } from '../lib/scheduling-store.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
@@ -604,10 +605,24 @@ async function turn() {
     }
   }
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
-  const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
+  const repair = reconcile({
+    registry,
+    worktrees,
+    tasks: backlog.tasks,
+    machine,
+    root,
+    directory: isDirectory,
+    now,
+  });
 
   const state = {
     machine,
+    unavailableWorkspaces: unavailableWorkspaces({
+      tasks: backlog.tasks,
+      registry,
+      worktrees,
+      root,
+    }),
     scheduling: schedulingStore.read(),
     ...(await buildDependencyState({
       backlog,
@@ -718,7 +733,10 @@ async function turn() {
     // возвращаемое здесь выбрасывалось, провалившаяся `finish-claim`
     // молчала: в журнале каждый оборот стояло «доводим взятие до конца»,
     // и ни разу — «не довели». Так и вышли двое суток простоя 31.08.2026.
-    const pendingIds = new Set(supervisor.reports.flatMap(reportTaskIds));
+    const pendingIds = new Set([
+      ...supervisor.reports.flatMap(reportTaskIds),
+      ...supervisor.running().flatMap((item) => [item.taskId, ...(item.batch ?? [])]),
+    ]);
     for (const item of repairWorld(
       repair.repairs.filter((repair) => !pendingIds.has(repair.taskId)),
       io,

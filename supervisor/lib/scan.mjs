@@ -512,6 +512,13 @@ export function scan(state) {
     // Живой этап удержание не касается: он уже идёт, и командам его сессии
     // правила разрешений судья, а не сканер.
     if (isRunning(task.id, task.status)) continue;
+
+    if (state.unavailableWorkspaces?.[task.id]) {
+      notes.push(
+        `задача ${task.id}: ${state.unavailableWorkspaces[task.id]}; запуск удержан локально`,
+      );
+      continue;
+    }
     const uncovered = uncoveredAt(task.status);
     if (uncovered.length === 0) continue;
     held.set(task.id, uncovered);
