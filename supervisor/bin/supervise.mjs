@@ -438,6 +438,11 @@ function createRuntimeSupervisor() {
     protectionError = error;
   }
   const runtime = createSupervisor({
+    isToolPaused: () => isPaused(root, config),
+    mayLaunch: () => ({
+      allowed: !isPaused(root, config) && !isApiPaused(root, config) && !draining,
+      why: 'локальная, серверная пауза или завершение работы',
+    }),
     inspectToolWork: (entry) => {
       const cwd = entry.context?.cwd;
       if (!cwd) return { state: 'unknown', reason: 'missing-cwd' };
@@ -755,6 +760,8 @@ async function turn() {
           (item) => item.reportId !== ignoreReportId && reportTaskIds(item).includes(taskId),
         ),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
+      mayLaunch: (...args) => supervisor.mayLaunch(...args),
+      inspectRetryLaunch: (...args) => supervisor.inspectRetryLaunch(...args),
       confirmLaunchCharge: (...args) => supervisor.confirmLaunchCharge(...args),
       launchCharge: (...args) => supervisor.launchCharge(...args),
       recordSchedulingLaunch: (task) => schedulingStore.launched(task, new Date().toISOString()),

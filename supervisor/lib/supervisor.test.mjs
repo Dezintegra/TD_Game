@@ -100,6 +100,8 @@ function harness(over = {}) {
     reportStore: over.reportStore,
     diagnoseTools: over.diagnoseTools,
     pauseTools: over.pauseTools,
+    isToolPaused: over.isToolPaused,
+    mayLaunch: over.mayLaunch,
     captureToolContext: over.captureToolContext,
     codexUsage: over.codexUsage ?? {},
     readCodexEvidence: over.readCodexEvidence,
@@ -929,6 +931,17 @@ describe('устойчивая очередь завершений', () => {
 });
 
 describe('порождение', () => {
+  it('availability closes immediately before spawn without charging or birth', () => {
+    let calls = 0;
+    const h = harness({ mayLaunch: () => ({ allowed: ++calls === 1 }) });
+    expect(h.supervisor.spawnStage(assignment())).toMatchObject({
+      ok: false,
+      reason: 'availability-held',
+    });
+    expect(h.children).toEqual([]);
+    expect(h.supervisor.busy()).toBe(0);
+    expect(h.supervisor.launchCharge('0001-one', 'design')).toBeNull();
+  });
   it('последний допуск запрещает рабочий запуск до раннего анализа и его продолжение после окончательного предела', () => {
     for (const [stage, spent, tokenReanalysis] of [
       ['design', 150, undefined],

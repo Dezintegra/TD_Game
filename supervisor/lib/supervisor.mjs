@@ -14,7 +14,7 @@ import {
   tokenAccountingNote,
 } from './token-budget.mjs';
 import { randomUUID } from 'node:crypto';
-import { CROSSCUT } from '../config/transitions.mjs';
+import { CROSSCUT, isExclusive } from '../config/transitions.mjs';
 import { clearInterval as nodeClearInterval, setInterval as nodeSetInterval } from 'node:timers';
 import { TAG, clip, describeEvent, humanDuration } from './console.mjs';
 import { providerOf, readCodexAnswer, codexDenial } from './provider.mjs';
@@ -34,6 +34,8 @@ import {
   needsToolDiagnosis,
 } from './tool-report-hold.mjs';
 import { launchCharge, confirmLaunchCharge } from './tool-work-evidence.mjs';
+import { matchingRetryClaim } from './tool-retry.mjs';
+import { sameToolContext } from './stage-tool-health.mjs';
 
 const { structuredClone } = globalThis;
 
@@ -81,6 +83,8 @@ export function createSupervisor({
   pauseTools = () => {},
   captureToolContext = toolContext,
   inspectToolWork = () => ({ state: 'unknown', reason: 'not-inspected' }),
+  isToolPaused = () => true,
+  mayLaunch = () => ({ allowed: true }),
   codexUsage = {},
   saveCodexUsage = () => {},
   onPolicyBlocked = () => {},
@@ -152,6 +156,8 @@ export function createSupervisor({
             };
           },
           pause: pauseTools,
+          isPaused: isToolPaused,
+          mayRecover: () => mayLaunch().allowed,
           archive: (entry) => reportStore.archive(entry.reportId),
           log,
         })
@@ -201,6 +207,28 @@ export function createSupervisor({
   const known = Object.fromEntries(
     Object.entries(stages).map(([at, value]) => [at, remembered(value)]),
   );
+  for (const entry of reportStore?.entries() ?? []) {
+    if (
+      entry.disposition !== 'retry-claimed' ||
+      entry.retry?.spawnState !== 'born' ||
+      !entry.retry.live
+    )
+      continue;
+    const at = `${entry.taskId}:${entry.stage}`;
+    if (
+      known[at]?.live &&
+      ![entry.launchId, entry.retry.newLaunchId].includes(known[at].live.launchId)
+    )
+      continue;
+    if (known[at]?.charge?.launchId === entry.retry.newLaunchId) continue;
+    known[at] = {
+      ...known[at],
+      sessionId: entry.retry.sessionId,
+      charge: { ...launchCharge(entry.retry.newLaunchId), born: true },
+      live: entry.retry.live,
+    };
+    saveStages(known);
+  }
   /**
    * Осиротевшие этапы: `taskId` → `{ taskId, stage, at, live }`.
    *
@@ -218,6 +246,19 @@ export function createSupervisor({
   if (initialize) adoptOrphans();
 
   return {
+    mayLaunch,
+    inspectRetryLaunch(entry) {
+      if (entry.retry?.spawnState === 'prepared') return { state: 'absent' };
+      const at = key(entry.taskId, entry.stage);
+      const child = children.get(entry.taskId);
+      if (known[at]?.charge?.launchId === entry.retry?.newLaunchId && known[at].charge.born) {
+        saveStages(known);
+        return { state: 'born' };
+      }
+      if (child?.launchId === entry.retry?.newLaunchId && child.handle?.pid)
+        return { state: 'unknown' };
+      return { state: 'unknown' };
+    },
     launchCharge(taskId, stage) {
       return structuredClone(known[key(taskId, stage)]?.charge ?? null);
     },
@@ -404,11 +445,22 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
+      const retryEntry = assignment.infrastructureRetry
+        ? reportStore?.get(assignment.infrastructureRetry.reportId)
+        : null;
+      if (
+        assignment.infrastructureRetry &&
+        (!matchingRetryClaim(retryEntry, assignment) ||
+          retryEntry.retry.spawnState !== 'prepared' ||
+          assignment.stage === 'deploy')
+      )
+        return { ok: false, reason: 'availability-held', why: 'replacement claim is not admitted' };
       if (
         pendingAcceptances.size ||
         reportViews().some(
           (report) =>
-            report.taskId === assignment.taskId || report.batch?.includes(assignment.taskId),
+            (!retryEntry || report.reportId !== retryEntry.reportId) &&
+            (report.taskId === assignment.taskId || report.batch?.includes(assignment.taskId)),
         )
       ) {
         return { ok: false, reason: 'busy', why: 'ожидается сохранение или перенос отчёта' };
@@ -436,6 +488,8 @@ export function createSupervisor({
       if (children.size >= config.maxConcurrent) {
         return { ok: false, reason: 'busy', why: 'все места заняты' };
       }
+      const admission = launchAvailability(assignment);
+      if (admission) return admission;
 
       // Идентификатор выдаётся заранее, а не берётся из ответа: тогда
       // возобновлять есть что даже после падения супервизора.
@@ -449,6 +503,7 @@ export function createSupervisor({
           : null) ?? (provider === 'claude' ? randomUUID() : null);
       let command;
       let tokenLimit;
+      let context = null;
       try {
         assignment = prepareAssignment(assignment, previous);
         tokenLimit = effectiveTokenLimit(assignment.task, config);
@@ -517,6 +572,21 @@ export function createSupervisor({
           root,
           home,
         });
+        if (toolHold)
+          context = captureToolContext(
+            command,
+            provider,
+            provider === 'codex'
+              ? codexGitEnvironment(getCodexEnvironment(), root, command.cwd)
+              : undefined,
+          );
+        if (retryEntry && !sameToolContext(context, retryEntry.retry.recovery.context))
+          return {
+            ok: false,
+            reason: 'availability-held',
+            retryRecheck: true,
+            why: 'replacement context changed',
+          };
       } catch (error) {
         return { ok: false, reason: 'not-born', why: error.message };
       }
@@ -526,15 +596,7 @@ export function createSupervisor({
       const timeoutMs = stageTimeoutMs(assignment.stage, config);
       const child = {
         assignment,
-        context: toolHold
-          ? captureToolContext(
-              command,
-              provider,
-              provider === 'codex'
-                ? codexGitEnvironment(getCodexEnvironment(), root, command.cwd)
-                : undefined,
-            )
-          : null,
+        context,
         tokenLimit: tokenLimit.value,
         tokenLimitSource: tokenLimit.source,
         taskId: assignment.taskId,
@@ -582,6 +644,20 @@ export function createSupervisor({
           saveStages({ ...known, [at]: { ...known[at], charge } });
           known[at] = { ...known[at], charge };
         }
+        if (retryEntry)
+          reportStore.update(retryEntry.reportId, {
+            retry: { ...retryEntry.retry, spawnState: 'spawning' },
+          });
+        const lastAdmission = launchAvailability(assignment);
+        if (lastAdmission) {
+          if (retryEntry)
+            reportStore.update(retryEntry.reportId, {
+              retry: { ...retryEntry.retry, spawnState: 'prepared' },
+            });
+          if (provider === 'codex') cancelUsageLaunch(child);
+          cancelUnbornCharge(child);
+          return lastAdmission;
+        }
         child.handle = spawnStageProcess({
           command:
             providerOf(config) === 'codex'
@@ -621,6 +697,18 @@ export function createSupervisor({
         return { ok: false, reason: 'not-born', why: 'процесс не родился: номера у него нет' };
       }
 
+      children.set(assignment.taskId, child);
+      handle.finished.then((run) => {
+        try {
+          finish(child, run);
+        } catch (error) {
+          children.delete(child.taskId);
+          stopPulse();
+          log(`разбор исхода ${child.taskId}:${child.stage} упал: ${error.message}`);
+          say.line(TAG.error, `${child.taskId} разбор исхода упал: ${error.message}`);
+        }
+      });
+
       // Отметка начала ставится один раз и переживает продолжения: она
       // отвечает на вопрос «этот ли заход сделал коммит», а продолжатель
       // приходит к чужим с его точки зрения коммитам.
@@ -643,9 +731,17 @@ export function createSupervisor({
           ...(child.launchId ? { launchId: child.launchId } : {}),
         },
       };
+      if (retryEntry)
+        reportStore.update(retryEntry.reportId, {
+          retry: {
+            ...retryEntry.retry,
+            spawnState: 'born',
+            sessionId,
+            live: known[at].live,
+          },
+        });
       saveStages(known);
 
-      children.set(assignment.taskId, child);
       startPulse();
 
       log(
@@ -667,17 +763,7 @@ export function createSupervisor({
 
       // Разбор исхода не должен уронить супервизор: он ведёт все задачи,
       // и падение на одном отчёте остановило бы конвейер целиком.
-      handle.finished.then((run) => {
-        try {
-          finish(child, run);
-        } catch (error) {
-          children.delete(child.taskId);
-          stopPulse();
-          log(`разбор исхода ${child.taskId}:${child.stage} упал: ${error.message}`);
-          say.line(TAG.error, `${child.taskId} разбор исхода упал: ${error.message}`);
-        }
-      });
-      return { ok: true, sessionId, pid: handle.pid };
+      return { ok: true, sessionId, pid: handle.pid, launchId: child.launchId };
     },
 
     /**
@@ -1468,6 +1554,25 @@ export function createSupervisor({
     };
     saveStages({ ...known, [at]: next });
     known[at] = next;
+  }
+
+  function launchAvailability(assignment) {
+    const allowed = mayLaunch(assignment);
+    if (!allowed?.allowed)
+      return {
+        ok: false,
+        reason: 'availability-held',
+        why: allowed?.why ?? 'availability is closed',
+      };
+    const active = [...children.values(), ...orphans.values()];
+    if (
+      active.length >= config.maxConcurrent ||
+      (active.length &&
+        (isExclusive(assignment.task ?? { status: assignment.stage }) ||
+          active.some((item) => isExclusive(item.assignment?.task ?? { status: item.stage }))))
+    )
+      return { ok: false, reason: 'busy', why: 'места заняты или требуется исключительный запуск' };
+    return null;
   }
 }
 

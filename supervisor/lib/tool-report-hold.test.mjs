@@ -27,6 +27,39 @@ function retain(f, report = null) {
 }
 
 describe('diagnostic disposition', () => {
+  it.each(['healthy', 'inconclusive', 'confirmed'])(
+    'requires a fresh recovery after pause: %s',
+    async (verdict) => {
+      const f = deliveryFixture();
+      try {
+        const { store, entry } = retain(f);
+        store.update(entry.reportId, {
+          disposition: 'infrastructure-held',
+          evidence: { verdict: 'confirmed' },
+          retry: { pauseRecorded: true },
+        });
+        let paused = true;
+        const diagnose = vi.fn(async () => ({ verdict, checks: ['fresh'] }));
+        const pause = vi.fn(() => {
+          paused = true;
+        });
+        const hold = createToolReportHold({ store, diagnose, pause, isPaused: () => paused });
+        hold.restore();
+        expect(diagnose).not.toHaveBeenCalled();
+        paused = false;
+        hold.restore();
+        expect(hold.blocked).toBe(true);
+        await tick(0);
+        expect(store.get(entry.reportId).retry.recovery.verdict).toBe(verdict);
+        expect(paused).toBe(verdict !== 'healthy');
+        hold.restore();
+        await tick(0);
+        expect(diagnose).toHaveBeenCalledOnce();
+      } finally {
+        f.cleanup();
+      }
+    },
+  );
   it.each(['healthy', 'inconclusive'])(
     'returns an accepted failed report to ordinary: %s',
     async (verdict) => {

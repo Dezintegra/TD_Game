@@ -19,6 +19,7 @@ import {
 } from './task-file.mjs';
 import { halt } from './report-plan.mjs';
 import { transferReport, settleToolReport } from './report-delivery.mjs';
+import { retryToolStage } from './tool-retry.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { recoverClosureReason } from './closure.mjs';
@@ -190,7 +191,7 @@ async function startStage(action, io, context) {
   // задача действительно взята и действительно стоит в этапе. Отменять
   // тут нечего — не хватает лишь сессии, и её выдаст ближайший оборот
   // действием `continue-stage`.
-  if (!spawned.ok && spawned.reason === 'busy') {
+  if (!spawned.ok && ['busy', 'availability-held'].includes(spawned.reason)) {
     return { result: 'skipped', why: `этап не запустился: ${spawned.why}` };
   }
 
@@ -333,7 +334,7 @@ async function continueStage(action, io) {
   // место десятками минут, такая запись дала бы карточке дюжину одинаковых
   // строк в час, и настоящая беда утонула бы в них. В журнал цикла причина
   // попадает всегда — её называет сам исход действия.
-  if (!spawned.ok && spawned.reason === 'busy') {
+  if (!spawned.ok && ['busy', 'availability-held'].includes(spawned.reason)) {
     return { result: 'skipped', why: `этап не запустился: ${spawned.why}` };
   }
 
@@ -853,6 +854,7 @@ const HANDLERS = {
   cleanup: cleanupTask,
   'transfer-report': transferReport,
   'settle-tool-report': settleToolReport,
+  'retry-tool-stage': retryToolStage,
   'start-stage': startStage,
   'open-incident': async (action, io) => {
     const task = io.readTask(action.taskId);
@@ -902,7 +904,10 @@ export async function execute(actions, io) {
       });
       continue;
     }
-    if (['start-stage', 'continue-stage'].includes(action.kind) && io.schedulingBlocked?.()) {
+    if (
+      ['start-stage', 'continue-stage', 'retry-tool-stage'].includes(action.kind) &&
+      io.schedulingBlocked?.()
+    ) {
       results.push({ action, result: 'skipped', why: io.schedulingBlocked() });
       continue;
     }
@@ -917,7 +922,7 @@ export async function execute(actions, io) {
           (entry) =>
             isToolHeld(entry) &&
             !(
-              action.kind === 'settle-tool-report' &&
+              ['settle-tool-report', 'retry-tool-stage'].includes(action.kind) &&
               action.reportId === entry.reportId &&
               action.taskId === entry.taskId &&
               action.stage === entry.stage
@@ -933,6 +938,7 @@ export async function execute(actions, io) {
     if (
       action.kind !== 'transfer-report' &&
       action.kind !== 'settle-tool-report' &&
+      action.kind !== 'retry-tool-stage' &&
       // Хвост завершённого этапа должен уйти до переноса его отчёта.
       action.kind !== 'push-tail' &&
       io.reportStore?.entries().some((entry) => reportTaskIds(entry.report).includes(action.taskId))
@@ -942,7 +948,10 @@ export async function execute(actions, io) {
     }
     // Перенесённый выше отчёт мог открыть инцидент уже после снимка scan.
     // Проверяем допуск до захвата и порождения, по обновлённому кешу доски.
-    if (['start-stage', 'continue-stage'].includes(action.kind) && io.allTaskIds) {
+    if (
+      ['start-stage', 'continue-stage', 'retry-tool-stage'].includes(action.kind) &&
+      io.allTaskIds
+    ) {
       const tasks = io
         .allTaskIds()
         .map((id) => io.readTask(id))

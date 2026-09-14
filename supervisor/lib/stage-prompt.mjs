@@ -84,6 +84,25 @@ export function stagePrompt({
   tokenBudget = null,
 }) {
   const lines = [];
+  if (assignment.toolRecovery)
+    lines.push(
+      '## Сохранённая работа после восстановления инструментов',
+      '',
+      'Это замещающий запуск того же этапа. Сначала сверь сохранённый отчёт, рабочее дерево, коммиты и внешние эффекты. Продолжай только недоделанное; не повторяй подтверждённые действия.',
+      'Состояние Git unknown требует чтения фактической ветки и хвоста; оно не означает чистое дерево.',
+      '```json',
+      JSON.stringify(
+        {
+          ...assignment.toolRecovery,
+          diagnosis: assignment.toolRecovery.diagnosis?.checks,
+          recovery: assignment.toolRecovery.recovery?.checks,
+        },
+        null,
+        2,
+      ),
+      '```',
+      '',
+    );
   if (
     task?.pipelineIncident &&
     !task.pipelineIncident.verifiedAt &&

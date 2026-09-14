@@ -208,6 +208,7 @@ export function planLaunches({
     actions.push({
       kind: item.kind,
       taskId: item.task.id,
+      ...(item.reportId ? { reportId: item.reportId } : {}),
       stage: item.stage,
       ...(item.kind === 'continue-stage'
         ? { reason: 'этапу нужна сессия, живого процесса нет' }

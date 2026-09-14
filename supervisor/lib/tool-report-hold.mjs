@@ -22,6 +22,11 @@ export function retainedReportView(entry) {
       entry.evidence?.verdict === 'confirmed' &&
       entry.retry?.recovery?.verdict === 'healthy' &&
       ['not-required', 'confirmed'].includes(entry.charge?.state),
+    retryReady:
+      entry.disposition === 'retry-ready' &&
+      entry.retry?.state === 'available' &&
+      entry.retry?.recovery?.verdict === 'healthy',
+    retryClaimed: ['retry-claimed', 'settled'].includes(entry.disposition),
   };
 }
 
@@ -42,18 +47,42 @@ export function needsToolDiagnosis(answer, parsed, stage) {
 }
 
 /** Only this coordinator changes a diagnostic disposition; it never writes a task. */
-export function createToolReportHold({ store, diagnose, pause, archive, log = () => {} }) {
+export function createToolReportHold({
+  store,
+  diagnose,
+  pause,
+  archive,
+  isPaused = () => true,
+  mayRecover = () => true,
+  log = () => {},
+}) {
   const running = new Set();
   let storageError = null;
   return {
     get blocked() {
-      return storageError !== null;
+      return (
+        storageError !== null ||
+        (running.size > 0 &&
+          store
+            .entries()
+            .some((entry) => ['infrastructure-held', 'retry-ready'].includes(entry.disposition)))
+      );
     },
     restore() {
       for (const entry of store.entries()) {
-        if (entry.disposition === 'infrastructure-held') {
+        if (['infrastructure-held', 'retry-ready'].includes(entry.disposition)) {
           try {
-            pause(entry);
+            if (!entry.retry?.pauseRecorded) armPause(entry);
+            else if (isPaused()) {
+              if (entry.retry.recovery?.verdict === 'healthy')
+                store.update(entry.reportId, { retry: { ...entry.retry, recovery: null } });
+            } else if (
+              !running.size &&
+              entry.retry.recovery?.verdict !== 'healthy' &&
+              mayRecover()
+            ) {
+              recover(entry);
+            }
           } catch (error) {
             storageError = error;
           }
@@ -74,7 +103,7 @@ export function createToolReportHold({ store, diagnose, pause, archive, log = ()
             store.update(entry.reportId, { evidence });
             if (evidence.verdict === 'confirmed') {
               store.update(entry.reportId, { disposition: 'infrastructure-held' });
-              pause(store.get(entry.reportId));
+              armPause(store.get(entry.reportId));
             } else if (entry.originalResult.accepted) {
               store.update(entry.reportId, { disposition: 'ordinary' });
             } else {
@@ -92,4 +121,39 @@ export function createToolReportHold({ store, diagnose, pause, archive, log = ()
       }
     },
   };
+
+  function armPause(entry) {
+    pause(entry);
+    store.update(entry.reportId, { retry: { ...entry.retry, pauseRecorded: true } });
+  }
+
+  function recover(entry) {
+    running.add(entry.reportId);
+    Promise.resolve()
+      .then(async () => {
+        let recovery;
+        try {
+          recovery = await diagnose(entry);
+        } catch (error) {
+          recovery = { verdict: 'inconclusive', reason: error.message, checks: [] };
+        }
+        if (!['confirmed', 'healthy', 'inconclusive'].includes(recovery?.verdict))
+          recovery = { verdict: 'inconclusive', reason: 'invalid-control-result', checks: [] };
+        store.update(entry.reportId, {
+          retry: {
+            ...entry.retry,
+            recovery,
+            recoveryHistory: [...(entry.retry?.recoveryHistory ?? []), recovery],
+            recoveryCostUsd: (entry.retry?.recoveryCostUsd ?? 0) + (recovery.costUsd ?? 0),
+          },
+        });
+        if (recovery.verdict !== 'healthy') armPause(store.get(entry.reportId));
+        storageError = null;
+      })
+      .catch((error) => {
+        storageError = error;
+        log(`tool recovery retention: ${error.message}`);
+      })
+      .finally(() => running.delete(entry.reportId));
+  }
 }

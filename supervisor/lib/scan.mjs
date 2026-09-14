@@ -54,6 +54,7 @@ export const ACTIONS = [
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
   'settle-tool-report', // подтвердить эффекты инфраструктурного удержания
+  'retry-tool-stage', // передать подтверждённое право на замещающий запуск
   'answer-question', // разобрать ответ владельца продукта
   'return-task', // вернуть из ошибки задачу, упавшую по вине конвейера
   'poll-external', // опросить проверки CI или прогон на чужом железе
@@ -316,6 +317,13 @@ export function scan(state) {
   // 2. Отчёты сессий. Перенос — самое дешёвое, что двигает задачу вперёд.
   for (const report of reports) {
     if (isToolHeld(report)) {
+      if (report.retryClaimed && report.stage !== 'deploy')
+        actions.push({
+          kind: 'retry-tool-stage',
+          taskId: report.taskId,
+          stage: report.stage,
+          reportId: report.reportId,
+        });
       if (report.settlementReady && byId.has(report.taskId))
         actions.push({
           kind: 'settle-tool-report',
@@ -670,6 +678,11 @@ export function scan(state) {
   // же — процесс. Различает их только то, известен ли идентификатор прежней
   // сессии: если известен, её возобновляют, а не начинают заново.
   const waitingForSession = [];
+  const retries = new Map(
+    reports
+      .filter((report) => report.retryReady && report.stage !== 'deploy')
+      .map((report) => [report.taskId, report]),
+  );
   // Опрос может сменить этап: продолжение и пределы решит следующий свежий оборот.
   const polled = new Set(
     actions.filter((action) => action.kind === 'poll-external').map((action) => action.taskId),
@@ -683,7 +696,12 @@ export function scan(state) {
     // занят ею навсегда, и заметить это можно было только глазами.
     // Проверено 27.08.2026: 0002 простояла так почти шесть часов.
     if (!NEEDS_SESSION.includes(task.status)) continue;
-    if (stuck.has(task.id) || hasReport(task.id) || tokenHeld.has(task.id)) continue;
+    if (
+      stuck.has(task.id) ||
+      (hasReport(task.id) && !retries.has(task.id)) ||
+      tokenHeld.has(task.id)
+    )
+      continue;
 
     // Живой процесс на этом самом этапе — работа идёт, вмешиваться незачем.
     if (isRunning(task.id, task.status)) continue;
@@ -725,7 +743,7 @@ export function scan(state) {
     // дальше вести нельзя, останавливают независимо от занятости машины.
     // Иначе повторился бы случай 0022 (02.09.2026), где остановка ждала
     // места, освободившегося за три минуты до неё.
-    if ((task.attempts?.continuations ?? 0) >= config.maxContinuations) {
+    if (!retries.has(task.id) && (task.attempts?.continuations ?? 0) >= config.maxContinuations) {
       notes.push(`задача ${task.id}: продолжения исчерпаны, нужен разбор человеком`);
       actions.push({
         kind: 'fail-stage',
@@ -853,7 +871,8 @@ export function scan(state) {
     .filter((task) => task.status !== 'deploy' || batchOf.has(task.id))
     .map((task) => ({
       task,
-      kind: 'continue-stage',
+      kind: retries.has(task.id) ? 'retry-tool-stage' : 'continue-stage',
+      reportId: retries.get(task.id)?.reportId,
       stage: task.status,
       batch: batchOf.get(task.id),
       unaccounted: unaccountedLaunchNote(task, task.status, config, state.codexUsage ?? {}),
@@ -1003,6 +1022,7 @@ export function scan(state) {
       (action) =>
         action.kind === 'transfer-report' ||
         action.kind === 'settle-tool-report' ||
+        action.kind === 'retry-tool-stage' ||
         action.kind === 'push-tail' ||
         (action.kind === 'flush-delay-journal' &&
           !reports.some((report) => report.reportId && report.taskId === action.taskId)) ||

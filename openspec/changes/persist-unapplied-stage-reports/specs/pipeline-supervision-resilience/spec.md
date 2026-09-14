@@ -87,6 +87,10 @@ the failed report. After full healthy recovery, settlement SHALL preserve the so
 account for actual cost and refund only a receipt-confirmed continuation for the same launch
 once. Pending charge confirmation SHALL prevent settlement. Retry-ready SHALL remain durable
 without launching a process; active acknowledgement SHALL wait for a safe handoff and archive.
+The sole exception to pending exclusion SHALL be the matching replacement claim after
+healthy recovery and confirmed settlement. Its new launchId SHALL be persisted before
+spawn. Uncertain birth SHALL retain the claim until recovery confirms it; confirmed birth
+SHALL consume the entitlement once. The full archive SHALL precede active acknowledgement.
 
 #### Scenario: Infrastructure refund response was lost
 - **WHEN** the recipient saved a launch-specific refund but its response or a journal part was lost
