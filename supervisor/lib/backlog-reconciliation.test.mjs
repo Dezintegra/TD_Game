@@ -57,6 +57,42 @@ function ioFor(t, needed = false) {
   };
 }
 describe('сверка фактического результата', () => {
+  it.each([false, true, undefined])(
+    'бюджет не удерживает только доказанную служебную уборку: %s',
+    async (needed) => {
+      const current = task({
+        status: 'token-limit',
+        tokenHold: { spent: 26795899, limit: 25000000, resumeStatus: 'implement' },
+      });
+      const io = ioFor(current);
+      io.deploymentImpact = () => (needed === undefined ? undefined : { needed });
+      expect(needsReconciliation(current, now)).toBe(true);
+      await reconcileTask({ ...action, expectedStatus: 'token-limit' }, io);
+      const saved = io.saveTask.mock.calls[0][0];
+      expect(saved.status).toBe(needed === false ? 'cleanup' : 'token-limit');
+      expect(saved.tokenBudget).toEqual(current.tokenBudget);
+      if (needed !== false) expect(saved.tokenHold).toEqual(current.tokenHold);
+    },
+  );
+  it.each([false, true])(
+    'сверяет review без сброса оставшихся игровых обязательств %s',
+    async (needed) => {
+      const current = task({ status: 'review', question: { text: 'pending' } });
+      const io = ioFor(current, needed);
+      expect(needsReconciliation(current, now)).toBe(true);
+      expect(await reconcileTask({ ...action, expectedStatus: 'review' }, io)).toMatchObject({
+        result: 'done',
+        status: needed ? 'review' : 'cleanup',
+      });
+      const saved = io.saveTask.mock.calls[0][0];
+      expect(saved.reconciliation.state).toBe('merged');
+      if (needed) {
+        expect(saved.attempts).toEqual(current.attempts);
+        expect(saved.statusChangedAt).toBe(current.statusChangedAt);
+        expect(saved.question).toEqual(current.question);
+      }
+    },
+  );
   it('закрытый без вливания PR не становится вечным неизвестным ответом', async () => {
     const io = ioFor(task());
     await reconcileTask({ ...action, proof: { ...proof, state: 'CLOSED', mergedAt: null } }, io);

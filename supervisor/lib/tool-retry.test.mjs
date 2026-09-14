@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import { settleToolReport } from './report-delivery.mjs';
 import { retryToolStage } from './tool-retry.mjs';
+import { execute } from './execute.mjs';
+import { executionSummary } from './execution-summary.mjs';
 import { retainedReportView } from './tool-report-hold.mjs';
 import { scan } from './scan.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -68,6 +70,32 @@ async function ready(options = {}) {
 }
 
 describe('durable replacement entitlement', () => {
+  it('handoff of an already born replacement reports no new launch', async () => {
+    const f = await ready({ stage: 'implement' });
+    try {
+      const opened = f.open();
+      const entry = opened.store.get(f.entry.reportId);
+      opened.store.update(entry.reportId, {
+        disposition: 'retry-claimed',
+        retry: { ...entry.retry, state: 'claimed', newLaunchId: 'new', spawnState: 'born' },
+      });
+      const spawnStage = vi.fn();
+      const results = await execute([f.action], {
+        ...f.open().io,
+        spawnStage,
+        inspectRetryLaunch: () => ({ state: 'born' }),
+      });
+      expect(results[0]).toMatchObject({ result: 'done' });
+      expect(executionSummary('worked', results)).toMatchObject({
+        launches: 0,
+        service: 1,
+        outcome: 'progress',
+      });
+      expect(spawnStage).not.toHaveBeenCalled();
+    } finally {
+      f.cleanup();
+    }
+  });
   it('confirms additional recovery cost once and requires fresh admission', async () => {
     const f = await ready();
     try {

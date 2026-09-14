@@ -55,6 +55,23 @@ const run = (state) => {
 const kinds = (result) => result.actions.map((action) => action.kind);
 
 describe('неподтверждённая доставка', () => {
+  it('отсутствующий каталог не забирает квоту независимой задачи', () => {
+    const stale = task({ status: 'review', priority: 100 });
+    const independent = task({ id: '0002-ready', type: 'note' });
+    const result = run({
+      tasks: [stale, independent],
+      unavailableWorkspaces: { [stale.id]: 'каталог отсутствует' },
+      config: { ...config, maxConcurrent: 1 },
+    });
+    expect(
+      result.actions.some(
+        (action) => action.taskId === stale.id && action.kind === 'continue-stage',
+      ),
+    ).toBe(false);
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'start-stage', taskId: independent.id }),
+    );
+  });
   it('удерживает участников отклонённого отчёта и выдаёт независимую работу', () => {
     const lead = task({ status: 'deploy' });
     const member = task({ id: '0002-member', status: 'implement' });

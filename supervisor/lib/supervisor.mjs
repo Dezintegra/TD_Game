@@ -102,6 +102,7 @@ export function createSupervisor({
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
+  let launchCount = 0;
   codexUsage = migrateTokenLedger(codexUsage);
   const usageWriteErrors = new Set();
   const pendingUsageCancellations = new Map();
@@ -247,6 +248,9 @@ export function createSupervisor({
   if (initialize) adoptOrphans();
 
   return {
+    get launchCount() {
+      return launchCount;
+    },
     mayLaunch,
     inspectRetryLaunch(entry) {
       if (entry.retry?.spawnState === 'prepared') return { state: 'absent' };
@@ -698,6 +702,7 @@ export function createSupervisor({
         return { ok: false, reason: 'not-born', why: 'процесс не родился: номера у него нет' };
       }
 
+      launchCount++;
       children.set(assignment.taskId, child);
       handle.finished.then((run) => {
         try {
