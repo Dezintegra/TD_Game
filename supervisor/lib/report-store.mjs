@@ -17,21 +17,38 @@ function validRejection(entry) {
   );
 }
 
-export const REPORT_STORE_VERSION = 1;
+export const REPORT_STORE_VERSION = 2;
+const dispositions = [
+  'ordinary',
+  'diagnosing',
+  'infrastructure-held',
+  'retry-ready',
+  'retry-claimed',
+  'settled',
+];
 
 function validate(value) {
-  if (value?.version !== REPORT_STORE_VERSION) throw new Error('unsupported report store version');
+  if (![1, REPORT_STORE_VERSION].includes(value?.version))
+    throw new Error('unsupported report store version');
   if (!Array.isArray(value.reports)) throw new Error('invalid report queue');
   const ids = new Set();
   for (const entry of value.reports) {
+    if (value.version === 1 && entry) entry.disposition = 'ordinary';
     if (
       !entry ||
       !['reportId', 'taskId', 'stage'].every(
         (key) => typeof entry[key] === 'string' && entry[key],
       ) ||
-      !entry.report ||
-      typeof entry.report !== 'object' ||
-      Array.isArray(entry.report) ||
+      !dispositions.includes(entry.disposition) ||
+      (entry.report === null
+        ? entry.disposition === 'ordinary'
+        : !entry.report || typeof entry.report !== 'object' || Array.isArray(entry.report)) ||
+      (entry.disposition !== 'ordinary' &&
+        (!text(entry.launchId) ||
+          !entry.originalResult ||
+          !Array.isArray(entry.batch) ||
+          !['known', 'unknown'].includes(entry.git?.state) ||
+          !['not-required', 'pending', 'confirmed'].includes(entry.charge?.state))) ||
       !Array.isArray(entry.progress) ||
       !validRejection(entry) ||
       ids.has(entry.reportId)
@@ -113,6 +130,7 @@ export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
         launchId: launch.launchId ?? null,
         startedAt: launch.startedAt ?? null,
         machine: launch.machine ?? null,
+        disposition: 'ordinary',
         report: structuredClone(report),
         plan: null,
         progress: [],
@@ -120,8 +138,39 @@ export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
       commit([...reports, entry]);
       return structuredClone(entry);
     },
-    update(id, { plan, progress } = {}) {
+    retain(result, launch) {
+      const existing = reports.find((entry) => sameReportLaunch(entry, launch));
+      if (existing) return structuredClone(existing);
+      const entry = {
+        reportId: uuid(),
+        taskId: launch.taskId,
+        stage: launch.stage,
+        launchId: launch.launchId,
+        startedAt: launch.startedAt,
+        machine: launch.machine,
+        disposition: 'diagnosing',
+        report: structuredClone(result.report ?? null),
+        originalResult: structuredClone(result),
+        assignment: structuredClone(launch.assignment ?? {}),
+        batch: structuredClone(launch.batch ?? []),
+        charge: structuredClone(launch.charge ?? { state: 'pending', launchId: launch.launchId }),
+        git: structuredClone(launch.git ?? { state: 'unknown', reason: 'not-inspected' }),
+        context: structuredClone(launch.context ?? null),
+        evidence: null,
+        retry: null,
+        plan: null,
+        progress: [],
+      };
+      commit([...reports, entry]);
+      return structuredClone(entry);
+    },
+    update(id, { plan, progress, disposition, evidence, retry, charge, git } = {}) {
       if (!reports.some((entry) => entry.reportId === id)) throw new Error(`unknown report ${id}`);
+      const current = reports.find((entry) => entry.reportId === id);
+      if (disposition && disposition !== 'ordinary' && current.disposition === 'ordinary')
+        throw new Error('cannot reclassify ordinary delivery');
+      if (charge && charge.launchId !== current.launchId)
+        throw new Error('charge belongs to another launch');
       commit(
         reports.map((entry) =>
           entry.reportId === id
@@ -129,6 +178,11 @@ export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
                 ...entry,
                 ...(plan === undefined ? {} : { plan }),
                 ...(progress === undefined ? {} : { progress }),
+                ...(disposition === undefined ? {} : { disposition }),
+                ...(evidence === undefined ? {} : { evidence }),
+                ...(retry === undefined ? {} : { retry }),
+                ...(charge === undefined ? {} : { charge }),
+                ...(git === undefined ? {} : { git }),
               }
             : entry,
         ),

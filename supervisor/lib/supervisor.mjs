@@ -384,6 +384,7 @@ export function createSupervisor({
           known[at] = { ...known[at], deployment: assignment.deployment };
           saveStages(known);
         }
+        assignment = { ...assignment, launchId: assignment.launchId ?? randomUUID() };
         command = stageCommand({
           assignment: { ...assignment, sessionId },
           prompt: stagePrompt({
@@ -436,7 +437,7 @@ export function createSupervisor({
         stage: assignment.stage,
         path: assignment.path,
         sessionId,
-        launchId: randomUUID(),
+        launchId: assignment.launchId,
         usageOrdinal: 0,
         startedAt: now(),
         startedMs: nowMs(),
