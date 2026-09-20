@@ -44,6 +44,12 @@ describe('настройка правил', () => {
     expect(BASE_INCOME_PER_TICK).toBe(10);
     expect(MAP_WIDTH_CELLS).toBe(38);
     expect(UNIT_STATS[UnitType.Assault].speed).toBe(67);
+    expect(UNIT_SEPARATION_RADIUS).toEqual({
+      [UnitType.Assault]: 250,
+      [UnitType.Sniper]: 238,
+      [UnitType.Tesla]: 300,
+    });
+    expect(SEPARATION_WALL_CLEARANCE).toBe(325);
   });
 
   it('доход двигается и остаётся целым', () => {
@@ -115,9 +121,45 @@ describe('настройка правил', () => {
     applyRuleTuning({ unitRadius: 1.25 });
 
     expect(UNIT_SEPARATION_RADIUS[UnitType.Assault]).toBe(250);
+    expect(UNIT_SEPARATION_RADIUS[UnitType.Sniper]).toBe(238);
     expect(UNIT_SEPARATION_RADIUS[UnitType.Tesla]).toBe(300);
     expect(SEPARATION_WALL_CLEARANCE).toBe(325);
     expect(SEPARATION_WALL_CLEARANCE).toBeGreaterThan(UNIT_SEPARATION_RADIUS[UnitType.Tesla]);
+  });
+
+  it('контроль прежней плотности, повтор и сброс не накапливают масштаб', () => {
+    const stats = structuredClone({
+      units: UNIT_STATS,
+      structures: STRUCTURE_STATS,
+      general: GENERAL_STATS,
+      upgrades: UPGRADE_BRANCHES,
+      income: BASE_INCOME_PER_TICK,
+      map: MAP_WIDTH_CELLS,
+    });
+    for (const radius of [1, 1, 1.25, 1.25]) {
+      applyRuleTuning({ unitRadius: radius });
+      expect(Object.values(UNIT_SEPARATION_RADIUS)).toEqual(
+        radius === 1 ? [200, 190, 240] : [250, 238, 300],
+      );
+      expect(SEPARATION_WALL_CLEARANCE).toBe(radius === 1 ? 260 : 325);
+      expect(SEPARATION_WALL_CLEARANCE).toBeGreaterThan(
+        Math.max(...Object.values(UNIT_SEPARATION_RADIUS)),
+      );
+      expect(ruleTuningIsNeutral()).toBe(radius === 1.25);
+      expect({
+        units: UNIT_STATS,
+        structures: STRUCTURE_STATS,
+        general: GENERAL_STATS,
+        upgrades: UPGRADE_BRANCHES,
+        income: BASE_INCOME_PER_TICK,
+        map: MAP_WIDTH_CELLS,
+      }).toEqual(stats);
+    }
+    applyRuleTuning({ unitRadius: 1 });
+    resetRuleTuning();
+    expect(Object.values(UNIT_SEPARATION_RADIUS)).toEqual([250, 238, 300]);
+    expect(SEPARATION_WALL_CLEARANCE).toBe(325);
+    expect(ruleTuningIsNeutral()).toBe(true);
   });
 
   it('карта меняет сторону, число клеток и отступ базы', () => {
