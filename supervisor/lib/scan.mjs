@@ -945,7 +945,12 @@ export function scan(state) {
     });
     actions.push(...selected.actions);
     for (const action of selected.actions) {
-      if (incident.probes.has(action.taskId)) action.incidentProbe = true;
+      const source = tasks.find((task) => task.id === action.taskId);
+      if (
+        incident.probes.has(action.taskId) &&
+        action.stage === source?.pipelineIncident?.check.stage
+      )
+        action.incidentProbe = true;
     }
     notes.push(...selected.notes);
   } else if (candidates.length) notes.push('самообновление ждёт тишины: сессий не выдаём');
