@@ -1,4 +1,5 @@
 ﻿import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach } from 'vitest';
 import {
   ATTACK_STANCES,
   ATTACK_STANCE_LABEL,
@@ -37,6 +38,8 @@ import {
   distanceSquared,
   nukeBaseExclusion,
   upgradeBranchIndex,
+  applyRuleTuning,
+  resetRuleTuning,
 } from '@td/shared';
 import type { Command, PlayerId, Vec2 } from '@td/shared';
 import { createWorld } from './world.js';
@@ -1913,6 +1916,114 @@ describe('пролом преграды в любом режиме', () => {
 });
 
 describe('расталкивание в связке с движением и боем', () => {
+  beforeEach(() => resetRuleTuning());
+  afterEach(() => resetRuleTuning());
+
+  const compositions = [
+    { name: 'штурмовики', types: [UnitType.Assault] },
+    { name: 'снайперы', types: [UnitType.Sniper] },
+    { name: 'Теслы', types: [UnitType.Tesla] },
+    { name: 'смешанное войско', types: [UnitType.Assault, UnitType.Sniper, UnitType.Tesla] },
+  ];
+  const passages = ['одна клетка', 'три клетки', 'поворот', 'постройки'] as const;
+  type Passage = (typeof passages)[number];
+
+  const passageWorld = (
+    passage: Passage,
+    types: readonly UnitType[],
+    closed = false,
+  ): WorldState => {
+    const world = openWorld();
+    const cells = new Uint8Array(MAP_CELL_COUNT);
+    const walls: StructureState[] = [];
+    // Цель достаточно далеко за выходом даже для Теслы. Свои стены,
+    // отключённые генералы и отложенный огонь базы исключают бой в горле.
+    const target = cellIndex(24, 35);
+    for (let y = 12; y <= 20; y += 1) {
+      for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
+        const free =
+          passage === 'поворот'
+            ? (x === 10 && y <= 15) || (y === 15 && x >= 10 && x <= 24) || (x === 24 && y >= 15)
+            : x >= 24 && x < 24 + (passage === 'три клетки' ? 3 : 1);
+        if (free && !(closed && y === 18)) continue;
+        const cell = cellIndex(x, y);
+        if (passage === 'постройки') walls.push(wallAt(cell, 0, 2000 + cell));
+        else cells[cell] = Terrain.Rock;
+      }
+    }
+    const start = cellCentre(cellIndex(passage === 'поворот' ? 10 : 24, 8));
+    return {
+      ...world,
+      map: { cells, baseCells: [world.map.baseCells[0]!, target] },
+      structures: [
+        ...world.structures.map((structure) => ({
+          ...structure,
+          cell: structure.owner === asPlayerId(1) ? target : structure.cell,
+          readyAtTick: asTickNumber(10000),
+          health: 1_000_000_000,
+        })),
+        ...walls,
+      ],
+      generals: world.generals.map((general) => ({
+        ...general,
+        alive: false,
+        respawnAtTick: asTickNumber(10000),
+      })),
+      units: Array.from({ length: 100 }, (_, index) => ({
+        id: asEntityId(700 + index),
+        owner: asPlayerId(0),
+        unitType: types[index % types.length]!,
+        position: { ...start },
+        health: 1_000_000,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(10000),
+      })),
+    };
+  };
+
+  const crossPassage = (initial: WorldState): number[] => {
+    let world = initial;
+    const occupancy = buildOccupancy(world.map, world.structures);
+    const originalIds = new Set(world.units.map((unit) => unit.id));
+    const crossed = new Set<number>();
+    for (let tick = 0; tick < 3600; tick += 1) {
+      world = step(world, []);
+      const invalid = world.units.filter(
+        (unit) =>
+          occupancy.blocked[cellAt(unit.position)] === 1 ||
+          unit.health <= 0 ||
+          !originalIds.has(unit.id),
+      );
+      if (invalid.length > 0 || world.units.length !== originalIds.size) {
+        throw new Error(
+          `tick=${tick}, invalid=${JSON.stringify(invalid)}, count=${world.units.length}`,
+        );
+      }
+      for (const unit of world.units) {
+        if (unit.position.y >= cellsToUnits(21)) crossed.add(unit.id);
+      }
+      if (crossed.size === originalIds.size) break;
+    }
+    return [...originalIds].filter((id) => !crossed.has(id));
+  };
+
+  for (const radius of [1, 1.25]) {
+    for (const passage of passages) {
+      for (const composition of compositions) {
+        it(`100 машин: ${composition.name}, ${passage}, радиус ${radius}`, () => {
+          applyRuleTuning({ unitRadius: radius });
+          expect(crossPassage(passageWorld(passage, composition.types))).toEqual([]);
+        });
+      }
+    }
+    it(`закрытый проход не выпускает исходные 100 машин, радиус ${radius}`, () => {
+      applyRuleTuning({ unitRadius: radius });
+      expect(crossPassage(passageWorld('одна клетка', compositions[3]!.types, true))).toEqual(
+        Array.from({ length: 100 }, (_, index) => 700 + index),
+      );
+    });
+  }
+
   /** Скальная гряда через всю карту с единственным проходом в клетку. */
   const GAP_X = 24;
   const WALL_Y = 24;
