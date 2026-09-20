@@ -2162,4 +2162,53 @@ describe('расталкивание в связке с движением и б
     // ...и при этом выстрел по назначенной цели состоялся в том же тике.
     expect(afterBase?.health ?? 0).toBeLessThan(before?.health ?? 0);
   });
+
+  it('200 осаждающих машин стреляют и не заходят центрами на основание', () => {
+    let world = openWorld();
+    const base = world.structures.find((entry) => entry.owner === asPlayerId(1))!;
+    const centre = cellCentre(base.cell);
+    const spots = [
+      { x: centre.x - 4000, y: centre.y },
+      { x: centre.x + 4000, y: centre.y },
+      { x: centre.x, y: centre.y - 4000 },
+      { x: centre.x, y: centre.y + 4000 },
+    ];
+    world = {
+      ...world,
+      structures: world.structures.map((entry) => ({
+        ...entry,
+        health: 1_000_000_000,
+        readyAtTick: asTickNumber(10000),
+      })),
+      generals: world.generals.map((general) => ({
+        ...general,
+        alive: false,
+        respawnAtTick: asTickNumber(10000),
+      })),
+      units: Array.from({ length: 200 }, (_, index) => ({
+        id: asEntityId(700 + index),
+        owner: asPlayerId(0),
+        unitType: [UnitType.Assault, UnitType.Sniper, UnitType.Tesla][index % 3]!,
+        position: { ...spots[Math.floor(index / 50)]! },
+        health: 1_000_000,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(0),
+      })),
+    };
+    const occupancy = buildOccupancy(world.map, world.structures);
+    const fired = new Set<number>();
+    for (let tick = 0; tick < 300; tick += 1) {
+      world = step(world, []);
+      expect(world.units).toHaveLength(200);
+      const inside = world.units.filter((entry) => occupancy.blocked[cellAt(entry.position)] === 1);
+      expect(inside.map((entry) => entry.id)).toEqual([]);
+      for (const entry of world.units) {
+        if (entry.readyAtTick > world.tick) fired.add(entry.id);
+      }
+    }
+    expect(fired.size).toBeGreaterThan(0);
+    expect(world.structures.find((entry) => entry.id === base.id)?.health).toBeLessThan(
+      1_000_000_000,
+    );
+  });
 });
