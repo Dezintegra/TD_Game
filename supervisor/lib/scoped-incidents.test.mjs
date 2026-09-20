@@ -4,6 +4,7 @@ import { incidentPolicy, incidentFromReport } from './pipeline-incidents.mjs';
 import { scan } from './scan.mjs';
 import { emptyScheduling } from './scheduling.mjs';
 import { sortCards } from './validate-card.mjs';
+import { finishTokenReanalysis } from './token-reanalysis.mjs';
 
 const now = '2026-09-14T01:00:00Z';
 const config = resolveConfig({
@@ -60,6 +61,90 @@ const state = (tasks, over = {}) => ({
 });
 const launches = (s) =>
   scan(s).actions.filter((a) => ['start-stage', 'continue-stage'].includes(a.kind));
+
+describe('бюджетный анализ перед проверкой инцидента', () => {
+  const preparing = () => ({
+    ...source('0001-source', ['implement', 'revise']),
+    status: 'decompose',
+    returnTo: null,
+    tokenReanalysis: {
+      phase: 'analyzing',
+      originStatus: 'implement',
+      originReturnTo: null,
+      originPriority: 1,
+      originAttempts: { continuations: 0 },
+      originDecomposed: false,
+    },
+  });
+  const preparedState = (t = preparing()) => state([t, task('0002-fix', { status: 'completed' })]);
+
+  it('выполняет обязательный анализ, затем выдаёт единственную исходную пробу', () => {
+    const s = preparedState();
+    const before = JSON.stringify(s);
+    expect(incidentPolicy(s).isRecovery(s.tasks[0], 'decompose')).toBe(true);
+    expect(launches(s)).toEqual([
+      expect.objectContaining({ taskId: s.tasks[0].id, stage: 'decompose' }),
+    ]);
+    expect(launches(s)[0].incidentProbe).toBeUndefined();
+    expect(JSON.stringify(s)).toBe(before);
+    const returned = finishTokenReanalysis(
+      s.tasks[0],
+      { ...s.tasks[0], status: 'implement' },
+      { summary: 'Неделимая задача возвращается в implement.' },
+      now,
+    );
+    expect(launches(preparedState(returned))[0]).toMatchObject({
+      taskId: returned.id,
+      stage: 'implement',
+      incidentProbe: true,
+    });
+  });
+
+  it.each([
+    'pending-fix',
+    'invalid-context',
+    'other-origin',
+    'completed',
+    'card-probe',
+    'journal-probe',
+  ])('не допускает подготовку при ограничении %s', (kind) => {
+    const s = preparedState();
+    const t = s.tasks[0];
+    if (kind === 'pending-fix') s.tasks[1].status = 'implement';
+    if (kind === 'invalid-context') delete t.tokenReanalysis.originPriority;
+    if (kind === 'other-origin') t.tokenReanalysis.originStatus = 'audit';
+    if (kind === 'completed') t.tokenReanalysis.phase = 'completed';
+    if (kind === 'card-probe') t.pipelineIncident.probeStartedAt = now;
+    if (kind === 'journal-probe') s.scheduling.probes[t.pipelineIncident.id] = now;
+    expect(incidentPolicy(s).allows(t, 'decompose')).toBe(false);
+    expect(launches(s).some((a) => a.taskId === t.id)).toBe(false);
+  });
+
+  it('сохраняет конечный лимит и общую паузу', () => {
+    const s = preparedState();
+    expect(launches({ ...s, paused: true })).toEqual([]);
+    s.config = { ...config, provider: 'codex', codexMaxTaskTokens: 250 };
+    s.codexUsage = {
+      version: 2,
+      tasks: {
+        [s.tasks[0].id]: {
+          sessions: {
+            old: {
+              knownTokens: 260,
+              snapshot: { input_tokens: 260, output_tokens: 0 },
+              reasons: [],
+            },
+          },
+          launches: {},
+        },
+      },
+    };
+    expect(launches(s)).toEqual([]);
+    expect(scan(s).actions).toContainEqual(
+      expect.objectContaining({ kind: 'hold-token-budget', taskId: s.tasks[0].id }),
+    );
+  });
+});
 
 describe('область инцидента и доступная работа', () => {
   it('исчерпанный ремонт не занимает места независимых продолжений', () => {

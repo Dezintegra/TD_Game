@@ -255,6 +255,39 @@ it('сохраняет диагноз с конкретным исправлен
   expect(io.readTask(source.id).pipelineIncident.probeStartedAt).toBe(NOW);
 });
 
+it.each(['completed', 'implement'])(
+  'бюджетная подготовка не расходует пробу и перечитывает исправление в статусе %s',
+  async (fixStatus) => {
+    const source = task({ status: 'decompose', returnTo: null });
+    source.tokenReanalysis = {
+      phase: 'analyzing',
+      originStatus: 'implement',
+      originReturnTo: null,
+      originPriority: 1,
+      originAttempts: { continuations: 0 },
+      originDecomposed: false,
+    };
+    source.pipelineIncident = {
+      id: 'incident',
+      evidence: 'Импорт внутренних пакетов прерывал тесты',
+      openedAt: NOW,
+      affectedStages: ['implement'],
+      fixedBy: ['0002-fix'],
+      check: { stage: 'implement', expectation: 'Исходные тесты действительно выполняются' },
+      probeStartedAt: null,
+      verifiedAt: null,
+    };
+    const io = fakeIo({ tasks: [source, task({ id: '0002-fix', status: fixStatus })] });
+    const result = await execute(
+      [{ kind: 'continue-stage', taskId: source.id, stage: 'decompose' }],
+      io,
+    );
+    expect(result[0].result).toBe(fixStatus === 'completed' ? 'done' : 'skipped');
+    expect(io.spawned).toHaveLength(fixStatus === 'completed' ? 1 : 0);
+    expect(io.readTask(source.id).pipelineIncident).toEqual(source.pipelineIncident);
+  },
+);
+
 it('свежий инцидент удерживает участника пакета, но допускает независимый этап', async () => {
   const source = task({ status: 'failed', returnTo: 'deploy' });
   source.pipelineIncident = {

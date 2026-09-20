@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { NEEDS_SESSION } from '../config/transitions.mjs';
 import { pendingDependencies } from './dependencies.mjs';
+import { tokenReanalysisProblem } from './token-reanalysis.mjs';
 
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const date = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value));
@@ -215,12 +216,19 @@ export function incidentPolicy(state) {
             : `разрешена одна проба ${source.id}:${incident.check.stage}: ${incident.check.expectation}`),
     );
   }
+  // Обязательный анализ бюджета возвращает исходный этап, но сам пробой не является.
+  const preparesProbe = (task, stage) =>
+    stage === 'decompose' &&
+    task.status === 'decompose' &&
+    task.tokenReanalysis?.originStatus === task.pipelineIncident?.check.stage &&
+    tokenReanalysisProblem(task) === null;
   const isRecovery = (task, stage) =>
     !broken.has(task.id) &&
     (fixes.has(task.id) ||
       (sources.has(task.id) &&
         (stage === 'postmortem' ||
-          (probes.has(task.id) && stage === task.pipelineIncident?.check.stage))));
+          (probes.has(task.id) &&
+            (stage === task.pipelineIncident?.check.stage || preparesProbe(task, stage))))));
   return {
     active: incidents.length > 0 || broken.size > 0,
     sources,
