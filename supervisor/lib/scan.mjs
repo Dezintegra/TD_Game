@@ -2,6 +2,7 @@ import { emptyScheduling, planLaunches, recordRecovery, schedulingProblem } from
 import { incidentPolicy, legacyIncident } from './pipeline-incidents.mjs';
 import { planBacklogReview } from './backlog-review.mjs';
 import { reportTaskIds } from './report-targets.mjs';
+import { isToolHeld } from './tool-report-hold.mjs';
 import { reconciliationHeld } from './backlog-reconciliation.mjs';
 import { pendingDependencies } from './dependencies.mjs';
 import { delayDecision, reviewingDelay, DELAY_STATES } from './delay-analysis.mjs';
@@ -52,6 +53,8 @@ export const ACTIONS = [
   'resume-token-budget',
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
+  'settle-tool-report', // подтвердить эффекты инфраструктурного удержания
+  'retry-tool-stage', // передать подтверждённое право на замещающий запуск
   'answer-question', // разобрать ответ владельца продукта
   'return-task', // вернуть из ошибки задачу, упавшую по вине конвейера
   'poll-external', // опросить проверки CI или прогон на чужом железе
@@ -295,7 +298,13 @@ export function scan(state) {
     // Ветку дерева, где идёт этап, не трогаем: неизвестно, доделан ли
     // атомарный коммит. Прежде это выяснялось по снимку сессий, теперь —
     // прямым вопросом «есть ли живой процесс», на который есть точный ответ.
-    if (entry && isRunning(entry.taskId)) {
+    if (
+      entry &&
+      (isRunning(entry.taskId) ||
+        reports.some(
+          (report) => isToolHeld(report) && reportTaskIds(report).includes(entry.taskId),
+        ))
+    ) {
       notes.push(`ветка ${branch} впереди удалённой, но на дереве идёт этап — не трогаем`);
       continue;
     }
@@ -307,6 +316,30 @@ export function scan(state) {
 
   // 2. Отчёты сессий. Перенос — самое дешёвое, что двигает задачу вперёд.
   for (const report of reports) {
+    if (isToolHeld(report)) {
+      if (report.retryClaimed)
+        actions.push({
+          kind: 'retry-tool-stage',
+          taskId: report.taskId,
+          stage: report.stage,
+          reportId: report.reportId,
+          batch: report.batch,
+        });
+      if (report.settlementReady && byId.has(report.taskId))
+        actions.push({
+          kind: 'settle-tool-report',
+          taskId: report.taskId,
+          stage: report.stage,
+          reportId: report.reportId,
+        });
+      continue;
+    }
+    if (report.rejection) {
+      notes.push(
+        `отчёт ${report.reportId} задачи ${report.taskId} отклонён: ${report.rejection.why}; участники удержаны, требуется исправление и явный retry`,
+      );
+      continue;
+    }
     if (!byId.has(report.taskId)) {
       notes.push(`отчёт по задаче ${report.taskId}, которой нет в бэклоге`);
       continue;
@@ -444,9 +477,15 @@ export function scan(state) {
   // Оставь её в счёте — и она держала бы единственное место НАВСЕГДА: сессии
   // нет, этап не кончается, место не освобождается. Сегодня оно освобождается
   // хотя бы через полчаса падением, то есть лечение вышло бы хуже болезни.
+  const retries = new Map(
+    reports.filter((report) => report.retryReady).map((report) => [report.taskId, report]),
+  );
+  const retryParticipants = new Set(
+    [...retries.values()].flatMap((report) => [report.taskId, ...(report.batch ?? [])]),
+  );
   const held = new Map();
   for (const task of tasks) {
-    if (isRunning(task.id) || hasReport(task.id)) continue;
+    if (isRunning(task.id) || (hasReport(task.id) && !retryParticipants.has(task.id))) continue;
     const stage = QUEUE_STATES.includes(task.status) ? firstStage(task) : task.status;
     if (
       incident.sources.has(task.id) &&
@@ -463,14 +502,14 @@ export function scan(state) {
     }
     if (!incident.allows(task, stage)) {
       held.set(task.id, ['pipeline-incident']);
-      notes.push(`задача ${task.id}: ожидает устранения подтверждённого инцидента`);
+      notes.push(`задача ${task.id}: этап ${stage} ожидает устранения подтверждённого инцидента`);
     }
   }
   // Проверяем до квот и пределов попыток: ожидание не является запуском.
   for (const task of tasks) {
     if (![...QUEUE_STATES, 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status))
       continue;
-    if (isRunning(task.id) || hasReport(task.id)) continue;
+    if (isRunning(task.id) || (hasReport(task.id) && !retryParticipants.has(task.id))) continue;
     // Диагностике нужны результаты блокеров, но ожидать их для самого разбора нельзя.
     if (reviewingDelay(task)) continue;
     const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? [], {
@@ -506,6 +545,13 @@ export function scan(state) {
     // Живой этап удержание не касается: он уже идёт, и командам его сессии
     // правила разрешений судья, а не сканер.
     if (isRunning(task.id, task.status)) continue;
+
+    if (state.unavailableWorkspaces?.[task.id]) {
+      notes.push(
+        `задача ${task.id}: ${state.unavailableWorkspaces[task.id]}; запуск удержан локально`,
+      );
+      continue;
+    }
     const uncovered = uncoveredAt(task.status);
     if (uncovered.length === 0) continue;
     held.set(task.id, uncovered);
@@ -659,7 +705,12 @@ export function scan(state) {
     // занят ею навсегда, и заметить это можно было только глазами.
     // Проверено 27.08.2026: 0002 простояла так почти шесть часов.
     if (!NEEDS_SESSION.includes(task.status)) continue;
-    if (stuck.has(task.id) || hasReport(task.id) || tokenHeld.has(task.id)) continue;
+    if (
+      stuck.has(task.id) ||
+      (hasReport(task.id) && !retries.has(task.id)) ||
+      tokenHeld.has(task.id)
+    )
+      continue;
 
     // Живой процесс на этом самом этапе — работа идёт, вмешиваться незачем.
     if (isRunning(task.id, task.status)) continue;
@@ -682,6 +733,19 @@ export function scan(state) {
     // в ошибку — сессии не было, тратить нечего, а ошибка потребовала бы
     // разбора, той самой второй сессии, ради отмены которой всё затеяно.
     if (held.has(task.id)) continue;
+    if (
+      retries
+        .get(task.id)
+        ?.batch?.some(
+          (id) =>
+            held.has(id) ||
+            tokenHeld.has(id) ||
+            !byId.has(id) ||
+            byId.get(id).status !== task.status ||
+            (byId.get(id).owner && byId.get(id).owner !== state.machine),
+        )
+    )
+      continue;
 
     // Отказ сервера этого оборота: сессию не выдаём, и не из осторожности.
     // Возврат продолжения и выдача сессии — две правки одной задачи, обе
@@ -701,7 +765,7 @@ export function scan(state) {
     // дальше вести нельзя, останавливают независимо от занятости машины.
     // Иначе повторился бы случай 0022 (02.09.2026), где остановка ждала
     // места, освободившегося за три минуты до неё.
-    if ((task.attempts?.continuations ?? 0) >= config.maxContinuations) {
+    if (!retries.has(task.id) && (task.attempts?.continuations ?? 0) >= config.maxContinuations) {
       notes.push(`задача ${task.id}: продолжения исчерпаны, нужен разбор человеком`);
       actions.push({
         kind: 'fail-stage',
@@ -777,7 +841,10 @@ export function scan(state) {
   // отобранных задач: удержанная, исчерпавшая пределы или ждущая оборота
   // в пакет не попадает — решение по ней принято выше, по общим правилам.
   const deploying = waitingForSession.filter(
-    (task) => task.status === 'deploy' && !incident.probes.has(task.id),
+    (task) =>
+      task.status === 'deploy' &&
+      !incident.probes.has(task.id) &&
+      !reports.some((report) => isToolHeld(report) && report.stage === 'deploy'),
   );
   deploying.sort(byPriorityThenAge);
   // Каждый инцидент требует своего свидетельства: общий отчёт ведущей
@@ -825,11 +892,13 @@ export function scan(state) {
       }
     }
   }
+  for (const [id, report] of retries) if (report.stage === 'deploy') batchOf.set(id, report.batch);
   const candidates = waitingForSession
     .filter((task) => task.status !== 'deploy' || batchOf.has(task.id))
     .map((task) => ({
       task,
-      kind: 'continue-stage',
+      kind: retries.has(task.id) ? 'retry-tool-stage' : 'continue-stage',
+      reportId: retries.get(task.id)?.reportId,
       stage: task.status,
       batch: batchOf.get(task.id),
       unaccounted: unaccountedLaunchNote(task, task.status, config, state.codexUsage ?? {}),
@@ -872,10 +941,16 @@ export function scan(state) {
       scheduling,
       now,
       compare: byPriorityThenAge,
+      isRecovery: incident.isRecovery,
     });
     actions.push(...selected.actions);
     for (const action of selected.actions) {
-      if (incident.probes.has(action.taskId)) action.incidentProbe = true;
+      const source = tasks.find((task) => task.id === action.taskId);
+      if (
+        incident.probes.has(action.taskId) &&
+        action.stage === source?.pipelineIncident?.check.stage
+      )
+        action.incidentProbe = true;
     }
     notes.push(...selected.notes);
   } else if (candidates.length) notes.push('самообновление ждёт тишины: сессий не выдаём');
@@ -977,6 +1052,8 @@ export function scan(state) {
       // Досылка не меняет карточку и снимает условие, удерживающее перенос.
       (action) =>
         action.kind === 'transfer-report' ||
+        action.kind === 'settle-tool-report' ||
+        action.kind === 'retry-tool-stage' ||
         action.kind === 'push-tail' ||
         (action.kind === 'flush-delay-journal' &&
           !reports.some((report) => report.reportId && report.taskId === action.taskId)) ||

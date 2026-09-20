@@ -128,7 +128,15 @@ export function sortCards(parsed) {
     const id = item.task.id ?? item.card.name;
 
     if (problems.length > 0) {
-      invalid.push({ id, problems, status: item.task.status, flags: item.card.flags ?? [] });
+      invalid.push({
+        id,
+        problems,
+        status: item.task.status,
+        flags: item.card.flags ?? [],
+        ...(item.task.pipelineIncident !== undefined
+          ? { pipelineIncident: item.task.pipelineIncident }
+          : {}),
+      });
       continue;
     }
 

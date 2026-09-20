@@ -55,6 +55,52 @@ const run = (state) => {
 const kinds = (result) => result.actions.map((action) => action.kind);
 
 describe('неподтверждённая доставка', () => {
+  it('отсутствующий каталог не забирает квоту независимой задачи', () => {
+    const stale = task({ status: 'review', priority: 100 });
+    const independent = task({ id: '0002-ready', type: 'note' });
+    const result = run({
+      tasks: [stale, independent],
+      unavailableWorkspaces: { [stale.id]: 'каталог отсутствует' },
+      config: { ...config, maxConcurrent: 1 },
+    });
+    expect(
+      result.actions.some(
+        (action) => action.taskId === stale.id && action.kind === 'continue-stage',
+      ),
+    ).toBe(false);
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'start-stage', taskId: independent.id }),
+    );
+  });
+  it('удерживает участников отклонённого отчёта и выдаёт независимую работу', () => {
+    const lead = task({ status: 'deploy' });
+    const member = task({ id: '0002-member', status: 'implement' });
+    const independent = task({ id: '0003-independent', type: 'note' });
+    const result = run({
+      tasks: [lead, member, independent],
+      reports: [
+        {
+          taskId: lead.id,
+          stage: 'deploy',
+          reportId: 'rejected-report',
+          outcome: 'done',
+          batch: [lead.id, member.id],
+          rejection: { kind: 'invalid-report', why: 'нет свидетельств' },
+        },
+      ],
+      registry: { entries: [entry(lead.id), entry(member.id)] },
+      orphans: [{ taskId: member.id, stage: 'implement' }],
+    });
+    expect(result.actions.filter((action) => action.taskId !== independent.id)).toEqual([]);
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({
+        taskId: independent.id,
+        kind: 'start-stage',
+      }),
+    );
+    expect(result.notes.join()).toContain('rejected-report');
+    expect(result.notes.join()).toContain('нет свидетельств');
+  });
   it.each(['pr', 'cleanup', 'failed', 'awaiting-po', 'new'])(
     'не даёт конкурирующих действий участнику в %s',
     (status) => {

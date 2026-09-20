@@ -1,5 +1,11 @@
 import { reportTaskIds } from './report-targets.mjs';
-import { prepareReportPlan, transferReport as transferLegacyReport } from './report-plan.mjs';
+import { isToolHeld } from './tool-report-hold.mjs';
+import { prepareToolSettlement, validToolSettlement } from './tool-settlement.mjs';
+import {
+  prepareReportPlan,
+  ReportValidationError,
+  transferReport as transferLegacyReport,
+} from './report-plan.mjs';
 
 function replaceId(value, before, after) {
   if (value === before) return after;
@@ -23,13 +29,30 @@ function renameRequest(entry, index, id) {
 }
 
 /** Намерение переживает сбой; квитанция получателя решает судьбу повтора. */
-export async function transferReport(action, io) {
-  if (!io.reportStore || !action.reportId) return transferLegacyReport(action, io);
+export async function transferReport(action, io, context = {}) {
+  return deliverReport(action, io, context, false);
+}
+
+export async function settleToolReport(action, io, context = {}) {
+  return deliverReport(action, io, context, true);
+}
+
+async function deliverReport(action, io, context, infrastructure) {
+  if (infrastructure && (!io.reportStore || !action.reportId))
+    return { result: 'failed', why: 'durable infrastructure envelope required' };
+  if (!io.reportStore || !action.reportId) return transferLegacyReport(action, io, context);
   const store = io.reportStore;
   let entry = store.get(action.reportId);
   if (!entry) return { result: 'skipped', why: 'report already acknowledged' };
+  if (infrastructure ? entry.disposition !== 'infrastructure-held' : isToolHeld(entry))
+    return { result: 'skipped', why: 'tool diagnostic disposition does not permit delivery' };
   if (entry.taskId !== action.taskId || entry.stage !== action.stage)
     return { result: 'failed', why: 'report identity mismatch' };
+  if (entry.rejection)
+    return {
+      result: 'skipped',
+      why: `report ${entry.reportId} rejected: ${entry.rejection.why}; требуется исправление и явный retry`,
+    };
   try {
     if (!entry.plan) {
       const task = io.readTask(entry.taskId);
@@ -40,14 +63,28 @@ export async function transferReport(action, io) {
       ) {
         return { result: 'failed', why: `report delivery conflicts with ${entry.taskId}` };
       }
-      const plan = await prepareReportPlan(action, { ...io, readReport: () => entry.report });
+      const plan = infrastructure
+        ? prepareToolSettlement(entry, task, io.now)
+        : await prepareReportPlan(action, { ...io, readReport: () => entry.report });
       store.update(entry.reportId, { plan });
       entry = store.get(entry.reportId);
     }
     if (entry.plan.version !== 1 || entry.plan.reportId !== entry.reportId)
       throw new Error('unsupported report delivery plan');
+    if (infrastructure && !validToolSettlement(entry))
+      throw new Error('invalid infrastructure settlement plan');
+    // Даже подтверждённые ранее адресаты перечитываются при каждом повторе:
+    // сохранённый план не доказывает свежесть зависимостей или свободу захвата.
+    for (const operation of entry.plan.operations) {
+      if (operation.kind !== 'appendTaskDependencies') continue;
+      const [update, dependencies] = operation.args;
+      const result = await io.appendTaskDependencies(update, { ...dependencies, ...context });
+      if (!result?.ok)
+        throw new Error(result?.why ?? result?.outcome ?? 'unconfirmed dependencies');
+    }
     for (let index = 0; index < entry.plan.operations.length; index += 1) {
       let operation = entry.plan.operations[index];
+      if (operation.kind === 'appendTaskDependencies') continue;
       if (entry.progress.includes(operation.key)) continue;
       const intent = `intent:${operation.key}`;
       if (!entry.progress.includes(intent)) {
@@ -92,6 +129,19 @@ export async function transferReport(action, io) {
       entry = store.get(entry.reportId);
     }
     for (const args of entry.plan.cleanup) await io.forgetSession?.(...args);
+    if (infrastructure) {
+      // The full payload, including unexecuted dependencyUpdates, remains recoverable.
+      store.archive(entry.reportId);
+      store.update(entry.reportId, {
+        disposition: 'retry-ready',
+        retry: {
+          ...entry.retry,
+          state: 'available',
+          sourceLaunchId: entry.launchId,
+        },
+      });
+      return entry.plan.result;
+    }
     store.acknowledge(entry.reportId);
     // Отметка о выкладке ставится ЗДЕСЬ — после того как весь план применён
     // и принят, а не при его составлении. От неё считается срок следующего
@@ -107,6 +157,20 @@ export async function transferReport(action, io) {
       io.markDeployed?.(io.now);
     return entry.plan.result;
   } catch (error) {
+    if (error instanceof ReportValidationError && !entry.plan && !entry.progress.length) {
+      try {
+        store.reject(entry.reportId, { why: error.message, at: io.now });
+        return {
+          result: 'failed',
+          why: `report ${entry.reportId} rejected: ${error.message}; требуется исправление и явный retry`,
+        };
+      } catch (storageError) {
+        return {
+          result: 'failed',
+          why: `pending report ${entry.reportId}: отказ не сохранён: ${storageError.message}; ${error.message}`,
+        };
+      }
+    }
     return { result: 'failed', why: `pending report ${entry.reportId}: ${error.message}` };
   }
 }

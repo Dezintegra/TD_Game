@@ -135,6 +135,31 @@ describe('код на диске уже сменился', () => {
     expect(notes.join()).toContain('отчётов ждёт переноса 2');
   });
 
+  it('перезапускается с сохранённой очередью, чтобы загрузить исправленный приёмник', () => {
+    expect(judge({ pending: 2, durablePending: 2 }, fakeGit({ tree: FRESH })).verdict).toBe(
+      'restart',
+    );
+    expect(judge({ pending: 3, durablePending: 2 }, fakeGit({ tree: FRESH })).verdict).toBe('wait');
+    expect(
+      judge({ pending: 2, durablePending: 2, running: 1 }, fakeGit({ tree: FRESH })).verdict,
+    ).toBe('wait');
+  });
+
+  it('повреждённая пустая очередь тоже запрещает рестарт и называет причину', () => {
+    const result = judge({ pendingProblem: 'повреждена очередь' }, fakeGit({ tree: FRESH }));
+    expect(result.verdict).toBe('wait');
+    expect(result.notes.join()).toContain('повреждена очередь');
+  });
+
+  it.each([-1, NaN, 0.5, 3])(
+    'не доверяет непригодному числу сохранённых отчётов %s',
+    (durablePending) => {
+      expect(judge({ pending: 2, durablePending }, fakeGit({ tree: FRESH })).verdict).toBe(
+        'blocked',
+      );
+    },
+  );
+
   it('незакоммиченная правка хеша не меняет и перезапуска не вызывает', () => {
     // Дерево грязное, а `HEAD:supervisor` прежний: человек работает,
     // и удалённая ветка при этом не ушла вперёд.

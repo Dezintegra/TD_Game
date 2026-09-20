@@ -142,9 +142,11 @@ describe('обрывки взятия задачи', () => {
     expect(kinds(result)).toEqual(['adopt-worktree']);
   });
 
-  it('запись без дерева снимается', () => {
+  it('запись отсутствующего дерева сохраняется, восстановление требует прежнюю ветку', () => {
     const result = run({ tasks: [task('0001-one')], registry: { entries: [entry('0001-one')] } });
-    expect(kinds(result)).toEqual(['drop-entry']);
+    expect(result.repairs).toEqual([
+      { kind: 'finish-claim', taskId: '0001-one', branch: 'worktree-0001-one', existingOnly: true },
+    ]);
   });
 
   it('захваченная задача без дерева доводится до конца', () => {

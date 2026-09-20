@@ -1,6 +1,7 @@
 import { parseWorktrees } from './reconcile.mjs';
 import { inspectCleanup } from './cleanup-safety.mjs';
 import { readDeploymentImpact } from './deploy-impact.mjs';
+import { checkWorkspace, isDirectory } from './workspace-state.mjs';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { recoverOwnership } from './worktree-ownership.mjs';
@@ -86,6 +87,12 @@ export function createIo({
     machine,
     taskPath,
     journalPath,
+
+    appendTaskDependencies: () => ({
+      ok: false,
+      outcome: 'unsupported',
+      why: 'файловый адаптер не поддерживает dependencyUpdates',
+    }),
 
     readTask: (id) => readJson(join(root, taskPath(id))),
 
@@ -439,7 +446,15 @@ export function createIo({
     worktreePathFor: (taskId, actualPath) =>
       actualPath ? relative(root, resolve(root, actualPath)) : join(config.worktreeDir, taskId),
 
-    addWorktree(taskId, branch) {
+    workspaceStatus(taskId) {
+      const entry = this.registryEntry(taskId);
+      if (entry?.branch !== `worktree-${taskId}`)
+        return { ok: false, why: 'ветка задачи не подтверждена' };
+      return checkWorkspace({ root, entry, run });
+    },
+    directoryExists: (path) => isDirectory(resolve(root, path)),
+
+    addWorktree(taskId, branch, { existingOnly = false } = {}) {
       const entry = this.registryEntry(taskId);
       if (
         entry &&
@@ -479,6 +494,8 @@ export function createIo({
       const known = (ref) => run(['rev-parse', '--verify', '--quiet', ref]).code === 0;
       const existing =
         known(`refs/heads/${branch}`) || known(`refs/remotes/${config.remote}/${branch}`);
+      if (existingOnly && !existing)
+        return { ok: false, why: 'ветка прежней работы отсутствует; пустое дерево не создаётся' };
       const result = existing
         ? run(['worktree', 'add', path, branch])
         : run(['worktree', 'add', path, '-b', branch, base]);

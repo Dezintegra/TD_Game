@@ -38,6 +38,8 @@ export const VERDICT = {
  * @param {boolean} [params.dryRun]   тень: мира не трогаем
  * @param {number} [params.running]   живых этапов сейчас
  * @param {number} [params.pending]   отчётов, ожидающих переноса
+ * @param {number} [params.durablePending] отчётов с подтверждённой сохранностью на диске
+ * @param {string|null} [params.pendingProblem] причина непригодности очереди к рестарту
  * @returns {{ verdict: string, notes: string[] }}
  */
 export function judgeSelfUpdate({
@@ -49,6 +51,8 @@ export function judgeSelfUpdate({
   dryRun = false,
   running = 0,
   pending = 0,
+  durablePending = 0,
+  pendingProblem = null,
 }) {
   const notes = [];
   const off = (why) => ({ verdict: 'off', notes: why ? [`самообновление выключено: ${why}`] : [] });
@@ -101,14 +105,24 @@ export function judgeSelfUpdate({
 
   // Тихий момент: нет этапов, которые перезапуск снял бы на полуслове,
   // и нет отчётов в памяти, которые он потерял бы.
-  if (running > 0 || pending > 0) {
+  if (
+    ![running, pending, durablePending].every((value) => Number.isInteger(value) && value >= 0) ||
+    durablePending > pending
+  )
+    return blocked('непригодные счётчики живых этапов или сохранённых отчётов');
+  if (running > 0 || pending > durablePending || pendingProblem) {
     notes.push(
       'самообновление: новый код супервизора уже в дереве, жду тишины ' +
-        `(идёт этапов ${running}, отчётов ждёт переноса ${pending})`,
+        `(идёт этапов ${running}, отчётов ждёт переноса ${pending}, подтверждено на диске ${durablePending})`,
     );
+    if (pendingProblem) notes.push(`самообновление: ${pendingProblem}`);
     return { verdict: 'wait', notes };
   }
 
+  if (durablePending)
+    notes.push(
+      `самообновление: сохранено отчётов ${durablePending}; новый процесс продолжит доставку`,
+    );
   notes.push('самообновление: код супервизора изменился, перезапускаюсь');
   return { verdict: 'restart', notes };
 }

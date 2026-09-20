@@ -18,11 +18,15 @@ import {
   resetAttempts,
 } from './task-file.mjs';
 import { halt } from './report-plan.mjs';
-import { transferReport } from './report-delivery.mjs';
+import { transferReport, settleToolReport } from './report-delivery.mjs';
+import { retryToolStage } from './tool-retry.mjs';
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
 import { cleanup, mayCleanup } from './cleanup.mjs';
 import { recoverClosureReason } from './closure.mjs';
 import { incidentPolicy } from './pipeline-incidents.mjs';
+import { randomUUID } from 'node:crypto';
+import { launchCharge } from './tool-work-evidence.mjs';
+import { isToolHeld, retainedReportView } from './tool-report-hold.mjs';
 
 /**
  * Исполнение решений сканера.
@@ -57,15 +61,12 @@ export const RESULT = {
 };
 
 /** Взять задачу в работу: захват, отправка, дерево, реестр, процесс этапа. */
-async function startStage(action, io) {
-  const task = io.readTask(action.taskId);
+async function startStage(action, io, context) {
+  let task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
-  const claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
+  let claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
   if (!claimed.task) return { result: 'raced', why: claimed.problems.join('; ') };
-  if (task.reanalysis) claimed.task.reanalysis = false;
-  if (action.scheduling && !task.scheduling) claimed.task.scheduling = action.scheduling;
-
   // Захват — ПЕРВОЕ действие над миром, раньше записи и раньше дерева.
   // Проигравшая гонку машина тогда не оставляет за собой ничего: ни следа
   // на доске, ни рабочего дерева, — и убирать ей нечего.
@@ -77,9 +78,45 @@ async function startStage(action, io) {
   // владельца, которая либо проходит, либо отбивается.
   const held = io.acquire ? await io.acquire(claimed.task) : { ok: true };
   if (!held.ok) {
+    if (io.requiresFreshStart) context.invalidate(task.id);
     if (held.outcome === 'taken') return { result: 'raced', why: held.why };
     return { result: 'failed', why: held.why ?? held.outcome };
   }
+
+  if (io.requiresFreshStart) {
+    let fresh;
+    try {
+      fresh = io.readStartTask
+        ? await io.readStartTask(task, { evidence: io.dependencyEvidence ?? {} })
+        : { ok: false, why: 'Trello IO не поддерживает свежее чтение старта' };
+    } catch (error) {
+      fresh = { ok: false, why: error.message };
+    }
+    if (fresh.ok) {
+      task = fresh.task;
+      claimed = claimTask(task, { machine: io.machine, status: action.stage, now: io.now });
+      if (!claimed.task) fresh = { ok: false, why: claimed.problems.join('; ') };
+    }
+    if (!fresh.ok) {
+      context.invalidate(task.id);
+      if (held.newClaim) {
+        try {
+          const released = await io.release(task);
+          if (!released?.ok)
+            return {
+              result: 'failed',
+              why: `${fresh.why}; освобождение захвата: ${released?.why ?? 'не подтверждено'}`,
+            };
+        } catch (error) {
+          return { result: 'failed', why: `${fresh.why}; освобождение захвата: ${error.message}` };
+        }
+      }
+      return { result: 'skipped', why: fresh.why };
+    }
+  }
+
+  if (task.reanalysis) claimed.task.reanalysis = false;
+  if (action.scheduling && !task.scheduling) claimed.task.scheduling = action.scheduling;
 
   const push = await io.saveTask(
     claimed.task,
@@ -148,13 +185,15 @@ async function startStage(action, io) {
     });
   }
 
+  if (NEEDS_WORKTREE.includes(action.stage) && io.workspaceStatus?.(task.id)?.ok === false)
+    return { result: 'failed', why: 'рабочий каталог не подтверждён после подготовки' };
   const spawned = io.spawnStage(assignmentFor(action, io, claimed.task, branch));
 
   // Захват и запись «Взята в работу» остаются на месте при любом отказе:
   // задача действительно взята и действительно стоит в этапе. Отменять
   // тут нечего — не хватает лишь сессии, и её выдаст ближайший оборот
   // действием `continue-stage`.
-  if (!spawned.ok && spawned.reason === 'busy') {
+  if (!spawned.ok && ['busy', 'availability-held'].includes(spawned.reason)) {
     return { result: 'skipped', why: `этап не запустился: ${spawned.why}` };
   }
 
@@ -200,7 +239,7 @@ function assignmentFor(action, io, task, branchHint) {
     taskId: task.id,
     stage: action.stage,
     branch: entry?.branch ?? branchHint ?? `worktree-${task.id}`,
-    path: entry?.path ?? null,
+    path: entry?.path && io.directoryExists?.(entry.path) !== false ? entry.path : null,
     continuation: Boolean(sessionId),
     sessionId,
     reason: action.reason ?? null,
@@ -254,7 +293,10 @@ async function continueStage(action, io) {
   //
   // Отказ здесь ничего не теряет: дерево заводит сверка, и следующий же
   // оборот выдаст сессию как ни в чём не бывало.
-  if (NEEDS_WORKTREE.includes(task.status) && !io.registryEntry(action.taskId)?.path) {
+  if (
+    NEEDS_WORKTREE.includes(task.status) &&
+    (!io.registryEntry(action.taskId)?.path || io.workspaceStatus?.(task.id)?.ok === false)
+  ) {
     return { result: 'failed', why: `дерева у задачи нет: этапу «${task.status}» работать негде` };
   }
 
@@ -269,14 +311,35 @@ async function continueStage(action, io) {
   // В мир это значение уезжает только вместе с родившимся процессом;
   // при отказе оно просто выбрасывается.
   const counted = countContinuation(task);
-  const spawned = io.spawnStage(assignmentFor(action, io, counted));
+  const launchId = randomUUID();
+  const started = {
+    ...counted,
+    attempts: { ...counted.attempts, spawnFailures: 0 },
+    ...(action.incidentProbe
+      ? { pipelineIncident: { ...counted.pipelineIncident, probeStartedAt: io.now } }
+      : {}),
+  };
+  const chargeEntry = {
+    at: io.now,
+    from: task.status,
+    to: task.status,
+    what: [`Этапу выдана сессия: ${action.reason}.`, action.selectionReason, action.unaccounted]
+      .filter(Boolean)
+      .join(' '),
+  };
+  const charge = {
+    ...launchCharge(launchId, true),
+    operation: { key: `continuation:${launchId}`, expected: task },
+    args: [started, chargeEntry, `chore(backlog): ${task.id} сессия на этап ${task.status}`],
+  };
+  const spawned = io.spawnStage({ ...assignmentFor(action, io, counted), launchId, charge });
 
   // Теснота — очередь, а не поломка: ничего не тратит и в журнал задачи
   // не пишется вовсе. При обороте в пять минут и прогоне арены, держащем
   // место десятками минут, такая запись дала бы карточке дюжину одинаковых
   // строк в час, и настоящая беда утонула бы в них. В журнал цикла причина
   // попадает всегда — её называет сам исход действия.
-  if (!spawned.ok && spawned.reason === 'busy') {
+  if (!spawned.ok && ['busy', 'availability-held'].includes(spawned.reason)) {
     return { result: 'skipped', why: `этап не запустился: ${spawned.why}` };
   }
 
@@ -301,26 +364,10 @@ async function continueStage(action, io) {
   // Процесс родился. Удавшееся порождение гасит счёт несостоявшихся
   // запусков: оно доказывает, что машинерия запуска работает, и прежние
   // отказы к делу больше не относятся.
-  const started = {
-    ...counted,
-    attempts: { ...counted.attempts, spawnFailures: 0 },
-    ...(action.incidentProbe
-      ? { pipelineIncident: { ...counted.pipelineIncident, probeStartedAt: io.now } }
-      : {}),
-  };
   io.recordSchedulingLaunch?.(started);
-  const push = await io.saveTask(
-    started,
-    {
-      at: io.now,
-      from: task.status,
-      to: task.status,
-      what: [`Этапу выдана сессия: ${action.reason}.`, action.selectionReason, action.unaccounted]
-        .filter(Boolean)
-        .join(' '),
-    },
-    `chore(backlog): ${task.id} сессия на этап ${task.status}`,
-  );
+  const push = await io.saveTask(...charge.args, [], charge.operation);
+  if (push.ok)
+    io.confirmLaunchCharge?.(task.id, task.status, { launchId, key: charge.key, confirmed: true });
   // Процесс при неудаче записи НЕ снимается: он делает работу, ради которой
   // и порождён. Платим одной пропущенной записью журнала и одной несписанной
   // попыткой — то есть задача получит на заход больше положенного. Второго
@@ -402,16 +449,27 @@ async function noteApiError(action, io) {
   const task = io.readTask(action.taskId);
   if (!task) return { result: 'skipped', why: 'задачи нет' };
 
-  const counted = countApiError(refundContinuation(task));
+  const charge = io.launchCharge?.(action.taskId, action.stage);
+  if (charge?.state === 'pending')
+    return { result: 'skipped', why: 'continuation receipt pending' };
+  const counted = countApiError(
+    !io.launchCharge || charge?.state === 'confirmed' ? refundContinuation(task) : task,
+  );
   const push = await io.saveTask(
     counted,
     {
       at: io.now,
       from: task.status,
       to: task.status,
-      problem: apiErrorRecord(action.stage, failure.why),
+      problem: apiErrorRecord(
+        action.stage,
+        failure.why,
+        !io.launchCharge || charge?.state === 'confirmed',
+      ),
     },
     `chore(backlog): ${action.taskId} отказ сервера на этапе ${action.stage}`,
+    [],
+    charge ? { key: `api-refund:${charge.launchId}`, expected: task } : undefined,
   );
   // Отказ снимается с очереди только после удавшейся записи: обрыв оставляет
   // его на месте, и следующий оборот пробует снова.
@@ -427,12 +485,13 @@ async function noteApiError(action, io) {
  * и почему счёт попыток не вырос. Без этого разбор пошёл бы искать причину
  * в работе, которой не было.
  */
-function apiErrorRecord(stage, why) {
+function apiErrorRecord(stage, why, refunded = true) {
   return (
     `**Этап «${stage}» лёг на отказе сервера модели**\n\n` +
-    `${why}. Ходов сессия не сделала, поэтому продолжение, списанное при ` +
-    'рождении процесса, задаче возвращено: платить за чужую перегрузку ей ' +
-    'нечем и незачем.\n\n' +
+    `${why}. ` +
+    (refunded
+      ? 'Подтверждённо списанное этому запуску продолжение возвращено.\n\n'
+      : 'Подтверждённого списания этому запуску нет; чужие продолжения не возвращаются.\n\n') +
     'Состояние задачи не изменилось. Как только сервер ответит, этап пойдёт ' +
     'заново с прежним счётом попыток.\n'
   );
@@ -799,6 +858,8 @@ const HANDLERS = {
   'clear-card': clearCard,
   cleanup: cleanupTask,
   'transfer-report': transferReport,
+  'settle-tool-report': settleToolReport,
+  'retry-tool-stage': retryToolStage,
   'start-stage': startStage,
   'open-incident': async (action, io) => {
     const task = io.readTask(action.taskId);
@@ -836,9 +897,22 @@ const HANDLERS = {
  */
 export async function execute(actions, io) {
   const results = [];
+  const invalidated = new Set();
+  const context = { invalidate: (id) => invalidated.add(id) };
 
   for (const action of actions) {
-    if (['start-stage', 'continue-stage'].includes(action.kind) && io.schedulingBlocked?.()) {
+    if (invalidated.has(action.taskId)) {
+      results.push({
+        action,
+        result: 'skipped',
+        why: 'данные адресата требуют нового сканирования',
+      });
+      continue;
+    }
+    if (
+      ['start-stage', 'continue-stage', 'retry-tool-stage'].includes(action.kind) &&
+      io.schedulingBlocked?.()
+    ) {
       results.push({ action, result: 'skipped', why: io.schedulingBlocked() });
       continue;
     }
@@ -847,7 +921,29 @@ export async function execute(actions, io) {
       break;
     }
     if (
+      io.reportStore
+        ?.entries()
+        .some(
+          (entry) =>
+            isToolHeld(entry) &&
+            !(
+              ['settle-tool-report', 'retry-tool-stage'].includes(action.kind) &&
+              action.reportId === entry.reportId &&
+              action.taskId === entry.taskId &&
+              action.stage === entry.stage
+            ) &&
+            [action.taskId, ...(action.batch ?? [])].some((id) =>
+              reportTaskIds(retainedReportView(entry)).includes(id),
+            ),
+        )
+    ) {
+      results.push({ action, result: 'skipped', why: 'tool diagnostic hold owns this task' });
+      continue;
+    }
+    if (
       action.kind !== 'transfer-report' &&
+      action.kind !== 'settle-tool-report' &&
+      action.kind !== 'retry-tool-stage' &&
       // Хвост завершённого этапа должен уйти до переноса его отчёта.
       action.kind !== 'push-tail' &&
       io.reportStore?.entries().some((entry) => reportTaskIds(entry.report).includes(action.taskId))
@@ -857,7 +953,10 @@ export async function execute(actions, io) {
     }
     // Перенесённый выше отчёт мог открыть инцидент уже после снимка scan.
     // Проверяем допуск до захвата и порождения, по обновлённому кешу доски.
-    if (['start-stage', 'continue-stage'].includes(action.kind) && io.allTaskIds) {
+    if (
+      ['start-stage', 'continue-stage', 'retry-tool-stage'].includes(action.kind) &&
+      io.allTaskIds
+    ) {
       const tasks = io
         .allTaskIds()
         .map((id) => io.readTask(id))
@@ -875,8 +974,8 @@ export async function execute(actions, io) {
         dependencyRecords: io.dependencyRecords?.() ?? [],
         scheduling: { probes },
       });
-      const task = io.readTask(action.taskId);
-      if (task && !policy.allows(task, action.stage)) {
+      const participants = [action.taskId, ...(action.batch ?? [])].map((id) => io.readTask(id));
+      if (participants.some((task) => task && !policy.allows(task, action.stage))) {
         results.push({
           action,
           result: 'skipped',
@@ -895,8 +994,25 @@ export async function execute(actions, io) {
       continue;
     }
 
-    const outcome = await handler(action, io);
-    results.push({ action, ...outcome });
+    let launched = 0;
+    const before = io.spawnCount?.();
+    const actionIo = { ...io };
+    actionIo.spawnStage = (assignment) => {
+      const result = io.spawnStage(assignment);
+      if (result.ok && result.pid) launched++;
+      return result;
+    };
+    let outcome;
+    try {
+      outcome = await handler(action, actionIo, context);
+    } catch (error) {
+      outcome = { result: 'failed', why: error.message };
+    }
+    // The runtime counter also observes a born process whose subsequent persistence threw.
+    const after = io.spawnCount?.();
+    if (Number.isSafeInteger(before) && Number.isSafeInteger(after) && after >= before)
+      launched = after - before;
+    results.push({ action, ...outcome, ...(launched ? { launched } : {}) });
 
     if (outcome.result === 'failed' && String(outcome.why ?? '').includes('offline')) {
       results.push({ action: null, result: 'skipped', why: 'записи невозможны: сети нет' });
