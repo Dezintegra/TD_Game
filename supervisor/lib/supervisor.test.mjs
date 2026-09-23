@@ -714,6 +714,59 @@ describe('история логов в назначении разбора', () 
 });
 
 describe('устойчивая очередь завершений', () => {
+  it('diagnostic callbacks use the supervisor ledger and retain unrelated usage', async () => {
+    const f = deliveryFixture({ stage: 'design' });
+    const snapshots = [];
+    let diagnosticComplete = false;
+    try {
+      const store = f.open().store;
+      store.acknowledge(f.entry.reportId);
+      const h = harness({
+        home: fileURLToPath(new URL('..', import.meta.url)),
+        config: { provider: 'codex', codexMaxTaskTokens: 10000 },
+        codexUsage: { other: { old: 700 } },
+        reportStore: store,
+        captureToolContext: () => ({ provider: 'codex' }),
+        saveCodexUsage: (next) => snapshots.push(globalThis.structuredClone(next)),
+        diagnoseTools: async (entry, callbacks) => {
+          callbacks.onStart('diagnostic');
+          expect(snapshots.at(-1).tasks[entry.taskId].launches.diagnostic.completed).toBe(false);
+          const run = {
+            code: 0,
+            stdout: [
+              { type: 'thread.started', thread_id: 'diagnostic-thread' },
+              { type: 'turn.completed', usage: { input_tokens: 30, output_tokens: 5 } },
+            ]
+              .map(JSON.stringify)
+              .join('\n'),
+          };
+          callbacks.onResult('diagnostic', run);
+          callbacks.onResult('diagnostic', run);
+          diagnosticComplete = true;
+          return { verdict: 'inconclusive', runs: [run] };
+        },
+      });
+      h.supervisor.spawnStage(assignment());
+      h.children[0].stdout.emit(
+        'data',
+        JSON.stringify({ type: 'thread.started', thread_id: 'original' }) + '\n',
+      );
+      h.children[0].stdout.emit(
+        'data',
+        JSON.stringify({
+          type: 'item.completed',
+          item: { type: 'agent_message', text: JSON.stringify({ ...report, outcome: 'failed' }) },
+        }) + '\n',
+      );
+      await h.answer({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+      await sleep(0);
+      expect(diagnosticComplete).toBe(true);
+      expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(47);
+      expect(taskTokens(h.supervisor.codexUsage, 'other')).toBe(700);
+    } finally {
+      f.cleanup();
+    }
+  });
   it('finish сохраняет pending списание, поздняя квитанция подтверждает тот же launch', async () => {
     const f = deliveryFixture({ stage: 'design' });
     try {

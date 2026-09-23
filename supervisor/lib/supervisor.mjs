@@ -1,4 +1,5 @@
 import { reviewingDelay } from './delay-analysis.mjs';
+import { diagnosticAccounting } from './diagnostic-accounting.mjs';
 import {
   migrateTokenLedger,
   commitTokenLedger,
@@ -123,32 +124,16 @@ export function createSupervisor({
               git = { state: 'unknown', reason: error.message };
             }
             reportStore.update(entry.reportId, { git });
-            const evidence = await diagnoseTools(entry, {
-              onStart: (launchId) => {
-                if (providerOf(config) !== 'codex') return;
-                const admission = tokenAdmission(
-                  entry.assignment.task,
-                  entry.stage,
-                  config,
-                  codexUsage,
-                );
-                if (admission) throw new Error('token admission holds diagnostic launch');
-                persistUsage(entry.taskId, (next) =>
-                  beginTokenLaunch(next, entry.taskId, launchId),
-                );
-              },
-              onResult: (launchId, run) => {
-                if (providerOf(config) !== 'codex') return;
-                const answer = readCodexAnswer(run, config, {
-                  ledger: codexUsage,
-                  taskId: entry.taskId,
-                  launchId,
-                });
-                persistUsage(entry.taskId, (next) => {
-                  next.tasks[entry.taskId] = answer.usageLedger.tasks[entry.taskId];
-                });
-              },
-            });
+            const evidence = await diagnoseTools(
+              entry,
+              diagnosticAccounting({
+                task: entry.assignment.task,
+                stage: entry.stage,
+                config,
+                getLedger: () => codexUsage,
+                persistUsage,
+              }),
+            );
             return {
               ...evidence,
               costUsd:
