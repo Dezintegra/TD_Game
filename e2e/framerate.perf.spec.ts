@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { bootGame, matchSnapshot, medianFps, number } from './helpers.js';
+import { bootGame, matchSnapshot, medianFps, number, rockDiagnostics } from './helpers.js';
 import { record, runContext } from './perf-record.js';
 
 /**
@@ -46,16 +46,31 @@ test('частота кадров держится при непрерывном
   // рельефа, и посекундное наблюдение показывает там 14, 28, 28, а дальше
   // ровные шестьдесят. Мерить разогрев незачем — его надо переждать.
   await page.waitForTimeout(3000);
+  await expect
+    .poll(async () => (await rockDiagnostics(page))?.initialRemaining, { timeout: 30000 })
+    .toBe(0);
 
   // Снимок берётся ПОСЛЕ разогрева: длинные кадры запекания рельефа
   // остаются за скобками окна и в разность не попадают.
   const before = await matchSnapshot(page);
-  const fps = await medianFps(page);
+  const rocksBefore = await rockDiagnostics(page);
+  const box = (await page.locator('#scene canvas').boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const fps = await medianFps(page, 6, async (index) => {
+    // Меняем масштаб и направление ВНУТРИ окна; постоянное движение не должно голодать догон.
+    await page.keyboard.up(index % 2 === 0 ? 'ArrowRight' : 'ArrowLeft');
+    await page.keyboard.down(index % 2 === 0 ? 'ArrowLeft' : 'ArrowRight');
+    await page.mouse.wheel(0, index % 2 === 0 ? -10000 : 10000);
+  });
   const after = await matchSnapshot(page);
+  const rocksAfter = await rockDiagnostics(page);
 
   await page.keyboard.up('ArrowRight');
+  await page.keyboard.up('ArrowLeft');
 
-  record('камера в движении', fps, runContext(before, after));
+  const context = { ...runContext(before, after), rocksBefore, rocksAfter };
+  record('камера в движении', fps, context);
+  expect(rocksAfter?.terrainRebuildCount).toBe(rocksBefore?.terrainRebuildCount);
   expect(fps).toBeGreaterThanOrEqual(55);
 });
 

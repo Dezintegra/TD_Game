@@ -1,4 +1,85 @@
 import { MAX_ZOOM } from './camera.js';
+import { screenToWorld } from './iso.js';
+
+export const rockBaseDensity = (resolution: number): number => Math.max(1, resolution);
+/** Совместимость статического fx-probe: его первый аргумент — плотность брони. */
+export const rockBakeDensity = (armourDensity: number, _rockCells: number): number =>
+  rockBaseDensity(armourDensity / MAX_ZOOM);
+export const rockTargetDensity = (resolution: number, scale: number): number =>
+  rockBaseDensity(resolution) * 2 ** Math.ceil(Math.log2(Math.max(1, scale)));
+
+export interface RockTextureSize {
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Физические размеры округляются вверх; каждый mip учитывается целиком. */
+export const rockTextureBytes = ({ width, height }: RockTextureSize, density: number): number => {
+  let w = Math.ceil(width * density);
+  let h = Math.ceil(height * density);
+  if (w <= 0 || h <= 0) return 0;
+  let bytes = 0;
+  for (;;) {
+    bytes += w * h * 4;
+    if (w === 1 && h === 1) return bytes;
+    w = Math.max(1, Math.floor(w / 2));
+    h = Math.max(1, Math.floor(h / 2));
+  }
+};
+
+export interface RockMemoryLimit {
+  readonly base: number;
+  readonly detail: number;
+  readonly temporary: number;
+  readonly total: number;
+}
+
+/** Запас задан в координатах проекции, как и расширение фактического обзора. */
+export const ROCK_VIEW_MARGIN = 32;
+
+export const rockMemoryLimit = (
+  cells: readonly RockTextureSize[],
+  field: RockTextureSize,
+  resolution: number,
+): RockMemoryLimit => {
+  const d0 = rockBaseDensity(resolution);
+  const base = cells.reduce((sum, cell) => sum + rockTextureBytes(cell, d0), 0);
+  const width = Math.max(0, ...cells.map((cell) => cell.width));
+  const height = Math.max(0, ...cells.map((cell) => cell.height));
+  const largest = { width, height };
+  let detail = 0;
+  for (let level = 1; level <= Math.ceil(Math.log2(MAX_ZOOM)); level += 1) {
+    const lowerScale = 2 ** (level - 1);
+    const w = field.width / lowerScale + 2 * (width + ROCK_VIEW_MARGIN);
+    const h = field.height / lowerScale + 2 * (height + ROCK_VIEW_MARGIN);
+    const corners = [
+      screenToWorld(0, 0),
+      screenToWorld(w, 0),
+      screenToWorld(0, h),
+      screenToWorld(w, h),
+    ];
+    const spanX = Math.max(...corners.map((p) => p.x)) - Math.min(...corners.map((p) => p.x));
+    const spanY = Math.max(...corners.map((p) => p.y)) - Math.min(...corners.map((p) => p.y));
+    const count = Math.min(cells.length, (Math.ceil(spanX) + 2) * (Math.ceil(spanY) + 2));
+    detail = Math.max(detail, count * rockTextureBytes(largest, d0 * 2 ** level));
+  }
+  const temporary = cells.length === 0 ? 0 : rockTextureBytes(largest, d0 * MAX_ZOOM);
+  return { base, detail, temporary, total: base + detail + temporary };
+};
+
+export const rockResolutionBridge = (
+  cells: readonly (RockTextureSize & { readonly heldBytes: number })[],
+  resolution: number,
+  startBytes: number,
+): { base: number; temporary: number; total: number } => {
+  const costs = cells.map((cell) => rockTextureBytes(cell, rockBaseDensity(resolution)));
+  const base = cells.reduce((sum, cell, i) => sum + Math.max(cell.heldBytes, costs[i] ?? 0), 0);
+  const temporary = Math.max(0, ...costs);
+  return { base, temporary, total: Math.max(startBytes, base) + temporary };
+};
+
+export const rockResizeLimit = (startBytes: number, newLimit: number): number =>
+  Math.max(startBytes, newLimit);
 
 /**
  * Плотность запекания — во сколько раз запечённая текстура подробнее
@@ -44,46 +125,6 @@ export const ARMOUR_BAKE_ZOOM = MAX_ZOOM;
 export const MAX_ARMOUR_BAKE_DENSITY = 6;
 
 /**
- * Бюджет видеопамяти под слой запечённых скал, в мегабайтах.
- *
- * Скалы — единственный слой, чья суммарная площадь растёт вместе
- * со стороной карты, поэтому множитель им не годится: на карте
- * для двоих двукратный запас стоит около сорока мегабайт, а на карте
- * для четверых — почти сто двадцать. Бюджет ведёт себя ровно наоборот:
- * плотность сама опускается на большой карте, и слой занимает свои
- * шестьдесят четыре мегабайта при любом размере.
- */
-export const ROCK_BAKE_BUDGET_MB = 64;
-
-/**
- * Средняя площадь запечённой скальной клетки, в точках.
- *
- * Измерено 29.08.2026 той же формулой, какой габариты считает
- * `buildCellMesh`: пять карт 38×38, 186–236 скальных клеток,
- * 2,48–3,30 Мпикс суммарно. На клетку выходит 13 300–14 000 точек,
- * наибольшая клетка — 97×271.
- *
- * Оценки достаточно, и точный обход тут не нужен: габариты клетки даёт
- * тот же цикл по шестистам вершинам, что и построение сетки, то есть
- * самая дорогая часть запекания. Пройти его дважды ради уточнения,
- * которое даёт полпроцента плотности, значило бы удвоить работу
- * при старте матча.
- */
-export const ROCK_CELL_AREA_PX = 14_000;
-
-/** Точка текстуры — четыре байта: RGBA. */
-const BYTES_PER_PIXEL = 4;
-
-/**
- * Во сколько раз мип-уровни удорожают текстуру.
- *
- * Сумма 1 + 1/4 + 1/16 + … сходится к четырём третям: каждый следующий
- * уровень вчетверо меньше предыдущего. Учитывается в бюджете, иначе слой
- * скал вышел бы за него ровно на эту треть.
- */
-const MIPMAP_OVERHEAD = 4 / 3;
-
-/**
  * Плотность запекания брони: машин, построек, командного центра и дуг.
  *
  * Покрывает диапазон приближения целиком — см. вывод в шапке модуля.
@@ -121,28 +162,3 @@ export const armourBakeDensity = (screenDensity: number): number =>
  * а в меню они не стоят ничего.
  */
 export const ARMOUR_SUPERSAMPLE = 1.5;
-
-/**
- * Плотность запекания слоя скал.
- *
- * Наибольшая, при которой слой укладывается в бюджет, но не выше потолка:
- * подробнее, чем требует предельное приближение, скалам быть незачем,
- * а беднее — приходится, когда карта велика.
- *
- * Скалы остаются на бюджете и НЕ получают полного покрытия зума, которое
- * получила броня. Причина в площади: слой скал — единственный, чья сумма
- * растёт вместе со стороной карты, и при плотности 4 он занял бы 150–200 МБ
- * на карте для двоих и под четыреста на карте для четверых. Следствие
- * названо вслух: на пределе приближения скалы будут мягче машин.
- *
- * Карта без скал возвращает потолок, а не бесконечность: делить на нулевую
- * площадь нельзя, а запекать в этом случае всё равно нечего.
- */
-export const rockBakeDensity = (ceiling: number, rockCells: number): number => {
-  if (rockCells <= 0) return ceiling;
-
-  const budgetPx = (ROCK_BAKE_BUDGET_MB * 1024 * 1024) / (BYTES_PER_PIXEL * MIPMAP_OVERHEAD);
-  const area = rockCells * ROCK_CELL_AREA_PX;
-
-  return Math.min(ceiling, Math.max(1, Math.sqrt(budgetPx / area)));
-};
