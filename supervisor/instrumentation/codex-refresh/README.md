@@ -13,6 +13,14 @@ regular blob внутри inputs; receipt различает хеш ссылки
 Receipt содержит UTC, исходные Git blob IDs и SHA-256 каждого полученного файла.
 Повтор поверх имеющейся области запрещён; существующие bytes не перезаписываются.
 
+`release-lock.patch` отдельно согласует версии 149 внутренних пакетов upstream
+с workspace version 0.153.4. Registry/git зависимости не меняются.
+`release-lock.mjs` проверяет точные исходный/результирующий SHA-256 и все прочие
+bytes; результат фактической проверки — `receipts/release-lock.json`.
+Патч применяется относительно корня экспортированного source, до сборки
+с `--locked`. Исходный source receipt остаётся описанием непатченного экспорта.
+`preparationPatchSha256` не заменяет ещё отсутствующий instrumentation patch hash.
+
 Подготовка не запускает build scripts, CLI, setup или command runner. Git dependency refs
 в receipt — опись lockfile, не подтверждение скачивания этих зависимостей.
 

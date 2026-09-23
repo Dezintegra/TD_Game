@@ -22,5 +22,11 @@ PAX path traversal, checksum/truncation и reparse/escape на файловой 
 Статический обзор шести upstream build.rs описан в README и source receipt.
 Он устанавливает отсутствие setup launch в этих файлах, но не полноту
 call graph, не безопасность транзитивных build scripts и не source availability.
-Точная преграда и весь неисполненный объём:
+`release-lock.patch` и его receipt подтверждают только подготовку согласованного
+lockfile; инструментирующий патч по-прежнему отсутствует. Поиск дополнительно
+выявил SetSecurityInfo в `windows-sandbox-rs/src/desktop.rs:420` на закреплённом
+SHA: достижимость и контроль этой ветви ещё предстоит установить. Отсутствие
+её в первоначальном перечне не разрешает считать покрытие полным.
+
+Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.
