@@ -432,8 +432,18 @@ export async function finishDelayAnalysis(
     },
     report.costUsd,
   );
-  if (saved.phase === 'verifying' && diagnosis.resolution === 'resolved')
+  if (saved.phase === 'verifying' && diagnosis.resolution === 'resolved') {
+    if (next.dependencyRecheck && next.blockedContext) {
+      // Проверенное ожидание становится историей разбора, а не активным
+      // основанием: его ссылки уже сняты из dependsOn.
+      next.delayAnalysis.resolvedDependencyContext = {
+        blockedContext: next.blockedContext,
+        dependencyRecheck: next.dependencyRecheck,
+      };
+      delete next.blockedContext;
+    }
     delete next.dependencyRecheck;
+  }
   next.delayAnalysis.facts = delayFacts(next);
   const written = await io.saveTask(
     next,
