@@ -4,6 +4,7 @@ import type { PlayerId, StructureKind as StructureKindType } from '@td/shared';
 import { cellX, cellY, playerStats } from '@td/sim';
 import type { WorldState } from '@td/sim';
 import { worldToScreen } from './iso.js';
+import { traceGroundCircle } from './ground-circle.js';
 import { traceCell } from './entities.js';
 import type { TouchStick } from './controls.js';
 
@@ -69,11 +70,13 @@ export const drawOverlays = (
 };
 
 /**
- * Окружность в мировых координатах.
+ * Окружность на земле в координатах поля.
  *
- * Проекция линейна, но круг она превращает в наклонный эллипс, поэтому
- * рисовать его средствами PixiJS (`circle`) нельзя — получится круг
- * на экране, а не на земле. Считаем точки в мире и проецируем каждую.
+ * Своей геометрии здесь нет: считает общий помощник `traceGroundCircle`,
+ * а этот вызов лишь подставляет проекцию поля и число отрезков, чтобы
+ * не повторять их у каждого из пяти мест вызова. Вторая, независимо
+ * написанная окружность разошлась бы с первой при первой же правке углов
+ * проекции — и разошлась бы молча.
  */
 const traceWorldCircle = (
   graphics: Graphics,
@@ -81,16 +84,7 @@ const traceWorldCircle = (
   centreY: number,
   radiusCells: number,
 ): void => {
-  for (let index = 0; index <= CIRCLE_STEPS; index += 1) {
-    const angle = (index / CIRCLE_STEPS) * Math.PI * 2;
-    const point = worldToScreen(
-      centreX + Math.cos(angle) * radiusCells,
-      centreY + Math.sin(angle) * radiusCells,
-    );
-
-    if (index === 0) graphics.moveTo(point.x, point.y);
-    else graphics.lineTo(point.x, point.y);
-  }
+  traceGroundCircle(graphics, centreX, centreY, radiusCells, worldToScreen, CIRCLE_STEPS);
 };
 
 /**
