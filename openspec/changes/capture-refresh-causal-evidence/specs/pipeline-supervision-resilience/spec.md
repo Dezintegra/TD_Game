@@ -53,7 +53,32 @@ The evidence checker SHALL separately report integrity, capture completeness and
 
 ### Requirement: Host refresh observation preserves existing security and incident boundaries
 
-Unavailable executor observations SHALL be collected only by the ordinary authorized Windows host through a documented read-only observation route using the same evidence contract. Neither the executor nor that route SHALL change ACLs, ownership, permission profiles or privileges as a proposed repair, impersonate a user, bypass a denial, restart a supervisor or replay the source audit. Evidence SHALL exclude secret stores, credentials and full environments. Successful collection SHALL NOT settle an outage hold, alter incident state, grant a retry or substitute for the source stage's incidentVerification. Existing report retention, accounting and incident mechanisms SHALL remain the sole owners of those effects.
+Unavailable executor observations SHALL be collected only by the ordinary authorized Windows host through a documented read-only observation route using the same evidence contract. Neither the executor nor that route SHALL change ACLs, ownership, permission profiles or privileges as a proposed repair, impersonate a user, bypass a denial or replay the source audit. Supervisor ownership transfer SHALL be permitted only for an explicitly authorized bounded diagnostic window operated by the Windows host after the tooling is prepared, checked and pushed at a pinned source revision. The executor MUST NOT stop its supervisor. Evidence SHALL exclude secret stores, credentials and full environments. Successful collection SHALL NOT settle an outage hold, alter incident state, grant a retry or substitute for the source stage's incidentVerification. Existing report retention, accounting and incident mechanisms SHALL remain the sole owners of those effects.
+
+The diagnostic owner SHALL confirm the previous owner's exit and acquire the existing startup/recovery guard and supervisor lock before reading runtime stores. It SHALL use the existing budget admission and launch accounting functions with the current shared ledger, persist each launch before spawn and its observed usage before the next launch or normal ownership release. It MUST NOT use a separate ledger, empty accounting callbacks or a stale task/configuration snapshot to bypass admission. Unresolved persistence failure SHALL prevent normal release and further probes; interrupted accounting SHALL remain recoverable under the original launch identity without replaying probes. Return to the ordinary supervisor SHALL preserve usage, retained reports, pauses and incident state.
+
+#### Scenario: Another owner still holds the lock
+- **WHEN** the production host route encounters a live or indeterminate owner or cannot acquire the common guard
+- **THEN** it refuses collection before runtime reads, ledger writes or model spawn and does not kill the owner or remove its lock
+
+#### Scenario: Budget refuses a diagnostic launch
+- **WHEN** the production composition loads the shared ledger after ownership and existing admission rejects the assigned task and stage
+- **THEN** no diagnostic process starts, the bundle records not-run, and neither limits nor usage are reset
+
+#### Scenario: Usage cannot be persisted
+- **WHEN** a diagnostic process has returned but saving its usage fails
+- **THEN** the owner retains the result and pending launch identity, starts no next probe, reports the exact storage failure and does not advertise safe release or completed collection
+- **AND** retrying persistence under ownership uses the same launch identity without double charging or rerunning the probe
+
+#### Scenario: Host window is interrupted
+- **WHEN** cancellation arrives after a probe started or the diagnostic owner exits unexpectedly
+- **THEN** graceful cancellation stops only its own probes and persists their partial results and accounting before releasing its lock
+- **AND** an abrupt exit leaves the durable pending launch and primary results for existing accounting recovery; a restarted collector does not replay the collection or report unobserved usage as zero
+
+#### Scenario: Ordinary supervision returns after collection
+- **WHEN** the host has confirmed probe exit, persisted usage and diagnostic-owner exit
+- **THEN** the ordinary supervisor reacquires the existing locks and reads the updated ledger with unrelated records and retained reports intact
+- **AND** the authorized handoff does not change the source audit or authorize another incident verification attempt
 
 #### Scenario: Executor cannot inspect refresh token
 - **WHEN** the executor cannot read the relevant process security metadata
