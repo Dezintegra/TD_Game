@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "origin": "https://github.com/openai/codex.git",
+  "tag": "rust-v0.153.4",
+  "tagObject": "042fb41b7c813ac7999105e886b2b7aa715b5081",
+  "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+  "sourceTree": "c527c7a5f5f199231dc0d819264e9e2180eb126a",
+  "toolchain": "1.95.0",
+  "target": "x86_64-pc-windows-msvc",
+  "schemaVersion": "refresh-boundary/v1",
+  "status": "preparation-only",
+  "patchSha256": null,
+  "recipeSha256": null,
+  "coverageSha256": null
+}
