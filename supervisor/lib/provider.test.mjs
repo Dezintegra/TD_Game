@@ -1,5 +1,7 @@
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { stageCommand } from './stage-command.mjs';
@@ -374,6 +376,43 @@ it('включает Windows sandbox без Git-авторизации в argv',
   expect(() =>
     codexExecutionArgs({ codexWindowsSandbox: 'disabled' }, '/main', '/tree', 'win32'),
   ).toThrow('codexWindowsSandbox');
+});
+
+it('разрешает пакеты только Windows deploy в назначенном снимке', async () => {
+  const { codexExecutionArgs } = await import('./provider.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'td-deploy-sandbox-'));
+  try {
+    const base = join(root, '.pipeline', 'deploy-checkouts');
+    const snapshot = join(base, 'deploy-test');
+    mkdirSync(join(root, '.git', 'worktrees', 'deploy-test'), { recursive: true });
+    for (const group of ['apps', 'packages']) {
+      const packagePath = join(snapshot, group, group === 'apps' ? 'client' : 'shared');
+      mkdirSync(packagePath, { recursive: true });
+      writeFileSync(join(packagePath, 'package.json'), '{}');
+    }
+    writeFileSync(
+      join(snapshot, '.git'),
+      `gitdir: ${join(root, '.git', 'worktrees', 'deploy-test')}\n`,
+    );
+    const profile = (stage) =>
+      codexExecutionArgs({}, root, snapshot, 'win32', stage).find((arg) =>
+        arg.startsWith('permissions='),
+      );
+    const quote = (path) => JSON.stringify(path.replaceAll('\\', '/')) + '="write"';
+    for (const path of [join(snapshot, 'apps', 'client'), join(snapshot, 'packages', 'shared')]) {
+      expect(profile('deploy')).toContain(quote(path));
+      expect(profile('audit')).not.toContain(quote(path));
+      expect(codexExecutionArgs({}, root, snapshot, 'linux', 'deploy').join()).not.toContain(
+        quote(path),
+      );
+    }
+    expect(profile('deploy')).not.toContain(quote(root));
+    expect(() => codexExecutionArgs({}, root, root, 'win32', 'deploy')).toThrow('снимка deploy');
+  } finally {
+    const relativeToTemp = root.slice(resolve(tmpdir()).length + 1);
+    if (root.startsWith(resolve(tmpdir()) + sep) && relativeToTemp.startsWith('td-deploy-sandbox-'))
+      rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it('считает declined отдельным отказом, даже когда модель завершила ответ', () => {
