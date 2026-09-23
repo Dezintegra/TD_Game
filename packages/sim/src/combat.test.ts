@@ -152,6 +152,30 @@ const unitById = (world: WorldState, id: number): UnitState | undefined =>
   world.units.find((entry) => entry.id === asEntityId(id));
 
 describe('стрельба и урон', () => {
+  it.each([1, 2, 3])('генерал против %i готовых башен', (count) => {
+    // Все цели в дальности и без преград; стройка не даёт генералу форы.
+    let world = arrange(
+      Array.from({ length: count }, (_, index) =>
+        structure(50 + index, 1, StructureKind.TowerBasic, 3, index - 1, 400),
+      ),
+      [],
+      at(0, 0),
+    );
+    let ticks = 0;
+    while (ticks < 500 && world.generals[0]?.alive && structureById(world, 50)) {
+      world = step(world, []);
+      ticks += 1;
+    }
+    expect(ticks).toBeLessThan(500);
+    if (count === 1) {
+      expect(world.generals[0]?.alive).toBe(true);
+      expect(structureById(world, 50)).toBeUndefined();
+    } else {
+      expect(world.generals[0]?.alive).toBe(false);
+      expect(world.structures.filter((entry) => entry.id >= 50)).toHaveLength(count);
+    }
+  });
+
   it('башня бьёт вражеского юнита', () => {
     const world = arrange(
       [structure(50, 0, StructureKind.TowerBasic, 0, 0, 200)],
