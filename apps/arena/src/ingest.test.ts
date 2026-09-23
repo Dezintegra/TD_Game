@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DatabaseSync } from 'node:sqlite';
+import { asPlayerId } from '@td/shared';
+import { NukeNote } from '@td/ai';
 import { ingestFile, isLogName, openDatabase } from './ingest.js';
 import { createLogWriter, logPathFor } from './log.js';
 import type { LogRecord } from './records.js';
@@ -47,6 +49,47 @@ const FOOTER: LogRecord = {
   endReason: 'base-destroyed',
   wallMs: 5,
 };
+
+/**
+ * Решение противника с судьбой ядерного удара.
+ *
+ * Собирается вручную, а не прогоном матча: проверяется здесь дорога
+ * от записи до столбца, а не поведение противника. Матч дал бы те же
+ * столбцы за четверть часа и с разбросом.
+ */
+const decision = (
+  tick: number,
+  nuke: { readonly nukeNote?: NukeNote; readonly nukeNet?: number; readonly nukeCost?: number },
+): LogRecord => ({
+  t: 'decision',
+  tick,
+  player: asPlayerId(0),
+  phaseIndex: 1,
+  waitStreak: 0,
+  impatient: false,
+  escorting: false,
+  liveUnits: 3,
+  nearbyUnits: 1,
+  spendOrder: [],
+  attempts: [],
+  frontiers: [],
+  generalCell: 42,
+  generalFromHome: 7,
+  approachShortest: 30,
+  energy: 100,
+  struck: false,
+  pushed: false,
+  commandCount: 0,
+  ...nuke,
+});
+
+/** Столбцы судьбы удара, как они легли в базу. */
+const nukesIn = (db: DatabaseSync, matchId: string): unknown[] =>
+  db
+    .prepare(
+      'select tick, nuke_note, nuke_net, nuke_cost from decision where match_id = ? order by tick',
+    )
+    .all(matchId);
 
 const asJsonl = (records: readonly LogRecord[]): string =>
   `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
@@ -162,6 +205,52 @@ describe('сборка базы из сжатого лога', () => {
     expect(result.matches).toBe(1);
     expect(result.broken).toBe(0);
     expect(commandsIn(db, 'проверка')).toHaveLength(600);
+  });
+
+  it('судьба удара доезжает до базы: помеха, ценность цели и цена пуска', () => {
+    // Три случая в одном логе, и все три разные по смыслу:
+    //  — обход не выполнялся: обеих величин нет, и в базе они `null`,
+    //    а не ноль. Ноль читался бы как «искали и нашли пустоту»;
+    //  — цель дешевле пуска: величины есть, и по ним видно, во сколько раз
+    //    цель не дотянула;
+    //  — лучшая точка хуже пустой карты: ценность ОТРИЦАТЕЛЬНАЯ. Это
+    //    значит, что своего рядом больше чужого, и обрезать такое нулём
+    //    при записи значило бы стереть диагноз.
+    const records = [
+      HEADER,
+      decision(10, { nukeNote: NukeNote.NotSearched }),
+      decision(20, { nukeNote: NukeNote.TargetTooCheap, nukeNet: 120.4, nukeCost: 400 }),
+      decision(30, { nukeNote: NukeNote.TargetTooCheap, nukeNet: -37.5, nukeCost: 400 }),
+      FOOTER,
+    ];
+
+    const path = join(dir, 'nuke.jsonl');
+    writeFileSync(path, asJsonl(records));
+
+    expect(ingestFile(db, path).matches).toBe(1);
+    // `toEqual`, а не `toStrictEqual`: строки из node:sqlite приходят
+    // объектами без прототипа, и строгое сравнение спорит о прототипе,
+    // а не о значениях.
+    expect(nukesIn(db, 'проверка')).toEqual([
+      { tick: 10, nuke_note: 'not-searched', nuke_net: null, nuke_cost: null },
+      { tick: 20, nuke_note: 'target-too-cheap', nuke_net: 120, nuke_cost: 400 },
+      { tick: 30, nuke_note: 'target-too-cheap', nuke_net: -37, nuke_cost: 400 },
+    ]);
+  });
+
+  it('удар состоялся — помехи в базе нет', () => {
+    const records = [HEADER, { ...decision(10, { nukeNet: 900, nukeCost: 400 }), struck: true }];
+
+    const path = join(dir, 'struck.jsonl');
+    writeFileSync(path, asJsonl(records as readonly LogRecord[]));
+    ingestFile(db, path);
+
+    // `toEqual`, а не `toStrictEqual`: строки из node:sqlite приходят
+    // объектами без прототипа, и строгое сравнение спорит о прототипе,
+    // а не о значениях.
+    expect(nukesIn(db, 'проверка')).toEqual([
+      { tick: 10, nuke_note: null, nuke_net: 900, nuke_cost: 400 },
+    ]);
   });
 
   it('имя лога узнаётся по обоим расширениям', () => {

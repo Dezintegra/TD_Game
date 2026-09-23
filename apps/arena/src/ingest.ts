@@ -160,7 +160,7 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
   const insertTower = db.prepare('insert into tower values (?, ?, ?, ?)');
   const insertWallSite = db.prepare('insert into wall_site values (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertDecision = db.prepare(`
-    insert into decision values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    insert into decision values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertAttempt = db.prepare('insert into attempt values (?, ?, ?, ?, ?, ?, ?, ?)');
   const insertFrontier = db.prepare(
@@ -258,6 +258,13 @@ export const ingestFile = (db: DatabaseSync, path: string): IngestResult => {
             record.generalCell,
             record.generalFromHome,
             record.approachShortest,
+            record.nukeNote ?? null,
+            // К ближайшему целому, а не усечением к нулю: величина знаковая,
+            // и усечение смещало бы отрицательные вверх, а положительные
+            // вниз — систематический перекос ровно там, где ценность цели
+            // близка к нулю и разбор всего интереснее.
+            record.nukeNet === undefined ? null : Math.round(record.nukeNet),
+            record.nukeCost ?? null,
           );
           rows += 1;
 
