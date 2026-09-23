@@ -12,6 +12,17 @@
 
 ## 3. Наблюдение Windows без изменения прав
 
+Техническое уточнение implement от 23.09.2026 записано в design, раздел
+«Источник корреляции Windows»: проверенные stdout/helper log версии 0.155.1
+не предоставляют требуемой связи refresh/PID/TID/effective token. Пункт 3.1
+остаётся открытым до выбора реального источника по внешней статической описи
+Windows-хозяина; подставной источник не считается реализацией. Лимит описи —
+один заход до 30 минут, результат только новым файлом в `.matchlog/0370-refresh/`,
+без native/model probes, tracing/debugger, остановки владельца или изменения
+прав. Критерий остановки и требуемые доказательства определены в design.
+Новые живые опыты до 4.3 по-прежнему запрещены. Независимый 4.1 выполнен раньше
+3.1; 4.2–4.3 и 5.1 не отмечаются и host collector не объявляется готовым.
+
 - [ ] 3.1 Реализовать `supervisor/lib/windows-refresh-observer.mjs`, при необходимости его локальную системную часть `supervisor/lib/windows-refresh-snapshot.ps1`, и `supervisor/lib/windows-refresh-observer.test.mjs`. Ограниченные read-only снимки target/parents и выбранных процессов: realpath/reparse/file identity, descriptor/owner/inheritance, PID/creationTime/image/hash/version, доступные effective-token сведения и read-only оценка ACL access с источником/ограничением. Наблюдатель вооружается до первого tool call, пропущенный короткоживущий helper даёт incomplete; токен хозяина или shell не заменяет refresh. Использовать подменённые системные ответы; не вызывать настоящий Windows helper на этом пункте. Проверка: `pnpm test:pipeline lib/windows-refresh-observer.test.mjs lib/refresh-evidence.test.mjs`: доступ запрещён, PID переиспользован, helper исчез, reparse/target изменился, token неизвестен, descriptor изменился штатным refresh, чужой процесс исключён, секреты не записаны, команд ACL-write/runas/setup нет. До двух часов; коммит и push.
 
 ## 4. Подключение и передаваемый маршрут хозяина
