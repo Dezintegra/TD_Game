@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toolControls, powerShellControl } from './tool-controls.mjs';
+import { toolControls, powerShellControl, refreshControls } from './tool-controls.mjs';
 import { controlFacts, toolContext, diagnoseStageTools } from './tool-diagnostics.mjs';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,6 +8,147 @@ import { codexGitEnvironment } from './codex-environment.mjs';
 import { classifyToolControls } from './stage-tool-health.mjs';
 
 const context = { provider: 'codex', cwd: 'work', environmentId: 'env', permissionsId: 'policy' };
+describe('refresh investigation uses bounded sequential sessions', () => {
+  async function investigate({
+    failure,
+    narrative = false,
+    wrong = false,
+    missing = false,
+    cancel = false,
+    resultFailure = false,
+    deny = false,
+    expire = false,
+  } = {}) {
+    const cwd = fileURLToPath(new URL('../../', import.meta.url));
+    const command = { program: 'codex', args: [], cwd };
+    const env = { PATH: 'fixed', GH_TOKEN: 'fixture-token' };
+    const environment = codexGitEnvironment(env, cwd, cwd);
+    const events = [];
+    const order = [];
+    let count = 0;
+    let clock = 0;
+    const signal = new globalThis.AbortController();
+    const result = await diagnoseStageTools({
+      assignment: { stage: 'implement' },
+      config: { provider: 'codex' },
+      root: cwd,
+      home: cwd,
+      env,
+      expectedContext: toolContext(command, 'codex', environment),
+      buildCommand: () => command,
+      mode: 'refresh-investigation',
+      signal: signal.signal,
+      now: () => clock,
+      evidence: {
+        append: (event) => events.push(event),
+        primary: () => ({ path: '/primary', sha256: 'fixture' }),
+      },
+      observer: {
+        arm: async () => {
+          order.push('arm');
+          return {
+            captureLaunch: async () => {
+              order.push('identity');
+              return {};
+            },
+            close: async () => {
+              order.push('close');
+            },
+          };
+        },
+      },
+      onStart: async () => {
+        order.push('begin');
+        if (deny) throw new Error('denied');
+      },
+      onResult: async () => {
+        order.push('usage');
+        if (resultFailure) throw new Error('save-failed');
+      },
+      start: ({ command: invoked, beforeInput, onEvent, timeoutMs }) => {
+        order.push('spawn');
+        const n = ++count;
+        expect(timeoutMs).toBeGreaterThan(0);
+        expect(timeoutMs).toBeLessThanOrEqual(120000);
+        expect(invoked.stdin).toContain('четыре отдельных');
+        const handle = {
+          kill: () => {
+            order.push('kill');
+          },
+        };
+        handle.finished = (async () => {
+          await beforeInput({ pid: n });
+          order.push('input');
+          if (expire) clock = 600_001;
+          onEvent({ type: 'thread.started', thread_id: 'session-' + n });
+          if (cancel) signal.abort();
+          if (narrative)
+            onEvent({
+              type: 'item.completed',
+              item: { type: 'agent_message', text: 'All four succeeded' },
+            });
+          else
+            for (const [i, control] of refreshControls(cwd).entries()) {
+              if (missing && i === 3) continue;
+              onEvent({
+                type: 'item.completed',
+                item: {
+                  id: 'call-' + i,
+                  type: 'command_execution',
+                  command: wrong ? 'Get-Date' : powerShellControl(control),
+                  status: failure === i ? 'failed' : 'completed',
+                  ...(failure === i
+                    ? { execution_error: { phase: 'spawn', created: false, code: 5 } }
+                    : { exit_code: 0 }),
+                  aggregated_output: 'safe-result',
+                },
+              });
+            }
+          return { code: 0, stdout: '', stderr: '' };
+        })();
+        return handle;
+      },
+    });
+    return { result, events, order, count };
+  }
+  it.each([undefined, 0, 3])('keeps first and later failure %s without replay', async (failure) => {
+    const h = await investigate({ failure });
+    expect(h.count).toBe(2);
+    expect(h.events.filter((e) => e.kind === 'command')).toHaveLength(8);
+    expect(h.order).toEqual(
+      Array(2).fill(['arm', 'begin', 'spawn', 'identity', 'input', 'usage', 'close']).flat(),
+    );
+    expect(h.result.verdict).toBe('inconclusive'); // no native refresh events in fixture
+    if (failure !== undefined) expect(h.events.filter((e) => e.created === false)).toHaveLength(2);
+  });
+  it('does not promote narrative or missing results', async () => {
+    const narrative = await investigate({ narrative: true });
+    expect(narrative.events.filter((e) => e.kind === 'command')).toHaveLength(0);
+    expect(narrative.events.filter((e) => e.reason === 'missing-command-results')).toHaveLength(2);
+    const missing = await investigate({ missing: true });
+    expect(missing.events.filter((e) => e.reason === 'missing-command-results')).toHaveLength(2);
+  });
+  it('stops on mismatched invocation without a new session', async () => {
+    const h = await investigate({ wrong: true });
+    expect(h.count).toBe(1);
+    expect(h.events.some((e) => e.reason === 'unexpected-command-order')).toBe(true);
+  });
+  it('cancellation prevents the second session but accounts for the first', async () => {
+    const h = await investigate({ cancel: true });
+    expect(h.count).toBe(1);
+    expect(h.order).toContain('usage');
+    expect(h.order.at(-1)).toBe('close');
+  });
+  it('propagates admission and persistence failures to the owner', async () => {
+    await expect(investigate({ deny: true })).rejects.toThrow('denied');
+    await expect(investigate({ resultFailure: true })).rejects.toThrow('save-failed');
+  });
+  it('does not start another session after the overall deadline', async () => {
+    const h = await investigate({ expire: true });
+    expect(h.count).toBe(1);
+    expect(h.order.at(-1)).toBe('close');
+  });
+});
 const controls = toolControls({
   stage: 'implement',
   cwd: 'work',

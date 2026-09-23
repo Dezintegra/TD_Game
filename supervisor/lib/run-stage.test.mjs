@@ -32,7 +32,7 @@ function fakeChild(pid = 4242) {
   return child;
 }
 
-function harness({ timeoutMs = 1000, command, onEvent, onStderr } = {}) {
+function harness({ timeoutMs = 1000, command, onEvent, onStderr, beforeInput } = {}) {
   const child = fakeChild();
   const killed = [];
   const timers = [];
@@ -42,6 +42,7 @@ function harness({ timeoutMs = 1000, command, onEvent, onStderr } = {}) {
   const handle = startStage({
     command: command ?? { program: 'claude', args: ['-p'], cwd: '/repo', stdin: 'делай' },
     timeoutMs,
+    beforeInput,
     spawn: (program, list, options) => {
       spawned.push({ program, list, options });
       return child;
@@ -494,4 +495,63 @@ it('передаёт авторизацию окружением, не доба�
   expect(h.spawned[0].options.env).toEqual(command.env);
   expect(h.spawned[0].list).toEqual(['exec']);
   h.child.emit('close', 0);
+});
+
+describe('pre-input identity gate', () => {
+  it('holds input while identity is saved and receives output meanwhile', async () => {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const h = harness({
+      beforeInput: async ({ pid }) => {
+        expect(pid).toBe(4242);
+        await gate;
+      },
+    });
+    expect(h.child.stdin.closed).toBe(false);
+    h.child.stdout.emit('data', '{"type":"thread.started"}\n');
+    expect(h.events).toHaveLength(1);
+    release();
+    await vi.waitFor(() => expect(h.child.stdin.closed).toBe(true));
+    h.child.emit('close', 0);
+    await h.handle.finished;
+  });
+  it('failure kills only its child and waits for stream close without input', async () => {
+    const h = harness({
+      beforeInput: () => {
+        throw new Error('identity-write');
+      },
+    });
+    let done = false;
+    h.handle.finished.then(() => {
+      done = true;
+    });
+    await vi.waitFor(() => expect(h.killed).toEqual([4242]));
+    expect(done).toBe(false);
+    expect(h.child.stdin.closed).toBe(false);
+    h.child.stderr.emit('data', 'last evidence');
+    h.child.emit('close', 1);
+    expect(await h.handle.finished).toMatchObject({
+      killedBy: 'before-input',
+      stderr: 'last evidence',
+      error: { message: 'identity-write' },
+    });
+  });
+  it('does not deliver late input after cancellation', async () => {
+    let release;
+    const h = harness({
+      beforeInput: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    h.handle.kill();
+    h.child.emit('close', 1);
+    release();
+    await h.handle.finished;
+    await Promise.resolve();
+    expect(h.child.stdin.closed).toBe(false);
+  });
 });

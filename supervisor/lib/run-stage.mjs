@@ -43,6 +43,7 @@ export function startStage({
   killTree,
   onEvent = () => {},
   onStderr = () => {},
+  beforeInput,
   setTimer = nodeSetTimeout,
   clearTimer = nodeClearTimeout,
 }) {
@@ -70,10 +71,12 @@ export function startStage({
   // простоит до истечения срока этапа, ничего не сделав. Ошибку записи ловим
   // отдельно — оборванный канал не должен ронять супервизор целиком, этап
   // и без промпта завершится сам, а его исход разберут как обычно.
-  if (command.stdin != null && child.stdin) {
-    child.stdin.on('error', () => {});
-    child.stdin.end(command.stdin);
-  }
+  const sendInput = () => {
+    if (command.stdin != null && child.stdin) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(command.stdin);
+    }
+  };
 
   let stdout = '';
   let stderr = '';
@@ -98,6 +101,8 @@ export function startStage({
   });
 
   let killedBy = null;
+  let closed = false;
+  let inputError = null;
   const stop = (why) => {
     killedBy = killedBy ?? why;
     killTree(child.pid);
@@ -110,13 +115,14 @@ export function startStage({
 
   const finished = new Promise((resolve) => {
     const done = (code, error) => {
+      closed = true;
       clearTimer(timer);
       // Последняя строка приходит без перевода в конце, и без этого слива
       // терялось бы именно итоговое событие — то самое, из которого берётся
       // весь отчёт.
       lines.flush();
       errLines.flush();
-      resolve({ code, killedBy, stdout, stderr, error: error ?? null });
+      resolve({ code, killedBy, stdout, stderr, error: error ?? inputError });
     };
     // Само событие «error» не означает несостоявшийся запуск: отсутствие pid
     // супервизор отдельно обрабатывает как not-born, а ошибка уже родившегося
@@ -124,6 +130,22 @@ export function startStage({
     child.on('error', (error) => done(null, error));
     child.on('close', (code) => done(code));
   });
+
+  // Только диагностический хозяин задерживает промпт до долговечной записи
+  // идентичности. При отказе не выдаём ввод и ждём закрытия потоков потомка.
+  if (beforeInput) {
+    Promise.resolve()
+      .then(() => {
+        if (!closed && !killedBy) return beforeInput({ pid: child.pid });
+      })
+      .then(() => {
+        if (!closed && !killedBy) sendInput();
+      })
+      .catch((error) => {
+        inputError = error;
+        if (!closed) stop('before-input');
+      });
+  } else sendInput();
 
   return { pid: child.pid, finished, kill: () => stop('shutdown') };
 }

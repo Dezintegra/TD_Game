@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 export const TOOL_DIAGNOSTIC_TIMEOUT_MS = 120_000;
 
+/** Четыре отдельных вызова, одинаковые в обеих новых сессиях. */
+export function refreshControls(cwd) {
+  const read = ['Get-Content', '-LiteralPath', `${cwd.replaceAll('\\', '/')}/CLAUDE.md`];
+  const git = ['git', '-C', cwd, 'status', '-sb'];
+  return [read, git, read, git].map((argv, index) => ({ id: `refresh-${index}`, argv }));
+}
+
 /** Общий каталог readiness и повторной диагностики не читает команды из отчёта. */
 export function toolControls({
   stage,
