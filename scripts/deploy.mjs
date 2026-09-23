@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { deploySshHost, deploySshOptions } from './deploy-ssh.mjs';
 import { ensureDeployHost } from './ensure-deploy-host.mjs';
 import { deployPerfArgs } from './deploy-perf.mjs';
+import { deploymentMarkerCommand } from './deploy-evidence.mjs';
 
 // ── Ключи ────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -162,6 +163,7 @@ if (dirty) {
 }
 
 const revision = capture('git', ['rev-parse', '--short', ref]);
+const fullRevision = capture('git', ['rev-parse', ref]);
 const subject = capture('git', ['log', '-1', '--format=%s', ref]);
 step(`Выкладываю ${revision} — ${subject}`);
 
@@ -222,6 +224,7 @@ try {
     // гигабайт. Убираем только висячие образы: те, на которые никто
     // не ссылается по имени.
     'docker image prune -f > /dev/null',
+    deploymentMarkerCommand(fullRevision),
   ].join('\n');
 
   step('Собираю и поднимаю на сервере (это самая долгая часть)');

@@ -31,25 +31,61 @@ import {
   incidentFromReport,
   verifyIncident,
 } from './pipeline-incidents.mjs';
+
+export class ReportValidationError extends Error {}
+
+const invalidReport = (why) => ({ result: 'failed', code: 'invalid-report', why });
+
 /** План собирается теми же правилами, но все записи становятся данными. */
 export async function prepareReportPlan(action, io, saved = null) {
   if (saved) return globalThis.structuredClone(saved);
   if (!action.reportId) throw new Error('reportId is required for a durable plan');
   const operations = [];
   const cleanup = [];
+  const dependencyCandidates = new Map();
+  const plannedTasks = new Map();
+  const readPlannedTask = (id) => plannedTasks.get(id) ?? io.readTask(id);
   let finalized = false;
   function record(kind, args) {
-    const target = typeof args[0] === 'string' ? args[0] : args[0].id;
+    const target = typeof args[0] === 'string' ? args[0] : (args[0].id ?? args[0].taskId);
     operations.push({
       key: `${action.reportId}:${kind}:${operations.length}:${target}`,
       kind,
       args: globalThis.structuredClone(args),
-      expected: kind === 'saveTask' ? globalThis.structuredClone(io.readTask(target)) : null,
+      expected: kind === 'saveTask' ? globalThis.structuredClone(readPlannedTask(target)) : null,
     });
     return { ok: true, outcome: 'saved' };
   }
   const result = await transferReport(action, {
     ...io,
+    readTask: readPlannedTask,
+    ...(io.parsedCards
+      ? {
+          parsedCards: () =>
+            io.parsedCards().map((item) => ({ ...item, task: readPlannedTask(item.task.id) })),
+        }
+      : {}),
+    ...(io.planTaskDependencyUpdates
+      ? {
+          planTaskDependencyUpdates: async (...args) => {
+            const plan = await io.planTaskDependencyUpdates(...args);
+            for (const task of plan.tasks ?? []) dependencyCandidates.set(task.id, task);
+            return plan;
+          },
+        }
+      : {}),
+    ...(io.appendTaskDependencies
+      ? {
+          appendTaskDependencies: (update, { sourceId, updates }) => {
+            const candidate = { ...dependencyCandidates.get(update.taskId) };
+            delete candidate.valid;
+            delete candidate.archived;
+            // Последующие действия плана видят дополнение, хотя запись ещё не началась.
+            plannedTasks.set(update.taskId, candidate);
+            return record('appendTaskDependencies', [update, { sourceId, updates }]);
+          },
+        }
+      : {}),
     saveTask: (...args) => record('saveTask', args),
     release: (...args) => record('release', args),
     createTask: (...args) => record('createTask', args),
@@ -69,8 +105,10 @@ export async function prepareReportPlan(action, io, saved = null) {
   });
   // Отбраковка неполного разбора тоже завершает доставку: её диагностику
   // и расход сохраняем, хотя исход обработчика остаётся failed.
-  if (result.result !== 'done' && !finalized)
-    throw new Error(result.why ?? 'cannot prepare report plan');
+  if (result.result !== 'done' && !finalized) {
+    const Failure = result.code === 'invalid-report' ? ReportValidationError : Error;
+    throw new Failure(result.why ?? 'cannot prepare report plan');
+  }
   return { version: 1, reportId: action.reportId, operations, cleanup, result };
 }
 
@@ -88,13 +126,78 @@ function evidenceFor(task, stage, io) {
   };
 }
 
+async function applyDependencyUpdates(task, updates, io, context) {
+  // Все адресаты проверяются до первой записи. Неудача сохраняет весь отчёт для повтора.
+  const dependencyNotes = [];
+  if (updates.length) {
+    if (!io.planTaskDependencyUpdates || !io.appendTaskDependencies)
+      return { result: 'failed', why: 'адаптер не поддерживает dependencyUpdates' };
+    try {
+      const planned = await io.planTaskDependencyUpdates(updates, task.id);
+      if (!planned.ok) return { result: 'failed', why: planned.why };
+      for (const update of updates) {
+        const saved = await io.appendTaskDependencies(update, {
+          ...context,
+          sourceId: task.id,
+          updates,
+        });
+        if (!saved.ok)
+          return { result: 'failed', why: saved.why ?? `${update.taskId}: ${saved.outcome}` };
+        dependencyNotes.push(`Зависимости ${update.taskId} подтверждены: ${update.reason}`);
+      }
+    } catch (error) {
+      return { result: 'failed', why: `dependencyUpdates: ${error.message}` };
+    }
+  }
+
+  return { notes: dependencyNotes };
+}
+
 /** Перенести отчёт сессии в бэклог. */
-export async function transferReport(action, io) {
+export async function transferReport(action, io, context = {}) {
   const task = io.readTask(action.taskId);
   const report = io.readReport(action.taskId, action.stage);
   if (!task || !report) return { result: 'skipped', why: 'задачи или отчёта нет' };
+  if (report.disposition && report.disposition !== 'ordinary')
+    return { result: 'skipped', why: 'tool diagnostic hold' };
+
+  const hasUpdates = Object.hasOwn(report, 'dependencyUpdates');
+  if (hasUpdates && !Array.isArray(report.dependencyUpdates))
+    return invalidReport('dependencyUpdates: ожидается массив');
+  const updates = report.dependencyUpdates ?? [];
+  let transferred = null;
+  if (
+    updates.length &&
+    report.taskId === task.id &&
+    report.taskId === action.taskId &&
+    report.stage === action.stage &&
+    io.readTransferredReport
+  ) {
+    const saved = await io.readTransferredReport(task.id, delayKey(report), report.stage);
+    if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };
+    transferred = saved.receipt;
+  }
+  if (
+    updates.length &&
+    (report.taskId !== task.id ||
+      report.taskId !== action.taskId ||
+      report.stage !== action.stage ||
+      (report.stage !== task.status &&
+        !transferred &&
+        task.delayAnalysis?.reportKey !== delayKey(report) &&
+        !(
+          report.outcome === 'blocked' &&
+          task.status === 'blocked' &&
+          task.blockedContext?.from === report.stage
+        )))
+  )
+    return {
+      result: 'failed',
+      why: 'dependencyUpdates: личность или этап отчёта не совпадают с источником',
+    };
 
   if (
+    !updates.length &&
     task.status !== report.stage &&
     task.tokenReanalysis?.reportKey === tokenAnalysisReportKey(report)
   ) {
@@ -116,6 +219,7 @@ export async function transferReport(action, io) {
   });
 
   if (trust.verdict === 'undermining') {
+    if (updates.length) return { result: 'failed', why: trust.why };
     // Отчёт при этом не пропадает. Основание записано ценой: 31.08.2026
     // задача 0006 ушла в ошибку с полностью снятыми числами шестидесяти
     // матчей, и числа эти остались лежать в логе, которого не прочитал никто.
@@ -165,7 +269,21 @@ export async function transferReport(action, io) {
     return stopped;
   }
 
+  // Переход уже сохранён вместе с отпечатком этого отчёта. Повторяем только
+  // подтверждение адресатов и доставку журнала, не переход и не расход.
+  if (transferred) {
+    const dependencies = await applyDependencyUpdates(task, updates, io, context);
+    if (dependencies.result) return dependencies;
+    const delivered = await io.deliverTransferredReport(task.id, delayKey(report));
+    if (!delivered.ok) return { result: 'failed', why: delivered.why ?? delivered.outcome };
+    io.forgetSession?.(task.id, report.stage);
+    io.removeReport(task.id, report.stage);
+    return { result: 'done', status: transferred.to };
+  }
+
   if (task.delayAnalysis?.reportKey === delayKey(report) && !task.delayJournal) {
+    const dependencies = await applyDependencyUpdates(task, updates, io, context);
+    if (dependencies.result) return dependencies;
     if (['blocked', 'new'].includes(task.status)) {
       const released = await io.release?.(task);
       if (released && !released.ok)
@@ -186,13 +304,19 @@ export async function transferReport(action, io) {
       return finishDelayAnalysis(task, report, io, { ownerAnswered: true });
     const problem = delayReportProblem(task, report) || categoriesProblem(report.categories, true);
     if (problem) return rejectDelayReport(task, report, problem, io);
-    if (report.outcome !== 'blocked') return finishDelayAnalysis(task, report, io);
+    if (report.outcome !== 'blocked')
+      return finishDelayAnalysis(task, report, io, {
+        beforeWrite: () => applyDependencyUpdates(task, updates, io, context),
+      });
   }
-  if (report.outcome === 'blocked') return transferBlocked(task, report, action, io);
+  if (report.outcome === 'blocked')
+    return transferBlocked(task, report, action, io, {
+      beforeWrite: () => applyDependencyUpdates(task, updates, io, context),
+    });
   const categoryProblem = categoriesProblem(report.categories, report.routingVersion === 1);
-  if (categoryProblem) return { result: 'failed', why: categoryProblem };
+  if (categoryProblem) return invalidReport(categoryProblem);
   const incidentProblem = incidentDeclarationProblem(report.pipelineIncident, task, report);
-  if (incidentProblem) return { result: 'failed', why: incidentProblem };
+  if (incidentProblem) return invalidReport(incidentProblem);
   const workProblem = workKindProblem(
     report.workKind !== undefined || report.workReason !== undefined
       ? {
@@ -203,16 +327,21 @@ export async function transferReport(action, io) {
         }
       : task,
   );
-  if (workProblem) return { result: 'failed', why: workProblem };
+  if (workProblem)
+    return report.workKind !== undefined || report.workReason !== undefined
+      ? invalidReport(workProblem)
+      : { result: 'failed', why: workProblem };
   if (report.categories && report.requests) {
-    if (!Array.isArray(report.requests)) return { result: 'failed', why: 'requests не массив' };
+    if (!Array.isArray(report.requests)) return invalidReport('requests не массив');
     for (const request of report.requests) {
       const problem = categoriesProblem(request?.categories, true);
-      if (problem) return { result: 'failed', why: problem };
+      if (problem) return invalidReport(problem);
     }
   }
 
   const verdict = applyReport(task, report, { maxRejections: io.maxRejections });
+  if (updates.length && verdict.problems?.length)
+    return { result: 'failed', why: verdict.problems.join('; ') };
   if (task.status === 'review' && report.outcome === 'done' && verdict.status === 'deploy') {
     const impact = io.deploymentImpact?.(report.links?.pr ?? task.links?.pr);
     if (impact?.needed === false) {
@@ -222,6 +351,10 @@ export async function transferReport(action, io) {
   }
   const moved = applyTransition(task, { status: verdict.status, note: verdict.note, now: io.now });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+
+  const dependencies = await applyDependencyUpdates(task, updates, io, context);
+  if (dependencies.result) return dependencies;
+  const dependencyNotes = dependencies.notes;
 
   // Остановленная задача счётчиков больше не считает: их обнулил сам переход
   // в сквозное состояние, и наращивать возвраты поверх обнулённого значило бы
@@ -559,13 +692,14 @@ export async function transferReport(action, io) {
           ? verdict.note
           : report.summary,
       links: verdict.status === 'completed' ? next.links : (report.links ?? {}),
-      decisions: [...(report.decisions ?? []), ...(plan.notes ?? [])],
+      decisions: [...(report.decisions ?? []), ...dependencyNotes, ...(plan.notes ?? [])],
       problem: halted ? verdict.note : undefined,
       denials,
       denialsNote,
       // Здесь и только здесь запись говорит словами сессии: всё остальное,
       // что конвейер пишет на доску, — его собственная механика.
       source: 'agent',
+      ...(updates.length && !action.reportId ? { reportTransferKey: delayKey(report) } : {}),
     },
     `chore(backlog): ${task.id} ${task.status} → ${verdict.status}`,
     [asked, answered].filter(Boolean),

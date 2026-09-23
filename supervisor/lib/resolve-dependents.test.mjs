@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { planEdgeResolutions, resolveDependents } from './resolve-dependents.mjs';
+import { routingProblem } from './categories.mjs';
+import { unblockTask } from './blockers.mjs';
 
 const now = '2026-09-10T12:00:00Z';
 
@@ -32,6 +34,7 @@ function harness(tasks) {
     now,
     machine: 'station',
     readTask: (id) => tasks.find((item) => item.id === id),
+    allTaskIds: () => tasks.map((item) => item.id),
     saveTask: async (next, entry) => {
       saved.push({ next, entry });
       const at = tasks.findIndex((item) => item.id === next.id);
@@ -159,6 +162,27 @@ describe('снятие ожидания', () => {
     // Схема требует от неё непустоты, а разблокировка узнаёт по ней законное
     // ожидание: сотри её — и задача осталась бы в «Заблокированы» навсегда.
     expect(h.tasks[0].blockedContext).toEqual(blockedContext);
+    const reread = JSON.parse(JSON.stringify(h.tasks[0]));
+    expect(routingProblem(reread)).toBeNull();
+    for (const edges of [
+      undefined,
+      {},
+      [],
+      [{ field: 'dependsOn', dependencyId: 'other', reason: 'закрыта' }],
+      [{ field: 'recovery.fixedBy', dependencyId: '0117-permit', reason: 'закрыта' }],
+      [{ field: 'dependsOn', dependencyId: '0117-permit', reason: ' ' }],
+    ]) {
+      expect(routingProblem({ ...reread, dependencyRecheck: { edges } })).toBeTruthy();
+    }
+    h.tasks[0] = reread;
+    expect(await unblockTask({ taskId: reread.id }, h.io)).toMatchObject({
+      result: 'done',
+      status: 'postmortem',
+    });
+    expect(h.tasks[0].delayAnalysis.phase).toBe('verifying');
+    expect(h.tasks[0].dependencyRecheck).toEqual(reread.dependencyRecheck);
+    expect(h.tasks[0].blockedContext).toEqual(blockedContext);
+    expect(routingProblem(h.tasks[0])).toBeNull();
   });
 
   it('чужую задачу не трогает', async () => {

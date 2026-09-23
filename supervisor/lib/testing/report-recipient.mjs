@@ -20,6 +20,7 @@ export function seedRecipient(path, tasks) {
     })),
     cards: tasks.map((task, index) => ({
       id: `66000000000000000000000${index}`,
+      idBoard: config.trello.board,
       name: task.title,
       desc: joinDescription(task.description ?? '', metaOf(task)),
       idList: `list-${task.status}`,
@@ -69,6 +70,9 @@ export function openRecipient(path, config = receiptConfig) {
       card.idMembers = card.idMembers.filter((id) => id !== route.split('/').at(-1));
       state.deletes = (state.deletes ?? 0) + 1;
       result = {};
+    } else if (method === 'POST' && card && route.endsWith('/idMembers')) {
+      card.idMembers = [...new Set([...card.idMembers, data.value])];
+      result = card;
     } else if (method === 'POST' && route === 'cards') {
       result = {
         id: `6600000000000000${String(state.cards.length).padStart(8, '0')}`,
