@@ -132,6 +132,35 @@ Package на шаге 5.2 включает подготовленные driver �
 
 ## Risks / Trade-offs
 
+### Уточнение подготовки после фактического Cargo preflight
+
+В revise 2026-09-23 23:30:29 UTC закреплённый Rust/Cargo 1.95.0 выполнил
+`cargo check --locked --target x86_64-pc-windows-msvc -p codex-windows-sandbox --lib`
+и завершился 101 до компиляции: Cargo требует обновления lockfile.
+Исходный Cargo.toml задаёт workspace version 0.153.4, Cargo.lock содержит
+codex-core и codex-windows-sandbox версии 0.0.0. Это пробел рецепта подготовки,
+а не доказанная невозможность сборки или разрешение обновить зависимости.
+
+Гипотеза: требуется только согласование версий внутренних workspace-пакетов.
+Разрешён один offline resolution посредством `cargo update --offline --workspace`
+под Rust 1.95.0 через локальный driver `.matchlog/0372-refresh/check-lock.mjs`.
+Driver сохраняет исходный lock и результат отдельно внутри той же рабочей
+области и восстанавливает исходный lock после команды. Лимит — 60 секунд,
+без компиляции или запуска runtime. До включения результата в точный патч
+сравнить все package source/version/checksum и зависимости: допустимы только
+переходы внутренних workspace-пакетов с 0.0.0 на 0.153.4. Любое изменение
+внешней зависимости останавливает этот способ и требует нового разбора;
+не подменять им закреплённый набор. Дальнейшие сборки по-прежнему только
+`--locked`; исходный и patched lockfile имеют отдельные SHA-256 в receipt.
+
+Cargo libgit2/Schannel ранее отказал с SEC_E_NO_CREDENTIALS. Штатный
+git-fetch-with-cli получил Git refs, но registry HTTPS Cargo дал тот же сбой.
+Node HTTPS получил все 1218 registry-архивов из Cargo.lock, каждый проверен
+по закреплённому checksum перед локальной распаковкой. Cache/vendor/temp/target
+находятся только в `.matchlog/0372-refresh/`. Это техническая подготовка,
+не изменение TLS/ACL/profile и не готовый воспроизводимый build driver.
+Его production-тесты и финальные receipts остаются незавершёнными.
+
 - Разработка задевает большой upstream Rust graph → маленькие собираемые patch increments, закреплённый toolchain, отдельные receipts; не подключать незавершённый источник в runtime.
 - User-mode snapshot не атомарен с kernel check → явная граница знания, mutator review, unstable/incomplete при сомнении; не обещать stock equivalence.
 - Новый IPC меняет timing и lifecycle → сохранить штатные spawn/join решения, измерять интервалы query/API/emission, сравнивать только одинаковые instrumented builds.
