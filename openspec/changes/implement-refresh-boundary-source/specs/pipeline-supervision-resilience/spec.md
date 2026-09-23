@@ -83,7 +83,7 @@ Source delivery SHALL include a review mapping real dispatch-to-ACL paths, no-re
 
 ### Requirement: Refresh source delivery preserves staged authorization and collector ownership
 
-The first authorized development stage SHALL produce the patch, build manifest/receipts, source-coverage review and negative-test results without activating a runtime, querying live tokens or running real setup. It SHALL present the exact candidate and absolute artifact paths, SHA-256 and UTC for a separate activation decision. Missing technical facts SHALL name evidence, an available acquisition method and its responsible owner. Only a separate authorization tied to that candidate SHALL permit activation and a bounded diagnostic window. The existing 0370 collector SHALL retain launch, budget, ledger, lock, observer integration and final integrity/completeness/causalSufficiency decisions, with at most two sessions, four calls per session, two minutes per session and ten minutes overall. No reverse dependency on 0370 SHALL be required to develop the source. Build/test success or merged documents MUST NOT establish source availability, repair, incident verification or live causal sufficiency.
+The first authorized development stage SHALL produce the patch, build manifest/receipts, source-coverage review and negative-test results without activating a runtime, querying live tokens or running real setup. It SHALL present the exact candidate and absolute artifact paths, SHA-256 and UTC for a separate activation decision. Missing technical facts SHALL name evidence, an available acquisition method and its responsible owner. Only a separate authorization tied to that candidate SHALL permit activation and a bounded diagnostic window. The existing 0370 collector SHALL retain launch, budget, ledger, lock, observer integration and final integrity/completeness/causalSufficiency decisions, with at most two sessions, four calls per session, two minutes per session and ten minutes overall. 0372 SHALL complete with either a verified portable package in storage surviving removal of its worktree or a precise confirmed technical barrier identifying evidence, missing deliverables, the next available method and responsible owner. Package delivery SHALL include the actual patch, CLI/helpers, manifest/build receipts, negative controls and source-coverage review; a separate read of every destination file SHALL verify availability, size and SHA-256 and record absolute destination paths and UTC. A workspace-only copy, successful copy command or failed transfer MUST NOT qualify as delivery. Neither completion of development nor completion of 0372 SHALL require a reverse dependency on 0370, collector readiness, a second authorization or live records; subsequent activation and live acceptance SHALL belong to 0370. Build/test success or merged documents MUST NOT establish source availability, repair, incident verification or live causal sufficiency.
 
 #### Scenario: Development authorization is already present
 - **WHEN** the accepted pinned design and the owner's first authorization are available
@@ -91,12 +91,20 @@ The first authorized development stage SHALL produce the patch, build manifest/r
 
 #### Scenario: Concrete package reaches the second gate
 - **WHEN** a candidate patch, manifests, reproducible build receipts, coverage and negative controls are ready
-- **THEN** delivery identifies that exact package for a separate activation decision and keeps live acceptance unproven until authorized primary records exist
+- **THEN** delivery independently verifies its complete persistent destination copy, identifies the exact package for 0370's subsequent activation decision and permits completion of 0372 while live acceptance remains unproven
+
+#### Scenario: Transfer is refused or destination bytes differ
+- **WHEN** the authorized storage route is unavailable, a copy/flush fails, or a destination file is missing or differs from the package index
+- **THEN** delivery remains unverified and a confirmed technical-barrier result preserves the exact boundary/error, UTC, evidence, missing files and responsible acquisition route without changing permissions or waiting for 0370
+
+#### Scenario: Consumer still waits for the producer
+- **WHEN** the package has been independently verified in persistent storage but 0370 is blocked and has no live records or activation authorization
+- **THEN** 0372 can complete with package-delivered/live-unproven and MUST NOT require collector execution or add live-validation tasks to its completion criteria
 
 #### Scenario: Host observation is unavailable
 - **WHEN** authorized verification cannot establish selected-helper identity, token-at-call, storage or another required runtime fact
-- **THEN** the handoff names the verified technical barrier and retains partial evidence without weakening 0370 or presenting command success as repair
+- **THEN** the subsequent 0370 handoff names the verified technical barrier and retains partial evidence without weakening 0370 or presenting command success as repair
 
 #### Scenario: Primary evidence is handed off
 - **WHEN** an authorized collection supplies records linking a specific tool call through refresh, helper/thread and ACL/token to read and Git outcomes
-- **THEN** the handoff supplies absolute paths, hashes, UTC and primary record references for the existing collector's three separate verdicts, without closing the original incident itself
+- **THEN** the subsequent 0370 handoff supplies absolute paths, hashes, UTC and primary record references for the existing collector's three separate verdicts, without closing the original incident itself
