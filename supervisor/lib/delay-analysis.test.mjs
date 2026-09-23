@@ -13,6 +13,7 @@ import {
 } from './delay-analysis.mjs';
 import { BLOCKABLE, unblockTask } from './blockers.mjs';
 import { stagePrompt } from './stage-prompt.mjs';
+import { routingProblem } from './categories.mjs';
 
 const now = '2026-09-07T12:00:00Z';
 const since = '2026-09-07T06:00:00Z';
@@ -868,6 +869,20 @@ it('сохранённый разбор blocked проверяется до но
     io,
   );
   expect(io.tasks.get(source.id).delayAnalysis.phase).toBe('verifying');
+  const checking = io.tasks.get(source.id);
+  checking.dependsOn = [];
+  checking.blockedContext.operation = 'closed-predecessor';
+  checking.dependencyRecheck = {
+    edges: [{ field: 'dependsOn', dependencyId: dependency.id, reason: 'Предмет снят' }],
+    results: [],
+  };
+  const history = JSON.parse(
+    JSON.stringify({
+      blockedContext: checking.blockedContext,
+      dependencyRecheck: checking.dependencyRecheck,
+    }),
+  );
+  expect(routingProblem(checking)).toBeNull();
   const verified = report({
     outcome: 'done',
     requests: [],
@@ -880,6 +895,11 @@ it('сохранённый разбор blocked проверяется до но
   });
   expect((await transfer(io, verified)).result).toBe('done');
   expect(io.tasks.get(source.id)).toMatchObject({ status: 'new', reanalysis: true });
+  const resumed = io.tasks.get(source.id);
+  expect(resumed.delayAnalysis.resolvedDependencyContext).toEqual(history);
+  expect(resumed.blockedContext).toBeUndefined();
+  expect(resumed.dependencyRecheck).toBeUndefined();
+  expect(routingProblem(JSON.parse(JSON.stringify(resumed)))).toBeNull();
 });
 
 it('неполный разбор виден в комментарии и не переносится бесконечно', async () => {

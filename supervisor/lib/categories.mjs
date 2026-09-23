@@ -59,7 +59,17 @@ export function routingProblem(task) {
     if (
       !reason ||
       typeof reason.taskId !== 'string' ||
-      !task.dependsOn?.includes(reason.taskId) ||
+      !(
+        task.dependsOn?.includes(reason.taskId) ||
+        (Array.isArray(task.dependencyRecheck?.edges) &&
+          task.dependencyRecheck.edges.some(
+            (edge) =>
+              edge?.field === 'dependsOn' &&
+              edge.dependencyId === reason.taskId &&
+              typeof edge.reason === 'string' &&
+              edge.reason.trim(),
+          ))
+      ) ||
       typeof reason.reason !== 'string' ||
       !reason.reason.trim() ||
       typeof reason.result !== 'string' ||
