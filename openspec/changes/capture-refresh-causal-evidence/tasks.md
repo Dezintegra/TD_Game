@@ -4,7 +4,7 @@
 
 ## 1. Согласованное сохранение и проверка свидетельства
 
-- [ ] 1.1 Добавить `supervisor/lib/refresh-evidence.mjs` и `supervisor/lib/refresh-evidence.test.mjs`: versioned manifest до spawn, exclusive reservation, append/flush/seal, recovery корректного префикса, отдельные integrity/completeness/causalSufficiency и references. Сбор и его checker внедрить вместе; неизвестные поля не засчитывать. Проверка: `pnpm test:pipeline lib/refresh-evidence.test.mjs`. Нужны отрицательные контроли каждого indispensable поля, неверного хеша/порядка/пути, позднего prelaunch, reuse PID, смешанных сессий, legacy evidence, секретной канарейки, отказа записи до spawn и обрыва после первого результата. До двух часов. После коммита и push открыть собственный draft PR по правилам implement; его тело передать файлом.
+- [x] 1.1 Добавить `supervisor/lib/refresh-evidence.mjs` и `supervisor/lib/refresh-evidence.test.mjs`: versioned manifest до spawn, exclusive reservation, append/flush/seal, recovery корректного префикса, отдельные integrity/completeness/causalSufficiency и references. Сбор и его checker внедрить вместе; неизвестные поля не засчитывать. Проверка: `pnpm test:pipeline lib/refresh-evidence.test.mjs`. Нужны отрицательные контроли каждого indispensable поля, неверного хеша/порядка/пути, позднего prelaunch, reuse PID, смешанных сессий, legacy evidence, секретной канарейки, отказа записи до spawn и обрыва после первого результата. До двух часов. После коммита и push открыть собственный draft PR по правилам implement; его тело передать файлом.
 
 ## 2. Последовательность существующей диагностики
 
