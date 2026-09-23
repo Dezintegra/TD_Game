@@ -30,8 +30,9 @@ ACL, профиля или привилегий. Этот отказ Git не д
 Долговременная передача и отдельный допуск к активации выполняются по Decisions 6
 `implement-refresh-boundary-source`. Путь внутри worktree не считается поставкой.
 
-Этап передаёт альтернативный результат: `technical-barrier; package-not-delivered`.
-В `openspec/changes/implement-refresh-boundary-source/technical-barrier.md` приведены
-точные writable roots и неисполненный объём; `handoff.md` передаёт их 0370.
+Текущий результат: `development-incomplete; package-not-delivered`.
+Ревью отвергло завершение по ограничению writable roots до подготовки пакета.
+В `openspec/changes/implement-refresh-boundary-source/technical-barrier.md` сохранена
+историческая граница; она не доказывает отказ уполномоченного Windows-хозяина.
 Патч и binaries отсутствуют. `coverage.md` явно отличает проверенную подготовку
 от невыполненного обзора производственных границ. Разрешение на активацию не выдано.
