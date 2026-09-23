@@ -1,0 +1,3 @@
+## 1. Защита полноты списка задач
+
+- [x] 1.1 Уточнить инструкции design, audit, implement, revise и review: нумерованные обязательные шаги сохраняются чекбоксами, `openspec status` не доказывает реализацию, альтернативный результат требует подтверждённой преграды и явного списка невыполненного. Добавить сторож формулировок в `supervisor/config/transitions.test.mjs` и исправить Windows-фикстуру `stage-model.test.mjs`, чтобы полный тестовый набор проверял эти правила. Проверка: `pnpm test:pipeline`, `openspec validate guard-openspec-task-checkboxes --strict`, `git diff --check`; сторож должен отвергать удаление любого ключевого правила.
