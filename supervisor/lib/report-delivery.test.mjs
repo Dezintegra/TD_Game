@@ -99,6 +99,61 @@ describe('durable report execution', () => {
       expect(f.open().store.entries()).toEqual([]);
     },
   );
+  it('доставляет сохранённый разбор cleanup как локальное восстановление ровно один раз', async () => {
+    const f = fixture({
+      stage: 'postmortem',
+      taskOverrides: { returnTo: 'cleanup' },
+      memberOverrides: { status: 'new', area: 'pipeline' },
+      reportOverrides: {
+        causedBy: 'pipeline',
+        fixedBy: ['0002-member'],
+        pipelineIncident: {
+          evidence: ['Cleanup повторяется.', 'Ремонт воспроизводит сбой.'],
+          affectedStages: ['cleanup'],
+          check: { stage: 'cleanup', expectation: 'Cleanup завершается один раз.' },
+        },
+      },
+    });
+    expect((await deliver(f, f.open())).result).toBe('done');
+    const reopened = f.open();
+    expect(reopened.recipient.store.readTask(f.task.id)).toMatchObject({
+      status: 'failed',
+      recovery: { causedBy: 'pipeline', fixedBy: ['0002-member'] },
+    });
+    expect(reopened.recipient.store.readTask(f.task.id).pipelineIncident).toBeUndefined();
+    const comments = reopened.recipient
+      .state()
+      .comments.map((item) => item.text)
+      .join('\n');
+    expect(comments).toContain('Cleanup повторяется.');
+    expect(comments).toContain('Cleanup завершается один раз.');
+    expect(comments).toContain('0002-member');
+    const state = reopened.recipient.state();
+    expect((await deliver(f, f.open())).result).toBe('skipped');
+    expect(f.open().recipient.state()).toEqual(state);
+    expect(f.open().store.entries()).toEqual([]);
+  });
+  it('оставляет cleanup-разбор без пригодного ремонта в очереди с явным отказом', async () => {
+    const f = fixture({
+      stage: 'postmortem',
+      taskOverrides: { returnTo: 'cleanup' },
+      reportOverrides: {
+        causedBy: 'pipeline',
+        fixedBy: ['9999-missing'],
+        pipelineIncident: {
+          evidence: 'Cleanup повторяется.',
+          affectedStages: ['cleanup'],
+          check: { stage: 'cleanup', expectation: 'Cleanup завершается один раз.' },
+        },
+      },
+    });
+    expect((await deliver(f, f.open())).result).toBe('failed');
+    expect(f.open().store.get(f.entry.reportId)).toMatchObject({
+      report: f.report,
+      rejection: { kind: 'invalid-report' },
+    });
+    expect(f.open().recipient.store.readTask(f.task.id).status).toBe('postmortem');
+  });
   it.each(['response', 'progress'])(
     'keeps same-slug request identities after collision and lost %s',
     async (point) => {

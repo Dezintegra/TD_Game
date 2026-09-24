@@ -479,12 +479,19 @@ export async function transferReport(action, io, context = {}) {
     });
     next = { ...next, recovery: judged.recovery };
     const opened = incidentFromReport(task, report, judged.recovery.fixedBy, io.now);
-    if (opened.problem) return { result: 'failed', why: opened.problem };
+    if (opened.problem) return invalidReport(opened.problem);
     if (opened.incident) {
       next.pipelineIncident = opened.incident;
       plan.notes = [
         ...(plan.notes ?? []),
         `Инцидент ${opened.incident.id}: ${opened.incident.evidence}. Исправления: ${opened.incident.fixedBy.join(', ')}. Проверка: ${opened.incident.check.expectation}`,
+      ];
+    }
+    if (opened.localRecovery) {
+      const { evidence, expectation, fixedBy } = opened.localRecovery;
+      plan.notes = [
+        ...(plan.notes ?? []),
+        `Локальное восстановление cleanup: ${evidence}. Исправления: ${fixedBy.join(', ')}. Проверка: ${expectation}`,
       ];
     }
     plan.notes = [...(plan.notes ?? []), ...judged.notes];
