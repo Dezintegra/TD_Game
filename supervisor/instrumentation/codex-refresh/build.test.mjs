@@ -186,7 +186,7 @@ const files = [
 const patch = Buffer.from('synthetic patch, never used as production source');
 const recipe = {
   version: 1,
-  stage: 'wire-only',
+  stage: 'partial-source',
   target: 'x86_64-pc-windows-msvc',
   toolchain: '1.95.0',
   tests: ['refresh_boundary::tests::refresh_boundary_wire_roundtrip_fixture'],

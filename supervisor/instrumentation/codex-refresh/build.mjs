@@ -190,7 +190,7 @@ export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
   if (manifest.recipeSha256 !== sha256(recipeBytes)) throw new Error('recipe-mismatch');
   if (
     recipe.version !== 1 ||
-    recipe.stage !== 'wire-only' ||
+    recipe.stage !== 'partial-source' ||
     recipe.target !== manifest.target ||
     recipe.toolchain !== manifest.toolchain
   )
@@ -201,7 +201,9 @@ export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
     new Set(recipe.tests).size !== recipe.tests.length ||
     recipe.tests.some(
       (name) =>
-        !/^refresh_boundary::tests::refresh_boundary_(?:wire|singleflight)_[a-z_]+$/u.test(name),
+        !/^refresh_boundary::(?:tests|token_tests)::refresh_boundary_(?:wire|singleflight|token)_[a-z_]+$/u.test(
+          name,
+        ),
     )
   )
     throw new Error('invalid-test-list');
@@ -278,11 +280,11 @@ export function verifyAppliedPatch(sourceRoot, patchPath, run = spawnSync) {
   if (result.error || result.status !== 0) throw new Error('patch-source-mismatch');
 }
 
-// Wire and the singleflight core are checked independently. Runtime carriers and
+// Wire, singleflight and token selection are checked independently. Runtime carriers and
 // final build/reproduce/package/delivery
 // remain unavailable until their independent checks and receipts exist.
 export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
-  if (mode !== 'check' || !['wire', 'singleflight'].includes(group))
+  if (mode !== 'check' || !['wire', 'singleflight', 'token'].includes(group))
     throw new Error('unsupported-build-mode');
   const io = dependencies.fs ?? fs;
   const run = dependencies.run ?? spawnSync;
@@ -319,7 +321,7 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
   const started = now();
   const receipt = {
     receiptVersion: 1,
-    stage: 'wire-only',
+    stage: 'partial-source',
     group,
     sourceCommit: manifest.sourceCommit,
     patchSha256: manifest.patchSha256,
@@ -376,25 +378,27 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
     const stdout = execute([...args, '--', '--nocapture']);
     if (!stdout.includes(`test result: ok. ${expectedTests.length} passed; 0 failed;`))
       throw new Error('native-test-count-mismatch');
-    const fixtureBytes = io.readFileSync(fixture);
-    const decoded = decodeBoundaryJournal(fixtureBytes, {
-      expectedWriterIds: ['root'],
-      collectionId: 'collection',
-      launchId: 'launch',
-    });
-    if (
-      !decoded.integrity ||
-      !decoded.completeness ||
-      decoded.frames.length !== (group === 'wire' ? 2 : 7)
-    )
-      throw new Error('native-reader-mismatch');
-    receipt.reader = {
-      integrity: decoded.integrity,
-      completeness: decoded.completeness,
-      sourceAvailable: decoded.sourceAvailable,
-      frames: decoded.frames.length,
-    };
-    receipt.fixture = { path: fixture, size: fixtureBytes.length, sha256: sha256(fixtureBytes) };
+    if (group !== 'token') {
+      const fixtureBytes = io.readFileSync(fixture);
+      const decoded = decodeBoundaryJournal(fixtureBytes, {
+        expectedWriterIds: ['root'],
+        collectionId: 'collection',
+        launchId: 'launch',
+      });
+      if (
+        !decoded.integrity ||
+        !decoded.completeness ||
+        decoded.frames.length !== (group === 'wire' ? 2 : 7)
+      )
+        throw new Error('native-reader-mismatch');
+      receipt.reader = {
+        integrity: decoded.integrity,
+        completeness: decoded.completeness,
+        sourceAvailable: decoded.sourceAvailable,
+        frames: decoded.frames.length,
+      };
+      receipt.fixture = { path: fixture, size: fixtureBytes.length, sha256: sha256(fixtureBytes) };
+    }
     receipt.status = 'passed';
   } catch (error) {
     receipt.status = 'failed';

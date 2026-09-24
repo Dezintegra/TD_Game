@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "stage": "wire-only",
+  "stage": "partial-source",
   "target": "x86_64-pc-windows-msvc",
   "toolchain": "1.95.0",
   "tests": [
@@ -15,7 +15,12 @@
     "refresh_boundary::tests::refresh_boundary_wire_private_data_rejected",
     "refresh_boundary::tests::refresh_boundary_wire_roundtrip_fixture",
     "refresh_boundary::tests::refresh_boundary_wire_sequence_overflow_sticky",
-    "refresh_boundary::tests::refresh_boundary_wire_write_failure_sticky"
+    "refresh_boundary::tests::refresh_boundary_wire_write_failure_sticky",
+    "refresh_boundary::token_tests::refresh_boundary_token_after_call_reselects_and_detects_change",
+    "refresh_boundary::token_tests::refresh_boundary_token_denied_never_uses_process",
+    "refresh_boundary::token_tests::refresh_boundary_token_failed_field_closes_handle",
+    "refresh_boundary::token_tests::refresh_boundary_token_no_token_is_only_fallback",
+    "refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable"
   ],
   "inputs": [
     {
@@ -32,7 +37,7 @@
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/refresh_boundary.rs",
-      "sha256": "a62153772ad71bfa7ce805b563521c444db18d3c48d227e40a137c1b0b7c37c5"
+      "sha256": "cf4f9b9eb21b85e7c7d128c7534f03545641bce81672ac5a8407c6989dd64404"
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/setup.rs",

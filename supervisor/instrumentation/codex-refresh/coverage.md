@@ -1,6 +1,6 @@
 # Coverage: подготовка, не инструментированный источник
 
-Статус: **wire-only; runtime-coverage-unimplemented**.
+Статус: **partial-source; runtime-coverage-unimplemented**.
 
 Проверена доставка исходных bytes Codex 0.153.4 по source-manifest/receipts/source.json.
 Проверки prepare.test.mjs (16) охватывают закреплённые идентификаторы,
@@ -15,7 +15,7 @@ PAX path traversal, checksum/truncation и reparse/escape на файловой 
 | helper resolver/image/child handshake                             | Не инструментирована, выбранный image не наблюдался                                                                               |
 | ReadAclsOnly и scope.spawn/thread lifetime                        | Не инструментированы                                                                                                              |
 | acl.rs и setup_main/win.rs: SetNamedSecurityInfoW/SetSecurityInfo | Патч отсутствует, достижимость всех ветвей не проверена                                                                           |
-| effective token и mutators                                        | Ни review mutators, ни token query не выполнены                                                                                   |
+| effective token и mutators                                        | Native token adapter компилируется; fake API tests проверяют выбор и стабильность; ACL wrapper и mutator review отсутствуют       |
 | writer/pipe/seq/seal/loss и Node reader                           | Node: 30 synthetic controls; Rust writer: 9 wire tests и cargo check, receipts/wire.json; pipe и причинная приёмка не реализованы |
 | build/reproduce/package/delivery                                  | Не выполнены                                                                                                                      |
 
@@ -50,6 +50,27 @@ mutation-run выявил зависание самого теста при по
 stage-tool-recovery, dependency-delivery и watch-lifetime. Собственные build,
 reader, prepare и release-lock tests проходят; независимость четырёх падений
 от ветки пока не доказана. Полный набор не объявляется успешным.
+
+Token increment: allowlisted native `GetTokenInformation` queries используют
+ограниченные выровненные buffers с проверкой всех pointer/count ranges. Handles
+удерживаются в `Captured` до окончания наблюдения и закрываются через RAII.
+`OpenThreadToken` использует только TOKEN_QUERY и OpenAsSelf FALSE; только
+ERROR_NO_TOKEN разрешает process fallback. До/после чтения полей сверяются
+TokenId/AuthenticationId/ModifiedId/type; повторный выбор обнаруживает смену
+selection или содержимого. Native adapter исключён из test build: пять тестов
+используют fake TokenApi, настоящее чтение токена не выполняется.
+`receipts/token.json` фиксирует cargo check native adapter, тесты и мутации
+fallback-on-denied/ignore-snapshot-change. Это не закрывает 4.2: wrapper у ACL,
+прямой DWORD, интервалы и сериализация snapshot ещё не интегрированы.
+
+Повтор общей проверки до token increment: 3182 passed, 2 failed — EPERM rename
+в tool-settlement и прежний watch-lifetime timeout. CI main на
+`e59fc16b66894a3f900003aa495d5ea07b507e0a` успешен; нестабильные локальные
+результаты не выданы за доказанную поломку main или препятствие разработке.
+
+Проверка token increment: 3180 passed, 4 failed — stage-tool-recovery (2),
+tool-retry и watch-lifetime. Два отказа содержат EPERM rename тестового
+pending.json; собственные build/reader/prepare/release-lock проверки прошли.
 
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

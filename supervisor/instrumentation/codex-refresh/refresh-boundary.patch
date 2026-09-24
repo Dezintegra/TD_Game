@@ -37,10 +37,10 @@ index 0ca4dcaf..668ccc3e 100644
  
 diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
 new file mode 100644
-index 00000000..ff72e19e
+index 00000000..2d55d157
 --- /dev/null
 +++ b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
-@@ -0,0 +1,741 @@
+@@ -0,0 +1,1291 @@
 +//! Bounded, opt-in diagnostic transport. No environment lookup or OS calls.
 +//! Callsite integration and native pipe adapter are separate admission steps.
 +use serde::Serialize;
@@ -780,6 +780,556 @@ index 00000000..ff72e19e
 +        );
 +        assert!(writer.incomplete());
 +        assert!(writer.queue.is_empty());
++    }
++}
++/// Token selection is isolated from snapshot serialization and syscall execution.
++/// Tests cannot fall through to native APIs: the adapter is absent under cfg(test).
++pub mod token_observer {
++    use serde::Serialize;
++
++    pub const ERROR_NO_TOKEN: u32 = 1008;
++    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
++    #[serde(rename_all = "kebab-case")]
++    pub enum Selection {
++        Thread,
++        ProcessAfterNoToken,
++    }
++
++    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
++    pub struct QueryError {
++        pub api: &'static str,
++        pub code: u32,
++    }
++
++    pub trait TokenApi {
++        type Handle;
++        fn open_thread(&mut self) -> Result<Self::Handle, QueryError>;
++        fn open_process(&mut self) -> Result<Self::Handle, QueryError>;
++        fn statistics(&mut self, handle: &Self::Handle) -> Result<Statistics, QueryError>;
++        fn fields(
++            &mut self,
++            handle: &Self::Handle,
++            stats: &Statistics,
++        ) -> Result<Fields, QueryError>;
++    }
++
++    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
++    pub struct Statistics {
++        pub token_id: u64,
++        pub authentication_id: u64,
++        pub modified_id: u64,
++        pub impersonation: bool,
++    }
++    #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
++    pub struct Sid {
++        pub sid: String,
++        pub attributes: u32,
++    }
++    #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
++    pub struct Privilege {
++        #[serde(serialize_with = "super::decimal")]
++        pub luid: u64,
++        pub attributes: u32,
++    }
++    #[derive(Clone, Debug, PartialEq, Eq)]
++    pub struct Fields {
++        pub user: String,
++        pub groups: Vec<Sid>,
++        pub restricted_sids: Vec<Sid>,
++        pub privileges: Vec<Privilege>,
++        pub integrity: Sid,
++        pub elevation_type: &'static str,
++        pub elevated: bool,
++        pub impersonation_level: Option<&'static str>,
++        pub is_app_container: bool,
++        pub app_container_sid: Option<String>,
++        pub capabilities: Option<Vec<Sid>>,
++    }
++    #[derive(Clone, Debug, PartialEq, Eq)]
++    pub struct Snapshot {
++        pub selection: Selection,
++        pub stats: Statistics,
++        pub fields: Fields,
++    }
++    pub struct Captured<H> {
++        pub snapshot: Snapshot,
++        pub handle: H,
++    }
++    #[derive(Clone, Debug, PartialEq, Eq)]
++    pub enum ObservationError {
++        Unavailable(QueryError),
++        Unstable,
++        InvalidFields,
++    }
++
++    pub fn snapshot<A: TokenApi>(api: &mut A) -> Result<Captured<A::Handle>, ObservationError> {
++        let (handle, selection) = match api.open_thread() {
++            Ok(handle) => (handle, Selection::Thread),
++            Err(QueryError {
++                code: ERROR_NO_TOKEN,
++                ..
++            }) => (
++                api.open_process().map_err(ObservationError::Unavailable)?,
++                Selection::ProcessAfterNoToken,
++            ),
++            Err(error) => return Err(ObservationError::Unavailable(error)),
++        };
++        let before = api
++            .statistics(&handle)
++            .map_err(ObservationError::Unavailable)?;
++        let fields = api
++            .fields(&handle, &before)
++            .map_err(ObservationError::Unavailable)?;
++        let after = api
++            .statistics(&handle)
++            .map_err(ObservationError::Unavailable)?;
++        if before != after {
++            return Err(ObservationError::Unstable);
++        }
++        if before.impersonation != fields.impersonation_level.is_some()
++            || fields.is_app_container != fields.app_container_sid.is_some()
++            || fields.is_app_container != fields.capabilities.is_some()
++            || fields.groups.len() > 4096
++            || fields.restricted_sids.len() > 4096
++            || fields.privileges.len() > 4096
++            || fields.capabilities.as_ref().is_some_and(|v| v.len() > 4096)
++        {
++            return Err(ObservationError::InvalidFields);
++        }
++        Ok(Captured {
++            snapshot: Snapshot {
++                selection,
++                stats: before,
++                fields,
++            },
++            handle,
++        })
++    }
++
++    pub fn same_effective_token(before: &Snapshot, after: &Snapshot) -> bool {
++        before.selection == after.selection
++            && before.stats == after.stats
++            && before.fields == after.fields
++    }
++
++    #[cfg(not(test))]
++    pub mod native {
++        use super::*;
++        use std::mem::{offset_of, size_of};
++        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, LUID};
++        use windows_sys::Win32::Security::*;
++        use windows_sys::Win32::System::Threading::{
++            GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
++        };
++
++        pub struct NativeToken;
++        pub struct OwnedToken(HANDLE);
++        impl Drop for OwnedToken {
++            fn drop(&mut self) {
++                unsafe {
++                    CloseHandle(self.0);
++                }
++            }
++        }
++        fn error(api: &'static str) -> QueryError {
++            QueryError {
++                api,
++                code: unsafe { GetLastError() },
++            }
++        }
++        fn invalid() -> QueryError {
++            QueryError {
++                api: "GetTokenInformation",
++                code: 13,
++            }
++        }
++        fn luid(v: LUID) -> u64 {
++            ((v.HighPart as u32 as u64) << 32) | v.LowPart as u64
++        }
++        // u64 storage preserves alignment; all pointer/count reads are range checked.
++        struct Info {
++            words: Vec<u64>,
++            bytes: usize,
++        }
++        impl Info {
++            fn query(handle: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Result<Self, QueryError> {
++                let mut needed = 0;
++                let ok = unsafe {
++                    GetTokenInformation(handle, class, std::ptr::null_mut(), 0, &mut needed)
++                };
++                if ok != 0 || unsafe { GetLastError() } != 122 {
++                    return Err(error("GetTokenInformation"));
++                }
++                if needed == 0 || needed > 256 * 1024 {
++                    return Err(invalid());
++                }
++                let mut result = Self {
++                    words: vec![0; (needed as usize).div_ceil(8)],
++                    bytes: needed as usize,
++                };
++                let capacity = needed;
++                let ok = unsafe {
++                    GetTokenInformation(
++                        handle,
++                        class,
++                        result.words.as_mut_ptr().cast(),
++                        capacity,
++                        &mut needed,
++                    )
++                };
++                if ok == 0 {
++                    return Err(error("GetTokenInformation"));
++                }
++                if needed > capacity || needed == 0 {
++                    return Err(invalid());
++                }
++                result.bytes = needed as usize;
++                Ok(result)
++            }
++            fn read<T: Copy>(&self, offset: usize) -> Result<T, QueryError> {
++                if offset
++                    .checked_add(size_of::<T>())
++                    .is_none_or(|end| end > self.bytes)
++                {
++                    return Err(invalid());
++                }
++                Ok(unsafe {
++                    std::ptr::read_unaligned(self.words.as_ptr().cast::<u8>().add(offset).cast())
++                })
++            }
++            fn sid(&self, ptr: *mut std::ffi::c_void) -> Result<String, QueryError> {
++                let offset = (ptr as usize)
++                    .checked_sub(self.words.as_ptr() as usize)
++                    .ok_or_else(invalid)?;
++                let revision = self.read::<u8>(offset)?;
++                let count = self.read::<u8>(offset + 1)? as usize;
++                if revision != 1 || count > 15 {
++                    return Err(invalid());
++                }
++                let mut authority = 0u64;
++                for i in 2..8 {
++                    authority = (authority << 8) | self.read::<u8>(offset + i)? as u64;
++                }
++                let mut sid = format!("S-{revision}-{authority}");
++                for i in 0..count {
++                    sid.push_str(&format!("-{}", self.read::<u32>(offset + 8 + i * 4)?));
++                }
++                Ok(sid)
++            }
++            fn sid_attributes(&self, value: SID_AND_ATTRIBUTES) -> Result<Sid, QueryError> {
++                Ok(Sid {
++                    sid: self.sid(value.Sid)?,
++                    attributes: value.Attributes,
++                })
++            }
++            fn groups(&self) -> Result<Vec<Sid>, QueryError> {
++                let count = self.read::<u32>(0)? as usize;
++                if count > 4096 {
++                    return Err(invalid());
++                }
++                (0..count)
++                    .map(|i| {
++                        self.sid_attributes(self.read::<SID_AND_ATTRIBUTES>(
++                            offset_of!(TOKEN_GROUPS, Groups) + i * size_of::<SID_AND_ATTRIBUTES>(),
++                        )?)
++                    })
++                    .collect()
++            }
++        }
++        impl TokenApi for NativeToken {
++            type Handle = OwnedToken;
++            fn open_thread(&mut self) -> Result<OwnedToken, QueryError> {
++                let mut handle = 0;
++                if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 0, &mut handle) } == 0
++                {
++                    return Err(error("OpenThreadToken"));
++                }
++                Ok(OwnedToken(handle))
++            }
++            fn open_process(&mut self) -> Result<OwnedToken, QueryError> {
++                let mut handle = 0;
++                if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut handle) } == 0 {
++                    return Err(error("OpenProcessToken"));
++                }
++                Ok(OwnedToken(handle))
++            }
++            fn statistics(&mut self, handle: &OwnedToken) -> Result<Statistics, QueryError> {
++                let value = Info::query(handle.0, TokenStatistics)?.read::<TOKEN_STATISTICS>(0)?;
++                if value.TokenType != TokenPrimary && value.TokenType != TokenImpersonation {
++                    return Err(invalid());
++                }
++                Ok(Statistics {
++                    token_id: luid(value.TokenId),
++                    authentication_id: luid(value.AuthenticationId),
++                    modified_id: luid(value.ModifiedId),
++                    impersonation: value.TokenType == TokenImpersonation,
++                })
++            }
++            fn fields(
++                &mut self,
++                handle: &OwnedToken,
++                stats: &Statistics,
++            ) -> Result<Fields, QueryError> {
++                let query = |class| Info::query(handle.0, class);
++                let user = query(TokenUser)?;
++                let user = user.sid(user.read::<TOKEN_USER>(0)?.User.Sid)?;
++                let groups = query(TokenGroups)?.groups()?;
++                let restricted_sids = query(TokenRestrictedSids)?.groups()?;
++                let privilege_info = query(TokenPrivileges)?;
++                let count = privilege_info.read::<u32>(0)? as usize;
++                if count > 4096 {
++                    return Err(invalid());
++                }
++                let privileges = (0..count)
++                    .map(|i| {
++                        let v = privilege_info.read::<LUID_AND_ATTRIBUTES>(
++                            offset_of!(TOKEN_PRIVILEGES, Privileges)
++                                + i * size_of::<LUID_AND_ATTRIBUTES>(),
++                        )?;
++                        Ok(Privilege {
++                            luid: luid(v.Luid),
++                            attributes: v.Attributes,
++                        })
++                    })
++                    .collect::<Result<Vec<_>, QueryError>>()?;
++                let integrity = query(TokenIntegrityLevel)?;
++                let integrity =
++                    integrity.sid_attributes(integrity.read::<TOKEN_MANDATORY_LABEL>(0)?.Label)?;
++                let elevation_type = match query(TokenElevationType)?.read::<i32>(0)? {
++                    TokenElevationTypeDefault => "default",
++                    TokenElevationTypeFull => "full",
++                    TokenElevationTypeLimited => "limited",
++                    _ => return Err(invalid()),
++                };
++                let bool_field = |class| -> Result<bool, QueryError> {
++                    match query(class)?.read::<u32>(0)? {
++                        0 => Ok(false),
++                        1 => Ok(true),
++                        _ => Err(invalid()),
++                    }
++                };
++                let elevated = bool_field(TokenElevation)?;
++                let impersonation_level = if stats.impersonation {
++                    Some(match query(TokenImpersonationLevel)?.read::<i32>(0)? {
++                        SecurityAnonymous => "anonymous",
++                        SecurityIdentification => "identification",
++                        SecurityImpersonation => "impersonation",
++                        SecurityDelegation => "delegation",
++                        _ => return Err(invalid()),
++                    })
++                } else {
++                    None
++                };
++                let is_app_container = bool_field(TokenIsAppContainer)?;
++                let (app_container_sid, capabilities) = if is_app_container {
++                    let info = query(TokenAppContainerSid)?;
++                    (
++                        Some(
++                            info.sid(
++                                info.read::<TOKEN_APPCONTAINER_INFORMATION>(0)?
++                                    .TokenAppContainer,
++                            )?,
++                        ),
++                        Some(query(TokenCapabilities)?.groups()?),
++                    )
++                } else {
++                    (None, None)
++                };
++                Ok(Fields {
++                    user,
++                    groups,
++                    restricted_sids,
++                    privileges,
++                    integrity,
++                    elevation_type,
++                    elevated,
++                    impersonation_level,
++                    is_app_container,
++                    app_container_sid,
++                    capabilities,
++                })
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod token_tests {
++    use super::token_observer::*;
++    use std::cell::Cell;
++    use std::rc::Rc;
++
++    struct Handle(Rc<Cell<usize>>);
++    impl Drop for Handle {
++        fn drop(&mut self) {
++            self.0.set(self.0.get() + 1);
++        }
++    }
++    struct Fake {
++        thread_error: Option<u32>,
++        process_error: Option<u32>,
++        field_error: bool,
++        process_opens: usize,
++        stat_calls: usize,
++        change_at: Option<usize>,
++        drops: Rc<Cell<usize>>,
++        incomplete_fields: bool,
++    }
++    impl Default for Fake {
++        fn default() -> Self {
++            Self {
++                thread_error: None,
++                process_error: None,
++                field_error: false,
++                process_opens: 0,
++                stat_calls: 0,
++                change_at: None,
++                drops: Rc::new(Cell::new(0)),
++                incomplete_fields: false,
++            }
++        }
++    }
++    impl TokenApi for Fake {
++        type Handle = Handle;
++        fn open_thread(&mut self) -> Result<Handle, QueryError> {
++            if let Some(code) = self.thread_error {
++                return Err(QueryError {
++                    api: "OpenThreadToken",
++                    code,
++                });
++            }
++            Ok(Handle(self.drops.clone()))
++        }
++        fn open_process(&mut self) -> Result<Handle, QueryError> {
++            self.process_opens += 1;
++            if let Some(code) = self.process_error {
++                return Err(QueryError {
++                    api: "OpenProcessToken",
++                    code,
++                });
++            }
++            Ok(Handle(self.drops.clone()))
++        }
++        fn statistics(&mut self, _: &Handle) -> Result<Statistics, QueryError> {
++            self.stat_calls += 1;
++            Ok(Statistics {
++                token_id: 1,
++                authentication_id: 2,
++                modified_id: if self.change_at.is_some_and(|at| self.stat_calls >= at) {
++                    4
++                } else {
++                    3
++                },
++                impersonation: false,
++            })
++        }
++        fn fields(&mut self, _: &Handle, _: &Statistics) -> Result<Fields, QueryError> {
++            if self.field_error {
++                return Err(QueryError {
++                    api: "GetTokenInformation",
++                    code: 5,
++                });
++            }
++            Ok(Fields {
++                user: "S-1-0-0".into(),
++                groups: vec![],
++                restricted_sids: vec![],
++                privileges: vec![],
++                integrity: Sid {
++                    sid: "S-1-16-4096".into(),
++                    attributes: 0,
++                },
++                elevation_type: "default",
++                elevated: false,
++                impersonation_level: None,
++                is_app_container: self.incomplete_fields,
++                app_container_sid: None,
++                capabilities: None,
++            })
++        }
++    }
++    #[test]
++    fn refresh_boundary_token_denied_never_uses_process() {
++        for code in [5, 1347, 6] {
++            let mut api = Fake {
++                thread_error: Some(code),
++                ..Default::default()
++            };
++            assert!(
++                matches!(snapshot(&mut api),Err(ObservationError::Unavailable(QueryError{api:"OpenThreadToken",code:actual})) if actual==code)
++            );
++            assert_eq!(api.process_opens, 0);
++            assert_eq!(api.drops.get(), 0);
++        }
++    }
++    #[test]
++    fn refresh_boundary_token_no_token_is_only_fallback() {
++        let mut api = Fake {
++            thread_error: Some(ERROR_NO_TOKEN),
++            ..Default::default()
++        };
++        let captured = snapshot(&mut api).unwrap();
++        assert_eq!(captured.snapshot.selection, Selection::ProcessAfterNoToken);
++        assert_eq!(api.process_opens, 1);
++        assert_eq!(api.drops.get(), 0);
++        drop(captured);
++        assert_eq!(api.drops.get(), 1);
++        api.process_error = Some(5);
++        assert!(matches!(
++            snapshot(&mut api),
++            Err(ObservationError::Unavailable(QueryError {
++                api: "OpenProcessToken",
++                code: 5
++            }))
++        ));
++    }
++    #[test]
++    fn refresh_boundary_token_failed_field_closes_handle() {
++        let mut api = Fake {
++            field_error: true,
++            ..Default::default()
++        };
++        assert!(matches!(
++            snapshot(&mut api),
++            Err(ObservationError::Unavailable(_))
++        ));
++        assert_eq!(api.drops.get(), 1);
++        api.field_error = false;
++        api.incomplete_fields = true;
++        assert!(matches!(
++            snapshot(&mut api),
++            Err(ObservationError::InvalidFields)
++        ));
++        assert_eq!(api.drops.get(), 2);
++    }
++    #[test]
++    fn refresh_boundary_token_snapshot_change_is_unstable() {
++        let mut api = Fake {
++            change_at: Some(2),
++            ..Default::default()
++        };
++        assert!(matches!(
++            snapshot(&mut api),
++            Err(ObservationError::Unstable)
++        ));
++        assert_eq!(api.drops.get(), 1);
++    }
++    #[test]
++    fn refresh_boundary_token_after_call_reselects_and_detects_change() {
++        let mut api = Fake::default();
++        let before = snapshot(&mut api).unwrap();
++        let after = snapshot(&mut api).unwrap();
++        assert!(same_effective_token(&before.snapshot, &after.snapshot));
++        api.change_at = Some(5);
++        let changed = snapshot(&mut api).unwrap();
++        assert!(!same_effective_token(&before.snapshot, &changed.snapshot));
++        api.change_at = None;
++        api.thread_error = Some(ERROR_NO_TOKEN);
++        let switched = snapshot(&mut api).unwrap();
++        assert!(!same_effective_token(&before.snapshot, &switched.snapshot));
++        assert_eq!(api.drops.get(), 0);
++        drop((before, after, changed, switched));
++        assert_eq!(api.drops.get(), 4);
 +    }
 +}
 diff --git a/codex-rs/windows-sandbox-rs/src/setup.rs b/codex-rs/windows-sandbox-rs/src/setup.rs

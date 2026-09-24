@@ -8,10 +8,10 @@
   "toolchain": "1.95.0",
   "target": "x86_64-pc-windows-msvc",
   "schemaVersion": "refresh-boundary/v1",
-  "status": "wire-only; production-coverage-incomplete",
+  "status": "partial-source; production-coverage-incomplete",
   "preparationPatchSha256": "50a5e22f1572f63aedb1045a5a839179ef3920847591d30e204fb2680be44068",
   "preparedLockSha256": "a2cb91dfb2e8112bc81d05158fa00b9698e2df8cc1ae0547b5dc5606a44904d3",
-  "patchSha256": "f2e5c1fb24911c027ce844a7ce3f5e829ace2beed8382417b09935d73445c825",
-  "recipeSha256": "73b1ad87388b59291ebb48e1d5237c0c95643047481bf8cd31723a4581dd0fd9",
+  "patchSha256": "46e1104759bc2f5d55f0a8b1f235f1bc7ed05299e13c1d7db96c5772c9ce0bfc",
+  "recipeSha256": "f0e725d794566f151caebbe2a5ce0907af6b53efa973e1bac6d23d62ccf213cc",
   "coverageSha256": null
 }
