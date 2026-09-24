@@ -226,6 +226,69 @@ describe('подтверждение и сохранение инцидента'
 });
 
 describe('приоритет восстановления и ограниченная проба', () => {
+  it('даёт локальной служебной починке ход перед независимой работой', () => {
+    const repair = base('0003-repair', {
+      area: 'pipeline',
+      dependsOn: ['0004-prerequisite'],
+    });
+    const prerequisite = base('0004-prerequisite', {
+      area: 'pipeline',
+      status: 'postmortem',
+    });
+    const blocked = base('0001-blocked', {
+      status: 'blocked',
+      dependsOn: [repair.id],
+    });
+    const unrelated = base('0002-unrelated', { status: 'postmortem', priority: 0 });
+    const tasks = [blocked, repair, prerequisite, unrelated];
+    const policy = incidentPolicy(state(tasks));
+    expect(policy.active).toBe(false);
+    expect(policy.isRecovery(prerequisite, 'postmortem')).toBe(true);
+    expect(
+      incidentPolicy(
+        state([blocked, repair, { ...prerequisite, dependsOn: [repair.id] }]),
+      ).isRecovery(prerequisite, 'postmortem'),
+    ).toBe(true);
+    expect(
+      launches(scan(state(tasks, { config: { ...config, maxConcurrent: 1 } }))).map(
+        (item) => item.taskId,
+      ),
+    ).toEqual([prerequisite.id]);
+    expect(
+      incidentPolicy(
+        state([{ ...blocked, status: 'completed' }, repair, prerequisite, unrelated]),
+      ).isRecovery(prerequisite, 'postmortem'),
+    ).toBe(false);
+  });
+  it('локальный приоритет не обходит удержание этапа общего инцидента', () => {
+    const blocked = base('0005-blocked', {
+      status: 'blocked',
+      dependsOn: ['0006-local-repair'],
+    });
+    const repair = base('0006-local-repair', { area: 'pipeline', status: 'design' });
+    const tasks = [source(), blocked, repair, base('0007-unrelated', { status: 'postmortem' })];
+    const policy = incidentPolicy(state(tasks));
+    expect(policy.isRecovery(repair, 'design')).toBe(true);
+    expect(policy.allows(repair, 'design')).toBe(false);
+    expect(
+      launches(scan(state(tasks, { config: { ...config, maxConcurrent: 1 } }))).map(
+        (item) => item.taskId,
+      ),
+    ).toEqual(['0007-unrelated']);
+  });
+  it('учитывает recovery.fixedBy до переноса источника в blocked', () => {
+    const repair = base('0006-repair', { area: 'pipeline' });
+    const failed = base('0005-failed', {
+      status: 'failed',
+      recovery: { causedBy: 'pipeline', fixedBy: [repair.id], returns: 0 },
+    });
+    expect(incidentPolicy(state([failed, repair])).isRecovery(repair, 'design')).toBe(true);
+    expect(
+      incidentPolicy(
+        state([{ ...failed, recovery: { ...failed.recovery, causedBy: 'task' } }, repair]),
+      ).isRecovery(repair, 'design'),
+    ).toBe(false);
+  });
   it('приоритизирует исправления и зависимости, удерживая затронутые игровые попытки', () => {
     const game = base('0009-game', {
       status: 'implement',

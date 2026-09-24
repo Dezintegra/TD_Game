@@ -202,7 +202,7 @@ export function planLaunches({
     }
     const lane = workLane(item.task);
     const reason =
-      (recovery.length ? 'приоритет восстановления инцидента; ' : '') +
+      (recovery.length ? 'приоритет восстановления; ' : '') +
       `${lane === 'game' ? 'игровая' : 'служебная'} работа; ` +
       `${protectGame ? 'защищено место игры; ' : ''}следующий первый запуск: ${next}`;
     actions.push({
