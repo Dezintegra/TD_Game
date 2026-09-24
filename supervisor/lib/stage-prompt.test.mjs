@@ -377,7 +377,7 @@ describe('журнал', () => {
     expect(clipped.length).toBeGreaterThan(150);
     expect(clipped).toContain('продолжение\n'.repeat(1500));
     expect(clipped).not.toContain('P1: собрать CLI');
-    expect(text).toContain(`## Последняя доступная запись возврата`);
+    expect(text).toContain(`## Вердикт, с которым вас вернули`);
     expect(text).toContain(review);
     expect(text).toContain('сама копия не доказывает актуальность');
   });
@@ -407,15 +407,39 @@ describe('журнал', () => {
       journal,
       journalLimit: 120,
     });
-    expect(text).toContain('## Последняя доступная запись возврата');
+    expect(text).toContain('## Вердикт, с которым вас вернули');
     expect(text).toContain(`${start}\n${end}`);
   });
 
-  it('не дублирует вердикт, который целиком виден в обычном журнале', () => {
+  it('подаёт файловый возврат перед журналом без маркера комментария', () => {
+    const audit = '## 2026-09-02 · audit → design\n\nИсправить старую причину';
+    const journal = `# задача\n\n${audit}\n## 2026-09-03 · design → design\n\nЭтапу выдана сессия`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal,
+      journalLimit: 70,
+    });
+    expect(text).toContain('## Вердикт, с которым вас вернули');
+    expect(text.indexOf('## Вердикт, с которым вас вернули')).toBeLessThan(
+      text.indexOf('## Журнал задачи'),
+    );
+    expect(text).toContain(audit);
+    expect(text).not.toContain('## Неполная запись возврата');
+  });
+
+  it('не придумывает раздел возврата для первого захода', () => {
+    const journal = '**new → design**\n\nПервый заход';
+    const text = stagePrompt({ assignment: { ...assignment, stage: 'design' }, task, journal });
+    expect(text).not.toContain('## Вердикт, с которым вас вернули');
+    expect(text).not.toContain('## Неполная запись возврата');
+  });
+
+  it('отдельно называет вердикт, даже когда он виден в обычном журнале', () => {
     const journal = verdict('review → revise', 'свежее замечание', 'd'.repeat(32));
     const text = stagePrompt({ assignment: { ...assignment, stage: 'revise' }, task, journal });
-    expect(text).not.toContain('## Последняя доступная запись возврата');
-    expect(text.match(/свежее замечание/g)).toHaveLength(1);
+    expect(text).toContain('## Вердикт, с которым вас вернули');
+    expect(text.match(/свежее замечание/g)).toHaveLength(2);
   });
 
   it('не выдаёт оборванную запись за полный вердикт', () => {
@@ -427,7 +451,7 @@ describe('журнал', () => {
       journalLimit: 100,
     });
     expect(text).toContain('## Неполная запись возврата');
-    expect(text).not.toContain('## Последняя доступная запись возврата');
+    expect(text).not.toContain('## Вердикт, с которым вас вернули');
     expect(text).not.toContain('ОБОРВАННОЕ ЗАМЕЧАНИЕ');
   });
 
@@ -441,7 +465,7 @@ describe('журнал', () => {
       journalLimit: 100,
     });
     expect(text).toContain('## Неполная запись возврата');
-    expect(text).not.toContain('## Последняя доступная запись возврата');
+    expect(text).not.toContain('## Вердикт, с которым вас вернули');
     expect(text).not.toContain('старое ревью');
   });
 
@@ -454,7 +478,7 @@ describe('журнал', () => {
       journalLimit: 100,
     });
     expect(text).toContain('## Запись возврата не найдена');
-    expect(text).not.toContain('## Последняя доступная запись возврата');
+    expect(text).not.toContain('## Вердикт, с которым вас вернули');
   });
 
   it.each([120, 8])('оставляет полное пояснение revise вне лимита %i', (journalLimit) => {

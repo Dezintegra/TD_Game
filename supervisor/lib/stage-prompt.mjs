@@ -1,4 +1,5 @@
 import { ROUTING_CONTRACT } from './routing-contract.mjs';
+import { TRACE } from './denials.mjs';
 
 /** Разделить историю по переходам, сохранив каждый знак исходного текста. */
 export function splitJournalEntries(text) {
@@ -77,35 +78,25 @@ function clipJournal(text, limit) {
   return result;
 }
 
-/** Один последний возврат, вытесненный из хвоста, не должен терять замечания. */
+/** Возврат проверяющего ищется среди целых записей обоих форматов журнала. */
 function latestReturnVerdict(journal, stage) {
-  const heading =
-    stage === 'design'
-      ? /^\*\*audit → design\*\*[ \t]*$/gm
-      : stage === 'revise'
-        ? /^\*\*(?:review|pr) → revise\*\*[ \t]*$/gm
-        : null;
-  if (!heading) return null;
-  const matches = [...String(journal).matchAll(heading)];
-  const last = matches.at(-1);
-  if (!last) return null;
-
-  const start = last.index;
-  const following = /^\*\*[a-z][a-z-]* → [a-z][a-z-]*\*\*[ \t]*$/gm;
-  following.lastIndex = start + last[0].length;
-  const next = following.exec(journal);
-  const footer = /^<!-- report:[0-9a-f]+:\d+ -->[ \t]*$/gm;
-  footer.lastIndex = start + last[0].length;
-  const end = footer.exec(journal);
-  const complete = Boolean(end && (next?.index ?? journal.length) > end.index);
-  const body = journal
-    .slice(start, complete ? end.index + end[0].length : (next?.index ?? journal.length))
-    .trim();
-  return {
-    heading: last[0].trim(),
-    body,
-    complete,
-  };
+  for (const entry of splitJournalEntries(journal).reverse()) {
+    const heading = entry.split(/\r?\n/, 1)[0];
+    const board = /^\*\*([a-z][a-z-]*) → ([a-z][a-z-]*)\*\*$/.exec(heading);
+    const file = /^## [^\r\n]+ · ([a-z][a-z-]*) → ([a-z][a-z-]*)$/.exec(heading);
+    const transition = board ?? file;
+    if (!transition) continue;
+    const [, from, to] = transition;
+    if (to !== stage || (TRACE[from] !== 'branch' && from !== 'pr')) continue;
+    const footer = /^<!-- report:[0-9a-f]+:\d+ -->[ \t]*$/m.exec(entry);
+    const complete = Boolean(file || footer);
+    return {
+      heading,
+      body: entry.slice(0, footer ? footer.index + footer[0].length : entry.length).trim(),
+      complete,
+    };
+  }
+  return null;
 }
 
 /**
@@ -290,6 +281,31 @@ export function stagePrompt({
   // пропустить предложение с оговорками, и оговорки эти нигде больше
   // не записаны.
   const clippedJournal = clipJournal(journal, journalLimit);
+  const returnVerdict = latestReturnVerdict(journal, assignment.stage);
+  if (returnVerdict && !returnVerdict.complete) {
+    lines.push(
+      '',
+      '## Неполная запись возврата',
+      '',
+      `В журнале найден заголовок ${returnVerdict.heading}, но нет конечного маркера отчёта. Не считай эту запись полным вердиктом; применяй правила проверки источника своего этапа.`,
+    );
+  } else if (returnVerdict) {
+    lines.push(
+      '',
+      '## Вердикт, с которым вас вернули',
+      '',
+      'Это последняя доступная полная запись возврата. Сверь её применимость к текущему возврату; сама копия не доказывает актуальность.',
+      '',
+      returnVerdict.body,
+    );
+  } else if (journal.length > journalLimit && ['design', 'revise'].includes(assignment.stage)) {
+    lines.push(
+      '',
+      '## Запись возврата не найдена',
+      '',
+      `В доступном журнале нет заголовка возврата в ${assignment.stage}. Если это повторный этап, не угадывай причину по старому логу; применяй правила проверки источника до исправлений.`,
+    );
+  }
   lines.push('', '## Журнал задачи', '', clippedJournal || '_пусто_');
   if (['review', 'interpret', 'triage'].includes(assignment.stage)) {
     lines.push(
@@ -314,36 +330,6 @@ export function stagePrompt({
       'Итоговый отчёт лога — дополнительный источник; он не заменяет полный журнал карточки',
       'и ответ владельца продукта. Не обращайся к Trello.',
       'Если достоверное восстановление невозможно, завершись с failed до исправлений, назвав путь и причину.',
-    );
-  }
-
-  const returnVerdict = latestReturnVerdict(journal, assignment.stage);
-  if (returnVerdict && !returnVerdict.complete) {
-    lines.push(
-      '',
-      '## Неполная запись возврата',
-      '',
-      `В журнале найден заголовок ${returnVerdict.heading}, но нет конечного маркера отчёта. Не считай эту запись полным вердиктом; применяй правила проверки источника своего этапа.`,
-    );
-  } else if (returnVerdict && !clippedJournal.includes(returnVerdict.body)) {
-    lines.push(
-      '',
-      '## Последняя доступная запись возврата',
-      '',
-      'Это полная копия записи из журнала, вытесненной из ограниченного хвоста. Сверь её применимость к текущему возврату; сама копия не доказывает актуальность.',
-      '',
-      returnVerdict.body,
-    );
-  } else if (
-    !returnVerdict &&
-    journal.length > journalLimit &&
-    ['design', 'revise'].includes(assignment.stage)
-  ) {
-    lines.push(
-      '',
-      '## Запись возврата не найдена',
-      '',
-      `В доступном журнале нет заголовка возврата в ${assignment.stage}. Если это повторный этап, не угадывай причину по старому логу; применяй правила проверки источника до исправлений.`,
     );
   }
 
