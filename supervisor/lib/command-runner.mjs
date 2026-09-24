@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 
 /** Тайм-аут задаёт вызывающий код: прочие команды сохраняют прежний режим. */
 export function createCommandRunner(root, exec = execFileSync) {
-  return (args, program = 'git', cwd = root, { timeout } = {}) => {
+  return (args, program = 'git', cwd = root, { timeout, env } = {}) => {
     try {
       const stdout = exec(program, args, {
         cwd,
@@ -11,6 +11,7 @@ export function createCommandRunner(root, exec = execFileSync) {
         // Фоновые проверки не должны открывать окна и забирать фокус.
         windowsHide: true,
         ...(timeout === undefined ? {} : { timeout }),
+        ...(env === undefined ? {} : { env }),
       });
       return { code: 0, stdout, stderr: '' };
     } catch (error) {

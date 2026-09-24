@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { checkCodexReadiness } from './codex-readiness.mjs';
+import { checkCodexReadiness, checkRemoteReachability } from './codex-readiness.mjs';
+import { createCommandRunner } from './command-runner.mjs';
 const completed = {
   type: 'turn.completed',
   usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 1 },
@@ -105,6 +106,20 @@ describe('проверка готовности Codex', () => {
       ok: true,
       remoteReady: false,
     });
+    expect(
+      await check(
+        [
+          git,
+          github,
+          push,
+          node,
+          command(ssh.item.command, 'wrong host', { status: 'failed', exit_code: 255 }),
+          completed,
+        ],
+        {},
+        env,
+      ),
+    ).toMatchObject({ ok: true, remoteReady: false });
     const chosen = command(
       ssh.item.command.replace('dezintegra', env.TD_DEPLOY_HOST),
       'td-codex-ssh-ready',
@@ -242,4 +257,43 @@ it.each([
   expect(result.ok).toBe(false);
   expect(result.why).toContain('рабочего каталога');
   expect(calls).toBe(1);
+});
+
+it('повторная сетевая проба использует выбранный SSH host и не объявляет ложный ответ готовностью', () => {
+  const env = { TD_DEPLOY_HOST: 'deploy.example.org' };
+  const calls = [];
+  const run = (args, program, cwd, options) => {
+    calls.push({ args, program, cwd, options });
+    return { code: 0, stdout: 'td-codex-ssh-ready\n' };
+  };
+  expect(checkRemoteReachability({ root: '/repo', env, run })).toEqual({ ok: true, why: null });
+  expect(calls[0]).toMatchObject({
+    args: [
+      expect.stringContaining('deploy-remote.mjs'),
+      '--host',
+      env.TD_DEPLOY_HOST,
+      '--',
+      'printf td-codex-ssh-ready',
+    ],
+    cwd: '/repo',
+    options: { timeout: 30_000, env },
+  });
+  expect(
+    checkRemoteReachability({
+      root: '/repo',
+      env,
+      run: () => ({ code: 0, stdout: 'ready' }),
+    }),
+  ).toMatchObject({ ok: false });
+});
+
+it('сетевая проба передаёт SSH config в окружение дочернего процесса', () => {
+  const env = { TD_DEPLOY_HOST: 'deploy.example.org', TD_DEPLOY_SSH_CONFIG: '/ssh/config' };
+  const run = createCommandRunner('/repo', (program, args, options) => {
+    expect(program).toBe(process.execPath);
+    expect(args).toContain(env.TD_DEPLOY_HOST);
+    expect(options).toMatchObject({ env, timeout: 30_000 });
+    return 'td-codex-ssh-ready\n';
+  });
+  expect(checkRemoteReachability({ root: '/repo', env, run })).toMatchObject({ ok: true });
 });

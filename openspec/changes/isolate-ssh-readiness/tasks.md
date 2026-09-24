@@ -4,7 +4,7 @@
 
 ## 2. Runtime isolation
 
-- [ ] 2.1 Hold deploy admission on an unready remote, retry reachability and require a fresh Codex proof before releasing; cover scanner behavior and update setup docs. Run focused checks and `pnpm test:pipeline`, then obtain green PR CI.
+- [x] 2.1 Hold deploy admission on an unready remote, retry reachability and require a fresh Codex proof before releasing; cover scanner behavior and update setup docs. Run focused checks and `pnpm test:pipeline`, then obtain green PR CI.
 
 ## 3. Delivery
 

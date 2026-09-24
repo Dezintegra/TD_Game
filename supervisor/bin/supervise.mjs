@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
-import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
+import { checkCodexReadiness, checkRemoteReachability } from '../lib/codex-readiness.mjs';
 import { diagnoseStageTools } from '../lib/tool-diagnostics.mjs';
 import { gitWorkEvidence } from '../lib/tool-work-evidence.mjs';
 import { deploymentReadCommand, deploymentEvidence } from '../../scripts/deploy-evidence.mjs';
@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { budgetsAgree, countFailure, newLock, refreshLock, shouldPause } from '../lib/lock.mjs';
 import { codexProbeCommand, providerOf, readCodexAnswer } from '../lib/provider.mjs';
 import { judgeProbe, shouldProbe } from '../lib/api-health.mjs';
-import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
+import { TAG, clip, clock, createConsole, humanDuration } from '../lib/console.mjs';
 import { checkEnvironment } from '../lib/environment.mjs';
 import { createGit } from '../lib/git.mjs';
 import {
@@ -423,6 +423,16 @@ async function openBacklog({ mayWrite }) {
 
 let codexEnvironment;
 let codexReady = false;
+let deployReady = false;
+let nextDeployProbeAt = 0;
+const DEPLOY_RETRY_MS = 5 * 60_000;
+const codexReadinessOptions = () => ({
+  env: codexEnvironment,
+  config,
+  root,
+  spawn,
+  killTree: createKillTree((program, args) => runCommand(args, program)),
+});
 function sessionFiles(dir, suffix) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -634,6 +644,8 @@ async function turn() {
   const mayWrite = !flags.includes('--dry-run') && !paused && !apiPaused;
   if (mayWrite && providerOf(config) === 'codex' && !codexReady && !(await prepareCodex()))
     return 'paused';
+  if (mayWrite && providerOf(config) === 'codex' && codexReady && !deployReady)
+    await retryDeployReadiness();
 
   const backlog = await openBacklog({ mayWrite });
   if (!backlog.ok) {
@@ -696,6 +708,7 @@ async function turn() {
 
   const state = {
     machine,
+    deployUnavailable: providerOf(config) === 'codex' && !deployReady,
     unavailableWorkspaces: unavailableWorkspaces({
       tasks: backlog.tasks,
       registry,
@@ -996,22 +1009,24 @@ const OUTCOME = {
 
 /** Бесконечный цикл с рубильником паузы и сторожем неудач. */
 async function prepareCodex() {
-  note('Проверяю Git, GitHub, SSH и дочерние процессы Node в Codex перед выдачей задач', TAG.cycle);
+  note('Проверяю локальные команды и SSH в Codex перед выдачей задач', TAG.cycle);
   try {
     prepareCodexPerfFiles(root);
     codexEnvironment = codexChildEnvironment();
-    const readiness = await checkCodexReadiness({
-      env: codexEnvironment,
-      config,
-      root,
-      spawn,
-      killTree: createKillTree((program, args) => runCommand(args, program)),
-    });
+    const readiness = await checkCodexReadiness(codexReadinessOptions());
     ensureLocal();
     writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
     if (!readiness.ok) throw new Error(readiness.why);
     codexReady = true;
-    note('Codex: Git, GitHub, SSH и дочерние процессы Node проверены', TAG.cycle);
+    deployReady = readiness.remoteReady;
+    nextDeployProbeAt = deployReady ? 0 : Date.now() + 60_000;
+    note('Codex: Git, GitHub и дочерние процессы Node проверены', TAG.cycle);
+    if (!deployReady)
+      note(
+        `SSH недоступен: выкладка удержана, локальные этапы идут; ${clip(readiness.remoteWhy, 240)}`,
+        TAG.warn,
+      );
+    else note('Codex: SSH для выкладки проверен', TAG.cycle);
     return true;
   } catch (error) {
     const why = 'Проверка Codex не прошла: ' + error.message;
@@ -1019,6 +1034,36 @@ async function prepareCodex() {
     writeFileSync(local('pause'), why + '\n');
     note('КОНВЕЙЕР НЕ ЗАПУЩЕН: ' + why, TAG.error);
     return false;
+  }
+}
+
+/** Внешний сетевой сбой не тратит новую Codex-сессию на каждом обороте. */
+async function retryDeployReadiness() {
+  if (Date.now() < nextDeployProbeAt) return;
+  nextDeployProbeAt = Date.now() + DEPLOY_RETRY_MS;
+  const direct = checkRemoteReachability({ root, env: codexEnvironment, run: runCommand });
+  if (!direct.ok) {
+    note(`SSH по-прежнему недоступен, выкладка удержана: ${clip(direct.why, 240)}`, TAG.warn);
+    return;
+  }
+  try {
+    const readiness = await checkCodexReadiness(codexReadinessOptions());
+    ensureLocal();
+    writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
+    if (!readiness.ok || !readiness.remoteReady) {
+      note(
+        `SSH доступен напрямую, но не подтверждён в Codex; выкладка удержана: ${clip(readiness.remoteWhy ?? readiness.why, 240)}`,
+        TAG.warn,
+      );
+      return;
+    }
+    deployReady = true;
+    note('SSH в Codex снова подтверждён: выкладка допускается', TAG.cycle);
+  } catch (error) {
+    note(
+      `Повторная проверка SSH не удалась, выкладка удержана: ${clip(error.message, 240)}`,
+      TAG.warn,
+    );
   }
 }
 

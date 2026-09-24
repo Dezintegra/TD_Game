@@ -2,12 +2,37 @@ import { mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deploySshOptions } from '../../scripts/deploy-ssh.mjs';
+import { deploySshHost, deploySshOptions } from '../../scripts/deploy-ssh.mjs';
 import { codexExecutionArgs, codexInvocation, readCodexAnswer } from './provider.mjs';
 import { startStage } from './run-stage.mjs';
 import { codexGitEnvironment } from './codex-environment.mjs';
 import { modelForStage } from './stage-model.mjs';
 import { toolControls, powerShellControl, TOOL_DIAGNOSTIC_TIMEOUT_MS } from './tool-controls.mjs';
+
+/** Дешёвая сетевая проба перед повторной дорогой проверкой внутри Codex. */
+export function checkRemoteReachability({ root, env, run }) {
+  let host;
+  try {
+    host = deploySshHost(env?.TD_DEPLOY_HOST);
+    deploySshOptions(env);
+  } catch (error) {
+    return { ok: false, why: error.message };
+  }
+  const script = fileURLToPath(new URL('../../scripts/deploy-remote.mjs', import.meta.url));
+  const result = run(
+    [script, '--host', host, '--', 'printf td-codex-ssh-ready'],
+    process.execPath,
+    root,
+    { timeout: 30_000, env },
+  );
+  const ok = result.code === 0 && result.stdout?.trim() === 'td-codex-ssh-ready';
+  return {
+    ok,
+    why: ok
+      ? null
+      : String(result.stderr || result.stdout || 'SSH не подтвердил соединение').trim(),
+  };
+}
 
 /** Проверяем инструмент, а не обещание модели: текст «готов» ничего не доказывает. */
 export async function checkCodexReadiness({
@@ -104,9 +129,7 @@ export async function checkCodexReadiness({
           return [];
         }
       });
-    const sshCommand = (item) =>
-      /\bnode\b.*deploy-remote\.mjs/.test(item.command ?? '') &&
-      item.command.includes(`--host ${host} --`);
+    const sshCommand = (item) => /\bnode\b.*deploy-remote\.mjs/.test(item.command ?? '');
     const failedLocal = commands.find(
       (item) => !sshCommand(item) && (item.status !== 'completed' || item.exit_code !== 0),
     );
@@ -124,7 +147,10 @@ export async function checkCodexReadiness({
         /^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(item.aggregated_output?.trim() ?? ''),
     );
     const connected = commands.some(
-      (item) => sshCommand(item) && item.aggregated_output?.trim() === 'td-codex-ssh-ready',
+      (item) =>
+        sshCommand(item) &&
+        item.command.includes(`--host ${host} --`) &&
+        item.aggregated_output?.trim() === 'td-codex-ssh-ready',
     );
     const pushReady = commands.some(
       (item) =>
