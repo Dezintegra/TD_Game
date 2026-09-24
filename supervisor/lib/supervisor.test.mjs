@@ -44,6 +44,60 @@ const { config } = resolveConfig({
 
 const NOW = '2026-08-31T12:00:00+03:00';
 
+describe('shared reports and addressed results after restart', () => {
+  it('repeats only missing report effects while preserving hold and addressed result', async () => {
+    const f = deliveryFixture();
+    try {
+      const first = f.open();
+      const held = first.store.retain(
+        { report: null },
+        { taskId: 'held', stage: 'revise', launchId: 'held' },
+      );
+      first.store.update(held.reportId, {
+        disposition: 'infrastructure-held',
+        retry: { pauseRecorded: true },
+      });
+      first.store.acceptDiagnostic(
+        { requestId: 'kept', taskId: 'historical' },
+        { fingerprint: 'same', source: { generation: 'old' }, authorization: {}, at: NOW },
+      );
+      first.store.completeDiagnostic('kept', { verdict: 'inconclusive', checks: [] });
+      first.recipient.fail('POST', '/actions/comments', 'after');
+      expect((await execute([f.action], first.io))[0].result).toBe('failed');
+      expect(first.store.get(f.entry.reportId).plan).toBeDefined();
+      expect(first.store.get(f.entry.reportId).progress.length).toBeGreaterThan(0);
+      const second = f.open();
+      const h = harness({
+        reportStore: second.store,
+        diagnoseTools: () => {
+          throw new Error('get must not settle');
+        },
+      });
+      second.io.reportStore = h.supervisor.reportStore;
+      const handler = h.supervisor.createAddressedDiagnostics({
+        authorize: () => ({
+          allowed: true,
+          fingerprint: 'same',
+          generation: 'new',
+          source: { generation: 'new' },
+        }),
+      });
+      const addressed = await handler.get('kept');
+      expect(addressed.ok).toBe(true);
+      expect((await execute([f.action], second.io))[0].result).toBe('done');
+      expect(second.recipient.state()).toMatchObject({ puts: 1, posts: 1 });
+      const delivered = second.recipient.state();
+      expect((await execute([f.action], second.io))[0].result).toBe('skipped');
+      expect(second.recipient.state()).toEqual(delivered);
+      expect(await handler.get('kept')).toEqual(addressed);
+      expect(second.store.entries()).toEqual([first.store.get(held.reportId)]);
+      expect(h.children).toHaveLength(0);
+    } finally {
+      f.cleanup();
+    }
+  });
+});
+
 function harness(over = {}) {
   const children = [];
   const killed = [];

@@ -29,6 +29,83 @@ const result = (provider, events) =>
   }).verdict;
 
 describe('fixed provider controls', () => {
+  it('attempts every historical control after confirmed failure and names skipped controls', async () => {
+    const parent = fileURLToPath(new URL('../../.matchlog', import.meta.url));
+    mkdirSync(parent, { recursive: true });
+    const cwd = mkdtempSync(join(parent, 'historical-diagnostic-test-'));
+    const command = { program: 'provider', args: [], cwd };
+    let time = 1;
+    let launches = 0;
+    const options = {
+      assignment: { stage: 'revise' },
+      config: { provider: 'claude' },
+      root: cwd,
+      home: cwd,
+      env: {},
+      expectedContext: toolContext(command, 'claude', {}),
+      profile: 'historical-revise-design',
+      buildCommand: () => command,
+      now: () => time,
+      start: ({ command: invoked }) => {
+        launches++;
+        const text = invoked.stdin.split('\n')[0].split('без изменений: ')[1];
+        return {
+          finished: Promise.resolve({
+            code: 0,
+            stdout: [
+              { message: { content: [{ type: 'tool_use', id: 'use', input: { command: text } }] } },
+              {
+                message: { content: [{ type: 'tool_result', tool_use_id: 'use' }] },
+                tool_use_result: { exit_code: 1 },
+              },
+            ]
+              .map(JSON.stringify)
+              .join('\n'),
+          }),
+        };
+      },
+    };
+    try {
+      const complete = await diagnoseStageTools(options);
+      expect(complete.verdict).toBe('confirmed');
+      expect(launches).toBe(3);
+      expect(complete.checks.map((check) => check.status)).toEqual(['failed', 'failed', 'failed']);
+      launches = 0;
+      const deadline = await diagnoseStageTools({
+        ...options,
+        onResult: () => {
+          time += 120001;
+        },
+      });
+      expect(launches).toBe(1);
+      expect(deadline.checks.slice(1)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ status: 'not-run', reason: 'deadline' }),
+        ]),
+      );
+      launches = 0;
+      const refused = await diagnoseStageTools({
+        ...options,
+        onStart: () => {
+          throw new Error('budget');
+        },
+      });
+      expect(launches).toBe(0);
+      expect(refused.checks.every((check) => check.status === 'not-run')).toBe(true);
+      expect(refused.accountingError).toBe('budget');
+      const unknown = await diagnoseStageTools({
+        ...options,
+        start: () => ({ finished: Promise.resolve({ code: 1, stdout: 'helper_unknown_error' }) }),
+      });
+      expect(unknown.verdict).toBe('inconclusive');
+      expect(unknown.checks.every((check) => check.status === 'missing')).toBe(true);
+      launches = 0;
+      await diagnoseStageTools({ ...options, profile: 'default' });
+      expect(launches).toBe(1);
+    } finally {
+      rmSync(cwd, { recursive: true });
+    }
+  });
   it.each(['codex', 'claude'])(
     'runs a bounded group in the retained %s context',
     async (provider) => {

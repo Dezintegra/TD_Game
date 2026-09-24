@@ -5,6 +5,141 @@ import { openReportStore, sameReportLaunch } from './report-store.mjs';
 import { launchCharge, confirmLaunchCharge, gitWorkEvidence } from './tool-work-evidence.mjs';
 
 const directories = [];
+const diagnosticRequest = {
+  schemaVersion: 1,
+  requestId: 'addressed',
+  taskId: 'stopped',
+  stage: 'revise',
+  sourceLaunchId: 'unknown',
+  profile: 'historical-revise',
+};
+const diagnosticMeta = {
+  fingerprint: 'fingerprint',
+  source: { branch: 'own', cwd: 'tree' },
+  authorization: { generation: 'generation' },
+  at: '2026-09-24T20:00:00Z',
+};
+const diagnosticLaunch = {
+  launchId: 'diagnostic-launch',
+  startedAt: '2026-09-24T20:00:01Z',
+  control: { id: 'git-status', argv: ['git', 'status'] },
+};
+
+describe('addressed diagnostics in the shared store', () => {
+  it('preserves both collections, held state and report progress across interleaved writes', () => {
+    const path = fixture();
+    const store = openReportStore(path);
+    const ordinary = store.accept(report, { launchId: 'ordinary' });
+    store.update(ordinary.reportId, { plan: { operations: ['a', 'b'] }, progress: ['a'] });
+    const held = store.retain(
+      { report: null },
+      { taskId: 'held', stage: 'revise', launchId: 'held-launch' },
+    );
+    store.update(held.reportId, { disposition: 'infrastructure-held' });
+    const before = store.entries();
+    store.acceptDiagnostic(diagnosticRequest, diagnosticMeta);
+    store.diagnosticLaunchIntent('addressed', diagnosticLaunch);
+    store.diagnosticRawResult('addressed', diagnosticLaunch.launchId, {
+      code: 0,
+      stdout: 'evidence',
+    });
+    expect(() => store.completeDiagnostic('addressed', { verdict: 'healthy' })).toThrow(
+      'accounting pending',
+    );
+    store.diagnosticAccounted('addressed', diagnosticLaunch.launchId, {
+      tokens: 12,
+      state: 'accounted',
+    });
+    const completed = store.completeDiagnostic('addressed', { verdict: 'healthy' });
+    expect(store.entries()).toEqual(before);
+    const reopened = openReportStore(path);
+    expect(reopened.getDiagnostic('addressed')).toEqual(completed);
+    expect(reopened.acceptDiagnostic(diagnosticRequest, diagnosticMeta)).toEqual(completed);
+    expect(() =>
+      reopened.acceptDiagnostic(diagnosticRequest, { ...diagnosticMeta, fingerprint: 'changed' }),
+    ).toThrow('conflict');
+    expect(() =>
+      reopened.acceptDiagnostic({ ...diagnosticRequest, stage: 'audit' }, diagnosticMeta),
+    ).toThrow('conflict');
+    reopened.acknowledge(ordinary.reportId);
+    expect(openReportStore(path).entries()).toEqual([before[1]]);
+    expect(openReportStore(path).getDiagnostic('addressed')).toEqual(completed);
+    expect(reopened.verifySaved()).toEqual({ ok: true, count: 1 });
+    const disk = JSON.parse(fs.readFileSync(path, 'utf8'));
+    disk.diagnosticRequests[0].result.verdict = 'changed';
+    fs.writeFileSync(path, JSON.stringify(disk));
+    expect(reopened.verifySaved().ok).toBe(false);
+  });
+  it.each([1, 2])('migrates version %s without discarding report fields', (version) => {
+    const path = fixture();
+    const ordinary = openReportStore(path).accept(report, { launchId: 'old' });
+    fs.writeFileSync(path, JSON.stringify({ version, reports: [ordinary] }));
+    const store = openReportStore(path);
+    store.acceptDiagnostic(diagnosticRequest, diagnosticMeta);
+    expect(openReportStore(path).entries()).toEqual([ordinary]);
+    const value = JSON.parse(fs.readFileSync(path, 'utf8'));
+    value.version = version;
+    fs.writeFileSync(path, JSON.stringify(value));
+    expect(() => openReportStore(path)).toThrow('legacy store');
+  });
+  it('exposes restored running requests as uncertain and never creates another launch', () => {
+    const path = fixture();
+    const store = openReportStore(path);
+    store.acceptDiagnostic(diagnosticRequest, diagnosticMeta);
+    store.diagnosticLaunchIntent('addressed', diagnosticLaunch);
+    const reopened = openReportStore(path);
+    expect(reopened.getDiagnostic('addressed').state).toBe('uncertain');
+    expect(() =>
+      reopened.diagnosticLaunchIntent('addressed', { ...diagnosticLaunch, launchId: 'duplicate' }),
+    ).toThrow('uncertain');
+    expect(reopened.verifySaved().ok).toBe(true);
+    expect(openReportStore(path).getDiagnostic('addressed').state).toBe('uncertain');
+  });
+  it.each(['intent', 'raw', 'completion', 'readback'])(
+    'retains %s failure for storage retry without another launch',
+    (failure) => {
+      const path = fixture();
+      let fail = false;
+      const store = openReportStore(path, {
+        disk: {
+          ...fs,
+          renameSync: (...args) => {
+            if (fail && failure !== 'readback') throw new Error('disk failure');
+            return fs.renameSync(...args);
+          },
+          readFileSync: (...args) => {
+            if (fail && failure === 'readback') throw new Error('readback failure');
+            return fs.readFileSync(...args);
+          },
+        },
+      });
+      store.acceptDiagnostic(diagnosticRequest, diagnosticMeta);
+      if (failure !== 'intent') store.diagnosticLaunchIntent('addressed', diagnosticLaunch);
+      if (['completion', 'readback'].includes(failure)) {
+        store.diagnosticRawResult('addressed', diagnosticLaunch.launchId, { code: 0 });
+        store.diagnosticAccounted('addressed', diagnosticLaunch.launchId, {
+          state: 'accounted',
+          tokens: 3,
+        });
+      }
+      fail = true;
+      expect(() => {
+        if (failure === 'intent') store.diagnosticLaunchIntent('addressed', diagnosticLaunch);
+        else if (failure === 'raw')
+          store.diagnosticRawResult('addressed', diagnosticLaunch.launchId, { code: 0 });
+        else store.completeDiagnostic('addressed', { verdict: 'healthy' });
+      }).toThrow('failure');
+      expect(store.verifySaved().ok).toBe(false);
+      expect(() => store.getDiagnostic('addressed')).toThrow('storage pending');
+      expect(() => store.accept(report)).toThrow('storage pending');
+      fail = false;
+      store.retryDiagnosticStorage();
+      expect(store.verifySaved().ok).toBe(true);
+      expect(store.getDiagnostic('addressed').launches).toHaveLength(1);
+      expect(openReportStore(path).getDiagnostic('addressed').launches).toHaveLength(1);
+    },
+  );
+});
 function fixture() {
   const base = join(import.meta.dirname, '../../.matchlog');
   fs.mkdirSync(base, { recursive: true });
@@ -215,7 +350,7 @@ describe('durable report queue', () => {
     entry.report.outcome = 'failed';
     expect(store.get(entry.reportId).report.outcome).toBe('done');
   });
-  it.each(['broken', '{"version":3,"reports":[]}', '{"version":1,"reports":[{}]}'])(
+  it.each(['broken', '{"version":4,"reports":[]}', '{"version":1,"reports":[{}]}'])(
     'preserves invalid data: %s',
     (data) => {
       const path = fixture();
