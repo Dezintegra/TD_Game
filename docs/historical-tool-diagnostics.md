@@ -1,10 +1,12 @@
 # Адресная диагностика исторических назначений
 
-Вход поставлен коммитом `62d8e4d4dfb875d2ce3ca40ab4f7a56d749f7b96`
+Базовый вход поставлен коммитом `62d8e4d4dfb875d2ce3ca40ab4f7a56d749f7b96`
 ветки `worktree-0383-obespechit-adresnyy-vhod-diagnostiki-024`, PR #303.
+Для приёмки до вливания используется сборка с поправкой аттестации владельца
+из PR #307; её фактический `codeSha` берётся из загруженного коммита.
 Это инструкция Windows-хозяину, а не разрешение исполнителю менять чужое
 дерево, `.pipeline`, настройки безопасности или работающий супервизор.
-Фактическая загрузка этого SHA и четыре живых ответа пока не подтверждены.
+Фактическая загрузка сборки и четыре живых ответа пока не подтверждены.
 
 ## Подготовка владельцем
 
@@ -13,8 +15,55 @@
 Сохраняются его root, конфигурация provider, ledger, registry, pending reports
 и все ограничения запуска. К штатной команде `node supervisor/bin/supervise.mjs`
 добавляется `--diagnostic-endpoint`. Установка невлитой версии требует
-отдельной подготовки хозяина; эта инструкция не предписывает checkout main
-из рабочего дерева исполнителя или обход проверки идентичности процесса.
+отдельной подготовки хозяина: основной checkout не переключают, дерево
+исполнителя 0383 не меняют и проверку идентичности не обходят.
+
+### Временный runtime из подтверждённого дерева
+
+Хозяин сначала сверяет точный коммит сборки PR #307, зелёный CI, чистоту
+`supervisor/`, регистрацию дерева в `git worktree list --porcelain` и общий
+Git common-dir с основным checkout. В `.pipeline/pending-reports.json` не
+должно быть незавершённых обычных отчётов, а у супервизора — живых этапов.
+После этого хозяин ставит собственную временную `.pipeline/pause` и штатно
+останавливает старого владельца через `node supervisor/bin/launch.mjs --stop`.
+Если пауза уже принадлежит другому инциденту, её не заменяют и не снимают.
+Планировщик Windows `TD pipeline supervisor` временно отключают перед
+переключением и обязательно включают обратно после возврата main: его
+нынешний код ещё не умеет опознавать невлитого владельца. Один свежий lock
+сам по себе всё равно не даёт второму процессу стать writer, но не должен
+быть основанием для лишних запусков или удаления lock старым `--stop`.
+
+В PowerShell из основного checkout, указав реальное зарегистрированное
+дерево сборки и сохранённую конфигурацию, запускают один процесс:
+
+```powershell
+$projectRoot = 'C:\src\dezintegra\TD_Game'
+$stagedRoot = '<абсолютный путь проверенного дерева сборки>'
+$entry = Join-Path $stagedRoot 'supervisor\bin\supervise.mjs'
+$config = Join-Path $projectRoot '.pipeline\pipeline.codex.local.json'
+$owner = Start-Process -FilePath 'C:\Program Files\nodejs\node.exe' `
+  -ArgumentList @($entry, '--provider=codex', '--quiet', "--config=$config", '--diagnostic-endpoint', $projectRoot) `
+  -WorkingDirectory $projectRoot -WindowStyle Hidden `
+  -RedirectStandardOutput (Join-Path $projectRoot '.pipeline\host-diagnostic-supervisor.out.log') `
+  -RedirectStandardError (Join-Path $projectRoot '.pipeline\host-diagnostic-supervisor.err.log') -PassThru
+```
+
+При включённом endpoint проверка Codex выполняется и под ручной паузой;
+пауза продолжает удерживать обычную выдачу задач. Дескриптор обязан назвать
+`entrypoint`, `codeSha`, `rootSha`, `runtimeSha=codeSha`, PID/Windows SID и
+generation. Хозяин сопоставляет PID с единственным lock, командной строкой
+процесса и HEAD подтверждённого дерева. Клиент повторяет проверку Git и
+командной строки перед каждым обращением. Если endpoint не появился или
+проверка отказала, хозяин сохраняет точную ошибку, останавливает только
+этот runtime, восстанавливает обычный запуск из main и снимает только свою
+временную паузу. Отсутствие endpoint не считается диагностическим ответом.
+
+После сохранения всех четырёх ответов и повторных get хозяин останавливает
+staged-процесс через `node <stagedRoot>/supervisor/bin/launch.mjs --stop
+--root=<projectRoot>`: этот пускатель проверяет staged owner по его
+дескриптору. Затем штатно запускает runtime main, снимает только свою паузу,
+включает планировщик Windows и проверяет следующий цикл. Старым пускателем
+main останавливать живой staged runtime нельзя, пока исправление не влито.
 
 До обращения хозяин подтверждает SHA загруженного кода, чистоту `supervisor/`,
 PID и идентичность владельца lock, отсутствие второго владельца каждого
@@ -24,7 +73,8 @@ PID и идентичность владельца lock, отсутствие в
 с защищённой ACL текущего Windows SID и запретом сетевых клиентов.
 Непроверенная ACL или неподтверждённый клиент означают отказ.
 
-Runtime публикует `.pipeline/diagnostic-endpoint.json`: `runtimeSha`,
+Runtime публикует `.pipeline/diagnostic-endpoint.json`: `entrypoint`,
+`codeSha`, `rootSha`, `runtimeSha` (равен `codeSha`),
 `generation`, `ownerPid`, `helperPid`, `ownerUser`, `ownerSid`, `acl`,
 `lockPath`, `root`, `startedAt`, `storePath`. Путь относится к каталогу
 локального состояния этого владельца. Он не является полномочием сам по себе.
