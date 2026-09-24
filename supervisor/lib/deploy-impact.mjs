@@ -1,16 +1,62 @@
+import { isDeepStrictEqual } from 'node:util';
+import { Buffer } from 'node:buffer';
+
 // Неизвестный путь требует обычной выкладки. Метка задачи не является доказательством.
-const serviceDirectories = ['supervisor/', 'manage/', 'docs/', 'openspec/', '.agents/', '.claude/'];
+const serviceDirectories = [
+  'supervisor/',
+  'plugins/pipeline/',
+  'scripts/testing/',
+  'scripts/mutation/',
+  'manage/',
+  'docs/',
+  'openspec/',
+  '.agents/',
+  '.claude/',
+];
 export function servicePath(path) {
   return (
     typeof path === 'string' &&
     path.length > 0 &&
     !path.includes('\\') &&
     !path.split('/').some((part) => part === '..' || part === '.' || part === '') &&
-    (serviceDirectories.some((dir) => path.startsWith(dir)) || /^[^/]+\.md$/i.test(path))
+    (serviceDirectories.some((dir) => path.startsWith(dir)) ||
+      [
+        'scripts/supervisor-scripts.test.mjs',
+        'scripts/test-source.mjs',
+        '.github/workflows/ci.yml',
+      ].includes(path) ||
+      /^[^/]+\.md$/i.test(path))
   );
 }
 
-export function classifyDeployment(pr, files, number, mainBranch) {
+export function supervisorPackageOnly(before, after) {
+  const ordinary = (document) => {
+    if (
+      !document ||
+      typeof document !== 'object' ||
+      Array.isArray(document) ||
+      !document.scripts ||
+      typeof document.scripts !== 'object' ||
+      Array.isArray(document.scripts)
+    )
+      throw new Error('invalid package document');
+    return {
+      ...document,
+      scripts: Object.fromEntries(
+        Object.entries(document.scripts).filter(
+          ([key]) => key !== 'supervisor' && !key.startsWith('supervisor:'),
+        ),
+      ),
+    };
+  };
+  try {
+    return isDeepStrictEqual(ordinary(before), ordinary(after));
+  } catch {
+    return false;
+  }
+}
+
+export function classifyDeployment(pr, files, number, mainBranch, packageDocuments) {
   const deploy = (reason) => ({ needed: true, reason });
   if (
     pr?.number !== number ||
@@ -38,8 +84,14 @@ export function classifyDeployment(pr, files, number, mainBranch) {
       )
     )
       return deploy('неизвестный вид изменения файла');
+    const packageOnly =
+      file.filename === 'package.json' &&
+      file.status === 'modified' &&
+      !file.previous_filename &&
+      packageDocuments &&
+      supervisorPackageOnly(packageDocuments.before, packageDocuments.after);
     if (
-      !servicePath(file.filename) ||
+      (!servicePath(file.filename) && !packageOnly) ||
       (file.previous_filename != null && !servicePath(file.previous_filename)) ||
       (file.status === 'renamed' && !file.previous_filename)
     )
@@ -67,7 +119,19 @@ export function readDeploymentImpact({ run, root, number, mainBranch }) {
     const pages = read(['api', `${endpoint}/files?per_page=100`, '--paginate', '--slurp']);
     if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page)))
       return { needed: true, reason: 'список файлов не разобран' };
-    return classifyDeployment(pr, pages.flat(), number, mainBranch);
+    const files = pages.flat();
+    let packageDocuments;
+    if (files.some((file) => file?.filename === 'package.json')) {
+      const document = (sha) => {
+        if (!/^[a-f0-9]{40}$/i.test(sha ?? '')) throw new Error('unverified package revision');
+        const blob = read(['api', `repos/{owner}/{repo}/contents/package.json?ref=${sha}`]);
+        if (blob.encoding !== 'base64' || typeof blob.content !== 'string')
+          throw new Error('package content unavailable');
+        return JSON.parse(Buffer.from(blob.content, 'base64').toString('utf8'));
+      };
+      packageDocuments = { before: document(pr.base?.sha), after: document(pr.head?.sha) };
+    }
+    return classifyDeployment(pr, files, number, mainBranch, packageDocuments);
   } catch {
     return { needed: true, reason: 'не удалось доказать служебный diff' };
   }

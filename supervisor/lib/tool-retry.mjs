@@ -1,0 +1,224 @@
+import { randomUUID } from 'node:crypto';
+import { addSpent, countSpawnFailure } from './task-file.mjs';
+import { launchCharge } from './tool-work-evidence.mjs';
+import { deployRetryAssignment, deployRetryEvidence } from './tool-deploy-recovery.mjs';
+import { hasReceipt } from './report-receipts.mjs';
+import { validToolSettlement } from './tool-settlement.mjs';
+
+export function matchingRetryClaim(entry, assignment) {
+  const claim = assignment.infrastructureRetry;
+  return Boolean(
+    entry &&
+    entry.disposition === 'retry-claimed' &&
+    entry.reportId === claim?.reportId &&
+    entry.launchId === claim.sourceLaunchId &&
+    entry.retry?.newLaunchId === assignment.launchId &&
+    entry.taskId === assignment.taskId &&
+    entry.stage === assignment.stage &&
+    entry.retry.recovery?.verdict === 'healthy',
+  );
+}
+
+function available(store, entry, extra = {}) {
+  store.update(entry.reportId, {
+    disposition: 'retry-ready',
+    retry: {
+      ...entry.retry,
+      ...extra,
+      state: 'available',
+      newLaunchId: null,
+      spawnState: null,
+    },
+  });
+}
+
+async function handoff(store, entry) {
+  store.update(entry.reportId, {
+    disposition: 'settled',
+    retry: { ...entry.retry, state: 'consumed' },
+  });
+  store.archive(entry.reportId);
+  store.acknowledge(entry.reportId);
+  return { result: 'done', status: entry.stage, why: 'replacement handoff confirmed' };
+}
+
+/** The active envelope is the entitlement. Neither a report nor a timer grants another. */
+export async function retryToolStage(action, io) {
+  const store = io.reportStore;
+  let entry = store?.get(action.reportId);
+  if (!entry || entry.taskId !== action.taskId || entry.stage !== action.stage)
+    return { result: 'skipped', why: 'retry envelope does not match' };
+  try {
+    if (entry.disposition === 'settled') return await handoff(store, entry);
+    if (entry.disposition === 'retry-claimed') {
+      if (entry.retry.failurePlan) return await finishFailedSpawn(store, entry, io);
+      const seen = io.inspectRetryLaunch?.(entry) ?? { state: 'unknown' };
+      if (seen.state === 'born') return await handoff(store, entry);
+      if (seen.state === 'absent') available(store, entry);
+      return {
+        result: 'skipped',
+        why:
+          seen.state === 'absent'
+            ? 'unstarted claim restored'
+            : 'replacement spawn remains uncertain',
+      };
+    }
+    if (
+      entry.disposition !== 'retry-ready' ||
+      entry.retry?.state !== 'available' ||
+      entry.retry.recovery?.verdict !== 'healthy'
+    )
+      return { result: 'skipped', why: 'retry is not ready' };
+    if (entry.stage === 'deploy') {
+      if (!deployRetryAssignment(entry))
+        return { result: 'skipped', why: 'original deploy assignment is unknown' };
+      const remote = (await io.inspectToolDeployment?.(entry)) ?? { state: 'unknown' };
+      store.update(entry.reportId, { retry: { ...entry.retry, remote } });
+      entry = store.get(entry.reportId);
+      if (!deployRetryEvidence(entry))
+        return { result: 'skipped', why: 'deploy effects are not verified' };
+    }
+    const gate = io.mayLaunch?.(entry.assignment);
+    if (gate && !gate.allowed) return { result: 'skipped', why: gate.why ?? 'availability-held' };
+    let task = io.readTask(entry.taskId);
+    if (!task || task.status !== entry.stage || (task.owner && task.owner !== io.machine))
+      return { result: 'skipped', why: 'retry source ownership changed' };
+    if (
+      !validToolSettlement(entry) ||
+      !hasReceipt(task, entry.plan.operations[0].key) ||
+      task.statusChangedAt !== entry.plan.operations[0].args[0].statusChangedAt
+    )
+      return { result: 'skipped', why: 'retry settlement no longer matches source' };
+    if (io.tokenAdmission?.(task, entry.stage) || io.tokenReanalysisAdmission?.(task, entry.stage))
+      return { result: 'skipped', why: 'token admission holds replacement' };
+    if (io.requiresFreshStart) {
+      const acquired = await io.acquire(task);
+      if (!acquired.ok)
+        return { result: 'skipped', why: acquired.why ?? 'retry ownership is unavailable' };
+      const fresh = await io.readStartTask(task, { evidence: io.dependencyEvidence ?? {} });
+      if (!fresh.ok) return { result: 'skipped', why: fresh.why };
+      task = fresh.task;
+    }
+    if (entry.stage === 'deploy')
+      for (const id of entry.batch.filter((id) => id !== entry.taskId)) {
+        const member = io.readTask(id);
+        if (
+          !member ||
+          member.status !== 'deploy' ||
+          (member.owner && member.owner !== io.machine) ||
+          io.tokenAdmission?.(member, 'deploy') ||
+          io.tokenReanalysisAdmission?.(member, 'deploy')
+        )
+          return { result: 'skipped', why: 'original deploy member is held' };
+        if (io.requiresFreshStart) {
+          const acquired = await io.acquire(member);
+          if (!acquired.ok)
+            return { result: 'skipped', why: acquired.why ?? 'deploy member ownership changed' };
+          const fresh = await io.readStartTask(member, { evidence: io.dependencyEvidence ?? {} });
+          if (!fresh.ok) return { result: 'skipped', why: fresh.why };
+        }
+      }
+    const registry = entry.stage === 'deploy' ? entry.assignment : io.registryEntry(entry.taskId);
+    if (
+      entry.assignment.path &&
+      (registry?.path !== entry.assignment.path || registry.branch !== entry.assignment.branch)
+    )
+      return { result: 'skipped', why: 'retry workspace changed' };
+    const accounted = entry.retry.accountedRecoveryCostUsd ?? entry.plan.recoveryCostUsd ?? 0;
+    const total = entry.retry.recoveryCostUsd ?? 0;
+    if (entry.retry.costPlan || total > accounted) {
+      if (!entry.retry.costPlan) {
+        const costPlan = {
+          total,
+          args: [
+            addSpent(task, total - accounted),
+            {
+              at: io.now,
+              from: task.status,
+              to: task.status,
+              what: `Повторная диагностика инструментов ${entry.reportId}: $${total - accounted}.`,
+            },
+            'chore(pipeline): account repeated tool recovery',
+          ],
+          operation: {
+            key: `${entry.reportId}:recovery-cost:${entry.retry.recoveryHistory?.length ?? total}`,
+            expected: task,
+          },
+        };
+        store.update(entry.reportId, { retry: { ...entry.retry, costPlan } });
+        entry = store.get(entry.reportId);
+      }
+      const { costPlan } = entry.retry;
+      const saved = await io.saveTask(...costPlan.args, [], costPlan.operation);
+      if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };
+      store.update(entry.reportId, {
+        retry: { ...entry.retry, costPlan: null, accountedRecoveryCostUsd: costPlan.total },
+      });
+      // Rescan budgets and the refreshed physical card before claiming a launch.
+      return { result: 'skipped', why: 'recovery cost confirmed; fresh admission required' };
+    }
+    const newLaunchId = randomUUID();
+    const submitted = Boolean(entry.originalResult.parsedReport ?? entry.report);
+    const sessionId = submitted ? null : (io.lastSession?.(entry.taskId, entry.stage) ?? null);
+    const assignment = {
+      ...entry.assignment,
+      task,
+      launchId: newLaunchId,
+      charge: launchCharge(newLaunchId),
+      sessionId,
+      continuation: Boolean(sessionId),
+      reason: 'замещающий запуск после подтверждённого восстановления инструментов',
+      infrastructureRetry: { reportId: entry.reportId, sourceLaunchId: entry.launchId },
+      toolRecovery: {
+        reportId: entry.reportId,
+        originalReport: entry.originalResult.parsedReport ?? entry.report,
+        diagnosis: entry.evidence,
+        recovery: entry.retry.recovery,
+        git: entry.git,
+        remote: entry.retry.remote,
+      },
+    };
+    store.update(entry.reportId, {
+      disposition: 'retry-claimed',
+      retry: { ...entry.retry, state: 'claimed', newLaunchId, spawnState: 'prepared', assignment },
+    });
+    const spawned = io.spawnStage(assignment);
+    entry = store.get(entry.reportId);
+    if (!spawned.ok) {
+      if (['busy', 'availability-held'].includes(spawned.reason)) {
+        available(store, entry, spawned.retryRecheck ? { recovery: null } : {});
+        return { result: 'skipped', why: spawned.why };
+      }
+      if (spawned.reason !== 'not-born')
+        return { result: 'skipped', why: 'unrecognized spawn result retained' };
+      const operation = { key: `${entry.reportId}:not-born:${newLaunchId}`, expected: task };
+      const args = [
+        countSpawnFailure(task),
+        {
+          at: io.now,
+          from: task.status,
+          to: task.status,
+          problem: `Замещающий этап не запустился: ${spawned.why}.`,
+        },
+        'chore(pipeline): record failed replacement spawn',
+      ];
+      store.update(entry.reportId, { retry: { ...entry.retry, failurePlan: { args, operation } } });
+      return await finishFailedSpawn(store, store.get(entry.reportId), io);
+    }
+    const seen = io.inspectRetryLaunch?.(entry) ?? { state: 'unknown' };
+    if (seen.state !== 'born')
+      return { result: 'skipped', why: 'replacement birth not durably confirmed' };
+    io.recordSchedulingLaunch?.(task);
+    return await handoff(store, entry);
+  } catch (error) {
+    return { result: 'failed', why: `retained tool retry ${entry.reportId}: ${error.message}` };
+  }
+}
+
+async function finishFailedSpawn(store, entry, io) {
+  const { args, operation } = entry.retry.failurePlan;
+  const written = await io.saveTask(...args, [], operation);
+  if (!written.ok) return { result: 'failed', why: written.why ?? written.outcome };
+  available(store, entry, { failurePlan: null });
+  return { result: 'failed', why: 'replacement did not start; entitlement preserved' };
+}

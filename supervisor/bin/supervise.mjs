@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
 import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
+import { diagnoseStageTools } from '../lib/tool-diagnostics.mjs';
+import { gitWorkEvidence } from '../lib/tool-work-evidence.mjs';
+import { deploymentReadCommand, deploymentEvidence } from '../../scripts/deploy-evidence.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
 import { createAssignmentPreparer } from '../lib/benchmark-source.mjs';
 import { readTokenLedger, writeTokenLedger, tokenAccountingNote } from '../lib/token-budget.mjs';
@@ -43,6 +46,7 @@ import {
   readTasks,
 } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
+import { isDirectory, unavailableWorkspaces } from '../lib/workspace-state.mjs';
 import { createIo } from '../lib/io.mjs';
 import { createSchedulingStore } from '../lib/scheduling-store.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
@@ -61,6 +65,7 @@ import {
 } from '../lib/supervisor-startup.mjs';
 import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
+import { executionSummary, executionNote } from '../lib/execution-summary.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from '../lib/cycle.mjs';
 import { judgeSelfUpdate } from '../lib/self-update.mjs';
@@ -436,6 +441,55 @@ function createRuntimeSupervisor() {
     protectionError = error;
   }
   const runtime = createSupervisor({
+    isToolPaused: () => isPaused(root, config),
+    mayLaunch: () => ({
+      allowed: !isPaused(root, config) && !isApiPaused(root, config) && !draining,
+      why: 'локальная, серверная пауза или завершение работы',
+    }),
+    inspectToolWork: (entry) => {
+      const cwd = entry.context?.cwd;
+      if (!cwd) return { state: 'unknown', reason: 'missing-cwd' };
+      const queries = {
+        head: ['rev-parse', 'HEAD'],
+        branch: ['branch', '--show-current'],
+        upstream: ['rev-parse', '--abbrev-ref', '@{upstream}'],
+        tail: ['rev-list', '@{upstream}..HEAD'],
+        dirty: ['status', '--porcelain'],
+      };
+      return gitWorkEvidence(
+        Object.fromEntries(
+          Object.entries(queries).map(([name, args]) => [
+            name,
+            runCommand(['-C', cwd, ...args], 'git', cwd, { timeout: 1000 }),
+          ]),
+        ),
+        entry.git,
+      );
+    },
+    diagnoseTools: (entry, accounting) =>
+      diagnoseStageTools({
+        assignment: entry.assignment,
+        expectedContext: entry.context,
+        config,
+        root,
+        home,
+        env: providerOf(config) === 'codex' ? codexEnvironment : undefined,
+        spawn,
+        killTree: createKillTree((program, args) => runCommand(args, program)),
+        ...accounting,
+      }),
+    pauseTools: (entry) => {
+      ensureLocal();
+      try {
+        writeFileSync(
+          local('pause'),
+          `Инструменты этапа ${entry.taskId}/${entry.stage}: подтверждённый сбой (${entry.reportId}).\n`,
+          { flag: 'wx' },
+        );
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+      }
+    },
     reportStore: openReportStore(local('pending-reports.json')),
     getCodexEnvironment: () => codexEnvironment,
     prepareAssignment: createAssignmentPreparer(root, config),
@@ -583,6 +637,29 @@ async function turn() {
     note(backlog.why, TAG.error);
     return backlog.outcome;
   }
+  // Resume only the stored, receipt-bearing operation. No fresh counter arithmetic
+  // or stage mutation may overtake an uncertain continuation write.
+  const charges = supervisor.pendingLaunchCharges();
+  if (charges.length) {
+    if (!mayWrite || !backlog.store?.saveTask) return 'paused';
+    for (const { taskId, stage, charge } of charges) {
+      const saved = await backlog.store.saveTask(...charge.args, [], charge.operation);
+      if (!saved.ok) {
+        note(
+          `Списание ${charge.launchId} не подтверждено: ${saved.why ?? saved.outcome}`,
+          TAG.error,
+        );
+        return 'paused';
+      }
+      supervisor.confirmLaunchCharge(taskId, stage, {
+        launchId: charge.launchId,
+        key: charge.key,
+        confirmed: true,
+      });
+    }
+    // Open the next turn with the recipient's fresh snapshot, never the pre-receipt one.
+    return 'paused';
+  }
 
   // Опись доски строкой: сколько задач прочитано, сколько идёт, сколько ждёт
   // человека и сколько не разобралось. Это первое, о чём спрашивают, глядя
@@ -604,10 +681,24 @@ async function turn() {
     }
   }
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
-  const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
+  const repair = reconcile({
+    registry,
+    worktrees,
+    tasks: backlog.tasks,
+    machine,
+    root,
+    directory: isDirectory,
+    now,
+  });
 
   const state = {
     machine,
+    unavailableWorkspaces: unavailableWorkspaces({
+      tasks: backlog.tasks,
+      registry,
+      worktrees,
+      root,
+    }),
     scheduling: schedulingStore.read(),
     ...(await buildDependencyState({
       backlog,
@@ -657,6 +748,8 @@ async function turn() {
     elapsed,
   });
 
+  let executed = [];
+  let repaired = [];
   if (mayWrite && (result.actions.length > 0 || repair.repairs.length > 0)) {
     const io = {
       ...createIo({
@@ -671,6 +764,7 @@ async function turn() {
         reportStore: supervisor.reportStore,
       }),
       ...(backlog.store ?? {}),
+      dependencyEvidence: state.dependencyEvidence ?? {},
       tokenAccountingNote: (taskId) => tokenAccountingNote(supervisor.codexUsage, taskId),
       tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
       tokenReanalysisAdmission: (task, stage) =>
@@ -685,6 +779,27 @@ async function turn() {
           (item) => item.reportId !== ignoreReportId && reportTaskIds(item).includes(taskId),
         ),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
+      spawnCount: () => supervisor.launchCount,
+      mayLaunch: (...args) => supervisor.mayLaunch(...args),
+      inspectRetryLaunch: (...args) => supervisor.inspectRetryLaunch(...args),
+      inspectToolDeployment: (entry) =>
+        deploymentEvidence(
+          runCommand(
+            [
+              resolve(home, '../scripts/deploy-remote.mjs'),
+              '--host',
+              entry.assignment.deployment.host,
+              '--',
+              deploymentReadCommand,
+            ],
+            'node',
+            root,
+            { timeout: 45000 },
+          ),
+          entry.assignment.deploymentRevision,
+        ),
+      confirmLaunchCharge: (...args) => supervisor.confirmLaunchCharge(...args),
+      launchCharge: (...args) => supervisor.launchCharge(...args),
       recordSchedulingLaunch: (task) => schedulingStore.launched(task, new Date().toISOString()),
       schedulingBlocked: () => schedulingStore.read().error,
       incidentProbeAt: (id) => schedulingStore.read().probes?.[id],
@@ -717,16 +832,20 @@ async function turn() {
     // возвращаемое здесь выбрасывалось, провалившаяся `finish-claim`
     // молчала: в журнале каждый оборот стояло «доводим взятие до конца»,
     // и ни разу — «не довели». Так и вышли двое суток простоя 31.08.2026.
-    const pendingIds = new Set(supervisor.reports.flatMap(reportTaskIds));
-    for (const item of repairWorld(
+    const pendingIds = new Set([
+      ...supervisor.reports.flatMap(reportTaskIds),
+      ...supervisor.running().flatMap((item) => [item.taskId, ...(item.batch ?? [])]),
+    ]);
+    repaired = repairWorld(
       repair.repairs.filter((repair) => !pendingIds.has(repair.taskId)),
       io,
-    )) {
+    );
+    for (const item of repaired) {
       if (item.result === 'done') continue;
       note(`починка ${item.kind} ${item.taskId ?? ''}: ${item.why}`);
     }
 
-    const executed = await execute(result.actions, io);
+    executed = await execute(result.actions, io);
     for (const item of executed) {
       if (item.result === 'done') continue;
       note(`${item.action?.kind ?? 'действие'} ${item.action?.taskId ?? ''}: ${item.why}`);
@@ -734,7 +853,9 @@ async function turn() {
   }
 
   note([...backlog.notes, ...repair.notes, ...result.notes]);
-  return result.outcome;
+  const summary = executionSummary(result.outcome, executed, repaired, mayWrite);
+  note(executionNote(summary));
+  return summary.outcome;
 }
 
 /**
@@ -858,6 +979,9 @@ function greet() {
 const OUTCOME = {
   idle: 'работы нет',
   worked: 'работа выдана',
+  progress: 'выполнены служебные действия',
+  held: 'новых запусков нет: действия удержаны или не выполнены',
+  planned: 'действия только запланированы, запусков нет',
   blocked: 'записи невозможны',
   paused: 'взведён рубильник паузы',
   'api-paused': 'сервер модели не отвечает',
@@ -1047,7 +1171,7 @@ async function loop() {
       enabled: config.selfUpdate !== false,
       dryRun: flags.includes('--dry-run'),
       running: supervisor.busy(),
-      pending: supervisor.reports.length + Number(supervisor.reportStorageBlocked),
+      ...supervisor.reportRestartState,
     });
     if (update.verdict !== 'off' || turns === 1) note(update.notes);
     draining = update.verdict === 'wait';

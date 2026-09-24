@@ -142,6 +142,9 @@
 
       "PowerShell(node supervisor/bin/check-install-snapshot.mjs)",
       "PowerShell(node supervisor/bin/check-install-snapshot.mjs --run)",
+      "PowerShell(node scripts/test-source.mjs:*)",
+      "PowerShell(node scripts/testing/check-source-tests.mjs --fresh)",
+      "PowerShell(node scripts/testing/check-source-tests.mjs --installed)",
       "PowerShell(node -e \"1\")",
       "PowerShell('hello' -match 'l')",
 

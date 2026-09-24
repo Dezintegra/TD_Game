@@ -1,5 +1,5 @@
-import { readFileSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve, relative } from 'node:path';
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, resolve, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { codexPerfPaths } from './codex-perf-files.mjs';
 import { modelForStage } from './stage-model.mjs';
@@ -33,7 +33,45 @@ export function codexInvocation(config, args) {
   };
 }
 
-export function codexExecutionArgs(config, root, cwd, platform = process.platform) {
+function deployPackagePaths(root, cwd) {
+  const base = resolve(root, '.pipeline/deploy-checkouts');
+  const name = relative(base, cwd);
+  const realName = relative(realpathSync(base), realpathSync(cwd));
+  if (
+    !name ||
+    name === '..' ||
+    name.startsWith(`..${sep}`) ||
+    isAbsolute(name) ||
+    name.includes(sep) ||
+    !realName ||
+    realName === '..' ||
+    realName.startsWith(`..${sep}`) ||
+    isAbsolute(realName) ||
+    realName.includes(sep) ||
+    !statSync(join(cwd, '.git')).isFile()
+  ) {
+    throw new Error('неверный путь снимка deploy для разрешений пакетов');
+  }
+  const packages = [];
+  for (const group of ['apps', 'packages']) {
+    const parent = join(cwd, group);
+    if (!lstatSync(parent).isDirectory())
+      throw new Error(`неверная группа пакетов в снимке deploy: ${group}`);
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const path = join(parent, entry.name);
+      try {
+        if (lstatSync(join(path, 'package.json')).isFile()) packages.push(path);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+  }
+  if (!packages.length) throw new Error('в снимке deploy нет каталогов пакетов');
+  return packages;
+}
+
+export function codexExecutionArgs(config, root, cwd, platform = process.platform, stage = null) {
   const args = [
     '-c',
     'approval_policy="never"',
@@ -65,7 +103,10 @@ export function codexExecutionArgs(config, root, cwd, platform = process.platfor
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
-    const filesystem = [...new Set([common, gitdir, ...codexPerfPaths(root, cwd)])]
+    const deployPackages = stage === 'deploy' ? deployPackagePaths(root, cwd) : [];
+    const filesystem = [
+      ...new Set([common, gitdir, ...codexPerfPaths(root, cwd), ...deployPackages]),
+    ]
       .map((path) => JSON.stringify(path.replaceAll('\\', '/')) + '="write"')
       .join(',');
     args.push(
@@ -90,7 +131,12 @@ export function codexStageCommand({ assignment, prompt, config, root, home }) {
     : resolve(home, config.skillsDir);
   const rules = readFileSync(join(skillDir, `${assignment.stage}.md`), 'utf8');
   const cwd = assignment.path ? resolve(root, assignment.path) : root;
-  const args = ['exec', '--ignore-user-config', '--json', ...codexExecutionArgs(config, root, cwd)];
+  const args = [
+    'exec',
+    '--ignore-user-config',
+    '--json',
+    ...codexExecutionArgs(config, root, cwd, process.platform, assignment.stage),
+  ];
   const model = modelForStage(config, 'codex', assignment.stage);
   if (model) args.push('--model', model);
   if (assignment.continuation && assignment.sessionId) args.push('resume', assignment.sessionId);
@@ -112,7 +158,7 @@ export function codexDenial(event) {
   };
 }
 
-export function readCodexAnswer(run, config = {}, context = {}) {
+export function readCodexAnswer(run, _config = {}, context = {}) {
   const { taskId = 'answer', launchId = 'answer' } = context;
   const ledger = migrateTokenLedger(context.ledger ?? {});
   beginTokenLaunch(ledger, taskId, launchId, context.sessionId ?? null);
@@ -213,15 +259,9 @@ export function readCodexAnswer(run, config = {}, context = {}) {
       why: error ?? `Codex не завершил ход (код ${run.code})`,
     };
   }
-  // Только завершение протокола разрешает сохранить текст; учёт решает его допуск отдельно.
+  // Допуск уже разрешил работу при неполном учёте: тот же unknown не отменяет
+  // завершённый ответ. Причины остаются в usageError и долговечном ledger.
   answer.result = message;
-  if (config.codexMaxTaskTokens != null && answer.usageError) {
-    return {
-      ...answer,
-      outcome: 'failed',
-      why: answer.usageError,
-    };
-  }
   return { ...answer, outcome: 'done', why: null };
 }
 

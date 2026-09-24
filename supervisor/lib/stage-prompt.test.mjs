@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clipMiddle, stagePrompt } from './stage-prompt.mjs';
+import { clipMiddle, splitJournalEntries, stagePrompt } from './stage-prompt.mjs';
 import { ROUTING_CONTRACT } from './routing-contract.mjs';
 
 /**
@@ -312,6 +312,200 @@ describe('лог упавшего этапа', () => {
 });
 
 describe('журнал', () => {
+  it.each([
+    '# задача\n\n**design → audit**\n\n**Решения:**\n\n- первое\n**audit → design**\n\nЗамечание',
+    '# задача\n\n## 2026-09-02 · design → audit\n\n**Отказано в действиях:**\n\n- нет\n## 2026-09-03 · audit → design\n\nЗамечание',
+  ])('разделяет записи двух форматов, не теряя текст и не дробя тело', (journal) => {
+    const entries = splitJournalEntries(journal);
+    expect(entries).toHaveLength(3);
+    expect(entries.join('')).toBe(journal);
+    expect(entries[1]).toContain('**');
+    expect(entries[2]).toContain('Замечание');
+  });
+
+  it('оставляет журнал без границ одним куском', () => {
+    const journal = 'история старого образца\n## Пояснение\n**Решения:**\nбез заголовка перехода';
+    expect(splitJournalEntries(journal)).toEqual([journal]);
+  });
+
+  it('нулевой предел не превращает старый неразмеченный журнал в полный', () => {
+    const text = stagePrompt({
+      assignment,
+      task,
+      journal: 'неразмеченная история',
+      journalLimit: 0,
+    });
+    expect(text).toContain('## Журнал задачи\n\n_пусто_');
+    expect(text).not.toContain('неразмеченная история');
+  });
+
+  const verdict = (transition, finding, key) =>
+    `**${transition}**\n\n${finding}\n\n<!-- report:${key}:0 -->`;
+
+  it('показывает начало и последнюю запись доски целиком, считая пропуск', () => {
+    const first = '**new → design**\n\nПЕРВОЕ РЕШЕНИЕ\n';
+    const middle = '**design → audit**\n\nСТАРАЯ СЕРЕДИНА\n'.repeat(20);
+    const last = '**audit → design**\n\nСВЕЖЕЕ ЗАМЕЧАНИЕ\nПОСЛЕДНЯЯ СТРОКА';
+    const prompt = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal: first + middle + last,
+      journalLimit: 160,
+    });
+    const clipped = prompt.split('## Журнал задачи\n\n')[1].split('\n\n## ')[0];
+    expect(clipped).toContain('ПЕРВОЕ РЕШЕНИЕ');
+    expect(clipped).toContain(last);
+    expect(clipped).not.toContain('СТАРАЯ СЕРЕДИНА');
+    expect(clipped).toMatch(/пропущено \d+ знаков и \d+ записей/);
+  });
+
+  it('передаёт последнюю файловую запись даже при превышении четырёх пределов', () => {
+    const last = `## 2026-09-03 · audit → design\n\n${'свидетельство '.repeat(90)}КОНЕЦ`;
+    const prompt = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal: `## 2026-09-02 · design → audit\n\nпрошлый ход\n${last}`,
+      journalLimit: 100,
+    });
+    expect(prompt).toContain(last);
+    expect(prompt).toContain('пропущено');
+  });
+
+  it('передаёт вытесненный вердикт review → revise и последнюю запись целиком', () => {
+    const review = verdict(
+      'review → revise',
+      'P1: собрать CLI и оба helper; P2: передать пакет',
+      'a'.repeat(32),
+    );
+    const journal = `${review}\n${verdict('revise → revise', 'следующий заход начал работу', 'b'.repeat(32))}\n${'продолжение\n'.repeat(1500)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 150,
+    });
+    const clipped = text.split('## Журнал задачи\n\n')[1].split('\n\n## ')[0];
+    expect(clipped.length).toBeGreaterThan(150);
+    expect(clipped).toContain('продолжение\n'.repeat(1500));
+    expect(clipped).not.toContain('P1: собрать CLI');
+    expect(text).toContain(`## Вердикт, с которым вас вернули`);
+    expect(text).toContain(review);
+    expect(text).toContain('сама копия не доказывает актуальность');
+  });
+
+  it('берёт последний полный возврат среди review и pr, а не прежнее ревью', () => {
+    const old = verdict('review → revise', 'старое замечание', 'a'.repeat(32));
+    const latest = verdict('pr → revise', 'текущий CI красный', 'b'.repeat(32));
+    const journal = `${old}\n${latest}\n${'продолжение\n'.repeat(1000)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 100,
+    });
+    const clipped = text.split('## Журнал задачи\n\n')[1].split('\n\n## ')[0];
+    expect(clipped).toContain(latest);
+    expect(clipped).not.toContain(old);
+  });
+
+  it('сохраняет вытесненный audit → design, собранный из частей комментария', () => {
+    const start = '**audit → design**\n\nЗамечание: сетка исчезает';
+    const end = `\nпри нажатии Q\n\n<!-- report:${'c'.repeat(32)}:0 -->`;
+    const journal = `${start}\n${end}\n${'новый заход\n'.repeat(1000)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal,
+      journalLimit: 120,
+    });
+    expect(text).toContain('## Вердикт, с которым вас вернули');
+    expect(text).toContain(`${start}\n${end}`);
+  });
+
+  it('подаёт файловый возврат перед журналом без маркера комментария', () => {
+    const audit = '## 2026-09-02 · audit → design\n\nИсправить старую причину';
+    const journal = `# задача\n\n${audit}\n## 2026-09-03 · design → design\n\nЭтапу выдана сессия`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal,
+      journalLimit: 70,
+    });
+    expect(text).toContain('## Вердикт, с которым вас вернули');
+    expect(text.indexOf('## Вердикт, с которым вас вернули')).toBeLessThan(
+      text.indexOf('## Журнал задачи'),
+    );
+    expect(text).toContain(audit);
+    expect(text).not.toContain('## Неполная запись возврата');
+  });
+
+  it('принимает служебный PR-возврат без маркера отчёта этапа', () => {
+    const conflict = '**pr → revise**\n\nPR #172 конфликтует с main; устранить конфликт';
+    const journal = `${conflict}\n**revise → revise**\n\nЭтапу выдана сессия`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 60,
+    });
+    expect(text).toContain('## Вердикт, с которым вас вернули');
+    expect(text).toContain(conflict);
+    expect(text).not.toContain('## Неполная запись возврата');
+  });
+
+  it('не придумывает раздел возврата для первого захода', () => {
+    const journal = '**new → design**\n\nПервый заход';
+    const text = stagePrompt({ assignment: { ...assignment, stage: 'design' }, task, journal });
+    expect(text).not.toContain('## Вердикт, с которым вас вернули');
+    expect(text).not.toContain('## Неполная запись возврата');
+  });
+
+  it('отдельно называет вердикт, даже когда он виден в обычном журнале', () => {
+    const journal = verdict('review → revise', 'свежее замечание', 'd'.repeat(32));
+    const text = stagePrompt({ assignment: { ...assignment, stage: 'revise' }, task, journal });
+    expect(text).toContain('## Вердикт, с которым вас вернули');
+    expect(text.match(/свежее замечание/g)).toHaveLength(2);
+  });
+
+  it('не выдаёт оборванную запись за полный вердикт', () => {
+    const journal = `**review → revise**\n\nОБОРВАННОЕ ЗАМЕЧАНИЕ\n${'позже\n'.repeat(1000)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 100,
+    });
+    expect(text).toContain('## Неполная запись возврата');
+    expect(text).not.toContain('## Вердикт, с которым вас вернули');
+    expect(text).not.toContain('ОБОРВАННОЕ ЗАМЕЧАНИЕ');
+  });
+
+  it('не принимает маркер следующего захода за завершение оборванного ревью', () => {
+    const old = verdict('review → revise', 'старое ревью', 'a'.repeat(32));
+    const journal = `${old}\n**review → revise**\n\nНОВОЕ БЕЗ ИТОГА\n**revise → revise**\n\n<!-- report:${'b'.repeat(32)}:0 -->\n${'позже\n'.repeat(1000)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 100,
+    });
+    expect(text).toContain('## Неполная запись возврата');
+    expect(text).not.toContain('## Вердикт, с которым вас вернули');
+    expect(text).not.toContain('старое ревью');
+  });
+
+  it('при длинном журнале без возврата не выдумывает вердикт', () => {
+    const journal = 'продолжение\n'.repeat(1000);
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal,
+      journalLimit: 100,
+    });
+    expect(text).toContain('## Запись возврата не найдена');
+    expect(text).not.toContain('## Вердикт, с которым вас вернули');
+  });
+
   it.each([120, 8])('оставляет полное пояснение revise вне лимита %i', (journalLimit) => {
     const journal = `${'история\n'.repeat(100)}P1: блоккер\nвладелец: принято`;
     const text = stagePrompt({
@@ -357,7 +551,7 @@ describe('журнал', () => {
   it('обрезается, и обрезка названа вслух: молчаливая обманывает', () => {
     const long = 'строка журнала\n'.repeat(2000);
     const text = stagePrompt({ assignment, task, journal: long, journalLimit: 100 });
-    expect(text).toContain('пропущена');
+    expect(text).toContain('пропущено');
     expect(text.length).toBeLessThan(long.length);
   });
 
@@ -368,7 +562,7 @@ describe('журнал', () => {
   it('сохраняет свежие P1 и ответ владельца после большого старого журнала', () => {
     const journal = `${'старый отчёт\n'.repeat(2000)}P1: исправить блоккер\nвладелец: принято`;
     const text = stagePrompt({ assignment, task, journal, journalLimit: 120 });
-    expect(text).toContain('ранняя часть журнала пропущена');
+    expect(text).toContain('пропущено');
     expect(text).toContain('P1: исправить блоккер');
     expect(text).toContain('владелец: принято');
   });
@@ -376,7 +570,7 @@ describe('журнал', () => {
   it('сохраняет bounded tail единственной последней строки, даже когда она длиннее лимита', () => {
     const journal = `${'старое\n'.repeat(100)}${'x'.repeat(400)} END-P1`;
     const text = stagePrompt({ assignment, task, journal, journalLimit: 90 });
-    expect(text).toContain('пропущена');
+    expect(text).toContain('пропущено');
     expect(text).toContain('END-P1');
   });
 });

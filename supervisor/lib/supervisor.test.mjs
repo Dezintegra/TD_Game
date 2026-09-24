@@ -18,6 +18,7 @@ import { createSupervisor } from './supervisor.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { TAG } from './console.mjs';
 import { scan } from './scan.mjs';
+import { execute } from './execute.mjs';
 import { parseReport } from './parse-report.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import { openStageLogs } from './stage-logs.mjs';
@@ -97,6 +98,11 @@ function harness(over = {}) {
     },
     stages: over.stages ?? {},
     reportStore: over.reportStore,
+    diagnoseTools: over.diagnoseTools,
+    pauseTools: over.pauseTools,
+    isToolPaused: over.isToolPaused,
+    mayLaunch: over.mayLaunch,
+    captureToolContext: over.captureToolContext,
     codexUsage: over.codexUsage ?? {},
     readCodexEvidence: over.readCodexEvidence,
     saveCodexUsage: over.saveCodexUsage,
@@ -216,26 +222,21 @@ describe('сохранённый отчёт при ошибке учёта', () 
         expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + text);
         expect(h.wrote[0].text).not.toContain('сессия ответа не оставила');
         const line = finishedLine(h.said);
-        if (kind === 'cached') {
-          expect(line.text).toContain('ответ done');
-          expect(line.text).not.toContain('неизвест');
-          expect(h.supervisor.reports).toHaveLength(valid ? 1 : 0);
-          expect(line.tag).toBe(valid ? TAG.stage : TAG.warn);
-        } else {
+        expect(line.text).toContain('ответ done');
+        expect(h.supervisor.reports).toHaveLength(valid ? 1 : 0);
+        expect(line.tag).toBe(valid ? TAG.stage : TAG.warn);
+        if (valid) expect(line.text).not.toContain('не применён');
+        else expect(line.text).toContain(parseReport(text).why);
+        if (kind === 'cached') expect(line.text).not.toContain('неизвест');
+        else {
           const reason =
             kind === 'history'
               ? 'legacy-unknown'
               : kind === 'decreased-output'
                 ? 'decreased-usage'
                 : kind;
-          for (const output of [h.wrote[0].text, line.text, h.logged.join('\n')]) {
+          for (const output of [h.wrote[0].text, line.text, h.logged.join('\n')])
             expect(output).toContain(reason);
-            expect(output).toContain('не применён');
-            if (!valid) expect(output).toContain(parseReport(text).why);
-          }
-          expect(line.text).toContain('ответ failed');
-          expect(line.tag).toBe(TAG.warn);
-          expect(h.supervisor.reports).toEqual([]);
           for (let cycle = 0; cycle < 2; cycle++) {
             const next = scan({
               config: { ...config, provider: 'codex', codexMaxTaskTokens: 25000000 },
@@ -246,43 +247,45 @@ describe('сохранённый отчёт при ошибке учёта', () 
               reports: h.supervisor.reports,
               codexUsage: h.supervisor.codexUsage,
             });
-            // Отчёт по-прежнему не применён — это проверено выше и не менялось.
-            // А вот запуск неполный учёт больше не удерживает: задача идёт
-            // дальше, называя неучтённый заход в записи журнала задачи.
-            // Прежде здесь стоял 'hold-token-budget', и снять его владельцу
-            // продукта было нечем: полноту учёта лимитом не поднимают.
-            expect(next.actions.map((action) => action.kind)).toEqual(['continue-stage']);
-            expect(next.actions[0].unaccounted).toContain(reason);
+            // Валидный отчёт идёт в перенос; новая попытка нужна только
+            // при ошибке самого отчёта, а не из-за неполного учёта.
+            expect(next.actions.map((action) => action.kind)).toEqual([
+              valid ? 'transfer-report' : 'continue-stage',
+            ]);
+            if (!valid) expect(next.actions[0].unaccounted).toContain(reason);
           }
         }
       },
     );
   }
 
-  it('отказ записи бюджета сохраняет текст до возврата и запрещает применение', async () => {
-    const h = harness({
-      home: fileURLToPath(new URL('..', import.meta.url)),
-      config: { provider: 'codex', codexMaxTaskTokens: 25000000 },
-      saveCodexUsage: (next) => {
-        if (
-          Object.values(next.tasks['0001-one']?.launches ?? {}).some((launch) => launch.completed)
-        )
-          throw new Error('disk unavailable');
-      },
-    });
-    h.supervisor.spawnStage(assignment());
-    for (const event of [
-      { type: 'thread.started', thread_id: 'thread' },
-      { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(report) } },
-    ])
-      h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
-    await h.answer({ type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 100 } });
-    expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + JSON.stringify(report));
-    expect(h.wrote[0].text).toContain('disk unavailable');
-    expect(finishedLine(h.said).tag).toBe(TAG.warn);
-    expect(h.supervisor.reports).toEqual([]);
-    expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
-  });
+  it.each([25000000, null])(
+    'отказ записи бюджета при лимите %s сохраняет текст и запрещает применение',
+    async (limit) => {
+      const h = harness({
+        home: fileURLToPath(new URL('..', import.meta.url)),
+        config: { provider: 'codex', codexMaxTaskTokens: limit },
+        saveCodexUsage: (next) => {
+          if (
+            Object.values(next.tasks['0001-one']?.launches ?? {}).some((launch) => launch.completed)
+          )
+            throw new Error('disk unavailable');
+        },
+      });
+      h.supervisor.spawnStage(assignment());
+      for (const event of [
+        { type: 'thread.started', thread_id: 'thread' },
+        { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(report) } },
+      ])
+        h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+      await h.answer({ type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 100 } });
+      expect(h.wrote[0].text).toContain('--- итоговый текст ---\n' + JSON.stringify(report));
+      expect(h.wrote[0].text).toContain('disk unavailable');
+      expect(finishedLine(h.said).tag).toBe(TAG.warn);
+      expect(h.supervisor.reports).toEqual([]);
+      expect(h.supervisor.codexUsage.writeErrors).toEqual(['0001-one']);
+    },
+  );
 });
 
 describe('диагностика границ Codex в finish', () => {
@@ -355,20 +358,22 @@ describe('диагностика границ Codex в finish', () => {
     const discarded = ['absent', 'exit', 'new-turn', 'turn-failed', 'error'].includes(kind);
     if (discarded) expect(log).not.toContain('--- итоговый текст ---');
     else expect(log).toContain('--- итоговый текст ---\n' + text);
-    if (kind === 'no-limit') {
+    if (['no-limit', 'numeric-history'].includes(kind)) {
       expect(h.supervisor.reports).toHaveLength(1);
       expect(line.tag).toBe(TAG.stage);
       expect(line.text).not.toContain('не применён');
-      expect(line.text).toContain('invalid-usage');
+      expect(line.text).toContain(kind === 'numeric-history' ? 'legacy-unknown' : 'invalid-usage');
     } else {
       expect(h.supervisor.reports).toEqual([]);
       expect(line.tag).toBe(TAG.warn);
-      expect(line.text).toContain('ответ failed');
+      expect(line.text).toContain(
+        ['exit', 'new-turn', 'turn-failed', 'error'].includes(kind) ? 'ответ failed' : 'ответ done',
+      );
     }
     if (kind === 'numeric-history') {
       expect(line.text).toContain('расход текущего запуска известен');
       expect(line.text).toContain('legacy-unknown');
-      expect(line.text).toContain('не применён');
+      expect(line.text).not.toContain('не применён');
     }
     if (kind === 'foreign') {
       expect(line.text).toContain('«audit»');
@@ -709,6 +714,95 @@ describe('история логов в назначении разбора', () 
 });
 
 describe('устойчивая очередь завершений', () => {
+  it('finish сохраняет pending списание, поздняя квитанция подтверждает тот же launch', async () => {
+    const f = deliveryFixture({ stage: 'design' });
+    try {
+      const store = f.open().store;
+      store.acknowledge(f.entry.reportId);
+      const h = harness({
+        reportStore: store,
+        captureToolContext: () => ({ provider: 'claude' }),
+        diagnoseTools: async () => ({ verdict: 'confirmed' }),
+        pauseTools: () => {},
+      });
+      const charge = {
+        launchId: 'pending-launch',
+        key: 'continuation:pending-launch',
+        state: 'pending',
+        args: [],
+        operation: { key: 'continuation:pending-launch' },
+      };
+      h.supervisor.spawnStage(assignment({ launchId: charge.launchId, charge }));
+      await h.answer(envelope({ result: JSON.stringify({ ...report, outcome: 'failed' }) }));
+      const entry = store.entries()[0];
+      expect(entry.charge).toMatchObject({ ...charge, born: true });
+      expect(entry.disposition).toBe('infrastructure-held');
+      const restarted = harness({ reportStore: f.open().store, stages: h.saved.at(-1) });
+      expect(restarted.supervisor.pendingLaunchCharges()[0].charge.launchId).toBe(charge.launchId);
+      restarted.supervisor.confirmLaunchCharge(report.taskId, report.stage, {
+        launchId: 'other',
+        key: charge.key,
+        confirmed: true,
+      });
+      expect(f.open().store.entries()[0].charge.state).toBe('pending');
+      restarted.supervisor.confirmLaunchCharge(report.taskId, report.stage, {
+        launchId: charge.launchId,
+        key: charge.key,
+        confirmed: true,
+      });
+      expect(f.open().store.entries()[0].charge.state).toBe('confirmed');
+      expect(restarted.supervisor.pendingLaunchCharges()).toEqual([]);
+    } finally {
+      f.cleanup();
+    }
+  });
+  it.each(['failed', 'invalid', 'empty'])('сохраняет diagnosing до release: %s', async (kind) => {
+    const f = deliveryFixture({ stage: 'design' });
+    try {
+      const store = f.open().store;
+      store.acknowledge(f.entry.reportId);
+      let resolveProbe;
+      const pauses = [];
+      const h = harness({
+        reportStore: store,
+        captureToolContext: () => ({ provider: 'claude' }),
+        diagnoseTools: () =>
+          new Promise((resolve) => {
+            resolveProbe = resolve;
+          }),
+        pauseTools: (entry) => pauses.push(entry.reportId),
+        saveStages: (stages) => {
+          if (stages['0001-one:design'] && !stages['0001-one:design'].live)
+            expect(store.entries()[0].disposition).toBe('diagnosing');
+        },
+      });
+      h.supervisor.spawnStage(assignment({ batch: [{ id: '0002-member' }] }));
+      const payload = {
+        ...report,
+        outcome: 'failed',
+        dependencyUpdates: [{ taskId: '0003-foreign' }],
+      };
+      await h.answer(
+        envelope({
+          result: kind === 'failed' ? JSON.stringify(payload) : kind === 'invalid' ? '{broken' : '',
+        }),
+      );
+      expect(h.supervisor.running()).toEqual([]);
+      expect(h.supervisor.reports[0]).toMatchObject({
+        disposition: 'diagnosing',
+        batch: ['0002-member'],
+      });
+      expect(h.supervisor.reports[0].dependencyUpdates).toBeUndefined();
+      expect(store.entries()[0].originalResult.run).toBeTruthy();
+      resolveProbe({ verdict: 'confirmed', checks: [{ status: 'failed' }] });
+      await sleep(0);
+      expect(f.open().store.entries()[0].disposition).toBe('infrastructure-held');
+      expect(pauses).toHaveLength(1);
+      expect(h.supervisor.reports[0].batch).toEqual(['0002-member']);
+    } finally {
+      f.cleanup();
+    }
+  });
   it('сопоставляет старый дескриптор по полной тройке времени, станции и этапа', () => {
     const f = deliveryFixture({ stage: 'design' });
     try {
@@ -771,6 +865,7 @@ describe('устойчивая очередь завершений', () => {
       h.supervisor.spawnStage(assignment());
       await h.answer(envelope());
       expect(h.supervisor.reportStorageBlocked).toBe(true);
+      expect(h.supervisor.reportRestartState).toMatchObject({ pending: 1, durablePending: 0 });
       expect(h.saved.at(-1)['0001-one:design'].live).toBeTruthy();
       expect(h.supervisor.spawnStage(assignment({ taskId: '0002-other' }))).toMatchObject({
         ok: false,
@@ -780,6 +875,11 @@ describe('устойчивая очередь завершений', () => {
       broken = false;
       h.supervisor.sweep();
       expect(h.supervisor.reportStorageBlocked).toBe(false);
+      expect(h.supervisor.reportRestartState).toEqual({
+        pending: 1,
+        durablePending: 1,
+        pendingProblem: null,
+      });
       expect(h.saved.at(-1)['0001-one:design'].live).toBeUndefined();
       expect(f.open().store.entries()).toHaveLength(1);
     } finally {
@@ -831,6 +931,17 @@ describe('устойчивая очередь завершений', () => {
 });
 
 describe('порождение', () => {
+  it('availability closes immediately before spawn without charging or birth', () => {
+    let calls = 0;
+    const h = harness({ mayLaunch: () => ({ allowed: ++calls === 1 }) });
+    expect(h.supervisor.spawnStage(assignment())).toMatchObject({
+      ok: false,
+      reason: 'availability-held',
+    });
+    expect(h.children).toEqual([]);
+    expect(h.supervisor.busy()).toBe(0);
+    expect(h.supervisor.launchCharge('0001-one', 'design')).toBeNull();
+  });
   it('последний допуск запрещает рабочий запуск до раннего анализа и его продолжение после окончательного предела', () => {
     for (const [stage, spent, tokenReanalysis] of [
       ['design', 150, undefined],
@@ -2050,7 +2161,7 @@ it('не подменяет отсутствующий долговечный ba
   expect(h.supervisor.codexUsage.tasks['0001-one'].sessions.thread.reasons).toContain(
     'missing-baseline',
   );
-  expect(h.supervisor.reports).toEqual([]);
+  expect(h.supervisor.reports).toHaveLength(1);
   expect(h.saved.at(-1)['0001-one:design'].usage).toBeUndefined();
 });
 
@@ -2625,6 +2736,150 @@ describe('автоматическое восстановление удержа
       });
       expect(reads).toBe(0);
       expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(0);
+    }
+  });
+});
+
+describe('неполный учёт не отменяет завершённый этап', () => {
+  it('принимает завершённую работу на пределе, сохраняя запрет следующего запуска', async () => {
+    const h = harness({
+      home: fileURLToPath(new URL('..', import.meta.url)),
+      config: { provider: 'codex', codexMaxTaskTokens: 110 },
+      codexUsage: { '0001-one': { old: 100 } },
+    });
+    expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+    for (const event of [
+      { type: 'thread.started', thread_id: 'current' },
+      { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(report) } },
+    ])
+      h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+    await h.answer({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+    expect(h.supervisor.reports).toHaveLength(1);
+    expect(taskTokens(h.supervisor.codexUsage, '0001-one')).toBe(112);
+    // Получатель забрал результат; проверяем бюджет следующего этапа.
+    h.supervisor.reports.shift();
+    expect(h.supervisor.spawnStage(assignment({ stage: 'audit' }))).toMatchObject({
+      ok: false,
+      why: 'Израсходовано 112 токенов при бюджете 110.',
+    });
+    expect(h.children).toHaveLength(1);
+  });
+
+  for (const stage of ['revise', 'postmortem']) {
+    it.each(['global', 'user', 'disabled'])(
+      stage + ' с бюджетом %s сохраняется после restart',
+      async (budget) => {
+        const f = deliveryFixture({ stage });
+        try {
+          const store = f.open().store;
+          store.acknowledge(f.entry.reportId);
+          let ledger;
+          const options = {
+            home: fileURLToPath(new URL('..', import.meta.url)),
+            config: {
+              provider: 'codex',
+              codexMaxTaskTokens: budget === 'global' ? 25000000 : null,
+            },
+            machine: 'test',
+            codexUsage: {
+              version: 2,
+              tasks: {
+                [f.task.id]: {
+                  sessions: {
+                    old: {
+                      knownTokens: 100,
+                      snapshot: null,
+                      reasons: ['missing-usage', 'stdout-unavailable'],
+                    },
+                  },
+                  launches: {},
+                },
+              },
+            },
+            saveCodexUsage: (next) => {
+              ledger = JSON.parse(JSON.stringify(next));
+            },
+          };
+          const task = {
+            ...f.task,
+            ...(budget === 'user' ? { userTokenLimit: { value: 50000000 } } : {}),
+          };
+          const h = harness({ ...options, reportStore: store });
+          expect(h.supervisor.spawnStage(assignment({ taskId: task.id, stage, task })).ok).toBe(
+            true,
+          );
+          const emit = (event) => h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+          emit({ type: 'thread.started', thread_id: 'current' });
+          emit({
+            type: 'item.completed',
+            item: { type: 'agent_message', text: JSON.stringify(f.report) },
+          });
+          await h.answer({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+          expect(h.supervisor.reports).toHaveLength(1);
+          expect(taskTokens(ledger, task.id)).toBe(112);
+          expect(taskTokenStatus(ledger, task.id)).toMatchObject({ complete: false });
+          expect(h.logged.join('\n')).toContain('stdout-unavailable');
+          expect(h.wrote[0].text).not.toContain('не применён');
+          expect(h.saved.at(-1)[task.id + ':' + stage].live).toBeUndefined();
+          const restarted = harness({
+            ...options,
+            codexUsage: ledger,
+            stages: h.saved.at(-1),
+            reportStore: f.open().store,
+          });
+          expect(restarted.supervisor.reports).toEqual(h.supervisor.reports);
+          expect(restarted.supervisor.orphanOutcomes).toEqual([]);
+          const decision = scan({
+            config: { ...config, ...options.config },
+            tasks: [task],
+            reports: restarted.supervisor.reports,
+            codexUsage: ledger,
+            registry: {
+              entries: [{ taskId: task.id, branch: 'worktree-0001-task', path: 'tree' }],
+            },
+          });
+          expect(decision.actions.map((action) => action.kind)).toEqual(['transfer-report']);
+          expect(taskTokens(ledger, task.id)).toBe(112);
+        } finally {
+          f.cleanup();
+        }
+      },
+    );
+  }
+
+  it('доставляет принятый отчёт после restart ровно один раз', async () => {
+    const f = deliveryFixture({ stage: 'design' });
+    try {
+      const queue = f.open().store;
+      queue.acknowledge(f.entry.reportId);
+      const h = harness({
+        home: fileURLToPath(new URL('..', import.meta.url)),
+        config: { provider: 'codex' },
+        now: () => f.now,
+        machine: 'test',
+        reportStore: queue,
+        codexUsage: { [f.task.id]: { old: 100 } },
+      });
+      h.supervisor.spawnStage(assignment({ taskId: f.task.id, task: f.task }));
+      for (const event of [
+        { type: 'thread.started', thread_id: 'current' },
+        { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(f.report) } },
+      ])
+        h.children[0].stdout.emit('data', JSON.stringify(event) + '\n');
+      await h.answer({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } });
+      const reopened = f.open();
+      const entry = reopened.store.entries()[0];
+      expect(entry).toBeDefined();
+      const action = { ...f.action, reportId: entry.reportId };
+      const delivery = (await execute([action], reopened.io))[0];
+      expect(delivery, JSON.stringify(delivery)).toMatchObject({ result: 'done', status: 'audit' });
+      const delivered = f.open().recipient.state();
+      expect((await execute([action], f.open().io))[0].result).toBe('skipped');
+      expect(f.open().recipient.state()).toEqual(delivered);
+      expect(f.open().store.entries()).toEqual([]);
+      expect(taskTokens(h.supervisor.codexUsage, f.task.id)).toBe(112);
+    } finally {
+      f.cleanup();
     }
   });
 });

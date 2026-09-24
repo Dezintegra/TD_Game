@@ -43,6 +43,24 @@ pnpm dev
 Настройки `.claude/launch.json` принадлежат Claude; запуск выше работает
 из терминала обоих приложений.
 
+## Узкие проверки исходников
+
+В implement/revise сначала обновите базу и выполните
+`pnpm install --frozen-lockfile --prefer-offline`. В revise установка нужна
+также при отсутствии node_modules, даже если lockfile не менялся.
+Из корня назначенного дерева:
+
+```powershell
+node scripts/test-source.mjs --environment node packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+node scripts/test-source.mjs --environment jsdom packages/sim/src/crowd.test.ts packages/sim/src/step.test.ts
+```
+
+Маршрут читает исходники shared/sim/ai без dist и подтверждает фактически
+исполненные файлы и ненулевые счётчики. Команды отдельных golden, свежей
+приёмки и переходник для ещё не доставленных разрешений приведены в
+[narrow-source-tests.md](narrow-source-tests.md). Полный verify и полный
+матчевый набор в дополнительном дереве не запускаются.
+
 ## Автономный супервизор
 
 Запускайте из основного дерева после вливания изменения:
@@ -56,6 +74,10 @@ pnpm supervisor --provider=codex
 передаётся в форме `--provider=codex`. Не вставляйте отдельный `--`: пускатель
 намеренно отвергает неизвестные доводы, чтобы не запустить конвейер случайно.
 Прямая форма: `node supervisor/bin/launch.mjs --provider=codex`.
+Если на станции используется локальная конфигурация с закреплённым
+`codexCommand`, передавайте тот же `--config=<путь>` и при ручном запуске,
+и в стороже планировщика. Иначе пускатель возьмёт общую настройку и может
+запустить другую версию CLI.
 
 Поле `provider` можно сохранить в `supervisor/pipeline.config.json`;
 ключ запуска имеет приоритет. Без поля и ключа остаётся Claude.

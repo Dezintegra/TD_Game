@@ -1,4 +1,18 @@
 import { ROUTING_CONTRACT } from './routing-contract.mjs';
+import { TRACE } from './denials.mjs';
+
+/** Разделить историю по переходам, сохранив каждый знак исходного текста. */
+export function splitJournalEntries(text) {
+  const source = String(text ?? '');
+  const heading =
+    /^(?:## [^\r\n]+ · [a-z][a-z-]* → [a-z][a-z-]*|\*\*[a-z][a-z-]* → [a-z][a-z-]*\*\*)\r?$/gm;
+  const starts = [...source.matchAll(heading)].map((match) => match.index);
+  if (starts.length === 0) return [source];
+  const boundaries = starts[0] === 0 ? starts : [0, ...starts];
+  return boundaries.map((start, index) =>
+    source.slice(start, boundaries[index + 1] ?? source.length),
+  );
+}
 /**
  * Промпт назначения: всё, что этапу нужно знать, одним куском.
  *
@@ -15,26 +29,78 @@ import { ROUTING_CONTRACT } from './routing-contract.mjs';
  * промпт. Здесь только то, что меняется от задачи к задаче.
  */
 
-// Для журнала важнее последний вердикт, чем начало давней переписки. Берём
-// хвост по целым строкам: так свежая запись не начинается посередине слова.
+// Последняя запись важнее старой середины: отдельная строка ещё не делает
+// замечание целым, поэтому режем историю только между переходами.
 function clipJournal(text, limit) {
-  if (!text || text.length <= limit) return text ?? '';
-  const marker = '[…ранняя часть журнала пропущена…]';
-  const room = limit - marker.length - 2;
-  if (room <= 0) return marker.slice(-Math.max(0, limit));
-  const lines = text.split('\n');
-  const kept = [];
-  let size = 0;
-  for (const line of lines.reverse()) {
-    const next = line.length + (kept.length ? 1 : 0);
-    if (size + next > room) {
-      if (kept.length === 0) kept.unshift(line.slice(-room));
-      break;
+  const source = String(text ?? '');
+  limit = Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : 0;
+  if (source.length <= limit) return source;
+  const entries = splitJournalEntries(source);
+  if (entries.length === 1) {
+    if (limit === 0) return '';
+    // Старый журнал без заголовков не позволяет назвать границу записи.
+    // Сохраняем оба края и явно называем дырку в середине.
+    let head = Math.max(1, Math.floor(limit / 8));
+    let tail = Math.max(1, limit - head - 40);
+    const excerpt = () =>
+      clipMiddle(source, head, tail).replace('; целиком — в файле лога', ' журнала');
+    let clipped = excerpt();
+    while (clipped.length > limit && head + tail > 2) {
+      if (head > 1) head--;
+      else tail--;
+      clipped = excerpt();
     }
-    kept.unshift(line);
-    size += next;
+    return clipped.length <= limit ? clipped : clipped.slice(-Math.max(0, limit));
   }
-  return `${marker}\n\n${kept.join('\n')}`;
+
+  const marker = (chars, count) => `\n\n[…пропущено ${chars} знаков и ${count} записей…]\n\n`;
+  let tailStart = entries.length - 1;
+  let tail = entries[tailStart];
+  while (tailStart > 1) {
+    const candidate = entries[tailStart - 1] + tail;
+    const gap = source.length - candidate.length;
+    if (candidate.length + marker(gap, tailStart - 1).length + entries[0].length > limit) break;
+    tailStart--;
+    tail = candidate;
+  }
+
+  let head = entries[0].slice(
+    0,
+    Math.max(0, limit - tail.length - marker(source.length - tail.length, tailStart).length),
+  );
+  let skipped = source.length - head.length - tail.length;
+  let omitted = tailStart - (head.length > 0 ? 1 : 0);
+  let result = head + marker(skipped, omitted) + tail;
+  while (result.length > limit && head.length > 0) {
+    head = head.slice(0, -1);
+    skipped = source.length - head.length - tail.length;
+    omitted = tailStart - (head.length > 0 ? 1 : 0);
+    result = head + marker(skipped, omitted) + tail;
+  }
+  // Последняя запись вправе перерасти предел; её не режем даже тогда.
+  return result;
+}
+
+/** Возврат проверяющего ищется среди целых записей обоих форматов журнала. */
+function latestReturnVerdict(journal, stage) {
+  for (const entry of splitJournalEntries(journal).reverse()) {
+    const heading = entry.split(/\r?\n/, 1)[0];
+    const board = /^\*\*([a-z][a-z-]*) → ([a-z][a-z-]*)\*\*$/.exec(heading);
+    const file = /^## [^\r\n]+ · ([a-z][a-z-]*) → ([a-z][a-z-]*)$/.exec(heading);
+    const transition = board ?? file;
+    if (!transition) continue;
+    const [, from, to] = transition;
+    if (to !== stage || (TRACE[from] !== 'branch' && from !== 'pr')) continue;
+    const footer = /^<!-- report:[0-9a-f]+:\d+ -->[ \t]*$/m.exec(entry);
+    // PR-возврат пишет сам супервизор, без отчёта этапа и его маркера.
+    const complete = Boolean(file || from === 'pr' || footer);
+    return {
+      heading,
+      body: entry.slice(0, footer ? footer.index + footer[0].length : entry.length).trim(),
+      complete,
+    };
+  }
+  return null;
 }
 
 /**
@@ -84,6 +150,30 @@ export function stagePrompt({
   tokenBudget = null,
 }) {
   const lines = [];
+  if (assignment.toolRecovery?.remote?.published)
+    lines.push(
+      'Публикация сохранённой deploymentRevision уже подтверждена контрольным чтением контейнеров и health. Не запускай deploy повторно; заверши только оставшиеся проверки и отчёт исходного пакета.',
+      '',
+    );
+  if (assignment.toolRecovery)
+    lines.push(
+      '## Сохранённая работа после восстановления инструментов',
+      '',
+      'Это замещающий запуск того же этапа. Сначала сверь сохранённый отчёт, рабочее дерево, коммиты и внешние эффекты. Продолжай только недоделанное; не повторяй подтверждённые действия.',
+      'Состояние Git unknown требует чтения фактической ветки и хвоста; оно не означает чистое дерево.',
+      '```json',
+      JSON.stringify(
+        {
+          ...assignment.toolRecovery,
+          diagnosis: assignment.toolRecovery.diagnosis?.checks,
+          recovery: assignment.toolRecovery.recovery?.checks,
+        },
+        null,
+        2,
+      ),
+      '```',
+      '',
+    );
   if (
     task?.pipelineIncident &&
     !task.pipelineIncident.verifiedAt &&
@@ -194,7 +284,33 @@ export function stagePrompt({
   // Журнал читается обязательно: там лежит вердикт аудита, а аудит мог
   // пропустить предложение с оговорками, и оговорки эти нигде больше
   // не записаны.
-  lines.push('', '## Журнал задачи', '', clipJournal(journal, journalLimit) || '_пусто_');
+  const clippedJournal = clipJournal(journal, journalLimit);
+  const returnVerdict = latestReturnVerdict(journal, assignment.stage);
+  if (returnVerdict && !returnVerdict.complete) {
+    lines.push(
+      '',
+      '## Неполная запись возврата',
+      '',
+      `В журнале найден заголовок ${returnVerdict.heading}, но нет конечного маркера отчёта. Не считай эту запись полным вердиктом; применяй правила проверки источника своего этапа.`,
+    );
+  } else if (returnVerdict) {
+    lines.push(
+      '',
+      '## Вердикт, с которым вас вернули',
+      '',
+      'Это последняя доступная полная запись возврата. Сверь её применимость к текущему возврату; сама копия не доказывает актуальность.',
+      '',
+      returnVerdict.body,
+    );
+  } else if (journal.length > journalLimit && ['design', 'revise'].includes(assignment.stage)) {
+    lines.push(
+      '',
+      '## Запись возврата не найдена',
+      '',
+      `В доступном журнале нет заголовка возврата в ${assignment.stage}. Если это повторный этап, не угадывай причину по старому логу; применяй правила проверки источника до исправлений.`,
+    );
+  }
+  lines.push('', '## Журнал задачи', '', clippedJournal || '_пусто_');
   if (['review', 'interpret', 'triage'].includes(assignment.stage)) {
     lines.push(
       '',

@@ -15,6 +15,90 @@ afterEach(() => {
 const deliver = async (f, opened) => (await execute([f.action], opened.io))[0];
 
 describe('durable report execution', () => {
+  it('persists a validation rejection before any recipient write and only retries explicitly', async () => {
+    const f = fixture({ reportOverrides: { dependencyUpdates: 'invalid' } });
+    const before = f.open().recipient.state();
+    const first = await deliver(f, f.open());
+    expect(first).toMatchObject({ result: 'failed', why: expect.stringContaining('rejected') });
+    const reopened = f.open();
+    expect(reopened.store.get(f.entry.reportId)).toMatchObject({
+      report: f.report,
+      plan: null,
+      progress: [],
+      rejection: { kind: 'invalid-report', at: f.now },
+    });
+    expect((await deliver(f, reopened)).result).toBe('skipped');
+    expect(reopened.recipient.state()).toEqual(before);
+    reopened.store.retry(f.entry.reportId);
+    expect((await deliver(f, reopened)).result).toBe('failed');
+    expect(f.open().store.get(f.entry.reportId).report).toEqual(f.report);
+    expect(f.open().recipient.state()).toEqual(before);
+  });
+  it('does not hide failure to persist a rejection', async () => {
+    const f = fixture({ reportOverrides: { dependencyUpdates: 'invalid' } });
+    const opened = f.open();
+    opened.store.reject = () => {
+      throw new Error('disk full');
+    };
+    expect(await deliver(f, opened)).toMatchObject({
+      result: 'failed',
+      why: expect.stringContaining('отказ не сохранён: disk full'),
+    });
+    expect(f.open().store.get(f.entry.reportId)).toEqual(f.entry);
+  });
+  it.each(['conflict', 'planning', 'delivery'])('keeps %s failures retryable', async (point) => {
+    const f = fixture();
+    const opened = f.open();
+    if (point === 'conflict') opened.io.readTask = () => ({ ...f.task, status: 'pr' });
+    if (point === 'planning')
+      opened.io.allTaskIds = () => {
+        throw new Error('offline');
+      };
+    if (point === 'delivery') opened.recipient.fail('POST', /actions\/comments/, 'before');
+    expect((await deliver(f, opened)).result).toBe('failed');
+    expect(f.open().store.get(f.entry.reportId).rejection).toBeUndefined();
+    expect((await deliver(f, f.open())).result).toBe('done');
+    expect(f.open().recipient.store.readTask(f.task.id).spentUsd).toBe(7);
+  });
+  it.each([
+    ['audit', ['audit', 'postmortem']],
+    ['implement', ['implement', 'revise']],
+  ])(
+    'доставляет сохранённый разбор %s со списком фактов ровно один раз',
+    async (stage, affectedStages) => {
+      const f = fixture({
+        stage: 'postmortem',
+        taskOverrides: { returnTo: stage },
+        memberOverrides: { status: 'new', area: 'pipeline' },
+        reportOverrides: {
+          causedBy: 'pipeline',
+          fixedBy: ['0002-member'],
+          pipelineIncident: {
+            evidence: ['Сломан исходный этап.', 'Повтор подтвердил общую причину.'],
+            affectedStages,
+            check: { stage, expectation: 'Исходный инструмент выполняется.' },
+          },
+        },
+      });
+      const reopened = f.open();
+      expect((await deliver(f, reopened)).result).toBe('done');
+      const saved = f.open().recipient.store.readTask(f.task.id);
+      expect(saved).toMatchObject({
+        status: 'failed',
+        spentUsd: 7,
+        pipelineIncident: {
+          evidence: f.report.pipelineIncident.evidence.join('\n'),
+          affectedStages: [...affectedStages].sort(),
+          fixedBy: ['0002-member'],
+          check: { stage },
+        },
+      });
+      const state = f.open().recipient.state();
+      expect((await deliver(f, f.open())).result).toBe('skipped');
+      expect(f.open().recipient.state()).toEqual(state);
+      expect(f.open().store.entries()).toEqual([]);
+    },
+  );
   it.each(['response', 'progress'])(
     'keeps same-slug request identities after collision and lost %s',
     async (point) => {

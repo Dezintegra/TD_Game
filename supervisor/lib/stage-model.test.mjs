@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
@@ -23,19 +25,44 @@ describe.each(['codex', 'claude'])('маршруты %s в реальном за
   it.each(NEEDS_SESSION)('%s получает свою модель и при resume', (stage) => {
     const model =
       expected[provider][analysis.includes(stage) ? 0 : execution.includes(stage) ? 1 : 2];
-    for (const continuation of [false, true]) {
-      const command = stageCommand({
-        assignment: { stage, continuation, sessionId: 'session-1' },
-        config,
-        root: '/repo',
-        home,
-        prompt: 'назначение',
-      });
-      expect(modelFlag(command)).toBe(model);
-      expect(command.args.filter((arg) => arg === '--model')).toHaveLength(1);
-      expect(command.args.includes('--resume') || command.args.includes('resume')).toBe(
-        continuation,
-      );
+    const deployRoot =
+      provider === 'codex' && stage === 'deploy'
+        ? mkdtempSync(join(tmpdir(), 'td-stage-model-'))
+        : null;
+    try {
+      if (deployRoot) {
+        // Deploy проверяет существование пакетов и gitdir снимка ещё до выбора модели.
+        const snapshot = join(deployRoot, '.pipeline', 'deploy-checkouts', 'deploy-test');
+        const gitdir = join(deployRoot, '.git', 'worktrees', 'deploy-test');
+        mkdirSync(gitdir, { recursive: true });
+        for (const group of ['apps', 'packages']) {
+          const packageDir = join(snapshot, group, 'sample');
+          mkdirSync(packageDir, { recursive: true });
+          writeFileSync(join(packageDir, 'package.json'), '{}');
+        }
+        writeFileSync(join(snapshot, '.git'), `gitdir: ${gitdir}`);
+      }
+      for (const continuation of [false, true]) {
+        const command = stageCommand({
+          assignment: {
+            stage,
+            continuation,
+            sessionId: 'session-1',
+            ...(deployRoot ? { path: '.pipeline/deploy-checkouts/deploy-test' } : {}),
+          },
+          config,
+          root: deployRoot ?? '/repo',
+          home,
+          prompt: 'назначение',
+        });
+        expect(modelFlag(command)).toBe(model);
+        expect(command.args.filter((arg) => arg === '--model')).toHaveLength(1);
+        expect(command.args.includes('--resume') || command.args.includes('resume')).toBe(
+          continuation,
+        );
+      }
+    } finally {
+      if (deployRoot) rmSync(deployRoot, { recursive: true, force: true });
     }
   });
 

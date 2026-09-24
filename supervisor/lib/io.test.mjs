@@ -932,6 +932,12 @@ describe('заведение рабочего дерева', () => {
   // на одной оси и красный на другой.
   const treePath = (taskId) => join('.claude/worktrees', taskId);
 
+  it('восстановление прежней работы не создаёт пустую ветку при потере refs', () => {
+    const { io, calls } = fakeIo();
+    expect(io.addWorktree('0001-one', 'worktree-0001-one', { existingOnly: true }).ok).toBe(false);
+    expect(addCall(calls)).toBeUndefined();
+  });
+
   it('новой задаче ветка заводится от удалённой главной', () => {
     const { io, calls } = fakeIo();
     expect(io.addWorktree('0001-one', 'worktree-0001-one').ok).toBe(true);

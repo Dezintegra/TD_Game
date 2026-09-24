@@ -10,6 +10,7 @@ import { execute } from './execute.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import { openRecipient, seedRecipient } from './testing/report-recipient.mjs';
+import { judgeSelfUpdate } from './self-update.mjs';
 
 const fixtures = [];
 afterEach(() => fixtures.splice(0).forEach((f) => f.cleanup()));
@@ -116,6 +117,42 @@ async function scenario(options) {
 }
 
 describe('paused completion survives full supervisor and recipient restart', () => {
+  it.each([false, true])(
+    'самообновление сохраняет очередь и отказ=%s без повторного запуска',
+    async (rejected) => {
+      const s = await scenario(
+        rejected ? { reportOverrides: { dependencyUpdates: 'invalid' } } : {},
+      );
+      if (rejected) {
+        expect((await s.deliver(s.next)).result).toBe('failed');
+        expect(s.next.supervisor.reports[0].rejection.kind).toBe('invalid-report');
+      }
+      const prior = s.next.store.entries();
+      expect(
+        judgeSelfUpdate({
+          git: { treeOf: () => 'new' },
+          ownDir: 'supervisor',
+          loadedTree: 'old',
+          mainBranch: 'main',
+          running: s.next.supervisor.busy(),
+          ...s.next.supervisor.reportRestartState,
+        }).verdict,
+      ).toBe('restart');
+      const resumed = s.restart();
+      expect(resumed.store.entries()).toEqual(prior);
+      if (rejected) {
+        expect(resumed.actions()).toEqual([]);
+        expect((await s.deliver(resumed)).result).toBe('skipped');
+        expect(resumed.recipient.state()).toMatchObject({ puts: 0, posts: 0 });
+      } else {
+        expect((await s.deliver(resumed)).result).toBe('done');
+        const before = resumed.recipient.state();
+        expect((await s.deliver(s.restart())).result).toBe('skipped');
+        expect(s.restart().recipient.state()).toEqual(before);
+        expect(s.restart().recipient.store.readTask(s.f.task.id).spentUsd).toBe(7);
+      }
+    },
+  );
   it('досылает хвост перед однократным переносом сохранённого отчёта', async () => {
     const s = await scenario();
     const branch = `worktree-${s.f.task.id}`;
