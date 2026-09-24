@@ -820,11 +820,30 @@ node supervisor/bin/launch.mjs --foreground  # прежний передний �
 задача **планировщика Windows**, раз в пять минут запускающая супервизор
 напрямую.
 
-```powershell
+```cmd
 schtasks /Create /TN "TD pipeline supervisor" /SC MINUTE /MO 5 ^
   /TR "C:\src\dezintegra\TD_Game\supervisor\start.cmd --detached" ^
   /RL LIMITED /F
 ```
+
+Сразу после создания или повторной настройки разрешите сторожу запуск и работу
+от батареи. Планировщик Windows по умолчанию запрещает оба действия: 24.09.2026
+на ноутбуке задача осталась в `Queued` и пропустила 13 запусков, пока питание
+было отключено. Помощник меняет только эти два условия существующей задачи,
+сохраняя пускатель, период, пользователя и запрет параллельных экземпляров:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\supervisor\configure-watchdog-power.ps1
+Get-ScheduledTask -TaskName 'TD pipeline supervisor' |
+  Select-Object -ExpandProperty Settings |
+  Select-Object DisallowStartIfOnBatteries, StopIfGoingOnBatteries
+```
+
+Оба поля должны быть `False`. При работе от батареи проверьте
+`Get-ScheduledTaskInfo -TaskName 'TD pipeline supervisor'`: после очередного
+запуска `LastTaskResult` должен быть `0`, `NumberOfMissedRuns` — `0`. Если
+супервизор уже жив, пускатель завершится без второго экземпляра по замку;
+сверьте его PID в `.pipeline/supervisor.lock` с живыми процессами.
 
 Через `start.cmd --detached`, а не прямым вызовом Node: обёртка сама находит
 корень проекта и уводит вывод в файл. Планировщик запускает задачу без
