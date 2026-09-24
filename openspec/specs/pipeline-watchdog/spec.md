@@ -1,0 +1,20 @@
+# pipeline-watchdog Specification
+
+## Purpose
+TBD - created by archiving change keep-watchdog-available-on-battery. Update Purpose after archive.
+## Requirements
+### Requirement: Сторож запускается при питании от батареи
+
+Процедура установки сторожа Windows MUST снять запрет запуска задачи от батареи и запрет остановки задачи при переходе на батарею, не изменяя её действие, триггер, принципал и политику повторных экземпляров.
+
+#### Scenario: Установка или повторная настройка
+
+- **WHEN** оператор создаёт или повторно настраивает задачу `TD pipeline supervisor`
+- **THEN** сохранённые настройки имеют `DisallowStartIfOnBatteries=false` и `StopIfGoingOnBatteries=false`
+- **AND** проверка этих настроек завершается явным успехом или ошибкой
+
+#### Scenario: Ноутбук работает от батареи
+
+- **WHEN** задача сторожа срабатывает при `PowerLineStatus=Offline`
+- **THEN** планировщик может выполнить пускатель без ожидания сетевого питания
+- **AND** при живом супервизоре пускатель завершается без второго экземпляра
