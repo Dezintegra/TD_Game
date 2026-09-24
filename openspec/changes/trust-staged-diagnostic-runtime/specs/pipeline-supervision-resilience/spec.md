@@ -12,6 +12,16 @@ For opt-in Windows host acceptance of an unmerged diagnostic endpoint, the super
 - **WHEN** the lock PID, owner command line, registered worktree, loaded commit or supervisor source differs from the attested descriptor
 - **THEN** endpoint startup or request validation fails closed, with no provider launch, diagnostic settlement or source-task transition.
 
+#### Scenario: Watchdog and stop inspect a staged owner
+- **WHEN** the ordinary watchdog or stop command sees a lock held by a staged diagnostic runtime
+- **THEN** it SHALL recognize that owner as live only after the endpoint descriptor, exact process command line, registered clean worktree and loaded code SHA agree
+- **AND** it MUST NOT remove the live lock or start a second writer merely because the entrypoint differs from main.
+
 #### Scenario: Main-checkout runtime remains valid
 - **WHEN** the supervisor runs from the committed main checkout under the existing watchdog
 - **THEN** its ordinary ownership checks and startup behavior remain valid without requiring a staged worktree or enabling the diagnostic endpoint.
+
+#### Scenario: Diagnostic acceptance under manual pause
+- **WHEN** the sole staged owner starts with a manual scheduling pause and the opt-in endpoint enabled
+- **THEN** it SHALL verify the configured provider prerequisites before admitting an owner-authorized diagnostic grant
+- **AND** it SHALL keep ordinary task scheduling paused throughout the acceptance.

@@ -1082,7 +1082,7 @@ async function loop() {
   if (
     providerOf(config) === 'codex' &&
     !flags.includes('--dry-run') &&
-    !isPaused(root, config) &&
+    (!isPaused(root, config) || flags.includes('--diagnostic-endpoint')) &&
     !(await prepareCodex())
   ) {
     releaseLock();
@@ -1302,7 +1302,11 @@ if (!owned.ownership.acquired) {
         home,
         directory: local(''),
         lockPath: lockPath(),
-        owns: () => diagnosticOwnerAvailable({ ownerPid: process.pid, lockPath: lockPath() }),
+        owns: () =>
+          diagnosticOwnerAvailable(
+            { ownerPid: process.pid, lockPath: lockPath() },
+            { expectedEntrypoint: join(home, 'bin', 'supervise.mjs') },
+          ),
         readRegistry: () => readRegistry(root, config),
         readStages: () => readStages(root, config),
         readTask: async (id) => {
