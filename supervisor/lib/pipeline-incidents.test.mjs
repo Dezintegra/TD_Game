@@ -263,10 +263,9 @@ describe('приоритет восстановления и ограничен�
     const ready = scan(state(tasks, { config: { ...config, maxConcurrent: 1 } }));
     expect(launches(ready).map((item) => item.taskId)).toEqual([prerequisite.id]);
     const held = scan(
-      state(
-        [source(), fix, { ...prerequisite, dependsOn: ['0009-missing'] }, unrelated],
-        { config: { ...config, maxConcurrent: 1 } },
-      ),
+      state([source(), fix, { ...prerequisite, dependsOn: ['0009-missing'] }, unrelated], {
+        config: { ...config, maxConcurrent: 1 },
+      }),
     );
     expect(launches(held).map((item) => item.taskId)).toEqual([unrelated.id]);
   });
