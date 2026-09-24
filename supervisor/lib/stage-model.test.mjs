@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,18 +92,24 @@ it.each(['win32', 'linux'])(
   'проверка готовности выкладки Codex использует Terra: %s',
   async (platform) => {
     const launched = [];
-    await checkCodexReadiness({
-      platform,
-      config: resolveConfig(project).config,
-      root: '/repo',
-      env: { GH_TOKEN: 'test-token' },
-      start: ({ command }) => {
-        launched.push(command);
-        if (command.args.includes('sandbox'))
-          return { finished: Promise.resolve({ code: 0, stdout: 'td-workspace-ready' }) };
-        return { finished: Promise.resolve({ code: 1, stdout: '' }) };
-      },
-    });
+    const root = mkdtempSync(join(tmpdir(), 'td-stage-model-readiness-'));
+    try {
+      await checkCodexReadiness({
+        platform,
+        config: resolveConfig(project).config,
+        root,
+        env: { GH_TOKEN: 'test-token' },
+        start: ({ command }) => {
+          launched.push(command);
+          if (command.args.includes('sandbox'))
+            return { finished: Promise.resolve({ code: 0, stdout: 'td-workspace-ready' }) };
+          return { finished: Promise.resolve({ code: 1, stdout: '' }) };
+        },
+      });
+    } finally {
+      if (platform === 'win32') rmdirSync(join(root, '.pipeline'));
+      rmdirSync(root);
+    }
     expect(
       launched.map((command) => command.args.find((arg) => arg === 'sandbox' || arg === 'exec')),
     ).toEqual(platform === 'win32' ? ['sandbox', 'exec'] : ['exec']);
