@@ -312,6 +312,105 @@ describe('лог упавшего этапа', () => {
 });
 
 describe('журнал', () => {
+  const verdict = (transition, finding, key) =>
+    `**${transition}**\n\n${finding}\n\n<!-- report:${key}:0 -->`;
+
+  it('передаёт вытесненный вердикт review → revise целиком, сохраняя лимит хвоста', () => {
+    const review = verdict(
+      'review → revise',
+      'P1: собрать CLI и оба helper; P2: передать пакет',
+      'a'.repeat(32),
+    );
+    const journal = `${review}\n${verdict('revise → revise', 'следующий заход начал работу', 'b'.repeat(32))}\n${'продолжение\n'.repeat(1500)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 150,
+    });
+    const clipped = text.split('## Журнал задачи\n\n')[1].split('\n\n## ')[0];
+    expect(clipped.length).toBeLessThanOrEqual(150);
+    expect(clipped).not.toContain('P1: собрать CLI');
+    expect(text).toContain(`## Последняя доступная запись возврата`);
+    expect(text).toContain(review);
+    expect(text).toContain('сама копия не доказывает актуальность');
+  });
+
+  it('берёт последний полный возврат среди review и pr, а не прежнее ревью', () => {
+    const old = verdict('review → revise', 'старое замечание', 'a'.repeat(32));
+    const latest = verdict('pr → revise', 'текущий CI красный', 'b'.repeat(32));
+    const journal = `${old}\n${latest}\n${'продолжение\n'.repeat(1000)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 100,
+    });
+    const extra = text.split('## Последняя доступная запись возврата\n\n')[1];
+    expect(extra).toContain(latest);
+    expect(extra).not.toContain(old);
+  });
+
+  it('сохраняет вытесненный audit → design, собранный из частей комментария', () => {
+    const start = '**audit → design**\n\nЗамечание: сетка исчезает';
+    const end = `\nпри нажатии Q\n\n<!-- report:${'c'.repeat(32)}:0 -->`;
+    const journal = `${start}\n${end}\n${'новый заход\n'.repeat(1000)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal,
+      journalLimit: 120,
+    });
+    expect(text).toContain('## Последняя доступная запись возврата');
+    expect(text).toContain(`${start}\n${end}`);
+  });
+
+  it('не дублирует вердикт, который целиком виден в обычном журнале', () => {
+    const journal = verdict('review → revise', 'свежее замечание', 'd'.repeat(32));
+    const text = stagePrompt({ assignment: { ...assignment, stage: 'revise' }, task, journal });
+    expect(text).not.toContain('## Последняя доступная запись возврата');
+    expect(text.match(/свежее замечание/g)).toHaveLength(1);
+  });
+
+  it('не выдаёт оборванную запись за полный вердикт', () => {
+    const journal = `**review → revise**\n\nОБОРВАННОЕ ЗАМЕЧАНИЕ\n${'позже\n'.repeat(1000)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 100,
+    });
+    expect(text).toContain('## Неполная запись возврата');
+    expect(text).not.toContain('## Последняя доступная запись возврата');
+    expect(text).not.toContain('ОБОРВАННОЕ ЗАМЕЧАНИЕ');
+  });
+
+  it('не принимает маркер следующего захода за завершение оборванного ревью', () => {
+    const old = verdict('review → revise', 'старое ревью', 'a'.repeat(32));
+    const journal = `${old}\n**review → revise**\n\nНОВОЕ БЕЗ ИТОГА\n**revise → revise**\n\n<!-- report:${'b'.repeat(32)}:0 -->\n${'позже\n'.repeat(1000)}`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 100,
+    });
+    expect(text).toContain('## Неполная запись возврата');
+    expect(text).not.toContain('## Последняя доступная запись возврата');
+    expect(text).not.toContain('старое ревью');
+  });
+
+  it('при длинном журнале без возврата не выдумывает вердикт', () => {
+    const journal = 'продолжение\n'.repeat(1000);
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal,
+      journalLimit: 100,
+    });
+    expect(text).toContain('## Запись возврата не найдена');
+    expect(text).not.toContain('## Последняя доступная запись возврата');
+  });
+
   it.each([120, 8])('оставляет полное пояснение revise вне лимита %i', (journalLimit) => {
     const journal = `${'история\n'.repeat(100)}P1: блоккер\nвладелец: принято`;
     const text = stagePrompt({

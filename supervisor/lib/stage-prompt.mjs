@@ -37,6 +37,37 @@ function clipJournal(text, limit) {
   return `${marker}\n\n${kept.join('\n')}`;
 }
 
+/** Один последний возврат, вытесненный из хвоста, не должен терять замечания. */
+function latestReturnVerdict(journal, stage) {
+  const heading =
+    stage === 'design'
+      ? /^\*\*audit → design\*\*[ \t]*$/gm
+      : stage === 'revise'
+        ? /^\*\*(?:review|pr) → revise\*\*[ \t]*$/gm
+        : null;
+  if (!heading) return null;
+  const matches = [...String(journal).matchAll(heading)];
+  const last = matches.at(-1);
+  if (!last) return null;
+
+  const start = last.index;
+  const following = /^\*\*[a-z][a-z-]* → [a-z][a-z-]*\*\*[ \t]*$/gm;
+  following.lastIndex = start + last[0].length;
+  const next = following.exec(journal);
+  const footer = /^<!-- report:[0-9a-f]+:\d+ -->[ \t]*$/gm;
+  footer.lastIndex = start + last[0].length;
+  const end = footer.exec(journal);
+  const complete = Boolean(end && (next?.index ?? journal.length) > end.index);
+  const body = journal
+    .slice(start, complete ? end.index + end[0].length : (next?.index ?? journal.length))
+    .trim();
+  return {
+    heading: last[0].trim(),
+    body,
+    complete,
+  };
+}
+
 /**
  * Взять у длинного текста голову и хвост, назвав пропущенное числом.
  *
@@ -218,7 +249,8 @@ export function stagePrompt({
   // Журнал читается обязательно: там лежит вердикт аудита, а аудит мог
   // пропустить предложение с оговорками, и оговорки эти нигде больше
   // не записаны.
-  lines.push('', '## Журнал задачи', '', clipJournal(journal, journalLimit) || '_пусто_');
+  const clippedJournal = clipJournal(journal, journalLimit);
+  lines.push('', '## Журнал задачи', '', clippedJournal || '_пусто_');
   if (['review', 'interpret', 'triage'].includes(assignment.stage)) {
     lines.push(
       '',
@@ -242,6 +274,36 @@ export function stagePrompt({
       'Итоговый отчёт лога — дополнительный источник; он не заменяет полный журнал карточки',
       'и ответ владельца продукта. Не обращайся к Trello.',
       'Если достоверное восстановление невозможно, завершись с failed до исправлений, назвав путь и причину.',
+    );
+  }
+
+  const returnVerdict = latestReturnVerdict(journal, assignment.stage);
+  if (returnVerdict && !returnVerdict.complete) {
+    lines.push(
+      '',
+      '## Неполная запись возврата',
+      '',
+      `В журнале найден заголовок ${returnVerdict.heading}, но нет конечного маркера отчёта. Не считай эту запись полным вердиктом; применяй правила проверки источника своего этапа.`,
+    );
+  } else if (returnVerdict && !clippedJournal.includes(returnVerdict.body)) {
+    lines.push(
+      '',
+      '## Последняя доступная запись возврата',
+      '',
+      'Это полная копия записи из журнала, вытесненной из ограниченного хвоста. Сверь её применимость к текущему возврату; сама копия не доказывает актуальность.',
+      '',
+      returnVerdict.body,
+    );
+  } else if (
+    !returnVerdict &&
+    journal.length > journalLimit &&
+    ['design', 'revise'].includes(assignment.stage)
+  ) {
+    lines.push(
+      '',
+      '## Запись возврата не найдена',
+      '',
+      `В доступном журнале нет заголовка возврата в ${assignment.stage}. Если это повторный этап, не угадывай причину по старому логу; применяй правила проверки источника до исправлений.`,
     );
   }
 
