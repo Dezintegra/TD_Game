@@ -331,7 +331,36 @@ describe('журнал', () => {
   const verdict = (transition, finding, key) =>
     `**${transition}**\n\n${finding}\n\n<!-- report:${key}:0 -->`;
 
-  it('передаёт вытесненный вердикт review → revise целиком, сохраняя лимит хвоста', () => {
+  it('показывает начало и последнюю запись доски целиком, считая пропуск', () => {
+    const first = '**new → design**\n\nПЕРВОЕ РЕШЕНИЕ\n';
+    const middle = '**design → audit**\n\nСТАРАЯ СЕРЕДИНА\n'.repeat(20);
+    const last = '**audit → design**\n\nСВЕЖЕЕ ЗАМЕЧАНИЕ\nПОСЛЕДНЯЯ СТРОКА';
+    const prompt = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal: first + middle + last,
+      journalLimit: 160,
+    });
+    const clipped = prompt.split('## Журнал задачи\n\n')[1].split('\n\n## ')[0];
+    expect(clipped).toContain('ПЕРВОЕ РЕШЕНИЕ');
+    expect(clipped).toContain(last);
+    expect(clipped).not.toContain('СТАРАЯ СЕРЕДИНА');
+    expect(clipped).toMatch(/пропущено \d+ знаков и \d+ записей/);
+  });
+
+  it('передаёт последнюю файловую запись даже при превышении четырёх пределов', () => {
+    const last = `## 2026-09-03 · audit → design\n\n${'свидетельство '.repeat(90)}КОНЕЦ`;
+    const prompt = stagePrompt({
+      assignment: { ...assignment, stage: 'design' },
+      task,
+      journal: `## 2026-09-02 · design → audit\n\nпрошлый ход\n${last}`,
+      journalLimit: 100,
+    });
+    expect(prompt).toContain(last);
+    expect(prompt).toContain('пропущено');
+  });
+
+  it('передаёт вытесненный вердикт review → revise и последнюю запись целиком', () => {
     const review = verdict(
       'review → revise',
       'P1: собрать CLI и оба helper; P2: передать пакет',
@@ -345,7 +374,8 @@ describe('журнал', () => {
       journalLimit: 150,
     });
     const clipped = text.split('## Журнал задачи\n\n')[1].split('\n\n## ')[0];
-    expect(clipped.length).toBeLessThanOrEqual(150);
+    expect(clipped.length).toBeGreaterThan(150);
+    expect(clipped).toContain('продолжение\n'.repeat(1500));
     expect(clipped).not.toContain('P1: собрать CLI');
     expect(text).toContain(`## Последняя доступная запись возврата`);
     expect(text).toContain(review);
@@ -362,9 +392,9 @@ describe('журнал', () => {
       journal,
       journalLimit: 100,
     });
-    const extra = text.split('## Последняя доступная запись возврата\n\n')[1];
-    expect(extra).toContain(latest);
-    expect(extra).not.toContain(old);
+    const clipped = text.split('## Журнал задачи\n\n')[1].split('\n\n## ')[0];
+    expect(clipped).toContain(latest);
+    expect(clipped).not.toContain(old);
   });
 
   it('сохраняет вытесненный audit → design, собранный из частей комментария', () => {
@@ -472,7 +502,7 @@ describe('журнал', () => {
   it('обрезается, и обрезка названа вслух: молчаливая обманывает', () => {
     const long = 'строка журнала\n'.repeat(2000);
     const text = stagePrompt({ assignment, task, journal: long, journalLimit: 100 });
-    expect(text).toContain('пропущена');
+    expect(text).toContain('пропущено');
     expect(text.length).toBeLessThan(long.length);
   });
 
@@ -483,7 +513,7 @@ describe('журнал', () => {
   it('сохраняет свежие P1 и ответ владельца после большого старого журнала', () => {
     const journal = `${'старый отчёт\n'.repeat(2000)}P1: исправить блоккер\nвладелец: принято`;
     const text = stagePrompt({ assignment, task, journal, journalLimit: 120 });
-    expect(text).toContain('ранняя часть журнала пропущена');
+    expect(text).toContain('пропущено');
     expect(text).toContain('P1: исправить блоккер');
     expect(text).toContain('владелец: принято');
   });
@@ -491,7 +521,7 @@ describe('журнал', () => {
   it('сохраняет bounded tail единственной последней строки, даже когда она длиннее лимита', () => {
     const journal = `${'старое\n'.repeat(100)}${'x'.repeat(400)} END-P1`;
     const text = stagePrompt({ assignment, task, journal, journalLimit: 90 });
-    expect(text).toContain('пропущена');
+    expect(text).toContain('пропущено');
     expect(text).toContain('END-P1');
   });
 });

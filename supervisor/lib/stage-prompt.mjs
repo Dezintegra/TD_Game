@@ -27,26 +27,54 @@ export function splitJournalEntries(text) {
  * промпт. Здесь только то, что меняется от задачи к задаче.
  */
 
-// Для журнала важнее последний вердикт, чем начало давней переписки. Берём
-// хвост по целым строкам: так свежая запись не начинается посередине слова.
+// Последняя запись важнее старой середины: отдельная строка ещё не делает
+// замечание целым, поэтому режем историю только между переходами.
 function clipJournal(text, limit) {
-  if (!text || text.length <= limit) return text ?? '';
-  const marker = '[…ранняя часть журнала пропущена…]';
-  const room = limit - marker.length - 2;
-  if (room <= 0) return marker.slice(-Math.max(0, limit));
-  const lines = text.split('\n');
-  const kept = [];
-  let size = 0;
-  for (const line of lines.reverse()) {
-    const next = line.length + (kept.length ? 1 : 0);
-    if (size + next > room) {
-      if (kept.length === 0) kept.unshift(line.slice(-room));
-      break;
+  const source = String(text ?? '');
+  if (source.length <= limit) return source;
+  const entries = splitJournalEntries(source);
+  if (entries.length === 1) {
+    // Старый журнал без заголовков не позволяет назвать границу записи.
+    // Сохраняем оба края и явно называем дырку в середине.
+    let head = Math.max(1, Math.floor(limit / 8));
+    let tail = Math.max(1, limit - head - 40);
+    const excerpt = () =>
+      clipMiddle(source, head, tail).replace('; целиком — в файле лога', ' журнала');
+    let clipped = excerpt();
+    while (clipped.length > limit && head + tail > 2) {
+      if (head > 1) head--;
+      else tail--;
+      clipped = excerpt();
     }
-    kept.unshift(line);
-    size += next;
+    return clipped.length <= limit ? clipped : clipped.slice(-Math.max(0, limit));
   }
-  return `${marker}\n\n${kept.join('\n')}`;
+
+  const marker = (chars, count) => `\n\n[…пропущено ${chars} знаков и ${count} записей…]\n\n`;
+  let tailStart = entries.length - 1;
+  let tail = entries[tailStart];
+  while (tailStart > 1) {
+    const candidate = entries[tailStart - 1] + tail;
+    const gap = source.length - candidate.length;
+    if (candidate.length + marker(gap, tailStart - 1).length + entries[0].length > limit) break;
+    tailStart--;
+    tail = candidate;
+  }
+
+  let head = entries[0].slice(
+    0,
+    Math.max(0, limit - tail.length - marker(source.length - tail.length, tailStart).length),
+  );
+  let skipped = source.length - head.length - tail.length;
+  let omitted = tailStart - (head.length > 0 ? 1 : 0);
+  let result = head + marker(skipped, omitted) + tail;
+  while (result.length > limit && head.length > 0) {
+    head = head.slice(0, -1);
+    skipped = source.length - head.length - tail.length;
+    omitted = tailStart - (head.length > 0 ? 1 : 0);
+    result = head + marker(skipped, omitted) + tail;
+  }
+  // Последняя запись вправе перерасти предел; её не режем даже тогда.
+  return result;
 }
 
 /** Один последний возврат, вытесненный из хвоста, не должен терять замечания. */
