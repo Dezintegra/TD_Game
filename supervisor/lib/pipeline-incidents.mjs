@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import { NEEDS_SESSION } from '../config/transitions.mjs';
 import { pendingDependencies } from './dependencies.mjs';
+import { workLane } from './scheduling.mjs';
 import { tokenReanalysisProblem } from './token-reanalysis.mjs';
 
 const text = (value) => typeof value === 'string' && value.trim().length > 0;
 const date = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value));
+const links = (value) => (Array.isArray(value) ? value : []);
 const CHECK_STAGES = NEEDS_SESSION.filter((stage) => stage !== 'postmortem');
 
 function evidenceText(value) {
@@ -190,17 +192,43 @@ export function incidentPolicy(state) {
     );
   }
   const byId = new Map(records.map((task) => [task.id, task]));
+  const localFixes = new Set();
   const visit = (id) => {
     if (fixes.has(id) || sources.has(id)) return;
     fixes.add(id);
     const task = byId.get(id);
     for (const next of [
-      ...(task?.dependsOn ?? []),
-      ...(task?.splitInto ?? []),
-      ...(task?.recovery?.fixedBy ?? []),
+      ...links(task?.dependsOn),
+      ...links(task?.splitInto),
+      ...links(task?.recovery?.fixedBy),
     ])
       visit(next);
   };
+  const visitLocal = (id) => {
+    if (localFixes.has(id)) return;
+    localFixes.add(id);
+    const task = byId.get(id);
+    for (const next of [
+      ...links(task?.dependsOn),
+      ...links(task?.splitInto),
+      ...links(task?.recovery?.fixedBy),
+    ])
+      visitLocal(next);
+  };
+  for (const task of records) {
+    if (task.valid === false || (task.pipelineIncident && !task.pipelineIncident.verifiedAt))
+      continue;
+    const repairs =
+      task.status === 'blocked'
+        ? links(task.dependsOn)
+        : task.status === 'failed' && task.recovery?.causedBy === 'pipeline'
+          ? links(task.recovery.fixedBy)
+          : [];
+    for (const id of repairs) {
+      const repair = byId.get(id);
+      if (repair && repair.valid !== false && workLane(repair) === 'service') visitLocal(id);
+    }
+  }
   for (const source of incidents) {
     const incident = source.pipelineIncident;
     const probed = incident.probeStartedAt || state.scheduling?.probes?.[incident.id];
@@ -227,13 +255,15 @@ export function incidentPolicy(state) {
     task.status === 'decompose' &&
     task.tokenReanalysis?.originStatus === task.pipelineIncident?.check.stage &&
     tokenReanalysisProblem(task) === null;
-  const isRecovery = (task, stage) =>
+  const isIncidentRecovery = (task, stage) =>
     !broken.has(task.id) &&
     (fixes.has(task.id) ||
       (sources.has(task.id) &&
         (stage === 'postmortem' ||
           (probes.has(task.id) &&
             (stage === task.pipelineIncident?.check.stage || preparesProbe(task, stage))))));
+  const isRecovery = (task, stage) =>
+    isIncidentRecovery(task, stage) || (task.valid !== false && localFixes.has(task.id));
   return {
     active: incidents.length > 0 || broken.size > 0,
     sources,
@@ -242,6 +272,6 @@ export function incidentPolicy(state) {
     notes,
     isRecovery,
     allows: (task, stage) =>
-      isRecovery(task, stage) || (!sources.has(task.id) && !affectedStages.has(stage)),
+      isIncidentRecovery(task, stage) || (!sources.has(task.id) && !affectedStages.has(stage)),
   };
 }
