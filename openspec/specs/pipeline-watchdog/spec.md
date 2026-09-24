@@ -18,4 +18,3 @@ TBD - created by archiving change keep-watchdog-available-on-battery. Update Pur
 - **WHEN** задача сторожа срабатывает при `PowerLineStatus=Offline`
 - **THEN** планировщик может выполнить пускатель без ожидания сетевого питания
 - **AND** при живом супервизоре пускатель завершается без второго экземпляра
-
