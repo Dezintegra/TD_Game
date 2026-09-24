@@ -552,6 +552,13 @@ export function scan(state) {
       );
       continue;
     }
+    if (task.status === 'deploy' && state.deployUnavailable) {
+      held.set(task.id, ['deploy-ssh']);
+      notes.push(
+        `задача ${task.id}: выкладка ждёт подтверждения SSH; локальная работа продолжается`,
+      );
+      continue;
+    }
     const uncovered = uncoveredAt(task.status);
     if (uncovered.length === 0) continue;
     held.set(task.id, uncovered);
@@ -930,6 +937,12 @@ export function scan(state) {
     const missing = missingForStage(config, stage, task);
     if (missing.length) {
       notes.push(`задача ${task.id} не берётся: в настройке нет ${missing.join(', ')}`);
+      continue;
+    }
+    if (stage === 'deploy' && state.deployUnavailable) {
+      notes.push(
+        `задача ${task.id}: выкладка ждёт подтверждения SSH; локальная работа продолжается`,
+      );
       continue;
     }
     const uncovered = uncoveredAt(stage);

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { checkCodexReadiness } from './codex-readiness.mjs';
+import { checkCodexReadiness, checkRemoteReachability } from './codex-readiness.mjs';
+import { createCommandRunner } from './command-runner.mjs';
 const completed = {
   type: 'turn.completed',
   usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 1 },
@@ -43,6 +44,9 @@ const check = (events, over = {}, env = {}) =>
       expect(probe.stdin).toContain('rev-parse');
       expect(probe.stdin).toContain(`--host ${env.TD_DEPLOY_HOST ?? 'dezintegra'} --`);
       expect(probe.stdin).toContain('deploy-remote.mjs');
+      expect(probe.stdin.indexOf('codex-node-probe.mjs')).toBeLessThan(
+        probe.stdin.indexOf('deploy-remote.mjs'),
+      );
       expect(probe.env.TD_DEPLOY_SSH_CONFIG).toBe(env.TD_DEPLOY_SSH_CONFIG);
       return {
         finished: Promise.resolve({
@@ -54,11 +58,16 @@ const check = (events, over = {}, env = {}) =>
     },
   });
 describe('проверка готовности Codex', () => {
-  it('принимает только все успешные команды и завершённый процесс', async () => {
-    const events = [git, github, push, ssh, node, completed];
-    expect((await check(events)).ok).toBe(true);
-    for (const missing of [git, github, push, ssh, node])
+  it('отделяет локальные команды от удалённой проверки', async () => {
+    const events = [git, github, push, node, ssh, completed];
+    expect(await check(events)).toMatchObject({ ok: true, remoteReady: true });
+    for (const missing of [git, github, push, node])
       expect((await check(events.filter((event) => event !== missing))).ok).toBe(false);
+    expect(await check(events.filter((event) => event !== ssh))).toMatchObject({
+      ok: true,
+      remoteReady: false,
+      remoteWhy: 'нет подтверждённой SSH-команды',
+    });
     expect((await check([completed])).ok).toBe(false);
     expect((await check(events, { code: 1 })).ok).toBe(false);
     expect((await check(events, { killedBy: 'timeout' })).ok).toBe(false);
@@ -68,15 +77,17 @@ describe('проверка готовности Codex', () => {
     ['failed', 255, 'Could not resolve hostname dezintegra'],
     ['failed', 255, 'Permission denied (publickey).'],
     ['failed', 255, 'Host key verification failed.'],
-  ])('сохраняет ошибку SSH: %s %s %s', async (status, exit_code, output) => {
+  ])('удерживает только выкладку при ошибке SSH: %s %s %s', async (status, exit_code, output) => {
     expect(
       await check([
         git,
         github,
+        push,
+        node,
         command(ssh.item.command, output, { status, exit_code }),
         completed,
       ]),
-    ).toMatchObject({ ok: false, why: output });
+    ).toMatchObject({ ok: true, remoteReady: false, remoteWhy: output });
   });
   it('не принимает текст модели, локальное echo и пустой вывод вместо удалённого маркера', async () => {
     for (const event of [
@@ -84,16 +95,39 @@ describe('проверка готовности Codex', () => {
       command('echo td-codex-ssh-ready', 'td-codex-ssh-ready'),
       command(ssh.item.command, ''),
     ])
-      expect((await check([git, github, push, event, completed])).ok).toBe(false);
+      expect(await check([git, github, push, node, event, completed])).toMatchObject({
+        ok: true,
+        remoteReady: false,
+      });
   });
   it('проверяет выбранный TD_DEPLOY_HOST, а не другой доступный сервер', async () => {
     const env = { TD_DEPLOY_HOST: 'deploy@example.org' };
-    expect((await check([git, github, push, ssh, node, completed], {}, env)).ok).toBe(false);
+    expect(await check([git, github, push, node, ssh, completed], {}, env)).toMatchObject({
+      ok: true,
+      remoteReady: false,
+    });
+    expect(
+      await check(
+        [
+          git,
+          github,
+          push,
+          node,
+          command(ssh.item.command, 'wrong host', { status: 'failed', exit_code: 255 }),
+          completed,
+        ],
+        {},
+        env,
+      ),
+    ).toMatchObject({ ok: true, remoteReady: false });
     const chosen = command(
       ssh.item.command.replace('dezintegra', env.TD_DEPLOY_HOST),
       'td-codex-ssh-ready',
     );
-    expect((await check([git, github, push, chosen, node, completed], {}, env)).ok).toBe(true);
+    expect(await check([git, github, push, node, chosen, completed], {}, env)).toMatchObject({
+      ok: true,
+      remoteReady: true,
+    });
   });
   it.each(['', '-F', 'host; whoami', '$(whoami)', 'host\ntrue'])(
     'не вставляет некорректный host в команду: %s',
@@ -223,4 +257,43 @@ it.each([
   expect(result.ok).toBe(false);
   expect(result.why).toContain('рабочего каталога');
   expect(calls).toBe(1);
+});
+
+it('повторная сетевая проба использует выбранный SSH host и не объявляет ложный ответ готовностью', () => {
+  const env = { TD_DEPLOY_HOST: 'deploy.example.org' };
+  const calls = [];
+  const run = (args, program, cwd, options) => {
+    calls.push({ args, program, cwd, options });
+    return { code: 0, stdout: 'td-codex-ssh-ready\n' };
+  };
+  expect(checkRemoteReachability({ root: '/repo', env, run })).toEqual({ ok: true, why: null });
+  expect(calls[0]).toMatchObject({
+    args: [
+      expect.stringContaining('deploy-remote.mjs'),
+      '--host',
+      env.TD_DEPLOY_HOST,
+      '--',
+      'printf td-codex-ssh-ready',
+    ],
+    cwd: '/repo',
+    options: { timeout: 30_000, env },
+  });
+  expect(
+    checkRemoteReachability({
+      root: '/repo',
+      env,
+      run: () => ({ code: 0, stdout: 'ready' }),
+    }),
+  ).toMatchObject({ ok: false });
+});
+
+it('сетевая проба передаёт SSH config в окружение дочернего процесса', () => {
+  const env = { TD_DEPLOY_HOST: 'deploy.example.org', TD_DEPLOY_SSH_CONFIG: '/ssh/config' };
+  const run = createCommandRunner('/repo', (program, args, options) => {
+    expect(program).toBe(process.execPath);
+    expect(args).toContain(env.TD_DEPLOY_HOST);
+    expect(options).toMatchObject({ env, timeout: 30_000 });
+    return 'td-codex-ssh-ready\n';
+  });
+  expect(checkRemoteReachability({ root: '/repo', env, run })).toMatchObject({ ok: true });
 });

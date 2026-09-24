@@ -730,6 +730,20 @@ describe('исключительные продолжения', () => {
     );
   });
 
+  it('недоступный SSH удерживает только deploy, не занимая место локального этапа', () => {
+    const result = run({
+      config: roomy,
+      tasks: [deploy(), ordinary()],
+      registry: { entries: [entry('0001-deploy'), entry('0009-design')] },
+      deployUnavailable: true,
+    });
+    expect(result.actions.some((action) => action.taskId === '0001-deploy')).toBe(false);
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'continue-stage', taskId: '0009-design', stage: 'design' }),
+    );
+    expect(result.notes.join()).toContain('выкладка ждёт подтверждения SSH');
+  });
+
   it('foreign benchmark не считается исключительным и не задерживает обычное продолжение', () => {
     const result = run({
       config: roomy,
