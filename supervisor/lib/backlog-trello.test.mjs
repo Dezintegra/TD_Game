@@ -136,6 +136,76 @@ describe('адресное дополнение зависимостей', () =>
       expect(f.calls.some((call) => ['PUT', 'DELETE'].includes(call.method))).toBe(false);
     },
   );
+  it('дополняет своего остановленного failed-адресата без снятия его захвата', async () => {
+    const f = dependencyFixture();
+    const old = splitDescription(f.cards[0].desc);
+    f.cards[0].idList = 'list-failed';
+    f.cards[0].idMembers = ['me'];
+    f.cards[0].desc = joinDescription(old.human, { ...old.meta, owner: 'A' });
+    const context = { ...f.context, canWriteHeld: () => true };
+    const store = f.store('A');
+    expect(await store.appendTaskDependencies(f.update, context)).toMatchObject({
+      ok: true,
+      task: { status: 'failed', owner: 'A', dependsOn: ['0002-producer'] },
+    });
+    expect(f.cards[0].idMembers).toEqual(['me']);
+    expect(f.cards[0].idList).toBe('list-failed');
+    expect(f.calls.filter((call) => ['POST', 'DELETE'].includes(call.method))).toEqual([]);
+    f.calls.length = 0;
+    expect(await store.appendTaskDependencies(f.update, context)).toMatchObject({
+      ok: true,
+      outcome: 'unchanged',
+    });
+    expect(f.calls.some((call) => call.method === 'PUT')).toBe(false);
+  });
+  it('повторно подтверждает свой failed-адресат после потери ответа без снятия членства', async () => {
+    const f = dependencyFixture();
+    const old = splitDescription(f.cards[0].desc);
+    f.cards[0].idList = 'list-failed';
+    f.cards[0].idMembers = ['me'];
+    f.cards[0].desc = joinDescription(old.human, { ...old.meta, owner: 'A' });
+    const context = { ...f.context, canWriteHeld: () => true };
+    let written = false;
+    f.hook = (method, path) => {
+      if (method === 'PUT' && path === 'cards/card-target') written = true;
+      if (written && method === 'GET' && path === 'cards/card-target') {
+        written = false;
+        return { ok: false, why: 'lost readback' };
+      }
+    };
+    expect(await f.store('A').appendTaskDependencies(f.update, context)).toMatchObject({
+      ok: false,
+    });
+    expect(splitDescription(f.cards[0].desc).meta.dependsOn).toEqual(['0002-producer']);
+    expect(f.cards[0].idMembers).toEqual(['me']);
+    f.hook = null;
+    f.calls.length = 0;
+    expect(await f.store('A').appendTaskDependencies(f.update, context)).toMatchObject({
+      ok: true,
+      outcome: 'unchanged',
+    });
+    expect(f.calls.some((call) => ['PUT', 'POST', 'DELETE'].includes(call.method))).toBe(false);
+  });
+  it.each([
+    ['no activity proof', 'A', 'me', 'failed', null],
+    ['foreign owner', 'B', 'me', 'failed', true],
+    ['foreign member', 'A', 'other', 'failed', true],
+    ['active stage', 'A', 'me', 'failed', false],
+    ['other status', 'A', 'me', 'new', true],
+  ])('не меняет удерживаемого адресата: %s', async (_, owner, member, status, allowed) => {
+    const f = dependencyFixture();
+    const old = splitDescription(f.cards[0].desc);
+    f.cards[0].idList = `list-${status}`;
+    f.cards[0].idMembers = [member];
+    f.cards[0].desc = joinDescription(old.human, { ...old.meta, owner });
+    const result = await f.store('A').appendTaskDependencies(f.update, {
+      ...f.context,
+      canWriteHeld: allowed === null ? undefined : () => allowed,
+    });
+    expect(result).toMatchObject({ ok: false, outcome: 'busy' });
+    expect(f.calls.some((call) => ['PUT', 'POST', 'DELETE'].includes(call.method))).toBe(false);
+    expect(f.cards[0].idMembers).toEqual([member]);
+  });
   it.each(
     ['read', 'post', 'after-claim', 'put', 'confirm', 'release'].flatMap((step) =>
       ['failure', 'throw'].map((mode) => [step, mode]),

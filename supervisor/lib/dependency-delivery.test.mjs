@@ -3,9 +3,53 @@ import { dependencyFixture } from './dependency-updates-fixture.mjs';
 import { deliveryFixture } from './testing/report-delivery-fixture.mjs';
 import { execute } from './execute.mjs';
 import { prepareReportPlan } from './report-plan.mjs';
-import { splitDescription } from './card.mjs';
+import { joinDescription, splitDescription } from './card.mjs';
 
 describe('адресные зависимости в устойчивом плане доставки', () => {
+  it('повторяет сохранённый отчёт для failed-адресата под своим неактивным захватом', async () => {
+    const dependencies = dependencyFixture();
+    const old = splitDescription(dependencies.cards[0].desc);
+    dependencies.cards[0].idList = 'list-failed';
+    dependencies.cards[0].idMembers = ['me'];
+    dependencies.cards[0].desc = joinDescription(old.human, { ...old.meta, owner: 'A' });
+    const f = deliveryFixture({ reportOverrides: { dependencyUpdates: [dependencies.update] } });
+    try {
+      dependencies.cards.push({ ...f.open().recipient.state().cards[0], idBoard: 'b' });
+      const io = (activity) => ({
+        ...dependencies.store('A'),
+        now: f.now,
+        reportStore: f.open().store,
+        readReport: () => f.report,
+        ...(activity ? { tokenActionBlocked: activity } : {}),
+      });
+      expect((await execute([f.action], io()))[0]).toMatchObject({ result: 'failed' });
+      expect(f.open().store.get(f.entry.reportId)).toMatchObject({
+        plan: { version: 1 },
+        progress: [],
+      });
+      expect(splitDescription(dependencies.cards[0].desc).meta.dependsOn).toBeUndefined();
+      const checks = [];
+      const result = await execute(
+        [f.action],
+        io((targetId, reportId) => {
+          checks.push([targetId, reportId]);
+          return false;
+        }),
+      );
+      expect(result[0]).toMatchObject({ result: 'done', status: 'pr' });
+      expect(checks).toContainEqual([dependencies.update.taskId, f.entry.reportId]);
+      expect(dependencies.cards[0].idMembers).toEqual(['me']);
+      expect(dependencies.cards[0].idList).toBe('list-failed');
+      expect(splitDescription(dependencies.cards[0].desc).meta).toMatchObject({
+        owner: 'A',
+        dependsOn: ['0002-producer'],
+        dependencyResults: dependencies.update.dependencyResults,
+      });
+      expect(f.open().store.entries()).toEqual([]);
+    } finally {
+      f.cleanup();
+    }
+  });
   it('продвижение адресата-предшественника сохраняет дополнение из того же отчёта', async () => {
     const dependencies = dependencyFixture();
     dependencies.cards[0].idList = 'list-candidate';

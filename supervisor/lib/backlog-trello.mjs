@@ -351,28 +351,54 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
             dependsOn: candidate.dependsOn,
             dependencyResults: candidate.dependencyResults,
           });
-        // Сохранённое дополнение не доказывает освобождение прежнего захвата.
-        if (fresh.raw.idMembers?.length)
-          return { ok: false, outcome: 'busy', why: 'адресат уже назначен исполнителю' };
+        // Свой остановленный failed-адресат сохраняет членство до возврата.
+        // Его можно дополнить под тем же захватом, лишь когда живой супервизор
+        // подтвердил отсутствие этапа и других отчётов для адресата.
+        const busy = () => ({
+          ok: false,
+          outcome: 'busy',
+          why: 'адресат уже назначен исполнителю',
+        });
+        let held = false;
+        let me;
+        if (fresh.raw.idMembers?.length) {
+          if (
+            fresh.item.task.status !== 'failed' ||
+            fresh.item.task.owner !== machine ||
+            context.canWriteHeld?.(update.taskId) !== true
+          )
+            return busy();
+          me = await whoAmI();
+          if (!me.ok) return me;
+          if (!isDeepStrictEqual(fresh.raw.idMembers, [me.id])) return busy();
+          held = true;
+        }
         if (alreadyPresent()) {
           context.invalidate(update.taskId);
           confirmed = fresh.raw;
           return { ok: true, outcome: 'unchanged' };
         }
-        const me = await whoAmI();
-        if (!me.ok) return me;
-        const taken = await trello.post(`cards/${fresh.raw.id}/idMembers`, { value: me.id });
-        if (!taken.ok)
-          return /already on the card/i.test(taken.why ?? '')
-            ? { ok: false, outcome: 'busy', why: 'адресат уже назначен исполнителю' }
-            : failure(taken);
-        owned = { cardId: fresh.raw.id, memberId: me.id };
+        if (!held) {
+          me = await whoAmI();
+          if (!me.ok) return me;
+          const taken = await trello.post(`cards/${fresh.raw.id}/idMembers`, { value: me.id });
+          if (!taken.ok)
+            return /already on the card/i.test(taken.why ?? '') ? busy() : failure(taken);
+          owned = { cardId: fresh.raw.id, memberId: me.id };
+        }
         board = await freshCards();
         if (!board.ok) return board;
-        fresh = await resolveFresh(update.taskId, board, owned.cardId);
+        fresh = await resolveFresh(update.taskId, board, owned?.cardId ?? fresh.raw.id);
         if (!fresh.ok) return fresh;
         if (!isDeepStrictEqual(fresh.raw.idMembers, [me.id]))
           return failed('захват адресата изменился');
+        if (
+          held &&
+          (fresh.item.task.status !== 'failed' ||
+            fresh.item.task.owner !== machine ||
+            context.canWriteHeld?.(update.taskId) !== true)
+        )
+          return busy();
         plan = mergeFresh();
         if (!plan.ok) return plan;
         candidate = plan.tasks.find((task) => task.id === update.taskId);
@@ -380,10 +406,10 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         const desc = unchanged ? fresh.raw.desc : description();
         context.invalidate(update.taskId);
         if (!unchanged) {
-          const written = await trello.put(`cards/${owned.cardId}`, { desc });
+          const written = await trello.put(`cards/${fresh.raw.id}`, { desc });
           if (!written.ok) return failure(written);
         }
-        const readback = await trello.get(`cards/${owned.cardId}`, { fields });
+        const readback = await trello.get(`cards/${fresh.raw.id}`, { fields });
         if (!readback.ok) return failure(readback);
         const saved = readback.data;
         if (
