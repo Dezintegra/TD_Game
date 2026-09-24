@@ -11,7 +11,27 @@ export function toolControls({
   childScript,
   sshScript,
   id = randomUUID(),
+  profile = 'default',
 }) {
+  const historical = {
+    'historical-revise': ['revise'],
+    'historical-revise-design': ['revise', 'design'],
+    'historical-audit': ['audit'],
+  };
+  if (profile !== 'default') {
+    if (!Object.hasOwn(historical, profile)) throw new Error('Invalid diagnostic profile');
+    if (stage !== historical[profile][0]) throw new Error('Diagnostic profile stage mismatch');
+    return [
+      ...historical[profile].map((skill) => ({
+        id: `read-${skill}`,
+        argv: ['Get-Content', `supervisor/skills/${skill}.md`],
+      })),
+      {
+        id: 'git-status',
+        argv: ['git', '-C', cwd, '--no-optional-locks', 'status', '--porcelain'],
+      },
+    ].map((control) => ({ ...control, invocationId: `${id}:${control.id}` }));
+  }
   if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(remote)) throw new Error('Invalid diagnostic remote');
   if (!/^[a-zA-Z0-9_[\]][a-zA-Z0-9_.@:[\]-]*$/.test(host))
     throw new Error('Invalid diagnostic host');
