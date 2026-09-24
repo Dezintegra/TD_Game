@@ -70,6 +70,7 @@ function harness(over = {}) {
   const logsAsked = [];
   const probed = [];
   const wrote = [];
+  const taskEvents = [];
   const said = [];
 
   const supervisor = createSupervisor({
@@ -119,6 +120,10 @@ function harness(over = {}) {
       wrote.push({ taskId, stage, text, launch });
       return over.writeStageLog?.(taskId, stage, text, launch);
     },
+    writeTaskEvent: (taskId, event) => {
+      taskEvents.push({ taskId, ...event });
+      return over.writeTaskEvent?.(taskId, event) ?? { ok: true };
+    },
     readStageLogs: over.readStageLogs,
     // Рассказчик подставной, и метка запоминается отдельно от текста: судить
     // её по знакам в строке значило бы проверять раскраску, а не выбор.
@@ -138,8 +143,78 @@ function harness(over = {}) {
     await sleep(0);
   };
 
-  return { supervisor, children, killed, logged, saved, answer, logsAsked, probed, wrote, said };
+  return {
+    supervisor,
+    children,
+    killed,
+    logged,
+    saved,
+    answer,
+    logsAsked,
+    probed,
+    wrote,
+    taskEvents,
+    said,
+  };
 }
+
+describe('потоковый журнал задачи', () => {
+  it('сохраняет действия и ошибку до окончания процесса и итогового лога этапа', async () => {
+    const h = harness();
+    expect(h.supervisor.spawnStage(assignment()).ok).toBe(true);
+    const child = h.children[0];
+    child.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: 'CLAUDE.md' } },
+          ],
+        },
+      }) + '\n',
+    );
+    child.stdout.emit(
+      'data',
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'read-1',
+              is_error: true,
+              content: 'CreateProcess failed',
+            },
+          ],
+        },
+      }) + '\n',
+    );
+    expect(h.wrote).toHaveLength(0);
+    expect(h.taskEvents.map((event) => event.kind)).toEqual([
+      'spawn-attempt',
+      'launch-start',
+      'action-start',
+      'action-finish',
+      'error',
+    ]);
+    expect(h.taskEvents.at(-1).detail).toBe('CreateProcess failed');
+    await h.answer({ type: 'result', result: '{}' });
+    expect(h.taskEvents.at(-1).kind).toBe('launch-finish');
+    expect(h.wrote).toHaveLength(1);
+  });
+
+  it('записывает отказ порождения и называет недоступность журнала, не меняя исход', () => {
+    const h = harness({
+      spawnThrows: 'ENOENT',
+      writeTaskEvent: () => ({ ok: false, error: 'disk full' }),
+    });
+    const result = h.supervisor.spawnStage(assignment());
+    expect(result).toMatchObject({ ok: false, reason: 'not-born' });
+    expect(h.taskEvents.map((event) => event.kind)).toEqual(['spawn-attempt', 'spawn-failed']);
+    expect(h.logged.join('\n')).toContain('Журнал задачи 0001-one/design не записан: disk full');
+  });
+});
 
 /** Строка итога этапа из всего, что рассказчик напечатал. */
 const finishedLine = (said) => said.find((line) => line.text.includes('завершён:'));
