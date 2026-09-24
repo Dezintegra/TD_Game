@@ -1,8 +1,180 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
+import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { checkEntry, checkManifest, checkWorkspace, sha256 } from './prepare.mjs';
 import { decodeBoundaryJournal } from '../../lib/refresh-boundary-source.mjs';
+
+export const DELIVERY_ROOT = 'C:/src/dezintegra/TD_Game/.matchlog/refresh-source-deliveries/0372';
+const HASH = /^[a-f0-9]{64}$/u;
+
+// Индекс не содержит собственный hash: digest однозначно задан отсортированной описью.
+export function admitPackageIndex(index) {
+  if (
+    !index ||
+    index.version !== 1 ||
+    !HASH.test(index.buildId) ||
+    !Array.isArray(index.files) ||
+    !index.files.length ||
+    index.files.length > 10000 ||
+    Object.keys(index).sort().join(',') !== 'buildId,files,version'
+  )
+    throw new Error('invalid-package-index');
+  const names = new Set();
+  let previous = '';
+  for (const entry of index.files) {
+    checkEntry(entry.path);
+    if (
+      entry.path === 'package-index.json' ||
+      entry.path <= previous ||
+      names.has(entry.path.toLowerCase()) ||
+      !HASH.test(entry.sha256) ||
+      !Number.isSafeInteger(entry.size) ||
+      entry.size < 0 ||
+      Object.keys(entry).sort().join(',') !== 'path,sha256,size'
+    )
+      throw new Error('invalid-package-entry');
+    names.add(entry.path.toLowerCase());
+    previous = entry.path;
+  }
+  return sha256(
+    JSON.stringify({
+      version: 1,
+      buildId: index.buildId,
+      files: index.files.map(({ path: name, size, sha256: hash }) => ({
+        path: name,
+        size,
+        sha256: hash,
+      })),
+    }),
+  );
+}
+
+function ordinaryDirectory(directory, io) {
+  const absolute = path.resolve(directory);
+  if (
+    !io.lstatSync(absolute).isDirectory() ||
+    io.lstatSync(absolute).isSymbolicLink() ||
+    io.realpathSync(absolute) !== absolute
+  )
+    throw new Error('package-reparse');
+  return absolute;
+}
+
+export function verifyPackage(directory, index, io = fs) {
+  const packageSha256 = admitPackageIndex(index);
+  const root = ordinaryDirectory(directory, io);
+  const expected = new Map(index.files.map((entry) => [entry.path, entry]));
+  const seen = new Set();
+  const files = [];
+  function visit(parent, prefix = '') {
+    for (const name of io.readdirSync(parent)) {
+      const relative = checkEntry(prefix ? `${prefix}/${name}` : name);
+      const absolute = checkWorkspace(root, path.join(root, relative), io);
+      const stat = io.lstatSync(absolute);
+      if (stat.isDirectory()) {
+        if (![...expected.keys()].some((key) => key.startsWith(`${relative}/`)))
+          throw new Error('unexpected-package-directory');
+        visit(absolute, relative);
+        continue;
+      }
+      if (!stat.isFile()) throw new Error('package-file-type');
+      if (relative === 'package-index.json') {
+        if (admitPackageIndex(JSON.parse(io.readFileSync(absolute, 'utf8'))) !== packageSha256)
+          throw new Error('stored-index-mismatch');
+        seen.add(relative);
+        continue;
+      }
+      const entry = expected.get(relative);
+      if (!entry) throw new Error('unexpected-package-file');
+      if (stat.size !== entry.size) throw new Error('package-size-mismatch');
+      const bytes = io.readFileSync(absolute);
+      if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256)
+        throw new Error('package-hash-mismatch');
+      seen.add(relative);
+      files.push({ ...entry, absolutePath: absolute });
+    }
+  }
+  visit(root);
+  if (seen.size !== index.files.length + 1) throw new Error('missing-package-file');
+  return { packageSha256, files: files.sort((a, b) => (a.path < b.path ? -1 : 1)) };
+}
+
+function checkedDestination(destination, io) {
+  const absolute = path.resolve(destination);
+  if (absolute !== path.resolve(DELIVERY_ROOT)) throw new Error('unsupported-delivery-root');
+  // Проверка всех родителей нужна и при ещё не созданном конечном каталоге.
+  const volume = path.parse(absolute).root;
+  checkWorkspace(volume, absolute, io);
+  return absolute;
+}
+
+export function verifyDelivery({ destination, index }, dependencies = {}) {
+  const io = dependencies.fs ?? fs;
+  const packageSha256 = admitPackageIndex(index);
+  const root = checkedDestination(destination, io);
+  const final = checkWorkspace(root, path.join(root, packageSha256), io);
+  const verified = verifyPackage(final, index, io);
+  return {
+    version: 1,
+    status: 'verified',
+    ...verified,
+    verifiedUtc: (dependencies.now ?? (() => new Date()))().toISOString(),
+    runtimeExecuted: false,
+    sourceFallback: false,
+  };
+}
+
+function writeAndFlush(file, bytes, io) {
+  bytes = Buffer.from(bytes);
+  const descriptor = io.openSync(file, 'wx');
+  try {
+    let written = 0;
+    while (written < bytes.length) {
+      const count = io.writeSync(descriptor, bytes, written, bytes.length - written);
+      if (count <= 0) throw new Error('package-short-write');
+      written += count;
+    }
+    io.fsyncSync(descriptor);
+  } finally {
+    io.closeSync(descriptor);
+  }
+}
+
+export function deliverPackage({ source, destination, index }, dependencies = {}) {
+  const io = dependencies.fs ?? fs;
+  const now = dependencies.now ?? (() => new Date());
+  const verified = verifyPackage(source, index, io);
+  const root = checkedDestination(destination, io);
+  io.mkdirSync(root, { recursive: true });
+  ordinaryDirectory(root, io);
+  const final = checkWorkspace(root, path.join(root, verified.packageSha256), io);
+  if (io.existsSync(final)) {
+    // Идентичный повтор проверяет bytes, а не доверяет имени по digest.
+    return { ...verifyDelivery({ destination, index }, { fs: io, now }), reused: true };
+  }
+  const staging = checkWorkspace(root, path.join(root, `${verified.packageSha256}.staging`), io);
+  io.mkdirSync(staging);
+  for (const entry of index.files) {
+    const target = checkWorkspace(root, path.join(staging, entry.path), io);
+    io.mkdirSync(path.dirname(target), { recursive: true });
+    writeAndFlush(
+      target,
+      io.readFileSync(checkWorkspace(source, path.join(source, entry.path), io)),
+      io,
+    );
+  }
+  writeAndFlush(path.join(staging, 'package-index.json'), JSON.stringify(index), io);
+  verifyPackage(staging, index, io);
+  // На закреплённой Windows rename каталога не заменяет существующий каталог.
+  if (io.existsSync(final)) throw new Error('delivery-publish-conflict');
+  io.renameSync(staging, final);
+  return {
+    ...verifyDelivery({ destination, index }, { fs: io, now }),
+    copiedUtc: now().toISOString(),
+    reused: false,
+  };
+}
 
 const NATIVE_FILES = [
   'codex-rs/Cargo.lock',

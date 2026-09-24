@@ -82,3 +82,11 @@ Cargo check, сверяет точный harness list и запускает де
 выдаёт seq до сериализации, проверяет handshake/seal и сохраняет failure status.
 Настоящий pipe, общий collection limit, dispatch, helper, token и ACL wrappers
 остаются открытыми пунктами 3.2–5.1; runtime не активирован.
+
+Проверенные примитивы `admitPackageIndex`, `verifyPackage`, `deliverPackage`
+и `verifyDelivery` работают с явной описью bytes. Тесты подменяют filesystem
+полностью: они не обращаются к постоянному хранилищу. Проверка конечной копии
+не читает исходный пакет, отвергает лишние/пропущенные файлы, symlink/reparse,
+повреждение размера/hash и ошибки flush. Эти функции пока не подключены
+к CLI: окончательный состав пакета, admission receipts и build/reproduce
+остаются в пункте 2.2. Два синтетических файла теста не являются пакетом 0372.
