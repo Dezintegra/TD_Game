@@ -6,7 +6,7 @@
 
 - [x] 2.1 Extend process identity to verify an explicit canonical diagnostic entrypoint and let watchdog/stop recognize only an attested staged owner; retain the ordinary main-entrypoint default. Test correct owner, wrong entrypoint, stale lock and unregistered tree.
 - [x] 2.2 Attest loaded `codeSha` separately from `rootSha`, check source cleanliness at startup and before launch, and make client/endpoint reject changed or fabricated attestation. Run Codex readiness under a manual pause only for the opt-in endpoint while leaving scheduling paused. Test distinct root/code revisions, changed SHA, dirty source and a request that cannot start provider.
-- [ ] 2.3 Update host instructions with single-owner staged startup, verification and rollback. Run focused endpoint/process-identity tests, lint, formatting and strict OpenSpec validation; commit and push the support patch with green CI.
+- [x] 2.3 Update host instructions with single-owner staged startup, verification and rollback. Run focused endpoint/process-identity tests, lint, formatting and strict OpenSpec validation; commit and push the support patch with green CI.
 
 ## 3. Prove live host acceptance
 
