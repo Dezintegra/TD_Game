@@ -127,6 +127,7 @@ export async function diagnoseStageTools({
   buildCommand = stageCommand,
   onStart = () => {},
   onResult = () => {},
+  profile = 'default',
 }) {
   const provider = config.provider ?? 'claude';
   const command = buildCommand({
@@ -138,6 +139,8 @@ export async function diagnoseStageTools({
   });
   const environment = provider === 'codex' ? codexGitEnvironment(env, root, command.cwd) : env;
   const context = toolContext(command, provider, environment);
+  // Проверяем профиль до записи вспомогательных файлов и допуска запуска.
+  toolControls({ stage: assignment.stage, cwd: command.cwd, profile });
   if (!sameToolContext(expectedContext, context))
     return { verdict: 'inconclusive', context, checks: [], reason: 'unverified-context' };
   const parent = join(command.cwd, '.matchlog');
@@ -152,22 +155,30 @@ export async function diagnoseStageTools({
     host: env?.TD_DEPLOY_HOST,
     childScript: script,
     sshScript: fileURLToPath(new URL('../../scripts/deploy-remote.mjs', import.meta.url)),
+    profile,
   });
   const deadline = now() + TOOL_DIAGNOSTIC_TIMEOUT_MS;
   const facts = [];
   const runs = [];
   let accountingError = null;
+  let stopReason = null;
+  const attempted = new Set();
   for (const control of controls) {
     const timeoutMs = deadline - now();
-    if (timeoutMs <= 0) break;
+    if (timeoutMs <= 0) {
+      stopReason = 'deadline';
+      break;
+    }
     const startedAt = now();
     const launchId = randomUUID();
     try {
-      await onStart(launchId);
+      await onStart(launchId, control);
     } catch (error) {
       accountingError = error.message;
+      stopReason = 'admission-or-persistence';
       break;
     }
+    attempted.add(control.id);
     const run = await start({
       command: {
         ...command,
@@ -180,17 +191,29 @@ export async function diagnoseStageTools({
     }).finished;
     const finishedAt = now();
     // Сырой ответ сохраняет в том числе фактический расход диагностической сессии.
-    runs.push({ ...run, launchId, startedAt, finishedAt });
+    runs.push({ ...run, launchId, startedAt, finishedAt, control });
+    facts.push(...controlFacts({ ...run, startedAt, finishedAt }, control, context, provider));
     try {
-      await onResult(launchId, run);
+      await onResult(launchId, run, { control, startedAt, finishedAt });
     } catch (error) {
       accountingError = error.message;
+      stopReason = 'accounting-or-persistence';
       break;
     }
-    facts.push(...controlFacts({ ...run, startedAt, finishedAt }, control, context, provider));
-    if (classifyToolControls({ context, controls, facts }).verdict === 'confirmed') break;
+    if (
+      profile === 'default' &&
+      classifyToolControls({ context, controls, facts }).verdict === 'confirmed'
+    )
+      break;
   }
   const result = classifyToolControls({ context, controls, facts });
+  if (profile !== 'default') {
+    result.checks = result.checks.map((check, index) => ({
+      ...check,
+      invocationId: controls[index].invocationId,
+      ...(!attempted.has(check.id) ? { status: 'not-run', reason: stopReason } : {}),
+    }));
+  }
   if (
     result.verdict === 'healthy' &&
     runs.some((run) => run.code !== 0 || run.killedBy || run.error)

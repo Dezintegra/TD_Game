@@ -17,7 +17,7 @@ function validRejection(entry) {
   );
 }
 
-export const REPORT_STORE_VERSION = 2;
+export const REPORT_STORE_VERSION = 3;
 const dispositions = [
   'ordinary',
   'diagnosing',
@@ -28,7 +28,7 @@ const dispositions = [
 ];
 
 function validate(value) {
-  if (![1, REPORT_STORE_VERSION].includes(value?.version))
+  if (![1, 2, REPORT_STORE_VERSION].includes(value?.version))
     throw new Error('unsupported report store version');
   if (!Array.isArray(value.reports)) throw new Error('invalid report queue');
   const ids = new Set();
@@ -56,7 +56,44 @@ function validate(value) {
       throw new Error('invalid report envelope');
     ids.add(entry.reportId);
   }
-  return value.reports;
+  if (value.version < 3 && Object.hasOwn(value, 'diagnosticRequests'))
+    throw new Error('diagnostic collection in legacy store');
+  const diagnosticRequests = value.version < 3 ? [] : value.diagnosticRequests;
+  if (!Array.isArray(diagnosticRequests)) throw new Error('invalid diagnostic collection');
+  const requestIds = new Set();
+  for (const entry of diagnosticRequests) {
+    if (
+      !entry ||
+      !text(entry.requestId) ||
+      !text(entry.fingerprint) ||
+      !entry.request ||
+      entry.request.requestId !== entry.requestId ||
+      !entry.source ||
+      !entry.authorization ||
+      !text(entry.createdAt) ||
+      !['accepted', 'running', 'completed', 'refused', 'uncertain'].includes(entry.state) ||
+      !Array.isArray(entry.launches) ||
+      requestIds.has(entry.requestId) ||
+      (['completed', 'refused'].includes(entry.state) && !entry.result)
+    )
+      throw new Error('invalid diagnostic request');
+    const launches = new Set();
+    for (const launch of entry.launches) {
+      if (
+        !text(launch.launchId) ||
+        !text(launch.startedAt) ||
+        !launch.control ||
+        !['intent', 'raw', 'accounted'].includes(launch.state) ||
+        launches.has(launch.launchId) ||
+        (launch.state !== 'intent' && !launch.run) ||
+        (launch.state === 'accounted' && !launch.receipt)
+      )
+        throw new Error('invalid diagnostic launch');
+      launches.add(launch.launchId);
+    }
+    requestIds.add(entry.requestId);
+  }
+  return { reports: value.reports, diagnosticRequests };
 }
 
 /** Совпадение этапа не доказывает совпадение запуска после возврата задачи. */
@@ -74,15 +111,27 @@ export function sameReportLaunch(entry, launch) {
 /** Единственный владелец замка пишет синхронно: завершения не обгоняют фиксацию. */
 export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
   let reports;
+  let diagnosticRequests;
   try {
-    reports = validate(JSON.parse(disk.readFileSync(path, 'utf8')));
+    ({ reports, diagnosticRequests } = validate(JSON.parse(disk.readFileSync(path, 'utf8'))));
   } catch (error) {
     if (error.code !== 'ENOENT')
       throw new Error(`report store ${path}: ${error.message}`, { cause: error });
     reports = [];
+    diagnosticRequests = [];
   }
-  function commit(next) {
-    const data = JSON.stringify({ version: REPORT_STORE_VERSION, reports: next });
+  const restored = new Set(
+    diagnosticRequests.filter((entry) => entry.state === 'running').map((entry) => entry.requestId),
+  );
+  let pendingDiagnostics = null;
+  function commit(next, diagnostics = diagnosticRequests) {
+    if (pendingDiagnostics && diagnostics !== pendingDiagnostics)
+      throw new Error('diagnostic storage pending');
+    const data = JSON.stringify({
+      version: REPORT_STORE_VERSION,
+      reports: next,
+      diagnosticRequests: diagnostics,
+    });
     validate(JSON.parse(data));
     const temporary = `${path}.tmp`;
     let fd;
@@ -94,14 +143,136 @@ export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
       disk.closeSync(fd);
       fd = undefined;
       disk.renameSync(temporary, path);
+      if (disk.readFileSync(path, 'utf8') !== data) throw new Error('store readback failed');
       reports = JSON.parse(data).reports;
+      diagnosticRequests = JSON.parse(data).diagnosticRequests;
     } catch (error) {
       throw new Error(`report store ${path}: ${error.message}`, { cause: error });
     } finally {
       if (fd !== undefined) disk.closeSync(fd);
     }
   }
+  function diagnostic(id) {
+    const entry = diagnosticRequests.find((item) => item.requestId === id);
+    if (!entry) throw new Error(`unknown diagnostic request ${id}`);
+    return entry;
+  }
+  function changeDiagnostic(id, transform) {
+    if (pendingDiagnostics) throw new Error('diagnostic storage pending');
+    const next = diagnosticRequests.map((entry) =>
+      entry.requestId === id ? transform(structuredClone(entry)) : entry,
+    );
+    validate(
+      JSON.parse(
+        JSON.stringify({ version: REPORT_STORE_VERSION, reports, diagnosticRequests: next }),
+      ),
+    );
+    try {
+      commit(reports, next);
+    } catch (error) {
+      // После завершения процесса повторяется запись, а не запуск.
+      pendingDiagnostics = next;
+      throw error;
+    }
+    return structuredClone(diagnostic(id));
+  }
   return {
+    diagnosticEntries: () => structuredClone(diagnosticRequests),
+    getDiagnostic(id) {
+      if (pendingDiagnostics) throw new Error('diagnostic storage pending');
+      const entry = diagnosticRequests.find((item) => item.requestId === id);
+      return entry
+        ? structuredClone({ ...entry, ...(restored.has(id) ? { state: 'uncertain' } : {}) })
+        : null;
+    },
+    acceptDiagnostic(request, { fingerprint, source, authorization, at }) {
+      if (pendingDiagnostics) throw new Error('diagnostic storage pending');
+      const previous = diagnosticRequests.find((entry) => entry.requestId === request.requestId);
+      if (previous) {
+        if (
+          previous.fingerprint !== fingerprint ||
+          JSON.stringify(previous.request) !== JSON.stringify(request)
+        )
+          throw new Error('diagnostic fingerprint conflict');
+        return this.getDiagnostic(request.requestId);
+      }
+      const entry = {
+        requestId: request.requestId,
+        request,
+        fingerprint,
+        source,
+        authorization,
+        createdAt: at,
+        state: 'accepted',
+        launches: [],
+        result: null,
+      };
+      commit(reports, [...diagnosticRequests, entry]);
+      return this.getDiagnostic(request.requestId);
+    },
+    diagnosticLaunchIntent(id, launch) {
+      const entry = diagnostic(id);
+      if (
+        restored.has(id) ||
+        !['accepted', 'running'].includes(entry.state) ||
+        entry.launches.some(
+          (item) => item.state !== 'accounted' || item.launchId === launch.launchId,
+        )
+      )
+        throw new Error('diagnostic launch uncertain or closed');
+      return changeDiagnostic(id, (current) => ({
+        ...current,
+        state: 'running',
+        launches: [...current.launches, { ...launch, state: 'intent' }],
+      }));
+    },
+    diagnosticRawResult(id, launchId, run) {
+      const launch = diagnostic(id).launches.find((item) => item.launchId === launchId);
+      if (!launch) throw new Error('unknown diagnostic launch');
+      if (launch.run) {
+        if (JSON.stringify(launch.run) !== JSON.stringify(run))
+          throw new Error('diagnostic raw conflict');
+        return this.getDiagnostic(id);
+      }
+      return changeDiagnostic(id, (entry) => ({
+        ...entry,
+        launches: entry.launches.map((item) =>
+          item.launchId === launchId ? { ...item, state: 'raw', run } : item,
+        ),
+      }));
+    },
+    diagnosticAccounted(id, launchId, receipt) {
+      const launch = diagnostic(id).launches.find((item) => item.launchId === launchId);
+      if (!launch?.run) throw new Error('diagnostic raw result required');
+      if (launch.receipt && JSON.stringify(launch.receipt) !== JSON.stringify(receipt))
+        throw new Error('diagnostic receipt conflict');
+      return changeDiagnostic(id, (entry) => ({
+        ...entry,
+        launches: entry.launches.map((item) =>
+          item.launchId === launchId ? { ...item, state: 'accounted', receipt } : item,
+        ),
+      }));
+    },
+    completeDiagnostic(id, result, state = 'completed') {
+      const entry = diagnostic(id);
+      if (!['completed', 'refused', 'uncertain'].includes(state))
+        throw new Error('invalid diagnostic completion');
+      if (entry.result) {
+        if (JSON.stringify(entry.result) !== JSON.stringify(result) || entry.state !== state)
+          throw new Error('diagnostic completion conflict');
+        return this.getDiagnostic(id);
+      }
+      if (state === 'completed' && entry.launches.some((launch) => launch.state !== 'accounted'))
+        throw new Error('diagnostic accounting pending');
+      const saved = changeDiagnostic(id, (current) => ({ ...current, state, result }));
+      restored.delete(id);
+      return saved;
+    },
+    retryDiagnosticStorage() {
+      if (!pendingDiagnostics) return;
+      commit(reports, pendingDiagnostics);
+      pendingDiagnostics = null;
+    },
     entries: () => structuredClone(reports),
     get: (id) => structuredClone(reports.find((entry) => entry.reportId === id) ?? null),
     archive(id) {
@@ -122,13 +293,15 @@ export function openReportStore(path, { disk = fs, uuid = randomUUID } = {}) {
         throw new Error('diagnostic archive readback failed');
     },
     verifySaved() {
+      if (pendingDiagnostics) return { ok: false, count: 0, why: 'diagnostic storage pending' };
       try {
         const saved = validate(JSON.parse(disk.readFileSync(path, 'utf8')));
-        if (JSON.stringify(saved) !== JSON.stringify(reports))
+        if (JSON.stringify(saved) !== JSON.stringify({ reports, diagnosticRequests }))
           return { ok: false, count: 0, why: 'очередь на диске отличается от принятой в памяти' };
-        return { ok: true, count: saved.length };
+        return { ok: true, count: saved.reports.length };
       } catch (error) {
-        if (error.code === 'ENOENT' && reports.length === 0) return { ok: true, count: 0 };
+        if (error.code === 'ENOENT' && reports.length === 0 && diagnosticRequests.length === 0)
+          return { ok: true, count: 0 };
         return {
           ok: false,
           count: 0,

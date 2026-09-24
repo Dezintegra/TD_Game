@@ -1,6 +1,6 @@
 ## 1. Prepare the isolated host build
 
-- [ ] 1.1 Integrate the committed PR #303 endpoint source with current main in this assigned worktree, without editing the 0383-owned tree; verify exact source SHAs, clean source and successful syntax/import checks.
+- [x] 1.1 Integrate the committed PR #303 endpoint source with current main in this assigned worktree, without editing the 0383-owned tree; verify exact source SHAs, clean source and successful syntax/import checks.
 
 ## 2. Attest the sole owner and loaded code
 
