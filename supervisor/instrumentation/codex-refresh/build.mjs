@@ -216,7 +216,7 @@ export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
           'unified_exec::backends::elevated::tests::refresh_boundary_singleflight_blocking_task_preserves_context' &&
         name !==
           'unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context' &&
-        !/^refresh_boundary::(?:tests|token_tests)::refresh_boundary_(?:wire|singleflight|token)_[a-z_]+$/u.test(
+        !/^refresh_boundary::(?:tests|token_tests)::refresh_boundary_(?:wire|singleflight|token|dispatch)_[a-z_]+$/u.test(
           name,
         ),
     )
@@ -300,7 +300,7 @@ export function verifyAppliedPatch(sourceRoot, patchPath, run = spawnSync) {
 // remain unavailable until their independent checks and receipts exist.
 export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
   if (mode === 'negative') return runNegative({ projectRoot, group }, dependencies);
-  if (mode !== 'check' || !['wire', 'singleflight', 'token'].includes(group))
+  if (mode !== 'check' || !['wire', 'singleflight', 'token', 'dispatch'].includes(group))
     throw new Error('unsupported-build-mode');
   const io = dependencies.fs ?? fs;
   const run = dependencies.run ?? spawnSync;
@@ -416,7 +416,7 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
       if (
         !decoded.integrity ||
         !decoded.completeness ||
-        decoded.frames.length !== (group === 'wire' ? 2 : 7)
+        decoded.frames.length !== { wire: 2, singleflight: 7, dispatch: 10 }[group]
       )
         throw new Error('native-reader-mismatch');
       receipt.reader = {
@@ -446,6 +446,22 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
 
 // Fixed source mutations only: no user supplied program, path or Cargo filter.
 const MUTATIONS = {
+  dispatch: [
+    [
+      'refresh_boundary.rs',
+      'reuse-attempt-id',
+      'attempt_id: self.next_id()?,',
+      'attempt_id: self.attempt_id.clone(),',
+      'refresh_boundary::tests::refresh_boundary_dispatch_leaf_and_attempt_identity',
+    ],
+    [
+      'refresh_boundary.rs',
+      'ignore-cancelled-attempt',
+      'if !self.finished {',
+      'if false {',
+      'refresh_boundary::tests::refresh_boundary_dispatch_cancelled_attempt_is_incomplete',
+    ],
+  ],
   singleflight: [
     [
       'setup.rs',

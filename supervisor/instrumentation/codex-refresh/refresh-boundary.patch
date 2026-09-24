@@ -46,10 +46,10 @@ index 0ca4dcaf..1fc39518 100644
  pub use wfp::install_wfp_filters_for_account;
 diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
 new file mode 100644
-index 00000000..7076ce54
+index 00000000..9c98d321
 --- /dev/null
 +++ b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
-@@ -0,0 +1,1548 @@
+@@ -0,0 +1,1710 @@
 +//! Bounded, opt-in diagnostic transport. No environment lookup or OS calls.
 +//! Callsite integration and native pipe adapter are separate admission steps.
 +use serde::Serialize;
@@ -64,6 +64,47 @@ index 00000000..7076ce54
 +    pub attempt_id: Id,
 +    writer: Arc<Mutex<Writer>>,
 +    clock: Arc<dyn Fn() -> Result<ClockSample, &'static str> + Send + Sync>,
++}
++impl std::fmt::Debug for DiagnosticContext {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("DiagnosticContext { .. }")
++    }
++}
++
++/// Explicit collector launch admission, owned by the session rather than TLS.
++#[derive(Clone, Debug)]
++pub struct DiagnosticLaunch {
++    pub invocation_id: Id,
++    pub context: DiagnosticContext,
++}
++
++pub struct AttemptGuard {
++    context: DiagnosticContext,
++    finished: bool,
++}
++impl AttemptGuard {
++    pub fn context(&self) -> &DiagnosticContext {
++        &self.context
++    }
++    pub fn finish(mut self, success: bool) {
++        self.context.emit(Event::AttemptEnd {
++            call_id: self.context.call_id.clone(),
++            attempt_id: self.context.attempt_id.clone(),
++            result: if success {
++                RefreshResult::Ok
++            } else {
++                RefreshResult::Error
++            },
++        });
++        self.finished = true;
++    }
++}
++impl Drop for AttemptGuard {
++    fn drop(&mut self) {
++        if !self.finished {
++            self.context.mark_incomplete();
++        }
++    }
 +}
 +impl DiagnosticContext {
 +    pub fn new(call_id: Id, attempt_id: Id, writer: Writer) -> Self {
@@ -92,6 +133,41 @@ index 00000000..7076ce54
 +        if let Ok(mut writer) = self.writer.lock() {
 +            writer.incomplete = true;
 +        }
++    }
++    pub fn dispatch_leaf(
++        &self,
++        invocation_id: Id,
++        provider_session_id: Id,
++        provider_tool_call_id: Id,
++        parent_call_id: Option<Id>,
++    ) -> Option<Self> {
++        let call_id = self.next_id()?;
++        let context = Self {
++            call_id: call_id.clone(),
++            ..self.clone()
++        };
++        context.emit(Event::LeafDispatch {
++            call_id,
++            invocation_id,
++            provider_session_id,
++            provider_tool_call_id,
++            parent_call_id,
++        });
++        Some(context)
++    }
++    pub fn begin_attempt(&self) -> Option<AttemptGuard> {
++        let context = Self {
++            attempt_id: self.next_id()?,
++            ..self.clone()
++        };
++        context.emit(Event::AttemptBegin {
++            call_id: context.call_id.clone(),
++            attempt_id: context.attempt_id.clone(),
++        });
++        Some(AttemptGuard {
++            context,
++            finished: false,
++        })
 +    }
 +    pub fn next_id(&self) -> Option<Id> {
 +        let mut writer = self.writer.lock().ok()?;
@@ -253,6 +329,34 @@ index 00000000..7076ce54
 +#[derive(Serialize)]
 +#[serde(tag = "kind", content = "body")]
 +pub enum Event {
++    #[serde(rename = "leaf-dispatch")]
++    LeafDispatch {
++        #[serde(rename = "callId")]
++        call_id: Id,
++        #[serde(rename = "invocationId")]
++        invocation_id: Id,
++        #[serde(rename = "providerSessionId")]
++        provider_session_id: Id,
++        #[serde(rename = "providerToolCallId")]
++        provider_tool_call_id: Id,
++        #[serde(rename = "parentCallId")]
++        parent_call_id: Option<Id>,
++    },
++    #[serde(rename = "attempt-begin")]
++    AttemptBegin {
++        #[serde(rename = "callId")]
++        call_id: Id,
++        #[serde(rename = "attemptId")]
++        attempt_id: Id,
++    },
++    #[serde(rename = "attempt-end")]
++    AttemptEnd {
++        #[serde(rename = "callId")]
++        call_id: Id,
++        #[serde(rename = "attemptId")]
++        attempt_id: Id,
++        result: RefreshResult,
++    },
 +    #[serde(rename = "refresh-leader")]
 +    RefreshLeader(RefreshEdge),
 +    #[serde(rename = "refresh-join")]
@@ -488,6 +592,64 @@ index 00000000..7076ce54
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++    #[test]
++    fn refresh_boundary_dispatch_leaf_and_attempt_identity() {
++        let root = flight_context();
++        let first = root
++            .dispatch_leaf(id("invocation"), id("session"), id("provider-first"), None)
++            .unwrap();
++        let second = root
++            .dispatch_leaf(
++                id("invocation"),
++                id("session"),
++                id("provider-nested"),
++                Some(first.call_id.clone()),
++            )
++            .unwrap();
++        assert_ne!(first.call_id.0, second.call_id.0);
++        let attempt1 = first.begin_attempt().unwrap();
++        let attempt1_id = attempt1.context().attempt_id.0.clone();
++        attempt1.finish(false);
++        let attempt2 = first.begin_attempt().unwrap();
++        assert_ne!(attempt1_id, attempt2.context().attempt_id.0);
++        attempt2.finish(true);
++        second.begin_attempt().unwrap().finish(true);
++        let records = events(&root);
++        let leaves: Vec<_> = records
++            .iter()
++            .filter(|r| r["kind"] == "leaf-dispatch")
++            .collect();
++        assert_eq!(leaves.len(), 2);
++        assert_eq!(leaves[0]["body"]["providerToolCallId"], "provider-first");
++        assert_eq!(leaves[1]["body"]["providerToolCallId"], "provider-nested");
++        assert_eq!(
++            leaves[1]["body"]["parentCallId"],
++            leaves[0]["body"]["callId"]
++        );
++        assert_eq!(
++            records
++                .iter()
++                .filter(|r| r["kind"] == "attempt-end" && r["body"]["result"] == "error")
++                .count(),
++            1
++        );
++        assert!(root.healthy());
++        let mut writer = root.writer.lock().unwrap();
++        writer.seal(&clock()).unwrap();
++        let mut sink = FakeSink::default();
++        writer.drain(&mut sink).unwrap();
++        if let Some(path) = std::env::var_os("REFRESH_BOUNDARY_TEST_FIXTURE") {
++            std::fs::write(path, sink.bytes).unwrap();
++        }
++    }
++    #[test]
++    fn refresh_boundary_dispatch_cancelled_attempt_is_incomplete() {
++        let root = flight_context();
++        let attempt = root.begin_attempt().unwrap();
++        drop(attempt);
++        assert!(!root.healthy());
++        assert!(!events(&root).iter().any(|r| r["kind"] == "attempt-end"));
++    }
 +    fn flight_context() -> DiagnosticContext {
 +        let mut writer = writer();
 +        writer.enqueue(handshake(), &clock()).unwrap();

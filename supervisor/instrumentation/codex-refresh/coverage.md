@@ -158,5 +158,13 @@ sticky health после await. Шесть singleflight tests и четыре ca
 3201 passed, 2 failed — dependency-delivery и watch-lifetime. Leaf dispatch,
 IPC/helper, ACL sites и пакет по-прежнему не завершены.
 
+Dispatch primitives increment: типизированные leaf/attempt events сохраняют
+provider mapping и parent ID; отдельный AttemptGuard получает новый attempt ID,
+а незавершённый guard помечает общий writer incomplete. Два native tests и две
+мутации прошли; Rust fixture из 10 frames принят Node wire reader. Receipt
+`receipts/dispatch.json` явно ограничен writer primitives: core handler ещё
+не подключён, 3.2 открыт. Pipeline: 3198 passed, 5 failed — stage-tool-recovery,
+tool-retry, tool-settlement, watch-lifetime; в store tests сохраняется EPERM rename.
+
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

@@ -70,7 +70,7 @@ ACL, профиля или привилегий. Этот отказ Git не д
 
 ### Rust wire writer и частичный driver
 
-`build.mjs` поддерживает `check --group wire`, `singleflight`, `token`: сверяет source inputs,
+`build.mjs` поддерживает `check --group wire`, `singleflight`, `token`, `dispatch`: сверяет source inputs,
 patch/recipe hashes и обратное применение patch к тестируемому source, выполняет
 Cargo check, сверяет точный harness list и запускает соответствующую группу Rust tests.
 Старый fixture удаляется перед запуском, свежие bytes проверяет Node reader.
@@ -91,7 +91,11 @@ Cargo check, сверяет точный harness list и запускает со
 к CLI: окончательный состав пакета, admission receipts и build/reproduce
 остаются в пункте 2.2. Два синтетических файла теста не являются пакетом 0372.
 
-Режим `negative --group singleflight|carrier|token` содержит фиксированные
+Группа `dispatch` пока проверяет только writer primitives: mapping двух leaf
+calls, отдельные attempt IDs и incomplete при отмене. Это не проверка core
+handler с fake executor; пункт 3.2 остаётся открытым.
+
+Режим `negative --group singleflight|carrier|token|dispatch` содержит фиксированные
 source mutations и точные имена tests. Сначала проверяется исходный patch,
 затем каждая мутация обязана дать именно assertion failure выбранного теста;
 ошибка компиляции, timeout или падение другого теста не принимаются.

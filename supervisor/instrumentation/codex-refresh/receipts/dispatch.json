@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "stage": "partial-source",
+  "group": "dispatch",
+  "startedUtc": "2026-09-24T12:36:48.942Z",
+  "patchSha256": "3ec3fa042d9bd5dcd3d1d8ad4de33590cfff0653eec14e8bd14f5e29f0f6ad7a",
+  "recipeSha256": "286cd87aed5384c50a6d9c6b0130bcde6d1f8996d6b9daa59ccb44b53d4a586b",
+  "driverSha256": "ae2acd66d96529863faf90924d9dfbaecd34db73f553f8b28f370308e51e27d5",
+  "baseline": {
+    "receiptVersion": 1,
+    "stage": "partial-source",
+    "group": "dispatch",
+    "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+    "patchSha256": "3ec3fa042d9bd5dcd3d1d8ad4de33590cfff0653eec14e8bd14f5e29f0f6ad7a",
+    "recipeSha256": "286cd87aed5384c50a6d9c6b0130bcde6d1f8996d6b9daa59ccb44b53d4a586b",
+    "driverSha256": "ae2acd66d96529863faf90924d9dfbaecd34db73f553f8b28f370308e51e27d5",
+    "startedUtc": "2026-09-24T12:37:02.102Z",
+    "runtimeExecuted": false,
+    "productionWindowsBoundaryTested": false,
+    "verifiedSourceInputs": 6498,
+    "commands": [
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.95.0",
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "-j",
+          "2",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "-p",
+          "codex-windows-sandbox",
+          "--lib"
+        ],
+        "status": 0,
+        "error": null,
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderrSha256": "0875e3519b8a570a7dbdf9de54bf358ef65a1cf88386df0ba203e98b229add3d"
+      },
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.95.0",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "-j",
+          "2",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "-p",
+          "codex-windows-sandbox",
+          "--lib",
+          "refresh_boundary_dispatch_",
+          "--",
+          "--list"
+        ],
+        "status": 0,
+        "error": null,
+        "stdoutSha256": "77ea6459543f810b8e2744dbf5e41f2020c6e11a64da6b38d479e0593b23e3ae",
+        "stderrSha256": "40ce6bf110bf6e883e2499a0462f84f14c49790e022b08389619294442382653"
+      },
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.95.0",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "-j",
+          "2",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "-p",
+          "codex-windows-sandbox",
+          "--lib",
+          "refresh_boundary_dispatch_",
+          "--",
+          "--nocapture"
+        ],
+        "status": 0,
+        "error": null,
+        "stdoutSha256": "5cf5bbb4716ee667f452802e0dae46cc1a47308346d740fd0b8362b6b6cc0267",
+        "stderrSha256": "9c7e02634b50a2999accdd6b0e60a1568642bb97c0adf3ad023406c8dd9c9843"
+      }
+    ],
+    "tests": [
+      "refresh_boundary::tests::refresh_boundary_dispatch_cancelled_attempt_is_incomplete",
+      "refresh_boundary::tests::refresh_boundary_dispatch_leaf_and_attempt_identity"
+    ],
+    "status": "passed",
+    "reader": {
+      "integrity": true,
+      "completeness": true,
+      "sourceAvailable": false,
+      "frames": 10
+    },
+    "fixture": {
+      "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\dispatch-fixture.bin",
+      "size": 4522,
+      "sha256": "f6e9c36861223916a474b849eafadfe7e45a8973dde7e366cc0da0976447a44d"
+    },
+    "finishedUtc": "2026-09-24T12:37:44.316Z"
+  },
+  "controls": [
+    {
+      "id": "reuse-attempt-id",
+      "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-c30aa025a00d8984400a3ce2f1b58a2f2bf78297071c0b0acc03470ec73024e9.rs",
+      "expectedSha256": "c30aa025a00d8984400a3ce2f1b58a2f2bf78297071c0b0acc03470ec73024e9",
+      "test": "refresh_boundary::tests::refresh_boundary_dispatch_leaf_and_attempt_identity",
+      "sourceSha256": "971f0045b5b854a70602945ba786c4a937f048e665bcc28619d8b612fc4eed04",
+      "detected": true,
+      "restored": true,
+      "status": 101,
+      "stdoutSha256": "39e0f9da743132051eca01422a5a0e4116003c5ae7571966e5c82dd9dec4e884",
+      "stderrSha256": "1935eaa89dee9bab8384897d1634d16fce6d87587f6a77e5ce6de961335a8edd"
+    },
+    {
+      "id": "ignore-cancelled-attempt",
+      "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-c30aa025a00d8984400a3ce2f1b58a2f2bf78297071c0b0acc03470ec73024e9.rs",
+      "expectedSha256": "c30aa025a00d8984400a3ce2f1b58a2f2bf78297071c0b0acc03470ec73024e9",
+      "test": "refresh_boundary::tests::refresh_boundary_dispatch_cancelled_attempt_is_incomplete",
+      "sourceSha256": "145a0f6f68bf0be29e438ebfd72f418df8e524e69c570c38dd745c2c1b754367",
+      "detected": true,
+      "restored": true,
+      "status": 101,
+      "stdoutSha256": "746e2171cf85d1b101fd840d7d48afa1175d503d708826c62da2f241970b962e",
+      "stderrSha256": "b614e3bfa6f13aab77d1ff23b2163f75cb6be3fbcc07db11c7469d1762230ef2"
+    }
+  ],
+  "runtimeExecuted": false,
+  "status": "passed",
+  "restoredCheck": {
+    "receiptVersion": 1,
+    "stage": "partial-source",
+    "group": "dispatch",
+    "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+    "patchSha256": "3ec3fa042d9bd5dcd3d1d8ad4de33590cfff0653eec14e8bd14f5e29f0f6ad7a",
+    "recipeSha256": "286cd87aed5384c50a6d9c6b0130bcde6d1f8996d6b9daa59ccb44b53d4a586b",
+    "driverSha256": "ae2acd66d96529863faf90924d9dfbaecd34db73f553f8b28f370308e51e27d5",
+    "startedUtc": "2026-09-24T12:38:31.559Z",
+    "runtimeExecuted": false,
+    "productionWindowsBoundaryTested": false,
+    "verifiedSourceInputs": 6498,
+    "commands": [
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.95.0",
+          "cargo",
+          "check",
+          "--locked",
+          "--offline",
+          "-j",
+          "2",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "-p",
+          "codex-windows-sandbox",
+          "--lib"
+        ],
+        "status": 0,
+        "error": null,
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderrSha256": "97c1c0501beab7dbaabef76e86c2f971b58af3eb2c3e80fc1068a3c8a15ab4ec"
+      },
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.95.0",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "-j",
+          "2",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "-p",
+          "codex-windows-sandbox",
+          "--lib",
+          "refresh_boundary_dispatch_",
+          "--",
+          "--list"
+        ],
+        "status": 0,
+        "error": null,
+        "stdoutSha256": "77ea6459543f810b8e2744dbf5e41f2020c6e11a64da6b38d479e0593b23e3ae",
+        "stderrSha256": "9c094788da7e06de35d55cebb48a07ea2c66e0da7bf3e957bb5df05a2b0be921"
+      },
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.95.0",
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "-j",
+          "2",
+          "--target",
+          "x86_64-pc-windows-msvc",
+          "-p",
+          "codex-windows-sandbox",
+          "--lib",
+          "refresh_boundary_dispatch_",
+          "--",
+          "--nocapture"
+        ],
+        "status": 0,
+        "error": null,
+        "stdoutSha256": "286f9f760bbc8be185b9e749bcf60ebeba7e81c5d467bc265383d9faf640cf5a",
+        "stderrSha256": "fdf0e53b6d94bbfbad57344fbf25b9292f3f816a3b5673318b17f130b77b8b61"
+      }
+    ],
+    "tests": [
+      "refresh_boundary::tests::refresh_boundary_dispatch_cancelled_attempt_is_incomplete",
+      "refresh_boundary::tests::refresh_boundary_dispatch_leaf_and_attempt_identity"
+    ],
+    "status": "passed",
+    "reader": {
+      "integrity": true,
+      "completeness": true,
+      "sourceAvailable": false,
+      "frames": 10
+    },
+    "fixture": {
+      "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\dispatch-fixture.bin",
+      "size": 4522,
+      "sha256": "f6e9c36861223916a474b849eafadfe7e45a8973dde7e366cc0da0976447a44d"
+    },
+    "finishedUtc": "2026-09-24T12:38:44.491Z"
+  },
+  "finishedUtc": "2026-09-24T12:38:44.492Z",
+  "scope": "writer primitives only; core dispatch not integrated",
+  "sourceAvailable": false
+}

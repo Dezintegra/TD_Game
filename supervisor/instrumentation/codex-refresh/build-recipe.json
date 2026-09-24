@@ -4,6 +4,8 @@
   "target": "x86_64-pc-windows-msvc",
   "toolchain": "1.95.0",
   "tests": [
+    "refresh_boundary::tests::refresh_boundary_dispatch_cancelled_attempt_is_incomplete",
+    "refresh_boundary::tests::refresh_boundary_dispatch_leaf_and_attempt_identity",
     "refresh_boundary::tests::refresh_boundary_singleflight_disabled_has_no_identity",
     "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
     "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
@@ -45,7 +47,7 @@
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/refresh_boundary.rs",
-      "sha256": "164a8db7ed022e3e574e48a8620bbccd19d27e103e1cd024c2730cfcab41b74b"
+      "sha256": "c30aa025a00d8984400a3ce2f1b58a2f2bf78297071c0b0acc03470ec73024e9"
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/setup.rs",
