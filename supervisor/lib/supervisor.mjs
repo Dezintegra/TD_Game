@@ -28,6 +28,7 @@ import { effectiveTokenLimit } from './user-token-limit.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import { tokenAdmission } from './token-hold.mjs';
 import { toolContext } from './tool-diagnostics.mjs';
+import { createToolDiagnosticAccounting } from './tool-diagnostic-accounting.mjs';
 import {
   createToolReportHold,
   retainedReportView,
@@ -141,38 +142,18 @@ export function createSupervisor({
               git = { state: 'unknown', reason: error.message };
             }
             reportStore.update(entry.reportId, { git });
-            const evidence = await diagnoseTools(entry, {
-              onStart: (launchId) => {
-                if (providerOf(config) !== 'codex') return;
-                const admission = tokenAdmission(
-                  entry.assignment.task,
-                  entry.stage,
-                  config,
-                  codexUsage,
-                );
-                if (admission) throw new Error('token admission holds diagnostic launch');
-                persistUsage(entry.taskId, (next) =>
-                  beginTokenLaunch(next, entry.taskId, launchId),
-                );
-              },
-              onResult: (launchId, run) => {
-                if (providerOf(config) !== 'codex') return;
-                const answer = readCodexAnswer(run, config, {
-                  ledger: codexUsage,
-                  taskId: entry.taskId,
-                  launchId,
-                });
-                persistUsage(entry.taskId, (next) => {
-                  next.tasks[entry.taskId] = answer.usageLedger.tasks[entry.taskId];
-                });
-              },
+            const accounting = createToolDiagnosticAccounting({
+              config,
+              taskId: entry.taskId,
+              task: entry.assignment.task,
+              stage: entry.stage,
+              getLedger: () => codexUsage,
+              persistUsage,
             });
+            const evidence = await diagnoseTools(entry, accounting);
             return {
               ...evidence,
-              costUsd:
-                providerOf(config) === 'claude'
-                  ? (evidence.runs ?? []).reduce((sum, run) => sum + (readAnswer(run).cost ?? 0), 0)
-                  : 0,
+              costUsd: accounting.costUsd(evidence),
             };
           },
           pause: pauseTools,
