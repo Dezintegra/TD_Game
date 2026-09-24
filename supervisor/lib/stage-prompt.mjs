@@ -33,9 +33,11 @@ export function splitJournalEntries(text) {
 // замечание целым, поэтому режем историю только между переходами.
 function clipJournal(text, limit) {
   const source = String(text ?? '');
+  limit = Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : 0;
   if (source.length <= limit) return source;
   const entries = splitJournalEntries(source);
   if (entries.length === 1) {
+    if (limit === 0) return '';
     // Старый журнал без заголовков не позволяет назвать границу записи.
     // Сохраняем оба края и явно называем дырку в середине.
     let head = Math.max(1, Math.floor(limit / 8));

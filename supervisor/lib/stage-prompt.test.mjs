@@ -328,6 +328,17 @@ describe('журнал', () => {
     expect(splitJournalEntries(journal)).toEqual([journal]);
   });
 
+  it('нулевой предел не превращает старый неразмеченный журнал в полный', () => {
+    const text = stagePrompt({
+      assignment,
+      task,
+      journal: 'неразмеченная история',
+      journalLimit: 0,
+    });
+    expect(text).toContain('## Журнал задачи\n\n_пусто_');
+    expect(text).not.toContain('неразмеченная история');
+  });
+
   const verdict = (transition, finding, key) =>
     `**${transition}**\n\n${finding}\n\n<!-- report:${key}:0 -->`;
 
