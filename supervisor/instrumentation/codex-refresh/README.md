@@ -21,7 +21,7 @@ bytes; результат фактической проверки — `receipts/
 Патч применяется относительно корня экспортированного source, до сборки
 с `--locked`. Исходный source receipt остаётся описанием непатченного экспорта.
 `refresh-boundary.patch` применяется после `release-lock.patch` и добавляет
-wire writer; его отдельный hash закреплён в manifest.
+wire writer, ядро singleflight, setup carrier и token adapter; его отдельный hash закреплён в manifest.
 
 ### Wire reader (частичная реализация)
 
@@ -70,9 +70,9 @@ ACL, профиля или привилегий. Этот отказ Git не д
 
 ### Rust wire writer и частичный driver
 
-`build.mjs` пока поддерживает только `check --group wire`: сверяет source inputs,
+`build.mjs` поддерживает `check --group wire`, `singleflight`, `token`: сверяет source inputs,
 patch/recipe hashes и обратное применение patch к тестируемому source, выполняет
-Cargo check, сверяет точный harness list и запускает девять Rust tests.
+Cargo check, сверяет точный harness list и запускает соответствующую группу Rust tests.
 Старый fixture удаляется перед запуском, свежие bytes проверяет Node reader.
 Результат сохранён в `receipts/wire.json`; synthetic fixture не доказывает
 производственную корреляцию. Пункт 2.2 полного build/package/delivery driver открыт.
@@ -80,7 +80,7 @@ Cargo check, сверяет точный harness list и запускает де
 `DiagnosticContext` передаётся явно и разделяет sticky health между clones.
 При `None` event/clock closures не вызываются. Writer ограничивает frame и queue,
 выдаёт seq до сериализации, проверяет handshake/seal и сохраняет failure status.
-Настоящий pipe, общий collection limit, dispatch, helper, token и ACL wrappers
+Настоящий pipe, общий collection limit, dispatch, helper и ACL wrappers
 остаются открытыми пунктами 3.2–5.1; runtime не активирован.
 
 Проверенные примитивы `admitPackageIndex`, `verifyPackage`, `deliverPackage`
@@ -90,3 +90,22 @@ Cargo check, сверяет точный harness list и запускает де
 повреждение размера/hash и ошибки flush. Эти функции пока не подключены
 к CLI: окончательный состав пакета, admission receipts и build/reproduce
 остаются в пункте 2.2. Два синтетических файла теста не являются пакетом 0372.
+
+Режим `negative --group singleflight|carrier|token` содержит фиксированные
+source mutations и точные имена tests. Сначала проверяется исходный patch,
+затем каждая мутация обязана дать именно assertion failure выбранного теста;
+ошибка компиляции, timeout или падение другого теста не принимаются.
+Перед изменением сохраняется flushed backup исходника по SHA-256 внутри
+рабочей области. Восстановление сверяет bytes; неожиданная сторонняя правка
+не перезаписывается и оставляет результат incomplete. После всех контролей
+driver заново проверяет восстановленный patch. Receipt содержит исходный и
+изменённый hashes, результаты и backup path; он не содержит исходный stdout.
+
+```powershell
+node .matchlog/0372-refresh/run.mjs negative --group carrier
+```
+
+Тонкий локальный entrypoint передаёт режим/группу в `runBuild`; саму проверку
+реализует версионированный `build.mjs`. При прерванной мутации baseline check
+не примет изменённый source; сохранённый backup и recipe позволяют проверить
+восстановление до нового запуска. Эти проверки ещё не закрывают 2.2 целиком.

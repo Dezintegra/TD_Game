@@ -1,0 +1,257 @@
+{
+  "status": "partial-negative-controls",
+  "sourceAvailable": false,
+  "runtimeExecuted": false,
+  "groups": [
+    {
+      "version": 1,
+      "stage": "partial-source",
+      "group": "carrier",
+      "startedUtc": "2026-09-24T11:36:20.384Z",
+      "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+      "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+      "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+      "baseline": {
+        "receiptVersion": 1,
+        "stage": "partial-source",
+        "group": "singleflight",
+        "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+        "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+        "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+        "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+        "startedUtc": "2026-09-24T11:36:30.226Z",
+        "runtimeExecuted": false,
+        "productionWindowsBoundaryTested": false,
+        "verifiedSourceInputs": 6498,
+        "commands": [
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "check",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrSha256": "38d001cb6fa884c13f246fad7115b8ea7ac865ad79a34e92044dd6eed7196e4c"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_singleflight_",
+              "--",
+              "--list"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "029f2805592cb43a2da1ac9792e3abfc01cf67e1da0c2991ebeef4fb5dd87b14",
+            "stderrSha256": "4c14c9a4822734f67f586eedb9a46a5f1cd25746a36d491368b8dc9e74cf1ea5"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_singleflight_",
+              "--",
+              "--nocapture"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "a3a710f06bc14d4ecdfa73a28c2f4d3cb70a0057b4e641a09aa3e97b130c5fba",
+            "stderrSha256": "4c14c9a4822734f67f586eedb9a46a5f1cd25746a36d491368b8dc9e74cf1ea5"
+          }
+        ],
+        "tests": [
+          "refresh_boundary::tests::refresh_boundary_singleflight_disabled_has_no_identity",
+          "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
+          "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
+          "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload"
+        ],
+        "status": "passed",
+        "reader": {
+          "integrity": true,
+          "completeness": true,
+          "sourceAvailable": false,
+          "frames": 7
+        },
+        "fixture": {
+          "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\singleflight-fixture.bin",
+          "size": 2825,
+          "sha256": "b34d2d4df0d0b7f50df26bc0b48d1b962fe7a95184bde9d77e822ef5b572edbc"
+        },
+        "finishedUtc": "2026-09-24T11:36:36.483Z"
+      },
+      "controls": [
+        {
+          "id": "drop-request-at-flight",
+          "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-a58800336e3dca8782697ca9701859656c72409ef7538b1d66a3a0e3f051cedf.rs",
+          "expectedSha256": "a58800336e3dca8782697ca9701859656c72409ef7538b1d66a3a0e3f051cedf",
+          "test": "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload",
+          "sourceSha256": "0a0b1f62fa5f9da17f4c704b7a517347d469e28e0c0164fe11ad7ad74fc50d71",
+          "detected": true,
+          "restored": true,
+          "status": 101,
+          "stdoutSha256": "61a3bd18008516874bf56e516d2fd3c7965e1c80fb0ce1109d5388e7a703f576",
+          "stderrSha256": "6e70679be6d83dc4f499ef3c3ee3966cde675f26ec2fe49f170502e7f4b91693"
+        },
+        {
+          "id": "drop-request-at-helper",
+          "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-a58800336e3dca8782697ca9701859656c72409ef7538b1d66a3a0e3f051cedf.rs",
+          "expectedSha256": "a58800336e3dca8782697ca9701859656c72409ef7538b1d66a3a0e3f051cedf",
+          "test": "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload",
+          "sourceSha256": "189f7c46bb1fbe64b90f4be8eb10471d61e77ae97d7b3369992a190e05b26eb6",
+          "detected": true,
+          "restored": true,
+          "status": 101,
+          "stdoutSha256": "9df29bac89b659caee3d1b52b2962a3af1f091c3a1fbb5470ae878b305d76fa8",
+          "stderrSha256": "0b6d19b782547676592d0eada2854202c18a732b66362373d9e59ae7d97f45ce"
+        }
+      ],
+      "runtimeExecuted": false,
+      "status": "passed",
+      "restoredCheck": {
+        "receiptVersion": 1,
+        "stage": "partial-source",
+        "group": "singleflight",
+        "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+        "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+        "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+        "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+        "startedUtc": "2026-09-24T11:37:05.449Z",
+        "runtimeExecuted": false,
+        "productionWindowsBoundaryTested": false,
+        "verifiedSourceInputs": 6498,
+        "commands": [
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "check",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrSha256": "0cf782151338ecebe093634d9690751963fa45060ca97899d07c80d326e4b2cc"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_singleflight_",
+              "--",
+              "--list"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "029f2805592cb43a2da1ac9792e3abfc01cf67e1da0c2991ebeef4fb5dd87b14",
+            "stderrSha256": "990c043d1a797d954652a38eaf5170720ea039ac16044f0b038d827a632f680e"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_singleflight_",
+              "--",
+              "--nocapture"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "a3a710f06bc14d4ecdfa73a28c2f4d3cb70a0057b4e641a09aa3e97b130c5fba",
+            "stderrSha256": "c5a60c5cd9e65549022aa1f83d3d22bc10a82b3d47d4f716189bed4b8ddc67de"
+          }
+        ],
+        "tests": [
+          "refresh_boundary::tests::refresh_boundary_singleflight_disabled_has_no_identity",
+          "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
+          "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
+          "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload"
+        ],
+        "status": "passed",
+        "reader": {
+          "integrity": true,
+          "completeness": true,
+          "sourceAvailable": false,
+          "frames": 7
+        },
+        "fixture": {
+          "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\singleflight-fixture.bin",
+          "size": 2825,
+          "sha256": "b34d2d4df0d0b7f50df26bc0b48d1b962fe7a95184bde9d77e822ef5b572edbc"
+        },
+        "finishedUtc": "2026-09-24T11:37:23.226Z"
+      },
+      "finishedUtc": "2026-09-24T11:37:23.226Z"
+    }
+  ]
+}

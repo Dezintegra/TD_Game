@@ -1,7 +1,13 @@
 import { Buffer } from 'node:buffer';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { admitWireRecipe, checkNativeTestList, runBuild, verifyAppliedPatch } from './build.mjs';
+import {
+  admitWireRecipe,
+  checkNativeTestList,
+  runBuild,
+  verifyAppliedPatch,
+  checkMutation,
+} from './build.mjs';
 import { pinned, sha256 } from './prepare.mjs';
 import {
   DELIVERY_ROOT,
@@ -188,6 +194,101 @@ const files = [
   'codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs',
 ];
 const patch = Buffer.from('synthetic patch, never used as production source');
+describe('native mutation restoration over fake boundaries', () => {
+  function mutationFixture() {
+    let bytes = Buffer.from('before guarded after');
+    const original = Buffer.from(bytes);
+    const io = {
+      readFileSync: () => Buffer.from(bytes),
+      writeFileSync: vi.fn((_file, next) => {
+        bytes = Buffer.from(next);
+      }),
+    };
+    const options = {
+      file: 'fake.rs',
+      expectedSha256: sha256(original),
+      from: 'guarded',
+      to: 'broken',
+      test: 'boundary_test',
+      execute: vi.fn(() => ({
+        status: 101,
+        stdout: 'test boundary_test ... FAILED\ntest result: FAILED. 0 passed; 1 failed;',
+        stderr: '',
+      })),
+    };
+    return { io, options, original };
+  }
+  it('requires the named assertion failure and restores exact original bytes', () => {
+    const f = mutationFixture();
+    expect(checkMutation(f.options, f.io)).toMatchObject({
+      detected: true,
+      restored: true,
+      status: 101,
+    });
+    expect(f.io.readFileSync()).toEqual(f.original);
+    expect(f.options.execute).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { status: 101, stdout: '', stderr: 'compiler failure' },
+    {
+      status: 101,
+      stdout: 'test another ... FAILED\ntest result: FAILED. 0 passed; 1 failed;',
+      stderr: '',
+    },
+    { status: 0, stdout: 'test result: ok. 1 passed; 0 failed;', stderr: '' },
+    { status: null, error: new Error('secret-canary'), stdout: '', stderr: '' },
+  ])('does not accept unrelated failures or a surviving mutation', (result) => {
+    const f = mutationFixture();
+    f.options.execute.mockReturnValue(result);
+    const checked = checkMutation(f.options, f.io);
+    expect(checked.detected).toBe(false);
+    expect(checked.restored).toBe(true);
+    expect(JSON.stringify(checked)).not.toContain('secret-canary');
+    expect(f.io.readFileSync()).toEqual(f.original);
+  });
+  it('preserves a concurrent foreign edit instead of overwriting it during restore', () => {
+    const f = mutationFixture();
+    f.options.execute.mockImplementation(() => {
+      f.io.writeFileSync('fake.rs', 'foreign edit');
+      throw Error('secret-canary');
+    });
+    expect(checkMutation(f.options, f.io)).toMatchObject({
+      detected: false,
+      restored: false,
+      failure: 'mutation-restore-failed',
+    });
+    expect(f.io.readFileSync().toString()).toBe('foreign edit');
+  });
+  it('reports failed restoration independently of a detected mutation', () => {
+    const f = mutationFixture(),
+      write = f.io.writeFileSync;
+    f.io.writeFileSync = vi.fn((file, bytes) => {
+      if (write.mock.calls.length) throw Error('EACCES');
+      write(file, bytes);
+    });
+    expect(checkMutation(f.options, f.io)).toMatchObject({
+      detected: true,
+      restored: false,
+      failure: 'mutation-restore-failed',
+    });
+  });
+  it.each(['stale', 'absent', 'duplicate'])(
+    'rejects %s mutation input before executing',
+    (kind) => {
+      const f = mutationFixture();
+      if (kind === 'stale') f.options.expectedSha256 = 'a'.repeat(64);
+      if (kind === 'absent') f.options.from = 'absent';
+      if (kind === 'duplicate') {
+        f.io.writeFileSync('fake.rs', 'guarded guarded');
+        f.options.expectedSha256 = sha256(f.io.readFileSync());
+        f.io.writeFileSync.mockClear();
+      }
+      expect(() => checkMutation(f.options, f.io)).toThrow();
+      expect(f.options.execute).not.toHaveBeenCalled();
+      expect(f.io.writeFileSync).not.toHaveBeenCalled();
+    },
+  );
+});
 const recipe = {
   version: 1,
   stage: 'partial-source',

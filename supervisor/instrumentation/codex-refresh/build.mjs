@@ -288,6 +288,7 @@ export function verifyAppliedPatch(sourceRoot, patchPath, run = spawnSync) {
 // final build/reproduce/package/delivery
 // remain unavailable until their independent checks and receipts exist.
 export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
+  if (mode === 'negative') return runNegative({ projectRoot, group }, dependencies);
   if (mode !== 'check' || !['wire', 'singleflight', 'token'].includes(group))
     throw new Error('unsupported-build-mode');
   const io = dependencies.fs ?? fs;
@@ -330,6 +331,7 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
     sourceCommit: manifest.sourceCommit,
     patchSha256: manifest.patchSha256,
     recipeSha256: manifest.recipeSha256,
+    driverSha256: sha256(io.readFileSync(path.join(packageRoot, 'build.mjs'))),
     startedUtc: started.toISOString(),
     runtimeExecuted: false,
     productionWindowsBoundaryTested: false,
@@ -417,5 +419,216 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
   }
   receipt.finishedUtc = now().toISOString();
   io.writeFileSync(output, JSON.stringify(receipt, null, 2) + '\n');
+  return receipt;
+}
+
+// Fixed source mutations only: no user supplied program, path or Cargo filter.
+const MUTATIONS = {
+  singleflight: [
+    [
+      'setup.rs',
+      'lost-join-edge',
+      'context.refresh_edge(refresh_id, is_leader);',
+      'if is_leader { context.refresh_edge(refresh_id, is_leader); }',
+      'refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight',
+    ],
+    [
+      'setup.rs',
+      'bypass-coalescing',
+      'match flights.get(&key) {',
+      'match None::<&Arc<SetupFlight>> {',
+      'refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight',
+    ],
+  ],
+  carrier: [
+    [
+      'setup.rs',
+      'drop-request-at-flight',
+      'run_setup_singleflight_observed(b64.clone(), request.diagnostic, |refresh_id| {',
+      'run_setup_singleflight_observed(b64.clone(), None, |refresh_id| {',
+      'refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload',
+    ],
+    [
+      'setup.rs',
+      'drop-request-at-helper',
+      'run(&b64, request.codex_home, request.diagnostic, refresh_id)',
+      'run(&b64, request.codex_home, None, refresh_id)',
+      'refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload',
+    ],
+  ],
+  token: [
+    [
+      'refresh_boundary.rs',
+      'fallback-on-denied',
+      /Err\(QueryError\s*\{\s*code: ERROR_NO_TOKEN,\s*\.\.\s*\}\)/gu,
+      'Err(_)',
+      'refresh_boundary::token_tests::refresh_boundary_token_denied_never_uses_process',
+    ],
+    [
+      'refresh_boundary.rs',
+      'ignore-snapshot-change',
+      'if before != after {',
+      'if false {',
+      'refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable',
+    ],
+  ],
+};
+
+export function checkMutation({ file, expectedSha256, from, to, test, execute }, io = fs) {
+  const original = io.readFileSync(file);
+  if (sha256(original) !== expectedSha256) throw new Error('mutation-source-mismatch');
+  const text = original.toString('utf8');
+  const count =
+    typeof from === 'string' ? text.split(from).length - 1 : [...text.matchAll(from)].length;
+  if (count !== 1) throw new Error('mutation-site-not-unique');
+  const mutated = Buffer.from(text.replace(from, to));
+  const sourceSha256 = sha256(mutated);
+  const result = { test, sourceSha256, detected: false, restored: false };
+  try {
+    io.writeFileSync(file, mutated);
+    if (sha256(io.readFileSync(file)) !== sourceSha256) throw new Error('mutation-write-mismatch');
+    const run = execute(test);
+    result.status = run.status;
+    result.stdoutSha256 = sha256(run.stdout ?? '');
+    result.stderrSha256 = sha256(run.stderr ?? '');
+    result.detected =
+      !run.error &&
+      run.status === 101 &&
+      run.stdout.includes(`test ${test} ... FAILED`) &&
+      run.stdout.includes('test result: FAILED. 0 passed; 1 failed;');
+  } catch {
+    result.failure = 'mutation-execution-error';
+  } finally {
+    try {
+      const current = sha256(io.readFileSync(file));
+      if (current !== sourceSha256 && current !== expectedSha256) {
+        result.failure = 'mutation-restore-failed';
+      } else {
+        io.writeFileSync(file, original);
+        result.restored = sha256(io.readFileSync(file)) === expectedSha256;
+      }
+    } catch {
+      result.failure = 'mutation-restore-failed';
+    }
+  }
+  return result;
+}
+
+function runNegative({ projectRoot, group }, dependencies) {
+  if (!Object.hasOwn(MUTATIONS, group)) throw new Error('unsupported-build-mode');
+  const io = dependencies.fs ?? fs;
+  const run = dependencies.run ?? spawnSync;
+  const now = dependencies.now ?? (() => new Date());
+  const root = io.realpathSync(projectRoot);
+  const workspace = checkWorkspace(root, path.join(root, '.matchlog/0372-refresh'), io);
+  const checkGroup = group === 'carrier' ? 'singleflight' : group;
+  const startedUtc = now().toISOString();
+  const baseline = runBuild({ projectRoot, mode: 'check', group: checkGroup }, dependencies);
+  const receipt = {
+    version: 1,
+    stage: 'partial-source',
+    group,
+    startedUtc,
+    patchSha256: baseline.patchSha256,
+    recipeSha256: baseline.recipeSha256,
+    driverSha256: baseline.driverSha256,
+    baseline,
+    controls: [],
+    runtimeExecuted: false,
+    status: 'failed',
+  };
+  try {
+    if (baseline.status !== 'passed') throw new Error('baseline-failed');
+    const recipe = JSON.parse(
+      io.readFileSync(
+        path.join(root, 'supervisor/instrumentation/codex-refresh/build-recipe.json'),
+        'utf8',
+      ),
+    );
+    for (const [name, id, from, to, test] of MUTATIONS[group]) {
+      if (!baseline.tests.includes(test)) throw new Error('unverified-mutation-test');
+      const relative = `codex-rs/windows-sandbox-rs/src/${name}`;
+      const expectedSha256 = recipe.inputs.find((entry) => entry.path === relative)?.sha256;
+      const file = checkWorkspace(root, path.join(workspace, 'source', relative), io);
+      const original = io.readFileSync(file);
+      if (sha256(original) !== expectedSha256) throw new Error('mutation-source-mismatch');
+      const backup = checkWorkspace(
+        root,
+        path.join(workspace, `mutation-original-${expectedSha256}.rs`),
+        io,
+      );
+      if (!io.existsSync(backup)) writeAndFlush(backup, original, io);
+      if (sha256(io.readFileSync(backup)) !== expectedSha256)
+        throw new Error('mutation-backup-mismatch');
+      const control = checkMutation(
+        {
+          file,
+          expectedSha256,
+          from,
+          to,
+          test,
+          execute: (filter) =>
+            run(
+              'rustup',
+              [
+                'run',
+                '1.95.0',
+                'cargo',
+                'test',
+                '--locked',
+                '--offline',
+                '-j',
+                '2',
+                '--target',
+                'x86_64-pc-windows-msvc',
+                '-p',
+                'codex-windows-sandbox',
+                '--lib',
+                filter,
+                '--',
+                '--exact',
+              ],
+              {
+                cwd: path.join(workspace, 'source/codex-rs'),
+                shell: false,
+                windowsHide: true,
+                timeout: 120000,
+                maxBuffer: 4 * 1024 * 1024,
+                encoding: 'utf8',
+                env: {
+                  ...process.env,
+                  CARGO_HOME: path.join(workspace, 'cargo-home'),
+                  CARGO_TARGET_DIR: path.join(workspace, 'target-preflight'),
+                  TMP: path.join(workspace, 'temp'),
+                  TEMP: path.join(workspace, 'temp'),
+                },
+              },
+            ),
+        },
+        io,
+      );
+      receipt.controls.push({ id, backup, expectedSha256, ...control });
+      if (!control.detected || !control.restored) throw new Error('mutation-incomplete');
+    }
+    receipt.restoredCheck = runBuild(
+      { projectRoot, mode: 'check', group: checkGroup },
+      dependencies,
+    );
+    if (
+      receipt.restoredCheck.status !== 'passed' ||
+      receipt.restoredCheck.driverSha256 !== baseline.driverSha256 ||
+      receipt.restoredCheck.patchSha256 !== baseline.patchSha256 ||
+      receipt.restoredCheck.recipeSha256 !== baseline.recipeSha256
+    )
+      throw new Error('restored-check-failed');
+    receipt.status = 'passed';
+  } catch {
+    receipt.failure = 'negative-check-incomplete';
+  }
+  receipt.finishedUtc = now().toISOString();
+  io.writeFileSync(
+    path.join(workspace, `${group}-negative-receipt.json`),
+    JSON.stringify(receipt, null, 2) + '\n',
+  );
   return receipt;
 }

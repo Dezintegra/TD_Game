@@ -30,9 +30,10 @@ SHA: достижимость и контроль этой ветви ещё п�
 
 Повтор 2026-09-24 выявил старую редакцию patch при более новом тестируемом source.
 Patch пересоздан, manifest согласован; driver теперь требует обратное применение
-patch к проверяемым исходникам до Cargo. Новый receipt относится к hash
+patch к проверяемым исходникам до Cargo. Исторический прогон после этой правки относился к hash
 `8aebbad888d9a47cb9b31cf87ad2191131250c0c8d98dc7af8f9069fc1046672`.
-Он не подтверждает сборку из чистого экспорта или производственные Windows/IPC sites.
+Актуальный hash каждого прогона указан в соответствующем receipt. Эти проверки
+не подтверждают сборку из чистого экспорта или производственные Windows/IPC sites.
 
 Шаг singleflight от 2026-09-24: `receipts/singleflight.json` связывает текущий
 patch с cargo check, тремя перечисленными Rust tests, семью принятыми reader
@@ -88,6 +89,18 @@ context incomplete до появления проверенного IPC; 3.2/3.3
 Проверка carrier increment: 3179 passed, 5 failed — report-delivery,
 report-recovery, stage-tool-recovery (2), watch-lifetime. Собственные проверки
 прошли; EPERM rename и timeout сохраняются без изменения соседнего кода.
+
+Мутационные проверки перенесены в `build.mjs`: фиксированные группы
+singleflight/carrier/token, точный harness filter `--exact`, обязательные
+baseline и restored check. Driver сохраняет flushed backup по исходному hash,
+не перезаписывает неожиданную стороннюю правку, отличает assertion failure
+от compilation/timeout и фиксирует собственный SHA-256 в receipt. Десять новых
+fake-boundary tests проверяют восстановление, неподходящее падение, утечку
+текста исключения, stale source и конфликт записи. Полный build/package driver
+по-прежнему не завершён.
+
+Проверка versioned negative driver: 3191 passed, 3 failed — stage-tool-recovery,
+tool-retry (EPERM rename), watch-lifetime. Все 41 tests build driver прошли.
 
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.
