@@ -598,7 +598,7 @@ export function createSupervisor({
 
       // Дескриптор заводится ДО порождения: обработчики событий пишут
       // в него ходы и последнее действие, а пульс их оттуда читает.
-      const timeoutMs = stageTimeoutMs(assignment.stage, config);
+      const timeoutMs = stageTimeoutMs(assignment.stage, config, assignment.taskId);
       const child = {
         assignment,
         context,
