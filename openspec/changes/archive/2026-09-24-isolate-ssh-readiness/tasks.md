@@ -6,6 +6,6 @@
 
 - [x] 2.1 Hold deploy admission on an unready remote, retry reachability and require a fresh Codex proof before releasing; cover scanner behavior and update setup docs. Run focused checks and `pnpm test:pipeline`, then obtain green PR CI.
 
-## 3. Delivery
+## Delivery
 
-- [ ] 3.1 Archive the OpenSpec change, merge after green CI, restart the paused supervisor, and verify non-deploy work and task-event logging in the live runtime.
+After these implementation tasks, archive the change, merge after green CI, and verify non-deploy work and task-event logging in the live runtime.
