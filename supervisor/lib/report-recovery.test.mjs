@@ -130,7 +130,7 @@ describe('paused completion survives full supervisor and recipient restart', () 
       const prior = s.next.store.entries();
       expect(
         judgeSelfUpdate({
-          git: { treeOf: () => 'new' },
+          git: { treeOf: () => 'new', changedPathsBetweenTrees: () => ['lib/run-stage.mjs'] },
           ownDir: 'supervisor',
           loadedTree: 'old',
           mainBranch: 'main',

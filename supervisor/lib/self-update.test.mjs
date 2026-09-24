@@ -20,6 +20,7 @@ function fakeGit(over = {}) {
   // умолчания, поэтому наличие ключа проверяется явно.
   const git = {
     treeOf: () => ('tree' in over ? over.tree : LOADED),
+    changedPathsBetweenTrees: () => ('changedPaths' in over ? over.changedPaths : ['lib/x.mjs']),
     aheadOn: () => ('ahead' in over ? over.ahead : 0),
     currentBranch: () => over.branch ?? 'main',
     dirtyPaths: () => over.dirty ?? [],
@@ -72,6 +73,16 @@ describe('когда обновляться нечему', () => {
 });
 
 describe('удалённая ветка ушла вперёд по инструменту', () => {
+  it('подтягивает только документацию и сохраняет свободные слоты', () => {
+    const git = fakeGit({
+      ahead: 1,
+      afterPull: FRESH,
+      changedPaths: ['README.md', 'configure-watchdog-power.ps1'],
+    });
+    expect(judge({ running: 1 }, git).verdict).toBe('current');
+    expect(git.calls).toEqual(['fast-forward']);
+  });
+
   it('чистое дерево на main подтягивается и перезапускается', () => {
     const git = fakeGit({ ahead: 2, afterPull: FRESH });
     const { verdict, notes } = judge({}, git);
@@ -114,6 +125,43 @@ describe('удалённая ветка ушла вперёд по инстру�
 });
 
 describe('код на диске уже сменился', () => {
+  it('README и установочный скрипт не занимают свободный слот ожиданием', () => {
+    const git = fakeGit({
+      tree: FRESH,
+      changedPaths: ['README.md', 'configure-watchdog-power.ps1'],
+    });
+    expect(judge({ running: 1 }, git).verdict).toBe('current');
+  });
+
+  it('правила нового этапа и тесты не требуют обновления текущего процесса', () => {
+    const git = fakeGit({
+      tree: FRESH,
+      changedPaths: ['skills/triage.md', 'permission-diagnostics.md', 'lib/self-update.test.mjs'],
+    });
+    expect(judge({}, git).verdict).toBe('current');
+  });
+
+  it('после пропущенного рестарта следующий коммит с кодом вызывает ожидание', () => {
+    const git = fakeGit({
+      tree: FRESH,
+      ahead: 1,
+      changedPaths: ['README.md'],
+      afterPull: 'cccc',
+    });
+    const paths = git.git.changedPathsBetweenTrees;
+    git.git.changedPathsBetweenTrees = (_, tree) =>
+      tree === FRESH ? paths() : ['README.md', 'lib/self-update.mjs'];
+    expect(judge({ running: 1 }, git).verdict).toBe('wait');
+    expect(git.calls).toEqual(['fast-forward']);
+  });
+
+  it.each([null, [], ['config/stage-settings.json'], ['new.md'], ['lib/x.mjs', 'README.md']])(
+    'неопределённая или исполняемая разница %j сохраняет безопасный рестарт',
+    (changedPaths) => {
+      expect(judge({ running: 1 }, fakeGit({ tree: FRESH, changedPaths })).verdict).toBe('wait');
+    },
+  );
+
   it('ручной git pull замечается без подтягивания', () => {
     // Человек подтянул сам либо закоммитил локально: хеш дерева другой,
     // и спрашивать удалённую ветку незачем.

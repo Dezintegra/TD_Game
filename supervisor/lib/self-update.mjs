@@ -10,10 +10,21 @@
  * к одному из исходов. Ни порождения процесса, ни замка, ни файлов — их
  * делает супервизор, а исходы проверяются подставным git за миллисекунды.
  *
- * Мерка «код изменился» — хеш дерева каталога инструмента в `HEAD`,
- * запомненный при запуске. Ловится всё, что меняет код на диске, и не
- * ловится незакоммиченная правка: человек работает, перезапуск ему ни к чему.
+ * Хеш дерева инструмента в `HEAD` запоминается при запуске. Если он меняется,
+ * разница путей отделяет файлы, которые уже работающий процесс не загружает.
+ * Незакоммиченная правка хеш не меняет: человек работает, перезапуск ему ни к чему.
  */
+
+/** Только эти пути не меняют уже загруженный процесс супервизора. */
+function nonRuntimePath(path) {
+  return (
+    path === 'README.md' ||
+    path === 'permission-diagnostics.md' ||
+    path === 'configure-watchdog-power.ps1' ||
+    /^skills\/[^/]+\.md$/.test(path) ||
+    /(?:^|\/)[^/]+\.test\.mjs$/.test(path)
+  );
+}
 
 /** Исходы решения. */
 export const VERDICT = {
@@ -68,7 +79,15 @@ export function judgeSelfUpdate({
   let current = git.treeOf(ownDir);
   if (current === null) return unknown(`git не отдал дерево ${ownDir}`);
 
-  if (current === loadedTree) {
+  const runtimeUnchanged = (tree) => {
+    if (tree === loadedTree) return true;
+    const paths = git.changedPathsBetweenTrees(loadedTree, tree);
+    // Разные хеши без известных изменений — неопределённость, а не разрешение
+    // пропустить перезапуск.
+    return Array.isArray(paths) && paths.length > 0 && paths.every(nonRuntimePath);
+  };
+
+  if (runtimeUnchanged(current)) {
     const ahead = git.aheadOn([ownDir], mainBranch);
     if (ahead === null) return unknown('не удалось посчитать отставание по каталогу инструмента');
     if (ahead === 0) return { verdict: 'current', notes };
@@ -97,8 +116,9 @@ export function judgeSelfUpdate({
     notes.push(`самообновление: подтянулись, ${moved}`);
 
     current = git.treeOf(ownDir);
-    if (current === null || current === loadedTree) {
-      notes.push('самообновление: код супервизора при этом не изменился');
+    if (current === null) return unknown(`git не отдал дерево ${ownDir} после подтягивания`);
+    if (runtimeUnchanged(current)) {
+      notes.push('самообновление: исполняемый код супервизора при этом не изменился');
       return { verdict: 'current', notes };
     }
   }

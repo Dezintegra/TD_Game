@@ -203,6 +203,26 @@ export function createGit(run, { remote, mainBranch }) {
       return result.code === 0 ? out(result) : null;
     },
 
+    /**
+     * Изменённые пути между двумя деревьями, относительно их корня.
+     * Без распознавания переименований: удаление кода и добавление документа
+     * должны остаться двумя видимыми изменениями. NUL сохраняет любые имена.
+     */
+    changedPathsBetweenTrees(fromTree, toTree) {
+      const result = run([
+        'diff',
+        '--name-only',
+        '-z',
+        '--no-renames',
+        '--no-ext-diff',
+        fromTree,
+        toTree,
+        '--',
+      ]);
+      if (result.code !== 0 || typeof result.stdout !== 'string') return null;
+      return result.stdout.split('\0').filter(Boolean);
+    },
+
     /** Кто написал последние коммиты хвоста: свои или чужие. */
     tailAuthors(branch = mainBranch) {
       const result = run(['log', '--format=%an', `${remote}/${branch}..${branch}`]);
