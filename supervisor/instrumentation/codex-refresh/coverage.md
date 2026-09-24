@@ -121,5 +121,13 @@ fallback, ModifiedId и применимость impersonation/AppContainer по
 stage-tool-recovery, tool-report-hold (2), watch-lifetime. Новые token checks
 прошли; общий набор остаётся красным, включая EPERM rename тестового хранилища.
 
+Token error increment: локальная ошибка разбора представлена `Malformed`,
+отдельно от `Windows { api, code }`; код Windows для неё не выдумывается.
+Malformed и denied не разрешают process fallback. Шесть native tests и две
+мутации проходят на patch `37b14e42150d0d72ce0dfc20352230aa2eeccd3db5d77f103262bfba9bcf5938`;
+receipt token сохраняет baseline, controls и restored check. Pipeline: 3198 passed,
+5 failed — report-delivery, stage-tool-recovery (2), tool-retry (EPERM rename),
+watch-lifetime. Build driver (41) и reader (39) прошли; общий набор не зелёный.
+
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

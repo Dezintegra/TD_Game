@@ -475,7 +475,7 @@ const MUTATIONS = {
     [
       'refresh_boundary.rs',
       'fallback-on-denied',
-      /Err\(QueryError\s*\{\s*code: ERROR_NO_TOKEN,\s*\.\.\s*\}\)/gu,
+      /Err\(QueryError::Windows\s*\{\s*code: ERROR_NO_TOKEN,\s*\.\.\s*\}\)/gu,
       'Err(_)',
       'refresh_boundary::token_tests::refresh_boundary_token_denied_never_uses_process',
     ],

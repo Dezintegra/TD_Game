@@ -39,7 +39,7 @@
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/refresh_boundary.rs",
-      "sha256": "fdcb7a4dc91e42aa652a778510c88a231224d5f48690b640308ae40605247d7a"
+      "sha256": "159adc586270b4487475a8acdbccc41752f03f348abd68efdfac561e0abb58ef"
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/setup.rs",

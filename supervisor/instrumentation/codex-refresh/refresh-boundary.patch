@@ -37,10 +37,10 @@ index 0ca4dcaf..668ccc3e 100644
  
 diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
 new file mode 100644
-index 00000000..e2117174
+index 00000000..bd473709
 --- /dev/null
 +++ b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
-@@ -0,0 +1,1445 @@
+@@ -0,0 +1,1459 @@
 +//! Bounded, opt-in diagnostic transport. No environment lookup or OS calls.
 +//! Callsite integration and native pipe adapter are separate admission steps.
 +use serde::Serialize;
@@ -871,9 +871,9 @@ index 00000000..e2117174
 +    }
 +
 +    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-+    pub struct QueryError {
-+        pub api: &'static str,
-+        pub code: u32,
++    pub enum QueryError {
++        Windows { api: &'static str, code: u32 },
++        Malformed,
 +    }
 +
 +    pub trait TokenApi {
@@ -983,7 +983,7 @@ index 00000000..e2117174
 +    pub fn snapshot<A: TokenApi>(api: &mut A) -> Result<Captured<A::Handle>, ObservationError> {
 +        let (handle, selection) = match api.open_thread() {
 +            Ok(handle) => (handle, Selection::Thread),
-+            Err(QueryError {
++            Err(QueryError::Windows {
 +                code: ERROR_NO_TOKEN,
 +                ..
 +            }) => (
@@ -1050,16 +1050,13 @@ index 00000000..e2117174
 +            }
 +        }
 +        fn error(api: &'static str) -> QueryError {
-+            QueryError {
++            QueryError::Windows {
 +                api,
 +                code: unsafe { GetLastError() },
 +            }
 +        }
 +        fn invalid() -> QueryError {
-+            QueryError {
-+                api: "GetTokenInformation",
-+                code: 13,
-+            }
++            QueryError::Malformed
 +        }
 +        fn luid(v: LUID) -> u64 {
 +            ((v.HighPart as u32 as u64) << 32) | v.LowPart as u64
@@ -1075,7 +1072,10 @@ index 00000000..e2117174
 +                let ok = unsafe {
 +                    GetTokenInformation(handle, class, std::ptr::null_mut(), 0, &mut needed)
 +                };
-+                if ok != 0 || unsafe { GetLastError() } != 122 {
++                if ok != 0 {
++                    return Err(invalid());
++                }
++                if unsafe { GetLastError() } != 122 {
 +                    return Err(error("GetTokenInformation"));
 +                }
 +                if needed == 0 || needed > 256 * 1024 {
@@ -1285,6 +1285,7 @@ index 00000000..e2117174
 +    }
 +    struct Fake {
 +        thread_error: Option<u32>,
++        malformed: bool,
 +        process_error: Option<u32>,
 +        field_error: bool,
 +        process_opens: usize,
@@ -1297,6 +1298,7 @@ index 00000000..e2117174
 +        fn default() -> Self {
 +            Self {
 +                thread_error: None,
++                malformed: false,
 +                process_error: None,
 +                field_error: false,
 +                process_opens: 0,
@@ -1310,8 +1312,11 @@ index 00000000..e2117174
 +    impl TokenApi for Fake {
 +        type Handle = Handle;
 +        fn open_thread(&mut self) -> Result<Handle, QueryError> {
++            if self.malformed {
++                return Err(QueryError::Malformed);
++            }
 +            if let Some(code) = self.thread_error {
-+                return Err(QueryError {
++                return Err(QueryError::Windows {
 +                    api: "OpenThreadToken",
 +                    code,
 +                });
@@ -1321,7 +1326,7 @@ index 00000000..e2117174
 +        fn open_process(&mut self) -> Result<Handle, QueryError> {
 +            self.process_opens += 1;
 +            if let Some(code) = self.process_error {
-+                return Err(QueryError {
++                return Err(QueryError::Windows {
 +                    api: "OpenProcessToken",
 +                    code,
 +                });
@@ -1343,7 +1348,7 @@ index 00000000..e2117174
 +        }
 +        fn fields(&mut self, _: &Handle, _: &Statistics) -> Result<Fields, QueryError> {
 +            if self.field_error {
-+                return Err(QueryError {
++                return Err(QueryError::Windows {
 +                    api: "GetTokenInformation",
 +                    code: 5,
 +                });
@@ -1374,11 +1379,20 @@ index 00000000..e2117174
 +                ..Default::default()
 +            };
 +            assert!(
-+                matches!(snapshot(&mut api),Err(ObservationError::Unavailable(QueryError{api:"OpenThreadToken",code:actual})) if actual==code)
++                matches!(snapshot(&mut api),Err(ObservationError::Unavailable(QueryError::Windows{api:"OpenThreadToken",code:actual})) if actual==code)
 +            );
 +            assert_eq!(api.process_opens, 0);
 +            assert_eq!(api.drops.get(), 0);
 +        }
++        let mut api = Fake {
++            malformed: true,
++            ..Default::default()
++        };
++        assert!(matches!(
++            snapshot(&mut api),
++            Err(ObservationError::Unavailable(QueryError::Malformed))
++        ));
++        assert_eq!(api.process_opens, 0);
 +    }
 +    #[test]
 +    fn refresh_boundary_token_no_token_is_only_fallback() {
@@ -1395,7 +1409,7 @@ index 00000000..e2117174
 +        api.process_error = Some(5);
 +        assert!(matches!(
 +            snapshot(&mut api),
-+            Err(ObservationError::Unavailable(QueryError {
++            Err(ObservationError::Unavailable(QueryError::Windows {
 +                api: "OpenProcessToken",
 +                code: 5
 +            }))
