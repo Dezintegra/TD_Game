@@ -1,6 +1,6 @@
 ## 1. Readiness contract
 
-- [ ] 1.1 Separate verified local and remote outcomes in the Codex probe and run the child-process check before SSH; add focused tests for timeout, missing SSH and failed local command.
+- [x] 1.1 Separate verified local and remote outcomes in the Codex probe and run the child-process check before SSH; add focused tests for timeout, missing SSH and failed local command.
 
 ## 2. Runtime isolation
 

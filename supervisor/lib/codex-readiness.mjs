@@ -87,7 +87,7 @@ export async function checkCodexReadiness({
       ...codexInvocation(config, args),
       cwd,
       env: codexGitEnvironment(env, root, cwd),
-      stdin: `Проверка среды. Выполни пятью отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree; gh api user --jq .login; ${push}; ${ssh}; ${node}. Dry-run проверяет отправку Git без записи удалённых refs; SSH проверяет только соединение с сервером выкладки; Node проверяет запуск дочерних процессов для pnpm и сборки. Не печатай окружение, git config, токены и другие секреты. Ничего не изменяй. При ошибке или отказе остановись, не пробуй альтернативы, не меняй настройки и права доступа. Верни результат команды.`,
+      stdin: `Проверка среды. Выполни пятью отдельными командами: git -C ${JSON.stringify(root)} rev-parse --is-inside-work-tree; gh api user --jq .login; ${push}; ${node}; ${ssh}. Dry-run проверяет отправку Git без записи удалённых refs; Node проверяет запуск дочерних процессов для pnpm и сборки; SSH проверяет только соединение с сервером выкладки. Не печатай окружение, git config, токены и другие секреты. Ничего не изменяй. При ошибке или отказе остановись, не пробуй альтернативы, не меняй настройки и права доступа. Верни результат команды.`,
     };
     const run = await start({ command, timeoutMs: TOOL_DIAGNOSTIC_TIMEOUT_MS, spawn, killTree })
       .finished;
@@ -104,7 +104,15 @@ export async function checkCodexReadiness({
           return [];
         }
       });
-    const failed = commands.find((item) => item.status !== 'completed' || item.exit_code !== 0);
+    const sshCommand = (item) =>
+      /\bnode\b.*deploy-remote\.mjs/.test(item.command ?? '') &&
+      item.command.includes(`--host ${host} --`);
+    const failedLocal = commands.find(
+      (item) => !sshCommand(item) && (item.status !== 'completed' || item.exit_code !== 0),
+    );
+    const failedSsh = commands.find(
+      (item) => sshCommand(item) && (item.status !== 'completed' || item.exit_code !== 0),
+    );
     const proof = commands.some(
       (item) =>
         /\bgit\b.*rev-parse\s+--is-inside-work-tree/.test(item.command ?? '') &&
@@ -116,10 +124,7 @@ export async function checkCodexReadiness({
         /^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(item.aggregated_output?.trim() ?? ''),
     );
     const connected = commands.some(
-      (item) =>
-        /\bnode\b.*deploy-remote\.mjs/.test(item.command ?? '') &&
-        item.command.includes(`--host ${host} --`) &&
-        item.aggregated_output?.trim() === 'td-codex-ssh-ready',
+      (item) => sshCommand(item) && item.aggregated_output?.trim() === 'td-codex-ssh-ready',
     );
     const pushReady = commands.some(
       (item) =>
@@ -133,19 +138,23 @@ export async function checkCodexReadiness({
     );
     const ok =
       answer.outcome === 'done' &&
-      !failed &&
+      !failedLocal &&
       proof &&
       authenticated &&
-      connected &&
       pushReady &&
       processesReady;
     return {
       ok,
+      remoteReady: ok && connected && !failedSsh,
+      remoteWhy:
+        ok && (!connected || failedSsh)
+          ? failedSsh?.aggregated_output?.trim() || 'нет подтверждённой SSH-команды'
+          : null,
       why: ok
         ? null
         : (answer.why ??
-          failed?.aggregated_output ??
-          'нет успешных проверочных команд Git, git push --dry-run, GitHub, SSH и дочерних процессов Node'),
+          failedLocal?.aggregated_output ??
+          'нет успешных проверочных команд Git, git push --dry-run, GitHub и дочерних процессов Node'),
       run,
     };
   } finally {
