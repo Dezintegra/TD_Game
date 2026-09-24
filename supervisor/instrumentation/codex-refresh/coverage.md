@@ -8,16 +8,16 @@
 PAX path traversal, checksum/truncation и reparse/escape на файловой границе.
 Эти тесты не являются отрицательными проверками Windows/IPC instrumentation.
 
-| Требуемая производственная граница                                | Состояние                                                                                    |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| leaf call → ToolCtx → request → elevated/spawn_blocking           | Не инструментирована, mutation controls отсутствуют                                          |
-| SetupFlight leader/joiner/refresh identity                        | Не инструментирована                                                                         |
-| helper resolver/image/child handshake                             | Не инструментирована, выбранный image не наблюдался                                          |
-| ReadAclsOnly и scope.spawn/thread lifetime                        | Не инструментированы                                                                         |
-| acl.rs и setup_main/win.rs: SetNamedSecurityInfoW/SetSecurityInfo | Патч отсутствует, достижимость всех ветвей не проверена                                      |
-| effective token и mutators                                        | Ни review mutators, ни token query не выполнены                                              |
+| Требуемая производственная граница                                | Состояние                                                                                                                         |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| leaf call → ToolCtx → request → elevated/spawn_blocking           | Не инструментирована, mutation controls отсутствуют                                                                               |
+| SetupFlight leader/joiner/refresh identity                        | Не инструментирована                                                                                                              |
+| helper resolver/image/child handshake                             | Не инструментирована, выбранный image не наблюдался                                                                               |
+| ReadAclsOnly и scope.spawn/thread lifetime                        | Не инструментированы                                                                                                              |
+| acl.rs и setup_main/win.rs: SetNamedSecurityInfoW/SetSecurityInfo | Патч отсутствует, достижимость всех ветвей не проверена                                                                           |
+| effective token и mutators                                        | Ни review mutators, ни token query не выполнены                                                                                   |
 | writer/pipe/seq/seal/loss и Node reader                           | Node: 30 synthetic controls; Rust writer: 9 wire tests и cargo check, receipts/wire.json; pipe и причинная приёмка не реализованы |
-| build/reproduce/package/delivery                                  | Не выполнены                                                                                 |
+| build/reproduce/package/delivery                                  | Не выполнены                                                                                                                      |
 
 Статический обзор шести upstream build.rs описан в README и source receipt.
 Он устанавливает отсутствие setup launch в этих файлах, но не полноту
