@@ -1,4 +1,5 @@
 import { CATEGORIES, routingFields } from './categories.mjs';
+import { schedulingFields } from './scheduling.mjs';
 import { tokenPanel, withoutTokenPanel } from './token-hold.mjs';
 
 /**
@@ -166,11 +167,14 @@ export function parseCard(card, { stateByList, labelKeyById }) {
 
   const task = {
     id: meta?.id ?? null,
+    ...(Object.hasOwn(meta ?? {}, 'spentUsd') ? { spentUsd: meta.spentUsd } : {}),
+    ...(Object.hasOwn(meta ?? {}, 'reportReceipts') ? { reportReceipts: meta.reportReceipts } : {}),
     ...(Object.hasOwn(meta ?? {}, 'tokenHold') ? { tokenHold: meta.tokenHold } : {}),
     ...(Object.hasOwn(meta ?? {}, 'tokenReanalysis')
       ? { tokenReanalysis: meta.tokenReanalysis }
       : {}),
     ...routingFields(meta),
+    ...schedulingFields(meta),
     ...(labels.categories.length ? { categories: labels.categories } : {}),
     type: labels.types[0] ?? null,
     title: titleOf(card.name),
@@ -183,6 +187,9 @@ export function parseCard(card, { stateByList, labelKeyById }) {
     statusChangedAt: meta?.statusChangedAt ?? createdAtOf(card.id),
     owner: meta?.owner ?? null,
     returnTo: meta?.returnTo ?? null,
+    ...(meta?.backlogReview ? { backlogReview: meta.backlogReview } : {}),
+    ...(meta?.dependencyRecheck ? { dependencyRecheck: meta.dependencyRecheck } : {}),
+    ...(meta?.reconciliation ? { reconciliation: meta.reconciliation } : {}),
     ...(Object.hasOwn(meta ?? {}, 'question') ? { question: meta.question } : {}),
     links: { change: null, pr: null, run: null, related: [], ...(meta?.links ?? {}) },
     attempts: { continuations: 0, cycleFailures: 0, ...(meta?.attempts ?? {}) },
@@ -257,12 +264,18 @@ function labelKeys(idLabels, labelKeyById) {
 export function metaOf(task) {
   return {
     id: task.id,
+    ...(Object.hasOwn(task, 'spentUsd') ? { spentUsd: task.spentUsd } : {}),
+    ...(Object.hasOwn(task, 'reportReceipts') ? { reportReceipts: task.reportReceipts } : {}),
     ...(Object.hasOwn(task, 'tokenHold') ? { tokenHold: task.tokenHold } : {}),
     ...(Object.hasOwn(task, 'tokenReanalysis') ? { tokenReanalysis: task.tokenReanalysis } : {}),
     ...routingFields(task),
+    ...schedulingFields(task),
     ...(Object.hasOwn(task, 'question') ? { question: task.question } : {}),
     ...(Object.hasOwn(task, 'dependsOn') ? { dependsOn: task.dependsOn } : {}),
     ...(Object.hasOwn(task, 'splitInto') ? { splitInto: task.splitInto } : {}),
+    ...(task.backlogReview ? { backlogReview: task.backlogReview } : {}),
+    ...(task.dependencyRecheck ? { dependencyRecheck: task.dependencyRecheck } : {}),
+    ...(task.reconciliation ? { reconciliation: task.reconciliation } : {}),
     ...(Object.hasOwn(task, 'closureReason') ? { closureReason: task.closureReason } : {}),
     ...(Object.hasOwn(task, 'completionSummary')
       ? { completionSummary: task.completionSummary }

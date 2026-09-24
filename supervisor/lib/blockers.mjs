@@ -170,11 +170,13 @@ export function planBlockers(task, report, known, now) {
   return { next, planned, reasons, operation };
 }
 
-export async function transferBlocked(task, report, action, io) {
+export async function transferBlocked(task, report, action, io, { beforeWrite } = {}) {
   // PUT мог пройти, а запись комментария — оборваться. Состояние уже применено.
   if (task.status === 'blocked' && task.blockedContext?.from === report.stage) {
     if (task.blockedContext.operation !== blockerOperation(task, report))
       return { result: 'failed', why: 'карточка ожидает по другому отчёту' };
+    const dependencies = await beforeWrite?.();
+    if (dependencies?.result) return dependencies;
     const released = await io.release?.(task);
     if (released && !released.ok)
       return { result: 'failed', why: released.why ?? released.outcome };
@@ -182,17 +184,27 @@ export async function transferBlocked(task, report, action, io) {
     io.removeReport(task.id, report.stage);
     return { result: 'done', status: 'blocked' };
   }
-  const known = io.parsedCards
-    ? [
-        ...io.parsedCards().map((p) => ({ ...p.task, valid: checkCard(p).length === 0 })),
-        ...(io.dependencyRecords?.() ?? []),
-      ]
-    : io
-        .allTaskIds()
-        .map((id) => io.readTask(id))
-        .filter(Boolean);
-  const plan = planBlockers(task, report, known, io.now);
+  const readKnown = () =>
+    io.parsedCards
+      ? [
+          ...io.parsedCards().map((p) => ({ ...p.task, valid: checkCard(p).length === 0 })),
+          ...(io.dependencyRecords?.() ?? []),
+        ]
+      : io
+          .allTaskIds()
+          .map((id) => io.readTask(id))
+          .filter(Boolean);
+  let known = readKnown();
+  let plan = planBlockers(task, report, known, io.now);
   if (plan.problem) return { result: 'failed', why: plan.problem };
+  const dependencies = await beforeWrite?.();
+  if (dependencies?.result) return dependencies;
+  if (dependencies?.notes?.length) {
+    // Адресат мог быть и предшественником: старый план не должен стереть дополнение.
+    known = readKnown();
+    plan = planBlockers(task, report, known, io.now);
+    if (plan.problem) return { result: 'failed', why: plan.problem };
+  }
   for (const born of plan.planned) {
     const saved = await io.createTask(born, `chore(backlog): prerequisite ${born.id}`);
     if (!saved.ok) return { result: 'failed', why: saved.why ?? saved.outcome };
@@ -254,7 +266,14 @@ export async function transferBlocked(task, report, action, io) {
       facts: delayFacts(next),
       dependencies: delayDependencies(next, [...known, ...plan.planned]),
     };
-  const entry = { from: task.status, to: 'blocked', what: note, source: 'agent', at: io.now };
+  const entry = {
+    from: task.status,
+    to: 'blocked',
+    what: note,
+    source: 'agent',
+    at: io.now,
+    decisions: dependencies?.notes ?? [],
+  };
   const saved = await io.saveTask(
     next,
     reviewingDelay(task) ? delayEntry(next, note, entry) : entry,
@@ -272,7 +291,11 @@ export async function unblockTask(action, io) {
   const task = io.readTask(action.taskId);
   if (task?.status !== 'blocked')
     return { result: 'skipped', why: 'карточка уже не заблокирована' };
-  if (!task.blockedContext?.reasons?.length || !task.dependsOn?.length)
+  // Непустого dependsOn не требуется: снятие ожидания у ждущих закрытую
+  // карточку оставляет перечень пустым, и прежнее условие держало бы такую
+  // задачу в «Заблокированы» навсегда. Законность ожидания доказывает
+  // сохранённое основание, а не остаток рёбер.
+  if (!task.blockedContext?.reasons?.length)
     return { result: 'skipped', why: 'нет сохранённого основания ожидания' };
   const tasks = io
     .allTaskIds()
@@ -285,16 +308,24 @@ export async function unblockTask(action, io) {
     mainBranch: action.mainBranch,
   });
   if (pending.length) return { result: 'skipped', why: pending.join(', ') };
-  if (task.delayAnalysis)
+  // Перечень может оказаться пустым: ожидание закрытой карточки снимается
+  // вместе с ребром. Тогда называем то, чего задача ждала, по сохранённому
+  // основанию — оно переживает снятие намеренно.
+  const awaited = (
+    task.dependsOn?.length
+      ? task.dependsOn
+      : (task.blockedContext?.reasons ?? []).map((item) => item.taskId)
+  ).join(', ');
+  if (task.delayAnalysis || task.dependencyRecheck)
     return beginDelayAnalysis(
       {
         taskId: task.id,
         mode: 'verify',
-        reason: `Исправления выполнены: ${task.dependsOn.join(', ')}. Проверить сохранённый разбор, конкретное разблокирование и защиту от повторения.`,
+        reason: `Исправления выполнены: ${awaited}. Проверить сохранённый разбор, конкретное разблокирование и защиту от повторения.`,
       },
       io,
     );
-  const note = `Предшественники выполнены: ${task.dependsOn.join(', ')}. Новый анализ с учётом их результата.`;
+  const note = `Предшественники выполнены: ${awaited}. Новый анализ с учётом их результата.`;
   const moved = applyTransition(task, { status: 'new', now: io.now, note });
   const next = {
     ...moved.task,

@@ -1,4 +1,5 @@
 ﻿import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach } from 'vitest';
 import {
   ATTACK_STANCES,
   ATTACK_STANCE_LABEL,
@@ -37,6 +38,8 @@ import {
   distanceSquared,
   nukeBaseExclusion,
   upgradeBranchIndex,
+  applyRuleTuning,
+  resetRuleTuning,
 } from '@td/shared';
 import type { Command, PlayerId, Vec2 } from '@td/shared';
 import { createWorld } from './world.js';
@@ -201,6 +204,18 @@ describe('шаг симуляции: основы', () => {
     const enemyBase = world.structures.find((s) => s.owner === asPlayerId(1));
 
     expect(world.players[0]?.targetStructure).toBe(enemyBase?.id);
+  });
+
+  it('режимом атаки по умолчанию является «Бой»', () => {
+    // Умолчание проверяется у ОБОИХ игроков: режим — свойство игрока,
+    // и односторонний недосмотр дал бы матч, в котором одна сторона
+    // отвечает на огонь, а вторая идёт мимо.
+    const world = createWorld(SEED);
+
+    expect(world.players.map((player) => player.stance)).toEqual([
+      AttackStance.Engage,
+      AttackStance.Engage,
+    ]);
   });
 });
 
@@ -1336,13 +1351,21 @@ describe('остановка юнита на противнике', () => {
   /**
    * Мир, где обе стороны дерутся, а не прорываются.
    *
-   * Режим по умолчанию — «Прорыв», и в нём остановки на встречном нет
-   * вовсе. Эти тесты проверяют именно «Бой», поэтому режим ставится явно:
-   * иначе они проверяли бы отсутствие правила, а не правило.
+   * Режим по умолчанию — «Бой», и обёртка эта нужна уже не для того, чтобы
+   * его включить, а чтобы тест не зависел от умолчания вовсе: проверяемый
+   * режим называется в тесте явно, и правка умолчания не превратит проверку
+   * правила в проверку его отсутствия. Ровно это и случилось при смене
+   * умолчания с «Прорыва»: соседние тесты молча поменяли предмет.
    */
   const engaging = (world: WorldState): WorldState => ({
     ...world,
     players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
+  });
+
+  /** Обе стороны прорываются. Называется явно по той же причине. */
+  const breaking = (world: WorldState): WorldState => ({
+    ...world,
+    players: world.players.map((player) => ({ ...player, stance: AttackStance.Breakthrough })),
   });
   it('в режиме «Бой» встречный противник останавливает', () => {
     const world = engaging(
@@ -1358,7 +1381,9 @@ describe('остановка юнита на противнике', () => {
   it('в режиме «Прорыв» встречный противник не останавливает', () => {
     // Главное свойство режима: волна идёт к цели, ведя огонь на ходу,
     // и не вязнет в первом же заслоне.
-    const world = withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
+    const world = breaking(
+      withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901),
+    );
 
     const after = run(world, 4);
     const mine = after.units.find((unit) => unit.id === asEntityId(900));
@@ -1420,15 +1445,26 @@ describe('огонь на ходу', () => {
   const unitOf = (world: WorldState, id: number) =>
     world.units.find((unit) => unit.id === asEntityId(id));
 
-  /** Мой юнит и чужой на дальности от него. Режим у обоих — «Прорыв». */
-  const facingEachOther = (): WorldState =>
-    withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901);
-
   /** Обе стороны в «Бою»: оба юнита сцепляются и стоят. */
   const bothEngage = (world: WorldState): WorldState => ({
     ...world,
     players: world.players.map((player) => ({ ...player, stance: AttackStance.Engage })),
   });
+
+  /** Обе стороны в «Прорыве»: оба идут, стреляя на ходу. */
+  const bothBreak = (world: WorldState): WorldState => ({
+    ...world,
+    players: world.players.map((player) => ({ ...player, stance: AttackStance.Breakthrough })),
+  });
+
+  /**
+   * Мой юнит и чужой на дальности от него, оба в «Прорыве».
+   *
+   * Режим ставится явно: умолчанием стал «Бой», в котором оба встанут,
+   * а весь раздел о том, что юнит стреляет НА ХОДУ.
+   */
+  const facingEachOther = (): WorldState =>
+    bothBreak(withUnitAt(withUnitAt(openWorld(), 0, MINE, TOUGH, 900), 1, THEIRS, TOUGH, 901));
 
   /**
    * В «Бою» только соперник: мой юнит идёт, чужой стои́т.
@@ -1498,7 +1534,9 @@ describe('огонь на ходу', () => {
     const AHEAD = cellIndex(21, 20);
     const ONCOMING = cellIndex(21, 22);
 
-    let world = withUnitAt(withUnitAt(openWorld(), 0, AHEAD, TOUGH, 900), 1, ONCOMING, TOUGH, 901);
+    let world = bothBreak(
+      withUnitAt(withUnitAt(openWorld(), 0, AHEAD, TOUGH, 900), 1, ONCOMING, TOUGH, 901),
+    );
     const apartAtStart = distanceSquared(cellCentre(AHEAD), cellCentre(ONCOMING));
 
     for (let tick = 0; tick < TWO_SHOTS; tick += 1) {
@@ -1588,7 +1626,12 @@ describe('остановка юнита на стреляющей построй
   });
 
   it('в режиме «Прорыв» башня не останавливает', () => {
-    const asIs = (world: WorldState): WorldState => world;
+    // Режим называется явно, а не оставляется умолчанию: умолчанием стал
+    // «Бой», и прежняя обёртка-пустышка проверяла бы обратное правило.
+    const asIs = (world: WorldState): WorldState => ({
+      ...world,
+      players: world.players.map((player) => ({ ...player, stance: AttackStance.Breakthrough })),
+    });
 
     expect(positionAfter(facing(towerAt(THEIRS, 1, 902), asIs), 4)).not.toEqual(cellCentre(MINE));
   });
@@ -1873,6 +1916,114 @@ describe('пролом преграды в любом режиме', () => {
 });
 
 describe('расталкивание в связке с движением и боем', () => {
+  beforeEach(() => resetRuleTuning());
+  afterEach(() => resetRuleTuning());
+
+  const compositions = [
+    { name: 'штурмовики', types: [UnitType.Assault] },
+    { name: 'снайперы', types: [UnitType.Sniper] },
+    { name: 'Теслы', types: [UnitType.Tesla] },
+    { name: 'смешанное войско', types: [UnitType.Assault, UnitType.Sniper, UnitType.Tesla] },
+  ];
+  const passages = ['одна клетка', 'три клетки', 'поворот', 'постройки'] as const;
+  type Passage = (typeof passages)[number];
+
+  const passageWorld = (
+    passage: Passage,
+    types: readonly UnitType[],
+    closed = false,
+  ): WorldState => {
+    const world = openWorld();
+    const cells = new Uint8Array(MAP_CELL_COUNT);
+    const walls: StructureState[] = [];
+    // Цель достаточно далеко за выходом даже для Теслы. Свои стены,
+    // отключённые генералы и отложенный огонь базы исключают бой в горле.
+    const target = cellIndex(24, 35);
+    for (let y = 12; y <= 20; y += 1) {
+      for (let x = 0; x < MAP_WIDTH_CELLS; x += 1) {
+        const free =
+          passage === 'поворот'
+            ? (x === 10 && y <= 15) || (y === 15 && x >= 10 && x <= 24) || (x === 24 && y >= 15)
+            : x >= 24 && x < 24 + (passage === 'три клетки' ? 3 : 1);
+        if (free && !(closed && y === 18)) continue;
+        const cell = cellIndex(x, y);
+        if (passage === 'постройки') walls.push(wallAt(cell, 0, 2000 + cell));
+        else cells[cell] = Terrain.Rock;
+      }
+    }
+    const start = cellCentre(cellIndex(passage === 'поворот' ? 10 : 24, 8));
+    return {
+      ...world,
+      map: { cells, baseCells: [world.map.baseCells[0]!, target] },
+      structures: [
+        ...world.structures.map((structure) => ({
+          ...structure,
+          cell: structure.owner === asPlayerId(1) ? target : structure.cell,
+          readyAtTick: asTickNumber(10000),
+          health: 1_000_000_000,
+        })),
+        ...walls,
+      ],
+      generals: world.generals.map((general) => ({
+        ...general,
+        alive: false,
+        respawnAtTick: asTickNumber(10000),
+      })),
+      units: Array.from({ length: 100 }, (_, index) => ({
+        id: asEntityId(700 + index),
+        owner: asPlayerId(0),
+        unitType: types[index % types.length]!,
+        position: { ...start },
+        health: 1_000_000,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(10000),
+      })),
+    };
+  };
+
+  const crossPassage = (initial: WorldState): number[] => {
+    let world = initial;
+    const occupancy = buildOccupancy(world.map, world.structures);
+    const originalIds = new Set(world.units.map((unit) => unit.id));
+    const crossed = new Set<number>();
+    for (let tick = 0; tick < 3600; tick += 1) {
+      world = step(world, []);
+      const invalid = world.units.filter(
+        (unit) =>
+          occupancy.blocked[cellAt(unit.position)] === 1 ||
+          unit.health <= 0 ||
+          !originalIds.has(unit.id),
+      );
+      if (invalid.length > 0 || world.units.length !== originalIds.size) {
+        throw new Error(
+          `tick=${tick}, invalid=${JSON.stringify(invalid)}, count=${world.units.length}`,
+        );
+      }
+      for (const unit of world.units) {
+        if (unit.position.y >= cellsToUnits(21)) crossed.add(unit.id);
+      }
+      if (crossed.size === originalIds.size) break;
+    }
+    return [...originalIds].filter((id) => !crossed.has(id));
+  };
+
+  for (const radius of [1, 1.25]) {
+    for (const passage of passages) {
+      for (const composition of compositions) {
+        it(`100 машин: ${composition.name}, ${passage}, радиус ${radius}`, () => {
+          applyRuleTuning({ unitRadius: radius });
+          expect(crossPassage(passageWorld(passage, composition.types))).toEqual([]);
+        });
+      }
+    }
+    it(`закрытый проход не выпускает исходные 100 машин, радиус ${radius}`, () => {
+      applyRuleTuning({ unitRadius: radius });
+      expect(crossPassage(passageWorld('одна клетка', compositions[3]!.types, true))).toEqual(
+        Array.from({ length: 100 }, (_, index) => 700 + index),
+      );
+    });
+  }
+
   /** Скальная гряда через всю карту с единственным проходом в клетку. */
   const GAP_X = 24;
   const WALL_Y = 24;
@@ -2010,5 +2161,54 @@ describe('расталкивание в связке с движением и б
     expect(after.units[0]?.position).not.toEqual(spot);
     // ...и при этом выстрел по назначенной цели состоялся в том же тике.
     expect(afterBase?.health ?? 0).toBeLessThan(before?.health ?? 0);
+  });
+
+  it('200 осаждающих машин стреляют и не заходят центрами на основание', () => {
+    let world = openWorld();
+    const base = world.structures.find((entry) => entry.owner === asPlayerId(1))!;
+    const centre = cellCentre(base.cell);
+    const spots = [
+      { x: centre.x - 4000, y: centre.y },
+      { x: centre.x + 4000, y: centre.y },
+      { x: centre.x, y: centre.y - 4000 },
+      { x: centre.x, y: centre.y + 4000 },
+    ];
+    world = {
+      ...world,
+      structures: world.structures.map((entry) => ({
+        ...entry,
+        health: 1_000_000_000,
+        readyAtTick: asTickNumber(10000),
+      })),
+      generals: world.generals.map((general) => ({
+        ...general,
+        alive: false,
+        respawnAtTick: asTickNumber(10000),
+      })),
+      units: Array.from({ length: 200 }, (_, index) => ({
+        id: asEntityId(700 + index),
+        owner: asPlayerId(0),
+        unitType: [UnitType.Assault, UnitType.Sniper, UnitType.Tesla][index % 3]!,
+        position: { ...spots[Math.floor(index / 50)]! },
+        health: 1_000_000,
+        facing: DIRECTION_SOUTH,
+        readyAtTick: asTickNumber(0),
+      })),
+    };
+    const occupancy = buildOccupancy(world.map, world.structures);
+    const fired = new Set<number>();
+    for (let tick = 0; tick < 300; tick += 1) {
+      world = step(world, []);
+      expect(world.units).toHaveLength(200);
+      const inside = world.units.filter((entry) => occupancy.blocked[cellAt(entry.position)] === 1);
+      expect(inside.map((entry) => entry.id)).toEqual([]);
+      for (const entry of world.units) {
+        if (entry.readyAtTick > world.tick) fired.add(entry.id);
+      }
+    }
+    expect(fired.size).toBeGreaterThan(0);
+    expect(world.structures.find((entry) => entry.id === base.id)?.health).toBeLessThan(
+      1_000_000_000,
+    );
   });
 });

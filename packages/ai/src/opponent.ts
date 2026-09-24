@@ -86,6 +86,7 @@ import {
   hasComparableUpgrade,
   orderBySpendGain,
   nukeOutcome,
+  NUCLEAR_STATS,
   unitGain,
   unitPrice,
   upgradeGain,
@@ -1899,13 +1900,6 @@ const tryUpgrade = (
 // ─────────────────────────────────────────────────────────────────────────
 // Ядерный удар
 // ─────────────────────────────────────────────────────────────────────────
-
-/** Характеристики, которые описывают ракету, а не строение базы. */
-const NUCLEAR_STATS: readonly UpgradeStat[] = [
-  UpgradeStat.NukeDamage,
-  UpgradeStat.NukeRadius,
-  UpgradeStat.NukeCooldown,
-];
 
 /**
  * Ядерный удар: поиск цели и решение бить — два шага, а не один.

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyRuleTuning,
+  resetRuleTuning,
   DIRECTION_SOUTH,
   FIXED_POINT_SCALE,
   MAP_CELL_COUNT,
@@ -100,6 +102,60 @@ const byId = (working: Working, id: number): WorkingUnit => {
 const distance = (a: WorkingUnit, b: WorkingUnit): number => Math.hypot(a.x - b.x, a.y - b.y);
 
 describe('расталкивание: личный радиус', () => {
+  for (const type of [UnitType.Assault, UnitType.Sniper, UnitType.Tesla]) {
+    it(`радиус 1,25 разрежает пару типа ${type} с сохранением симметрии и потолка`, () => {
+      const settled: number[] = [];
+      try {
+        for (const radius of [1, 1.25]) {
+          resetRuleTuning();
+          applyRuleTuning({ unitRadius: radius });
+          const pair = [unit(1, point(12, 12), type), unit(2, point(12.1, 12), type)];
+          const working = toWorking(arrange(pair));
+          const stats = allPlayerStats(working.players);
+          const cap = Math.floor((UNIT_STATS[type].speed * SEPARATION_PUSH_SPEED_PERCENT) / 100);
+          for (let pass = 0; pass < 80; pass += 1) {
+            const before = working.units.map(({ x, y }) => ({ x, y }));
+            separateUnits(working, stats);
+            for (let index = 0; index < working.units.length; index += 1) {
+              const current = working.units[index]!;
+              const previous = before[index]!;
+              expect(
+                Math.hypot(current.x - previous.x, current.y - previous.y),
+              ).toBeLessThanOrEqual(cap);
+            }
+          }
+          const actual = distance(byId(working, 1), byId(working, 2));
+          expect(Math.abs(actual - 2 * UNIT_SEPARATION_RADIUS[type])).toBeLessThanOrEqual(1);
+          settled.push(actual);
+
+          const reverse = separate(arrange([...pair].reverse()), 80);
+          const turn = (p: { x: number; y: number }) => ({
+            x: MAP_WIDTH_CELLS * FIXED_POINT_SCALE - p.x,
+            y: MAP_WIDTH_CELLS * FIXED_POINT_SCALE - p.y,
+          });
+          const rotated = separate(
+            arrange(
+              pair.map((entry) => ({
+                ...entry,
+                owner: asPlayerId(1),
+                position: turn(entry.position),
+              })),
+            ),
+            80,
+          );
+          for (const id of [1, 2]) {
+            const { x, y } = byId(working, id);
+            expect(byId(reverse, id)).toMatchObject({ x, y });
+            expect(byId(rotated, id)).toMatchObject(turn({ x, y }));
+          }
+        }
+        expect(settled[1]).toBeGreaterThan(settled[0]!);
+      } finally {
+        resetRuleTuning();
+      }
+    });
+  }
+
   it('две машины в одной точке расходятся', () => {
     const same = point(FIELD_X, FIELD_Y);
     const world = arrange([unit(1, { ...same }), unit(2, { ...same })]);

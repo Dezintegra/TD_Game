@@ -1,4 +1,6 @@
 import { NEEDS_WORKTREE } from '../config/transitions.mjs';
+import { resolve } from 'node:path';
+import { needsReconciliation } from './backlog-reconciliation.mjs';
 
 /**
  * Сверка реестра с действительностью.
@@ -83,13 +85,23 @@ const canAdoptWorktree = (status) => NEEDS_WORKTREE.includes(status) || status =
  * @param {string} params.machine    имя этой рабочей станции
  * @returns {{ repairs: object[], notes: string[] }}
  */
-export function reconcile({ registry, worktrees, tasks, machine }) {
+export function reconcile({
+  registry,
+  worktrees,
+  tasks,
+  machine,
+  root = '.',
+  directory = () => true,
+  now,
+}) {
   const repairs = [];
   const notes = [];
 
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const entries = registry.entries ?? [];
-  const ours = worktrees.filter((tree) => PIPELINE_BRANCH.test(tree.branch ?? ''));
+  const ours = worktrees.filter(
+    (tree) => PIPELINE_BRANCH.test(tree.branch ?? '') && directory(resolve(root, tree.path)),
+  );
 
   const taskIdOf = (tree) => tree.branch.slice('worktree-'.length);
 
@@ -100,7 +112,17 @@ export function reconcile({ registry, worktrees, tasks, machine }) {
   // называется человеку и ждёт его решения.
   for (const tree of ours) {
     const taskId = taskIdOf(tree);
-    if (entries.some((entry) => entry.taskId === taskId)) continue;
+    const entry = entries.find((entry) => entry.taskId === taskId);
+    if (entry && (typeof entry.path !== 'string' || !entry.path.trim())) {
+      notes.push(`задача ${taskId}: путь реестра повреждён, владение сохранено`);
+      continue;
+    }
+    if (
+      entry &&
+      (resolve(root, entry.path) === resolve(root, tree.path) ||
+        directory(resolve(root, entry.path)))
+    )
+      continue;
 
     const task = byId.get(taskId);
     if (!task) {
@@ -135,7 +157,18 @@ export function reconcile({ registry, worktrees, tasks, machine }) {
     if (ours.some((tree) => taskIdOf(tree) === entry.taskId)) continue;
     // Отсутствие регистрации не означает, что исчезли папка и обе ветки.
     // Незавершённую уборку вправе забыть только сама успешная уборка.
-    if (byId.get(entry.taskId)?.status === 'cleanup') continue;
+    if (
+      [
+        ...NEEDS_WORKTREE,
+        'cleanup',
+        'failed',
+        'postmortem',
+        'awaiting-po',
+        'pr',
+        'token-limit',
+      ].includes(byId.get(entry.taskId)?.status)
+    )
+      continue;
     repairs.push({ kind: 'drop-entry', taskId: entry.taskId, why: 'дерева нет на диске' });
   }
 
@@ -145,9 +178,27 @@ export function reconcile({ registry, worktrees, tasks, machine }) {
     if (task.owner !== machine) continue;
     if (!NEEDS_WORKTREE.includes(task.status)) continue;
     const hasTree = ours.some((tree) => taskIdOf(tree) === task.id);
-    const hasEntry = entries.some((entry) => entry.taskId === task.id);
-    if (hasTree || hasEntry) continue;
-    repairs.push({ kind: 'finish-claim', taskId: task.id, branch: branchFor(task.id) });
+    const entry = entries.find((entry) => entry.taskId === task.id);
+    if (hasTree) continue;
+    if (
+      entry &&
+      (entry.branch !== branchFor(task.id) || typeof entry.path !== 'string' || !entry.path.trim())
+    )
+      continue;
+    // Сначала узнаём судьбу PR. Служебный merge уйдёт в cleanup без воссоздания дерева.
+    if (
+      task.links?.pr &&
+      (!task.reconciliation ||
+        needsReconciliation(task, now) ||
+        !['open', 'merged'].includes(task.reconciliation.state))
+    )
+      continue;
+    repairs.push({
+      kind: 'finish-claim',
+      taskId: task.id,
+      branch: branchFor(task.id),
+      ...(entry || task.links?.pr ? { existingOnly: true } : {}),
+    });
     notes.push(`задача ${task.id} захвачена, но дерева нет — доводим взятие до конца`);
   }
 

@@ -36,7 +36,7 @@ function register(io, { taskId, branch, path }) {
   // из `git worktree list` он приходит абсолютным, а запуск этапа склеивает
   // путь с корнем. Хранилище без такого метода (подделки в тестах) оставляет
   // путь как есть.
-  const stored = io.worktreePathFor?.(taskId) ?? path;
+  const stored = io.worktreePathFor?.(taskId, path) ?? path;
 
   io.upsertRegistry({
     taskId,
@@ -58,7 +58,14 @@ function register(io, { taskId, branch, path }) {
  * Написать назначение отсюда значило бы выдать работу мимо квоты.
  */
 function finishClaim(io, item) {
-  const tree = io.addWorktree(item.taskId, item.branch);
+  const task = io.readTask(item.taskId);
+  if (
+    task?.reconciliation?.state === 'merged' &&
+    task.links?.pr &&
+    io.deploymentImpact?.(task.links.pr)?.needed === false
+  )
+    return { result: 'skipped', why: 'влитому служебному PR осталось пройти уборку' };
+  const tree = io.addWorktree(item.taskId, item.branch, { existingOnly: item.existingOnly });
   if (!tree.ok) return { result: 'failed', why: `дерево не завелось: ${tree.why}` };
   return register(io, { ...item, path: tree.path });
 }
@@ -85,6 +92,10 @@ export function repairWorld(repairs, io) {
     if (!handler) {
       return { ...item, result: 'skipped', why: `починка «${item.kind}» здесь не исполняется` };
     }
-    return { ...item, ...handler(io, item) };
+    try {
+      return { ...item, ...handler(io, item) };
+    } catch (error) {
+      return { ...item, result: 'failed', why: error.message };
+    }
   });
 }

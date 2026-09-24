@@ -1,11 +1,19 @@
+import { emptyScheduling, planLaunches, recordRecovery, schedulingProblem } from './scheduling.mjs';
+import { incidentPolicy, legacyIncident } from './pipeline-incidents.mjs';
+import { planBacklogReview } from './backlog-review.mjs';
+import { reportTaskIds } from './report-targets.mjs';
+import { isToolHeld } from './tool-report-hold.mjs';
+import { reconciliationHeld } from './backlog-reconciliation.mjs';
 import { pendingDependencies } from './dependencies.mjs';
-import { delayDecision, reviewingDelay } from './delay-analysis.mjs';
-import { tokenAdmission, tokenHoldProblem } from './token-hold.mjs';
+import { delayDecision, reviewingDelay, DELAY_STATES } from './delay-analysis.mjs';
+import { tokenAdmission, tokenHoldProblem, unaccountedLaunchNote } from './token-hold.mjs';
+import { planEdgeResolutions } from './resolve-dependents.mjs';
 import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import {
   CROSSCUT,
   NEEDS_SESSION,
   NEEDS_WORKTREE,
+  QUEUE_STATES,
   canTransition,
   stateClass,
 } from '../config/transitions.mjs';
@@ -29,15 +37,24 @@ import { STAGE_COMMANDS, uncoveredForStage } from '../config/permissions.mjs';
 
 /** Действия, которые сканер умеет назначать, от самого срочного к обычным. */
 export const ACTIONS = [
+  'reconcile-task',
+  'queue-backlog-review',
   'flush-delay-journal',
   'analyze-delay',
   'observe-delay',
   'unblock-task',
+  // Снятие ожидания у ждущих закрытую карточку. Стоит рядом с разблокировкой
+  // намеренно: обе разбирают застой, и обе дешёвые — ни сессии, ни дерева.
+  'resolve-dependents',
+  'settle-maintenance',
+  'open-incident',
   'hold-token-budget',
   'refresh-token-budget',
   'resume-token-budget',
   'push-tail', // дослать неотправленное — прежде всего прочего
   'transfer-report', // перенести отчёт сессии в бэклог
+  'settle-tool-report', // подтвердить эффекты инфраструктурного удержания
+  'retry-tool-stage', // передать подтверждённое право на замещающий запуск
   'answer-question', // разобрать ответ владельца продукта
   'return-task', // вернуть из ошибки задачу, упавшую по вине конвейера
   'poll-external', // опросить проверки CI или прогон на чужом железе
@@ -163,11 +180,38 @@ export function scan(state) {
     config,
     paused = false,
     apiPaused = false,
+    // Часы приходят доводом, как и всё остальное: сканер их не берёт сам,
+    // иначе один и тот же снимок давал бы разные ответы.
+    now,
   } = state;
 
   const actions = [];
   const notes = [];
   const apiFailed = new Set(apiFailures.map((failure) => failure.taskId));
+  let scheduling = state.scheduling ?? emptyScheduling();
+  if (!scheduling.error && schedulingProblem(scheduling))
+    scheduling = { error: schedulingProblem(scheduling) };
+  if (!scheduling.error)
+    for (const task of [...tasks, ...(state.dependencyRecords ?? [])]) {
+      if (task.pipelineIncident?.verifiedAt)
+        scheduling = recordRecovery(scheduling, task.pipelineIncident.id);
+    }
+  let incident = incidentPolicy({ ...state, scheduling });
+  const legacy =
+    !incident.active &&
+    legacyIncident(
+      tasks.filter((task) => !task.owner || task.owner === state.machine),
+      now,
+      state.dependencyRecords ?? [],
+    );
+  if (legacy)
+    incident = incidentPolicy({
+      ...state,
+      scheduling,
+      tasks: tasks.map((task) =>
+        task.id === legacy.taskId ? { ...task, pipelineIncident: legacy.incident } : task,
+      ),
+    });
 
   for (const bad of invalid) {
     notes.push(
@@ -177,7 +221,7 @@ export function scan(state) {
 
   notes.push(...duplicateNumbers(tasks));
 
-  if (paused) {
+  if (paused || state.reportStorageBlocked) {
     notes.push('взведён рубильник паузы: конвейер не порождает работы');
     return { actions, notes };
   }
@@ -196,14 +240,11 @@ export function scan(state) {
   }
 
   const entryOf = (taskId) => registry.entries.find((item) => item.taskId === taskId);
+  notes.push(...incident.notes);
+  if (legacy) actions.push({ kind: 'open-incident', ...legacy });
   // Перенос отчёта меняет весь пакет; до следующего снимка его участники
   // не должны получать действия по старому состоянию доски.
-  const hasReport = (taskId) =>
-    reports.some(
-      (report) =>
-        report.taskId === taskId ||
-        (report.stage === 'deploy' && Array.isArray(report.batch) && report.batch.includes(taskId)),
-    );
+  const hasReport = (taskId) => reports.some((report) => reportTaskIds(report).includes(taskId));
   const isRunning = (taskId, stage) =>
     running.some(
       (item) =>
@@ -257,7 +298,13 @@ export function scan(state) {
     // Ветку дерева, где идёт этап, не трогаем: неизвестно, доделан ли
     // атомарный коммит. Прежде это выяснялось по снимку сессий, теперь —
     // прямым вопросом «есть ли живой процесс», на который есть точный ответ.
-    if (entry && isRunning(entry.taskId)) {
+    if (
+      entry &&
+      (isRunning(entry.taskId) ||
+        reports.some(
+          (report) => isToolHeld(report) && reportTaskIds(report).includes(entry.taskId),
+        ))
+    ) {
       notes.push(`ветка ${branch} впереди удалённой, но на дереве идёт этап — не трогаем`);
       continue;
     }
@@ -269,6 +316,30 @@ export function scan(state) {
 
   // 2. Отчёты сессий. Перенос — самое дешёвое, что двигает задачу вперёд.
   for (const report of reports) {
+    if (isToolHeld(report)) {
+      if (report.retryClaimed)
+        actions.push({
+          kind: 'retry-tool-stage',
+          taskId: report.taskId,
+          stage: report.stage,
+          reportId: report.reportId,
+          batch: report.batch,
+        });
+      if (report.settlementReady && byId.has(report.taskId))
+        actions.push({
+          kind: 'settle-tool-report',
+          taskId: report.taskId,
+          stage: report.stage,
+          reportId: report.reportId,
+        });
+      continue;
+    }
+    if (report.rejection) {
+      notes.push(
+        `отчёт ${report.reportId} задачи ${report.taskId} отклонён: ${report.rejection.why}; участники удержаны, требуется исправление и явный retry`,
+      );
+      continue;
+    }
     if (!byId.has(report.taskId)) {
       notes.push(`отчёт по задаче ${report.taskId}, которой нет в бэклоге`);
       continue;
@@ -279,6 +350,7 @@ export function scan(state) {
       taskId: report.taskId,
       stage: report.stage,
       outcome: report.outcome,
+      ...(report.reportId ? { reportId: report.reportId } : {}),
     });
   }
 
@@ -299,6 +371,7 @@ export function scan(state) {
   //     в конвейере и была уже починена: решения в подъёме нет, одна задержка.
   for (const task of tasks) {
     if (task.status !== 'failed' || task.recovery?.causedBy !== 'pipeline') continue;
+    if (legacy?.taskId === task.id || !incident.allows(task, task.returnTo)) continue;
     if (!task.returnTo) {
       notes.push(`задача ${task.id}: причина в конвейере, но возвращать некуда — возврат пуст`);
       continue;
@@ -334,7 +407,7 @@ export function scan(state) {
     if (stuck.has(task.id)) continue;
     if (task.status === 'pr') {
       actions.push({ kind: 'poll-external', taskId: task.id, what: 'ci' });
-    } else if (task.status === 'benchmark' && stateClass(task) === 'waiting') {
+    } else if (task.status === 'benchmark' && stateClass(task) === 'waiting' && task.links?.run) {
       actions.push({ kind: 'poll-external', taskId: task.id, what: 'run' });
     }
   }
@@ -404,11 +477,39 @@ export function scan(state) {
   // Оставь её в счёте — и она держала бы единственное место НАВСЕГДА: сессии
   // нет, этап не кончается, место не освобождается. Сегодня оно освобождается
   // хотя бы через полчаса падением, то есть лечение вышло бы хуже болезни.
+  const retries = new Map(
+    reports.filter((report) => report.retryReady).map((report) => [report.taskId, report]),
+  );
+  const retryParticipants = new Set(
+    [...retries.values()].flatMap((report) => [report.taskId, ...(report.batch ?? [])]),
+  );
   const held = new Map();
+  for (const task of tasks) {
+    if (isRunning(task.id) || (hasReport(task.id) && !retryParticipants.has(task.id))) continue;
+    const stage = QUEUE_STATES.includes(task.status) ? firstStage(task) : task.status;
+    if (
+      incident.sources.has(task.id) &&
+      stage === task.pipelineIncident?.check.stage &&
+      (task.pipelineIncident.probeStartedAt || scheduling.probes?.[task.pipelineIncident.id])
+    ) {
+      actions.push({
+        kind: 'fail-stage',
+        taskId: task.id,
+        stage,
+        reason: `инцидент ${task.pipelineIncident.id}: проверочная сессия закончилась без подтверждения; нужен новый диагноз`,
+      });
+      stuck.add(task.id);
+    }
+    if (!incident.allows(task, stage)) {
+      held.set(task.id, ['pipeline-incident']);
+      notes.push(`задача ${task.id}: этап ${stage} ожидает устранения подтверждённого инцидента`);
+    }
+  }
   // Проверяем до квот и пределов попыток: ожидание не является запуском.
   for (const task of tasks) {
-    if (!['new', 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status)) continue;
-    if (isRunning(task.id) || hasReport(task.id)) continue;
+    if (![...QUEUE_STATES, 'blocked'].includes(task.status) && !NEEDS_SESSION.includes(task.status))
+      continue;
+    if (isRunning(task.id) || (hasReport(task.id) && !retryParticipants.has(task.id))) continue;
     // Диагностике нужны результаты блокеров, но ожидать их для самого разбора нельзя.
     if (reviewingDelay(task)) continue;
     const pending = pendingDependencies(task, tasks, state.closedDependencyIds ?? [], {
@@ -418,11 +519,12 @@ export function scan(state) {
       mainBranch: config.mainBranch,
     });
     if (pending.length === 0) {
-      if (
-        task.status === 'blocked' &&
-        task.dependsOn?.length &&
-        task.blockedContext?.reasons?.length
-      ) {
+      // Непустого dependsOn здесь больше не требуется. Снятие ожидания
+      // у ждущих закрытую карточку оставляет перечень пустым, и прежнее
+      // условие удержало бы такую задачу в «Заблокированы» навсегда —
+      // ровно та беда, ради которой снятие и заводилось. Законность
+      // ожидания доказывает сохранённое основание, а не остаток рёбер.
+      if (task.status === 'blocked' && task.blockedContext?.reasons?.length) {
         actions.push({
           kind: 'unblock-task',
           taskId: task.id,
@@ -443,10 +545,53 @@ export function scan(state) {
     // Живой этап удержание не касается: он уже идёт, и командам его сессии
     // правила разрешений судья, а не сканер.
     if (isRunning(task.id, task.status)) continue;
+
+    if (state.unavailableWorkspaces?.[task.id]) {
+      notes.push(
+        `задача ${task.id}: ${state.unavailableWorkspaces[task.id]}; запуск удержан локально`,
+      );
+      continue;
+    }
+    if (task.status === 'deploy' && state.deployUnavailable) {
+      held.set(task.id, ['deploy-ssh']);
+      notes.push(
+        `задача ${task.id}: выкладка ждёт подтверждения SSH; локальная работа продолжается`,
+      );
+      continue;
+    }
     const uncovered = uncoveredAt(task.status);
     if (uncovered.length === 0) continue;
     held.set(task.id, uncovered);
     notes.push(heldNote(task.id, task.status, uncovered));
+  }
+
+  // Кандидаты, чья объявленная область работы — конвейер, переезжают
+  // в «Обслуживание». Разбирается этим и то, что накопилось до введения
+  // очереди: на 10.09.2026 таких кандидатов было большинство, и предложения
+  // по игре тонули среди них.
+  //
+  // Переносится только объявленная область. Догадка по заголовку отвергнута:
+  // на глаз карточка про конвейер и карточка про игру неразличимы, а ошибка
+  // отнесения стоит владельцу продукта потерянного предложения.
+  for (const task of tasks) {
+    if (task.status !== 'candidate' || task.area !== 'pipeline') continue;
+    if (hasReport(task.id) || isRunning(task.id)) continue;
+    actions.push({ kind: 'settle-maintenance', taskId: task.id });
+  }
+
+  // Рёбра, ведущие в закрытые карточки, снимаются с обоснованием. Планируется
+  // по снимку доски: так разбирается и уже накопившийся затор, и переживается
+  // обрыв на середине — неснятое ребро попадёт в план следующего оборота.
+  for (const plan of planEdgeResolutions({
+    tasks,
+    records: state.dependencyRecords ?? [],
+  })) {
+    if (hasReport(plan.taskId) || isRunning(plan.taskId)) continue;
+    actions.push({ kind: 'resolve-dependents', ...plan });
+    notes.push(
+      `задача ${plan.taskId}: снимаем ожидание закрытых карточек — ` +
+        plan.edges.map((edge) => edge.dependencyId).join(', '),
+    );
   }
 
   // Нечитаемые правила не держат ничего: «не знаем, значит держим» остановило
@@ -482,7 +627,8 @@ export function scan(state) {
   const tokenHeld = new Set();
   for (const task of tasks) {
     const waiting = task.status === 'token-limit';
-    if (!waiting && task.status !== 'new' && !NEEDS_SESSION.includes(task.status)) continue;
+    if (!waiting && !QUEUE_STATES.includes(task.status) && !NEEDS_SESSION.includes(task.status))
+      continue;
     if (task.delayJournal) continue;
     if (task.status === 'deploy' && running.some((item) => item.stage === 'deploy')) continue;
     if (isRunning(task.id) || hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id))
@@ -496,7 +642,7 @@ export function scan(state) {
     // Зависимости и разрешения не превращаются в бюджетное ожидание.
     if (!waiting && held.has(task.id)) continue;
     const resumeStatus = waiting ? task.tokenHold.resumeStatus : task.status;
-    const stage = resumeStatus === 'new' ? firstStage(task) : resumeStatus;
+    const stage = QUEUE_STATES.includes(resumeStatus) ? firstStage(task) : resumeStatus;
     const budget = tokenAdmission(task, stage, config, state.codexUsage ?? {});
     if (!budget) {
       if (waiting) actions.push({ kind: 'resume-token-budget', taskId: task.id, stage });
@@ -534,23 +680,16 @@ export function scan(state) {
     )
       actions.push({ kind: 'refresh-token-budget', ...common });
   }
-  const engaged = tasks.filter(
-    (task) => NEEDS_SESSION.includes(task.status) && !held.has(task.id) && !tokenHeld.has(task.id),
-  );
-  let busy = engaged.length >= config.maxConcurrent;
-
-  // Исключительный этап — замер кадров и выкладка — требует тишины на машине
-  // целиком. При одном исполнителе это выходит само собой, но настройка
-  // допускает и больше, а замер на engagedй машине измеряет загрузку, а не код:
-  // проверено дважды, один раз цифра оказалась завышена вдесятеро.
-  //
-  // Удержанные сюда не попадают вместе с `engaged`, и это не оговорка:
-  // задача, которой не выдали сессию, машину не занимает и тишины не требует.
-  const exclusiveEngaged = engaged.some((task) => stateClass(task) === 'exclusive');
-  if (exclusiveEngaged && !busy) {
-    notes.push('идёт исключительный этап: новых задач не берём, машина должна молчать');
-    busy = true;
-  }
+  if (state.reconciliationReady)
+    for (const task of tasks) {
+      if (
+        !incident.sources.has(task.id) &&
+        reconciliationHeld(task, state.now) &&
+        !isRunning(task.id) &&
+        !hasReport(task.id)
+      )
+        held.set(task.id, ['сверка PR']);
+    }
 
   // 6. Этапы, которым нужна сессия, а живого процесса нет.
   //
@@ -560,7 +699,12 @@ export function scan(state) {
   // же — процесс. Различает их только то, известен ли идентификатор прежней
   // сессии: если известен, её возобновляют, а не начинают заново.
   const waitingForSession = [];
+  // Опрос может сменить этап: продолжение и пределы решит следующий свежий оборот.
+  const polled = new Set(
+    actions.filter((action) => action.kind === 'poll-external').map((action) => action.taskId),
+  );
   for (const task of tasks) {
+    if (polled.has(task.id)) continue;
     // Отбор идёт по признаку «этапу нужна сессия», а не по цене этапа.
     // Раньше здесь стоял перечень классов, и прогон на чужом железе в него
     // не попадал: класс у него «ожидательный». Из-за этого умершая сессия
@@ -568,7 +712,12 @@ export function scan(state) {
     // занят ею навсегда, и заметить это можно было только глазами.
     // Проверено 27.08.2026: 0002 простояла так почти шесть часов.
     if (!NEEDS_SESSION.includes(task.status)) continue;
-    if (stuck.has(task.id) || hasReport(task.id) || tokenHeld.has(task.id)) continue;
+    if (
+      stuck.has(task.id) ||
+      (hasReport(task.id) && !retries.has(task.id)) ||
+      tokenHeld.has(task.id)
+    )
+      continue;
 
     // Живой процесс на этом самом этапе — работа идёт, вмешиваться незачем.
     if (isRunning(task.id, task.status)) continue;
@@ -591,6 +740,19 @@ export function scan(state) {
     // в ошибку — сессии не было, тратить нечего, а ошибка потребовала бы
     // разбора, той самой второй сессии, ради отмены которой всё затеяно.
     if (held.has(task.id)) continue;
+    if (
+      retries
+        .get(task.id)
+        ?.batch?.some(
+          (id) =>
+            held.has(id) ||
+            tokenHeld.has(id) ||
+            !byId.has(id) ||
+            byId.get(id).status !== task.status ||
+            (byId.get(id).owner && byId.get(id).owner !== state.machine),
+        )
+    )
+      continue;
 
     // Отказ сервера этого оборота: сессию не выдаём, и не из осторожности.
     // Возврат продолжения и выдача сессии — две правки одной задачи, обе
@@ -610,8 +772,15 @@ export function scan(state) {
     // дальше вести нельзя, останавливают независимо от занятости машины.
     // Иначе повторился бы случай 0022 (02.09.2026), где остановка ждала
     // места, освободившегося за три минуты до неё.
-    if ((task.attempts?.continuations ?? 0) >= config.maxContinuations) {
-      notes.push(`задача ${task.id}: продолжения исчерпаны, нужен разбор человеком`);
+    const taskContinuationLimit = config.taskContinuationLimits?.[task.id];
+    const continuationLimit =
+      Number.isSafeInteger(taskContinuationLimit) && taskContinuationLimit > 0
+        ? taskContinuationLimit
+        : config.maxContinuations;
+    if (!retries.has(task.id) && (task.attempts?.continuations ?? 0) >= continuationLimit) {
+      notes.push(
+        `задача ${task.id}: продолжения исчерпаны (${task.attempts?.continuations ?? 0}/${continuationLimit}), нужен разбор человеком`,
+      );
       actions.push({
         kind: 'fail-stage',
         taskId: task.id,
@@ -668,10 +837,8 @@ export function scan(state) {
     waitingForSession.push(task);
   }
 
-  // Свободные места считаются по ЖИВЫМ ПРОЦЕССАМ, а не по `engaged`: та
-  // мерка верна для взятия новой работы (раздел 7) и заведомо неверна здесь,
-  // потому что задача, ждущая первой сессии, сама себя посчитала бы занявшей
-  // место.
+  // Свободные места и для продолжений, и для новых карточек считаются
+  // по живым процессам. Ожидание первой сессии само место не занимает.
   //
   // Просить сессию, когда мест нет, после решений об отказе уже безвредно —
   // теснота ничего не тратит. Но сборка назначения тащит журнал задачи
@@ -679,7 +846,6 @@ export function scan(state) {
   // не запустился» каждые пять минут на исправном конвейере. Строка, которая
   // при исправной работе означает беду, обязана быть редкой, иначе её
   // перестают читать.
-  let free = Math.max(0, config.maxConcurrent - running.length);
 
   // Задачи `deploy` сворачиваются в пакет: сессию получает одна — ведущая,
   // старшая по приоритету и возрасту, — а перечень остальных едет с ней
@@ -688,122 +854,132 @@ export function scan(state) {
   // пятнадцать карточек в «Выкладке»). Перечень складывается ЗДЕСЬ, из уже
   // отобранных задач: удержанная, исчерпавшая пределы или ждущая оборота
   // в пакет не попадает — решение по ней принято выше, по общим правилам.
-  const deploying = waitingForSession.filter((task) => task.status === 'deploy');
-  deploying.sort(byPriorityThenAge);
-  const batchOf = new Map();
-  if (deploying.length > 0) {
-    const [lead, ...rest] = deploying;
-    batchOf.set(
-      lead.id,
-      deploying.map((task) => task.id),
-    );
-    for (const other of rest) {
-      notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
-    }
-  }
-  let eligible = waitingForSession.filter(
-    (task) => task.status !== 'deploy' || batchOf.has(task.id),
+  const deploying = waitingForSession.filter(
+    (task) =>
+      task.status === 'deploy' &&
+      !incident.probes.has(task.id) &&
+      !reports.some((report) => isToolHeld(report) && report.stage === 'deploy'),
   );
-  const liveExclusive = running.some((item) => {
-    const task = tasks.find((candidate) => candidate.id === item.taskId);
-    return task && stateClass(task) === 'exclusive';
-  });
-  const readyExclusives = eligible
-    .filter((task) => stateClass(task) === 'exclusive')
-    .sort(byPriorityThenAge);
-  if (liveExclusive && free > 0) {
-    notes.push('идёт исключительный этап: продолжения других задач не выдаются');
-    eligible = [];
-  } else if (readyExclusives.length > 0) {
-    // Готовая выкладка/замер ждёт тишины: не подпитываем обычные продолжения
-    // и не выдаём два исключительных продолжения, даже если свободных мест
-    // несколько. Выбранный первым по обычному приоритету этап резервирует
-    // весь оборот, чтобы следующий цикл увидел его уже живым.
-    eligible = running.length === 0 ? readyExclusives.slice(0, 1) : [];
-  }
-
-  // Слив перед самообновлением: новый код супервизора уже на диске, и он
-  // перезапустится, как только не останется ни этапов, ни отчётов. Выдавать
-  // сессии сейчас значило бы никогда этого не дождаться: при двух местах
-  // и сотне задач в очереди тихий момент сам не наступает. Идущее
-  // доделывается, отчёты переносятся, опросы идут — не берётся только новое.
-  if (state.draining && eligible.length > 0) {
-    notes.push('самообновление ждёт тишины: сессий не выдаём, идущее доделываем');
-  }
-  for (const task of [...eligible].sort(byPriorityThenAge)) {
-    if (state.draining) continue;
-    if (free === 0) {
-      notes.push(`задача ${task.id} ждёт сессию: свободных мест нет`);
-      continue;
+  deploying.sort(byPriorityThenAge);
+  // Каждый инцидент требует своего свидетельства: общий отчёт ведущей
+  // не должен передвинуть вторую проверку в уборку без её результата.
+  const batchOf = new Map(
+    waitingForSession
+      .filter((task) => task.status === 'deploy' && incident.probes.has(task.id))
+      .map((task) => [task.id, [task.id]]),
+  );
+  if (deploying.length > 0) {
+    // Пакет не отправляется, едва в нём появилась первая задача. Условий два,
+    // и достаточно любого: накопилось довольно карточек либо прошло довольно
+    // времени с прошлой выкладки.
+    //
+    // Прежде условие было одно — «есть хоть одна», — и каждая доведённая
+    // задача звала свою выкладку. Выкладка эксклюзивна: она занимает машину
+    // целиком, а на боевом сервере поднимает и перезапускает игру. Делать это
+    // по разу на карточку дорого и для машины, и для игроков.
+    //
+    // Срок нужен рядом с порогом затем, чтобы одинокая задача не ждала
+    // вечно: пять карточек могут не набраться неделю.
+    const since = Date.parse(state.lastDeployAt ?? '');
+    const elapsed = Number.isFinite(since) ? Date.parse(now) - since : null;
+    const waited = elapsed === null || elapsed >= config.deployBatchHours * 3600000;
+    const enough = deploying.length >= config.deployBatchSize;
+    if (!enough && !waited) {
+      const hours = elapsed === null ? '—' : (elapsed / 3600000).toFixed(1);
+      notes.push(
+        `пакет выкладки копится: ${deploying.length} из ${config.deployBatchSize}, ` +
+          `с прошлой выкладки прошло ${hours} ч из ${config.deployBatchHours}`,
+      );
+    } else {
+      const [lead, ...rest] = deploying;
+      batchOf.set(
+        lead.id,
+        deploying.map((task) => task.id),
+      );
+      notes.push(
+        enough
+          ? `пакет выкладки набран: ${deploying.length} задач, ведущая ${lead.id}`
+          : `срок выкладки вышел: ведущая ${lead.id}, в пакете ${deploying.length}`,
+      );
+      for (const other of rest) {
+        notes.push(`задача ${other.id} едет в пакете выкладки с ${lead.id}`);
+      }
     }
-    actions.push({
-      kind: 'continue-stage',
-      taskId: task.id,
+  }
+  for (const [id, report] of retries) if (report.stage === 'deploy') batchOf.set(id, report.batch);
+  const candidates = waitingForSession
+    .filter((task) => task.status !== 'deploy' || batchOf.has(task.id))
+    .map((task) => ({
+      task,
+      kind: retries.has(task.id) ? 'retry-tool-stage' : 'continue-stage',
+      reportId: retries.get(task.id)?.reportId,
       stage: task.status,
-      reason: 'этапу нужна сессия, живого процесса нет',
-      // Перечень пакета есть только у ведущей выкладки; прочим действиям
-      // поле не нужно, и его нет вовсе — отсутствие и есть «не пакет».
-      ...(batchOf.has(task.id) ? { batch: batchOf.get(task.id) } : {}),
-    });
-    free -= 1;
-  }
-
-  // 7. Взятие новых задач. Здесь и только здесь действуют квоты и приоритеты.
-  // Сначала сохраняем разблокировку; обычную очередь выбираем по следующему снимку.
+      batch: batchOf.get(task.id),
+      unaccounted: unaccountedLaunchNote(task, task.status, config, state.codexUsage ?? {}),
+    }));
   const unblocking = actions.some((action) => action.kind === 'unblock-task');
-  const queue = tasks
-    .filter((task) => task.status === 'new' && !held.has(task.id) && !tokenHeld.has(task.id))
-    .sort(byPriorityThenAge);
-
-  // Прогоны приоритетнее: пока готов хоть один, проработка и имплементация ждут.
-  const runWaiting = queue.some((task) => task.type === 'run');
-  if (runWaiting) {
-    notes.push('в очереди есть прогон: новых задач в проработку и имплементацию не берём');
-  }
-
-  for (const task of queue) {
+  for (const task of tasks.filter((item) => QUEUE_STATES.includes(item.status))) {
+    if (
+      held.has(task.id) ||
+      tokenHeld.has(task.id) ||
+      hasReport(task.id) ||
+      unblocking ||
+      isRunning(task.id) ||
+      (task.owner && task.owner !== state.machine)
+    )
+      continue;
     const stage = firstStage(task);
     const verdict = canTransition(task, stage);
     if (!verdict.ok) {
       notes.push(`задача ${task.id}: ${verdict.reason}`);
       continue;
     }
-
-    // Этап, который нечем закончить, не начинают. Иначе сессия проснётся,
-    // дойдёт до последнего шага и встанет, оставив задачу в состоянии,
-    // из которого её будет доставать человек.
     const missing = missingForStage(config, stage, task);
-    if (missing.length > 0) {
+    if (missing.length) {
       notes.push(`задача ${task.id} не берётся: в настройке нет ${missing.join(', ')}`);
       continue;
     }
-
-    // Та же мерка, но по нехватке РАЗРЕШЕНИЙ, а не настройки. Задача остаётся
-    // в очереди: работа цела, и после починки она пойдёт с того же места.
+    if (stage === 'deploy' && state.deployUnavailable) {
+      notes.push(
+        `задача ${task.id}: выкладка ждёт подтверждения SSH; локальная работа продолжается`,
+      );
+      continue;
+    }
     const uncovered = uncoveredAt(stage);
-    if (uncovered.length > 0) {
+    if (uncovered.length) {
       notes.push(heldNote(task.id, stage, uncovered));
       continue;
     }
-
-    if (state.draining) {
-      notes.push(`задача ${task.id} ждёт: самообновление сливает работу`);
-      continue;
-    }
-    if (unblocking) continue;
-    if (busy) {
-      notes.push(`задача ${task.id} ждёт: исполнитель занят`);
-      continue;
-    }
-    if (runWaiting && task.type !== 'run') continue;
-
-    actions.push({ kind: 'start-stage', taskId: task.id, stage });
-    busy = true;
+    candidates.push({ task, kind: 'start-stage', stage });
   }
+  if (!state.draining && !legacy) {
+    const selected = planLaunches({
+      candidates,
+      running,
+      tasks,
+      config,
+      scheduling,
+      now,
+      compare: byPriorityThenAge,
+      isRecovery: incident.isRecovery,
+    });
+    actions.push(...selected.actions);
+    for (const action of selected.actions) {
+      const source = tasks.find((task) => task.id === action.taskId);
+      if (
+        incident.probes.has(action.taskId) &&
+        action.stage === source?.pipelineIncident?.check.stage
+      )
+        action.incidentProbe = true;
+    }
+    notes.push(...selected.notes);
+  } else if (candidates.length) notes.push('самообновление ждёт тишины: сессий не выдаём');
 
   const delayed = new Map();
   if (!state.draining)
     for (const task of tasks) {
+      if (incident.sources.has(task.id)) continue;
+      if (incident.active && !incident.allows(task, task.status)) continue;
       if (tokenHeld.has(task.id)) continue;
       if (isRunning(task.id) || running.some((item) => item.batch?.includes(task.id))) continue;
       if (task.owner && task.owner !== state.machine) continue;
@@ -812,6 +988,21 @@ export function scan(state) {
         continue;
       }
       if (hasReport(task.id) || stuck.has(task.id) || apiFailed.has(task.id)) continue;
+      if (
+        task.dependencyRecheck &&
+        DELAY_STATES.includes(task.status) &&
+        (!task.delayAnalysis || task.delayAnalysis.phase === 'monitoring') &&
+        task.status !== 'postmortem'
+      ) {
+        delayed.set(task.id, {
+          kind: 'analyze-delay',
+          taskId: task.id,
+          mode: 'verify',
+          reason:
+            'Предшественник закрыт без результата. Проверить сохранённые dependencyRecheck и blockedContext: конкретное предусловие выполнено, снято с доказательством или требует живой замены.',
+        });
+        continue;
+      }
       const action = delayDecision(task, {
         now: state.now,
         answered: Boolean(answers[task.id]),
@@ -836,8 +1027,60 @@ export function scan(state) {
       actions.splice(index, 1);
   }
   actions.push(...delayed.values());
+  if (state.reconciliationReady && !state.draining) {
+    const held = new Set();
+    for (const task of tasks) {
+      if (
+        !reconciliationHeld(task, state.now) ||
+        incident.sources.has(task.id) ||
+        isRunning(task.id) ||
+        hasReport(task.id) ||
+        (task.owner && task.owner !== state.machine) ||
+        task.delayJournal
+      )
+        continue;
+      held.add(task.id);
+      const evidence = state.reconciliationEvidence?.[task.id];
+      if (evidence)
+        actions.push({
+          kind: 'reconcile-task',
+          taskId: task.id,
+          expectedStatus: task.status,
+          expectedSince: task.statusChangedAt,
+          pr: task.links.pr,
+          proof: evidence.proof,
+          mainBranch: config.mainBranch,
+        });
+    }
+    for (let i = actions.length - 1; i >= 0; i--) {
+      const action = actions[i];
+      if (
+        action.kind !== 'reconcile-task' &&
+        action.kind !== 'push-tail' &&
+        (held.has(action.taskId) || action.batch?.some((id) => held.has(id)))
+      )
+        actions.splice(i, 1);
+    }
+  }
+  if (state.reconciliationReady && !state.draining) {
+    const review = planBacklogReview({ tasks, running, reports, machine: state.machine });
+    if (review) actions.push(review);
+  }
   actions.sort((a, b) => ACTIONS.indexOf(a.kind) - ACTIONS.indexOf(b.kind));
-  return { actions, notes };
+  return {
+    actions: actions.filter(
+      // Досылка не меняет карточку и снимает условие, удерживающее перенос.
+      (action) =>
+        action.kind === 'transfer-report' ||
+        action.kind === 'settle-tool-report' ||
+        action.kind === 'retry-tool-stage' ||
+        action.kind === 'push-tail' ||
+        (action.kind === 'flush-delay-journal' &&
+          !reports.some((report) => report.reportId && report.taskId === action.taskId)) ||
+        !hasReport(action.taskId),
+    ),
+    notes,
+  };
 }
 
 /** Есть ли вообще работа. Ради этого ответа сканер и запускается 288 раз в сутки. */

@@ -1,5 +1,7 @@
 import { dependencyFormatProblem } from './dependencies.mjs';
 import { categoriesProblem } from './categories.mjs';
+import { runSourceProblem } from './run-source.mjs';
+import { workKindProblem } from './scheduling.mjs';
 /**
  * Заявки на новые задачи.
  *
@@ -96,6 +98,8 @@ export function taskFromRequest(
   { id, now, sourceId, mayQueue = false, pipelineByDefault = false, decomposed = false },
 ) {
   const problems = [];
+  const workProblem = workKindProblem(request ?? {});
+  if (workProblem) problems.push(workProblem);
 
   const categoryProblem = categoriesProblem(request?.categories);
   if (categoryProblem) problems.push(categoryProblem);
@@ -112,6 +116,25 @@ export function taskFromRequest(
   if (type === 'run' && !String(request?.run?.expectation ?? '').trim()) {
     problems.push('прогон заявлен без ожидаемого результата');
   }
+  if (type === 'run') {
+    const sourceProblem = runSourceProblem(request.run);
+    if (sourceProblem) problems.push(sourceProblem);
+  }
+
+  // Замер кадров отдельной задачей больше не заводится. Он делается ровно
+  // в одном месте — перед выкладкой, на выкладываемой ревизии, — и просадка
+  // там не отменяет выкладку, а заводит разбор.
+  //
+  // Причина названа владельцем продукта: риск выпустить в продакшен что-то
+  // медленное менее важен, чем то, что новые возможности не выезжают
+  // в продакшен вовсе. Замер, рассыпанный по обычным задачам, занимает
+  // единственную машину и требует тишины, а отвечает на вопрос, который
+  // нужен только перед выкладкой.
+  if (type === 'run' && request?.run?.kind === 'perf') {
+    problems.push(
+      'замер кадров отдельной задачей не заводится: он делается только перед выкладкой',
+    );
+  }
 
   const dependencyProblem = dependencyFormatProblem({ ...request, id });
   if (dependencyProblem) problems.push(dependencyProblem);
@@ -119,8 +142,8 @@ export function taskFromRequest(
 
   const priority = Number.isInteger(request.priority) ? request.priority : 50;
 
-  // Область причины сохраняется для разбора ошибок. Сама область больше
-  // не даёт права обогнать очередь: необходимость задаётся отдельно.
+  // Область причины сохраняется для разбора ошибок. Область выбирает
+  // очередь обслуживания, а необходимость блокера задаётся отдельно.
   const pipeline = request.area === 'pipeline' || pipelineByDefault;
 
   // Разбор ошибки сохраняет право на необходимые починки причины.
@@ -145,7 +168,33 @@ export function taskFromRequest(
     //
     // Прогоны и обязательные починки разбора имеют прежние исключения.
     // Предпосылки исхода blocked подтверждаются отдельным проверенным планом.
-    status: type === 'run' || blocking ? 'new' : 'candidate',
+    //
+    // Заявка про сам конвейер идёт в «Обслуживание» и одобрения не ждёт.
+    // Владельцу продукта решать про игру, а не про то, какое правило этапа
+    // понято двояко; прежде такие заявки лежали в кандидатах вперемешку
+    // с предложениями по игре — сорок пять из шестидесяти девяти, — и
+    // предложения по игре в них тонули. Признаком служит объявленная область
+    // работы, а не догадка по заголовку: на глаз эти карточки неразличимы,
+    // а ошибка отнесения стоит владельцу потерянного предложения.
+    //
+    // Часть дробления одобрения не ждёт тоже, и по своему основанию: до этапа
+    // дробления задача доходит ТОЛЬКО из очереди, куда её перевёл человек,
+    // а дробление к заказу ничего не добавляет — оно режет ту же работу
+    // на самостоятельно вливаемые части. Спрашивать про каждую заново значит
+    // спрашивать про уже отвеченное: четыре части задачи 0274 простояли
+    // в кандидатах с 07.09.2026 нетронутыми, ожидая такого одобрения.
+    //
+    // Проверка области стоит ПЕРЕД проверкой части намеренно: конвейерная
+    // часть уходит в «Обслуживание», а не в общую очередь, иначе она
+    // бралась бы позже починок, которые должны идти впереди.
+    status:
+      type === 'run' || blocking
+        ? 'new'
+        : pipeline
+          ? 'maintenance'
+          : decomposed
+            ? 'new'
+            : 'candidate',
     returnTo: null,
     priority: Math.min(999, Math.max(0, priority)),
     createdAt: now,
@@ -179,6 +228,10 @@ export function taskFromRequest(
   // отчёта разбора узнаёт, какие из заведённых задач — починки конвейера,
   // после закрытия которых упавшую задачу можно вернуть в работу.
   if (pipeline) task.area = 'pipeline';
+  if (request.workKind !== undefined) {
+    task.workKind = pipeline ? 'service' : request.workKind;
+    task.workReason = request.workReason;
+  }
 
   if (type === 'run') {
     task.run = {
@@ -244,9 +297,9 @@ export function planRequests(
  * Та же причина, всплывшая после закрытия задачи, — это не «ещё один
  * случай», а регрессия: закрытую задачу починили и проверили, и приписывать
  * к ней новую фактуру значит хоронить сигнал в законченной истории.
- * Остановленная не лучше: её саму ещё предстоит поднимать человеку.
+ * Остановленная failed остаётся незавершённой: новая фактура не меняет её состояние.
  */
-const CLOSED_TO_FACTS = ['completed', 'closed', 'failed'];
+const CLOSED_TO_FACTS = ['completed', 'closed'];
 
 /**
  * Разобрать дополнения отчёта.

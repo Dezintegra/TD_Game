@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import { codexChildEnvironment } from '../lib/codex-environment.mjs';
-import { checkCodexReadiness } from '../lib/codex-readiness.mjs';
+import { checkCodexReadiness, checkRemoteReachability } from '../lib/codex-readiness.mjs';
+import { diagnoseStageTools } from '../lib/tool-diagnostics.mjs';
+import { gitWorkEvidence } from '../lib/tool-work-evidence.mjs';
+import { deploymentReadCommand, deploymentEvidence } from '../../scripts/deploy-evidence.mjs';
 import { prepareCodexPerfFiles } from '../lib/codex-perf-files.mjs';
-import { prepareDeploySnapshot } from '../lib/deploy-snapshot.mjs';
-import { readTokenLedger, writeTokenLedger } from '../lib/token-budget.mjs';
+import { createAssignmentPreparer } from '../lib/benchmark-source.mjs';
+import { readTokenLedger, writeTokenLedger, tokenAccountingNote } from '../lib/token-budget.mjs';
 import { tokenAdmission } from '../lib/token-hold.mjs';
 import { tokenReanalysisAdmission } from '../lib/token-reanalysis.mjs';
 import { spawn } from 'node:child_process';
 import { createCommandRunner } from '../lib/command-runner.mjs';
+import { reportTaskIds } from '../lib/report-targets.mjs';
 import { buildDependencyState } from '../lib/dependency-state.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
@@ -27,12 +31,13 @@ import { fileURLToPath } from 'node:url';
 import { budgetsAgree, countFailure, newLock, refreshLock, shouldPause } from '../lib/lock.mjs';
 import { codexProbeCommand, providerOf, readCodexAnswer } from '../lib/provider.mjs';
 import { judgeProbe, shouldProbe } from '../lib/api-health.mjs';
-import { TAG, clock, createConsole, humanDuration } from '../lib/console.mjs';
+import { TAG, clip, clock, createConsole, humanDuration } from '../lib/console.mjs';
 import { checkEnvironment } from '../lib/environment.mjs';
 import { createGit } from '../lib/git.mjs';
 import {
   isApiPaused,
   isPaused,
+  readLastDeploy,
   readApiPause,
   readAnswers,
   readPermissions,
@@ -41,10 +46,19 @@ import {
   readTasks,
 } from '../lib/read-state.mjs';
 import { parseWorktrees, reconcile } from '../lib/reconcile.mjs';
+import { isDirectory, unavailableWorkspaces } from '../lib/workspace-state.mjs';
 import { createIo } from '../lib/io.mjs';
+import { createSchedulingStore } from '../lib/scheduling-store.mjs';
 import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
+import { openReportStore } from '../lib/report-store.mjs';
+import {
+  openStageLogs,
+  createStageLogMaintenance,
+  readLiveLogProtection,
+} from '../lib/stage-logs.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
+import { openTaskEvents } from '../lib/task-events.mjs';
 import {
   claimSupervisorLock,
   createOwnedSupervisor as createAfterOwnership,
@@ -52,6 +66,7 @@ import {
 } from '../lib/supervisor-startup.mjs';
 import { execute } from '../lib/execute.mjs';
 import { repairWorld } from '../lib/repair.mjs';
+import { executionSummary, executionNote } from '../lib/execution-summary.mjs';
 import { resolveConfig } from '../config/defaults.mjs';
 import { runCycle } from '../lib/cycle.mjs';
 import { judgeSelfUpdate } from '../lib/self-update.mjs';
@@ -183,6 +198,7 @@ const runCommand = createCommandRunner(root);
 
 const runGit = (args) => runCommand(args, 'git');
 const { config, missing } = loadConfig();
+const schedulingStore = createSchedulingStore(root, config);
 const git = createGit(runGit, { remote: config.remote, mainBranch: config.mainBranch });
 
 /**
@@ -392,6 +408,9 @@ async function openBacklog({ mayWrite }) {
     invalid,
     marked,
     store,
+    // Ответы владельца снимаются здесь же, из того же снимка доски:
+    // сканер получает карту готовой, как и команды лимита токенов.
+    ownerAnswers: store.ownerAnswers(),
     closedDependencyIds: store.closedDependencyIds(),
     dependencyRecords: store.dependencyRecords(),
     notes: [
@@ -404,6 +423,16 @@ async function openBacklog({ mayWrite }) {
 
 let codexEnvironment;
 let codexReady = false;
+let deployReady = false;
+let nextDeployProbeAt = 0;
+const DEPLOY_RETRY_MS = 5 * 60_000;
+const codexReadinessOptions = () => ({
+  env: codexEnvironment,
+  config,
+  root,
+  spawn,
+  killTree: createKillTree((program, args) => runCommand(args, program)),
+});
 function sessionFiles(dir, suffix) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -413,26 +442,91 @@ function sessionFiles(dir, suffix) {
   });
 }
 function createRuntimeSupervisor() {
-  return createSupervisor({
-    getCodexEnvironment: () => codexEnvironment,
-    prepareAssignment: (assignment, previous) => {
-      const prepared = prepareDeploySnapshot(root, config, assignment, previous);
-      if (providerOf(config) === 'codex')
-        prepareCodexPerfFiles(root, prepared.path ? resolve(root, prepared.path) : root);
-      return prepared;
+  const stageLogs = openStageLogs(local('logs'), {
+    diagnose: (message) => note(message, TAG.warn),
+  });
+  const taskEvents = openTaskEvents(local('task-events'));
+  let protectionError;
+  try {
+    readLiveLogProtection(local('stages.json'));
+  } catch (error) {
+    protectionError = error;
+  }
+  const runtime = createSupervisor({
+    isToolPaused: () => isPaused(root, config),
+    mayLaunch: () => ({
+      allowed: !isPaused(root, config) && !isApiPaused(root, config) && !draining,
+      why: 'локальная, серверная пауза или завершение работы',
+    }),
+    inspectToolWork: (entry) => {
+      const cwd = entry.context?.cwd;
+      if (!cwd) return { state: 'unknown', reason: 'missing-cwd' };
+      const queries = {
+        head: ['rev-parse', 'HEAD'],
+        branch: ['branch', '--show-current'],
+        upstream: ['rev-parse', '--abbrev-ref', '@{upstream}'],
+        tail: ['rev-list', '@{upstream}..HEAD'],
+        dirty: ['status', '--porcelain'],
+      };
+      return gitWorkEvidence(
+        Object.fromEntries(
+          Object.entries(queries).map(([name, args]) => [
+            name,
+            runCommand(['-C', cwd, ...args], 'git', cwd, { timeout: 1000 }),
+          ]),
+        ),
+        entry.git,
+      );
     },
+    diagnoseTools: (entry, accounting) =>
+      diagnoseStageTools({
+        assignment: entry.assignment,
+        expectedContext: entry.context,
+        config,
+        root,
+        home,
+        env: providerOf(config) === 'codex' ? codexEnvironment : undefined,
+        spawn,
+        killTree: createKillTree((program, args) => runCommand(args, program)),
+        ...accounting,
+      }),
+    pauseTools: (entry) => {
+      ensureLocal();
+      try {
+        writeFileSync(
+          local('pause'),
+          `Инструменты этапа ${entry.taskId}/${entry.stage}: подтверждённый сбой (${entry.reportId}).\n`,
+          { flag: 'wx' },
+        );
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+      }
+    },
+    reportStore: openReportStore(local('pending-reports.json')),
+    getCodexEnvironment: () => codexEnvironment,
+    prepareAssignment: createAssignmentPreparer(root, config),
     config,
     root,
     readCodexEvidence: (child) => {
       if (!child.sessionId) return { ok: false, reason: 'unknown-session' };
+      let evidencePath = child.path;
+      if (child.recovery) {
+        const entries = readRegistry(root, config).entries.filter(
+          (item) => item.taskId === child.taskId,
+        );
+        if (entries.length !== 1 || !entries[0].path)
+          return { ok: false, reason: 'unknown-task-cwd' };
+        evidencePath = entries[0].path;
+      }
       const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
       const paths = sessionFiles(join(codexHome, 'sessions'), `${child.sessionId}.jsonl`);
       if (paths.length !== 1) return { ok: false, reason: 'ambiguous-session-evidence' };
       try {
         return sessionEvidence(readFileSync(paths[0], 'utf8'), {
           sessionId: child.sessionId,
-          cwd: child.path ? resolve(root, child.path) : root,
+          cwd: evidencePath ? resolve(root, evidencePath) : root,
           after: child.startedAt,
+          allowIncomplete: child.recovery === true,
         });
       } catch {
         return { ok: false, reason: 'malformed-session-evidence' };
@@ -455,6 +549,17 @@ function createRuntimeSupervisor() {
     // Пустой объект здесь при первом сохранении стёр бы весь прежний реестр.
     codexUsage: readTokenLedger(root, config),
     saveCodexUsage: (usage) => writeTokenLedger(root, config, usage),
+    // Отметка о состоявшейся выкладке: от неё считается срок следующего
+    // пакета. Ошибка записи глотается намеренно — цена ей одна выкладка
+    // раньше срока, а падение этапа из-за неудачной отметки дороже.
+    markDeployed: (at) => {
+      try {
+        ensureLocal();
+        writeFileSync(local('last-deploy'), `${at}\n`);
+      } catch {
+        // Отметка не легла: следующий пакет уедет по числу карточек.
+      }
+    },
     onPolicyBlocked: (why) => {
       ensureLocal();
       writeFileSync(local('pause'), `Отказ политики Codex: ${why}\n`);
@@ -462,26 +567,22 @@ function createRuntimeSupervisor() {
     },
     say,
     log: (line) => note(line, null),
-    writeStageLog: (taskId, stage, text) => {
-      // Вывод процесса целиком — взамен списка сессий, в котором этапы
-      // больше не видны. Взамен неравноценное: кода возврата, стоимости
-      // и перечня отказов в списке не было вовсе.
-      mkdirSync(local('logs'), { recursive: true });
-      writeFileSync(local('logs', `${taskId}-${stage}.log`), text, 'utf8');
-    },
-    // Тот же лог читается обратно — разбором упавшей задачи, и только им.
-    // Отсутствие файла возвращается пустым текстом, а не отказом: разбор
-    // без лога всё равно начинается, а сам факт его отсутствия — улика.
-    readStageLog: (taskId, stage) => {
-      if (!stage) return null;
-      const path = local('logs', `${taskId}-${stage}.log`);
-      return {
-        stage,
-        path: `${config.paths.local}/logs/${taskId}-${stage}.log`,
-        text: existsSync(path) ? readFileSync(path, 'utf8') : null,
-      };
-    },
+    writeStageLog: stageLogs.writeStageLog,
+    writeTaskEvent: taskEvents.append,
+    readStageLog: stageLogs.readStageLog,
+    readStageLogs: stageLogs.readStageLogs,
   });
+  runtime.maintainStageLogs = createStageLogMaintenance({
+    store: stageLogs,
+    ownsLock: () => readLock()?.pid === process.pid,
+    getProtection: () => {
+      if (protectionError) throw protectionError;
+      return [...readLiveLogProtection(local('stages.json')), ...runtime.stageLogProtection()];
+    },
+    diagnose: (message) => note(message, TAG.warn),
+  });
+  runtime.maintainStageLogs();
+  return runtime;
 }
 
 let supervisor;
@@ -512,6 +613,7 @@ async function turn() {
   // потому, что замок брался внутри цикла и до него не доходило дело при
   // недоступной доске.
   writeLock(refreshLock(readLock() ?? newLock(process.pid, now), now));
+  supervisor.maintainStageLogs();
 
   // Один `git fetch` на оборот — свой, а не по случаю. До сих пор удалённая
   // ветка обновлялась в общем `.git` только тогда, когда её подтягивала
@@ -529,6 +631,10 @@ async function turn() {
   // супервизора, мог кончиться минуту назад, и место обязано освободиться
   // этим же оборотом, а не при следующем перезапуске.
   supervisor.sweep();
+  if (supervisor.reportStorageBlocked) {
+    note('Планирование остановлено: отчёт ещё не сохранён на диск.', TAG.error);
+    return 'paused';
+  }
 
   const paused = isPaused(root, config);
   const apiPaused = isApiPaused(root, config);
@@ -538,11 +644,36 @@ async function turn() {
   const mayWrite = !flags.includes('--dry-run') && !paused && !apiPaused;
   if (mayWrite && providerOf(config) === 'codex' && !codexReady && !(await prepareCodex()))
     return 'paused';
+  if (mayWrite && providerOf(config) === 'codex' && codexReady && !deployReady)
+    await retryDeployReadiness();
 
   const backlog = await openBacklog({ mayWrite });
   if (!backlog.ok) {
     note(backlog.why, TAG.error);
     return backlog.outcome;
+  }
+  // Resume only the stored, receipt-bearing operation. No fresh counter arithmetic
+  // or stage mutation may overtake an uncertain continuation write.
+  const charges = supervisor.pendingLaunchCharges();
+  if (charges.length) {
+    if (!mayWrite || !backlog.store?.saveTask) return 'paused';
+    for (const { taskId, stage, charge } of charges) {
+      const saved = await backlog.store.saveTask(...charge.args, [], charge.operation);
+      if (!saved.ok) {
+        note(
+          `Списание ${charge.launchId} не подтверждено: ${saved.why ?? saved.outcome}`,
+          TAG.error,
+        );
+        return 'paused';
+      }
+      supervisor.confirmLaunchCharge(taskId, stage, {
+        launchId: charge.launchId,
+        key: charge.key,
+        confirmed: true,
+      });
+    }
+    // Open the next turn with the recipient's fresh snapshot, never the pre-receipt one.
+    return 'paused';
   }
 
   // Опись доски строкой: сколько задач прочитано, сколько идёт, сколько ждёт
@@ -558,13 +689,36 @@ async function turn() {
   );
 
   const registry = readRegistry(root, config);
+  if (!schedulingStore.read().error) {
+    schedulingStore.reconcile(backlog.tasks, supervisor.stageStartedAt);
+    for (const task of [...backlog.tasks, ...(backlog.dependencyRecords ?? [])]) {
+      if (task.pipelineIncident?.verifiedAt) schedulingStore.recovered(task.pipelineIncident.id);
+    }
+  }
   const worktrees = parseWorktrees(runGit(['worktree', 'list', '--porcelain']).stdout);
-  const repair = reconcile({ registry, worktrees, tasks: backlog.tasks, machine });
+  const repair = reconcile({
+    registry,
+    worktrees,
+    tasks: backlog.tasks,
+    machine,
+    root,
+    directory: isDirectory,
+    now,
+  });
 
   const state = {
     machine,
+    deployUnavailable: providerOf(config) === 'codex' && !deployReady,
+    unavailableWorkspaces: unavailableWorkspaces({
+      tasks: backlog.tasks,
+      registry,
+      worktrees,
+      root,
+    }),
+    scheduling: schedulingStore.read(),
     ...(await buildDependencyState({
       backlog,
+      machine,
       config,
       root,
       run: runCommand,
@@ -578,7 +732,10 @@ async function turn() {
     orphans: supervisor.orphanOutcomes,
     apiFailures: supervisor.apiFailures,
     codexUsage: supervisor.codexUsage,
-    answers: readAnswers(root, config),
+    reportStorageBlocked: supervisor.reportStorageBlocked,
+    // Бэклог на доске отвечает сам; файловый — прежним разделом
+    // `manage/questions.md`, который для него и остаётся местом ответа.
+    answers: backlog.ownerAnswers ?? readAnswers(root, config),
     // Правила разрешений читаются здесь, а не сканером: сканер запускается
     // 288 раз в сутки и остаётся чистым счётом от доводов.
     permissions: providerOf(config) === 'claude' ? readPermissions(home, config) : null,
@@ -586,6 +743,9 @@ async function turn() {
     paused,
     apiPaused,
     draining,
+    // От неё считается срок следующего пакета выкладки. Отсутствие отметки —
+    // законный ответ «не выкладывали»: сканер считает такой срок вышедшим.
+    lastDeployAt: readLastDeploy(root, config),
     tails: { main: git.tail() ?? 0, branches: {} },
   };
 
@@ -604,6 +764,8 @@ async function turn() {
     elapsed,
   });
 
+  let executed = [];
+  let repaired = [];
   if (mayWrite && (result.actions.length > 0 || repair.repairs.length > 0)) {
     const io = {
       ...createIo({
@@ -615,19 +777,49 @@ async function turn() {
         run: runCommand,
         elapsed,
         reports: supervisor.reports,
+        reportStore: supervisor.reportStore,
       }),
       ...(backlog.store ?? {}),
+      dependencyEvidence: state.dependencyEvidence ?? {},
+      tokenAccountingNote: (taskId) => tokenAccountingNote(supervisor.codexUsage, taskId),
       tokenAdmission: (task, stage) => tokenAdmission(task, stage, config, supervisor.codexUsage),
       tokenReanalysisAdmission: (task, stage) =>
         tokenReanalysisAdmission(task, stage, config, supervisor.codexUsage),
-      tokenActionBlocked: (taskId) =>
+      tokenActionBlocked: (taskId, ignoreReportId) =>
         (backlog.store?.readTask(taskId)?.status === 'deploy' &&
           supervisor.running().some((item) => item.stage === 'deploy')) ||
         supervisor
           .running()
           .some((item) => item.taskId === taskId || item.batch?.includes(taskId)) ||
-        supervisor.reports.some((item) => item.taskId === taskId || item.batch?.includes(taskId)),
+        supervisor.reports.some(
+          (item) => item.reportId !== ignoreReportId && reportTaskIds(item).includes(taskId),
+        ),
       spawnStage: (assignment) => supervisor.spawnStage(assignment),
+      spawnCount: () => supervisor.launchCount,
+      mayLaunch: (...args) => supervisor.mayLaunch(...args),
+      inspectRetryLaunch: (...args) => supervisor.inspectRetryLaunch(...args),
+      inspectToolDeployment: (entry) =>
+        deploymentEvidence(
+          runCommand(
+            [
+              resolve(home, '../scripts/deploy-remote.mjs'),
+              '--host',
+              entry.assignment.deployment.host,
+              '--',
+              deploymentReadCommand,
+            ],
+            'node',
+            root,
+            { timeout: 45000 },
+          ),
+          entry.assignment.deploymentRevision,
+        ),
+      confirmLaunchCharge: (...args) => supervisor.confirmLaunchCharge(...args),
+      launchCharge: (...args) => supervisor.launchCharge(...args),
+      recordSchedulingLaunch: (task) => schedulingStore.launched(task, new Date().toISOString()),
+      schedulingBlocked: () => schedulingStore.read().error,
+      incidentProbeAt: (id) => schedulingStore.read().probes?.[id],
+      reportStorageBlocked: () => supervisor.reportStorageBlocked,
       lastSession: (taskId, stage) => supervisor.lastSession(taskId, stage),
       forgetSession: (taskId, stage) => supervisor.forgetSession(taskId, stage),
       // Исход сироты и его забвение — та же пара, что чтение и снятие отчёта:
@@ -656,12 +848,20 @@ async function turn() {
     // возвращаемое здесь выбрасывалось, провалившаяся `finish-claim`
     // молчала: в журнале каждый оборот стояло «доводим взятие до конца»,
     // и ни разу — «не довели». Так и вышли двое суток простоя 31.08.2026.
-    for (const item of repairWorld(repair.repairs, io)) {
+    const pendingIds = new Set([
+      ...supervisor.reports.flatMap(reportTaskIds),
+      ...supervisor.running().flatMap((item) => [item.taskId, ...(item.batch ?? [])]),
+    ]);
+    repaired = repairWorld(
+      repair.repairs.filter((repair) => !pendingIds.has(repair.taskId)),
+      io,
+    );
+    for (const item of repaired) {
       if (item.result === 'done') continue;
       note(`починка ${item.kind} ${item.taskId ?? ''}: ${item.why}`);
     }
 
-    const executed = await execute(result.actions, io);
+    executed = await execute(result.actions, io);
     for (const item of executed) {
       if (item.result === 'done') continue;
       note(`${item.action?.kind ?? 'действие'} ${item.action?.taskId ?? ''}: ${item.why}`);
@@ -669,7 +869,9 @@ async function turn() {
   }
 
   note([...backlog.notes, ...repair.notes, ...result.notes]);
-  return result.outcome;
+  const summary = executionSummary(result.outcome, executed, repaired, mayWrite);
+  note(executionNote(summary));
+  return summary.outcome;
 }
 
 /**
@@ -793,6 +995,9 @@ function greet() {
 const OUTCOME = {
   idle: 'работы нет',
   worked: 'работа выдана',
+  progress: 'выполнены служебные действия',
+  held: 'новых запусков нет: действия удержаны или не выполнены',
+  planned: 'действия только запланированы, запусков нет',
   blocked: 'записи невозможны',
   paused: 'взведён рубильник паузы',
   'api-paused': 'сервер модели не отвечает',
@@ -804,22 +1009,24 @@ const OUTCOME = {
 
 /** Бесконечный цикл с рубильником паузы и сторожем неудач. */
 async function prepareCodex() {
-  note('Проверяю Git, GitHub, SSH и дочерние процессы Node в Codex перед выдачей задач', TAG.cycle);
+  note('Проверяю локальные команды и SSH в Codex перед выдачей задач', TAG.cycle);
   try {
     prepareCodexPerfFiles(root);
     codexEnvironment = codexChildEnvironment();
-    const readiness = await checkCodexReadiness({
-      env: codexEnvironment,
-      config,
-      root,
-      spawn,
-      killTree: createKillTree((program, args) => runCommand(args, program)),
-    });
+    const readiness = await checkCodexReadiness(codexReadinessOptions());
     ensureLocal();
     writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
     if (!readiness.ok) throw new Error(readiness.why);
     codexReady = true;
-    note('Codex: Git, GitHub, SSH и дочерние процессы Node проверены', TAG.cycle);
+    deployReady = readiness.remoteReady;
+    nextDeployProbeAt = deployReady ? 0 : Date.now() + 60_000;
+    note('Codex: Git, GitHub и дочерние процессы Node проверены', TAG.cycle);
+    if (!deployReady)
+      note(
+        `SSH недоступен: выкладка удержана, локальные этапы идут; ${clip(readiness.remoteWhy, 240)}`,
+        TAG.warn,
+      );
+    else note('Codex: SSH для выкладки проверен', TAG.cycle);
     return true;
   } catch (error) {
     const why = 'Проверка Codex не прошла: ' + error.message;
@@ -827,6 +1034,36 @@ async function prepareCodex() {
     writeFileSync(local('pause'), why + '\n');
     note('КОНВЕЙЕР НЕ ЗАПУЩЕН: ' + why, TAG.error);
     return false;
+  }
+}
+
+/** Внешний сетевой сбой не тратит новую Codex-сессию на каждом обороте. */
+async function retryDeployReadiness() {
+  if (Date.now() < nextDeployProbeAt) return;
+  nextDeployProbeAt = Date.now() + DEPLOY_RETRY_MS;
+  const direct = checkRemoteReachability({ root, env: codexEnvironment, run: runCommand });
+  if (!direct.ok) {
+    note(`SSH по-прежнему недоступен, выкладка удержана: ${clip(direct.why, 240)}`, TAG.warn);
+    return;
+  }
+  try {
+    const readiness = await checkCodexReadiness(codexReadinessOptions());
+    ensureLocal();
+    writeFileSync(local('codex-readiness.log'), JSON.stringify(readiness, null, 2));
+    if (!readiness.ok || !readiness.remoteReady) {
+      note(
+        `SSH доступен напрямую, но не подтверждён в Codex; выкладка удержана: ${clip(readiness.remoteWhy ?? readiness.why, 240)}`,
+        TAG.warn,
+      );
+      return;
+    }
+    deployReady = true;
+    note('SSH в Codex снова подтверждён: выкладка допускается', TAG.cycle);
+  } catch (error) {
+    note(
+      `Повторная проверка SSH не удалась, выкладка удержана: ${clip(error.message, 240)}`,
+      TAG.warn,
+    );
   }
 }
 
@@ -982,7 +1219,7 @@ async function loop() {
       enabled: config.selfUpdate !== false,
       dryRun: flags.includes('--dry-run'),
       running: supervisor.busy(),
-      pending: supervisor.reports.length,
+      ...supervisor.reportRestartState,
     });
     if (update.verdict !== 'off' || turns === 1) note(update.notes);
     draining = update.verdict === 'wait';

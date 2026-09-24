@@ -34,6 +34,12 @@ export interface ComputerIdentity {
   readonly profile: string;
 }
 
+/** Манера на предложении: чем её заказывают и как она зовётся игроку. */
+export interface ComputerProfile {
+  readonly id: string;
+  readonly title: string;
+}
+
 export interface ComputerRegistry {
   /** Манера этой личности. Чужой идентификатор — `undefined`. */
   profileOf(playerId: string): string | undefined;
@@ -43,8 +49,20 @@ export interface ComputerRegistry {
    * Возвращает `false`, если секрет не подошёл или регистрация закрыта.
    * Причина не различается намеренно: тому, кто подбирает секрет,
    * знать, закрыта регистрация или он ошибся, незачем.
+   *
+   * Манеры объявляются ОТДЕЛЬНО от личностей, и это не удобство.
+   * Дежурных больше не бывает без приглашения — служба поднимает
+   * их по заказу игрока, — а значит в тот момент, когда игрок открывает
+   * список манер, живых личностей нет вовсе. Объяви мы манеры через них,
+   * список был бы пуст ровно тогда, когда он нужен.
    */
-  declare(secret: string, identities: readonly ComputerIdentity[]): boolean;
+  declare(
+    secret: string,
+    identities: readonly ComputerIdentity[],
+    offers?: readonly ComputerProfile[],
+  ): boolean;
+  /** Какие манеры сейчас на предложении. Пусто — службы нет. */
+  readonly profiles: readonly ComputerProfile[];
   /**
    * Снять объявление: служба уходит по-хорошему.
    *
@@ -52,7 +70,7 @@ export interface ComputerRegistry {
    * по истечении срока. Игрок не должен минуту смотреть на комнату,
    * в которую никто не войдёт.
    */
-  withdraw(secret: string, ids: readonly string[]): boolean;
+  withdraw(secret: string, ids: readonly string[], offers?: readonly string[]): boolean;
   /** Есть ли хоть одна живая личность. */
   readonly available: boolean;
   /** Сколько живых личностей известно. Для показаний и проверок. */
@@ -99,6 +117,14 @@ export const createComputerRegistry = (options: ComputerRegistryOptions = {}): C
   const entries = new Map<string, Entry>();
 
   /**
+   * Манеры на предложении, со своим сроком.
+   *
+   * Срок тот же и по той же причине: служба может уйти не попрощавшись,
+   * и без срока игроку вечно предлагали бы соперника, которого нет.
+   */
+  const offers = new Map<string, { readonly title: string; expiresAtMs: number }>();
+
+  /**
    * Сверка секрета.
    *
    * Пустой секрет не подходит ни к чему, включая пустое объявление:
@@ -119,6 +145,9 @@ export const createComputerRegistry = (options: ComputerRegistryOptions = {}): C
     for (const [id, entry] of entries) {
       if (entry.expiresAtMs <= nowMs) entries.delete(id);
     }
+    for (const [id, offer] of offers) {
+      if (offer.expiresAtMs <= nowMs) offers.delete(id);
+    }
   };
 
   return {
@@ -127,22 +156,38 @@ export const createComputerRegistry = (options: ComputerRegistryOptions = {}): C
       return entries.get(playerId)?.profile;
     },
 
-    declare(offered, identities) {
+    declare(offered, identities, proposed = []) {
       if (!admits(offered)) return false;
 
       const expiresAtMs = now() + ttlMs;
       for (const identity of identities) {
         entries.set(identity.id, { profile: identity.profile, expiresAtMs });
       }
+      for (const offer of proposed) {
+        offers.set(offer.id, { title: offer.title, expiresAtMs });
+      }
 
       return true;
     },
 
-    withdraw(offered, ids) {
+    withdraw(offered, ids, withdrawn = []) {
       if (!admits(offered)) return false;
 
       for (const id of ids) entries.delete(id);
+      // Манеры снимаются ОТДЕЛЬНЫМ списком, а не вместе с личностями:
+      // служба вправе уйти, не подняв ни одного дежурного, и тогда
+      // снимать по личностям было бы нечего, а предложение осталось бы
+      // висеть до истечения срока.
+      for (const id of withdrawn) offers.delete(id);
       return true;
+    },
+
+    get profiles() {
+      sweep();
+      // Порядок постоянный: набор манер приходит от службы в одном
+      // и том же порядке, и перетасовка меняла бы кнопки местами
+      // на каждом обновлении списка.
+      return [...offers].map(([id, offer]) => ({ id, title: offer.title }));
     },
 
     get available() {

@@ -74,6 +74,28 @@ describe('launch argument matrix', () => {
 });
 
 describe('launcher effects', () => {
+  it.each(['--stop', '--detached', '--foreground'])(
+    'refuses unknown owner for %s',
+    async (mode) => {
+      const f = fixture([mode]);
+      f.states[0] = { kind: 'unknown', reason: 'identity unavailable' };
+      expect(await f.run()).toBe(1);
+      expect(f.effects.spawn).not.toHaveBeenCalled();
+      expect(f.effects.killTree).not.toHaveBeenCalled();
+      expect(f.effects.remove).not.toHaveBeenCalled();
+      expect(f.effects.error).toHaveBeenCalled();
+    },
+  );
+  it.each([{ kind: 'waiting' }, { kind: 'unknown' }, { kind: 'live', pid: 43 }])(
+    'does not stop a changed owner: %j',
+    async (next) => {
+      const f = fixture(['--stop']);
+      f.states.splice(0, 1, { kind: 'live', pid: 42 }, next);
+      expect(await f.run()).toBe(1);
+      expect(f.effects.killTree).not.toHaveBeenCalled();
+      expect(f.effects.remove).not.toHaveBeenCalled();
+    },
+  );
   it('starts detached then watches and forwards only supervisor arguments', async () => {
     const f = fixture(['--provider=codex', '--quiet', '--config=custom']);
     expect(await f.run()).toBe(0);
@@ -157,7 +179,7 @@ describe('launcher effects', () => {
     expect(await f.run()).toBe(0);
     expect(f.effects.remove).toHaveBeenCalledOnce();
     expect(f.effects.killTree).not.toHaveBeenCalled();
-    f.states.unshift({ kind: 'live', pid: 42 });
+    f.states.unshift({ kind: 'live', pid: 42 }, { kind: 'live', pid: 42 });
     expect(await f.run()).toBe(0);
     expect(f.effects.killTree).toHaveBeenCalledWith(42);
     expect(f.effects.sleep).toHaveBeenCalledWith(500);

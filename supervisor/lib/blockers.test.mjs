@@ -189,14 +189,24 @@ it('0032 удерживается сто циклов и получает нов
       expect(result.notes.join(' ')).toContain(predecessor.id);
     }
   }
-  for (const predecessors of [[], [{ ...predecessor, status: 'closed' }]])
-    expect(
-      scan({
-        config,
-        now: '2026-09-08T12:00:00Z',
-        tasks: [blocked, ...predecessors],
-      }).actions.filter((a) => a.taskId === source.id),
-    ).toEqual([]);
+  expect(
+    scan({
+      config,
+      now: '2026-09-08T12:00:00Z',
+      tasks: [blocked],
+    }).actions.filter((a) => a.taskId === source.id),
+  ).toEqual([]);
+  // Закрытый предшественник новый анализ не разрешает, но и ждать его больше
+  // нечего: назначается только снятие ребра с обоснованием.
+  expect(
+    scan({
+      config,
+      now: '2026-09-08T12:00:00Z',
+      tasks: [blocked, { ...predecessor, status: 'closed' }],
+    })
+      .actions.filter((a) => a.taskId === source.id)
+      .map((a) => a.kind),
+  ).toEqual(['resolve-dependents']);
   expect(
     scan({
       config,
@@ -478,15 +488,22 @@ it('ожидание не расходует попытки, closed и проп�
     dependsOn: ['0002-build'],
     blockedContext: { reasons: ['нужна сборка'] },
   });
-  for (const predecessors of [
-    [],
-    [task({ id: '0002-build', status: 'closed' })],
-    [task({ id: '0002-build', status: 'new' })],
-  ]) {
+  for (const predecessors of [[], [task({ id: '0002-build', status: 'new' })]]) {
     const result = scan({ config, tasks: [blocked, ...predecessors] });
     expect(result.actions.filter((a) => a.taskId === blocked.id)).toEqual([]);
     expect(blocked.attempts.continuations).toBe(2);
   }
+
+  // Закрытый предшественник запуска по-прежнему не разрешает — но и ждать
+  // его больше незачем: закрытая карточка результата не даст никогда.
+  // Поэтому единственное, что назначается, — снятие ребра с обоснованием.
+  // Прежде здесь не назначалось ничего, и такое ожидание не кончалось вовсе.
+  const withClosed = scan({
+    config,
+    tasks: [blocked, task({ id: '0002-build', status: 'closed' })],
+  }).actions.filter((a) => a.taskId === blocked.id);
+  expect(withClosed.map((a) => a.kind)).toEqual(['resolve-dependents']);
+  expect(blocked.attempts.continuations).toBe(2);
 });
 
 it('выполненные предшественники возвращают на новый анализ, сохраняя PR, ошибки и расходы', async () => {

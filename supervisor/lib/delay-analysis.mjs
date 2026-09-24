@@ -39,9 +39,45 @@ export const WAIT_FROM = [
   'benchmark',
   'interpret',
 ];
-function acceptedWait(task) {
+/**
+ * Предел принятого ожидания.
+ *
+ * Ожидание результата — законное состояние, а не заминка, и платить за разбор
+ * ему незачем. Но БЕССРОЧНОЕ освобождение от разбора превращает застой
+ * в вечный: 09.09.2026 тридцать шесть карточек простояли в «Заблокированы»,
+ * не получив ни строки в собственном журнале, потому что правило прямо
+ * освобождало их «спустя пять часов, сутки и сто циклов».
+ *
+ * Отсюда отдельная величина, крупнее обычного порога задержки: сутки против
+ * пяти часов. Пять часов — мерка заминки на этапе, сутки — мерка того, что
+ * ожидание не кончится само.
+ */
+export const WAIT_LIMIT_HOURS = 24;
+
+/** Пережило ли ожидание свой предел. */
+function waitOverdue(task, now) {
+  const since = task.statusChangedAt ?? task.createdAt;
+  const elapsed = Date.parse(now) - Date.parse(since);
+  return Number.isFinite(elapsed) && elapsed > WAIT_LIMIT_HOURS * 3600000;
+}
+
+/**
+ * Мерки «ждать заведомо некого» здесь нет намеренно.
+ *
+ * Соблазн был: считать ожидание пропавшей, негодной или двусмысленной карточки
+ * безнадёжным и разбирать его немедленно. Мерка оказалась ненадёжной. Снимок
+ * доски не обязан быть полным — архивные карточки в него не входят вовсе,
+ * а мерка запуска честно засчитывает их по отдельному перечню закрытых. Значит
+ * «пропала» на неполном снимке означает не беду, а неполный снимок, и разбор
+ * ушёл бы платить за каждую задачу, ждущую архивного предшественника.
+ *
+ * Ожидание закрытой карточки при этом разбирается и без такой мерки: ребро
+ * снимается вместе с обоснованием, и сохранённое обязательное условие проходит проверку перед разблокировкой.
+ * Остальное ловит предел по сроку.
+ */
+function acceptedWait(task, { now } = {}) {
   const context = task.blockedContext;
-  return (
+  const shaped =
     task.status === 'blocked' &&
     !task.delayAnalysis &&
     !dependencyFormatProblem(task) &&
@@ -56,8 +92,8 @@ function acceptedWait(task) {
         task.dependsOn.includes(item.taskId) &&
         nonempty(item.reason) &&
         nonempty(item.result),
-    )
-  );
+    );
+  return shaped && !waitOverdue(task, now);
 }
 
 export function delayStateProblem(task) {
@@ -124,14 +160,21 @@ export function delayDependencies(task, tasks = []) {
 
 export function delayDecision(task, { now, tasks = [], answered = false }) {
   if (task.delayJournal) return { kind: 'flush-delay-journal', taskId: task.id };
-  if (acceptedWait(task)) return null;
+  if (acceptedWait(task, { now })) return null;
   if (task.status === 'awaiting-po' && answered) return null;
   if (!DELAY_STATES.includes(task.status) || reviewingDelay(task)) return null;
   const saved = task.delayAnalysis;
   const snapshot = delayDependencies(task, tasks);
   const facts = delayFacts(task);
+  // Второй затвор бессрочности. Для ожидания эпизод считался неизменным
+  // по одной лишь сохранённой фазе, без сверки времени, — и потому наблюдение
+  // глушило повторный разбор навсегда, даже когда ожидание пережило предел.
+  // Отсчёт идёт от входа в статус, а разбор возвращает задачу в «Заблокированы»
+  // заново: значит платный разбор случается не чаще раза в сутки ожидания.
+  const overdueWait = task.status === 'blocked' && waitOverdue(task, now);
   const sameEpisode =
     saved &&
+    !overdueWait &&
     ((task.status === 'blocked' && saved.phase === 'waiting') ||
       (task.status === saved.originStatus && task.statusChangedAt === saved.originSince));
   if (sameEpisode) {
@@ -184,7 +227,10 @@ export async function beginDelayAnalysis(action, io) {
   )
     return { result: 'skipped', why: 'состояние изменилось после снимка' };
   const old = task.delayAnalysis;
-  const initial = action.mode === 'initial' || !old;
+  const initial =
+    action.mode === 'initial' ||
+    !old ||
+    (task.dependencyRecheck && old.phase === 'monitoring' && task.status !== old.originStatus);
   const diagnosis = {
     ...(initial ? {} : old),
     episode: initial ? `${task.status}:${task.statusChangedAt ?? task.createdAt}` : old.episode,
@@ -332,7 +378,12 @@ export async function rejectDelayReport(task, report, problem, io) {
   return { result: 'failed', why: problem };
 }
 
-export async function finishDelayAnalysis(task, report, io, { ownerAnswered = false } = {}) {
+export async function finishDelayAnalysis(
+  task,
+  report,
+  io,
+  { beforeWrite, ownerAnswered = false } = {},
+) {
   const saved = task.delayAnalysis;
   const wasBlocked = saved.originStatus === 'blocked' && saved.phase === 'verifying';
   const resumeQuestion = reviewingQuestion(task) && saved.phase === 'verifying' && !ownerAnswered;
@@ -355,6 +406,8 @@ export async function finishDelayAnalysis(task, report, io, { ownerAnswered = fa
           note: diagnosis.nextAction,
         });
   if (!moved.task) return { result: 'failed', why: moved.problems.join('; ') };
+  const dependencies = await beforeWrite?.();
+  if (dependencies?.result) return dependencies;
   let next = addSpent(
     {
       ...moved.task,
@@ -379,6 +432,18 @@ export async function finishDelayAnalysis(task, report, io, { ownerAnswered = fa
     },
     report.costUsd,
   );
+  if (saved.phase === 'verifying' && diagnosis.resolution === 'resolved') {
+    if (next.dependencyRecheck && next.blockedContext) {
+      // Проверенное ожидание становится историей разбора, а не активным
+      // основанием: его ссылки уже сняты из dependsOn.
+      next.delayAnalysis.resolvedDependencyContext = {
+        blockedContext: next.blockedContext,
+        dependencyRecheck: next.dependencyRecheck,
+      };
+      delete next.blockedContext;
+    }
+    delete next.dependencyRecheck;
+  }
   next.delayAnalysis.facts = delayFacts(next);
   const written = await io.saveTask(
     next,
@@ -386,6 +451,7 @@ export async function finishDelayAnalysis(task, report, io, { ownerAnswered = fa
       from: 'postmortem',
       source: 'agent',
       at: io.now,
+      decisions: dependencies?.notes ?? [],
     }),
     `chore(backlog): record delay diagnosis ${task.id}`,
   );

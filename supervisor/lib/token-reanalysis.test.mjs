@@ -261,8 +261,12 @@ describe('ранний бюджетный анализ', () => {
     expect(
       world({ tasks: [task({ userTokenLimit: { value: 140 } })] }).next().actions[0].kind,
     ).toBe('hold-token-budget');
+    // Неполный учёт ни удерживает, ни назначает ранний анализ: посчитанный
+    // расход окончательного предела не достиг, а по неизвестному хвосту
+    // дробить задачу не за что. Прежде здесь стоял 'hold-token-budget' —
+    // удержание по незнанию, которое владельцу продукта нечем было снять.
     expect(world({ codexUsage: ledger(150, ['missing-baseline']) }).next().actions[0].kind).toBe(
-      'hold-token-budget',
+      'continue-stage',
     );
     for (const t of [
       task({ type: 'note' }),

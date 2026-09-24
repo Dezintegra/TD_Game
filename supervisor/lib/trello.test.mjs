@@ -194,6 +194,11 @@ describe('чтение картины мира', () => {
       appCreator: null,
       data: { card: { id: 'card1' }, text: 'Лимит токенов: 35000000' },
     };
+    const oldReturn = {
+      id: 'old-return',
+      date: '2026-09-01T00:01:00Z',
+      data: { card: { id: 'card2' }, text: '🤖 pr → revise: проверки красные' },
+    };
     const calls = [];
     const trello = {
       get: async (path, query) => {
@@ -205,7 +210,7 @@ describe('чтение картины мира', () => {
               ? { id: 'owner' }
               : path.endsWith('/actions')
                 ? query.before
-                  ? [old]
+                  ? [old, oldReturn]
                   : recent
                 : [],
         };
@@ -213,7 +218,17 @@ describe('чтение картины мира', () => {
     };
     const result = await readBoard(trello, 'b');
     expect(result.userTokenLimits.card1).toMatchObject({ value: 35000000, actionId: 'old' });
-    expect(result.comments).toHaveLength(1000);
+    expect(result.comments).toHaveLength(1002);
+    expect(result.comments.at(-2)).toMatchObject({
+      id: 'old',
+      cardId: 'card1',
+      text: 'Лимит токенов: 35000000',
+    });
+    expect(result.comments.at(-1)).toMatchObject({
+      id: 'old-return',
+      cardId: 'card2',
+      text: '🤖 pr → revise: проверки красные',
+    });
     expect(calls.at(-1).query.before).toBe('r999');
     expect((await readBoard(trello, 'b')).userTokenLimits).toEqual(result.userTokenLimits);
   });

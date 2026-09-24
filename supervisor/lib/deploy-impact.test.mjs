@@ -1,5 +1,10 @@
 import { expect, it } from 'vitest';
-import { classifyDeployment, readDeploymentImpact } from './deploy-impact.mjs';
+import { Buffer } from 'node:buffer';
+import {
+  classifyDeployment,
+  readDeploymentImpact,
+  supervisorPackageOnly,
+} from './deploy-impact.mjs';
 import { execute } from './execute.mjs';
 
 const pr = {
@@ -14,12 +19,84 @@ const file = (filename, over = {}) => ({ filename, status: 'modified', ...over }
 it('служебные добавления, изменения и удаления обходят выкладку', () => {
   for (const name of [
     'supervisor/lib/io.mjs',
+    'plugins/pipeline/lib/execute.mjs',
+    'scripts/supervisor-scripts.test.mjs',
+    'scripts/testing/source-runner.mjs',
+    'scripts/mutation/vitest.config.ts',
+    'scripts/test-source.mjs',
+    '.github/workflows/ci.yml',
     'docs/setup.md',
     'openspec/changes/x/tasks.md',
     'CLAUDE.md',
   ])
     for (const status of ['added', 'modified', 'removed'])
       expect(classifyDeployment(pr, [file(name, { status })], 23, 'main').needed).toBe(false);
+});
+it('полные package-документы доказывают только изменения команд супервизора', () => {
+  const before = { scripts: { ship: 'node scripts/deploy.mjs' }, dependencies: { game: '1' } };
+  const after = {
+    ...before,
+    scripts: { ...before.scripts, supervisor: 'node supervisor/bin/launch.mjs' },
+  };
+  expect(supervisorPackageOnly(before, after)).toBe(true);
+  for (const changed of [
+    null,
+    {},
+    { ...after, dependencies: { game: '2' } },
+    { ...after, scripts: { ...after.scripts, ship: 'different' } },
+  ])
+    expect(supervisorPackageOnly(before, changed)).toBe(false);
+  expect(classifyDeployment(pr, [file('package.json')], 23, 'main').needed).toBe(true);
+  expect(classifyDeployment(pr, [file('package.json')], 23, 'main', { before, after }).needed).toBe(
+    false,
+  );
+  expect(
+    classifyDeployment(
+      { ...pr, changed_files: 2 },
+      [file('package.json'), file('apps/client/index.ts')],
+      23,
+      'main',
+      { before, after },
+    ).needed,
+  ).toBe(true);
+});
+it('читает package по закреплённым SHA, не доверяя усечённому patch', () => {
+  const metadata = {
+    ...pr,
+    base: { ref: 'main', sha: 'b'.repeat(40) },
+    head: { sha: 'c'.repeat(40) },
+  };
+  const calls = [];
+  const run = (args) => {
+    calls.push(args);
+    const value = args[1].includes('/contents/')
+      ? {
+          encoding: 'base64',
+          content: Buffer.from(
+            JSON.stringify({
+              scripts: args[1].endsWith(metadata.base.sha)
+                ? {}
+                : { supervisor: 'node supervisor/bin/launch.mjs' },
+            }),
+          ).toString('base64'),
+        }
+      : args.includes('--paginate')
+        ? [[file('package.json')]]
+        : metadata;
+    return { code: 0, stdout: JSON.stringify(value) };
+  };
+  expect(readDeploymentImpact({ run, root: '.', number: 23, mainBranch: 'main' }).needed).toBe(
+    false,
+  );
+  expect(calls.slice(2).map((args) => args[1])).toEqual(
+    [metadata.base.sha, metadata.head.sha].map(
+      (sha) => `repos/{owner}/{repo}/contents/package.json?ref=${sha}`,
+    ),
+  );
+  const unavailable = (args) => (args[1].includes('/contents/') ? { code: 1 } : run(args));
+  expect(readDeploymentImpact({ run: unavailable, number: 23, mainBranch: 'main' }).needed).toBe(
+    true,
+  );
 });
 it('игра, сборка и обе стороны переименования требуют выкладку', () => {
   for (const name of [

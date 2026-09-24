@@ -162,6 +162,24 @@ export function readPermissions(home, config) {
 export const isPaused = (root, config) => existsSync(join(root, config.paths.local, 'pause'));
 
 /**
+ * Когда выкладывали в прошлый раз.
+ *
+ * Отдельный файл, а не поле в общем состоянии: он переживает перезапуск
+ * супервизора, а больше от него ничего и не требуется. Отсутствие файла —
+ * законный ответ «не выкладывали»; сканер считает такой срок вышедшим,
+ * иначе первый пакет на чистой станции ждал бы часы без причины.
+ *
+ * Испорченная отметка равна отсутствию: единственная цена ошибки —
+ * одна выкладка раньше срока, и это дешевле, чем встать на нечитаемом файле.
+ */
+export function readLastDeploy(root, config) {
+  const path = join(root, config.paths.local, 'last-deploy');
+  if (!existsSync(path)) return null;
+  const at = readFileSync(path, 'utf8').trim();
+  return Number.isFinite(Date.parse(at)) ? at : null;
+}
+
+/**
  * Взведена ли пауза сервера модели.
  *
  * Файл свой, а не поле в общем: такой файл пришлось бы читать и разбирать,

@@ -805,6 +805,17 @@ export const BASELINE_PROFILE: AiProfile = deepFreeze({
 });
 
 /**
+ * Контроль общего порога наступления без отката правил игры.
+ * Порог выключает и Прорыв, и escorting с его приоритетом трат:
+ * этот профиль не изолирует влияние одного режима атаки.
+ */
+export const ADVANCE_CONTROL_PROFILE: AiProfile = deepFreeze({
+  ...BASELINE_PROFILE,
+  id: 'advance-control-2026-08',
+  movement: { ...BASELINE_PROFILE.movement, advanceFraction: 2 },
+});
+
+/**
  * Профиль, ставящий стены вдвое реже базового.
  *
  * Заведён не ради игры, а ради проверки самого механизма: он доказывает,
@@ -1723,6 +1734,7 @@ export const DEFAULT_PROFILE_ID = BASELINE_PROFILE.id;
 
 export const PROFILES: Readonly<Record<string, AiProfile>> = deepFreeze({
   [BASELINE_PROFILE.id]: BASELINE_PROFILE,
+  [ADVANCE_CONTROL_PROFILE.id]: ADVANCE_CONTROL_PROFILE,
   [WALL_LIGHT_PROFILE.id]: WALL_LIGHT_PROFILE,
   [SIEGE_PROFILE.id]: SIEGE_PROFILE,
   [FORTRESS_PROFILE.id]: FORTRESS_PROFILE,

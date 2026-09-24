@@ -1,4 +1,7 @@
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveConfig } from '../config/defaults.mjs';
 import { stageCommand } from './stage-command.mjs';
@@ -8,6 +11,29 @@ import { beginTokenLaunch, taskTokens } from './token-budget.mjs';
 
 const home = fileURLToPath(new URL('..', import.meta.url));
 const config = resolveConfig({ provider: 'codex' }).config;
+
+it('Codex использует абсолютный источник benchmark как cwd и рабочее пространство', () => {
+  const path = resolve('external source tree');
+  const command = stageCommand({
+    root: '/repo',
+    home,
+    config,
+    prompt: 'источник',
+    assignment: {
+      stage: 'benchmark',
+      path,
+      benchmarkSource: { path, branch: null, head: 'a'.repeat(40) },
+    },
+  });
+  expect(command.cwd).toBe(path);
+  expect(command.args).toContain(
+    process.platform === 'win32'
+      ? 'default_permissions="td-pipeline"'
+      : 'sandbox_mode="workspace-write"',
+  );
+  if (process.platform === 'win32')
+    expect(command.args.join(' ')).toContain('extends=":workspace"');
+});
 const report = JSON.stringify({ stage: 'design', outcome: 'done', summary: 'готово' });
 const events = [
   { type: 'thread.started', thread_id: 'thread-1' },
@@ -91,7 +117,7 @@ describe('ответ Codex', () => {
           { ledger: first.usageLedger, launchId: 'next' },
         );
         expect(answer.result).toBe(text);
-        expect(answer.outcome).toBe(kind === 'cached' ? 'done' : 'failed');
+        expect(answer.outcome).toBe('done');
         if (kind === 'cached') expect(answer.usageError).toBeNull();
         else
           expect(answer.usageError).toContain(
@@ -149,7 +175,7 @@ describe('ответ Codex', () => {
       readCodexAnswer(run([...events.slice(0, -1), { type: 'turn.completed' }]), {
         codexMaxTaskTokens: 25_000_000,
       }).outcome,
-    ).toBe('failed');
+    ).toBe('done');
   });
 });
 
@@ -168,7 +194,7 @@ describe('границы сохранения текста Codex', () => {
         run([events[0], message(text), { type: 'turn.completed', usage }]),
         config,
       );
-      expect(answer).toMatchObject({ result: text, outcome: 'failed' });
+      expect(answer).toMatchObject({ result: text, outcome: 'done' });
       expect(answer.usageError).toContain('invalid-usage');
     });
   }
@@ -220,7 +246,7 @@ describe('границы сохранения текста Codex', () => {
       { ledger: first.usageLedger, launchId: 'new' },
     );
     expect(answer.usage).toMatchObject({ input_tokens: 1000, output_tokens: 100 });
-    expect(answer).toMatchObject({ result: report, outcome: 'failed' });
+    expect(answer).toMatchObject({ result: report, outcome: 'done' });
     expect(answer.usageError).toContain('invalid-usage');
   });
 });
@@ -283,10 +309,13 @@ it('подписка Codex не выключает долларовый лими
 });
 
 it('прошлый usage не подтверждает расход нового завершённого хода', () => {
-  expect(
-    readCodexAnswer(run([...events, { type: 'turn.started' }, { type: 'turn.completed' }]), config)
-      .outcome,
-  ).toBe('failed');
+  const answer = readCodexAnswer(
+    run([...events, { type: 'turn.started' }, { type: 'turn.completed' }]),
+    config,
+  );
+  expect(answer).toMatchObject({ outcome: 'done', result: null });
+  expect(answer.usageStatus.complete).toBe(false);
+  expect(answer.usageError).toBeTruthy();
 });
 
 it('согласует все completed, resume и уменьшение без отрицательного расхода', () => {
@@ -347,6 +376,43 @@ it('включает Windows sandbox без Git-авторизации в argv',
   expect(() =>
     codexExecutionArgs({ codexWindowsSandbox: 'disabled' }, '/main', '/tree', 'win32'),
   ).toThrow('codexWindowsSandbox');
+});
+
+it('разрешает пакеты только Windows deploy в назначенном снимке', async () => {
+  const { codexExecutionArgs } = await import('./provider.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'td-deploy-sandbox-'));
+  try {
+    const base = join(root, '.pipeline', 'deploy-checkouts');
+    const snapshot = join(base, 'deploy-test');
+    mkdirSync(join(root, '.git', 'worktrees', 'deploy-test'), { recursive: true });
+    for (const group of ['apps', 'packages']) {
+      const packagePath = join(snapshot, group, group === 'apps' ? 'client' : 'shared');
+      mkdirSync(packagePath, { recursive: true });
+      writeFileSync(join(packagePath, 'package.json'), '{}');
+    }
+    writeFileSync(
+      join(snapshot, '.git'),
+      `gitdir: ${join(root, '.git', 'worktrees', 'deploy-test')}\n`,
+    );
+    const profile = (stage) =>
+      codexExecutionArgs({}, root, snapshot, 'win32', stage).find((arg) =>
+        arg.startsWith('permissions='),
+      );
+    const quote = (path) => JSON.stringify(path.replaceAll('\\', '/')) + '="write"';
+    for (const path of [join(snapshot, 'apps', 'client'), join(snapshot, 'packages', 'shared')]) {
+      expect(profile('deploy')).toContain(quote(path));
+      expect(profile('audit')).not.toContain(quote(path));
+      expect(codexExecutionArgs({}, root, snapshot, 'linux', 'deploy').join()).not.toContain(
+        quote(path),
+      );
+    }
+    expect(profile('deploy')).not.toContain(quote(root));
+    expect(() => codexExecutionArgs({}, root, root, 'win32', 'deploy')).toThrow('снимка deploy');
+  } finally {
+    const relativeToTemp = root.slice(resolve(tmpdir()).length + 1);
+    if (root.startsWith(resolve(tmpdir()) + sep) && relativeToTemp.startsWith('td-deploy-sandbox-'))
+      rmSync(root, { recursive: true, force: true });
+  }
 });
 
 it('считает declined отдельным отказом, даже когда модель завершила ответ', () => {

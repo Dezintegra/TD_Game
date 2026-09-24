@@ -39,11 +39,11 @@ The Codex adapter SHALL require a successful terminal event and process exit for
 
 #### Scenario: Incomparable cumulative usage
 - **WHEN** a new observation decreases an input/output component or historical completeness cannot be established
-- **THEN** the known contribution is retained as a lower bound, consumption remains explicitly incomplete, and an enabled token budget holds ordinary launches below the known limit without spending attempts; existing over-budget transitions and recovery exceptions remain effective
+- **THEN** the known contribution is retained as a lower bound and consumption remains explicitly incomplete; incompleteness alone blocks neither an ordinary launch nor a completed report, while known budget exhaustion and durable storage failures retain their existing guards
 
 #### Scenario: Unknown consumption
 - **WHEN** a completed turn omits usage while the budget is enabled
-- **THEN** the stage is not accepted as successful and existing attempt and timeout guards remain active
+- **THEN** unknown consumption is recorded separately without rejecting an otherwise successful process; report validation, attempt and timeout guards remain active
 
 ### Requirement: Discoverable project guidance
 The repository SHALL expose project instructions and six OpenSpec skills to Codex while retaining Claude support.

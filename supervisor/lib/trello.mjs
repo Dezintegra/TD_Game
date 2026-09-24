@@ -216,6 +216,7 @@ export async function readBoard(trello, board) {
   // Команда не должна выпадать из окна после тысячи записей журнала.
   // Разрешение не кэшируется: удаление/правка человеком видны следующему циклу.
   const userTokenLimits = Object.create(null);
+  const allComments = [];
   let page = comments;
   const cursors = new Set();
   while (true) {
@@ -227,6 +228,14 @@ export async function readBoard(trello, board) {
         why: 'ожидался список действий',
       };
     collectTokenLimits(userTokenLimits, page.data, owner.data.id);
+    allComments.push(
+      ...page.data.map((action) => ({
+        id: action.id,
+        cardId: action.data?.card?.id ?? null,
+        date: action.date,
+        text: action.data?.text ?? '',
+      })),
+    );
     if (page.data.length < 1000) break;
     const before = page.data.at(-1)?.id;
     if (!before || cursors.has(before))
@@ -251,12 +260,7 @@ export async function readBoard(trello, board) {
     lists: lists.data,
     labels: labels.data,
     cards: cards.data,
-    comments: comments.data.map((action) => ({
-      id: action.id,
-      cardId: action.data?.card?.id ?? null,
-      date: action.date,
-      text: action.data?.text ?? '',
-    })),
+    comments: allComments,
   };
 }
 

@@ -39,7 +39,7 @@ const frames = async (page: Page): Promise<Record<string, string>> => {
     'profile-bar',
     'lobby-title',
     'lobby-create',
-    'practice-start',
+    'lobby-password',
     'lobby-panel',
   ]) {
     const box = await page.getByTestId(id).boundingBox();
@@ -115,6 +115,57 @@ test('созданная комната появляется у соседа б�
   } finally {
     await watching.close();
     await creating.close();
+  }
+});
+
+test('комната под паролем видна замком и пускает только по паролю', async ({ browser }) => {
+  const hosting = await browser.newContext();
+  const guesting = await browser.newContext();
+
+  try {
+    const host = await hosting.newPage();
+    const guest = await guesting.newPage();
+    const title = uniqueTitle();
+
+    await identify(host, 'Аня');
+    await identify(guest, 'Боря');
+
+    await host.getByTestId('lobby-title').fill(title);
+    await host.getByTestId('lobby-password').fill('тайна');
+    await host.getByTestId('lobby-create').click();
+    await expect(host.getByTestId('room')).toBeVisible();
+
+    // Замок виден ДО попытки входа: иначе гость тыкается вслепую.
+    const row = rowOf(guest, title);
+    await expect(row).toBeVisible();
+    await expect(row).toHaveAttribute('data-locked', 'true');
+    await expect(row.getByTestId('lobby-row-locked')).toBeVisible();
+
+    // Первое нажатие раскрывает поле, а не уходит в сервер с пустым
+    // паролем: отказ, которого можно не получать, получать незачем.
+    await row.getByTestId('lobby-join').click();
+    const field = row.getByTestId('lobby-row-password');
+    await expect(field).toBeVisible();
+
+    // Неверный пароль оставляет гостя в списке и говорит почему — прямо
+    // у поля, а не общей строкой внизу экрана: опечатку исправляют там,
+    // где её набрали.
+    await field.fill('не та');
+    await field.press('Enter');
+    await expect(row.getByText('Пароль не подошёл')).toBeVisible();
+    await expect(guest.getByTestId('lobby-error')).toHaveCount(0);
+    await expect(guest.getByTestId('room')).toBeHidden();
+    // Место в комнате не занято ни одной неудачной попыткой.
+    await expect(host.getByTestId('room-slot')).toHaveCount(1);
+
+    // Верный — пускает, и дальше комната обычная.
+    await field.fill('тайна');
+    await field.press('Enter');
+    await expect(guest.getByTestId('room')).toBeVisible();
+    await expect(host.getByTestId('room-slot')).toHaveCount(2);
+  } finally {
+    await hosting.close();
+    await guesting.close();
   }
 });
 
@@ -477,18 +528,27 @@ test('готовность недоступна в одиночестве и с�
   }
 });
 
-test('компьютер держит комнату и играет как обычный участник', async ({ page }) => {
+test('компьютер приходит по приглашению и играет как обычный участник', async ({ page }) => {
+  const title = uniqueTitle();
   await identify(page, 'Аня');
 
-  // Комната компьютера — в общем списке, наравне с человеческими,
-  // и помечена как компьютерная: имени мало, «Компьютер» вполне может
-  // оказаться прозвищем человека.
-  const computerRow = page.getByTestId('lobby-row').filter({ hasText: 'Компьютер' });
-  await expect(computerRow.first()).toBeVisible({ timeout: 15_000 });
-  await expect(computerRow.first()).toHaveAttribute('data-computer', 'true');
+  // Дежурных комнат компьютера в списке НЕТ и быть не должно: он
+  // приходит только туда, куда его позвали. Обходной кнопки «играть
+  // с компьютером» тоже нет — вход в игру один.
+  await expect(page.getByTestId('practice-start')).toHaveCount(0);
+  await expect(page.getByTestId('lobby-row').filter({ hasText: 'Компьютер' })).toHaveCount(0);
 
-  // Одно нажатие: войти в дежурную комнату и подтвердить готовность.
-  await page.getByTestId('practice-start').click();
+  await createRoom(page, title);
+
+  // Выбор соперника живёт в комнате, а состав манер приходит с сервера.
+  const opponents = page.getByTestId('room-computer').getByRole('button');
+  await expect(opponents.first()).toBeEnabled({ timeout: 15_000 });
+  await opponents.first().click();
+
+  // Дежурный вошёл гостем, и комната помечена компьютерной: имени мало,
+  // «Компьютер» вполне может оказаться прозвищем человека.
+  await expect(page.getByTestId('room-slot')).toHaveCount(2, { timeout: 15_000 });
+  await page.getByTestId('room-ready').click();
 
   await expect(page.locator('#scene canvas')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('match-opponent')).toHaveAttribute('data-computer', 'true');

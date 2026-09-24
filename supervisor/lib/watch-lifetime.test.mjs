@@ -11,7 +11,7 @@ import {
   existsSync,
 } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, it, expect } from 'vitest';
 import { spawnSupervisor } from './launch.mjs';
@@ -53,6 +53,10 @@ function setup() {
   const base = realpathSync(basePath);
   const root = realpathSync(mkdtempSync(join(base, 'case-')));
   writeFileSync(join(root, 'owner'), '0126-watch-lifetime');
+  // Проба теперь проходит настоящее опознание entry, а не только живость PID.
+  const entry = join(root, 'supervisor/bin/supervise.mjs');
+  mkdirSync(dirname(entry), { recursive: true });
+  writeFileSync(entry, `import ${JSON.stringify(pathToFileURL(fixturePath).href)};\n`);
   const observers = [];
   const writers = new Map();
   const out = join(root, '.pipeline/supervisor.out.log');
@@ -93,7 +97,7 @@ function setup() {
   async function writer(id) {
     const calls = [];
     const child = await spawnSupervisor(
-      { root, detached: true, argv: [fixturePath, 'writer', root, id] },
+      { root, detached: true, argv: [entry, 'writer', root, id] },
       {
         spawn: (...args) => {
           calls.push(args);

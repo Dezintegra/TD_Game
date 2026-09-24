@@ -104,18 +104,19 @@ export function stageCommand({ assignment, prompt, config, root, home = root }) 
     // Текст назначения — тот, что прежде был вторым аргументом при `-p`.
     // Кто запускает, тот и подаёт его на вход процессу.
     stdin: prompt,
-    // Рабочий каталог — дерево задачи, а у этапов без дерева основное.
-    // Прогон и толкование дерева не имеют вовсе: арену считает чужое железо,
-    // а толкование только читает уже снятые числа.
+    // Локальный benchmark использует подтверждённый источник без владения деревом.
+    // Остальные этапы сохраняют прежний выбор: дерево задачи либо основное.
     //
     // Путь спрашивается вместе с самим этапом: назначение без пути отдаёт
     // сюда `null`, и `join` бросает TypeError посреди исполнения. Решает,
     // выдавать ли работу безместной задаче, не этот чистый счёт, а тот,
     // кто её выдаёт; здесь остаётся не уронить оборот на склейке пути.
     cwd:
-      NEEDS_WORKTREE.includes(assignment.stage) && assignment.path
-        ? join(root, assignment.path)
-        : root,
+      assignment.stage === 'benchmark' && assignment.benchmarkSource
+        ? assignment.benchmarkSource.path
+        : NEEDS_WORKTREE.includes(assignment.stage) && assignment.path
+          ? join(root, assignment.path)
+          : root,
   };
 }
 
@@ -126,7 +127,11 @@ export function stageCommand({ assignment, prompt, config, root, home = root }) 
  * минуты запретил бы выкладку с замером, а годный выкладке не поймал бы
  * зависший разбор до вечера.
  */
-export function stageTimeoutMs(stage, config) {
-  const minutes = config.stageTimeoutMinutes?.[stage] ?? config.stageTimeoutMinutes?.default;
+export function stageTimeoutMs(stage, config, taskId) {
+  const taskMinutes = taskId && config.taskStageTimeoutMinutes?.[taskId]?.[stage];
+  const minutes =
+    Number.isSafeInteger(taskMinutes) && taskMinutes > 0
+      ? taskMinutes
+      : (config.stageTimeoutMinutes?.[stage] ?? config.stageTimeoutMinutes?.default);
   return minutes * 60000;
 }

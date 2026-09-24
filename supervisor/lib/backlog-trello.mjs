@@ -12,6 +12,10 @@ import {
 import { findAnswer, joinJournalParts, splitJournalEntry } from './comments.mjs';
 import { journalBody } from './journal.mjs';
 import { nextId } from './requests.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { planDependencyUpdates } from './dependency-updates.mjs';
+import { pendingDependencies } from './dependencies.mjs';
+import { hasReceipt, withReceipt, partReceipt, readReceiptComments } from './report-receipts.mjs';
 
 /**
  * Бэклог, живущий карточками доски Trello.
@@ -20,10 +24,9 @@ import { nextId } from './requests.mjs';
  * часть конвейера — сканер, таблица переходов, раскладка слотов — о выборе
  * хранилища не знает вовсе и знать не должна.
  *
- * Картина мира читается ОДИН раз за цикл и передаётся сюда снимком. Читать
- * доску заново на каждую задачу значило бы тратить десятки обращений
- * за цикл там, где хватает четырёх, и вдобавок работать с меняющимися под
- * руками данными.
+ * Обычное чтение использует снимок цикла. Адресные дополнения и граница
+ * старта после захвата перечитывают доску независимо: старый снимок другой
+ * станции не должен стирать уже подтверждённые зависимости.
  *
  * Записи же идут по одной и сразу: карточка переезжает в колонку нового
  * состояния тем же запросом, которым обновляются машинные отметки. Это
@@ -86,18 +89,34 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
   /** Карточка задачи вместе с разобранным человеческим текстом. */
   const cardOf = (id) => byId.get(id)?.card ?? null;
 
+  // Исходный блок нужен для проверки основания старта и сохранения неизвестных полей.
+  const rawById = new Map(cards.map((raw) => [splitDescription(raw.desc ?? '').meta?.id, raw]));
+  const startBases = new Map();
+  /**
+   * Ответ владельца продукта — первый комментарий без пометки после вопроса.
+   *
+   * Отсчёт ведётся от даты вопроса, а при живой проверке смысла ожидания —
+   * от даты, с которой эта проверка началась: разбор задержки переставляет
+   * `statusChangedAt`, и без оговорки ответ, пришедший до него, потерялся бы.
+   */
+  const answerFor = (id) => {
+    const item = byId.get(id);
+    if (!item) return null;
+    const found = findAnswer(commentsByCard.get(item.card.id) ?? [], {
+      marker: mark,
+      since:
+        item.task.delayAnalysis?.originStatus === 'awaiting-po' &&
+        ['analyzing', 'waiting', 'verifying'].includes(item.task.delayAnalysis.phase)
+          ? item.task.delayAnalysis.originSince
+          : item.task.statusChangedAt,
+    });
+    return found?.text ?? null;
+  };
+
   // Подтверждённые перемещения нужны при повторе после ошибки комментария;
   // исходный снимок остаётся прежним для остальных решений цикла.
   const savedLists = new Map();
-
-  /**
-   * Чьё имя стоит в служебной отметке владельца.
-   *
-   * Читается из снимка, снятого в начале оборота, — то есть из состояния
-   * ДО любой нашей правки. Именно этим он и ценен: после захвата отметка
-   * уже наша, и отличить свой прошлый заход от чужого будет нечем.
-   */
-  const ownerOf = (id) => byId.get(id)?.task?.owner ?? null;
+  const attemptedReportTransfers = new Set();
 
   /**
    * Опубликовать запись журнала комментариями.
@@ -111,44 +130,27 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
    * а разница между «так решила сессия» и «так распорядился конвейер»
    * читающему доску нужна постоянно.
    */
-  async function comment(
-    cardId,
-    text,
-    source,
-    { deduplicate = false, parts: savedParts = null } = {},
-  ) {
+  async function comment(cardId, text, source, operation = {}) {
+    const { key, deduplicate = false, parts: savedParts = null } = operation;
     const parts =
       savedParts ??
       splitJournalEntry(text, {
         marker: mark,
         source,
-        limit: trelloConfig.maxTextLength,
+        limit: trelloConfig.maxTextLength - (key ? partReceipt(key, 999999).length : 0),
       });
-    const existing = new Set();
-    if (deduplicate) {
-      // Снимок всей доски ограничен тысячей записей: для повтора нужна
-      // полная история именно этой карточки, включая частичную публикацию.
-      let before;
-      const cursors = new Set();
-      do {
-        const page = await trello.get(`cards/${cardId}/actions`, {
-          filter: 'commentCard',
-          limit: 1000,
-          before,
-        });
-        if (!page.ok) return page;
-        if (!Array.isArray(page.data))
-          return { ok: false, kind: 'refused', why: 'история комментариев не является списком' };
-        for (const action of page.data) existing.add(action.data?.text);
-        if (page.data.length < 1000) break;
-        before = page.data.at(-1)?.id;
-        if (!before || cursors.has(before))
-          return { ok: false, kind: 'refused', why: 'пагинация комментариев не продвигается' };
-        cursors.add(before);
-      } while (before);
-    }
-    for (const part of parts) {
-      if (existing.has(part)) continue;
+    const existing =
+      key || deduplicate ? await readReceiptComments(trello, cardId) : { ok: true, comments: [] };
+    if (!existing.ok) return existing;
+    for (const [index, body] of parts.entries()) {
+      const suffix = key ? partReceipt(key, index) : '';
+      const part = body + suffix;
+      if (
+        key
+          ? existing.comments.some((item) => item.endsWith(suffix))
+          : existing.comments.includes(part)
+      )
+        continue;
       const posted = await trello.post(`cards/${cardId}/actions/comments`, { text: part });
       if (!posted.ok) return posted;
     }
@@ -175,6 +177,259 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     return { ok: true, id: meId };
   }
 
+  const failed = (why) => ({ ok: false, outcome: 'failed', why });
+  const fields = 'idBoard,name,desc,idList,idLabels,idMembers,pos,closed';
+  const parse = parseSnapshotCard;
+  function record(raw) {
+    const item = parse(raw);
+    const id = item.task.id ?? raw.name?.match(/^([0-9]{4}-[a-z0-9]+(?:-[a-z0-9]+)*)\s*[·—–]/)?.[1];
+    return {
+      ...item.task,
+      id,
+      valid: checkCard(item).length === 0 && raw.idBoard === trelloConfig.board,
+      archived: Boolean(raw.closed),
+    };
+  }
+  async function freshCards() {
+    const result = await trello.get(`boards/${trelloConfig.board}/cards`, {
+      filter: 'all',
+      fields,
+      limit: 1000,
+    });
+    if (!result.ok) return failure(result);
+    if (!Array.isArray(result.data)) return failed('не получена коллекция карточек доски');
+    return { ok: true, cards: result.data, records: result.data.map(record) };
+  }
+  async function resolveFresh(id, board, expectedCardId) {
+    const matches = board.cards.filter((raw) => record(raw).id === id);
+    if (matches.length !== 1) return failed(`${id}: адресат отсутствует или неоднозначен`);
+    const raw = matches[0];
+    if (raw.idBoard !== trelloConfig.board || (expectedCardId && raw.id !== expectedCardId))
+      return failed(`${id}: другая физическая карточка или доска`);
+    const result = await trello.get(`cards/${raw.id}`, { fields });
+    if (!result.ok) return failure(result);
+    const current = result.data;
+    if (
+      !current ||
+      current.id !== raw.id ||
+      current.idBoard !== trelloConfig.board ||
+      current.closed ||
+      record(current).id !== id ||
+      !record(current).valid
+    )
+      return failed(`${id}: негодное свежее чтение карточки`);
+    return { ok: true, raw: current, item: parse(current) };
+  }
+  // Меняется лишь JSON блока: даже пробелы человеческой части остаются на месте.
+  function withMeta(desc, meta) {
+    const start = desc.indexOf('<!-- pipeline');
+    const end = desc.indexOf('-->', start);
+    // Штатный сериализатор экранирует конец комментария внутри конверта журнала.
+    return `${desc.slice(0, start)}${joinDescription('', meta)}${desc.slice(end + 3)}`;
+  }
+  function overlayMeta(base, changes) {
+    const merged = { ...base };
+    for (const [key, value] of Object.entries(changes)) {
+      merged[key] =
+        value && typeof value === 'object' && !Array.isArray(value)
+          ? overlayMeta(base?.[key], value)
+          : value;
+    }
+    return merged;
+  }
+  function preserved(raw) {
+    return Object.fromEntries(
+      ['id', 'idBoard', 'name', 'idList', 'idLabels', 'idMembers', 'pos', 'closed'].map((key) => [
+        key,
+        raw[key],
+      ]),
+    );
+  }
+  function sameDescription(a, b) {
+    return (
+      isDeepStrictEqual(splitDescription(a).meta, splitDescription(b).meta) &&
+      withMeta(a, {}) === withMeta(b, {})
+    );
+  }
+  function publish(raw) {
+    const item = parse(raw);
+    // Все читатели снимка должны видеть подтверждение, включая план блокировки.
+    const rawIndex = cards.findIndex((card) => card.id === raw.id);
+    if (rawIndex !== -1) cards[rawIndex] = raw;
+    const parsedIndex = parsed.findIndex((entry) => entry.card.id === raw.id);
+    if (parsedIndex !== -1) parsed[parsedIndex] = item;
+    byId.set(item.task.id, item);
+    rawById.set(item.task.id, raw);
+    return item.task;
+  }
+
+  async function readStartTask(task, { evidence = {} } = {}) {
+    try {
+      const basis = rawById.get(task.id);
+      if (!basis) return failed(`${task.id}: нет основания старта`);
+      const board = await freshCards();
+      if (!board.ok) return board;
+      const fresh = await resolveFresh(task.id, board, basis.id);
+      if (!fresh.ok) return fresh;
+      const graph = board.records.map((item) => (item.id === task.id ? record(fresh.raw) : item));
+      const active = graph.filter((item) => !item.archived && item.valid);
+      const records = graph.filter((item) => item.archived || !item.valid);
+      const archivedClosed = records
+        .filter((item) => item.archived && item.valid && item.status === 'closed')
+        .map((item) => item.id);
+      const pending = pendingDependencies(fresh.item.task, active, archivedClosed, {
+        records,
+        evidence,
+        mainBranch: config.mainBranch,
+      });
+      // Назначение добавил acquire; остальные поля обязаны соответствовать снимку.
+      const basisFields = preserved(basis);
+      const freshFields = preserved(fresh.raw);
+      delete basisFields.idMembers;
+      delete freshFields.idMembers;
+      // Старые снимки не запрашивали idBoard; свежая адресация проверила его отдельно.
+      if (basis.idBoard === undefined) delete freshFields.idBoard;
+      if (basis.idBoard === undefined) delete basisFields.idBoard;
+      if (
+        !isDeepStrictEqual(basisFields, freshFields) ||
+        !sameDescription(basis.desc, fresh.raw.desc) ||
+        !isDeepStrictEqual(task, parse(basis).task)
+      )
+        return failed(
+          `${task.id}: основание старта изменилось${pending.length ? `; ${pending.join('; ')}` : ''}`,
+        );
+      if (pending.length) return failed(`${task.id}: ${pending.join('; ')}`);
+      if (!isDeepStrictEqual(fresh.raw.idMembers, [meId]))
+        return failed(`${task.id}: захват старта изменился`);
+      startBases.set(task.id, fresh.raw);
+      return { ok: true, task: publish(fresh.raw) };
+    } catch (error) {
+      return failed(`${task.id}: свежее чтение старта: ${error.message}`);
+    }
+  }
+
+  async function planTaskDependencyUpdates(updates, sourceId) {
+    try {
+      const board = await freshCards();
+      return board.ok ? planDependencyUpdates(updates, sourceId, board.records) : board;
+    } catch (error) {
+      return failed(`dependencyUpdates: ${error.message}`);
+    }
+  }
+
+  async function appendTaskDependencies(update, context) {
+    let owned = null;
+    let confirmed = null;
+    let result;
+    try {
+      const apply = async () => {
+        let board = await freshCards();
+        if (!board.ok) return board;
+        let plan = planDependencyUpdates(
+          context.updates ?? [update],
+          context.sourceId,
+          board.records,
+        );
+        if (!plan.ok) return plan;
+        let fresh = await resolveFresh(update.taskId, board);
+        if (!fresh.ok) return fresh;
+        const mergeFresh = () =>
+          planDependencyUpdates(
+            context.updates ?? [update],
+            context.sourceId,
+            board.records.map((item) => (item.id === update.taskId ? record(fresh.raw) : item)),
+          );
+        plan = mergeFresh();
+        if (!plan.ok) return plan;
+        let candidate = plan.tasks.find((task) => task.id === update.taskId);
+        const alreadyPresent = () =>
+          isDeepStrictEqual(candidate.dependsOn, fresh.item.task.dependsOn ?? []) &&
+          isDeepStrictEqual(candidate.dependencyResults, fresh.item.task.dependencyResults ?? []);
+        const description = () =>
+          withMeta(fresh.raw.desc, {
+            ...splitDescription(fresh.raw.desc).meta,
+            dependsOn: candidate.dependsOn,
+            dependencyResults: candidate.dependencyResults,
+          });
+        // Сохранённое дополнение не доказывает освобождение прежнего захвата.
+        if (fresh.raw.idMembers?.length)
+          return { ok: false, outcome: 'busy', why: 'адресат уже назначен исполнителю' };
+        if (alreadyPresent()) {
+          context.invalidate(update.taskId);
+          confirmed = fresh.raw;
+          return { ok: true, outcome: 'unchanged' };
+        }
+        const me = await whoAmI();
+        if (!me.ok) return me;
+        const taken = await trello.post(`cards/${fresh.raw.id}/idMembers`, { value: me.id });
+        if (!taken.ok)
+          return /already on the card/i.test(taken.why ?? '')
+            ? { ok: false, outcome: 'busy', why: 'адресат уже назначен исполнителю' }
+            : failure(taken);
+        owned = { cardId: fresh.raw.id, memberId: me.id };
+        board = await freshCards();
+        if (!board.ok) return board;
+        fresh = await resolveFresh(update.taskId, board, owned.cardId);
+        if (!fresh.ok) return fresh;
+        if (!isDeepStrictEqual(fresh.raw.idMembers, [me.id]))
+          return failed('захват адресата изменился');
+        plan = mergeFresh();
+        if (!plan.ok) return plan;
+        candidate = plan.tasks.find((task) => task.id === update.taskId);
+        const unchanged = alreadyPresent();
+        const desc = unchanged ? fresh.raw.desc : description();
+        context.invalidate(update.taskId);
+        if (!unchanged) {
+          const written = await trello.put(`cards/${owned.cardId}`, { desc });
+          if (!written.ok) return failure(written);
+        }
+        const readback = await trello.get(`cards/${owned.cardId}`, { fields });
+        if (!readback.ok) return failure(readback);
+        const saved = readback.data;
+        if (
+          !saved ||
+          !record(saved).valid ||
+          !isDeepStrictEqual(preserved(saved), preserved(fresh.raw)) ||
+          !sameDescription(saved.desc, desc)
+        )
+          return failed('подтверждение потеряло или изменило данные карточки');
+        confirmed = saved;
+        return { ok: true, outcome: 'saved' };
+      };
+      result = await apply();
+    } catch (error) {
+      result = failed(error.message);
+    } finally {
+      if (owned) {
+        try {
+          const freed = await trello.delete(`cards/${owned.cardId}/idMembers/${owned.memberId}`);
+          if (!freed.ok) result = failed(`освобождение захвата: ${freed.why}`);
+        } catch (error) {
+          result = failed(`освобождение захвата: ${error.message}`);
+        }
+      }
+    }
+    if (!result.ok) return { ...result, why: `${update.taskId}: ${result.why}` };
+    if (owned)
+      confirmed = {
+        ...confirmed,
+        idMembers: confirmed.idMembers.filter((id) => id !== owned.memberId),
+      };
+    startBases.set(update.taskId, confirmed);
+    return { ...result, task: publish(confirmed) };
+  }
+
+  async function reportCards() {
+    const found = await trello.get(`boards/${trelloConfig.board}/cards`, {
+      filter: 'all',
+      fields: 'id,name,desc,idList,idLabels,pos,closed',
+    });
+    if (!found.ok) return failure(found);
+    if (!Array.isArray(found.data))
+      return { ok: false, outcome: 'failed', why: 'invalid report card lookup' };
+    return { ok: true, cards: found.data };
+  }
+
   // Доставку видимого разбора нельзя считать законченной по одному PUT.
   // Части сохраняются до POST: после обрыва сравниваем точный текст уже
   // опубликованных частей, затем снимаем конверт отдельной записью.
@@ -189,21 +444,70 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
     if (!posted.ok) return failure(posted);
     const next = { ...task };
     delete next.delayJournal;
-    const desc = joinDescription(card.human, metaOf(next));
+    const raw = cards.find((item) => item.id === card.id);
+    const meta = { ...splitDescription(raw.desc).meta };
+    delete meta.delayJournal;
+    const desc = withMeta(raw.desc, overlayMeta(meta, metaOf(next)));
     const cleared = await trello.put(`cards/${card.id}`, { desc });
     if (!cleared.ok) return failure(cleared);
     byId.get(task.id).task = next;
-    const raw = cards.find((item) => item.id === card.id);
     if (raw) raw.desc = desc;
+    if (startBases.has(task.id)) startBases.set(task.id, { ...raw, desc });
     return { ok: true, outcome: 'saved' };
+  }
+
+  async function readTransferredReport(id, key, stage) {
+    if (
+      !attemptedReportTransfers.has(id) &&
+      !splitDescription(rawById.get(id)?.desc ?? '').meta?.reportTransfer
+    )
+      return { ok: true, receipt: null };
+    try {
+      const board = await freshCards();
+      if (!board.ok) return board;
+      const fresh = await resolveFresh(id, board, cardOf(id)?.id);
+      if (!fresh.ok) return fresh;
+      const receipt = splitDescription(fresh.raw.desc).meta?.reportTransfer;
+      if (!receipt) return { ok: true, receipt: null };
+      if (receipt.key !== key && fresh.item.task.status === stage)
+        return { ok: true, receipt: null };
+      if (
+        receipt.key !== key ||
+        receipt.to !== fresh.item.task.status ||
+        !Array.isArray(receipt.parts) ||
+        !receipt.parts.length ||
+        receipt.parts.some((part) => typeof part !== 'string' || !part)
+      )
+        return failed(`${id}: сохранённый перенос принадлежит другому отчёту или состоянию`);
+      return { ok: true, receipt, cardId: fresh.raw.id };
+    } catch (error) {
+      return failed(`${id}: подтверждение переноса отчёта: ${error.message}`);
+    }
+  }
+
+  async function deliverTransferredReport(id, key) {
+    const saved = await readTransferredReport(id, key);
+    if (!saved.ok) return saved;
+    if (!saved.receipt) return failed(`${id}: подтверждение переноса отчёта отсутствует`);
+    const posted = await comment(saved.cardId, '', 'agent', {
+      deduplicate: true,
+      parts: saved.receipt.parts,
+    });
+    return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
   }
 
   return {
     flushDelayJournal,
+    readTransferredReport,
+    deliverTransferredReport,
     // Всё, что ниже, повторяет поверхность файлового хранилища. Разница
     // только в том, что записи возвращают обещание: доска отвечает по сети.
 
     readTask: (id) => byId.get(id)?.task ?? null,
+    planTaskDependencyUpdates,
+    appendTaskDependencies,
+    requiresFreshStart: true,
+    readStartTask,
     taskLink: (id) => {
       const cardId = cardOf(id)?.id;
       return cardId ? `[${id}](https://trello.com/c/${cardId})` : id;
@@ -250,14 +554,14 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * При закрытии сначала записывается причина: терминальная карточка
      * не получит нового этапа, который мог бы восстановить пропавший текст.
      */
-    async saveTask(task, entry) {
+    async saveTask(task, entry, message, _extraPaths = [], operation) {
       if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
         return {
           ok: false,
           outcome: 'failed',
           why: 'на доске нет меток категорий: выполните board-setup',
         };
-      const card = cardOf(task.id);
+      let card = cardOf(task.id);
       if (!card) {
         return { ok: false, outcome: 'failed', why: `карточки задачи ${task.id} нет` };
       }
@@ -267,7 +571,36 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };
       }
 
-      if (entry.deliveryKey)
+      let current = byId.get(task.id).task;
+      if (operation?.key) {
+        const fresh = await trello.get(`cards/${card.id}`, {
+          fields: 'id,name,desc,idList,idLabels,pos,closed',
+        });
+        if (!fresh.ok) return failure(fresh);
+        const parsedCard = parseSnapshotCard(fresh.data);
+        current = parsedCard.task;
+        card = parsedCard.card;
+        byId.set(task.id, parsedCard);
+        if (
+          !hasReceipt(current, operation.key) &&
+          (fresh.data.closed ||
+            current.status !== operation.expected?.status ||
+            !isDeepStrictEqual(metaOf(current), metaOf(operation.expected ?? {})))
+        )
+          return {
+            ok: false,
+            outcome: 'conflict',
+            why: `report delivery conflicts with ${task.id}`,
+          };
+      }
+      const settled = operation?.key
+        ? withReceipt(task, operation.key, current)
+        : {
+            ...task,
+            ...(current.reportReceipts ? { reportReceipts: current.reportReceipts } : {}),
+          };
+      task = settled;
+      if (entry.deliveryKey && !operation?.key)
         task = {
           ...task,
           delayJournal: {
@@ -284,59 +617,109 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         };
       const closing = task.status === 'closed' && entry.from !== 'closed';
       const completing = task.status === 'completed' && entry.from !== 'completed';
-      const journal = `**${entry.from} → ${entry.to}**\n\n${journalBody({ ...entry, completionSummary: task.completionSummary ?? entry.completionSummary })}`;
+      const journal =
+        `**${entry.from} → ${entry.to}**\n\n${journalBody({ ...entry, completionSummary: task.completionSummary ?? entry.completionSummary })}` +
+        (entry.reportTransferKey ? `\n\n<!-- report:${entry.reportTransferKey} -->` : '');
       if (closing) {
         if (typeof entry.closureReason !== 'string' || !entry.closureReason.trim())
           return { ok: false, outcome: 'failed', why: 'причина закрытия не названа' };
       }
       if (closing || completing) {
-        const written = await comment(card.id, journal, entry.source, { deduplicate: true });
+        const written = await comment(card.id, journal, entry.source, {
+          ...operation,
+          deduplicate: true,
+        });
         if (!written.ok) return failure(written);
       }
 
       const currentList =
         savedLists.get(card.id) ?? cards.find((item) => item.id === card.id)?.idList;
       const placeFirst = task.status === 'completed' ? currentList !== idList : task.blocking;
-      const moved = await trello.put(`cards/${card.id}`, {
-        idList,
-        ...(placeFirst ? { pos: 'top' } : {}),
-        ...(Number.isFinite(entry.restorePriority) ? { pos: entry.restorePriority } : {}),
-        // Название пересобирается из очищенного: иначе служебный префикс
-        // припишется поверх прежнего и будет расти с каждым переходом.
-        name: nameWithId(task.id, titleOf(card.name) || task.title),
-        desc: joinDescription(card.human, metaOf(task)),
-        // Чужие метки сохраняются; категории и флаг декомпозиции берём из задачи.
-        idLabels: [
-          ...new Set([
-            ...(cards.find((item) => item.id === card.id)?.idLabels ?? []).filter(
-              (id) =>
-                ![...labelIdByKey.entries()].some(
-                  ([key, known]) =>
-                    known === id && (key.startsWith('category-') || key === 'decomposed'),
-                ),
-            ),
-            ...labelKeysOf(task)
-              .map((key) => labelIdByKey.get(key))
-              .filter(Boolean),
-          ]),
-        ],
-      });
+      let desc = startBases.has(task.id)
+        ? withMeta(
+            startBases.get(task.id).desc,
+            overlayMeta(splitDescription(startBases.get(task.id).desc).meta, metaOf(task)),
+          )
+        : joinDescription(card.human, metaOf(task));
+      if (entry.reportTransferKey) {
+        attemptedReportTransfers.add(task.id);
+        // Квитанция и переход неделимы. Оставляем квитанцию до следующей
+        // записи задачи: потеря ответа POST не должна повторно считать расход.
+        desc = withMeta(desc, {
+          ...splitDescription(desc).meta,
+          reportTransfer: {
+            key: entry.reportTransferKey,
+            to: task.status,
+            parts: splitJournalEntry(journal, {
+              marker: mark,
+              source: entry.source,
+              limit: trelloConfig.maxTextLength,
+            }),
+          },
+        });
+      }
+      if (operation?.key && desc.length > trelloConfig.maxTextLength)
+        return {
+          ok: false,
+          outcome: 'failed',
+          why: 'report receipts exceed description limit for ' + task.id,
+        };
+      const moved =
+        operation?.key && hasReceipt(current, operation.key)
+          ? { ok: true }
+          : await trello.put(`cards/${card.id}`, {
+              idList,
+              ...(placeFirst ? { pos: 'top' } : {}),
+              ...(Number.isFinite(entry.restorePriority) ? { pos: entry.restorePriority } : {}),
+              // Название пересобирается из очищенного: иначе служебный префикс
+              // припишется поверх прежнего и будет расти с каждым переходом.
+              name: nameWithId(task.id, titleOf(card.name) || task.title),
+              desc,
+              // Чужие метки сохраняются; категории и флаг декомпозиции берём из задачи.
+              idLabels: [
+                ...new Set([
+                  ...(cards.find((item) => item.id === card.id)?.idLabels ?? []).filter(
+                    (id) =>
+                      ![...labelIdByKey.entries()].some(
+                        ([key, known]) =>
+                          known === id && (key.startsWith('category-') || key === 'decomposed'),
+                      ),
+                  ),
+                  ...labelKeysOf(task)
+                    .map((key) => labelIdByKey.get(key))
+                    .filter(Boolean),
+                ]),
+              ],
+            });
       if (!moved.ok) return failure(moved);
       savedLists.set(card.id, idList);
+      // Свой снимок обновляется после PUT, включая квитанцию и категории.
+      const snapshotTask = { ...task };
+      delete snapshotTask.userTokenLimit;
+      if (current.userTokenLimit) snapshotTask.userTokenLimit = current.userTokenLimit;
+      byId.set(task.id, { task: snapshotTask, card });
+      const snapshotCard = cards.find((item) => item.id === card.id);
+      if (snapshotCard) {
+        snapshotCard.desc = desc;
+        snapshotCard.idList = idList;
+      }
       if (task.delayJournal) {
         byId.get(task.id).task = task;
         const raw = cards.find((item) => item.id === card.id);
         if (raw) {
-          raw.desc = joinDescription(card.human, metaOf(task));
+          raw.desc = desc;
           raw.idList = idList;
         }
         return flushDelayJournal(task);
       }
       if (closing || completing) return { ok: true, outcome: 'saved' };
 
+      if (entry.reportTransferKey)
+        return deliverTransferredReport(task.id, entry.reportTransferKey);
+
       // Источник берётся из самой записи: переход состояния бывает и делом
       // сессии — тогда в записи её отчёт, — и распоряжением супервизора.
-      const written = await comment(card.id, journal, entry.source);
+      const written = await comment(card.id, journal, entry.source, operation);
       if (!written.ok) return failure(written);
 
       return { ok: true, outcome: 'saved' };
@@ -355,19 +738,19 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * порядок доводов ради одного из них значило бы заставить исполнение
      * помнить, с каким из них оно работает.
      */
-    async amendTask(taskId, text, message, source, deliveryKey = null) {
+    async amendTask(taskId, text, message, source, deliveryKey = null, operation = null) {
       const card = cardOf(taskId);
-      if (!card) return { ok: false, outcome: 'failed', why: `карточки задачи ${taskId} нет` };
-      if (deliveryKey) {
-        const posted = await comment(
-          card.id,
-          `${text}\n\n<!-- delay-analysis:${deliveryKey} -->`,
-          source,
-          { deduplicate: true },
-        );
-        return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
+      if (!card) return { ok: false, outcome: 'failed', why: 'карточки задачи ' + taskId + ' нет' };
+      if (deliveryKey && typeof deliveryKey === 'object') {
+        operation = deliveryKey;
+        deliveryKey = null;
       }
-      const posted = await comment(card.id, text, source);
+      const posted = await comment(
+        card.id,
+        deliveryKey ? text + '\n\n<!-- delay-analysis:' + deliveryKey + ' -->' : text,
+        source,
+        { ...operation, deduplicate: Boolean(deliveryKey) },
+      );
       return posted.ok ? { ok: true, outcome: 'saved' } : failure(posted);
     },
 
@@ -384,7 +767,43 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * значит и разбора не получит, и заметить её можно только глазами
      * в журнале цикла.
      */
-    async createTask(task) {
+    async reserveReportTask(task, operation, reservedIds = []) {
+      const found = await reportCards();
+      if (!found.ok) return found;
+      const metas = found.cards
+        .map((card) => splitDescription(card.desc ?? '').meta)
+        .filter(Boolean);
+      const matches = metas.filter((meta) => hasReceipt(meta, operation.key));
+      if (matches.length > 1)
+        return { ok: false, outcome: 'conflict', why: 'duplicate creation receipt' };
+      if (matches.length) return { ok: true, task: { ...task, id: matches[0].id } };
+      const ids = [...metas.map((meta) => meta.id).filter(Boolean), ...reservedIds];
+      const occupied = ids.some((id) => id.split('-')[0] === task.id.split('-')[0]);
+      return { ok: true, task: occupied ? { ...task, id: nextId(ids, task.title) } : task };
+    },
+
+    async createTask(task, message, operation) {
+      if (operation?.key) {
+        const found = await reportCards();
+        if (!found.ok) return found;
+        const metas = found.cards
+          .map((card) => splitDescription(card.desc ?? '').meta)
+          .filter(Boolean);
+        const matches = metas.filter((meta) => hasReceipt(meta, operation.key));
+        if (matches.length === 1 && matches[0].id === task.id)
+          return { ok: true, outcome: 'saved' };
+        if (
+          matches.length ||
+          metas.some((meta) => meta.id?.split('-')[0] === task.id.split('-')[0])
+        ) {
+          return {
+            ok: false,
+            outcome: 'conflict',
+            why: `request identity conflicts with ${task.id}`,
+          };
+        }
+        task = withReceipt(task, operation.key);
+      }
       if ((task.categories ?? []).some((key) => !labelIdByKey.has(`category-${key}`)))
         return {
           ok: false,
@@ -396,10 +815,13 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
         return { ok: false, outcome: 'failed', why: `на доске нет колонки для «${task.status}»` };
       }
 
+      const desc = joinDescription(withExpectation(task.description ?? '', task), metaOf(task));
+      if (operation?.key && desc.length > trelloConfig.maxTextLength)
+        return { ok: false, outcome: 'failed', why: 'request description exceeds limit' };
       const created = await trello.post('cards', {
         idList,
         name: nameWithId(task.id, task.title),
-        desc: joinDescription(withExpectation(task.description ?? '', task), metaOf(task)),
+        desc,
         idLabels: labelKeysOf(task)
           .map((key) => labelIdByKey.get(key))
           .filter(Boolean),
@@ -545,14 +967,14 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       if (!me.ok) return me;
 
       const taken = await trello.post(`cards/${card.id}/idMembers`, { value: me.id });
-      if (taken.ok) return { ok: true, outcome: 'ours' };
+      if (taken.ok) return { ok: true, outcome: 'ours', newClaim: true };
 
       // Единственный отказ, который бедой не является: задачу уже заняли.
       //
       // Но «заняли» — это две разные вещи, и различить их обязательно.
       // Участник доски один на все станции, поэтому само назначение
       // не говорит, кто держит задачу; говорит служебная отметка владельца,
-      // прочитанная ДО этой попытки. Наше имя в ней означает собственный
+      // прочитанная ЗАНОВО после этой попытки. Наше имя в ней означает собственный
       // недоведённый захват: этап оборвался, назначение осталось, — и брать
       // такую задачу заново законно, это ровно то, ради чего конвейер её
       // и захватывал.
@@ -561,8 +983,20 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       // конвейер не мог, а её состояние занимало единственное место
       // исполнителя, и весь бэклог стоял за ней с 31.08.2026.
       if (/already on the card/i.test(taken.why ?? '')) {
-        const holder = ownerOf(task.id);
-        if (machine && holder === machine) return { ok: true, outcome: 'ours' };
+        if (!machine)
+          return { ok: false, outcome: 'taken', why: 'задача уже назначена исполнителю' };
+        let fresh;
+        try {
+          const board = await freshCards();
+          if (!board.ok) return board;
+          fresh = await resolveFresh(task.id, board, card.id);
+        } catch (error) {
+          return failed(`${task.id}: проверка прежнего захвата: ${error.message}`);
+        }
+        if (!fresh.ok) return fresh;
+        const holder = fresh.item.task.owner;
+        if (holder === machine && isDeepStrictEqual(fresh.raw.idMembers, [me.id]))
+          return { ok: true, outcome: 'ours', newClaim: false };
         return {
           ok: false,
           outcome: 'taken',
@@ -581,13 +1015,22 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * взятия в работу. Отсутствие назначения бедой не считается: цель
      * достигнута.
      */
-    async release(task) {
+    async release(task, operation) {
       const card = cardOf(task.id);
       if (!card) return { ok: true, outcome: 'released' };
 
       const me = await whoAmI();
       if (!me.ok) return me;
 
+      if (operation?.key) {
+        // DELETE мог завершиться до потери ответа; отсутствие участника
+        // подтверждает освобождение и не требует второго удаления.
+        const fresh = await trello.get(`cards/${card.id}`, { fields: 'idMembers' });
+        if (!fresh.ok) return failure(fresh);
+        if (!Array.isArray(fresh.data?.idMembers))
+          return { ok: false, outcome: 'failed', why: 'membership lookup is invalid' };
+        if (!fresh.data.idMembers.includes(me.id)) return { ok: true, outcome: 'released' };
+      }
       const freed = await trello.delete(`cards/${card.id}/idMembers/${me.id}`);
       return freed.ok ? { ok: true, outcome: 'released' } : failure(freed);
     },
@@ -619,9 +1062,12 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * Отдельного файла вопросов больше нет намеренно: вопрос живёт там же,
      * где задача, и владелец продукта отвечает оттуда же, откуда читает.
      */
-    async askOwner(task, report) {
+    async askOwner(task, report, operation) {
       const card = cardOf(task.id);
-      if (!card) return null;
+      if (!card)
+        return operation?.key
+          ? { ok: false, outcome: 'failed', why: 'question card missing' }
+          : null;
 
       const lines = ['**Вопрос владельцу продукта**', '', report.summary ?? ''];
       const options = report.decisions ?? [];
@@ -639,7 +1085,8 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
       // Вопрос помечается агентским: сформулировала его сессия, супервизор
       // лишь донёс. Владельцу продукта это говорит, с кого спрашивать,
       // если спрашивают невнятно.
-      await comment(card.id, lines.join('\n'), 'agent');
+      const written = await comment(card.id, lines.join('\n'), 'agent', operation);
+      if (operation?.key) return written.ok ? { ok: true, outcome: 'saved' } : failure(written);
       return null;
     },
 
@@ -650,30 +1097,45 @@ export function createTrelloBacklog({ trello, config, snapshot, marker, machine 
      * владельца продукта. Конвейер лишь подтверждает, что услышал, — иначе
      * по карточке нельзя отличить отвеченный вопрос от незамеченного.
      */
-    async recordAnswer(task, action, report) {
+    async recordAnswer(task, action, report, operation) {
       const card = cardOf(task.id);
       const answer = report?.decisions?.[0];
-      if (!card || !answer) return null;
+      if (!card)
+        return operation?.key ? { ok: false, outcome: 'failed', why: 'answer card missing' } : null;
+      if (!answer) return operation?.key ? { ok: true } : null;
 
       // Ответ собрала спрашивающая сессия, она же его и пересказала, —
       // значит запись агентская, как и сам вопрос.
-      await comment(card.id, `**Ответ принят**\n\n${answer}`, 'agent');
+      const written = await comment(card.id, `**Ответ принят**\n\n${answer}`, 'agent', operation);
+      if (operation?.key) return written.ok ? { ok: true, outcome: 'saved' } : failure(written);
       return null;
     },
 
     /** Ответ владельца продукта — первый комментарий без пометки после вопроса. */
-    readAnswer(id) {
-      const item = byId.get(id);
-      if (!item) return null;
-      const found = findAnswer(commentsByCard.get(item.card.id) ?? [], {
-        marker: mark,
-        since:
-          item.task.delayAnalysis?.originStatus === 'awaiting-po' &&
-          ['analyzing', 'waiting', 'verifying'].includes(item.task.delayAnalysis.phase)
-            ? item.task.delayAnalysis.originSince
-            : item.task.statusChangedAt,
-      });
-      return found?.text ?? null;
+    readAnswer: answerFor,
+
+    /**
+     * Ответы владельца по всем ждущим карточкам разом.
+     *
+     * Сканеру нужна именно карта: действие, возвращающее задачу из «Ждёт
+     * ответа», рождается по ней одной. Собиралась она чтением
+     * `manage/questions.md`, и после переезда вопросов на доску ответ
+     * владельца не доходил до сканера вовсе — карточка ждала вечно, сколько
+     * бы комментариев ей ни написали. Проверено 10.09.2026 на 0009 и 0010:
+     * ответ лежал сутки, разбор его видел, а сканер — нет.
+     *
+     * Опрашиваются только ждущие карточки. Комментарий под задачей в работе
+     * ответом не является: вопроса там нет, и принять за ответ можно было бы
+     * любую заметку на полях.
+     */
+    ownerAnswers() {
+      const answers = Object.create(null);
+      for (const [id, item] of byId) {
+        if (item.task.status !== 'awaiting-po') continue;
+        const text = answerFor(id);
+        if (text) answers[id] = text;
+      }
+      return answers;
     },
 
     /** Разобранные карточки — для сканера и для проверки при чтении. */
