@@ -439,6 +439,20 @@ describe('журнал', () => {
     expect(text).not.toContain('## Неполная запись возврата');
   });
 
+  it('принимает служебный PR-возврат без маркера отчёта этапа', () => {
+    const conflict = '**pr → revise**\n\nPR #172 конфликтует с main; устранить конфликт';
+    const journal = `${conflict}\n**revise → revise**\n\nЭтапу выдана сессия`;
+    const text = stagePrompt({
+      assignment: { ...assignment, stage: 'revise' },
+      task,
+      journal,
+      journalLimit: 60,
+    });
+    expect(text).toContain('## Вердикт, с которым вас вернули');
+    expect(text).toContain(conflict);
+    expect(text).not.toContain('## Неполная запись возврата');
+  });
+
   it('не придумывает раздел возврата для первого захода', () => {
     const journal = '**new → design**\n\nПервый заход';
     const text = stagePrompt({ assignment: { ...assignment, stage: 'design' }, task, journal });

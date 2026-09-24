@@ -92,7 +92,8 @@ function latestReturnVerdict(journal, stage) {
     const [, from, to] = transition;
     if (to !== stage || (TRACE[from] !== 'branch' && from !== 'pr')) continue;
     const footer = /^<!-- report:[0-9a-f]+:\d+ -->[ \t]*$/m.exec(entry);
-    const complete = Boolean(file || footer);
+    // PR-возврат пишет сам супервизор, без отчёта этапа и его маркера.
+    const complete = Boolean(file || from === 'pr' || footer);
     return {
       heading,
       body: entry.slice(0, footer ? footer.index + footer[0].length : entry.length).trim(),
