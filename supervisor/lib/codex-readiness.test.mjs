@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkCodexReadiness, checkRemoteReachability } from './codex-readiness.mjs';
 import { createCommandRunner } from './command-runner.mjs';
@@ -39,6 +40,7 @@ const check = (events, over = {}, env = {}) =>
     start: ({ command: probe, timeoutMs }) => {
       expect(timeoutMs).toBe(120000);
       expect(probe.args).toContain('--ephemeral');
+      expect(probe.cwd.startsWith(tmpdir())).toBe(true);
       expect(probe.args.join()).not.toContain('test-token');
       expect(probe.stdin).toContain('push --dry-run');
       expect(probe.stdin).toContain('rev-parse');
@@ -207,35 +209,72 @@ it('удаляет скрипт и каталог после ошибки пор
 
 it('Windows сначала готовит реальный cwd без модели, затем проверяет инструменты', async () => {
   const calls = [];
-  const result = await checkCodexReadiness({
-    platform: 'win32',
-    config: {},
-    root: '/repo',
-    env: { GH_TOKEN: 'test-token' },
-    start: ({ command: probe, timeoutMs }) => {
-      calls.push(probe);
-      if (calls.length === 1) {
-        expect(probe.cwd).toBe('/repo');
-        expect(probe.args).toContain('sandbox');
-        expect(probe.args).toContain('td-pipeline');
-        expect(probe.args).toContain('windows.sandbox="elevated"');
-        expect(probe.args).not.toContain('--model');
-        expect(timeoutMs).toBe(600000);
-        return { finished: Promise.resolve({ code: 0, stdout: 'td-workspace-ready' }) };
-      }
-      expect(probe.args).toContain('exec');
-      return {
-        finished: Promise.resolve({
-          code: 0,
-          stdout: [git, github, push, ssh, node, completed]
-            .map((e) => JSON.stringify(e))
-            .join('\n'),
-        }),
-      };
-    },
-  });
-  expect(result.ok).toBe(true);
-  expect(calls).toHaveLength(2);
+  const root = mkdtempSync(join(tmpdir(), 'td-readiness-windows-test-'));
+  const parent = join(root, 'pipeline-local');
+  try {
+    const result = await checkCodexReadiness({
+      platform: 'win32',
+      config: { paths: { local: 'pipeline-local' } },
+      root,
+      env: { GH_TOKEN: 'test-token' },
+      start: ({ command: probe, timeoutMs }) => {
+        calls.push(probe);
+        if (calls.length === 1) {
+          expect(probe.cwd).toBe(root);
+          expect(probe.args).toContain('sandbox');
+          expect(probe.args).toContain('td-pipeline');
+          expect(probe.args).toContain('windows.sandbox="elevated"');
+          expect(probe.args).not.toContain('--model');
+          expect(timeoutMs).toBe(600000);
+          return { finished: Promise.resolve({ code: 0, stdout: 'td-workspace-ready' }) };
+        }
+        expect(probe.args).toContain('exec');
+        expect(probe.cwd.startsWith(join(parent, 'td-codex-ready-'))).toBe(true);
+        return {
+          finished: Promise.resolve({
+            code: 0,
+            stdout: [git, github, push, ssh, node, completed]
+              .map((e) => JSON.stringify(e))
+              .join('\n'),
+          }),
+        };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(existsSync(calls[1].cwd)).toBe(false);
+    expect(existsSync(parent)).toBe(true);
+  } finally {
+    rmdirSync(parent);
+    rmdirSync(root);
+  }
+});
+
+it('Windows убирает неудавшуюся пробу, сохраняя локальный родительский каталог', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'td-readiness-windows-failure-'));
+  const parent = join(root, '.pipeline');
+  let probeCwd;
+  try {
+    const result = await checkCodexReadiness({
+      platform: 'win32',
+      config: { paths: { local: '.pipeline' } },
+      root,
+      env: { GH_TOKEN: 'test-token' },
+      start: ({ command: probe }) => {
+        if (probe.args.includes('sandbox'))
+          return { finished: Promise.resolve({ code: 0, stdout: 'td-workspace-ready' }) };
+        probeCwd = probe.cwd;
+        return { finished: Promise.resolve({ code: 1, stdout: '' }) };
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(probeCwd.startsWith(join(parent, 'td-codex-ready-'))).toBe(true);
+    expect(existsSync(probeCwd)).toBe(false);
+    expect(existsSync(parent)).toBe(true);
+  } finally {
+    rmdirSync(parent);
+    rmdirSync(root);
+  }
 });
 
 it.each([

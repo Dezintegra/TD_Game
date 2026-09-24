@@ -14,6 +14,7 @@ import { codexGitEnvironment } from './codex-environment.mjs';
 import { providerOf, codexInvocation } from './provider.mjs';
 import { supervisorIdentity } from './process-identity.mjs';
 import { parseDiagnosticRequest } from './addressed-tool-diagnostics.mjs';
+import { attestDiagnosticCode, diagnosticCodeMatches } from './diagnostic-code-identity.mjs';
 
 const REQUEST_LIMIT = 65536;
 const RESPONSE_LIMIT = 16 * 1024 * 1024;
@@ -282,19 +283,30 @@ export function readDiagnosticDescriptor(path) {
     !Number.isSafeInteger(descriptor.helperPid) ||
     !descriptor.generation ||
     !descriptor.ownerSid ||
-    descriptor.acl !== 'user-only-network-denied'
+    descriptor.acl !== 'user-only-network-denied' ||
+    typeof descriptor.root !== 'string' ||
+    typeof descriptor.lockPath !== 'string' ||
+    typeof descriptor.entrypoint !== 'string' ||
+    !/^[a-f0-9]{40}$/.test(descriptor.codeSha ?? '') ||
+    !/^[a-f0-9]{40}$/.test(descriptor.rootSha ?? '') ||
+    descriptor.runtimeSha !== descriptor.codeSha
   )
     throw new Error('invalid-endpoint-descriptor');
   return descriptor;
 }
 
 /** Both client and server prove the existing owner; a public PID is insufficient. */
-export async function diagnosticOwnerAvailable(descriptor, { identity = supervisorIdentity } = {}) {
+export async function diagnosticOwnerAvailable(
+  descriptor,
+  { identity = supervisorIdentity, attest = diagnosticCodeMatches, expectedEntrypoint = null } = {},
+) {
   try {
     const lock = JSON.parse(readFileSync(descriptor.lockPath, 'utf8'));
+    const entrypoint = expectedEntrypoint ?? descriptor.entrypoint;
+    if (!expectedEntrypoint && !(await attest(descriptor))) return false;
     return (
       lock.pid === descriptor.ownerPid &&
-      (await identity(lock.pid, descriptor.lockPath)).kind === 'live'
+      (await identity(lock.pid, descriptor.lockPath, { entrypoint })).kind === 'live'
     );
   } catch {
     return false;
@@ -319,15 +331,16 @@ export async function installHostDiagnosticEndpoint({
   runCommand,
   spawn: spawnStage,
   killTree,
+  attestCode = attestDiagnosticCode,
 }) {
   const read = (argv, program = 'git', cwd = root) => {
     const result = runCommand(argv, program, cwd, { timeout: 5000 });
     if (result.code !== 0) throw new Error('diagnostic-context-read-failed');
     return String(result.stdout ?? '').trim();
   };
-  const runtimeSha = read(['-C', root, 'rev-parse', 'HEAD']);
-  if (read(['-C', root, '--no-optional-locks', 'status', '--porcelain', '--', 'supervisor']))
-    throw new Error('runtime-code-not-committed');
+  const readGit = (args) => read(args);
+  const codeIdentity = attestCode({ root, home, readGit });
+  const runtimeSha = codeIdentity.codeSha;
   let endpoint;
   const authorizationPath = join(directory, 'diagnostic-authorizations.json');
   const currentGrant = (request, fingerprint) => {
@@ -418,6 +431,18 @@ export async function installHostDiagnosticEndpoint({
         : { program: command.program, args: ['--version'] };
     const env =
       provider === 'codex' ? codexGitEnvironment(getEnvironment(), root, command.cwd) : undefined;
+    let latestCode;
+    try {
+      latestCode = attestCode({ root, home, readGit });
+    } catch {
+      return { verified: false };
+    }
+    if (
+      latestCode.codeSha !== codeIdentity.codeSha ||
+      latestCode.rootSha !== codeIdentity.rootSha ||
+      latestCode.entrypoint !== codeIdentity.entrypoint
+    )
+      return { verified: false };
     const current = {
       ...source,
       cwd: resolve(command.cwd),
@@ -425,14 +450,11 @@ export async function installHostDiagnosticEndpoint({
       branch: read(['-C', source.cwd, 'branch', '--show-current']),
       head: read(['-C', source.cwd, 'rev-parse', 'HEAD']),
       providerVersion: read(versionCommand.args, versionCommand.program, command.cwd),
-      runtimeSha: read(['-C', root, 'rev-parse', 'HEAD']),
+      runtimeSha: latestCode.codeSha,
+      rootSha: latestCode.rootSha,
       generation: endpoint.descriptor.generation,
     };
-    if (
-      current.runtimeSha !== runtimeSha ||
-      read(['-C', root, '--no-optional-locks', 'status', '--porcelain', '--', 'supervisor'])
-    )
-      return { verified: false };
+    if (current.runtimeSha !== runtimeSha) return { verified: false };
     return { verified: true, source: current, paused: isPaused() };
   };
   const handler = runtime.createAddressedDiagnostics({
@@ -481,6 +503,9 @@ export async function installHostDiagnosticEndpoint({
     owns,
     metadata: {
       runtimeSha,
+      codeSha: codeIdentity.codeSha,
+      rootSha: codeIdentity.rootSha,
+      entrypoint: codeIdentity.entrypoint,
       lockPath,
       root,
       startedAt: new Date().toISOString(),

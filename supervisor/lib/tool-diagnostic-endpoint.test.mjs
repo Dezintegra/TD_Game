@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -20,6 +20,8 @@ import {
   openDiagnosticEndpoint,
   requestDiagnostic,
   installHostDiagnosticEndpoint,
+  diagnosticOwnerAvailable,
+  readDiagnosticDescriptor,
 } from './tool-diagnostic-endpoint.mjs';
 
 const paths = [];
@@ -36,6 +38,43 @@ function directory() {
   return path;
 }
 describe('Windows addressed diagnostic transport', () => {
+  it('requires attested code and the exact live entrypoint before a host client connects', async () => {
+    const dir = directory();
+    const lockPath = join(dir, 'supervisor.lock');
+    writeFileSync(lockPath, JSON.stringify({ pid: 123 }));
+    const descriptor = {
+      ownerPid: 123,
+      helperPid: 456,
+      generation: 'generation',
+      ownerSid: 'owner-sid',
+      acl: 'user-only-network-denied',
+      root: dir,
+      lockPath,
+      entrypoint: join(dir, 'supervisor', 'bin', 'supervise.mjs'),
+      codeSha: 'a'.repeat(40),
+      rootSha: 'b'.repeat(40),
+      runtimeSha: 'a'.repeat(40),
+    };
+    const path = join(dir, 'diagnostic-endpoint.json');
+    writeFileSync(path, JSON.stringify(descriptor));
+    expect(readDiagnosticDescriptor(path)).toEqual(descriptor);
+    const identity = vi.fn(async () => ({ kind: 'live' }));
+    expect(await diagnosticOwnerAvailable(descriptor, { identity, attest: () => true })).toBe(true);
+    expect(identity).toHaveBeenCalledWith(123, lockPath, {
+      entrypoint: descriptor.entrypoint,
+    });
+    identity.mockClear();
+    expect(await diagnosticOwnerAvailable(descriptor, { identity, attest: () => false })).toBe(
+      false,
+    );
+    expect(identity).not.toHaveBeenCalled();
+    writeFileSync(lockPath, JSON.stringify({ pid: 999 }));
+    expect(await diagnosticOwnerAvailable(descriptor, { identity, attest: () => true })).toBe(
+      false,
+    );
+    writeFileSync(path, JSON.stringify({ ...descriptor, runtimeSha: descriptor.rootSha }));
+    expect(() => readDiagnosticDescriptor(path)).toThrow('invalid-endpoint-descriptor');
+  });
   it.skipIf(process.platform !== 'win32')(
     'refuses an anonymous OS pipe caller before dispatch',
     async () => {
@@ -178,6 +217,7 @@ try {
       };
       const path = join(dir, 'pending-reports.json');
       let spawns = 0;
+      let codeRevision = 'b'.repeat(40);
       let race;
       let runtime;
       const spawnStage = () => {
@@ -250,6 +290,12 @@ try {
           getEnvironment: () => undefined,
           isPaused: () => true,
           mayDiagnose: () => ({ allowed: true }),
+          attestCode: () => ({
+            root: dir,
+            entrypoint: join(home, 'bin', 'supervise.mjs'),
+            codeSha: codeRevision,
+            rootSha: 'b'.repeat(40),
+          }),
           runCommand: (args, program) => ({
             code: 0,
             stdout:
@@ -313,6 +359,13 @@ try {
       grants.requests[0].source = prepared.source;
       grants.requests[0].prepareOnly = false;
       writeFileSync(grantsPath, JSON.stringify(grants));
+      codeRevision = 'c'.repeat(40);
+      expect(
+        await requestDiagnostic(endpoint.descriptor, { operation: 'submit', request }),
+      ).toEqual({ ok: false, reason: 'unverified-context-or-ownership' });
+      expect(spawns).toBe(0);
+      expect(runtime.reportStore.diagnosticEntries()).toEqual([]);
+      codeRevision = 'b'.repeat(40);
       const first = await requestDiagnostic(endpoint.descriptor, { operation: 'submit', request });
       expect(first, JSON.stringify(first)).toMatchObject({
         ok: true,
