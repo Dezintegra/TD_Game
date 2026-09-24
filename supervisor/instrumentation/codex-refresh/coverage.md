@@ -102,5 +102,12 @@ fake-boundary tests проверяют восстановление, непод�
 Проверка versioned negative driver: 3191 passed, 3 failed — stage-tool-recovery,
 tool-retry (EPERM rename), watch-lifetime. Все 41 tests build driver прошли.
 
+Все три группы нового driver исполнены на patch
+`ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510`:
+шесть мутаций обнаружены, после каждой исходник восстановлен, завершающие
+проверки проходят. `receipts/negative.json` содержит отдельные результаты
+carrier, token и singleflight с UTC и driver hash. Полнота всей инструментации
+этими шестью проверками не заявляется.
+
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

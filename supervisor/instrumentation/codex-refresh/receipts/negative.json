@@ -252,6 +252,486 @@
         "finishedUtc": "2026-09-24T11:37:23.226Z"
       },
       "finishedUtc": "2026-09-24T11:37:23.226Z"
+    },
+    {
+      "version": 1,
+      "stage": "partial-source",
+      "group": "singleflight",
+      "startedUtc": "2026-09-24T11:39:38.876Z",
+      "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+      "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+      "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+      "baseline": {
+        "receiptVersion": 1,
+        "stage": "partial-source",
+        "group": "singleflight",
+        "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+        "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+        "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+        "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+        "startedUtc": "2026-09-24T11:39:51.832Z",
+        "runtimeExecuted": false,
+        "productionWindowsBoundaryTested": false,
+        "verifiedSourceInputs": 6498,
+        "commands": [
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "check",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrSha256": "8c34b6c88c1554e7fd529c660936b18ff180534a46ebe6627f81d6d0a0acfdf2"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_singleflight_",
+              "--",
+              "--list"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "029f2805592cb43a2da1ac9792e3abfc01cf67e1da0c2991ebeef4fb5dd87b14",
+            "stderrSha256": "c2328327444bf7216c794940132a96834ca83054a968ba4f64100bb140f3147b"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_singleflight_",
+              "--",
+              "--nocapture"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "a3a710f06bc14d4ecdfa73a28c2f4d3cb70a0057b4e641a09aa3e97b130c5fba",
+            "stderrSha256": "ee69275878d6031a3255e839e9acb826bd3ac5fb665e407eaddd941709f46390"
+          }
+        ],
+        "tests": [
+          "refresh_boundary::tests::refresh_boundary_singleflight_disabled_has_no_identity",
+          "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
+          "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
+          "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload"
+        ],
+        "status": "passed",
+        "reader": {
+          "integrity": true,
+          "completeness": true,
+          "sourceAvailable": false,
+          "frames": 7
+        },
+        "fixture": {
+          "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\singleflight-fixture.bin",
+          "size": 2825,
+          "sha256": "b34d2d4df0d0b7f50df26bc0b48d1b962fe7a95184bde9d77e822ef5b572edbc"
+        },
+        "finishedUtc": "2026-09-24T11:40:00.432Z"
+      },
+      "controls": [
+        {
+          "id": "lost-join-edge",
+          "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-a58800336e3dca8782697ca9701859656c72409ef7538b1d66a3a0e3f051cedf.rs",
+          "expectedSha256": "a58800336e3dca8782697ca9701859656c72409ef7538b1d66a3a0e3f051cedf",
+          "test": "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
+          "sourceSha256": "244af45c9bd862c67743ea45f4d5e8d411faf9e934a79ec417e1aeb384e6ff8e",
+          "detected": true,
+          "restored": true,
+          "status": 101,
+          "stdoutSha256": "bf09f8d38e01eeea1af87c3e4775f1676855faa1c90883686cbf0739b8c99bd6",
+          "stderrSha256": "f12cd230938a57158dfabba7fdf19f42ade82efa0bbaed5889e1f35e4aa89c46"
+        },
+        {
+          "id": "bypass-coalescing",
+          "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-a58800336e3dca8782697ca9701859656c72409ef7538b1d66a3a0e3f051cedf.rs",
+          "expectedSha256": "a58800336e3dca8782697ca9701859656c72409ef7538b1d66a3a0e3f051cedf",
+          "test": "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
+          "sourceSha256": "ad94e04208d83df56630d15d4e110a433bc91f0ab7e737685c95056f83b7eebb",
+          "detected": true,
+          "restored": true,
+          "status": 101,
+          "stdoutSha256": "63538544ee468620e7d9fcb4129ca8f7e9a16443c7e6eb302a33e779727daf5e",
+          "stderrSha256": "0e6960fc93c680d501163c47921df2c8c0a77bebbd5abaa05bc86b96003677c3"
+        }
+      ],
+      "runtimeExecuted": false,
+      "status": "passed",
+      "restoredCheck": {
+        "receiptVersion": 1,
+        "stage": "partial-source",
+        "group": "singleflight",
+        "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+        "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+        "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+        "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+        "startedUtc": "2026-09-24T11:40:39.168Z",
+        "runtimeExecuted": false,
+        "productionWindowsBoundaryTested": false,
+        "verifiedSourceInputs": 6498,
+        "commands": [
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "check",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrSha256": "f400bacaa2fffd23832c3ae9f9e9a0fdab0fd8bbdaaab223c241f22709849886"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_singleflight_",
+              "--",
+              "--list"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "029f2805592cb43a2da1ac9792e3abfc01cf67e1da0c2991ebeef4fb5dd87b14",
+            "stderrSha256": "01b1fb40bfe90fdcb77d8368745def76537a56a4e03b900f9fce69b3cd6aa1f8"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_singleflight_",
+              "--",
+              "--nocapture"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "a3a710f06bc14d4ecdfa73a28c2f4d3cb70a0057b4e641a09aa3e97b130c5fba",
+            "stderrSha256": "6b066d6229d5c3b5b1c8ee5f4ceaefdc8da93d433074c25bbcd98e19cf9d254b"
+          }
+        ],
+        "tests": [
+          "refresh_boundary::tests::refresh_boundary_singleflight_disabled_has_no_identity",
+          "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
+          "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
+          "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload"
+        ],
+        "status": "passed",
+        "reader": {
+          "integrity": true,
+          "completeness": true,
+          "sourceAvailable": false,
+          "frames": 7
+        },
+        "fixture": {
+          "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\singleflight-fixture.bin",
+          "size": 2825,
+          "sha256": "b34d2d4df0d0b7f50df26bc0b48d1b962fe7a95184bde9d77e822ef5b572edbc"
+        },
+        "finishedUtc": "2026-09-24T11:40:54.219Z"
+      },
+      "finishedUtc": "2026-09-24T11:40:54.220Z"
+    },
+    {
+      "version": 1,
+      "stage": "partial-source",
+      "group": "token",
+      "startedUtc": "2026-09-24T11:38:11.136Z",
+      "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+      "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+      "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+      "baseline": {
+        "receiptVersion": 1,
+        "stage": "partial-source",
+        "group": "token",
+        "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+        "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+        "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+        "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+        "startedUtc": "2026-09-24T11:38:21.417Z",
+        "runtimeExecuted": false,
+        "productionWindowsBoundaryTested": false,
+        "verifiedSourceInputs": 6498,
+        "commands": [
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "check",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrSha256": "731b01a30cef8e897541486128358702e3e0cae5c3e6c447ec9eb12b381d4a4a"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_token_",
+              "--",
+              "--list"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "4cc8fb5742cc8b3b79126ac6bfc2669d0c8d3174bf153b6be1a6739ce5f6257b",
+            "stderrSha256": "037ebdc026cdb088b37f78974c132e18e7f54b0d194c4e2916cd3f13f66356ba"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_token_",
+              "--",
+              "--nocapture"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "60b36c4baa42ddfee25e6760dbc70624e98e6e5a94140d5fe5e5b21c1167bf63",
+            "stderrSha256": "45dfb83287f7442b07b1ea46b94b218dd76e42b61f4637f174c7981271f1d41e"
+          }
+        ],
+        "tests": [
+          "refresh_boundary::token_tests::refresh_boundary_token_after_call_reselects_and_detects_change",
+          "refresh_boundary::token_tests::refresh_boundary_token_denied_never_uses_process",
+          "refresh_boundary::token_tests::refresh_boundary_token_failed_field_closes_handle",
+          "refresh_boundary::token_tests::refresh_boundary_token_no_token_is_only_fallback",
+          "refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable"
+        ],
+        "status": "passed",
+        "finishedUtc": "2026-09-24T11:38:28.836Z"
+      },
+      "controls": [
+        {
+          "id": "fallback-on-denied",
+          "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-f1fd13e25aa1e045e8300c0f20a2372148ff77f3739d8353c64151718bbf35bb.rs",
+          "expectedSha256": "f1fd13e25aa1e045e8300c0f20a2372148ff77f3739d8353c64151718bbf35bb",
+          "test": "refresh_boundary::token_tests::refresh_boundary_token_denied_never_uses_process",
+          "sourceSha256": "2ad629ae70c10e9e118e02cc98d877523038a903f344a7092fe80264aedf520c",
+          "detected": true,
+          "restored": true,
+          "status": 101,
+          "stdoutSha256": "61fa8005056d0c5e1e1e33f08075ab7ca81cb54b7b3359e2f8022b941d4b1af8",
+          "stderrSha256": "95d656873cc75a27a4c7543a9fd9aa87170606ff39361bf3281e4cc553ad13a0"
+        },
+        {
+          "id": "ignore-snapshot-change",
+          "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-f1fd13e25aa1e045e8300c0f20a2372148ff77f3739d8353c64151718bbf35bb.rs",
+          "expectedSha256": "f1fd13e25aa1e045e8300c0f20a2372148ff77f3739d8353c64151718bbf35bb",
+          "test": "refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable",
+          "sourceSha256": "ded3a3be7edab5fc79da5f08a10ded71a94a9ef4c4a4181e050bc5a96df8657b",
+          "detected": true,
+          "restored": true,
+          "status": 101,
+          "stdoutSha256": "2e64cf1b5f98af8927bece01771f2152cf992d1309c6e4d4f4db2d4d8167167e",
+          "stderrSha256": "2aab3f541bf6b9d024e2c1ff25606384e47851f52df0aa0e77e5d9b095e13e4b"
+        }
+      ],
+      "runtimeExecuted": false,
+      "status": "passed",
+      "restoredCheck": {
+        "receiptVersion": 1,
+        "stage": "partial-source",
+        "group": "token",
+        "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+        "patchSha256": "ef40a1855fb846786325109f953ec15117e3873fde7c7ef9fcd62f4f8d473510",
+        "recipeSha256": "253cbf51c478f2d16e3848cddeb0954b941993c982e0cae5faa783665e298ba0",
+        "driverSha256": "1e1c2997b8bdaf7ac5d2e3068a03960de40286e95aca32fe0766e75c23d06c17",
+        "startedUtc": "2026-09-24T11:39:00.685Z",
+        "runtimeExecuted": false,
+        "productionWindowsBoundaryTested": false,
+        "verifiedSourceInputs": 6498,
+        "commands": [
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "check",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrSha256": "b9f7c7d986846bab4833e9232c6ae4f8a49775fa32afcc171041f472d1af586e"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_token_",
+              "--",
+              "--list"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "4cc8fb5742cc8b3b79126ac6bfc2669d0c8d3174bf153b6be1a6739ce5f6257b",
+            "stderrSha256": "5873cc09bbf2289c390aec407e4bc911d72c3233480e3a7b9b390ce87f04c1e5"
+          },
+          {
+            "command": [
+              "rustup",
+              "run",
+              "1.95.0",
+              "cargo",
+              "test",
+              "--locked",
+              "--offline",
+              "-j",
+              "2",
+              "--target",
+              "x86_64-pc-windows-msvc",
+              "-p",
+              "codex-windows-sandbox",
+              "--lib",
+              "refresh_boundary_token_",
+              "--",
+              "--nocapture"
+            ],
+            "status": 0,
+            "error": null,
+            "stdoutSha256": "48726ac29c987ffe017f3d0c29d356ce9e18b0c71e0b85db8252b0e36d28477a",
+            "stderrSha256": "1a0e560413c38827d15b2baf3d67bd02ba51c40b01e608e107de6c8ed36b48fd"
+          }
+        ],
+        "tests": [
+          "refresh_boundary::token_tests::refresh_boundary_token_after_call_reselects_and_detects_change",
+          "refresh_boundary::token_tests::refresh_boundary_token_denied_never_uses_process",
+          "refresh_boundary::token_tests::refresh_boundary_token_failed_field_closes_handle",
+          "refresh_boundary::token_tests::refresh_boundary_token_no_token_is_only_fallback",
+          "refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable"
+        ],
+        "status": "passed",
+        "finishedUtc": "2026-09-24T11:39:19.729Z"
+      },
+      "finishedUtc": "2026-09-24T11:39:19.730Z"
     }
   ]
 }
