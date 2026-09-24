@@ -17,6 +17,10 @@
     "refresh_boundary::tests::refresh_boundary_wire_roundtrip_fixture",
     "refresh_boundary::tests::refresh_boundary_wire_sequence_overflow_sticky",
     "refresh_boundary::tests::refresh_boundary_wire_write_failure_sticky",
+    "refresh_boundary::token_tests::refresh_boundary_token_acl_disabled_only_calls_api",
+    "refresh_boundary::token_tests::refresh_boundary_token_acl_preserves_dword_and_handle_lifetime",
+    "refresh_boundary::token_tests::refresh_boundary_token_acl_rejects_changed_token",
+    "refresh_boundary::token_tests::refresh_boundary_token_acl_unavailable_is_not_success_evidence",
     "refresh_boundary::token_tests::refresh_boundary_token_after_call_reselects_and_detects_change",
     "refresh_boundary::token_tests::refresh_boundary_token_denied_never_uses_process",
     "refresh_boundary::token_tests::refresh_boundary_token_failed_field_closes_handle",
@@ -39,7 +43,7 @@
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/refresh_boundary.rs",
-      "sha256": "159adc586270b4487475a8acdbccc41752f03f348abd68efdfac561e0abb58ef"
+      "sha256": "164a8db7ed022e3e574e48a8620bbccd19d27e103e1cd024c2730cfcab41b74b"
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/setup.rs",

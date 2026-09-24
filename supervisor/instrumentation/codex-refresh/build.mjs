@@ -486,6 +486,20 @@ const MUTATIONS = {
       'if false {',
       'refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable',
     ],
+    [
+      'refresh_boundary.rs',
+      'ignore-call-token-change',
+      'if same_effective_token(&before.snapshot, &after.snapshot) {',
+      'if true {',
+      'refresh_boundary::token_tests::refresh_boundary_token_acl_rejects_changed_token',
+    ],
+    [
+      'refresh_boundary.rs',
+      'replace-acl-result',
+      '(dword, Some(observation))',
+      '(0, Some(observation))',
+      'refresh_boundary::token_tests::refresh_boundary_token_acl_preserves_dword_and_handle_lifetime',
+    ],
   ],
 };
 

@@ -129,5 +129,14 @@ receipt token сохраняет baseline, controls и restored check. Pipeline:
 5 failed — report-delivery, stage-tool-recovery (2), tool-retry (EPERM rename),
 watch-lifetime. Build driver (41) и reader (39) прошли; общий набор не зелёный.
 
+ACL call boundary increment: `around_acl` удерживает выбранный token handle
+через единственный синхронный вызов, сохраняет его DWORD и повторно выбирает
+effective token. Ошибка наблюдения не подменяет штатный результат; отключённый
+observer не запрашивает токен. Четыре новые fake-API проверки довели token group
+до 10 tests. Четыре мутации token group обнаружены, включая подмену DWORD и
+игнорирование смены token после вызова; исходник восстановлен и проверен.
+Это ещё не подключение к ACL sites и не emission intent/before/result; 4.2/4.3
+остаются открытыми. Pipeline: 3202 passed, 1 failed — watch-lifetime timeout.
+
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

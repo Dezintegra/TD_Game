@@ -37,10 +37,10 @@ index 0ca4dcaf..668ccc3e 100644
  
 diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
 new file mode 100644
-index 00000000..bd473709
+index 00000000..7076ce54
 --- /dev/null
 +++ b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
-@@ -0,0 +1,1459 @@
+@@ -0,0 +1,1548 @@
 +//! Bounded, opt-in diagnostic transport. No environment lookup or OS calls.
 +//! Callsite integration and native pipe adapter are separate admission steps.
 +use serde::Serialize;
@@ -1030,6 +1030,32 @@ index 00000000..bd473709
 +            && before.fields == after.fields
 +    }
 +
++    /// Executes exactly once on the calling thread. Observation failure never
++    /// replaces the DWORD returned directly by the ACL API. Retain the selected
++    /// handle until after the call and independently reselect the effective token.
++    /// A stable pair is necessary evidence, not proof against an unobserved ABA.
++    pub fn around_acl<A: TokenApi>(
++        api: Option<&mut A>,
++        call: impl FnOnce() -> u32,
++    ) -> (u32, Option<Result<(Snapshot, Snapshot), ObservationError>>) {
++        let Some(api) = api else {
++            return (call(), None);
++        };
++        let before = snapshot(api);
++        let dword = call();
++        let after = snapshot(api);
++        let observation = before.and_then(|before| {
++            after.and_then(|after| {
++                if same_effective_token(&before.snapshot, &after.snapshot) {
++                    Ok((before.snapshot, after.snapshot))
++                } else {
++                    Err(ObservationError::Unstable)
++                }
++            })
++        });
++        (dword, Some(observation))
++    }
++
 +    #[cfg(not(test))]
 +    pub mod native {
 +        use super::*;
@@ -1276,6 +1302,69 @@ index 00000000..bd473709
 +    use super::token_observer::*;
 +    use std::cell::Cell;
 +    use std::rc::Rc;
++
++    #[test]
++    fn refresh_boundary_token_acl_preserves_dword_and_handle_lifetime() {
++        let mut api = Fake::default();
++        let drops = api.drops.clone();
++        let calls = Cell::new(0);
++        let thread = std::thread::current().id();
++        let (code, observed) = around_acl(Some(&mut api), || {
++            assert_eq!(std::thread::current().id(), thread);
++            assert_eq!(drops.get(), 0);
++            calls.set(calls.get() + 1);
++            5
++        });
++        assert_eq!(calls.get(), 1);
++        assert_eq!(code, 5);
++        assert!(observed.unwrap().is_ok());
++        assert_eq!(api.stat_calls, 4);
++        assert_eq!(drops.get(), 2);
++    }
++
++    #[test]
++    fn refresh_boundary_token_acl_unavailable_is_not_success_evidence() {
++        let mut api = Fake {
++            thread_error: Some(5),
++            ..Default::default()
++        };
++        let calls = Cell::new(0);
++        let (code, observed) = around_acl(Some(&mut api), || {
++            calls.set(calls.get() + 1);
++            0
++        });
++        assert_eq!(calls.get(), 1);
++        assert_eq!(code, 0);
++        assert!(matches!(
++            observed.unwrap(),
++            Err(ObservationError::Unavailable(_))
++        ));
++        assert_eq!(api.process_opens, 0);
++    }
++
++    #[test]
++    fn refresh_boundary_token_acl_rejects_changed_token() {
++        let mut api = Fake {
++            change_at: Some(3),
++            ..Default::default()
++        };
++        let (code, observed) = around_acl(Some(&mut api), || 87);
++        assert_eq!(code, 87);
++        assert_eq!(observed.unwrap(), Err(ObservationError::Unstable));
++        assert_eq!(api.drops.get(), 2);
++    }
++
++    #[test]
++    fn refresh_boundary_token_acl_disabled_only_calls_api() {
++        let calls = Cell::new(0);
++        let (code, observed) = around_acl::<Fake>(None, || {
++            calls.set(calls.get() + 1);
++            u32::MAX
++        });
++        assert_eq!(calls.get(), 1);
++        assert_eq!(code, u32::MAX);
++        assert!(observed.is_none());
++    }
 +
 +    struct Handle(Rc<Cell<usize>>);
 +    impl Drop for Handle {
