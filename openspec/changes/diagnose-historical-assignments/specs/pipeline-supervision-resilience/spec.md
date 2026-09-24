@@ -48,10 +48,24 @@ Before launching, the runtime owner SHALL verify assignment provenance, task/sta
 
 The owner SHALL durably record request identity and diagnostic launch identity before process creation and preserve the result before acknowledging completion. Each result SHALL include requestId, assignment and source launch provenance, diagnostic launchId and confirmed sessionId or explicit absence, UTC interval, verified context, runtime/code SHA, commands, structured outcomes, accounted usage/cost and available primary evidence references with SHA-256. Missing evidence SHALL be explicit and SHALL NOT be replaced by model prose. Repeated retrieval SHALL return the same saved result without a new launch or duplicate charge. Reusing requestId with different contents SHALL be rejected. An uncertain launch SHALL be reconciled by persisted identity and MUST NOT be blindly reissued. Storage or accounting errors SHALL prevent successful completion acknowledgement and further launch of the affected request while preserving available data.
 
+The addressed entry SHALL extend the existing owner-managed report store and its production wiring, using separate diagnostic request accessors and a single runtime writer. It MUST NOT replace the report queue or create another report-delivery or recovery backend. Every write and restart SHALL preserve both report envelopes and diagnostic requests, including existing launch identities, plans, progress, rejections, dispositions and charge/retry records. Ordinary report views and delivery SHALL exclude addressed requests. Restoration SHALL retain the existing lock-before-store-before-recovery ordering and storage-failure protections.
+
 #### Scenario: Result acknowledgement is lost
 
 - **WHEN** diagnosis completed and the caller retries submission or retrieval with the same requestId after losing the answer
 - **THEN** the saved result and evidence hashes are returned with no extra spawn or usage charge
+
+#### Scenario: Reports and addressed requests share a restarted runtime
+
+- **WHEN** the store contains a partially delivered ordinary report, an infrastructure-held envelope and an addressed request, and the production runtime is recreated after writes to each collection
+- **THEN** supervisor, report delivery and the addressed endpoint use the same restored store and retain all three records with their identities and progress
+- **AND** ordinary delivery completes only missing effects while addressed retrieval neither settles the hold nor launches or charges another diagnostic
+
+#### Scenario: Report acknowledgement and storage verification preserve addressed data
+
+- **WHEN** ordinary report acknowledgement writes the shared store while an addressed request and a held envelope remain
+- **THEN** only that ordinary envelope is removed and the other records survive readback and restart
+- **AND** failure to persist or verify either collection prevents durable-success acknowledgement and unsafe restart rather than falling back to an empty or separate queue
 
 #### Scenario: Owner restarts after launch intent
 
