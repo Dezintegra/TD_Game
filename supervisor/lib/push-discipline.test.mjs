@@ -102,6 +102,26 @@ describe('команды самообновления', () => {
     const { git: none } = gitWith([['rev-parse HEAD:supervisor', FAIL('fatal')]]);
     expect(none.treeOf('supervisor')).toBeNull();
   });
+
+  it('разница деревьев сохраняет удалённый путь при переносе кода в документ', () => {
+    const { git, calls } = gitWith([
+      [
+        'diff --name-only -z --no-renames --no-ext-diff old new --',
+        { code: 0, stdout: 'lib/old.mjs\0README.md\0' },
+      ],
+    ]);
+    expect(git.changedPathsBetweenTrees('old', 'new')).toEqual(['lib/old.mjs', 'README.md']);
+    expect(calls).toContain('diff --name-only -z --no-renames --no-ext-diff old new --');
+  });
+
+  it('отказ Git и отсутствие текста различаются', () => {
+    const { git: failed } = gitWith([
+      ['diff --name-only -z --no-renames --no-ext-diff old new --', FAIL('bad tree')],
+    ]);
+    expect(failed.changedPathsBetweenTrees('old', 'new')).toBeNull();
+    const { git: empty } = gitWith([]);
+    expect(empty.changedPathsBetweenTrees('old', 'new')).toEqual([]);
+  });
 });
 
 describe('отправка с первого раза', () => {
