@@ -1981,6 +1981,53 @@ describe('согласованность ожидания 0216 с подгото
   });
 });
 
+describe('целостность списка задач OpenSpec', () => {
+  const clauses = {
+    design: [
+      'Нумерованные обязательные пункты',
+      '`- [ ] N.N`',
+      'all_done',
+      'преграду по всем разрешённым маршрутам',
+    ],
+    audit: [
+      'Нумерованные обязательные пункты',
+      '`- [ ] N.N`',
+      'all_done',
+      'преграду проверяй отдельно',
+    ],
+    implement: [
+      'Нумерованные обязательные пункты',
+      '`- [ ] N.N`',
+      'openspec status: all_done',
+      'подтверждённой технической преграде',
+    ],
+    revise: [
+      'Нумерованные обязательные пункты',
+      '`- [ ] N.N`',
+      'openspec status: all_done',
+      'подтверждённой технической преграды',
+    ],
+    review: [
+      'Нумерованные обязательные пункты',
+      '`- [ ] N.N`',
+      'openspec status: all_done',
+      'подтверждённой технической преграде',
+    ],
+  };
+  const missing = (stage, source) => clauses[stage].filter((phrase) => !source.includes(phrase));
+
+  it.each(Object.keys(clauses))('%s сохраняет обязательные пункты видимыми', (stage) => {
+    expect(missing(stage, skillText(stage))).toEqual([]);
+  });
+
+  it.each(
+    Object.entries(clauses).flatMap(([stage, phrases]) => phrases.map((phrase) => [stage, phrase])),
+  )('%s замечает утрату правила %s', (stage, phrase) => {
+    const source = skillText(stage);
+    expect(missing(stage, source.replace(phrase, 'УТРАЧЕНО'))).toContain(phrase);
+  });
+});
+
 describe('связность таблицы', () => {
   it('у каждого состояния объявлена цена', () => {
     const priced = STATES.filter((status) => stateClass({ status, run: { kind: 'arena' } }));
