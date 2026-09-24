@@ -21,6 +21,27 @@ bytes; результат фактической проверки — `receipts/
 с `--locked`. Исходный source receipt остаётся описанием непатченного экспорта.
 `preparationPatchSha256` не заменяет ещё отсутствующий instrumentation patch hash.
 
+### Wire reader (частичная реализация)
+
+`schema.json` задаёт строгий allowlist `refresh-boundary/v1`.
+`supervisor/lib/refresh-boundary-source.mjs` кодирует и читает отдельный bounded
+snapshot: uint32 LE длина UTF-8 JSON, JSON, 32 bytes SHA-256 JSON. JSON компактный,
+без дублированных ключей и избыточных escape; порядок ключей свободный. Размер всего
+frame не больше 256 КиБ. В journal не больше 10 МиБ; последние 64 КиБ доступны
+только loss/seal. Вызывающий transport также обязан ограничивать входной буфер.
+
+Каждый writer начинает с handshake/seq=1; seal подтверждает число предшествующих
+frames, их последний seq и SHA-256 полных wire bytes этого writer. Независимые
+writers передаются через expectedWriterIds, collectionId/launchId — через параметры
+collector. Reader сохраняет только проверенный префикс, не публикует неизвестные
+поля или исходный текст ошибок. Encoder не читает лишние поля даже через getters.
+Это не Rust serializer и не проверка производственных Windows/IPC-границ.
+
+`integrity` и `completeness` пока относятся только к wire transport. Проверка
+происхождения, причинного графа и token-at-call остаётся пунктом 5.1:
+`sourceAvailable`, `causalSufficiency` и `allowNextInvocation` всегда false.
+Ни синтетика, ни handshake с origin=instrumented не открывают допуск.
+
 Подготовка не запускает build scripts, CLI, setup или command runner. Git dependency refs
 в receipt — опись lockfile, не подтверждение скачивания этих зависимостей.
 

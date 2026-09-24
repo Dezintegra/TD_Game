@@ -1,0 +1,1724 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "refresh-boundary/v1 frame payload",
+  "description": "Transport validation only. Acceptance requires independent provenance and causal coverage validation. Wire: uint32 LE JSON byte length, UTF-8 JSON, raw SHA-256 of JSON (32 bytes). Seal hashes preceding complete frames of its writer in sequence order.",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "u64": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "format": "uint64"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId", "pid", "creationTime", "helperInstanceId"],
+      "properties": {
+        "hostId": {
+          "$ref": "#/$defs/id"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "creationTime": {
+          "$ref": "#/$defs/u64"
+        },
+        "helperInstanceId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["process", "tid", "creationTime", "threadInstanceId"],
+      "properties": {
+        "process": {
+          "$ref": "#/$defs/process"
+        },
+        "tid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "creationTime": {
+          "$ref": "#/$defs/u64"
+        },
+        "threadInstanceId": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "token": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection",
+        "threadOpenError",
+        "tokenId",
+        "authenticationId",
+        "modifiedId",
+        "modifiedIdBefore",
+        "modifiedIdAfter",
+        "tokenType",
+        "user",
+        "groups",
+        "restrictedSids",
+        "privileges",
+        "integrity",
+        "elevationType",
+        "elevated",
+        "impersonationLevel",
+        "isAppContainer",
+        "appContainerSid",
+        "capabilities"
+      ],
+      "properties": {
+        "selection": {
+          "enum": ["thread", "process-after-no-token"]
+        },
+        "threadOpenError": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          ]
+        },
+        "tokenId": {
+          "$ref": "#/$defs/u64"
+        },
+        "authenticationId": {
+          "$ref": "#/$defs/u64"
+        },
+        "modifiedId": {
+          "$ref": "#/$defs/u64"
+        },
+        "modifiedIdBefore": {
+          "$ref": "#/$defs/u64"
+        },
+        "modifiedIdAfter": {
+          "$ref": "#/$defs/u64"
+        },
+        "tokenType": {
+          "enum": ["primary", "impersonation"]
+        },
+        "user": {
+          "type": "string",
+          "pattern": "^S-[0-9]+(-[0-9]+)+$",
+          "maxLength": 184
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sid", "attributes"],
+            "properties": {
+              "sid": {
+                "type": "string",
+                "pattern": "^S-[0-9]+(-[0-9]+)+$",
+                "maxLength": 184
+              },
+              "attributes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              }
+            }
+          },
+          "maxItems": 4096
+        },
+        "restrictedSids": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sid", "attributes"],
+            "properties": {
+              "sid": {
+                "type": "string",
+                "pattern": "^S-[0-9]+(-[0-9]+)+$",
+                "maxLength": 184
+              },
+              "attributes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              }
+            }
+          },
+          "maxItems": 4096
+        },
+        "privileges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["luid", "attributes"],
+            "properties": {
+              "luid": {
+                "$ref": "#/$defs/u64"
+              },
+              "attributes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              }
+            }
+          },
+          "maxItems": 4096
+        },
+        "integrity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sid", "attributes"],
+          "properties": {
+            "sid": {
+              "type": "string",
+              "pattern": "^S-[0-9]+(-[0-9]+)+$",
+              "maxLength": 184
+            },
+            "attributes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            }
+          }
+        },
+        "elevationType": {
+          "enum": ["default", "full", "limited"]
+        },
+        "elevated": {
+          "type": "boolean"
+        },
+        "impersonationLevel": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": ["anonymous", "identification", "impersonation", "delegation"]
+            }
+          ]
+        },
+        "isAppContainer": {
+          "type": "boolean"
+        },
+        "appContainerSid": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^S-[0-9]+(-[0-9]+)+$",
+              "maxLength": 184
+            }
+          ]
+        },
+        "capabilities": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["sid", "attributes"],
+                "properties": {
+                  "sid": {
+                    "type": "string",
+                    "pattern": "^S-[0-9]+(-[0-9]+)+$",
+                    "maxLength": 184
+                  },
+                  "attributes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  }
+                }
+              },
+              "maxItems": 4096
+            }
+          ]
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "handshake"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "buildId", "process", "parentWriterId"],
+          "properties": {
+            "origin": {
+              "enum": ["synthetic", "instrumented"]
+            },
+            "buildId": {
+              "$ref": "#/$defs/hash"
+            },
+            "process": {
+              "$ref": "#/$defs/process"
+            },
+            "parentWriterId": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "leaf-dispatch"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "callId",
+            "invocationId",
+            "providerSessionId",
+            "providerToolCallId",
+            "parentCallId"
+          ],
+          "properties": {
+            "callId": {
+              "$ref": "#/$defs/id"
+            },
+            "invocationId": {
+              "$ref": "#/$defs/id"
+            },
+            "providerSessionId": {
+              "$ref": "#/$defs/id"
+            },
+            "providerToolCallId": {
+              "$ref": "#/$defs/id"
+            },
+            "parentCallId": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "attempt-begin"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["callId", "attemptId"],
+          "properties": {
+            "callId": {
+              "$ref": "#/$defs/id"
+            },
+            "attemptId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "attempt-end"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["callId", "attemptId", "result"],
+          "properties": {
+            "callId": {
+              "$ref": "#/$defs/id"
+            },
+            "attemptId": {
+              "$ref": "#/$defs/id"
+            },
+            "result": {
+              "enum": ["ok", "error", "no-op"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "no-refresh"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["callId", "attemptId", "branchId"],
+          "properties": {
+            "callId": {
+              "$ref": "#/$defs/id"
+            },
+            "attemptId": {
+              "$ref": "#/$defs/id"
+            },
+            "branchId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "refresh-leader"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["callId", "attemptId", "refreshId"],
+          "properties": {
+            "callId": {
+              "$ref": "#/$defs/id"
+            },
+            "attemptId": {
+              "$ref": "#/$defs/id"
+            },
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "refresh-join"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["callId", "attemptId", "refreshId"],
+          "properties": {
+            "callId": {
+              "$ref": "#/$defs/id"
+            },
+            "attemptId": {
+              "$ref": "#/$defs/id"
+            },
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "refresh-end"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refreshId", "result"],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "result": {
+              "enum": ["ok", "error", "no-op"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "helper-spawn"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "refreshId",
+            "helperInstanceId",
+            "parentHelperInstanceId",
+            "childWriterId",
+            "process",
+            "resolverRef",
+            "imageBeforeSha256",
+            "imageAfterSha256",
+            "imageIdentitySha256"
+          ],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "helperInstanceId": {
+              "$ref": "#/$defs/id"
+            },
+            "parentHelperInstanceId": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/id"
+                }
+              ]
+            },
+            "childWriterId": {
+              "$ref": "#/$defs/id"
+            },
+            "process": {
+              "$ref": "#/$defs/process"
+            },
+            "resolverRef": {
+              "$ref": "#/$defs/id"
+            },
+            "imageBeforeSha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "imageAfterSha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "imageIdentitySha256": {
+              "$ref": "#/$defs/hash"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "helper-begin"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refreshId", "process"],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "process": {
+              "$ref": "#/$defs/process"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "helper-end"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refreshId", "helperInstanceId", "result"],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "helperInstanceId": {
+              "$ref": "#/$defs/id"
+            },
+            "result": {
+              "enum": ["ok", "error", "no-op"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "thread-begin"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refreshId", "thread"],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "thread": {
+              "$ref": "#/$defs/thread"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "thread-end"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refreshId", "thread"],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "thread": {
+              "$ref": "#/$defs/thread"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "acl-intent"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "refreshId",
+            "helperInstanceId",
+            "thread",
+            "aclOpId",
+            "sourceSite",
+            "api",
+            "objectType",
+            "securityInformation",
+            "targetRef",
+            "targetIdentitySha256",
+            "requestedDaclSha256"
+          ],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "helperInstanceId": {
+              "$ref": "#/$defs/id"
+            },
+            "thread": {
+              "$ref": "#/$defs/thread"
+            },
+            "aclOpId": {
+              "$ref": "#/$defs/id"
+            },
+            "sourceSite": {
+              "$ref": "#/$defs/id"
+            },
+            "api": {
+              "enum": ["SetNamedSecurityInfoW", "SetSecurityInfo"]
+            },
+            "objectType": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "securityInformation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "targetRef": {
+              "$ref": "#/$defs/id"
+            },
+            "targetIdentitySha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "requestedDaclSha256": {
+              "$ref": "#/$defs/hash"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "acl-before"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "refreshId",
+            "helperInstanceId",
+            "thread",
+            "aclOpId",
+            "sourceSite",
+            "api",
+            "objectType",
+            "securityInformation",
+            "targetRef",
+            "targetIdentitySha256",
+            "requestedDaclSha256",
+            "descriptorRef",
+            "token",
+            "queryStart",
+            "queryEnd"
+          ],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "helperInstanceId": {
+              "$ref": "#/$defs/id"
+            },
+            "thread": {
+              "$ref": "#/$defs/thread"
+            },
+            "aclOpId": {
+              "$ref": "#/$defs/id"
+            },
+            "sourceSite": {
+              "$ref": "#/$defs/id"
+            },
+            "api": {
+              "enum": ["SetNamedSecurityInfoW", "SetSecurityInfo"]
+            },
+            "objectType": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "securityInformation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "targetRef": {
+              "$ref": "#/$defs/id"
+            },
+            "targetIdentitySha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "requestedDaclSha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "descriptorRef": {
+              "$ref": "#/$defs/id"
+            },
+            "token": {
+              "$ref": "#/$defs/token"
+            },
+            "queryStart": {
+              "$ref": "#/$defs/u64"
+            },
+            "queryEnd": {
+              "$ref": "#/$defs/u64"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "acl-result"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "refreshId",
+            "helperInstanceId",
+            "thread",
+            "aclOpId",
+            "sourceSite",
+            "api",
+            "objectType",
+            "securityInformation",
+            "targetRef",
+            "targetIdentitySha256",
+            "requestedDaclSha256",
+            "dword",
+            "descriptorRef",
+            "token",
+            "queryStart",
+            "queryEnd",
+            "apiStart",
+            "apiEnd",
+            "emissionStart"
+          ],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "helperInstanceId": {
+              "$ref": "#/$defs/id"
+            },
+            "thread": {
+              "$ref": "#/$defs/thread"
+            },
+            "aclOpId": {
+              "$ref": "#/$defs/id"
+            },
+            "sourceSite": {
+              "$ref": "#/$defs/id"
+            },
+            "api": {
+              "enum": ["SetNamedSecurityInfoW", "SetSecurityInfo"]
+            },
+            "objectType": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "securityInformation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "targetRef": {
+              "$ref": "#/$defs/id"
+            },
+            "targetIdentitySha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "requestedDaclSha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "dword": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "descriptorRef": {
+              "$ref": "#/$defs/id"
+            },
+            "token": {
+              "$ref": "#/$defs/token"
+            },
+            "queryStart": {
+              "$ref": "#/$defs/u64"
+            },
+            "queryEnd": {
+              "$ref": "#/$defs/u64"
+            },
+            "apiStart": {
+              "$ref": "#/$defs/u64"
+            },
+            "apiEnd": {
+              "$ref": "#/$defs/u64"
+            },
+            "emissionStart": {
+              "$ref": "#/$defs/u64"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "branch"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refreshId", "helperInstanceId", "branchId", "result"],
+          "properties": {
+            "refreshId": {
+              "$ref": "#/$defs/id"
+            },
+            "helperInstanceId": {
+              "$ref": "#/$defs/id"
+            },
+            "branchId": {
+              "$ref": "#/$defs/id"
+            },
+            "result": {
+              "enum": ["no-op", "error"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "loss"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reason", "api", "code"],
+          "properties": {
+            "reason": {
+              "enum": [
+                "queue-overflow",
+                "write-failed",
+                "flush-failed",
+                "deadline",
+                "token-unavailable",
+                "token-unstable",
+                "target-unavailable",
+                "coverage-incomplete"
+              ]
+            },
+            "api": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "enum": [
+                    "OpenThreadToken",
+                    "OpenProcessToken",
+                    "GetTokenInformation",
+                    "GetProcessTimes",
+                    "GetThreadTimes",
+                    "WriteFile",
+                    "FlushFileBuffers"
+                  ]
+                }
+              ]
+            },
+            "code": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "writerId",
+        "seq",
+        "kind",
+        "collectionId",
+        "launchId",
+        "qpcTicks",
+        "qpcFrequency",
+        "utc",
+        "body"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "refresh-boundary/v1"
+        },
+        "writerId": {
+          "$ref": "#/$defs/id"
+        },
+        "seq": {
+          "$ref": "#/$defs/u64"
+        },
+        "kind": {
+          "const": "seal"
+        },
+        "collectionId": {
+          "$ref": "#/$defs/id"
+        },
+        "launchId": {
+          "$ref": "#/$defs/id"
+        },
+        "qpcTicks": {
+          "$ref": "#/$defs/u64"
+        },
+        "qpcFrequency": {
+          "$ref": "#/$defs/u64"
+        },
+        "utc": {
+          "type": "string",
+          "format": "utc",
+          "maxLength": 24
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "finalSeq", "sha256", "dropped", "status"],
+          "properties": {
+            "count": {
+              "$ref": "#/$defs/u64"
+            },
+            "finalSeq": {
+              "$ref": "#/$defs/u64"
+            },
+            "sha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "dropped": {
+              "$ref": "#/$defs/u64"
+            },
+            "status": {
+              "enum": ["complete", "incomplete"]
+            }
+          }
+        }
+      }
+    }
+  ]
+}
