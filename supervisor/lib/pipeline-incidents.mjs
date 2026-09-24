@@ -15,10 +15,24 @@ function evidenceText(value) {
   return null;
 }
 
+function localCleanupDeclaration(value, task) {
+  return (
+    task.returnTo === 'cleanup' &&
+    !task.pipelineIncident &&
+    !!evidenceText(value?.evidence) &&
+    Array.isArray(value.affectedStages) &&
+    value.affectedStages.length === 1 &&
+    value.affectedStages[0] === 'cleanup' &&
+    value.check?.stage === 'cleanup' &&
+    text(value.check.expectation)
+  );
+}
+
 export function incidentDeclarationProblem(value, task, report) {
   if (value === undefined) return null;
   if (report.stage !== 'postmortem' || report.outcome !== 'done' || report.causedBy !== 'pipeline')
     return 'pipelineIncident принимается только из успешного разбора общей поломки конвейера';
+  if (localCleanupDeclaration(value, task)) return null;
   if (
     !value ||
     !evidenceText(value.evidence) ||
@@ -67,6 +81,14 @@ export function incidentFromReport(task, report, fixedBy, now) {
   if (problem) return { problem };
   if (!declaration) return { incident: task.pipelineIncident };
   if (!fixedBy.length) return { problem: 'общему инциденту нужны конкретные карточки исправлений' };
+  if (localCleanupDeclaration(declaration, task))
+    return {
+      localRecovery: {
+        evidence: evidenceText(declaration.evidence),
+        expectation: declaration.check.expectation,
+        fixedBy: [...new Set(fixedBy)].sort(),
+      },
+    };
   const data = {
     evidence: evidenceText(declaration.evidence),
     affectedStages: [...declaration.affectedStages].sort(),

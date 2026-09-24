@@ -100,6 +100,36 @@ it('не объединяет проверочные выкладки разны
 });
 
 describe('подтверждение и сохранение инцидента', () => {
+  it('принимает строго локальный cleanup без глобального инцидента', () => {
+    const task = source({ returnTo: 'cleanup', pipelineIncident: undefined });
+    const report = {
+      ...diagnosis,
+      pipelineIncident: {
+        evidence: ['Cleanup повторяется.', 'Исправления названы.'],
+        affectedStages: ['cleanup'],
+        check: { stage: 'cleanup', expectation: 'Cleanup завершается один раз.' },
+      },
+    };
+    expect(incidentDeclarationProblem(report.pipelineIncident, task, report)).toBeNull();
+    expect(incidentFromReport(task, report, ['0002-fix'], now)).toEqual({
+      localRecovery: {
+        evidence: 'Cleanup повторяется.\nИсправления названы.',
+        expectation: 'Cleanup завершается один раз.',
+        fixedBy: ['0002-fix'],
+      },
+    });
+    expect(incidentFromReport(task, report, [], now).problem).toContain('исправлений');
+    expect(
+      incidentDeclarationProblem(
+        { ...report.pipelineIncident, affectedStages: ['cleanup', 'design'] },
+        task,
+        report,
+      ),
+    ).toContain('свидетельство');
+    expect(
+      incidentDeclarationProblem(report.pipelineIncident, source({ returnTo: 'cleanup' }), report),
+    ).toContain('свидетельство');
+  });
   it('сохраняет все свидетельства и этап разбора без смены идентичности диагноза', () => {
     const report = globalThis.structuredClone(diagnosis);
     report.pipelineIncident.evidence = ['Инструмент не запускается.', 'Разбор воспроизводит сбой.'];
