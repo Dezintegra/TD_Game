@@ -1239,6 +1239,40 @@ describe('этапы без живого процесса', () => {
     expect(result.notes.join()).toContain('исчерпаны');
   });
 
+  it('адресный предел продолжений разрешает длинную задачу и не ослабляет соседнюю', () => {
+    const long = task({
+      id: '0372-long',
+      status: 'design',
+      attempts: { continuations: 2, cycleFailures: 0 },
+    });
+    const other = task({
+      id: '0002-other',
+      status: 'design',
+      attempts: { continuations: 2, cycleFailures: 0 },
+    });
+    const result = run({
+      tasks: [long, other],
+      registry: { entries: [entry(long.id), entry(other.id)] },
+      running: [],
+      config: { ...config, taskContinuationLimits: { [long.id]: 6 } },
+    });
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'continue-stage', taskId: long.id }),
+    );
+    expect(result.actions).toContainEqual(
+      expect.objectContaining({ kind: 'fail-stage', taskId: other.id }),
+    );
+    const exhausted = run({
+      tasks: [{ ...long, attempts: { continuations: 6, cycleFailures: 0 } }],
+      registry: { entries: [entry(long.id)] },
+      running: [],
+      config: { ...config, taskContinuationLimits: { [long.id]: 6 } },
+    });
+    expect(exhausted.actions).toContainEqual(
+      expect.objectContaining({ kind: 'fail-stage', taskId: long.id }),
+    );
+  });
+
   it('исчерпанные запуски останавливают задачу своей причиной', () => {
     // «Продолжения исчерпаны» здесь было бы прямой ложью: сессии не было
     // ни одной, и разбор пошёл бы читать её лог, которого нет. Так уже

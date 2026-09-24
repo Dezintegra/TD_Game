@@ -765,8 +765,15 @@ export function scan(state) {
     // дальше вести нельзя, останавливают независимо от занятости машины.
     // Иначе повторился бы случай 0022 (02.09.2026), где остановка ждала
     // места, освободившегося за три минуты до неё.
-    if (!retries.has(task.id) && (task.attempts?.continuations ?? 0) >= config.maxContinuations) {
-      notes.push(`задача ${task.id}: продолжения исчерпаны, нужен разбор человеком`);
+    const taskContinuationLimit = config.taskContinuationLimits?.[task.id];
+    const continuationLimit =
+      Number.isSafeInteger(taskContinuationLimit) && taskContinuationLimit > 0
+        ? taskContinuationLimit
+        : config.maxContinuations;
+    if (!retries.has(task.id) && (task.attempts?.continuations ?? 0) >= continuationLimit) {
+      notes.push(
+        `задача ${task.id}: продолжения исчерпаны (${task.attempts?.continuations ?? 0}/${continuationLimit}), нужен разбор человеком`,
+      );
       actions.push({
         kind: 'fail-stage',
         taskId: task.id,
