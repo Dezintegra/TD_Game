@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,7 +80,13 @@ export async function checkCodexReadiness({
     if (run.code !== 0 || run.killedBy || run.stdout?.trim() !== 'td-workspace-ready')
       return { ok: false, why: 'Windows sandbox основного рабочего каталога не готов', run };
   }
-  const cwd = mkdtempSync(join(tmpdir(), 'td-codex-ready-'));
+  // После перезагрузки задача планировщика может не дать модельной команде
+  // доступ к новому каталогу в пользовательском Temp, хотя прямая подготовка
+  // песочницы прошла. Локальное хозяйство лежит под уже подготовленным root.
+  const probeParent =
+    platform === 'win32' ? join(root, config.paths?.local ?? '.pipeline') : tmpdir();
+  if (platform === 'win32') mkdirSync(probeParent, { recursive: true });
+  const cwd = mkdtempSync(join(probeParent, 'td-codex-ready-'));
   const script = join(cwd, 'codex-node-probe.mjs');
   try {
     writeFileSync(script, readFileSync(new URL('./codex-node-probe.mjs', import.meta.url)));
