@@ -157,5 +157,58 @@
   "releaseSha256": "a2cb91dfb2e8112bc81d05158fa00b9698e2df8cc1ae0547b5dc5606a44904d3",
   "patchSha256": "50a5e22f1572f63aedb1045a5a839179ef3920847591d30e204fb2680be44068",
   "runtimeExecuted": false,
-  "instrumentationImplemented": false
+  "instrumentationImplemented": false,
+  "compilationPreflights": [
+    {
+      "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\toolchain-preflight-offline.json",
+      "sha256": "4d05dd6eee87d5794159289721bc2651ffbb76f2659744ad8bec0ab4a6dc8189",
+      "startedAt": "2026-09-23T23:35:49.757Z",
+      "finishedAt": "2026-09-23T23:45:15.519Z",
+      "command": [
+        "rustup",
+        "run",
+        "1.95.0",
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "-j",
+        "2",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "-p",
+        "codex-windows-sandbox",
+        "--lib"
+      ],
+      "status": 0,
+      "runtimeExecuted": false,
+      "scope": "un-instrumented source plus release-lock.patch; cargo check only; no executable build or reproduction"
+    },
+    {
+      "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\cli-preflight-offline.json",
+      "sha256": "cfe61f283b5e4947fb3fcab30bbf3f87db385cdb0f4a5376fc5fc245de0ac240",
+      "startedAt": "2026-09-23T23:49:40.886Z",
+      "finishedAt": "2026-09-24T00:04:27.381Z",
+      "command": [
+        "rustup",
+        "run",
+        "1.95.0",
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "-j",
+        "2",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "-p",
+        "codex-cli",
+        "--bin",
+        "codex"
+      ],
+      "status": 0,
+      "runtimeExecuted": false,
+      "scope": "un-instrumented source plus release-lock.patch; cargo check only; no executable build or reproduction"
+    }
+  ]
 }
