@@ -4,7 +4,8 @@ import { TRACE } from './denials.mjs';
 /** Разделить историю по переходам, сохранив каждый знак исходного текста. */
 export function splitJournalEntries(text) {
   const source = String(text ?? '');
-  const heading = /^(?:## [^\r\n]+|\*\*[a-z][a-z-]* → [a-z][a-z-]*\*\*)\r?$/gm;
+  const heading =
+    /^(?:## [^\r\n]+ · [a-z][a-z-]* → [a-z][a-z-]*|\*\*[a-z][a-z-]* → [a-z][a-z-]*\*\*)\r?$/gm;
   const starts = [...source.matchAll(heading)].map((match) => match.index);
   if (starts.length === 0) return [source];
   const boundaries = starts[0] === 0 ? starts : [0, ...starts];
