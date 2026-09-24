@@ -1004,7 +1004,15 @@ export async function execute(actions, io) {
     };
     let outcome;
     try {
-      outcome = await handler(action, actionIo, context);
+      outcome = await handler(action, actionIo, {
+        ...context,
+        // Сохранённый отчёт сам держит адресата. Для уже удерживаемой
+        // failed-карточки исключаем только эту квитанцию из проверки живости.
+        canWriteHeld: (targetId) =>
+          action.kind === 'transfer-report' &&
+          !!io.tokenActionBlocked &&
+          !io.tokenActionBlocked(targetId, action.reportId),
+      });
     } catch (error) {
       outcome = { result: 'failed', why: error.message };
     }
