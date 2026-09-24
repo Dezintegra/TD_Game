@@ -72,5 +72,22 @@ fallback-on-denied/ignore-snapshot-change. Это не закрывает 4.2: w
 tool-retry и watch-lifetime. Два отказа содержат EPERM rename тестового
 pending.json; собственные build/reader/prepare/release-lock проверки прошли.
 
+Carrier increment: `SandboxSetupRequest.diagnostic` явно доходит до
+`run_setup_refresh_inner_using` → `run_setup_singleflight_observed` → runner.
+Новый Rust test `refresh_boundary_singleflight_setup_request_preserves_payload`
+исполняет реальную подготовку payload с fake runner: b64 одинаков с context
+и без него, opaque callId не попадает в payload, runner получает тот же context
+и refreshId, исходная ошибка сохраняется. Test build подставляет synthetic user
+и запрещает штатный helper runner вместо случайного запуска setup.
+Мутации потери carrier на входе flight и runner обнаружены. Актуальный
+singleflight receipt включает эти контроли и исторические контроли ядра
+с их собственным patch hash; они не выдаются за повтор на новой ревизии.
+Identity/elevated callers пока передают None. Переход к native helper помечает
+context incomplete до появления проверенного IPC; 3.2/3.3 остаются открытыми.
+
+Проверка carrier increment: 3179 passed, 5 failed — report-delivery,
+report-recovery, stage-tool-recovery (2), watch-lifetime. Собственные проверки
+прошли; EPERM rename и timeout сохраняются без изменения соседнего кода.
+
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

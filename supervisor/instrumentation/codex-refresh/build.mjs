@@ -182,6 +182,10 @@ const NATIVE_FILES = [
   'codex-rs/windows-sandbox-rs/src/lib.rs',
   'codex-rs/windows-sandbox-rs/src/refresh_boundary.rs',
   'codex-rs/windows-sandbox-rs/src/setup.rs',
+  'codex-rs/windows-sandbox-rs/src/identity.rs',
+  'codex-rs/windows-sandbox-rs/src/elevated_impl.rs',
+  'codex-rs/windows-sandbox-rs/src/desktop_tests.rs',
+  'codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs',
 ];
 
 export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {

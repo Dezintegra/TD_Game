@@ -37,10 +37,10 @@ index 0ca4dcaf..668ccc3e 100644
  
 diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
 new file mode 100644
-index 00000000..2d55d157
+index 00000000..ff67e672
 --- /dev/null
 +++ b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
-@@ -0,0 +1,1291 @@
+@@ -0,0 +1,1366 @@
 +//! Bounded, opt-in diagnostic transport. No environment lookup or OS calls.
 +//! Callsite integration and native pipe adapter are separate admission steps.
 +use serde::Serialize;
@@ -496,6 +496,81 @@ index 00000000..2d55d157
 +                serde_json::from_slice(&bytes[4..4 + length]).unwrap()
 +            })
 +            .collect()
++    }
++    #[test]
++    fn refresh_boundary_singleflight_setup_request_preserves_payload() {
++        use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
++        use crate::setup::{
++            SandboxSetupRequest, SetupRootOverrides, run_setup_refresh_inner_using,
++        };
++        use codex_protocol::models::PermissionProfile;
++        let directory = tempfile::tempdir().unwrap();
++        let permissions = ResolvedWindowsSandboxPermissions::try_from_permission_profile(
++            &PermissionProfile::read_only(),
++        )
++        .unwrap();
++        let env = std::collections::HashMap::new();
++        let mut context = flight_context();
++        context.call_id = id("leaf-metadata-canary");
++        let mut payloads = Vec::new();
++        for diagnostic in [None, Some(&context)] {
++            let result = run_setup_refresh_inner_using(
++                SandboxSetupRequest {
++                    diagnostic,
++                    permissions: &permissions,
++                    command_cwd: directory.path(),
++                    env_map: &env,
++                    codex_home: directory.path(),
++                    proxy_enforced: false,
++                },
++                SetupRootOverrides {
++                    read_roots: Some(vec![]),
++                    write_roots: Some(vec![]),
++                    deny_read_paths: Some(vec![]),
++                    deny_write_paths: Some(vec![]),
++                    ..Default::default()
++                },
++                None,
++                |payload, home, received, refresh_id| {
++                    assert_eq!(home, directory.path());
++                    assert_eq!(received.is_some(), diagnostic.is_some());
++                    assert_eq!(refresh_id.is_some(), diagnostic.is_some());
++                    if let Some(received) = received {
++                        assert!(std::ptr::eq(received, &context));
++                        assert_eq!(received.call_id.0, "leaf-metadata-canary");
++                    }
++                    payloads.push(payload.to_owned());
++                    Err(anyhow::anyhow!("fake-launch-failed"))
++                },
++            );
++            assert_eq!(result.unwrap_err().to_string(), "fake-launch-failed");
++        }
++        assert_eq!(payloads[0], payloads[1]);
++        use base64::Engine;
++        let bytes = base64::engine::general_purpose::STANDARD
++            .decode(&payloads[1])
++            .unwrap();
++        assert!(
++            !String::from_utf8(bytes)
++                .unwrap()
++                .contains("leaf-metadata-canary")
++        );
++        let records = events(&context);
++        assert_eq!(
++            records
++                .iter()
++                .filter(|e| e["kind"] == "refresh-leader")
++                .count(),
++            1
++        );
++        assert_eq!(
++            records
++                .iter()
++                .filter(|e| e["kind"] == "refresh-end" && e["body"]["result"] == "error")
++                .count(),
++            1
++        );
++        assert!(context.healthy());
 +    }
 +    #[test]
 +    fn refresh_boundary_singleflight_join_and_new_flight() {
@@ -1333,7 +1408,7 @@ index 00000000..2d55d157
 +    }
 +}
 diff --git a/codex-rs/windows-sandbox-rs/src/setup.rs b/codex-rs/windows-sandbox-rs/src/setup.rs
-index 5daaa8d6..45862e2d 100644
+index 5daaa8d6..752fc0eb 100644
 --- a/codex-rs/windows-sandbox-rs/src/setup.rs
 +++ b/codex-rs/windows-sandbox-rs/src/setup.rs
 @@ -103,13 +103,16 @@ impl SharedSetupError {
@@ -1401,3 +1476,202 @@ index 5daaa8d6..45862e2d 100644
      let shared_result = match &result {
          Ok(()) => Ok(()),
          Err(error) => Err(SharedSetupError::from_error(error)),
+@@ -202,6 +224,7 @@ pub fn sandbox_users_path(codex_home: &Path) -> PathBuf {
+ }
+ 
+ pub struct SandboxSetupRequest<'a> {
++    pub diagnostic: Option<&'a crate::refresh_boundary::DiagnosticContext>,
+     pub permissions: &'a ResolvedWindowsSandboxPermissions,
+     pub command_cwd: &'a Path,
+     pub env_map: &'a HashMap<String, String>,
+@@ -238,6 +261,7 @@ pub fn run_setup_refresh(
+         setup_refresh_deny_read_paths(permission_profile, workspace_roots, command_cwd)?;
+     run_setup_refresh_inner(
+         SandboxSetupRequest {
++            diagnostic: None,
+             permissions: &permissions,
+             command_cwd,
+             env_map,
+@@ -283,6 +307,7 @@ pub fn run_setup_refresh_with_extra_read_roots(
+     read_roots.extend(extra_read_roots);
+     run_setup_refresh_inner(
+         SandboxSetupRequest {
++            diagnostic: None,
+             permissions: &permissions,
+             command_cwd,
+             env_map,
+@@ -323,6 +348,25 @@ fn run_setup_refresh_inner(
+     request: SandboxSetupRequest<'_>,
+     overrides: SetupRootOverrides,
+     offline_proxy_settings_override: Option<&OfflineProxySettings>,
++) -> Result<()> {
++    run_setup_refresh_inner_using(
++        request,
++        overrides,
++        offline_proxy_settings_override,
++        run_setup_refresh_payload_observed,
++    )
++}
++
++pub(crate) fn run_setup_refresh_inner_using(
++    request: SandboxSetupRequest<'_>,
++    overrides: SetupRootOverrides,
++    offline_proxy_settings_override: Option<&OfflineProxySettings>,
++    run: impl FnOnce(
++        &str,
++        &Path,
++        Option<&crate::refresh_boundary::DiagnosticContext>,
++        Option<&crate::refresh_boundary::Id>,
++    ) -> Result<()>,
+ ) -> Result<()> {
+     if !request.permissions.is_enforceable_by_windows_sandbox() {
+         anyhow::bail!("unsupported filesystem permissions for Windows sandbox setup");
+@@ -345,17 +389,49 @@ fn run_setup_refresh_inner(
+         proxy_ports: offline_proxy_settings.proxy_ports,
+         allow_local_binding: offline_proxy_settings.allow_local_binding,
+         otel: None,
+-        real_user: std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string()),
++        real_user: setup_payload_user(),
+         mode: SetupMode::Full,
+         refresh_only: true,
+     };
+     let json = serde_json::to_vec(&payload)?;
+     let b64 = BASE64_STANDARD.encode(json);
+-    run_setup_singleflight(b64.clone(), || {
+-        run_setup_refresh_payload(&b64, request.codex_home)
++    run_setup_singleflight_observed(b64.clone(), request.diagnostic, |refresh_id| {
++        run(&b64, request.codex_home, request.diagnostic, refresh_id)
+     })
+ }
+ 
++fn setup_payload_user() -> String {
++    #[cfg(test)]
++    {
++        "synthetic-user".into()
++    }
++    #[cfg(not(test))]
++    {
++        std::env::var("USERNAME").unwrap_or_else(|_| "Administrators".to_string())
++    }
++}
++
++fn run_setup_refresh_payload_observed(
++    b64: &str,
++    codex_home: &Path,
++    diagnostic: Option<&crate::refresh_boundary::DiagnosticContext>,
++    _refresh_id: Option<&crate::refresh_boundary::Id>,
++) -> Result<()> {
++    // IPC ещё не подключён: нельзя считать этот переход наблюдаемым.
++    if let Some(context) = diagnostic {
++        context.mark_incomplete();
++    }
++    #[cfg(test)]
++    {
++        let _ = (b64, codex_home);
++        panic!("setup requires an explicit fake runner in diagnostic tests");
++    }
++    #[cfg(not(test))]
++    {
++        run_setup_refresh_payload(b64, codex_home)
++    }
++}
++
+ fn run_setup_refresh_payload(b64: &str, codex_home: &Path) -> Result<()> {
+     let exe = find_setup_exe();
+     let sbx_dir = sandbox_dir(codex_home);
+@@ -1526,6 +1602,7 @@ mod tests {
+             allow_local_binding: true,
+         };
+         let request = super::SandboxSetupRequest {
++            diagnostic: None,
+             permissions: &permissions,
+             command_cwd: &command_cwd,
+             env_map: &env_map,
+@@ -2095,6 +2172,7 @@ mod tests {
+ 
+         let (read_roots, write_roots) = build_payload_roots(
+             &super::SandboxSetupRequest {
++                diagnostic: None,
+                 permissions: &permissions,
+                 command_cwd: &command_cwd,
+                 env_map: &HashMap::new(),
+@@ -2142,6 +2220,7 @@ mod tests {
+ 
+         let (read_roots, write_roots) = build_payload_roots(
+             &super::SandboxSetupRequest {
++                diagnostic: None,
+                 permissions: &permissions,
+                 command_cwd: &command_cwd,
+                 env_map: &HashMap::new(),
+@@ -2198,6 +2277,7 @@ mod tests {
+             sandbox_root.clone(),
+         ];
+         let request = super::SandboxSetupRequest {
++            diagnostic: None,
+             permissions: &permissions,
+             command_cwd: &command_cwd,
+             env_map: &HashMap::new(),
+@@ -2285,6 +2365,7 @@ mod tests {
+         let workspace_roots = workspace_roots_for(command_cwd.as_path());
+         let permissions = permissions_for(&permission_profile, workspace_roots.as_slice());
+         let request = super::SandboxSetupRequest {
++            diagnostic: None,
+             permissions: &permissions,
+             command_cwd: &command_cwd,
+             env_map: &HashMap::new(),
+diff --git a/codex-rs/windows-sandbox-rs/src/elevated_impl.rs b/codex-rs/windows-sandbox-rs/src/elevated_impl.rs
+index 702884ac..53e938c7 100644
+--- a/codex-rs/windows-sandbox-rs/src/elevated_impl.rs
++++ b/codex-rs/windows-sandbox-rs/src/elevated_impl.rs
+@@ -190,6 +190,7 @@ mod windows_impl {
+                 .then(|| {
+                     crate::desktop::DesktopPolicy::elevated(
+                         crate::setup::SandboxSetupRequest {
++                            diagnostic: None,
+                             permissions: &permissions,
+                             command_cwd: cwd,
+                             env_map: &env_map,
+diff --git a/codex-rs/windows-sandbox-rs/src/desktop_tests.rs b/codex-rs/windows-sandbox-rs/src/desktop_tests.rs
+index 2c8f35c9..4038a6a3 100644
+--- a/codex-rs/windows-sandbox-rs/src/desktop_tests.rs
++++ b/codex-rs/windows-sandbox-rs/src/desktop_tests.rs
+@@ -112,6 +112,7 @@ fn shared_desktop_reuses_only_equivalent_permissions() -> Result<()> {
+     let desktop = |overrides, capability_sids: &[String], network_proxy_restricting_sid| {
+         let policy = DesktopPolicy::elevated(
+             SandboxSetupRequest {
++                diagnostic: None,
+                 permissions: &permissions,
+                 command_cwd: &workspace,
+                 env_map: &env,
+diff --git a/codex-rs/windows-sandbox-rs/src/identity.rs b/codex-rs/windows-sandbox-rs/src/identity.rs
+index 860877df..ed5da92a 100644
+--- a/codex-rs/windows-sandbox-rs/src/identity.rs
++++ b/codex-rs/windows-sandbox-rs/src/identity.rs
+@@ -210,6 +210,7 @@ pub fn require_logon_sandbox_creds(
+         }
+         run_elevated_setup_with_proxy_settings(
+             crate::setup::SandboxSetupRequest {
++                diagnostic: None,
+                 permissions,
+                 command_cwd,
+                 env_map,
+@@ -230,6 +231,7 @@ pub fn require_logon_sandbox_creds(
+     // Always refresh ACLs (non-elevated) for current roots via the setup binary.
+     run_setup_refresh_with_overrides_and_proxy_settings(
+         crate::setup::SandboxSetupRequest {
++            diagnostic: None,
+             permissions,
+             command_cwd,
+             env_map,
+diff --git a/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs b/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs
+index 0d7d2ca1..d13d1658 100644
+--- a/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs
++++ b/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs
+@@ -103,6 +103,7 @@ async fn spawn_runner_transport_task(
+             .then(|| {
+                 DesktopPolicy::elevated(
+                     crate::setup::SandboxSetupRequest {
++                        diagnostic: None,
+                         permissions: &request.permissions,
+                         command_cwd: &request.cwd,
+                         env_map: &request.env_map,
