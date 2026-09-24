@@ -4,6 +4,9 @@
   "target": "x86_64-pc-windows-msvc",
   "toolchain": "1.95.0",
   "tests": [
+    "refresh_boundary::tests::refresh_boundary_singleflight_disabled_has_no_identity",
+    "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
+    "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
     "refresh_boundary::tests::refresh_boundary_wire_bounded_queue",
     "refresh_boundary::tests::refresh_boundary_wire_context_clone_shares_health",
     "refresh_boundary::tests::refresh_boundary_wire_disabled_is_lazy",
@@ -29,7 +32,11 @@
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/refresh_boundary.rs",
-      "sha256": "f21fd289475593e500aafd8078068d14ebfde829489781f4df0bc47000a36644"
+      "sha256": "a62153772ad71bfa7ce805b563521c444db18d3c48d227e40a137c1b0b7c37c5"
+    },
+    {
+      "path": "codex-rs/windows-sandbox-rs/src/setup.rs",
+      "sha256": "b933a49c7c55197ada3a3f77660463685b43076cf5d74c3cf5c838d4a9cccd31"
     }
   ]
 }

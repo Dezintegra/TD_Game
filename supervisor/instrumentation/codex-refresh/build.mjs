@@ -181,6 +181,7 @@ const NATIVE_FILES = [
   'codex-rs/windows-sandbox-rs/Cargo.toml',
   'codex-rs/windows-sandbox-rs/src/lib.rs',
   'codex-rs/windows-sandbox-rs/src/refresh_boundary.rs',
+  'codex-rs/windows-sandbox-rs/src/setup.rs',
 ];
 
 export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
@@ -199,7 +200,8 @@ export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
     !recipe.tests.length ||
     new Set(recipe.tests).size !== recipe.tests.length ||
     recipe.tests.some(
-      (name) => !/^refresh_boundary::tests::refresh_boundary_wire_[a-z_]+$/u.test(name),
+      (name) =>
+        !/^refresh_boundary::tests::refresh_boundary_(?:wire|singleflight)_[a-z_]+$/u.test(name),
     )
   )
     throw new Error('invalid-test-list');
@@ -276,10 +278,12 @@ export function verifyAppliedPatch(sourceRoot, patchPath, run = spawnSync) {
   if (result.error || result.status !== 0) throw new Error('patch-source-mismatch');
 }
 
-// Only the wire step is implemented. Final build/reproduce/package/delivery
+// Wire and the singleflight core are checked independently. Runtime carriers and
+// final build/reproduce/package/delivery
 // remain unavailable until their independent checks and receipts exist.
 export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
-  if (mode !== 'check' || group !== 'wire') throw new Error('unsupported-build-mode');
+  if (mode !== 'check' || !['wire', 'singleflight'].includes(group))
+    throw new Error('unsupported-build-mode');
   const io = dependencies.fs ?? fs;
   const run = dependencies.run ?? spawnSync;
   const now = dependencies.now ?? (() => new Date());
@@ -292,6 +296,8 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
   const recipe = JSON.parse(recipeBytes);
   const patch = io.readFileSync(path.join(packageRoot, 'refresh-boundary.patch'));
   admitWireRecipe(manifest, recipe, patch, recipeBytes);
+  const expectedTests = recipe.tests.filter((name) => name.includes(`refresh_boundary_${group}_`));
+  if (!expectedTests.length) throw new Error('invalid-test-list');
   const sourceReceipt = JSON.parse(
     io.readFileSync(path.join(packageRoot, 'receipts/source.json'), 'utf8'),
   );
@@ -301,7 +307,7 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
   const directories = ['cargo-home', 'target-preflight', 'temp'];
   for (const name of directories)
     io.mkdirSync(checkWorkspace(root, path.join(workspace, name), io), { recursive: true });
-  const fixture = checkWorkspace(root, path.join(workspace, 'wire-fixture.bin'), io);
+  const fixture = checkWorkspace(root, path.join(workspace, `${group}-fixture.bin`), io);
   const env = {
     ...process.env,
     CARGO_HOME: path.join(workspace, 'cargo-home'),
@@ -314,6 +320,7 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
   const receipt = {
     receiptVersion: 1,
     stage: 'wire-only',
+    group,
     sourceCommit: manifest.sourceCommit,
     patchSha256: manifest.patchSha256,
     recipeSha256: manifest.recipeSha256,
@@ -325,7 +332,7 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
     tests: [],
     status: 'running',
   };
-  const output = checkWorkspace(root, path.join(workspace, 'wire-check-receipt.json'), io);
+  const output = checkWorkspace(root, path.join(workspace, `${group}-check-receipt.json`), io);
   const base = ['run', '1.95.0', 'cargo'];
   const target = [
     '--locked',
@@ -364,10 +371,10 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
     // Старый fixture не должен подменять отсутствующий output нового harness.
     if (io.existsSync(fixture)) io.unlinkSync(fixture);
     execute(['check', ...target]);
-    const args = ['test', ...target, 'refresh_boundary'];
-    receipt.tests = checkNativeTestList(execute([...args, '--', '--list']), recipe.tests);
+    const args = ['test', ...target, `refresh_boundary_${group}_`];
+    receipt.tests = checkNativeTestList(execute([...args, '--', '--list']), expectedTests);
     const stdout = execute([...args, '--', '--nocapture']);
-    if (!stdout.includes(`test result: ok. ${recipe.tests.length} passed; 0 failed;`))
+    if (!stdout.includes(`test result: ok. ${expectedTests.length} passed; 0 failed;`))
       throw new Error('native-test-count-mismatch');
     const fixtureBytes = io.readFileSync(fixture);
     const decoded = decodeBoundaryJournal(fixtureBytes, {
@@ -375,7 +382,11 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
       collectionId: 'collection',
       launchId: 'launch',
     });
-    if (!decoded.integrity || !decoded.completeness || decoded.frames.length !== 2)
+    if (
+      !decoded.integrity ||
+      !decoded.completeness ||
+      decoded.frames.length !== (group === 'wire' ? 2 : 7)
+    )
       throw new Error('native-reader-mismatch');
     receipt.reader = {
       integrity: decoded.integrity,

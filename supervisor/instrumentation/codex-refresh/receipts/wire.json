@@ -1,10 +1,11 @@
 {
   "receiptVersion": 1,
   "stage": "wire-only",
+  "group": "wire",
   "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
-  "patchSha256": "8aebbad888d9a47cb9b31cf87ad2191131250c0c8d98dc7af8f9069fc1046672",
-  "recipeSha256": "dc399502e053f77ac75d1b5aeee943adc67300b732e32e684f690d062eaf251f",
-  "startedUtc": "2026-09-24T09:57:37.807Z",
+  "patchSha256": "f2e5c1fb24911c027ce844a7ce3f5e829ace2beed8382417b09935d73445c825",
+  "recipeSha256": "73b1ad87388b59291ebb48e1d5237c0c95643047481bf8cd31723a4581dd0fd9",
+  "startedUtc": "2026-09-24T11:08:51.877Z",
   "runtimeExecuted": false,
   "productionWindowsBoundaryTested": false,
   "verifiedSourceInputs": 6498,
@@ -29,7 +30,7 @@
       "status": 0,
       "error": null,
       "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "stderrSha256": "847c2445a21e7b24b665a602fa4d725b9a2d2f9dce1dafc0a332d17720869b27"
+      "stderrSha256": "96a2ea4dc71bcf66229707d245dc783a8c79a6c952f6ab44c2ef6d6bfb8d3abb"
     },
     {
       "command": [
@@ -47,14 +48,14 @@
         "-p",
         "codex-windows-sandbox",
         "--lib",
-        "refresh_boundary",
+        "refresh_boundary_wire_",
         "--",
         "--list"
       ],
       "status": 0,
       "error": null,
       "stdoutSha256": "c27649e85e6962a91e87ab21d15acda1a7035a092f36101e0af08a74766c6fc7",
-      "stderrSha256": "83c7f87cd85460157ff39c43fc8d9104f0419e4c23d225ed3526d563a4c83732"
+      "stderrSha256": "660f63263b0961d5eb40df695553a21258330592e563cc0ed520bcf7abceca93"
     },
     {
       "command": [
@@ -72,13 +73,13 @@
         "-p",
         "codex-windows-sandbox",
         "--lib",
-        "refresh_boundary",
+        "refresh_boundary_wire_",
         "--",
         "--nocapture"
       ],
       "status": 0,
       "error": null,
-      "stdoutSha256": "542ed391f0c4e6eac5893a15ff362cbfc6607798acb5d1d379be65208be73873",
+      "stdoutSha256": "279fdfb8d86a7c514e94386078e981a7154f4ed4d9bca4663b0e902b401fd126",
       "stderrSha256": "224ccd42bd2c7ff1919edc64cd2657c134a94959dbf2c9499833101992c77424"
     }
   ],
@@ -105,5 +106,5 @@
     "size": 897,
     "sha256": "6520389e7667c2faf50d4dbb86da1656bc18876ef894f36b58a574af960bc858"
   },
-  "finishedUtc": "2026-09-24T09:57:43.378Z"
+  "finishedUtc": "2026-09-24T11:08:57.073Z"
 }

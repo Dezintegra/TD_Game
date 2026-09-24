@@ -1,0 +1,129 @@
+{
+  "receiptVersion": 1,
+  "stage": "wire-only",
+  "group": "singleflight",
+  "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+  "patchSha256": "f2e5c1fb24911c027ce844a7ce3f5e829ace2beed8382417b09935d73445c825",
+  "recipeSha256": "73b1ad87388b59291ebb48e1d5237c0c95643047481bf8cd31723a4581dd0fd9",
+  "startedUtc": "2026-09-24T11:08:22.023Z",
+  "runtimeExecuted": false,
+  "productionWindowsBoundaryTested": false,
+  "verifiedSourceInputs": 6498,
+  "commands": [
+    {
+      "command": [
+        "rustup",
+        "run",
+        "1.95.0",
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "-j",
+        "2",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "-p",
+        "codex-windows-sandbox",
+        "--lib"
+      ],
+      "status": 0,
+      "error": null,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e388b066ac6e16c36091f99024177f3b142e4297338a729238ec0921ea1c0091"
+    },
+    {
+      "command": [
+        "rustup",
+        "run",
+        "1.95.0",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j",
+        "2",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "-p",
+        "codex-windows-sandbox",
+        "--lib",
+        "refresh_boundary_singleflight_",
+        "--",
+        "--list"
+      ],
+      "status": 0,
+      "error": null,
+      "stdoutSha256": "50cc780d9b73da78cf826c59303e250a753c1078cc58e57fb000fbe9e78881e8",
+      "stderrSha256": "66bb80853f1d9c0635dae1c8bac008b49264e3728e4054aba2217f38eaca8bc8"
+    },
+    {
+      "command": [
+        "rustup",
+        "run",
+        "1.95.0",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j",
+        "2",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "-p",
+        "codex-windows-sandbox",
+        "--lib",
+        "refresh_boundary_singleflight_",
+        "--",
+        "--nocapture"
+      ],
+      "status": 0,
+      "error": null,
+      "stdoutSha256": "41d8dd3c57db10068dcae9e1e334d6d87c119370f69fd34cdb7cd700a06a5634",
+      "stderrSha256": "66bb80853f1d9c0635dae1c8bac008b49264e3728e4054aba2217f38eaca8bc8"
+    }
+  ],
+  "tests": [
+    "refresh_boundary::tests::refresh_boundary_singleflight_disabled_has_no_identity",
+    "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
+    "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight"
+  ],
+  "status": "passed",
+  "reader": {
+    "integrity": true,
+    "completeness": true,
+    "sourceAvailable": false,
+    "frames": 7
+  },
+  "fixture": {
+    "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\singleflight-fixture.bin",
+    "size": 2825,
+    "sha256": "b34d2d4df0d0b7f50df26bc0b48d1b962fe7a95184bde9d77e822ef5b572edbc"
+  },
+  "finishedUtc": "2026-09-24T11:08:27.046Z",
+  "mutations": {
+    "startedUtc": "2026-09-24T11:04:18.427Z",
+    "patchSha256": "f2e5c1fb24911c027ce844a7ce3f5e829ace2beed8382417b09935d73445c825",
+    "controls": [
+      {
+        "name": "lost-join-edge",
+        "detected": true,
+        "status": 101,
+        "sourceSha256": "507f45496fd8e54eecb8f3dec368b36b4e54fd2477989adb58496cd776551af6",
+        "stdoutSha256": "5fb422ee477fd73359a7fb8424986c1e24096dfc970331825959a493d4577f34",
+        "stderrSha256": "f80aebbb8bc614100d93ec356ec4de9f994db84d96052680ae5d7ea3d599deca"
+      },
+      {
+        "name": "bypass-coalescing",
+        "detected": true,
+        "status": 101,
+        "sourceSha256": "31ddeed6139f39c87bf14b4b9ebc9e89ff87fdd779de178a898c2324faac70b5",
+        "stdoutSha256": "e6966921976b53c88c1a7d3819cffb7eadc172a2dc22b666c1f13ba3f476637d",
+        "stderrSha256": "53d87e818d0a6e013ea215613ae49cb8e7f34bf88a1ad2f3fef5663528d88744"
+      }
+    ],
+    "runtimeExecuted": false,
+    "restoredSha256": "b933a49c7c55197ada3a3f77660463685b43076cf5d74c3cf5c838d4a9cccd31",
+    "finishedUtc": "2026-09-24T11:04:40.639Z"
+  }
+}

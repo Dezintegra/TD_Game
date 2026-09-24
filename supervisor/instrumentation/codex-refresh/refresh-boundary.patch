@@ -37,10 +37,10 @@ index 0ca4dcaf..668ccc3e 100644
  
 diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
 new file mode 100644
-index 00000000..757ad602
+index 00000000..ff72e19e
 --- /dev/null
 +++ b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,741 @@
 +//! Bounded, opt-in diagnostic transport. No environment lookup or OS calls.
 +//! Callsite integration and native pipe adapter are separate admission steps.
 +use serde::Serialize;
@@ -54,6 +54,7 @@ index 00000000..757ad602
 +    pub call_id: Id,
 +    pub attempt_id: Id,
 +    writer: Arc<Mutex<Writer>>,
++    clock: Arc<dyn Fn() -> Result<ClockSample, &'static str> + Send + Sync>,
 +}
 +impl DiagnosticContext {
 +    pub fn new(call_id: Id, attempt_id: Id, writer: Writer) -> Self {
@@ -61,6 +62,8 @@ index 00000000..757ad602
 +            call_id,
 +            attempt_id,
 +            writer: Arc::new(Mutex::new(writer)),
++            // До установки проверенного адаптера время не выдумывается.
++            clock: Arc::new(|| Err("clock-unavailable")),
 +        }
 +    }
 +    pub fn healthy(&self) -> bool {
@@ -69,6 +72,84 @@ index 00000000..757ad602
 +            .map(|writer| !writer.incomplete())
 +            .unwrap_or(false)
 +    }
++    pub fn with_clock(
++        mut self,
++        clock: impl Fn() -> Result<ClockSample, &'static str> + Send + Sync + 'static,
++    ) -> Self {
++        self.clock = Arc::new(clock);
++        self
++    }
++    pub fn mark_incomplete(&self) {
++        if let Ok(mut writer) = self.writer.lock() {
++            writer.incomplete = true;
++        }
++    }
++    pub fn next_id(&self) -> Option<Id> {
++        let mut writer = self.writer.lock().ok()?;
++        let Some(serial) = writer.identity_serial.checked_add(1) else {
++            writer.incomplete = true;
++            return None;
++        };
++        writer.identity_serial = serial;
++        // Полный digest сохраняет ограниченную длину независимо от writerId.
++        let mut digest = Sha256::new();
++        for part in [
++            &writer.collection_id.0,
++            &writer.launch_id.0,
++            &writer.writer_id.0,
++        ] {
++            digest.update((part.len() as u64).to_le_bytes());
++            digest.update(part.as_bytes());
++        }
++        digest.update(serial.to_le_bytes());
++        Some(Id(format!("{:x}", digest.finalize())))
++    }
++    fn emit(&self, event: Event) {
++        let Ok(clock) = (self.clock)() else {
++            self.mark_incomplete();
++            return;
++        };
++        if let Ok(mut writer) = self.writer.lock() {
++            let _ = writer.enqueue(event, &clock);
++        }
++    }
++    pub fn refresh_edge(&self, refresh_id: &Id, leader: bool) {
++        let edge = RefreshEdge {
++            call_id: self.call_id.clone(),
++            attempt_id: self.attempt_id.clone(),
++            refresh_id: refresh_id.clone(),
++        };
++        self.emit(if leader {
++            Event::RefreshLeader(edge)
++        } else {
++            Event::RefreshJoin(edge)
++        });
++    }
++    pub fn refresh_end(&self, refresh_id: &Id, success: bool) {
++        self.emit(Event::RefreshEnd {
++            refresh_id: refresh_id.clone(),
++            result: if success {
++                RefreshResult::Ok
++            } else {
++                RefreshResult::Error
++            },
++        });
++    }
++}
++
++#[derive(Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct RefreshEdge {
++    call_id: Id,
++    attempt_id: Id,
++    refresh_id: Id,
++}
++
++#[derive(Serialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum RefreshResult {
++    Ok,
++    Error,
 +}
 +
 +pub fn record_if_enabled(
@@ -163,6 +244,16 @@ index 00000000..757ad602
 +#[derive(Serialize)]
 +#[serde(tag = "kind", content = "body")]
 +pub enum Event {
++    #[serde(rename = "refresh-leader")]
++    RefreshLeader(RefreshEdge),
++    #[serde(rename = "refresh-join")]
++    RefreshJoin(RefreshEdge),
++    #[serde(rename = "refresh-end")]
++    RefreshEnd {
++        #[serde(rename = "refreshId")]
++        refresh_id: Id,
++        result: RefreshResult,
++    },
 +    #[serde(rename = "handshake")]
 +    Handshake {
 +        origin: Origin,
@@ -242,6 +333,7 @@ index 00000000..757ad602
 +}
 +
 +pub struct Writer {
++    identity_serial: u64,
 +    writer_id: Id,
 +    collection_id: Id,
 +    launch_id: Id,
@@ -262,6 +354,7 @@ index 00000000..757ad602
 +            collection_id,
 +            launch_id,
 +            seq: 0,
++            identity_serial: 0,
 +            accepted: 0,
 +            dropped: 0,
 +            queue: VecDeque::new(),
@@ -386,6 +479,143 @@ index 00000000..757ad602
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++    fn flight_context() -> DiagnosticContext {
++        let mut writer = writer();
++        writer.enqueue(handshake(), &clock()).unwrap();
++        DiagnosticContext::new(id("call"), id("attempt"), writer).with_clock(|| Ok(clock()))
++    }
++    fn events(context: &DiagnosticContext) -> Vec<serde_json::Value> {
++        context
++            .writer
++            .lock()
++            .unwrap()
++            .queue
++            .iter()
++            .map(|bytes| {
++                let length = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
++                serde_json::from_slice(&bytes[4..4 + length]).unwrap()
++            })
++            .collect()
++    }
++    #[test]
++    fn refresh_boundary_singleflight_join_and_new_flight() {
++        use std::sync::mpsc;
++        use std::time::Duration;
++        let (edge_tx, edge_rx) = mpsc::channel();
++        let context = flight_context().with_clock(move || {
++            edge_tx.send(()).unwrap();
++            Ok(clock())
++        });
++        let mut joiner = context.clone();
++        joiner.call_id = id("nested-call");
++        joiner.attempt_id = id("nested-attempt");
++        let (started_tx, started_rx) = mpsc::channel();
++        let (release_tx, release_rx) = mpsc::channel();
++        std::thread::scope(|scope| {
++            let leader_context = &context;
++            let leader = scope.spawn(move || {
++                crate::setup::run_setup_singleflight_observed(
++                    "refresh-boundary-concurrent".into(),
++                    Some(leader_context),
++                    |refresh_id| {
++                        assert!(refresh_id.is_some());
++                        started_tx.send(()).unwrap();
++                        release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
++                        Ok(())
++                    },
++                )
++            });
++            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
++            let joined = scope.spawn(|| {
++                crate::setup::run_setup_singleflight_observed(
++                    "refresh-boundary-concurrent".into(),
++                    Some(&joiner),
++                    |_| panic!("second spawn"),
++                )
++            });
++            edge_rx.recv_timeout(Duration::from_secs(5)).unwrap();
++            let joined_edge = edge_rx.recv_timeout(Duration::from_secs(5));
++            // Даже испорченный observer обязан освободить fake leader:
++            // иначе мутация проверяла бы зависание стенда вместо потери edge.
++            release_tx.send(()).unwrap();
++            leader.join().unwrap().unwrap();
++            joined.join().unwrap().unwrap();
++            joined_edge.unwrap();
++        });
++        crate::setup::run_setup_singleflight_observed(
++            "refresh-boundary-concurrent".into(),
++            Some(&context),
++            |_| Ok(()),
++        )
++        .unwrap();
++        let records = events(&context);
++        let leaders: Vec<_> = records
++            .iter()
++            .filter(|x| x["kind"] == "refresh-leader")
++            .collect();
++        let joins: Vec<_> = records
++            .iter()
++            .filter(|x| x["kind"] == "refresh-join")
++            .collect();
++        assert_eq!(leaders.len(), 2);
++        assert_eq!(joins.len(), 1);
++        assert_eq!(
++            leaders[0]["body"]["refreshId"],
++            joins[0]["body"]["refreshId"]
++        );
++        assert_ne!(
++            leaders[0]["body"]["refreshId"],
++            leaders[1]["body"]["refreshId"]
++        );
++        assert_eq!(joins[0]["body"]["callId"], "nested-call");
++        assert_eq!(joins[0]["body"]["attemptId"], "nested-attempt");
++        assert_eq!(
++            records
++                .iter()
++                .filter(|x| x["kind"] == "refresh-end")
++                .count(),
++            2
++        );
++        assert!(context.healthy());
++        let mut writer = context.writer.lock().unwrap();
++        writer.seal(&clock()).unwrap();
++        let mut sink = FakeSink::default();
++        writer.drain(&mut sink).unwrap();
++        if let Some(path) = std::env::var_os("REFRESH_BOUNDARY_TEST_FIXTURE") {
++            std::fs::write(path, sink.bytes).unwrap();
++        }
++    }
++    #[test]
++    fn refresh_boundary_singleflight_error_and_observer_loss_preserve_result() {
++        let context = flight_context().with_clock(|| Err("clock-unavailable"));
++        let result = crate::setup::run_setup_singleflight_observed(
++            "refresh-boundary-error".into(),
++            Some(&context),
++            |_| Err(anyhow::anyhow!("native failure")),
++        );
++        assert_eq!(result.unwrap_err().to_string(), "native failure");
++        assert!(!context.healthy());
++        let observed = flight_context();
++        let result = crate::setup::run_setup_singleflight_observed(
++            "refresh-boundary-error".into(),
++            Some(&observed),
++            |_| Err(anyhow::anyhow!("native failure")),
++        );
++        assert!(result.is_err());
++        assert_eq!(events(&observed).last().unwrap()["body"]["result"], "error");
++    }
++    #[test]
++    fn refresh_boundary_singleflight_disabled_has_no_identity() {
++        crate::setup::run_setup_singleflight_observed(
++            "refresh-boundary-disabled".into(),
++            None,
++            |identity| {
++                assert!(identity.is_none());
++                Ok(())
++            },
++        )
++        .unwrap();
++    }
 +    fn id(value: &str) -> Id {
 +        Id::new(value).expect("valid fixture id")
 +    }
@@ -552,3 +782,72 @@ index 00000000..757ad602
 +        assert!(writer.queue.is_empty());
 +    }
 +}
+diff --git a/codex-rs/windows-sandbox-rs/src/setup.rs b/codex-rs/windows-sandbox-rs/src/setup.rs
+index 5daaa8d6..45862e2d 100644
+--- a/codex-rs/windows-sandbox-rs/src/setup.rs
++++ b/codex-rs/windows-sandbox-rs/src/setup.rs
+@@ -103,13 +103,16 @@ impl SharedSetupError {
+ }
+ 
+ struct SetupFlight {
++    // Идентификатор принадлежит flight, а не ключу: повтор после удаления новый.
++    diagnostic_id: Option<crate::refresh_boundary::Id>,
+     result: Mutex<Option<Result<(), SharedSetupError>>>,
+     completed: Condvar,
+ }
+ 
+ impl SetupFlight {
+-    fn pending() -> Self {
++    fn pending(diagnostic: Option<&crate::refresh_boundary::DiagnosticContext>) -> Self {
+         Self {
++            diagnostic_id: diagnostic.and_then(|context| context.next_id()),
+             result: Mutex::new(None),
+             completed: Condvar::new(),
+         }
+@@ -144,6 +147,14 @@ impl SetupFlight {
+ static SETUP_FLIGHTS: OnceLock<Mutex<HashMap<String, Arc<SetupFlight>>>> = OnceLock::new();
+ 
+ fn run_setup_singleflight(key: String, run: impl FnOnce() -> Result<()>) -> Result<()> {
++    run_setup_singleflight_observed(key, None, |_| run())
++}
++
++pub(crate) fn run_setup_singleflight_observed(
++    key: String,
++    diagnostic: Option<&crate::refresh_boundary::DiagnosticContext>,
++    run: impl FnOnce(Option<&crate::refresh_boundary::Id>) -> Result<()>,
++) -> Result<()> {
+     let flights = SETUP_FLIGHTS.get_or_init(|| Mutex::new(HashMap::new()));
+     let (flight, is_leader) = {
+         let mut flights = flights
+@@ -152,18 +163,29 @@ fn run_setup_singleflight(key: String, run: impl FnOnce() -> Result<()>) -> Resu
+         match flights.get(&key) {
+             Some(flight) => (Arc::clone(flight), false),
+             None => {
+-                let flight = Arc::new(SetupFlight::pending());
++                let flight = Arc::new(SetupFlight::pending(diagnostic));
+                 flights.insert(key.clone(), Arc::clone(&flight));
+                 (flight, true)
+             }
+         }
+     };
+ 
++    if let Some(context) = diagnostic {
++        if let Some(refresh_id) = &flight.diagnostic_id {
++            context.refresh_edge(refresh_id, is_leader);
++        } else {
++            // Наблюдаемый joiner не выдумывает ID для ненаблюдаемого leader.
++            context.mark_incomplete();
++        }
++    }
+     if !is_leader {
+         return flight.wait();
+     }
+ 
+-    let result = run();
++    let result = run(flight.diagnostic_id.as_ref());
++    if let (Some(context), Some(refresh_id)) = (diagnostic, &flight.diagnostic_id) {
++        context.refresh_end(refresh_id, result.is_ok());
++    }
+     let shared_result = match &result {
+         Ok(()) => Ok(()),
+         Err(error) => Err(SharedSetupError::from_error(error)),

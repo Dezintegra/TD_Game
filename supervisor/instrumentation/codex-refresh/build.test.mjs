@@ -181,6 +181,7 @@ const files = [
   'codex-rs/windows-sandbox-rs/Cargo.toml',
   'codex-rs/windows-sandbox-rs/src/lib.rs',
   'codex-rs/windows-sandbox-rs/src/refresh_boundary.rs',
+  'codex-rs/windows-sandbox-rs/src/setup.rs',
 ];
 const patch = Buffer.from('synthetic patch, never used as production source');
 const recipe = {
