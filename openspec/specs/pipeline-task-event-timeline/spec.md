@@ -40,4 +40,3 @@ The supervisor SHALL use one append-only timeline per task, preserve entries fro
 
 - **WHEN** the timeline cannot be appended
 - **THEN** the supervisor records a diagnostic naming the task and stage and continues existing stage and report handling.
-
