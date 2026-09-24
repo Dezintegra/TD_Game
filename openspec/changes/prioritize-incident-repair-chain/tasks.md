@@ -1,6 +1,6 @@
 ## 1. Priority graph
 
-- [ ] 1.1 Extend incident repair traversal to `recovery.fixedBy` and test transitive priority, cycles, and ordinary admission holds. Run focused tests, full `pnpm test:pipeline`, format/lint and strict OpenSpec validation; obtain green PR CI.
+- [x] 1.1 Extend incident repair traversal to `recovery.fixedBy` and test transitive priority, cycles, and ordinary admission holds. Run focused tests, full `pnpm test:pipeline`, format/lint and strict OpenSpec validation; obtain green PR CI.
 
 ## Delivery
 

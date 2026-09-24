@@ -194,7 +194,12 @@ export function incidentPolicy(state) {
     if (fixes.has(id) || sources.has(id)) return;
     fixes.add(id);
     const task = byId.get(id);
-    for (const next of [...(task?.dependsOn ?? []), ...(task?.splitInto ?? [])]) visit(next);
+    for (const next of [
+      ...(task?.dependsOn ?? []),
+      ...(task?.splitInto ?? []),
+      ...(task?.recovery?.fixedBy ?? []),
+    ])
+      visit(next);
   };
   for (const source of incidents) {
     const incident = source.pipelineIncident;

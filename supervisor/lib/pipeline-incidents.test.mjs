@@ -246,6 +246,30 @@ describe('приоритет восстановления и ограничен�
     expect(JSON.stringify(game)).toBe(before);
     expect(result.notes.join()).toContain('подтверждённого инцидента');
   });
+  it('ведёт приоритет через recovery.fixedBy и не пропускает обычные удержания', () => {
+    const fix = base('0002-fix', {
+      status: 'failed',
+      area: 'pipeline',
+      recovery: { causedBy: 'pipeline', fixedBy: ['0003-prerequisite'], returns: 0 },
+    });
+    const prerequisite = base('0003-prerequisite', {
+      status: 'postmortem',
+      area: 'pipeline',
+      recovery: { causedBy: 'pipeline', fixedBy: [fix.id], returns: 0 },
+    });
+    const unrelated = base('0004-unrelated', { status: 'postmortem', priority: 0 });
+    const tasks = [source(), fix, prerequisite, unrelated];
+    expect(incidentPolicy(state(tasks)).isRecovery(prerequisite, 'postmortem')).toBe(true);
+    const ready = scan(state(tasks, { config: { ...config, maxConcurrent: 1 } }));
+    expect(launches(ready).map((item) => item.taskId)).toEqual([prerequisite.id]);
+    const held = scan(
+      state(
+        [source(), fix, { ...prerequisite, dependsOn: ['0009-missing'] }, unrelated],
+        { config: { ...config, maxConcurrent: 1 } },
+      ),
+    );
+    expect(launches(held).map((item) => item.taskId)).toEqual([unrelated.id]);
+  });
   it('не считает закрытую или исчезнувшую починку выполненной', () => {
     for (const fix of [[], [base('0002-fix', { status: 'closed' })]]) {
       const policy = incidentPolicy(state([source(), ...fix]));
