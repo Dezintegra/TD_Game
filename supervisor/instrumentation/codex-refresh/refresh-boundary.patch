@@ -37,10 +37,10 @@ index 0ca4dcaf..668ccc3e 100644
  
 diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
 new file mode 100644
-index 00000000..ff67e672
+index 00000000..e2117174
 --- /dev/null
 +++ b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
-@@ -0,0 +1,1366 @@
+@@ -0,0 +1,1445 @@
 +//! Bounded, opt-in diagnostic transport. No environment lookup or OS calls.
 +//! Callsite integration and native pipe adapter are separate admission steps.
 +use serde::Serialize;
@@ -926,6 +926,49 @@ index 00000000..ff67e672
 +        pub stats: Statistics,
 +        pub fields: Fields,
 +    }
++    impl Serialize for Snapshot {
++        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
++            use serde::ser::SerializeStruct;
++            let mut record = serializer.serialize_struct("TokenSnapshot", 19)?;
++            record.serialize_field("selection", &self.selection)?;
++            record.serialize_field(
++                "threadOpenError",
++                &match self.selection {
++                    Selection::Thread => None,
++                    Selection::ProcessAfterNoToken => Some(ERROR_NO_TOKEN),
++                },
++            )?;
++            record.serialize_field("tokenId", &self.stats.token_id.to_string())?;
++            record.serialize_field(
++                "authenticationId",
++                &self.stats.authentication_id.to_string(),
++            )?;
++            record.serialize_field("modifiedId", &self.stats.modified_id.to_string())?;
++            record.serialize_field("modifiedIdBefore", &self.stats.modified_id.to_string())?;
++            record.serialize_field("modifiedIdAfter", &self.stats.modified_id.to_string())?;
++            record.serialize_field(
++                "tokenType",
++                if self.stats.impersonation {
++                    "impersonation"
++                } else {
++                    "primary"
++                },
++            )?;
++            record.serialize_field("user", &self.fields.user)?;
++            record.serialize_field("groups", &self.fields.groups)?;
++            record.serialize_field("restrictedSids", &self.fields.restricted_sids)?;
++            record.serialize_field("privileges", &self.fields.privileges)?;
++            record.serialize_field("integrity", &self.fields.integrity)?;
++            record.serialize_field("elevationType", &self.fields.elevation_type)?;
++            record.serialize_field("elevated", &self.fields.elevated)?;
++            record.serialize_field("impersonationLevel", &self.fields.impersonation_level)?;
++            record.serialize_field("isAppContainer", &self.fields.is_app_container)?;
++            record.serialize_field("appContainerSid", &self.fields.app_container_sid)?;
++            record.serialize_field("capabilities", &self.fields.capabilities)?;
++            record.end()
++        }
++    }
++
 +    pub struct Captured<H> {
 +        pub snapshot: Snapshot,
 +        pub handle: H,
@@ -1405,6 +1448,42 @@ index 00000000..ff67e672
 +        assert_eq!(api.drops.get(), 0);
 +        drop((before, after, changed, switched));
 +        assert_eq!(api.drops.get(), 4);
++    }
++
++    #[test]
++    fn refresh_boundary_token_wire_snapshot_is_allowlisted_and_lossless() {
++        let mut api = Fake {
++            thread_error: Some(ERROR_NO_TOKEN),
++            ..Default::default()
++        };
++        let mut captured = snapshot(&mut api).unwrap();
++        captured.snapshot.stats.token_id = u64::MAX;
++        captured.snapshot.fields.groups = vec![Sid {
++            sid: "S-1-5-32-545".into(),
++            attributes: 16,
++        }];
++        captured.snapshot.fields.privileges = vec![Privilege {
++            luid: u64::MAX,
++            attributes: 2,
++        }];
++        let value = serde_json::to_value(&captured.snapshot).unwrap();
++        assert_eq!(
++            value,
++            serde_json::json!({
++                "selection":"process-after-no-token","threadOpenError":1008,
++                "tokenId":"18446744073709551615","authenticationId":"2",
++                "modifiedId":"3","modifiedIdBefore":"3","modifiedIdAfter":"3",
++                "tokenType":"primary","user":"S-1-0-0",
++                "groups":[{"sid":"S-1-5-32-545","attributes":16}],"restrictedSids":[],
++                "privileges":[{"luid":"18446744073709551615","attributes":2}],
++                "integrity":{"sid":"S-1-16-4096","attributes":0},"elevationType":"default",
++                "elevated":false,"impersonationLevel":null,"isAppContainer":false,
++                "appContainerSid":null,"capabilities":null
++            })
++        );
++        let path = std::env::var_os("REFRESH_BOUNDARY_TEST_FIXTURE")
++            .expect("driver supplies fixture path");
++        std::fs::write(path, serde_json::to_vec(&captured.snapshot).unwrap()).unwrap();
 +    }
 +}
 diff --git a/codex-rs/windows-sandbox-rs/src/setup.rs b/codex-rs/windows-sandbox-rs/src/setup.rs

@@ -5,6 +5,7 @@ import {
   decodeBoundaryJournal,
   encodeBoundaryFrame,
   MAX_BOUNDARY_FRAME,
+  validateBoundaryToken,
 } from './refresh-boundary-source.mjs';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -54,6 +55,66 @@ function raw(value) {
   return Buffer.concat([header, payload, Buffer.from(sha(payload), 'hex')]);
 }
 const codes = (result) => result.reasons.map((reason) => reason.code);
+
+describe('token snapshot semantics without source admission', () => {
+  const token = {
+    selection: 'process-after-no-token',
+    threadOpenError: 1008,
+    tokenId: '18446744073709551615',
+    authenticationId: '2',
+    modifiedId: '3',
+    modifiedIdBefore: '3',
+    modifiedIdAfter: '3',
+    tokenType: 'primary',
+    user: 'S-1-0-0',
+    groups: [{ sid: 'S-1-5-32-545', attributes: 16 }],
+    restrictedSids: [],
+    privileges: [{ luid: '18446744073709551615', attributes: 2 }],
+    integrity: { sid: 'S-1-16-4096', attributes: 0 },
+    elevationType: 'default',
+    elevated: false,
+    impersonationLevel: null,
+    isAppContainer: false,
+    appContainerSid: null,
+    capabilities: null,
+  };
+  it('preserves LUID strings and deny-only attributes', () => {
+    expect(validateBoundaryToken(token)).toEqual(token);
+    expect(
+      validateBoundaryToken({
+        ...token,
+        selection: 'thread',
+        threadOpenError: null,
+        tokenType: 'impersonation',
+        impersonationLevel: 'identification',
+      }).selection,
+    ).toBe('thread');
+  });
+  it.each([
+    ['denied fallback', { threadOpenError: 5 }, 'token-selection-mismatch'],
+    ['inconsistent thread selection', { selection: 'thread' }, 'token-selection-mismatch'],
+    ['changed snapshot', { modifiedIdAfter: '4' }, 'token-unstable'],
+    ['missing impersonation level', { tokenType: 'impersonation' }, 'token-applicability-mismatch'],
+    ['unexpected capabilities', { capabilities: [] }, 'token-applicability-mismatch'],
+    ['missing appcontainer fields', { isAppContainer: true }, 'token-applicability-mismatch'],
+    ['numeric LUID', { tokenId: 42 }, 'invalid-string'],
+  ])('rejects %s', (_name, change, code) =>
+    expect(() => validateBoundaryToken({ ...token, ...change })).toThrow(code),
+  );
+  it('does not read an unknown secret field', () => {
+    const value = { ...token };
+    Object.defineProperty(value, 'secret', {
+      enumerable: true,
+      get() {
+        throw Error('SECRET_CANARY');
+      },
+    });
+    expect(() => validateBoundaryToken(value)).toThrow('unknown-field');
+    const missing = { ...token };
+    delete missing.groups;
+    expect(() => validateBoundaryToken(missing)).toThrow('missing-field');
+  });
+});
 
 describe('refresh boundary transport', () => {
   it('retains 64-bit strings and accepts a sealed synthetic transport without admitting live evidence', () => {

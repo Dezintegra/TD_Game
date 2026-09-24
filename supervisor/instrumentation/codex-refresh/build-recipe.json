@@ -21,7 +21,8 @@
     "refresh_boundary::token_tests::refresh_boundary_token_denied_never_uses_process",
     "refresh_boundary::token_tests::refresh_boundary_token_failed_field_closes_handle",
     "refresh_boundary::token_tests::refresh_boundary_token_no_token_is_only_fallback",
-    "refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable"
+    "refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable",
+    "refresh_boundary::token_tests::refresh_boundary_token_wire_snapshot_is_allowlisted_and_lossless"
   ],
   "inputs": [
     {
@@ -38,7 +39,7 @@
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/refresh_boundary.rs",
-      "sha256": "f1fd13e25aa1e045e8300c0f20a2372148ff77f3739d8353c64151718bbf35bb"
+      "sha256": "fdcb7a4dc91e42aa652a778510c88a231224d5f48690b640308ae40605247d7a"
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/setup.rs",

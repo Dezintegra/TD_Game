@@ -3,7 +3,11 @@ import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { checkEntry, checkManifest, checkWorkspace, sha256 } from './prepare.mjs';
-import { decodeBoundaryJournal } from '../../lib/refresh-boundary-source.mjs';
+import {
+  decodeBoundaryJournal,
+  validateBoundaryToken,
+  MAX_BOUNDARY_FRAME,
+} from '../../lib/refresh-boundary-source.mjs';
 
 export const DELIVERY_ROOT = 'C:/src/dezintegra/TD_Game/.matchlog/refresh-source-deliveries/0372';
 const HASH = /^[a-f0-9]{64}$/u;
@@ -384,7 +388,18 @@ export function runBuild({ projectRoot, mode, group }, dependencies = {}) {
     const stdout = execute([...args, '--', '--nocapture']);
     if (!stdout.includes(`test result: ok. ${expectedTests.length} passed; 0 failed;`))
       throw new Error('native-test-count-mismatch');
-    if (group !== 'token') {
+    if (group === 'token') {
+      if (io.statSync(fixture).size > MAX_BOUNDARY_FRAME) throw new Error('native-reader-mismatch');
+      const fixtureBytes = io.readFileSync(fixture);
+      validateBoundaryToken(JSON.parse(fixtureBytes));
+      receipt.token = { schemaValid: true, sourceAvailable: false };
+      receipt.fixture = {
+        path: fixture,
+        format: 'token-json',
+        size: fixtureBytes.length,
+        sha256: sha256(fixtureBytes),
+      };
+    } else {
       const fixtureBytes = io.readFileSync(fixture);
       const decoded = decodeBoundaryJournal(fixtureBytes, {
         expectedWriterIds: ['root'],

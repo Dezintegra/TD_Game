@@ -109,5 +109,17 @@ tool-retry (EPERM rename), watch-lifetime. Все 41 tests build driver прош
 carrier, token и singleflight с UTC и driver hash. Полнота всей инструментации
 этими шестью проверками не заявляется.
 
+Token wire increment: Rust serializer перечисляет ровно 19 полей контракта,
+сохраняет 64-bit LUID строками и attributes, неприменимые поля пишет null.
+Шестой token test создаёт synthetic JSON snapshot, который driver проверяет
+производственным Node `validateBoundaryToken`: типы/allowlist, согласованность
+fallback, ModifiedId и применимость impersonation/AppContainer полей.
+`receipts/token.json` содержит hash принятых bytes и шесть tests. Это проверка
+формата и стабильности отдельного снимка; provenance и token-at-call не приняты.
+
+Проверка token wire increment: 3198 passed, 5 failed — report-recovery,
+stage-tool-recovery, tool-report-hold (2), watch-lifetime. Новые token checks
+прошли; общий набор остаётся красным, включая EPERM rename тестового хранилища.
+
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

@@ -80,6 +80,22 @@ function admitted(value, project = false) {
   return clean;
 }
 
+// A structurally valid snapshot is still not token-at-call or source provenance.
+export function validateBoundaryToken(value) {
+  const token = check(value, schema.$defs.token);
+  if (token.threadOpenError !== (token.selection === 'thread' ? null : 1008))
+    fail('token-selection-mismatch');
+  if (token.modifiedId !== token.modifiedIdBefore || token.modifiedId !== token.modifiedIdAfter)
+    fail('token-unstable');
+  if (
+    (token.tokenType === 'impersonation') !== (token.impersonationLevel !== null) ||
+    token.isAppContainer !== (token.appContainerSid !== null) ||
+    token.isAppContainer !== (token.capabilities !== null)
+  )
+    fail('token-applicability-mismatch');
+  return token;
+}
+
 // Test/adapter encoder. Enumerates only schema fields, so unknown getters and
 // payload/argv properties are not read or serialized. Not a native writer.
 export function encodeBoundaryFrame(value) {
