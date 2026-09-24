@@ -160,6 +160,9 @@ export const DEFAULTS = {
     postmortem: 30,
   },
 
+  /** Точные исключения для задачи и этапа: `{ "id-карточки": { revise: 120 } }`. */
+  taskStageTimeoutMinutes: {},
+
   /** Сколько секунд ждать завершения этапов при остановке супервизора. */
   shutdownGraceSeconds: 60,
 

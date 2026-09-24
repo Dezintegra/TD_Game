@@ -127,7 +127,11 @@ export function stageCommand({ assignment, prompt, config, root, home = root }) 
  * минуты запретил бы выкладку с замером, а годный выкладке не поймал бы
  * зависший разбор до вечера.
  */
-export function stageTimeoutMs(stage, config) {
-  const minutes = config.stageTimeoutMinutes?.[stage] ?? config.stageTimeoutMinutes?.default;
+export function stageTimeoutMs(stage, config, taskId) {
+  const taskMinutes = taskId && config.taskStageTimeoutMinutes?.[taskId]?.[stage];
+  const minutes =
+    Number.isSafeInteger(taskMinutes) && taskMinutes > 0
+      ? taskMinutes
+      : (config.stageTimeoutMinutes?.[stage] ?? config.stageTimeoutMinutes?.default);
   return minutes * 60000;
 }
