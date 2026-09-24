@@ -71,6 +71,13 @@ describe('supervisor identity', () => {
       expect(await identify({ entrypoint: 'C:/project/supervisor/bin/supervise.mjs' })).toEqual({
         kind: 'waiting',
       });
+      expect(
+        await identify({
+          run: async () => ({
+            stdout: JSON.stringify({ command: command.replace('--diagnostic-endpoint', '') }),
+          }),
+        }),
+      ).toEqual({ kind: 'waiting' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
