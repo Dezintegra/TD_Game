@@ -15,7 +15,7 @@ import { createWorld, playerStats, upgradeCosts } from '@td/sim';
 import type { PlayerState, WorldState } from '@td/sim';
 import { createProduction } from './production.js';
 import { createOpponent } from './opponent.js';
-import { BASELINE_PROFILE } from './profile.js';
+import { BASELINE_PROFILE, patienceDecisions } from './profile.js';
 import type { AiProfile, PhaseProfile } from './profile.js';
 import type { DecisionRecord } from './observer.js';
 
@@ -207,21 +207,26 @@ describe('обычное производство через createOpponent.deci
 
   it('исчерпание терпения разрешает прокачку, сохраняя обычную цель', () => {
     const records: DecisionRecord[] = [];
-    // Цена Теслы укладывается в горизонт, но неподвижная казна не растёт.
+    // После снижения дохода прежних 30 секунд недостаточно для Теслы.
+    // Стенд обязан войти в wait, а затем исчерпать вычисляемое терпение.
+    const stats = playerStats(player);
+    const horizon = Math.ceil(stats.units[T].cost / stats.incomePerTick / TICKS_PER_SECOND);
+    const waiting = profile([phase({ mix: TESLA })], horizon);
+    const patience = Math.ceil(patienceDecisions(waiting));
     const base = profile(
       [
-        phase({ untilSecond: 1, mix: TESLA }),
+        phase({ untilSecond: patience, mix: TESLA }),
         phase({
           spend: ['train', 'upgrade'],
           upgrades: { [UpgradeTarget.Base]: 1 },
           upgradeStats: [UpgradeStat.Income],
         }),
       ],
-      30,
+      horizon,
     );
     const opponent = createOpponent(ME, 42, base, (record) => records.push(record));
     const commands = [];
-    for (let second = 0; second < 70; second += 1) {
+    for (let second = 0; second <= patience; second += 1) {
       commands.push(
         ...opponent.decide(
           worldAt(second, {
@@ -233,12 +238,13 @@ describe('обычное производство через createOpponent.deci
         ),
       );
     }
-    expect(records.some((record) => record.impatient)).toBe(true);
+    expect(records.slice(0, patience).every((record) => !record.impatient)).toBe(true);
+    expect(records[patience]?.impatient).toBe(true);
     expect(commands.some((c) => c.kind === CommandKind.BuyUpgrade)).toBe(true);
     expect(commands.some((c) => c.kind === CommandKind.TrainUnit)).toBe(false);
-    expect(
-      opponent.decide(worldAt(70, { energy: playerStats(player).units[T].cost })),
-    ).toContainEqual(expect.objectContaining({ kind: CommandKind.TrainUnit, unitType: T }));
+    expect(opponent.decide(worldAt(patience + 1, { energy: stats.units[T].cost }))).toContainEqual(
+      expect.objectContaining({ kind: CommandKind.TrainUnit, unitType: T }),
+    );
   });
 
   it.each([0, 150])('сохраняет дорогой выбор после wait/pass, горизонт %i', (horizon) => {
