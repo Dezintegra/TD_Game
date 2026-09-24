@@ -138,5 +138,15 @@ observer не запрашивает токен. Четыре новые fake-AP
 Это ещё не подключение к ACL sites и не emission intent/before/result; 4.2/4.3
 остаются открытыми. Pipeline: 3202 passed, 1 failed — watch-lifetime timeout.
 
+Retry carrier increment: optional context включён в RunnerTransportRequest,
+передаётся в retry callback, observed identity refresh и setup request, включая
+desktop request внутри существующего spawn_blocking. Старые identity entrypoints
+делегируют observed-вариантам с None; публичное поведение сохранено. Fake runner
+проверяет callId/attemptId, общую sticky health и неизменные launch параметры;
+новая мутация удаления retry context обнаружена. Пять singleflight-group tests
+и три carrier mutations прошли. Entry в backend пока создаёт context None:
+полнота dispatch/spawn_blocking пути не заявляется. Pipeline: 3199 passed,
+4 failed — report-delivery, tool-retry (2, EPERM rename), watch-lifetime.
+
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

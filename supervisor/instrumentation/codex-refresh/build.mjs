@@ -190,6 +190,7 @@ const NATIVE_FILES = [
   'codex-rs/windows-sandbox-rs/src/elevated_impl.rs',
   'codex-rs/windows-sandbox-rs/src/desktop_tests.rs',
   'codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs',
+  'codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated_tests.rs',
 ];
 
 export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
@@ -209,6 +210,8 @@ export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
     new Set(recipe.tests).size !== recipe.tests.length ||
     recipe.tests.some(
       (name) =>
+        name !==
+          'unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context' &&
         !/^refresh_boundary::(?:tests|token_tests)::refresh_boundary_(?:wire|singleflight|token)_[a-z_]+$/u.test(
           name,
         ),
@@ -456,6 +459,13 @@ const MUTATIONS = {
     ],
   ],
   carrier: [
+    [
+      'unified_exec/backends/elevated.rs',
+      'drop-retry-context',
+      'refresh(\n                request.diagnostic.as_ref(),',
+      'refresh(\n                None,',
+      'unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context',
+    ],
     [
       'setup.rs',
       'drop-request-at-flight',
