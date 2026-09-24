@@ -23,7 +23,7 @@ index aa41ed5f..0b032bbb 100644
  tokio = { workspace = true, features = ["sync", "rt", "macros", "signal", "time"] }
  tracing-appender = { workspace = true }
 diff --git a/codex-rs/windows-sandbox-rs/src/lib.rs b/codex-rs/windows-sandbox-rs/src/lib.rs
-index 0ca4dcaf..668ccc3e 100644
+index 0ca4dcaf..1fc39518 100644
 --- a/codex-rs/windows-sandbox-rs/src/lib.rs
 +++ b/codex-rs/windows-sandbox-rs/src/lib.rs
 @@ -2,6 +2,8 @@
@@ -35,6 +35,15 @@ index 0ca4dcaf..668ccc3e 100644
  #[cfg(any(target_os = "windows", test))]
  mod ssh_config_dependencies;
  
+@@ -324,6 +326,8 @@ pub use unified_exec::spawn_windows_sandbox_session_elevated_for_permission_prof
+ #[cfg(target_os = "windows")]
+ pub use unified_exec::spawn_windows_sandbox_session_for_level;
+ #[cfg(target_os = "windows")]
++pub use unified_exec::spawn_windows_sandbox_session_for_level_observed;
++#[cfg(target_os = "windows")]
+ pub use unified_exec::spawn_windows_sandbox_session_legacy;
+ #[cfg(target_os = "windows")]
+ pub use wfp::install_wfp_filters_for_account;
 diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
 new file mode 100644
 index 00000000..7076ce54
@@ -1927,7 +1936,7 @@ index 860877df..0a161429 100644
          command_cwd,
          env_map,
 diff --git a/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs b/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs
-index 0d7d2ca1..e650ad6e 100644
+index 0d7d2ca1..07ab46ff 100644
 --- a/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs
 +++ b/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs
 @@ -5,7 +5,7 @@ use super::windows_common::start_runner_stdin_writer;
@@ -1963,7 +1972,28 @@ index 0d7d2ca1..e650ad6e 100644
                  &request.permissions,
                  &request.cwd,
                  &request.env_map,
-@@ -103,6 +106,7 @@ async fn spawn_runner_transport_task(
+@@ -92,17 +95,27 @@ fn spawn_runner_transport_with_retry<T>(
+     )
+ }
+ 
++async fn on_runner_thread<T: Send + 'static>(
++    request: RunnerTransportRequest,
++    run: impl FnOnce(RunnerTransportRequest) -> Result<T> + Send + 'static,
++) -> Result<T> {
++    tokio::task::spawn_blocking(move || run(request))
++        .await
++        .map_err(|err| anyhow::anyhow!("runner handshake task failed: {err}"))?
++}
++
+ async fn spawn_runner_transport_task(
+     sandbox_creds: SandboxCreds,
+     request: RunnerTransportRequest,
+ ) -> Result<RunnerTransport> {
+-    tokio::task::spawn_blocking(move || -> Result<_> {
++    on_runner_thread(request, move |request| -> Result<_> {
+         let desktop_policy = request
+             .spawn_request
+             .use_private_desktop
              .then(|| {
                  DesktopPolicy::elevated(
                      crate::setup::SandboxSetupRequest {
@@ -1971,7 +2001,7 @@ index 0d7d2ca1..e650ad6e 100644
                          permissions: &request.permissions,
                          command_cwd: &request.cwd,
                          env_map: &request.env_map,
-@@ -138,7 +142,7 @@ async fn spawn_runner_transport_task(
+@@ -138,15 +151,15 @@ async fn spawn_runner_transport_task(
                      desktop_policy.as_ref(),
                  )
              },
@@ -1980,22 +2010,46 @@ index 0d7d2ca1..e650ad6e 100644
          )
      })
      .await
-@@ -196,6 +200,7 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
+-    .map_err(|err| anyhow::anyhow!("runner handshake task failed: {err}"))?
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profile(
++    diagnostic: Option<crate::refresh_boundary::DiagnosticContext>,
+     permission_profile: &PermissionProfile,
+     workspace_roots: &[AbsolutePathBuf],
+     codex_home: &Path,
+@@ -180,6 +193,7 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
+             workspace_roots,
+         )?;
+     let elevated = prepare_elevated_spawn_context_for_permissions(
++        diagnostic.as_ref(),
+         permissions.clone(),
+         codex_home,
+         cwd,
+@@ -196,6 +210,7 @@ pub(crate) async fn spawn_windows_sandbox_session_elevated_for_permission_profil
  
      let sandbox_creds = elevated.sandbox_creds;
      let request = RunnerTransportRequest {
-+        diagnostic: None,
++        diagnostic,
          permissions,
          codex_home: codex_home.to_path_buf(),
          cwd: cwd.to_path_buf(),
 diff --git a/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated_tests.rs b/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated_tests.rs
-index e8025109..193dd6dd 100644
+index e8025109..8aba2942 100644
 --- a/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated_tests.rs
 +++ b/codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated_tests.rs
-@@ -45,6 +45,24 @@ struct RefreshObservation {
+@@ -45,52 +45,27 @@ struct RefreshObservation {
  
  #[test]
  fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
+-    let workspace_root = AbsolutePathBuf::from_absolute_path(PathBuf::from(r"C:\workspace"))
+-        .expect("absolute workspace root");
+-    let permission_profile = PermissionProfile::workspace_write();
+-    let permissions =
+-        ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(
+-            &permission_profile,
+-            std::slice::from_ref(&workspace_root),
 +    check_retry_carrier(false);
 +}
 +
@@ -2012,20 +2066,53 @@ index e8025109..193dd6dd 100644
 +            id("retry-call"),
 +            id("retry-attempt"),
 +            Writer::new(id("writer"), id("collection"), id("launch")),
-+        )
+         )
+-        .expect("resolved permissions");
+-    let env_map = HashMap::from([
+-        ("Path".to_string(), r"C:\tools".to_string()),
+-        (
+-            "HTTPS_PROXY".to_string(),
+-            "http://localhost:1234".to_string(),
+-        ),
+-    ]);
+-    let request = RunnerTransportRequest {
+-        permissions: permissions.clone(),
+-        codex_home: PathBuf::from(r"C:\Users\codex"),
+-        cwd: PathBuf::from(r"C:\workspace"),
+-        env_map: env_map.clone(),
+-        logs_base_dir: Some(PathBuf::from(r"C:\Users\codex\.sandbox")),
+-        spawn_request: SpawnRequest {
+-            command: vec!["pwsh.exe".to_string(), "-NoProfile".to_string()],
+-            cwd: PathBuf::from(r"C:\workspace"),
+-            env: env_map.clone(),
+-            permission_profile,
+-            workspace_roots: vec![workspace_root],
+-            codex_home: PathBuf::from(r"C:\Users\codex\.sandbox"),
+-            real_codex_home: PathBuf::from(r"C:\Users\codex"),
+-            cap_sids: vec!["S-1-15-3-1024-1".to_string()],
+-            network_proxy_restricting_sid: Some("S-1-5-21-100-200-300-400".to_string()),
+-            timeout_ms: Some(5_000),
+-            tty: true,
+-            stdin_open: true,
+-            use_private_desktop: true,
+-            private_desktop_name: None,
+-        },
+-        read_roots_override: Some(vec![PathBuf::from(r"C:\workspace\read")]),
+-        read_roots_include_platform_defaults: true,
+-        write_roots_override: Some(vec![PathBuf::from(r"C:\workspace\write")]),
+-        deny_read_paths_override: vec![PathBuf::from(r"C:\secrets")],
+-        deny_write_paths_override: vec![PathBuf::from(r"C:\workspace\.codex")],
+-        proxy_enforced: true,
+-        proxy_settings_mode: WindowsSandboxProxySettingsMode::Preserve,
+-    };
 +    });
-     let workspace_root = AbsolutePathBuf::from_absolute_path(PathBuf::from(r"C:\workspace"))
-         .expect("absolute workspace root");
-     let permission_profile = PermissionProfile::workspace_write();
-@@ -62,6 +80,7 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
-         ),
-     ]);
-     let request = RunnerTransportRequest {
-+        diagnostic: context.clone(),
-         permissions: permissions.clone(),
-         codex_home: PathBuf::from(r"C:\Users\codex"),
-         cwd: PathBuf::from(r"C:\workspace"),
-@@ -133,7 +152,8 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
++    let request = fake_runner_request(context.clone());
++    let permissions = request.permissions.clone();
++    let env_map = request.env_map.clone();
+     let expected_spawn_request =
+         serde_json::to_value(&request.spawn_request).expect("serialize spawn request");
+     let expected_refresh = RefreshObservation {
+@@ -133,7 +108,8 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
                  windows_error_code: Some(ERROR_NO_SUCH_LOGON_SESSION),
              })))
          },
@@ -2035,7 +2122,7 @@ index e8025109..193dd6dd 100644
           cwd,
           env_map,
           codex_home,
-@@ -144,6 +164,18 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
+@@ -144,6 +120,18 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
           deny_write_paths_override,
           proxy_enforced,
           proxy_settings_mode| {
@@ -2054,7 +2141,7 @@ index e8025109..193dd6dd 100644
              refresh_observations.borrow_mut().push(RefreshObservation {
                  permissions: permissions.clone(),
                  cwd: cwd.to_path_buf(),
-@@ -164,6 +196,9 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
+@@ -164,6 +152,9 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
          },
      );
  
@@ -2064,3 +2151,162 @@ index e8025109..193dd6dd 100644
      let err = result.expect_err("second spawn should fail");
      assert_eq!(
          "runner failed during SpawnChild: spawn attempt 2 failed (Windows error 1312)",
+@@ -192,3 +183,87 @@ fn retry_uses_original_unified_exec_request_and_stops_after_second_failure() {
+     );
+     assert_eq!(vec![expected_refresh], *refresh_observations.borrow());
+ }
++
++fn fake_runner_request(
++    context: Option<crate::refresh_boundary::DiagnosticContext>,
++) -> RunnerTransportRequest {
++    let workspace_root = AbsolutePathBuf::from_absolute_path(PathBuf::from(r"C:\workspace"))
++        .expect("absolute workspace root");
++    let permission_profile = PermissionProfile::workspace_write();
++    let permissions =
++        ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(
++            &permission_profile,
++            std::slice::from_ref(&workspace_root),
++        )
++        .expect("resolved permissions");
++    let env_map = HashMap::from([
++        ("Path".to_string(), r"C:\tools".to_string()),
++        (
++            "HTTPS_PROXY".to_string(),
++            "http://localhost:1234".to_string(),
++        ),
++    ]);
++    let request = RunnerTransportRequest {
++        diagnostic: context.clone(),
++        permissions: permissions.clone(),
++        codex_home: PathBuf::from(r"C:\Users\codex"),
++        cwd: PathBuf::from(r"C:\workspace"),
++        env_map: env_map.clone(),
++        logs_base_dir: Some(PathBuf::from(r"C:\Users\codex\.sandbox")),
++        spawn_request: SpawnRequest {
++            command: vec!["pwsh.exe".to_string(), "-NoProfile".to_string()],
++            cwd: PathBuf::from(r"C:\workspace"),
++            env: env_map.clone(),
++            permission_profile,
++            workspace_roots: vec![workspace_root],
++            codex_home: PathBuf::from(r"C:\Users\codex\.sandbox"),
++            real_codex_home: PathBuf::from(r"C:\Users\codex"),
++            cap_sids: vec!["S-1-15-3-1024-1".to_string()],
++            network_proxy_restricting_sid: Some("S-1-5-21-100-200-300-400".to_string()),
++            timeout_ms: Some(5_000),
++            tty: true,
++            stdin_open: true,
++            use_private_desktop: true,
++            private_desktop_name: None,
++        },
++        read_roots_override: Some(vec![PathBuf::from(r"C:\workspace\read")]),
++        read_roots_include_platform_defaults: true,
++        write_roots_override: Some(vec![PathBuf::from(r"C:\workspace\write")]),
++        deny_read_paths_override: vec![PathBuf::from(r"C:\secrets")],
++        deny_write_paths_override: vec![PathBuf::from(r"C:\workspace\.codex")],
++        proxy_enforced: true,
++        proxy_settings_mode: WindowsSandboxProxySettingsMode::Preserve,
++    };
++    request
++}
++
++#[tokio::test]
++async fn refresh_boundary_singleflight_blocking_task_preserves_context() {
++    use crate::refresh_boundary::{DiagnosticContext, Id, Writer};
++    let id = |value| Id::new(value).unwrap();
++    let context = DiagnosticContext::new(
++        id("thread-call"),
++        id("thread-attempt"),
++        Writer::new(id("writer"), id("collection"), id("launch")),
++    );
++    let caller = std::thread::current().id();
++    let result =
++        super::on_runner_thread(fake_runner_request(Some(context.clone())), move |request| {
++            assert_ne!(std::thread::current().id(), caller);
++            let context = request.diagnostic.expect("context across blocking task");
++            assert_eq!(
++                serde_json::to_string(&context.call_id).unwrap(),
++                "\"thread-call\""
++            );
++            assert_eq!(
++                serde_json::to_string(&context.attempt_id).unwrap(),
++                "\"thread-attempt\""
++            );
++            context.mark_incomplete();
++            Ok(17)
++        })
++        .await
++        .unwrap();
++    assert_eq!(result, 17);
++    assert!(!context.healthy());
++}
+diff --git a/codex-rs/windows-sandbox-rs/src/spawn_prep.rs b/codex-rs/windows-sandbox-rs/src/spawn_prep.rs
+index 9479c0b8..5def58b6 100644
+--- a/codex-rs/windows-sandbox-rs/src/spawn_prep.rs
++++ b/codex-rs/windows-sandbox-rs/src/spawn_prep.rs
+@@ -15,7 +15,7 @@ use crate::env::ensure_non_interactive_pager;
+ use crate::env::inherit_path_env;
+ use crate::env::normalize_null_device_env;
+ use crate::identity::SandboxCreds;
+-use crate::identity::require_logon_sandbox_creds;
++use crate::identity::require_logon_sandbox_creds_observed;
+ use crate::logging::log_start;
+ use crate::path_normalization::canonicalize_path;
+ use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
+@@ -347,6 +347,7 @@ pub(crate) fn apply_legacy_session_acl_rules(
+ 
+ #[allow(clippy::too_many_arguments)]
+ pub(crate) fn prepare_elevated_spawn_context_for_permissions(
++    diagnostic: Option<&crate::refresh_boundary::DiagnosticContext>,
+     permissions: ResolvedWindowsSandboxPermissions,
+     codex_home: &Path,
+     cwd: &Path,
+@@ -399,7 +400,8 @@ pub(crate) fn prepare_elevated_spawn_context_for_permissions(
+     } else {
+         write_roots_override
+     };
+-    let sandbox_creds = require_logon_sandbox_creds(
++    let sandbox_creds = require_logon_sandbox_creds_observed(
++        diagnostic,
+         &permissions,
+         cwd,
+         env_map,
+diff --git a/codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs b/codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs
+index 4e6020a8..b4ee4572 100644
+--- a/codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs
++++ b/codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs
+@@ -49,9 +49,17 @@ pub struct WindowsSandboxSessionRequest<'a> {
+ 
+ pub async fn spawn_windows_sandbox_session_for_level(
+     request: WindowsSandboxSessionRequest<'_>,
++) -> Result<SpawnedProcess> {
++    spawn_windows_sandbox_session_for_level_observed(request, None).await
++}
++
++pub async fn spawn_windows_sandbox_session_for_level_observed(
++    request: WindowsSandboxSessionRequest<'_>,
++    diagnostic: Option<crate::refresh_boundary::DiagnosticContext>,
+ ) -> Result<SpawnedProcess> {
+     if matches!(request.windows_sandbox_level, WindowsSandboxLevel::Elevated) {
+         backends::elevated::spawn_windows_sandbox_session_elevated_for_permission_profile(
++            diagnostic,
+             request.permission_profile,
+             request.workspace_roots,
+             request.codex_home,
+@@ -73,6 +81,9 @@ pub async fn spawn_windows_sandbox_session_for_level(
+         )
+         .await
+     } else {
++        if let Some(context) = diagnostic {
++            context.mark_incomplete();
++        }
+         if request.proxy_enforced {
+             bail!("managed networking requires the elevated Windows sandbox backend");
+         }
+@@ -150,6 +161,7 @@ pub async fn spawn_windows_sandbox_session_elevated_for_permission_profile(
+     use_private_desktop: bool,
+ ) -> Result<SpawnedProcess> {
+     backends::elevated::spawn_windows_sandbox_session_elevated_for_permission_profile(
++        None,
+         permission_profile,
+         workspace_roots,
+         codex_home,

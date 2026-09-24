@@ -3,10 +3,10 @@
   "stage": "partial-source",
   "group": "singleflight",
   "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
-  "patchSha256": "9eb2f5f3d1268d3a5144cbe67f1515a97f237d649cf01f8b0a2713b689169287",
-  "recipeSha256": "8c15e881900004a8045891e1d8fd69d1ba59a0404c5695cacbcf732c9f728749",
-  "driverSha256": "4f969dd3e10b7f159ccd4d3d065883b60550484a969a989e56b0c5ed237d4cc1",
-  "startedUtc": "2026-09-24T12:07:28.568Z",
+  "patchSha256": "a62d11ab9114459805ee3d8ea718ffca271ce94032df41895c58a15c29733481",
+  "recipeSha256": "64f14b15bb9b9cb7c7b9f84d5e82d68c0d754252f96086328ce829e95aacb920",
+  "driverSha256": "04ac95bf7edafaa2a83e16d9f7c7b4f64a68ce9c487d027d69a153456a7d1cfd",
+  "startedUtc": "2026-09-24T12:14:35.882Z",
   "runtimeExecuted": false,
   "productionWindowsBoundaryTested": false,
   "verifiedSourceInputs": 6498,
@@ -31,7 +31,7 @@
       "status": 0,
       "error": null,
       "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "stderrSha256": "e3cfb9d676359da5a3472ab02f4c1605be5ccf518d028de752b82e607617dbde"
+      "stderrSha256": "7f761eb0c378f85da1a28e03b628d3dae18dbbee81f59fcd5634310eddcff2e6"
     },
     {
       "command": [
@@ -55,8 +55,8 @@
       ],
       "status": 0,
       "error": null,
-      "stdoutSha256": "a1ac2fe83f7f3fcdc36ab4df9bf320ef40842febce7db36e90acf3149c1fe041",
-      "stderrSha256": "810dca7150117de183904ba77ec7fbc4565c2e16e53d30551510b448f68e5c7d"
+      "stdoutSha256": "e6247d4e7c1b2538a0afedc05b3aa76ddcceabac7a64edad24530882a776b755",
+      "stderrSha256": "d70f0a2812c9a55f14ff9c64fbb1b402e4570ddc9109c81c6928db49c67d8871"
     },
     {
       "command": [
@@ -80,8 +80,8 @@
       ],
       "status": 0,
       "error": null,
-      "stdoutSha256": "82cdc084752f67b30960af213230387c98801364081a31f07cba06f7534b2e49",
-      "stderrSha256": "4262b50d2a1f20ebd7229243b2e6d41da9c5d967e581cd08b7db4939fddfc9a0"
+      "stdoutSha256": "4dae284d5ccb25cfd131651a1c0ed506d13e0175c5742d780fa13518d72613e3",
+      "stderrSha256": "42d46195ad20fb20f7b014213434c86a1815687e7db7ea1bed85562c2ed3f370"
     }
   ],
   "tests": [
@@ -89,6 +89,7 @@
     "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
     "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
     "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload",
+    "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_blocking_task_preserves_context",
     "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context"
   ],
   "status": "passed",
@@ -103,7 +104,7 @@
     "size": 2825,
     "sha256": "b34d2d4df0d0b7f50df26bc0b48d1b962fe7a95184bde9d77e822ef5b572edbc"
   },
-  "finishedUtc": "2026-09-24T12:07:43.733Z",
+  "finishedUtc": "2026-09-24T12:14:50.587Z",
   "previousCoreMutations": {
     "startedUtc": "2026-09-24T11:04:18.427Z",
     "patchSha256": "f2e5c1fb24911c027ce844a7ce3f5e829ace2beed8382417b09935d73445c825",
@@ -133,19 +134,19 @@
     "version": 1,
     "stage": "partial-source",
     "group": "carrier",
-    "startedUtc": "2026-09-24T12:05:51.301Z",
-    "patchSha256": "9eb2f5f3d1268d3a5144cbe67f1515a97f237d649cf01f8b0a2713b689169287",
-    "recipeSha256": "8c15e881900004a8045891e1d8fd69d1ba59a0404c5695cacbcf732c9f728749",
-    "driverSha256": "4f969dd3e10b7f159ccd4d3d065883b60550484a969a989e56b0c5ed237d4cc1",
+    "startedUtc": "2026-09-24T12:12:46.234Z",
+    "patchSha256": "a62d11ab9114459805ee3d8ea718ffca271ce94032df41895c58a15c29733481",
+    "recipeSha256": "64f14b15bb9b9cb7c7b9f84d5e82d68c0d754252f96086328ce829e95aacb920",
+    "driverSha256": "04ac95bf7edafaa2a83e16d9f7c7b4f64a68ce9c487d027d69a153456a7d1cfd",
     "baseline": {
       "receiptVersion": 1,
       "stage": "partial-source",
       "group": "singleflight",
       "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
-      "patchSha256": "9eb2f5f3d1268d3a5144cbe67f1515a97f237d649cf01f8b0a2713b689169287",
-      "recipeSha256": "8c15e881900004a8045891e1d8fd69d1ba59a0404c5695cacbcf732c9f728749",
-      "driverSha256": "4f969dd3e10b7f159ccd4d3d065883b60550484a969a989e56b0c5ed237d4cc1",
-      "startedUtc": "2026-09-24T12:06:00.763Z",
+      "patchSha256": "a62d11ab9114459805ee3d8ea718ffca271ce94032df41895c58a15c29733481",
+      "recipeSha256": "64f14b15bb9b9cb7c7b9f84d5e82d68c0d754252f96086328ce829e95aacb920",
+      "driverSha256": "04ac95bf7edafaa2a83e16d9f7c7b4f64a68ce9c487d027d69a153456a7d1cfd",
+      "startedUtc": "2026-09-24T12:12:55.125Z",
       "runtimeExecuted": false,
       "productionWindowsBoundaryTested": false,
       "verifiedSourceInputs": 6498,
@@ -170,7 +171,7 @@
           "status": 0,
           "error": null,
           "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "stderrSha256": "558e3c7ef70f752dbd18143ac4d6f0626ea58ef701bef45927529d667251e10c"
+          "stderrSha256": "466474d64c54a4ac7eb5967f44f5dc6f07ef5d9436861e5c5a5b9c051820d2f0"
         },
         {
           "command": [
@@ -194,8 +195,8 @@
           ],
           "status": 0,
           "error": null,
-          "stdoutSha256": "a1ac2fe83f7f3fcdc36ab4df9bf320ef40842febce7db36e90acf3149c1fe041",
-          "stderrSha256": "75852dbdc84ab023537435583b82f4d4f689a4ae5636b860e85e30a4d0d0ee1c"
+          "stdoutSha256": "e6247d4e7c1b2538a0afedc05b3aa76ddcceabac7a64edad24530882a776b755",
+          "stderrSha256": "584c7769ef5da19edd098da0b8840a6c4b5c92909f9da759379057dca60bf117"
         },
         {
           "command": [
@@ -219,8 +220,8 @@
           ],
           "status": 0,
           "error": null,
-          "stdoutSha256": "640d3f259804092eb6a076e30a2ed736ab2ed66333ee40d4ac751dcb34e762fb",
-          "stderrSha256": "8cfbd612e91c759457c60833dee974155f69238d9a5f5417af6f4a43d474e3e5"
+          "stdoutSha256": "a98399c8c31d48860cc5c86ea84ea225f0334aff98abd51767374637640f1bf1",
+          "stderrSha256": "60450b27ffa9cad50252ddb00046e2641a2c4fdfd08df5a6018816924bed1ac1"
         }
       ],
       "tests": [
@@ -228,6 +229,7 @@
         "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
         "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
         "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload",
+        "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_blocking_task_preserves_context",
         "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context"
       ],
       "status": "passed",
@@ -242,20 +244,32 @@
         "size": 2825,
         "sha256": "b34d2d4df0d0b7f50df26bc0b48d1b962fe7a95184bde9d77e822ef5b572edbc"
       },
-      "finishedUtc": "2026-09-24T12:06:16.178Z"
+      "finishedUtc": "2026-09-24T12:13:24.348Z"
     },
     "controls": [
       {
-        "id": "drop-retry-context",
-        "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-609205f150304ecebb5151f657bdf95512a8af72f3cfa0a31e3faaf511e73f9e.rs",
-        "expectedSha256": "609205f150304ecebb5151f657bdf95512a8af72f3cfa0a31e3faaf511e73f9e",
-        "test": "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context",
-        "sourceSha256": "7b15da64e47fa833e56caa4089fe23349f6c853c98d142c0b00ea6439a1bcd6e",
+        "id": "drop-blocking-context",
+        "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-25648e0b3c96828dbf70aeeddc0b4f82c0f1ef3f069275442fbd6e9199187d68.rs",
+        "expectedSha256": "25648e0b3c96828dbf70aeeddc0b4f82c0f1ef3f069275442fbd6e9199187d68",
+        "test": "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_blocking_task_preserves_context",
+        "sourceSha256": "57007af311ff723244964a92655f90959503ad223cbcb5345d9404e9fb6f2aef",
         "detected": true,
         "restored": true,
         "status": 101,
-        "stdoutSha256": "1d4fcd963670d9928cc0cfda15424e388bce25839021029c37f524f3501bfdd3",
-        "stderrSha256": "58d725752a6ad76e9da27551842a8b385bff043ffc5b18750acf8dd6f59a5dc7"
+        "stdoutSha256": "da19898b9f659183c4252faec27b630c62053537565129a9509cb8ad4a7b69ce",
+        "stderrSha256": "0a77f642cf0aedea028f39881bbd6d87f7a631ac9d945f9a3fcc3ac181d51252"
+      },
+      {
+        "id": "drop-retry-context",
+        "backup": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\mutation-original-25648e0b3c96828dbf70aeeddc0b4f82c0f1ef3f069275442fbd6e9199187d68.rs",
+        "expectedSha256": "25648e0b3c96828dbf70aeeddc0b4f82c0f1ef3f069275442fbd6e9199187d68",
+        "test": "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context",
+        "sourceSha256": "bf35fddab834d937bb0f6e421e8da0ecc410cfb5592d19cdaa83523ade8e3307",
+        "detected": true,
+        "restored": true,
+        "status": 101,
+        "stdoutSha256": "1ec4c6baa037d11d6c785ab6f2ae78ea5025ed5d5509c9b427e0edcd46fc8e85",
+        "stderrSha256": "a38a8ec4b1c4c4a0582fefa03e6a9d7c53773506a436e62e86d48fe40b5ac77d"
       },
       {
         "id": "drop-request-at-flight",
@@ -266,8 +280,8 @@
         "detected": true,
         "restored": true,
         "status": 101,
-        "stdoutSha256": "91943e7eca1f301f5746e5fbcd3b2d02e0f7e3271266713ed9d815498264a9fd",
-        "stderrSha256": "1021270a17b132f786579cea02f14107bf29cd38bd4df95e05d8d1ea0ada7127"
+        "stdoutSha256": "52de48f4c40e375d57b9afd51829383d525ac38b4d672f8b5445a550209ed968",
+        "stderrSha256": "8c1bf5b74354b7d2ea4a2c70cafa63de2a50cd21f9f7e4009c341312b0bc33ca"
       },
       {
         "id": "drop-request-at-helper",
@@ -278,8 +292,8 @@
         "detected": true,
         "restored": true,
         "status": 101,
-        "stdoutSha256": "fbbb2494d34f853f1ed8ffb435a505284b2a447fae2abc7b3618adb6bf3d4d13",
-        "stderrSha256": "d0172ae4025f37361dfdd1c60405f1219d404198f4534c646bc9263941342c7a"
+        "stdoutSha256": "f8d62f5bf97267b30b89fe77ec9e1f32f1101be56a5762890b1f63f89b80fd42",
+        "stderrSha256": "f06231334e2938a1eb2a6ecfd569ae11e75de42223741d30492e0888962e9090"
       }
     ],
     "runtimeExecuted": false,
@@ -289,10 +303,10 @@
       "stage": "partial-source",
       "group": "singleflight",
       "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
-      "patchSha256": "9eb2f5f3d1268d3a5144cbe67f1515a97f237d649cf01f8b0a2713b689169287",
-      "recipeSha256": "8c15e881900004a8045891e1d8fd69d1ba59a0404c5695cacbcf732c9f728749",
-      "driverSha256": "4f969dd3e10b7f159ccd4d3d065883b60550484a969a989e56b0c5ed237d4cc1",
-      "startedUtc": "2026-09-24T12:07:28.568Z",
+      "patchSha256": "a62d11ab9114459805ee3d8ea718ffca271ce94032df41895c58a15c29733481",
+      "recipeSha256": "64f14b15bb9b9cb7c7b9f84d5e82d68c0d754252f96086328ce829e95aacb920",
+      "driverSha256": "04ac95bf7edafaa2a83e16d9f7c7b4f64a68ce9c487d027d69a153456a7d1cfd",
+      "startedUtc": "2026-09-24T12:14:35.882Z",
       "runtimeExecuted": false,
       "productionWindowsBoundaryTested": false,
       "verifiedSourceInputs": 6498,
@@ -317,7 +331,7 @@
           "status": 0,
           "error": null,
           "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "stderrSha256": "e3cfb9d676359da5a3472ab02f4c1605be5ccf518d028de752b82e607617dbde"
+          "stderrSha256": "7f761eb0c378f85da1a28e03b628d3dae18dbbee81f59fcd5634310eddcff2e6"
         },
         {
           "command": [
@@ -341,8 +355,8 @@
           ],
           "status": 0,
           "error": null,
-          "stdoutSha256": "a1ac2fe83f7f3fcdc36ab4df9bf320ef40842febce7db36e90acf3149c1fe041",
-          "stderrSha256": "810dca7150117de183904ba77ec7fbc4565c2e16e53d30551510b448f68e5c7d"
+          "stdoutSha256": "e6247d4e7c1b2538a0afedc05b3aa76ddcceabac7a64edad24530882a776b755",
+          "stderrSha256": "d70f0a2812c9a55f14ff9c64fbb1b402e4570ddc9109c81c6928db49c67d8871"
         },
         {
           "command": [
@@ -366,8 +380,8 @@
           ],
           "status": 0,
           "error": null,
-          "stdoutSha256": "82cdc084752f67b30960af213230387c98801364081a31f07cba06f7534b2e49",
-          "stderrSha256": "4262b50d2a1f20ebd7229243b2e6d41da9c5d967e581cd08b7db4939fddfc9a0"
+          "stdoutSha256": "4dae284d5ccb25cfd131651a1c0ed506d13e0175c5742d780fa13518d72613e3",
+          "stderrSha256": "42d46195ad20fb20f7b014213434c86a1815687e7db7ea1bed85562c2ed3f370"
         }
       ],
       "tests": [
@@ -375,6 +389,7 @@
         "refresh_boundary::tests::refresh_boundary_singleflight_error_and_observer_loss_preserve_result",
         "refresh_boundary::tests::refresh_boundary_singleflight_join_and_new_flight",
         "refresh_boundary::tests::refresh_boundary_singleflight_setup_request_preserves_payload",
+        "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_blocking_task_preserves_context",
         "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context"
       ],
       "status": "passed",
@@ -389,8 +404,8 @@
         "size": 2825,
         "sha256": "b34d2d4df0d0b7f50df26bc0b48d1b962fe7a95184bde9d77e822ef5b572edbc"
       },
-      "finishedUtc": "2026-09-24T12:07:43.733Z"
+      "finishedUtc": "2026-09-24T12:14:50.587Z"
     },
-    "finishedUtc": "2026-09-24T12:07:43.734Z"
+    "finishedUtc": "2026-09-24T12:14:50.587Z"
   }
 }

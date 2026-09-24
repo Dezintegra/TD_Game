@@ -148,5 +148,15 @@ desktop request внутри существующего spawn_blocking. Стар
 полнота dispatch/spawn_blocking пути не заявляется. Pipeline: 3199 passed,
 4 failed — report-delivery, tool-retry (2, EPERM rename), watch-lifetime.
 
+Session/backend increment: отдельный observed session entry передаёт optional
+context в elevated backend, начальную identity preparation и owned runner request.
+Исходный entry делегирует с None. Legacy entry с diagnostic помечает incomplete,
+пока его sites не покрыты. Общий `on_runner_thread` используется настоящим
+spawn path и тестом с fake body; тест проверяет другой thread, оба IDs и общую
+sticky health после await. Шесть singleflight tests и четыре carrier mutations
+проходят; удаление context в blocking closure обнаруживается. Pipeline:
+3201 passed, 2 failed — dependency-delivery и watch-lifetime. Leaf dispatch,
+IPC/helper, ACL sites и пакет по-прежнему не завершены.
+
 Историческая граница записи, не принятая как конечный результат, и неисполненный объём:
 `openspec/changes/implement-refresh-boundary-source/technical-barrier.md`.

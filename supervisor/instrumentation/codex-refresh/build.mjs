@@ -191,6 +191,8 @@ const NATIVE_FILES = [
   'codex-rs/windows-sandbox-rs/src/desktop_tests.rs',
   'codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs',
   'codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated_tests.rs',
+  'codex-rs/windows-sandbox-rs/src/spawn_prep.rs',
+  'codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs',
 ];
 
 export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
@@ -210,6 +212,8 @@ export function admitWireRecipe(manifest, recipe, patch, recipeBytes) {
     new Set(recipe.tests).size !== recipe.tests.length ||
     recipe.tests.some(
       (name) =>
+        name !==
+          'unified_exec::backends::elevated::tests::refresh_boundary_singleflight_blocking_task_preserves_context' &&
         name !==
           'unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context' &&
         !/^refresh_boundary::(?:tests|token_tests)::refresh_boundary_(?:wire|singleflight|token)_[a-z_]+$/u.test(
@@ -459,6 +463,13 @@ const MUTATIONS = {
     ],
   ],
   carrier: [
+    [
+      'unified_exec/backends/elevated.rs',
+      'drop-blocking-context',
+      'spawn_blocking(move || run(request))',
+      'spawn_blocking(move || { let mut request = request; request.diagnostic = None; run(request) })',
+      'unified_exec::backends::elevated::tests::refresh_boundary_singleflight_blocking_task_preserves_context',
+    ],
     [
       'unified_exec/backends/elevated.rs',
       'drop-retry-context',

@@ -193,6 +193,8 @@ const files = [
   'codex-rs/windows-sandbox-rs/src/desktop_tests.rs',
   'codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs',
   'codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated_tests.rs',
+  'codex-rs/windows-sandbox-rs/src/spawn_prep.rs',
+  'codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs',
 ];
 const patch = Buffer.from('synthetic patch, never used as production source');
 describe('native mutation restoration over fake boundaries', () => {

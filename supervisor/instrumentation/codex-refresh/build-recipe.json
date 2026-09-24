@@ -27,6 +27,7 @@
     "refresh_boundary::token_tests::refresh_boundary_token_no_token_is_only_fallback",
     "refresh_boundary::token_tests::refresh_boundary_token_snapshot_change_is_unstable",
     "refresh_boundary::token_tests::refresh_boundary_token_wire_snapshot_is_allowlisted_and_lossless",
+    "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_blocking_task_preserves_context",
     "unified_exec::backends::elevated::tests::refresh_boundary_singleflight_retry_preserves_context"
   ],
   "inputs": [
@@ -40,7 +41,7 @@
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/lib.rs",
-      "sha256": "a70463604901a14198830d279e4cc396dbfd80124bf62e7dc4c8e19c84dc222a"
+      "sha256": "9696dfaf63ca1fe7473bd8dd3d8511b23910c380061edde30ce0bcd9954fb270"
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/refresh_boundary.rs",
@@ -64,11 +65,19 @@
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated.rs",
-      "sha256": "609205f150304ecebb5151f657bdf95512a8af72f3cfa0a31e3faaf511e73f9e"
+      "sha256": "25648e0b3c96828dbf70aeeddc0b4f82c0f1ef3f069275442fbd6e9199187d68"
     },
     {
       "path": "codex-rs/windows-sandbox-rs/src/unified_exec/backends/elevated_tests.rs",
-      "sha256": "923d12de0c7ebe81c9372bb1c01f86f7a230929b1acd07352bc077882901a2ea"
+      "sha256": "aa579be421c5cd49adb268ba0f5e251a6f1b9ac626ff8fc3d2cdf0c69c212817"
+    },
+    {
+      "path": "codex-rs/windows-sandbox-rs/src/spawn_prep.rs",
+      "sha256": "f310b93a47735636413c32f3ef1496821dfbdf3705f6eb1ae3136f7e4634248d"
+    },
+    {
+      "path": "codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs",
+      "sha256": "6f0bca3dbfe933712509d03ebd01e5620f0332871341566022f16e388fd3229d"
     }
   ]
 }
