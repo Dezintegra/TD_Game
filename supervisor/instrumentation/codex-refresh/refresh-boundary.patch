@@ -1,0 +1,554 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index ca93c945..08f3af59 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -4959,6 +4959,7 @@ dependencies = [
+  "rand 0.8.6",
+  "serde",
+  "serde_json",
++ "sha2 0.10.9",
+  "tempfile",
+  "tokio",
+  "tracing-appender",
+diff --git a/codex-rs/windows-sandbox-rs/Cargo.toml b/codex-rs/windows-sandbox-rs/Cargo.toml
+index aa41ed5f..0b032bbb 100644
+--- a/codex-rs/windows-sandbox-rs/Cargo.toml
++++ b/codex-rs/windows-sandbox-rs/Cargo.toml
+@@ -36,6 +36,7 @@ dunce = "1.0"
+ glob = { workspace = true }
+ serde = { version = "1.0", features = ["derive"] }
+ serde_json = "1.0"
++sha2 = { workspace = true }
+ tempfile = "3"
+ tokio = { workspace = true, features = ["sync", "rt", "macros", "signal", "time"] }
+ tracing-appender = { workspace = true }
+diff --git a/codex-rs/windows-sandbox-rs/src/lib.rs b/codex-rs/windows-sandbox-rs/src/lib.rs
+index 0ca4dcaf..668ccc3e 100644
+--- a/codex-rs/windows-sandbox-rs/src/lib.rs
++++ b/codex-rs/windows-sandbox-rs/src/lib.rs
+@@ -2,6 +2,8 @@
+ // from the eventual unsafe cleanup.
+ #![allow(unsafe_op_in_unsafe_fn)]
+ 
++pub mod refresh_boundary;
++
+ #[cfg(any(target_os = "windows", test))]
+ mod ssh_config_dependencies;
+ 
+diff --git a/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
+new file mode 100644
+index 00000000..757ad602
+--- /dev/null
++++ b/codex-rs/windows-sandbox-rs/src/refresh_boundary.rs
+@@ -0,0 +1,511 @@
++//! Bounded, opt-in diagnostic transport. No environment lookup or OS calls.
++//! Callsite integration and native pipe adapter are separate admission steps.
++use serde::Serialize;
++use sha2::{Digest, Sha256};
++use std::collections::VecDeque;
++use std::sync::{Arc, Mutex};
++
++/// Passed explicitly across request/async boundaries; never ambient thread-local.
++#[derive(Clone)]
++pub struct DiagnosticContext {
++    pub call_id: Id,
++    pub attempt_id: Id,
++    writer: Arc<Mutex<Writer>>,
++}
++impl DiagnosticContext {
++    pub fn new(call_id: Id, attempt_id: Id, writer: Writer) -> Self {
++        Self {
++            call_id,
++            attempt_id,
++            writer: Arc::new(Mutex::new(writer)),
++        }
++    }
++    pub fn healthy(&self) -> bool {
++        self.writer
++            .lock()
++            .map(|writer| !writer.incomplete())
++            .unwrap_or(false)
++    }
++}
++
++pub fn record_if_enabled(
++    context: Option<&DiagnosticContext>,
++    event: impl FnOnce() -> Event,
++    clock: impl FnOnce() -> ClockSample,
++) -> Result<(), &'static str> {
++    let Some(context) = context else {
++        return Ok(());
++    };
++    context
++        .writer
++        .lock()
++        .map_err(|_| "writer-poisoned")?
++        .enqueue(event(), &clock())
++}
++
++const FRAME_LIMIT: usize = 256 * 1024;
++const QUEUE_LIMIT: usize = 1024 * 1024;
++
++#[derive(Clone, Debug, Serialize)]
++#[serde(transparent)]
++pub struct Id(String);
++impl Id {
++    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
++        let value = value.into();
++        if value.is_empty()
++            || value.len() > 128
++            || !value
++                .bytes()
++                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
++        {
++            return Err("invalid-id");
++        }
++        Ok(Self(value))
++    }
++}
++
++#[derive(Clone, Debug, Serialize)]
++#[serde(transparent)]
++pub struct Hash(String);
++impl Hash {
++    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
++        let value = value.into();
++        if value.len() != 64
++            || !value
++                .bytes()
++                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
++        {
++            return Err("invalid-hash");
++        }
++        Ok(Self(value))
++    }
++}
++
++#[derive(Clone, Debug, Serialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ProcessIdentity {
++    pub host_id: Id,
++    pub pid: u32,
++    #[serde(serialize_with = "decimal")]
++    pub creation_time: u64,
++    pub helper_instance_id: Id,
++}
++
++fn decimal<S: serde::Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
++    serializer.serialize_str(&value.to_string())
++}
++
++#[derive(Clone, Copy, Debug, Serialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum Origin {
++    Synthetic,
++    Instrumented,
++}
++
++#[derive(Clone, Copy, Debug, Serialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum LossReason {
++    QueueOverflow,
++    WriteFailed,
++    FlushFailed,
++    Deadline,
++}
++
++#[derive(Clone, Copy, Debug, Serialize)]
++pub enum Api {
++    WriteFile,
++    FlushFileBuffers,
++}
++
++#[derive(Serialize)]
++#[serde(tag = "kind", content = "body")]
++pub enum Event {
++    #[serde(rename = "handshake")]
++    Handshake {
++        origin: Origin,
++        #[serde(rename = "buildId")]
++        build_id: Hash,
++        process: ProcessIdentity,
++        #[serde(rename = "parentWriterId")]
++        parent_writer_id: Option<Id>,
++    },
++    #[serde(rename = "loss")]
++    Loss {
++        reason: LossReason,
++        api: Option<Api>,
++        code: Option<u32>,
++    },
++    #[serde(rename = "seal")]
++    Seal {
++        #[serde(serialize_with = "decimal")]
++        count: u64,
++        #[serde(rename = "finalSeq", serialize_with = "decimal")]
++        final_seq: u64,
++        sha256: Hash,
++        #[serde(serialize_with = "decimal")]
++        dropped: u64,
++        status: &'static str,
++    },
++}
++
++#[derive(Clone)]
++pub struct ClockSample {
++    pub ticks: u64,
++    pub frequency: u64,
++    pub utc: String,
++}
++impl ClockSample {
++    fn validate(&self) -> Result<(), &'static str> {
++        // The clock adapter owns calendar validity. Shape/ASCII is enforced here
++        // to prevent a raw external string from entering the diagnostic channel.
++        if self.frequency == 0
++            || self.utc.len() != 24
++            || !self.utc.bytes().enumerate().all(|(i, b)| match i {
++                4 | 7 => b == b'-',
++                10 => b == b'T',
++                13 | 16 => b == b':',
++                19 => b == b'.',
++                23 => b == b'Z',
++                _ => b.is_ascii_digit(),
++            })
++        {
++            return Err("invalid-clock");
++        }
++        Ok(())
++    }
++}
++
++#[derive(Serialize)]
++#[serde(rename_all = "camelCase")]
++struct Frame<'a> {
++    schema_version: &'static str,
++    writer_id: &'a Id,
++    #[serde(serialize_with = "decimal")]
++    seq: u64,
++    collection_id: &'a Id,
++    launch_id: &'a Id,
++    #[serde(serialize_with = "decimal")]
++    qpc_ticks: u64,
++    #[serde(serialize_with = "decimal")]
++    qpc_frequency: u64,
++    utc: &'a str,
++    #[serde(flatten)]
++    event: &'a Event,
++}
++
++pub trait Sink {
++    fn write_frame(&mut self, bytes: &[u8]) -> Result<(), ()>;
++    fn flush(&mut self) -> Result<(), ()>;
++}
++
++pub struct Writer {
++    writer_id: Id,
++    collection_id: Id,
++    launch_id: Id,
++    seq: u64,
++    accepted: u64,
++    dropped: u64,
++    queue: VecDeque<Vec<u8>>,
++    queued_bytes: usize,
++    digest: Sha256,
++    started: bool,
++    sealed: bool,
++    incomplete: bool,
++}
++impl Writer {
++    pub fn new(writer_id: Id, collection_id: Id, launch_id: Id) -> Self {
++        Self {
++            writer_id,
++            collection_id,
++            launch_id,
++            seq: 0,
++            accepted: 0,
++            dropped: 0,
++            queue: VecDeque::new(),
++            queued_bytes: 0,
++            digest: Sha256::new(),
++            started: false,
++            sealed: false,
++            incomplete: false,
++        }
++    }
++    pub fn incomplete(&self) -> bool {
++        self.incomplete
++    }
++    pub fn enqueue(&mut self, event: Event, clock: &ClockSample) -> Result<(), &'static str> {
++        if matches!(event, Event::Seal { .. }) {
++            self.incomplete = true;
++            return Err("external-seal");
++        }
++        self.enqueue_internal(event, clock)
++    }
++    fn enqueue_internal(&mut self, event: Event, clock: &ClockSample) -> Result<(), &'static str> {
++        if self.sealed {
++            self.incomplete = true;
++            return Err("sealed");
++        }
++        // Assignment precedes serialization/enqueue: a rejected record cannot
++        // disappear behind a contiguous sequence number or a successful seal.
++        self.seq = match self.seq.checked_add(1) {
++            Some(seq) => seq,
++            None => {
++                self.incomplete = true;
++                return Err("sequence-overflow");
++            }
++        };
++        let result = self.encode_and_queue(&event, clock);
++        if result.is_err() {
++            self.incomplete = true;
++            self.dropped = self.dropped.saturating_add(1);
++        }
++        result
++    }
++    fn encode_and_queue(&mut self, event: &Event, clock: &ClockSample) -> Result<(), &'static str> {
++        clock.validate()?;
++        let is_handshake = matches!(event, Event::Handshake { .. });
++        let is_seal = matches!(event, Event::Seal { .. });
++        if is_handshake == self.started {
++            return Err("handshake-order");
++        }
++        if matches!(event, Event::Loss { .. }) {
++            self.incomplete = true;
++        }
++        let payload = serde_json::to_vec(&Frame {
++            schema_version: "refresh-boundary/v1",
++            writer_id: &self.writer_id,
++            seq: self.seq,
++            collection_id: &self.collection_id,
++            launch_id: &self.launch_id,
++            qpc_ticks: clock.ticks,
++            qpc_frequency: clock.frequency,
++            utc: &clock.utc,
++            event,
++        })
++        .map_err(|_| "serialize-failed")?;
++        if payload.len() + 36 > FRAME_LIMIT {
++            return Err("frame-limit");
++        }
++        if self.queued_bytes + payload.len() + 36 > QUEUE_LIMIT {
++            return Err("queue-overflow");
++        }
++        let mut bytes = Vec::with_capacity(payload.len() + 36);
++        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
++        bytes.extend_from_slice(&payload);
++        bytes.extend_from_slice(&Sha256::digest(&payload));
++        if !is_seal {
++            self.digest.update(&bytes);
++            self.accepted += 1;
++        }
++        self.queued_bytes += bytes.len();
++        self.queue.push_back(bytes);
++        self.started = true;
++        self.sealed = is_seal;
++        Ok(())
++    }
++    pub fn drain(&mut self, sink: &mut impl Sink) -> Result<(), &'static str> {
++        while let Some(bytes) = self.queue.pop_front() {
++            self.queued_bytes -= bytes.len();
++            if sink.write_frame(&bytes).is_err() {
++                self.incomplete = true;
++                self.dropped = self.dropped.saturating_add(1);
++                return Err("write-failed");
++            }
++        }
++        if sink.flush().is_err() {
++            self.incomplete = true;
++            return Err("flush-failed");
++        }
++        Ok(())
++    }
++    pub fn seal(&mut self, clock: &ClockSample) -> Result<(), &'static str> {
++        let digest = self.digest.clone().finalize();
++        let hash = digest
++            .iter()
++            .map(|byte| format!("{byte:02x}"))
++            .collect::<String>();
++        self.enqueue_internal(
++            Event::Seal {
++                count: self.accepted,
++                final_seq: self.seq,
++                sha256: Hash::new(hash)?,
++                dropped: self.dropped,
++                status: if self.incomplete {
++                    "incomplete"
++                } else {
++                    "complete"
++                },
++            },
++            clock,
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn id(value: &str) -> Id {
++        Id::new(value).expect("valid fixture id")
++    }
++    fn clock() -> ClockSample {
++        ClockSample {
++            ticks: u64::MAX,
++            frequency: 10_000_000,
++            utc: "2026-09-24T00:00:00.000Z".into(),
++        }
++    }
++    fn handshake() -> Event {
++        Event::Handshake {
++            origin: Origin::Synthetic,
++            build_id: Hash::new("a".repeat(64)).unwrap(),
++            process: ProcessIdentity {
++                host_id: id("host"),
++                pid: 42,
++                creation_time: 134345678901234567,
++                helper_instance_id: id("helper"),
++            },
++            parent_writer_id: None,
++        }
++    }
++    fn writer() -> Writer {
++        Writer::new(id("root"), id("collection"), id("launch"))
++    }
++    #[derive(Default)]
++    struct FakeSink {
++        bytes: Vec<u8>,
++        write_denied: bool,
++        flush_denied: bool,
++    }
++    impl Sink for FakeSink {
++        fn write_frame(&mut self, bytes: &[u8]) -> Result<(), ()> {
++            if self.write_denied {
++                Err(())
++            } else {
++                self.bytes.extend_from_slice(bytes);
++                Ok(())
++            }
++        }
++        fn flush(&mut self) -> Result<(), ()> {
++            if self.flush_denied { Err(()) } else { Ok(()) }
++        }
++    }
++    #[test]
++    fn refresh_boundary_wire_roundtrip_fixture() {
++        let mut writer = writer();
++        let mut sink = FakeSink::default();
++        writer.enqueue(handshake(), &clock()).unwrap();
++        writer.seal(&clock()).unwrap();
++        writer.drain(&mut sink).unwrap();
++        assert!(!writer.incomplete());
++        let text = String::from_utf8_lossy(&sink.bytes);
++        assert!(text.contains("134345678901234567"));
++        assert!(text.contains("18446744073709551615"));
++        if let Some(path) = std::env::var_os("REFRESH_BOUNDARY_TEST_FIXTURE") {
++            std::fs::write(path, sink.bytes).unwrap();
++        }
++    }
++    #[test]
++    fn refresh_boundary_wire_write_failure_sticky() {
++        let mut writer = writer();
++        writer.enqueue(handshake(), &clock()).unwrap();
++        let mut sink = FakeSink {
++            write_denied: true,
++            ..Default::default()
++        };
++        assert_eq!(writer.drain(&mut sink), Err("write-failed"));
++        assert!(writer.incomplete());
++        sink.write_denied = false;
++        writer.seal(&clock()).unwrap();
++        writer.drain(&mut sink).unwrap();
++        assert!(String::from_utf8_lossy(&sink.bytes).contains("incomplete"));
++    }
++    #[test]
++    fn refresh_boundary_wire_flush_failure_sticky() {
++        let mut writer = writer();
++        writer.enqueue(handshake(), &clock()).unwrap();
++        assert_eq!(
++            writer.drain(&mut FakeSink {
++                flush_denied: true,
++                ..Default::default()
++            }),
++            Err("flush-failed")
++        );
++        assert!(writer.incomplete());
++    }
++    #[test]
++    fn refresh_boundary_wire_bounded_queue() {
++        let mut writer = writer();
++        writer.enqueue(handshake(), &clock()).unwrap();
++        let mut failed = false;
++        for _ in 0..10_000 {
++            if writer
++                .enqueue(
++                    Event::Loss {
++                        reason: LossReason::Deadline,
++                        api: None,
++                        code: None,
++                    },
++                    &clock(),
++                )
++                .is_err()
++            {
++                failed = true;
++                break;
++            }
++        }
++        assert!(failed);
++        assert!(writer.queued_bytes <= QUEUE_LIMIT);
++        assert!(writer.incomplete());
++    }
++    #[test]
++    fn refresh_boundary_wire_private_data_rejected() {
++        assert!(Id::new("payload SECRET_CANARY").is_err());
++        assert!(Hash::new("SECRET_CANARY").is_err());
++        let mut writer = writer();
++        let mut invalid = clock();
++        invalid.utc = "SECRET_CANARY".into();
++        assert_eq!(writer.enqueue(handshake(), &invalid), Err("invalid-clock"));
++        assert!(writer.queue.is_empty());
++        assert!(writer.incomplete());
++    }
++    #[test]
++    fn refresh_boundary_wire_handshake_and_seal_order() {
++        let mut writer = writer();
++        assert!(writer.seal(&clock()).is_err());
++        let mut other = super::tests::writer();
++        other.enqueue(handshake(), &clock()).unwrap();
++        other.seal(&clock()).unwrap();
++        assert_eq!(other.enqueue(handshake(), &clock()), Err("sealed"));
++        assert!(other.incomplete());
++    }
++    #[test]
++    fn refresh_boundary_wire_disabled_is_lazy() {
++        assert_eq!(
++            record_if_enabled(
++                None,
++                || panic!("must not inspect event"),
++                || panic!("must not sample clock")
++            ),
++            Ok(())
++        );
++    }
++    #[test]
++    fn refresh_boundary_wire_context_clone_shares_health() {
++        let context = DiagnosticContext::new(id("call"), id("attempt"), writer());
++        let clone = context.clone();
++        record_if_enabled(Some(&clone), handshake, clock).unwrap();
++        assert!(context.healthy());
++        assert!(record_if_enabled(Some(&context), handshake, clock).is_err());
++        assert!(!clone.healthy());
++    }
++    #[test]
++    fn refresh_boundary_wire_sequence_overflow_sticky() {
++        let mut writer = writer();
++        writer.seq = u64::MAX;
++        assert_eq!(
++            writer.enqueue(handshake(), &clock()),
++            Err("sequence-overflow")
++        );
++        assert!(writer.incomplete());
++        assert!(writer.queue.is_empty());
++    }
++}

@@ -1,7 +1,8 @@
 # Закреплённый источник refresh
 
-Подготовка Codex 0.153.4 по проектам 0371/0372. Пока это только подготовка
-исходников: патч, сборка, покрытие и live source availability не подтверждены.
+Частичная реализация Codex 0.153.4 по проектам 0371/0372: подготовка исходников,
+wire reader и отключённый Rust writer. Производственные границы, воспроизводимая
+сборка CLI/helpers, полный пакет и live source availability пока не подтверждены.
 
 `prepare.mjs` проверяет annotated tag, commit и tree из `source-manifest.json`
 через GitHub API, сверяет каждый blob официального tarball с recursive Git tree
@@ -19,7 +20,8 @@ Receipt содержит UTC, исходные Git blob IDs и SHA-256 кажд�
 bytes; результат фактической проверки — `receipts/release-lock.json`.
 Патч применяется относительно корня экспортированного source, до сборки
 с `--locked`. Исходный source receipt остаётся описанием непатченного экспорта.
-`preparationPatchSha256` не заменяет ещё отсутствующий instrumentation patch hash.
+`refresh-boundary.patch` применяется после `release-lock.patch` и добавляет
+wire writer; его отдельный hash закреплён в manifest.
 
 ### Wire reader (частичная реализация)
 
@@ -63,5 +65,20 @@ ACL, профиля или привилегий. Этот отказ Git не д
 Ревью отвергло завершение по ограничению writable roots до подготовки пакета.
 В `openspec/changes/implement-refresh-boundary-source/technical-barrier.md` сохранена
 историческая граница; она не доказывает отказ уполномоченного Windows-хозяина.
-Патч и binaries отсутствуют. `coverage.md` явно отличает проверенную подготовку
+Полный патч и binaries отсутствуют. `coverage.md` явно отличает проверенную подготовку
 от невыполненного обзора производственных границ. Разрешение на активацию не выдано.
+
+### Rust wire writer и частичный driver
+
+`build.mjs` пока поддерживает только `check --group wire`: сверяет source inputs,
+patch/recipe hashes и обратное применение patch к тестируемому source, выполняет
+Cargo check, сверяет точный harness list и запускает девять Rust tests.
+Старый fixture удаляется перед запуском, свежие bytes проверяет Node reader.
+Результат сохранён в `receipts/wire.json`; synthetic fixture не доказывает
+производственную корреляцию. Пункт 2.2 полного build/package/delivery driver открыт.
+
+`DiagnosticContext` передаётся явно и разделяет sticky health между clones.
+При `None` event/clock closures не вызываются. Writer ограничивает frame и queue,
+выдаёт seq до сериализации, проверяет handshake/seal и сохраняет failure status.
+Настоящий pipe, общий collection limit, dispatch, helper, token и ACL wrappers
+остаются открытыми пунктами 3.2–5.1; runtime не активирован.

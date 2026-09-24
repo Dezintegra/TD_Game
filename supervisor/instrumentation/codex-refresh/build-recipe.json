@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "stage": "wire-only",
+  "target": "x86_64-pc-windows-msvc",
+  "toolchain": "1.95.0",
+  "tests": [
+    "refresh_boundary::tests::refresh_boundary_wire_bounded_queue",
+    "refresh_boundary::tests::refresh_boundary_wire_context_clone_shares_health",
+    "refresh_boundary::tests::refresh_boundary_wire_disabled_is_lazy",
+    "refresh_boundary::tests::refresh_boundary_wire_flush_failure_sticky",
+    "refresh_boundary::tests::refresh_boundary_wire_handshake_and_seal_order",
+    "refresh_boundary::tests::refresh_boundary_wire_private_data_rejected",
+    "refresh_boundary::tests::refresh_boundary_wire_roundtrip_fixture",
+    "refresh_boundary::tests::refresh_boundary_wire_sequence_overflow_sticky",
+    "refresh_boundary::tests::refresh_boundary_wire_write_failure_sticky"
+  ],
+  "inputs": [
+    {
+      "path": "codex-rs/Cargo.lock",
+      "sha256": "0008e5c5c3f4cf320f4654bd33d4c0bcf63f47cf4a5c2b695dcd183f3647f976"
+    },
+    {
+      "path": "codex-rs/windows-sandbox-rs/Cargo.toml",
+      "sha256": "21bc32979a9700059dbf5b4950f49d5ded5b92acfb911bc1d4b5f0c092122349"
+    },
+    {
+      "path": "codex-rs/windows-sandbox-rs/src/lib.rs",
+      "sha256": "a70463604901a14198830d279e4cc396dbfd80124bf62e7dc4c8e19c84dc222a"
+    },
+    {
+      "path": "codex-rs/windows-sandbox-rs/src/refresh_boundary.rs",
+      "sha256": "f21fd289475593e500aafd8078068d14ebfde829489781f4df0bc47000a36644"
+    }
+  ]
+}

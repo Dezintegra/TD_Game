@@ -1,0 +1,109 @@
+{
+  "receiptVersion": 1,
+  "stage": "wire-only",
+  "sourceCommit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+  "patchSha256": "8aebbad888d9a47cb9b31cf87ad2191131250c0c8d98dc7af8f9069fc1046672",
+  "recipeSha256": "dc399502e053f77ac75d1b5aeee943adc67300b732e32e684f690d062eaf251f",
+  "startedUtc": "2026-09-24T09:57:37.807Z",
+  "runtimeExecuted": false,
+  "productionWindowsBoundaryTested": false,
+  "verifiedSourceInputs": 6498,
+  "commands": [
+    {
+      "command": [
+        "rustup",
+        "run",
+        "1.95.0",
+        "cargo",
+        "check",
+        "--locked",
+        "--offline",
+        "-j",
+        "2",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "-p",
+        "codex-windows-sandbox",
+        "--lib"
+      ],
+      "status": 0,
+      "error": null,
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "847c2445a21e7b24b665a602fa4d725b9a2d2f9dce1dafc0a332d17720869b27"
+    },
+    {
+      "command": [
+        "rustup",
+        "run",
+        "1.95.0",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j",
+        "2",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "-p",
+        "codex-windows-sandbox",
+        "--lib",
+        "refresh_boundary",
+        "--",
+        "--list"
+      ],
+      "status": 0,
+      "error": null,
+      "stdoutSha256": "c27649e85e6962a91e87ab21d15acda1a7035a092f36101e0af08a74766c6fc7",
+      "stderrSha256": "83c7f87cd85460157ff39c43fc8d9104f0419e4c23d225ed3526d563a4c83732"
+    },
+    {
+      "command": [
+        "rustup",
+        "run",
+        "1.95.0",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j",
+        "2",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "-p",
+        "codex-windows-sandbox",
+        "--lib",
+        "refresh_boundary",
+        "--",
+        "--nocapture"
+      ],
+      "status": 0,
+      "error": null,
+      "stdoutSha256": "542ed391f0c4e6eac5893a15ff362cbfc6607798acb5d1d379be65208be73873",
+      "stderrSha256": "224ccd42bd2c7ff1919edc64cd2657c134a94959dbf2c9499833101992c77424"
+    }
+  ],
+  "tests": [
+    "refresh_boundary::tests::refresh_boundary_wire_bounded_queue",
+    "refresh_boundary::tests::refresh_boundary_wire_context_clone_shares_health",
+    "refresh_boundary::tests::refresh_boundary_wire_disabled_is_lazy",
+    "refresh_boundary::tests::refresh_boundary_wire_flush_failure_sticky",
+    "refresh_boundary::tests::refresh_boundary_wire_handshake_and_seal_order",
+    "refresh_boundary::tests::refresh_boundary_wire_private_data_rejected",
+    "refresh_boundary::tests::refresh_boundary_wire_roundtrip_fixture",
+    "refresh_boundary::tests::refresh_boundary_wire_sequence_overflow_sticky",
+    "refresh_boundary::tests::refresh_boundary_wire_write_failure_sticky"
+  ],
+  "status": "passed",
+  "reader": {
+    "integrity": true,
+    "completeness": true,
+    "sourceAvailable": false,
+    "frames": 2
+  },
+  "fixture": {
+    "path": "C:\\src\\dezintegra\\TD_Game\\.claude\\worktrees\\0372-realizovat-istochnik-prichinnoy-korrelya\\.matchlog\\0372-refresh\\wire-fixture.bin",
+    "size": 897,
+    "sha256": "6520389e7667c2faf50d4dbb86da1656bc18876ef894f36b58a574af960bc858"
+  },
+  "finishedUtc": "2026-09-24T09:57:43.378Z"
+}
