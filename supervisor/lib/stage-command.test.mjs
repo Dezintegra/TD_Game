@@ -249,6 +249,22 @@ describe('сроки этапов', () => {
     expect(stageTimeoutMs('triage', mine)).toBe(5 * 60000);
     expect(stageTimeoutMs('deploy', mine)).toBe(DEPLOY_DEFAULT);
   });
+
+  it('длинная задача получает свой срок только на названном этапе', () => {
+    const { config: mine } = resolveConfig({
+      taskStageTimeoutMinutes: { '0372-refresh': { revise: 120 } },
+    });
+    expect(stageTimeoutMs('revise', mine, '0372-refresh')).toBe(120 * 60000);
+    expect(stageTimeoutMs('revise', mine, '0370-next')).toBe(60 * 60000);
+    expect(stageTimeoutMs('implement', mine, '0372-refresh')).toBe(90 * 60000);
+  });
+
+  it('неверное исключение не снимает предел этапа', () => {
+    const { config: mine } = resolveConfig({
+      taskStageTimeoutMinutes: { '0372-refresh': { revise: 0 } },
+    });
+    expect(stageTimeoutMs('revise', mine, '0372-refresh')).toBe(60 * 60000);
+  });
 });
 
 const DEPLOY_DEFAULT = 60 * 60000;
