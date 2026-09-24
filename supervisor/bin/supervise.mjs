@@ -58,6 +58,7 @@ import {
   readLiveLogProtection,
 } from '../lib/stage-logs.mjs';
 import { sessionEvidence } from '../lib/legacy-ledger-recovery.mjs';
+import { openTaskEvents } from '../lib/task-events.mjs';
 import {
   claimSupervisorLock,
   createOwnedSupervisor as createAfterOwnership,
@@ -434,6 +435,7 @@ function createRuntimeSupervisor() {
   const stageLogs = openStageLogs(local('logs'), {
     diagnose: (message) => note(message, TAG.warn),
   });
+  const taskEvents = openTaskEvents(local('task-events'));
   let protectionError;
   try {
     readLiveLogProtection(local('stages.json'));
@@ -556,6 +558,7 @@ function createRuntimeSupervisor() {
     say,
     log: (line) => note(line, null),
     writeStageLog: stageLogs.writeStageLog,
+    writeTaskEvent: taskEvents.append,
     readStageLog: stageLogs.readStageLog,
     readStageLogs: stageLogs.readStageLogs,
   });

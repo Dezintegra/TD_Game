@@ -37,6 +37,7 @@ import { launchCharge, confirmLaunchCharge } from './tool-work-evidence.mjs';
 import { matchingRetryClaim } from './tool-retry.mjs';
 import { sameToolContext } from './stage-tool-health.mjs';
 import { deployRetryEvidence } from './tool-deploy-recovery.mjs';
+import { taskEventSummaries } from './task-events.mjs';
 
 const { structuredClone } = globalThis;
 
@@ -93,6 +94,7 @@ export function createSupervisor({
   prepareAssignment = (assignment) => assignment,
   log = () => {},
   writeStageLog = () => {},
+  writeTaskEvent = () => ({ ok: true }),
   readStageLog = () => null,
   readStageLogs = null,
   /** Рассказчик. По умолчанию немой: счётная часть обязана работать и без него. */
@@ -102,6 +104,22 @@ export function createSupervisor({
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
+  const taskEventWriteErrors = new Set();
+  function recordTaskEvent(taskId, stage, launchId, event) {
+    try {
+      const written = writeTaskEvent(taskId, { at: now(), stage, launchId, ...event });
+      if (written?.ok !== false) return;
+      const key = `${taskId}:${stage}:${launchId ?? 'no-launch'}`;
+      if (taskEventWriteErrors.has(key)) return;
+      taskEventWriteErrors.add(key);
+      log(`Журнал задачи ${taskId}/${stage} не записан: ${written.error ?? 'неизвестная ошибка'}`);
+    } catch (error) {
+      const key = `${taskId}:${stage}:${launchId ?? 'no-launch'}`;
+      if (taskEventWriteErrors.has(key)) return;
+      taskEventWriteErrors.add(key);
+      log(`Журнал задачи ${taskId}/${stage} не записан: ${error.message}`);
+    }
+  }
   let launchCount = 0;
   codexUsage = migrateTokenLedger(codexUsage);
   const usageWriteErrors = new Set();
@@ -593,6 +611,10 @@ export function createSupervisor({
             why: 'replacement context changed',
           };
       } catch (error) {
+        recordTaskEvent(assignment.taskId, assignment.stage, assignment.launchId, {
+          kind: 'spawn-failed',
+          detail: error.message,
+        });
         return { ok: false, reason: 'not-born', why: error.message };
       }
 
@@ -663,6 +685,7 @@ export function createSupervisor({
           cancelUnbornCharge(child);
           return lastAdmission;
         }
+        recordTaskEvent(child.taskId, child.stage, child.launchId, { kind: 'spawn-attempt' });
         child.handle = spawnStageProcess({
           command:
             providerOf(config) === 'codex'
@@ -675,9 +698,19 @@ export function createSupervisor({
           // Поток ошибок печатается всегда: там появляются предупреждения
           // самого приложения, к отчёту не относящиеся, — и именно они
           // объясняют половину странных исходов.
-          onStderr: (line) => say.line(TAG.warn, `${child.taskId} ⚠ ${clip(line, 200)}`),
+          onStderr: (line) => {
+            recordTaskEvent(child.taskId, child.stage, child.launchId, {
+              kind: 'stderr',
+              detail: line,
+            });
+            say.line(TAG.warn, `${child.taskId} ⚠ ${clip(line, 200)}`);
+          },
         });
       } catch (error) {
+        recordTaskEvent(child.taskId, child.stage, child.launchId, {
+          kind: 'spawn-failed',
+          detail: error.message,
+        });
         if (provider === 'codex' && codexUsage.tasks[child.taskId]?.launches[child.launchId])
           cancelUsageLaunch(child);
         cancelUnbornCharge(child);
@@ -697,17 +730,29 @@ export function createSupervisor({
       // на возобновление того, чего не было, и оно умерло бы за секунды
       // с ответом «сессии с таким идентификатором нет».
       if (!handle?.pid) {
+        recordTaskEvent(child.taskId, child.stage, child.launchId, {
+          kind: 'spawn-failed',
+          detail: 'процесс не родился: номера у него нет',
+        });
         if (provider === 'codex') cancelUsageLaunch(child);
         cancelUnbornCharge(child);
         return { ok: false, reason: 'not-born', why: 'процесс не родился: номера у него нет' };
       }
 
       launchCount++;
+      recordTaskEvent(child.taskId, child.stage, child.launchId, {
+        kind: 'launch-start',
+        pid: handle.pid,
+      });
       children.set(assignment.taskId, child);
       handle.finished.then((run) => {
         try {
           finish(child, run);
         } catch (error) {
+          recordTaskEvent(child.taskId, child.stage, child.launchId, {
+            kind: 'error',
+            detail: `разбор исхода упал: ${error.message}`,
+          });
           children.delete(child.taskId);
           stopPulse();
           log(`разбор исхода ${child.taskId}:${child.stage} упал: ${error.message}`);
@@ -836,6 +881,8 @@ export function createSupervisor({
    * и длительность, и стоимость, и отказы.
    */
   function watch(child, event, line) {
+    for (const summary of taskEventSummaries(providerOf(config), event))
+      recordTaskEvent(child.taskId, child.stage, child.launchId, summary);
     if (providerOf(config) === 'codex') {
       const denial = codexDenial(event);
       if (denial && !policyBlocked) {
@@ -1325,6 +1372,12 @@ export function createSupervisor({
     // получает пустую строку и возвращает `{ report: null, why }`. Исключений
     // он не бросает, защиты не требует.
     const parsed = parseReport(answer.result);
+    recordTaskEvent(child.taskId, child.stage, child.launchId, {
+      kind: 'launch-finish',
+      status: answer.outcome,
+      ...(Number.isInteger(run.code) ? { exitCode: run.code } : {}),
+      detail: answer.why ?? parsed.why ?? '',
+    });
     const accepted = answer.outcome === 'done' && parsed.report?.stage === child.stage;
     const diagnosing = Boolean(toolHold && needsToolDiagnosis(answer, parsed, child.stage));
     if (reportStore && (accepted || diagnosing)) {

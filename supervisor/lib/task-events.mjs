@@ -8,6 +8,7 @@ const MAX_DETAIL = 300;
 const MAX_ACTION = 180;
 const MAX_TOOL = 60;
 const KINDS = new Set([
+  'spawn-attempt',
   'launch-start',
   'spawn-failed',
   'action-start',
@@ -24,6 +25,9 @@ function resultText(content) {
   if (!Array.isArray(content)) return '';
   return content.map((part) => (typeof part === 'string' ? part : (part?.text ?? ''))).join(' ');
 }
+
+const contentParts = (event) =>
+  Array.isArray(event.message?.content) ? event.message.content : [];
 
 /** Разрешённая выжимка из потока провайдера: промпты и полный вывод сюда не попадают. */
 export function taskEventSummaries(provider, event) {
@@ -64,8 +68,8 @@ export function taskEventSummaries(provider, event) {
   }
   if (provider === 'claude') {
     if (event.type === 'assistant')
-      return (event.message?.content ?? [])
-        .filter((part) => part.type === 'tool_use')
+      return contentParts(event)
+        .filter((part) => part?.type === 'tool_use')
         .map((part) => ({
           kind: 'action-start',
           tool: bounded(part.name, MAX_TOOL),
@@ -73,8 +77,8 @@ export function taskEventSummaries(provider, event) {
           action: bounded(toolDigest(part.name, part.input), MAX_ACTION),
         }));
     if (event.type === 'user')
-      return (event.message?.content ?? [])
-        .filter((part) => part.type === 'tool_result')
+      return contentParts(event)
+        .filter((part) => part?.type === 'tool_result')
         .flatMap((part) => {
           const fields = {
             ...(part.tool_use_id ? { actionId: bounded(part.tool_use_id, 80) } : {}),
