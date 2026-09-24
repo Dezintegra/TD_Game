@@ -53,6 +53,11 @@ import { createKillTree, createProbeProcess } from '../lib/run-stage.mjs';
 import { createSupervisor } from '../lib/supervisor.mjs';
 import { openReportStore } from '../lib/report-store.mjs';
 import {
+  installHostDiagnosticEndpoint,
+  diagnosticOwnerAvailable,
+} from '../lib/tool-diagnostic-endpoint.mjs';
+import { incidentPolicy } from '../lib/pipeline-incidents.mjs';
+import {
   openStageLogs,
   createStageLogMaintenance,
   readLiveLogProtection,
@@ -1287,5 +1292,65 @@ if (!owned.ownership.acquired) {
   supervisor = owned.supervisor;
   if (owned.ownership.handedFrom)
     note(`замок получен от процесса ${owned.ownership.handedFrom}: продолжаю на новом коде`, null);
-  await loop();
+  let diagnosticEndpoint;
+  try {
+    if (flags.includes('--diagnostic-endpoint')) {
+      diagnosticEndpoint = await installHostDiagnosticEndpoint({
+        runtime: supervisor,
+        config,
+        root,
+        home,
+        directory: local(''),
+        lockPath: lockPath(),
+        owns: () => diagnosticOwnerAvailable({ ownerPid: process.pid, lockPath: lockPath() }),
+        readRegistry: () => readRegistry(root, config),
+        readStages: () => readStages(root, config),
+        readTask: async (id) => {
+          const state = await openBacklog({ mayWrite: false });
+          if (!state.ok || state.invalid?.length) throw new Error('ownership-state-unknown');
+          const task = state.tasks.find((item) => item.id === id);
+          if (task?.owner && task.owner !== hostname()) throw new Error('foreign-owner');
+          return task;
+        },
+        getEnvironment: () => codexEnvironment,
+        isPaused: () => isPaused(root, config),
+        mayDiagnose: async (request, authorization) => {
+          if (
+            isApiPaused(root, config) ||
+            draining ||
+            schedulingStore.read().error ||
+            (providerOf(config) === 'codex' && !codexReady)
+          )
+            return { allowed: false, reason: 'runtime-launch-held' };
+          const state = await openBacklog({ mayWrite: false });
+          if (!state.ok || state.invalid?.length)
+            return { allowed: false, reason: 'ownership-state-unknown' };
+          const task = state.tasks.find((item) => item.id === request.taskId);
+          if (task?.owner && task.owner !== hostname())
+            return { allowed: false, reason: 'foreign-owner' };
+          if (
+            !task ||
+            !['failed', 'blocked'].includes(task.status) ||
+            JSON.stringify(task) !== JSON.stringify(authorization.source.task)
+          )
+            return { allowed: false, reason: 'source-task-changed' };
+          if (
+            !incidentPolicy({ ...state, scheduling: schedulingStore.read() }).allows(
+              task,
+              request.stage,
+            )
+          )
+            return { allowed: false, reason: 'incident-held' };
+          return { allowed: true };
+        },
+        runCommand,
+        spawn,
+        killTree: createKillTree((program, args) => runCommand(args, program)),
+      });
+      note(`Адресная диагностика: поколение ${diagnosticEndpoint.descriptor.generation}`, null);
+    }
+    await loop();
+  } finally {
+    await diagnosticEndpoint?.close();
+  }
 }

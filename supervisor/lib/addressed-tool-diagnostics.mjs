@@ -107,7 +107,12 @@ export function createAddressedToolDiagnostics({
         const entry = store.getDiagnostic(requestId);
         if (!entry) return refused('not-found');
         const auth = await authorize(entry.request, entry.fingerprint, 'get');
-        if (auth?.allowed !== true) return refused('unauthorized');
+        if (
+          auth?.allowed !== true ||
+          auth.fingerprint !== entry.fingerprint ||
+          auth.generation !== auth.source?.generation
+        )
+          return refused('unauthorized');
         return saved(requestId);
       } catch (error) {
         return refused(error.message);
@@ -190,16 +195,18 @@ export function createAddressedToolDiagnostics({
           return refused(result.accountingError ?? 'accounting-pending');
         }
         // Полный raw остаётся в store; публичные первичные ссылки формирует host transport.
-        const { runs, ...evidence } = result;
+        const evidence = { ...result };
+        delete evidence.runs;
         store.completeDiagnostic(request.requestId, {
           requestId: request.requestId,
           source,
           startedAt,
           finishedAt: now(),
           evidence,
-          primary: (runs ?? []).map((run) => ({
-            launchId: run.launchId,
-            sha256: hash(JSON.stringify(run)),
+          primary: launches.map((launch, index) => ({
+            launchId: launch.launchId,
+            pointer: `/launches/${index}/run`,
+            sha256: hash(JSON.stringify(launch.run)),
           })),
         });
         return saved(request.requestId);

@@ -29,6 +29,7 @@ import { tokenReanalysisAdmission } from './token-reanalysis.mjs';
 import { tokenAdmission } from './token-hold.mjs';
 import { toolContext } from './tool-diagnostics.mjs';
 import { createToolDiagnosticAccounting } from './tool-diagnostic-accounting.mjs';
+import { createAddressedToolDiagnostics } from './addressed-tool-diagnostics.mjs';
 import {
   createToolReportHold,
   retainedReportView,
@@ -105,6 +106,13 @@ export function createSupervisor({
 }) {
   /** Живые этапы: `taskId` → дескриптор. */
   const children = new Map();
+  const diagnosticReservations = new Set();
+  const heldDiagnostics = new Set();
+  let addressedDiagnostics = null;
+  const unresolvedDiagnostics = () =>
+    (reportStore?.diagnosticEntries?.() ?? []).filter(
+      (entry) => !['completed', 'refused'].includes(entry.state),
+    );
   const taskEventWriteErrors = new Set();
   function recordTaskEvent(taskId, stage, launchId, event) {
     try {
@@ -135,26 +143,36 @@ export function createSupervisor({
       ? createToolReportHold({
           store: reportStore,
           diagnose: async (entry) => {
-            let git;
+            if (
+              diagnosticReservations.size ||
+              unresolvedDiagnostics().some((item) => item.request.taskId === entry.taskId)
+            )
+              throw new Error('addressed diagnosis holds assignment');
+            heldDiagnostics.add(entry.taskId);
             try {
-              git = await inspectToolWork(entry);
-            } catch (error) {
-              git = { state: 'unknown', reason: error.message };
+              let git;
+              try {
+                git = await inspectToolWork(entry);
+              } catch (error) {
+                git = { state: 'unknown', reason: error.message };
+              }
+              reportStore.update(entry.reportId, { git });
+              const accounting = createToolDiagnosticAccounting({
+                config,
+                taskId: entry.taskId,
+                task: entry.assignment.task,
+                stage: entry.stage,
+                getLedger: () => codexUsage,
+                persistUsage,
+              });
+              const evidence = await diagnoseTools(entry, accounting);
+              return {
+                ...evidence,
+                costUsd: accounting.costUsd(evidence),
+              };
+            } finally {
+              heldDiagnostics.delete(entry.taskId);
             }
-            reportStore.update(entry.reportId, { git });
-            const accounting = createToolDiagnosticAccounting({
-              config,
-              taskId: entry.taskId,
-              task: entry.assignment.task,
-              stage: entry.stage,
-              getLedger: () => codexUsage,
-              persistUsage,
-            });
-            const evidence = await diagnoseTools(entry, accounting);
-            return {
-              ...evidence,
-              costUsd: accounting.costUsd(evidence),
-            };
           },
           pause: pauseTools,
           isPaused: isToolPaused,
@@ -251,6 +269,47 @@ export function createSupervisor({
       return launchCount;
     },
     mayLaunch,
+    createAddressedDiagnostics(options) {
+      if (!reportStore || addressedDiagnostics)
+        throw new Error('diagnostic store missing or handler already installed');
+      addressedDiagnostics = createAddressedToolDiagnostics({
+        ...options,
+        store: reportStore,
+        now,
+        acquire: (taskId) => {
+          // A diagnostic is not a fictional stage. Its reservation nevertheless
+          // consumes capacity and cannot coexist with an exclusive stage.
+          const active = [...children.values(), ...orphans.values()];
+          if (
+            children.has(taskId) ||
+            orphans.has(taskId) ||
+            heldDiagnostics.size ||
+            diagnosticReservations.has(taskId) ||
+            active.length + diagnosticReservations.size >= config.maxConcurrent ||
+            active.some((item) => isExclusive(item.assignment?.task ?? { status: item.stage })) ||
+            policyBlocked ||
+            usageWriteErrors.size ||
+            pendingAcceptances.size ||
+            chargeStoreError ||
+            !reportStore.verifySaved().ok
+          )
+            return null;
+          diagnosticReservations.add(taskId);
+          return () => diagnosticReservations.delete(taskId);
+        },
+        accounting: ({ request, source, ...callbacks }) =>
+          createToolDiagnosticAccounting({
+            ...callbacks,
+            config,
+            taskId: request.taskId,
+            task: source.task,
+            stage: request.stage,
+            getLedger: () => codexUsage,
+            persistUsage,
+          }),
+      });
+      return addressedDiagnostics;
+    },
     inspectRetryLaunch(entry) {
       if (entry.retry?.spawnState === 'prepared') return { state: 'absent' };
       const at = key(entry.taskId, entry.stage);
@@ -324,7 +383,13 @@ export function createSupervisor({
       ];
     },
     get reportStorageBlocked() {
-      return pendingAcceptances.size > 0 || Boolean(toolHold?.blocked) || Boolean(chargeStoreError);
+      return (
+        pendingAcceptances.size > 0 ||
+        Boolean(toolHold?.blocked) ||
+        Boolean(chargeStoreError) ||
+        Boolean(addressedDiagnostics?.blocked) ||
+        reportStore?.verifySaved?.().ok === false
+      );
     },
     get reportRestartState() {
       const saved = reportStore
@@ -334,9 +399,13 @@ export function createSupervisor({
           })
         : { ok: true, count: 0 };
       return {
-        pending: reportViews().length + pendingAcceptances.size,
+        pending: reportViews().length + pendingAcceptances.size + diagnosticReservations.size,
         durablePending: saved.ok ? saved.count : 0,
-        pendingProblem: saved.ok ? null : saved.why,
+        pendingProblem: !saved.ok
+          ? saved.why
+          : diagnosticReservations.size
+            ? 'diagnostic launch active'
+            : null,
       };
     },
     orphanOutcomes,
@@ -449,6 +518,22 @@ export function createSupervisor({
      * в молчаливую подмену тесноты поломкой.
      */
     spawnStage(assignment) {
+      if (
+        diagnosticReservations.size &&
+        (diagnosticReservations.has(assignment.taskId) ||
+          children.size + orphans.size + diagnosticReservations.size >= config.maxConcurrent ||
+          isExclusive(assignment.task ?? { status: assignment.stage }))
+      )
+        return {
+          ok: false,
+          reason: 'busy',
+          why: 'diagnostic reservation holds assignment or capacity',
+        };
+      if (
+        heldDiagnostics.has(assignment.taskId) ||
+        unresolvedDiagnostics().some((entry) => entry.request.taskId === assignment.taskId)
+      )
+        return { ok: false, reason: 'busy', why: 'diagnostic result unresolved' };
       const retryEntry = assignment.infrastructureRetry
         ? reportStore?.get(assignment.infrastructureRetry.reportId)
         : null;
