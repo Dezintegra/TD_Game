@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { dirname, join } from 'node:path';
+import { diagnosticCodeMatches } from './diagnostic-code-identity.mjs';
 
 const execute = promisify(execFile);
 
@@ -8,7 +10,12 @@ const execute = promisify(execFile);
 export async function supervisorIdentity(
   pid,
   lockPath,
-  { run = execute, platform = process.platform } = {},
+  {
+    run = execute,
+    platform = process.platform,
+    entrypoint,
+    attestStaged = diagnosticCodeMatches,
+  } = {},
 ) {
   if (!Number.isInteger(pid) || pid <= 0) return { kind: 'unknown', reason: 'некорректный PID' };
   const windows = platform === 'win32';
@@ -42,8 +49,11 @@ export async function supervisorIdentity(
     const path = value.replaceAll('\\', '/');
     return windows ? path.toLowerCase() : path;
   };
+  // The diagnostic endpoint may be loaded from a separately attested Git
+  // worktree. Other callers keep the main-checkout entrypoint derived from the
+  // lock location; merely supplying a PID never changes their trust boundary.
   const expected = normalize(
-    join(dirname(dirname(lockPath)), 'supervisor', 'bin', 'supervise.mjs'),
+    entrypoint ?? join(dirname(dirname(lockPath)), 'supervisor', 'bin', 'supervise.mjs'),
   );
   const args = [...command.matchAll(/"([^"]*)"|'([^']*)'|([^\s]+)/g)].map(
     (match) => match[1] ?? match[2] ?? match[3],
@@ -52,7 +62,29 @@ export async function supervisorIdentity(
   const node = normalize(args[0] ?? '')
     .split('/')
     .at(-1);
-  if (!['node', 'node.exe'].includes(node) || normalize(args[1] ?? '') !== expected)
-    return { kind: 'waiting' };
-  return { kind: 'live', pid };
+  if (!['node', 'node.exe'].includes(node)) return { kind: 'waiting' };
+  if (normalize(args[1] ?? '') === expected) return { kind: 'live', pid };
+  if (entrypoint || !args.includes('--diagnostic-endpoint')) return { kind: 'waiting' };
+
+  // The main watchdog and stop command must recognize an attested staged
+  // owner too. Without this fallback they would mistake its live lock for an
+  // orphan. The descriptor is evidence only after the code and command line
+  // are independently checked.
+  try {
+    const descriptor = JSON.parse(
+      readFileSync(join(dirname(lockPath), 'diagnostic-endpoint.json'), 'utf8'),
+    );
+    if (
+      descriptor.ownerPid === pid &&
+      normalize(descriptor.lockPath ?? '') === normalize(lockPath) &&
+      normalize(descriptor.storePath ?? '') ===
+        normalize(join(dirname(lockPath), 'pending-reports.json')) &&
+      normalize(descriptor.entrypoint ?? '') === normalize(args[1] ?? '') &&
+      (await attestStaged(descriptor))
+    )
+      return { kind: 'live', pid };
+  } catch {
+    // Missing or tampered attestation cannot grant ownership.
+  }
+  return { kind: 'waiting' };
 }

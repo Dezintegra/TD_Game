@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { supervisorIdentity } from './process-identity.mjs';
 
 const lock = 'C:/project with space/.pipeline/supervisor.lock';
@@ -14,6 +16,64 @@ describe('supervisor identity', () => {
     expect(
       await check(`"C:\\Program Files\\nodejs\\node.exe" "${entry.replaceAll('/', '\\')}"`),
     ).toEqual({ kind: 'live', pid: 24268 });
+  });
+  it('accepts only the explicitly attested staged entrypoint', async () => {
+    const staged = 'C:/project with space/.claude/worktrees/0383/supervisor/bin/supervise.mjs';
+    const command = `"C:\\Program Files\\nodejs\\node.exe" "${staged.replaceAll('/', '\\')}"`;
+    expect(await check(command)).toEqual({ kind: 'waiting' });
+    expect(
+      await supervisorIdentity(24268, lock, {
+        platform: 'win32',
+        entrypoint: staged,
+        run: async () => ({ stdout: JSON.stringify({ command }) }),
+      }),
+    ).toEqual({ kind: 'live', pid: 24268 });
+    expect(
+      await supervisorIdentity(24268, lock, {
+        platform: 'win32',
+        entrypoint: `${staged}.other`,
+        run: async () => ({ stdout: JSON.stringify({ command }) }),
+      }),
+    ).toEqual({ kind: 'waiting' });
+  });
+  it('lets the ordinary watchdog recognize only an attested staged owner', async () => {
+    const base = resolve(import.meta.dirname, '../../.matchlog');
+    mkdirSync(base, { recursive: true });
+    const dir = mkdtempSync(join(base, 'staged-owner-'));
+    if (!resolve(dir).startsWith(`${base}\\`) && !resolve(dir).startsWith(`${base}/`))
+      throw new Error('fixture-path-escaped');
+    try {
+      const lockPath = join(dir, 'supervisor.lock');
+      const staged = 'C:/registered/worktree/supervisor/bin/supervise.mjs';
+      const descriptor = {
+        ownerPid: 24268,
+        lockPath,
+        storePath: join(dir, 'pending-reports.json'),
+        entrypoint: staged,
+      };
+      const path = join(dir, 'diagnostic-endpoint.json');
+      writeFileSync(path, JSON.stringify(descriptor));
+      const command = `node.exe ${staged} --diagnostic-endpoint C:/project`;
+      const attestStaged = vi.fn(async () => true);
+      const identify = (overrides = {}) =>
+        supervisorIdentity(24268, lockPath, {
+          platform: 'win32',
+          run: async () => ({ stdout: JSON.stringify({ command }) }),
+          attestStaged,
+          ...overrides,
+        });
+      expect(await identify()).toEqual({ kind: 'live', pid: 24268 });
+      expect(attestStaged).toHaveBeenCalledWith(descriptor);
+      expect(await identify({ attestStaged: () => false })).toEqual({ kind: 'waiting' });
+      writeFileSync(path, JSON.stringify({ ...descriptor, ownerPid: 1 }));
+      expect(await identify()).toEqual({ kind: 'waiting' });
+      writeFileSync(path, JSON.stringify(descriptor));
+      expect(await identify({ entrypoint: 'C:/project/supervisor/bin/supervise.mjs' })).toEqual({
+        kind: 'waiting',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   it.each([
     '"C:/Docker/com.docker.backend.exe" services',
