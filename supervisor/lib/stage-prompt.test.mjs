@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clipMiddle, stagePrompt } from './stage-prompt.mjs';
+import { clipMiddle, splitJournalEntries, stagePrompt } from './stage-prompt.mjs';
 import { ROUTING_CONTRACT } from './routing-contract.mjs';
 
 /**
@@ -312,6 +312,22 @@ describe('лог упавшего этапа', () => {
 });
 
 describe('журнал', () => {
+  it.each([
+    '# задача\n\n**design → audit**\n\n**Решения:**\n\n- первое\n**audit → design**\n\nЗамечание',
+    '# задача\n\n## 2026-09-02 · design → audit\n\n**Отказано в действиях:**\n\n- нет\n## 2026-09-03 · audit → design\n\nЗамечание',
+  ])('разделяет записи двух форматов, не теряя текст и не дробя тело', (journal) => {
+    const entries = splitJournalEntries(journal);
+    expect(entries).toHaveLength(3);
+    expect(entries.join('')).toBe(journal);
+    expect(entries[1]).toContain('**');
+    expect(entries[2]).toContain('Замечание');
+  });
+
+  it('оставляет журнал без границ одним куском', () => {
+    const journal = 'история старого образца\n**Решения:**\nбез заголовка перехода';
+    expect(splitJournalEntries(journal)).toEqual([journal]);
+  });
+
   const verdict = (transition, finding, key) =>
     `**${transition}**\n\n${finding}\n\n<!-- report:${key}:0 -->`;
 

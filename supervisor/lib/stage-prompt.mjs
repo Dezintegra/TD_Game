@@ -1,4 +1,16 @@
 import { ROUTING_CONTRACT } from './routing-contract.mjs';
+
+/** Разделить историю по переходам, сохранив каждый знак исходного текста. */
+export function splitJournalEntries(text) {
+  const source = String(text ?? '');
+  const heading = /^(?:## [^\r\n]+|\*\*[a-z][a-z-]* → [a-z][a-z-]*\*\*)\r?$/gm;
+  const starts = [...source.matchAll(heading)].map((match) => match.index);
+  if (starts.length === 0) return [source];
+  const boundaries = starts[0] === 0 ? starts : [0, ...starts];
+  return boundaries.map((start, index) =>
+    source.slice(start, boundaries[index + 1] ?? source.length),
+  );
+}
 /**
  * Промпт назначения: всё, что этапу нужно знать, одним куском.
  *
